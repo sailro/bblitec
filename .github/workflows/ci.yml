@@ -32,6 +32,7 @@ jobs:
         run: |
           $vcpkgRoot = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
           git -C $vcpkgRoot fetch origin ea1a7396b05637a53bf23c078647ecc0edee4b80 --depth=1
+          git -C $vcpkgRoot checkout --force ea1a7396b05637a53bf23c078647ecc0edee4b80
           cmake -S native -B native\build-boombox-release -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$vcpkgRoot\scripts\buildsystems\vcpkg.cmake" `
             -DBBLITE_GENERATED_DIR="$PWD\generated\boombox"
