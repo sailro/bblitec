@@ -28,15 +28,50 @@ typed native operations + reached feature set
         +--> main.cpp
         +--> features.cmake
         +--> manifest.json
+        +--> upstream-generated C++
                     |
                     v
-          C++20 handle-based runtime
+          C++20 engine code + PAL
                     |
                     v
             SDL3 window/input/rendering
 ```
 
 This is a compiler, not a JavaScript interpreter. Unsupported JavaScript or Babylon Lite APIs fail with source locations instead of being silently ignored.
+
+## Upstream transpilation direction
+
+The long-term architecture is to transpile the reachable Babylon Lite implementation itself and keep hand-written native code only at the platform abstraction layer (PAL).
+
+`@babylonjs/lite@1.18.0` is pinned as the upstream source artifact. Its package metadata pins GitHub source commit `7184feda683072980735f9a180e6f567ee5717ba`, and its source maps embed the original TypeScript for each published module.
+
+```text
+BoomBox TypeScript imports
+        |
+        v
+Babylon Lite public-export resolution
+        |
+        v
+reachable TypeScript module graph
+        |
+        v
+supported TS lowering + generated C++
+        |
+        v
+PAL (filesystem, paths, environment, clock, SDL)
+```
+
+Generate the conservative BoomBox module graph:
+
+```powershell
+npm run analyze:boombox
+```
+
+The current graph contains 218 runtime modules and approximately 1.35 MiB of TypeScript. Its main unsupported pressures are async/await, closures, dynamic imports, and Web platform references such as `fetch`, `navigator`, and `requestAnimationFrame`.
+
+As the first vertical migration, `createHemisphericLight` and its `localMatrixFromDirection` helper are generated from the real upstream `hemispheric.ts` and `light-matrix.ts`. Their generated sources and provenance are emitted under `generated\<scene>\upstream`; the previous hand-written C++ light factory is no longer part of the runtime.
+
+The PAL currently owns native file reads, path joining, environment variables, and monotonic timing. SDL remains the window/input/render implementation. Engine, loader, scene, material, and render modules will move from hand-written native implementations to upstream-generated C++ incrementally, starting from the BoomBox reachable graph.
 
 ## Prerequisites
 

@@ -119,6 +119,10 @@ struct MaterialRecord {
 struct LightRecord {
     Vec3 direction{0.0f, 1.0f, 0.0f};
     float intensity = 1.0f;
+    Color3 diffuse_color{};
+    Color3 specular_color{};
+    Color3 ground_color{0.0f, 0.0f, 0.0f};
+    std::array<float, 16> local_matrix{};
 };
 
 struct CameraRecord {

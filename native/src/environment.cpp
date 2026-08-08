@@ -1,11 +1,10 @@
 #include <bblite/runtime.hpp>
+#include <bblite/pal.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdlib>
-#include <fstream>
-#include <iterator>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -18,16 +17,6 @@ struct MipmapEntry {
     std::size_t position = 0;
     std::size_t length = 0;
 };
-
-std::vector<std::uint8_t> read_file(const std::string& path) {
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) {
-        throw std::runtime_error("Unable to open environment file '" + path + "'.");
-    }
-    return std::vector<std::uint8_t>(
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>());
-}
 
 void skip_space(std::string_view text, std::size_t& position) {
     while (position < text.size() && std::isspace(static_cast<unsigned char>(text[position]))) {
@@ -176,7 +165,7 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
     static constexpr std::array<std::uint8_t, 8> magic{
         0x86, 0x16, 0x87, 0x96, 0xf6, 0xd6, 0x96, 0x36,
     };
-    const std::vector<std::uint8_t> bytes = read_file(options.environment_url);
+    const std::vector<std::uint8_t> bytes = pal::read_binary_file(options.environment_url);
     if (bytes.size() < magic.size() + 2 || !std::equal(magic.begin(), magic.end(), bytes.begin())) {
         throw std::runtime_error("Invalid Babylon environment file.");
     }
@@ -225,7 +214,7 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
     }
     scene.environment.brdf_lut = {};
     if (!options.brdf_url.empty()) {
-        scene.environment.brdf_lut.bytes = read_file(options.brdf_url);
+        scene.environment.brdf_lut.bytes = pal::read_binary_file(options.brdf_url);
         scene.environment.brdf_lut.mime_type = "image/png";
     }
     scene.environment.source_url = std::move(options.environment_url);

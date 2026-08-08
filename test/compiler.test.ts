@@ -18,6 +18,10 @@ test("compiles the Babylon Lite primitives example", () => {
         "mesh:ground",
     ]);
     assert.deepEqual(result.manifest.assets, []);
+    assert.deepEqual(result.manifest.generatedSources, [
+        "upstream/src/light_matrix.cpp",
+        "upstream/src/light_hemispheric.cpp",
+    ]);
     assert.match(result.cpp, /bbl::create_box/);
     assert.match(result.cpp, /bbl::create_ground/);
     assert.match(result.cpp, /bbl::set_diffuse_color/);
@@ -42,6 +46,7 @@ test("emits only reached native feature modules", () => {
     `);
 
     assert.deepEqual(result.manifest.features, ["core", "backend:sdl", "mesh:box"]);
+    assert.deepEqual(result.manifest.generatedSources, []);
     assert.doesNotMatch(result.cmake, /material_standard|mesh_ground|camera_/);
 });
 

@@ -4,6 +4,7 @@ node_modules/
 native/build*/
 native/vcpkg_installed/
 artifacts/
+.cache/
 
 .idea/
 .vscode/

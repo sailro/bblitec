@@ -1,8 +1,8 @@
 #include <bblite/runtime.hpp>
+#include <bblite/pal.hpp>
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
@@ -655,6 +655,17 @@ Color3 sample_brdf(const EnvironmentImages& environment, float n_dot_v, float ro
         Vec2{std::clamp(n_dot_v, 0.0f, 1.0f), std::clamp(roughness, 0.0f, 1.0f)});
 }
 
+Vec3 light_direction(const LightRecord& light) {
+    const Vec3 matrix_direction{
+        light.local_matrix[8],
+        light.local_matrix[9],
+        light.local_matrix[10],
+    };
+    return dot(matrix_direction, matrix_direction) > 0.000001f
+        ? normalize(matrix_direction)
+        : normalize(light.direction);
+}
+
 Color3 diffuse_light_color(
     const Scene& scene,
     const Engine& engine,
@@ -668,8 +679,12 @@ Color3 diffuse_light_color(
             continue;
         }
         const LightRecord& light = engine.lights[handle.value];
-        const float hemisphere = dot(normal, normalize(light.direction)) * 0.5f + 0.5f;
-        result = add_color(result, multiply_color(Color3{}, light.intensity * 0.18f * std::clamp(hemisphere, 0.0f, 1.0f)));
+        const float hemisphere = dot(normal, light_direction(light)) * 0.5f + 0.5f;
+        result = add_color(
+            result,
+            multiply_color(
+                light.diffuse_color,
+                light.intensity * 0.18f * std::clamp(hemisphere, 0.0f, 1.0f)));
     }
     const float brightness = std::max({base_color.r, base_color.g, base_color.b});
     result = multiply_color(
@@ -734,12 +749,12 @@ Color3 specular_light_color(
             continue;
         }
         const LightRecord& light = engine.lights[handle.value];
-        const Vec3 half_direction = normalize(add(normalize(light.direction), view_direction));
+        const Vec3 half_direction = normalize(add(light_direction(light), view_direction));
         const float highlight = std::pow(std::max(dot(normal, half_direction), 0.0f), exponent);
         result = add_color(
             result,
             multiply_color(
-                fresnel,
+                multiply_color(fresnel, light.specular_color),
                 highlight * light.intensity * (0.2f + metallic * 0.8f) * (1.0f - roughness * 0.55f)));
     }
     return display_color(result);
@@ -1034,24 +1049,8 @@ void handle_camera_pointer_event(
     }
 }
 
-std::string environment_value(const char* name) {
-#if defined(_MSC_VER)
-    char* value = nullptr;
-    std::size_t length = 0;
-    if (_dupenv_s(&value, &length, name) != 0 || !value) {
-        return {};
-    }
-    std::string result(value);
-    std::free(value);
-    return result;
-#else
-    const char* value = std::getenv(name);
-    return value ? value : "";
-#endif
-}
-
 long configured_frames(const char* name) {
-    const std::string value = environment_value(name);
+    const std::string value = pal::environment_variable(name);
     return value.empty() ? 0 : std::strtol(value.c_str(), nullptr, 10);
 }
 
@@ -1133,7 +1132,7 @@ void start_engine(Engine& engine) {
         benchmarking
             ? warmup_frames + benchmark_frame_count
             : configured_frames("BBLITE_MAX_FRAMES");
-    const std::string screenshot_path = environment_value("BBLITE_SCREENSHOT");
+    const std::string screenshot_path = pal::environment_variable("BBLITE_SCREENSHOT");
     std::vector<double> benchmark_samples;
     benchmark_samples.reserve(static_cast<std::size_t>(std::max(benchmark_frame_count, 0L)));
     bool screenshot_saved = false;
@@ -1149,7 +1148,7 @@ void start_engine(Engine& engine) {
             handle_camera_pointer_event(event, *camera, pointer_state);
         }
 
-        const auto frame_start = std::chrono::steady_clock::now();
+        const double frame_start = pal::monotonic_milliseconds();
         update_camera(*camera);
 
         int width = engine.options.width;
@@ -1213,9 +1212,7 @@ void start_engine(Engine& engine) {
             throw std::runtime_error(std::string("Unable to present frame: ") + SDL_GetError());
         }
         if (benchmarking && frame_count >= warmup_frames) {
-            const auto frame_end = std::chrono::steady_clock::now();
-            benchmark_samples.push_back(
-                std::chrono::duration<double, std::milli>(frame_end - frame_start).count());
+            benchmark_samples.push_back(pal::monotonic_milliseconds() - frame_start);
         }
         if (!benchmarking) {
             SDL_Delay(1);

@@ -1,6 +1,6 @@
 #include <bblite/runtime.hpp>
+#include <bblite/pal.hpp>
 
-#include <filesystem>
 #include <stdexcept>
 #include <utility>
 
@@ -40,7 +40,7 @@ Scene create_scene_context(Engine& engine) {
 }
 
 std::string asset_path(const std::string& relative_path) {
-    return (std::filesystem::path(BBLITE_ASSET_DIR) / relative_path).lexically_normal().string();
+    return pal::join_path(BBLITE_ASSET_DIR, relative_path);
 }
 
 void set_clear_color(Scene& scene, Color4 color) {

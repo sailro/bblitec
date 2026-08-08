@@ -15,10 +15,16 @@ add_executable(
     bblite_native
     "${BBLITE_GENERATED_DIR}/main.cpp"
     ${BBLITE_RUNTIME_SOURCES}
+    ${BBLITE_GENERATED_SOURCES}
 )
 
 target_compile_features(bblite_native PRIVATE cxx_std_20)
-target_include_directories(bblite_native PRIVATE "${BBLITE_NATIVE_ROOT}/include")
+target_include_directories(
+    bblite_native
+    PRIVATE
+    "${BBLITE_NATIVE_ROOT}/include"
+    "${BBLITE_GENERATED_DIR}/upstream/include"
+)
 target_compile_definitions(bblite_native PRIVATE BBLITE_ASSET_DIR="${BBLITE_GENERATED_DIR}/assets")
 
 find_package(SDL3 CONFIG QUIET)

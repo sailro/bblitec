@@ -27,13 +27,15 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/test/compiler.test.js dist/test/parity.test.js",
+    "test": "npm run build && node --test dist/test/compiler.test.js dist/test/parity.test.js dist/test/upstream.test.js",
+    "analyze:boombox": "npm run build && node dist/src/analyze-upstream.js",
     "compile:example": "npm run build && node dist/src/cli.js examples/primitives.ts --out generated/primitives",
     "compile:boombox": "npm run build && node dist/src/cli.js examples/boombox.ts --out generated/boombox --title \"Babylon Lite Native - BoomBox\"",
     "parity:reference": "npm run build && node dist/src/capture-reference.js",
     "parity:boombox": "npm run build && node dist/src/parity-boombox.js"
   },
   "devDependencies": {
+    "@babylonjs/lite": "1.18.0",
     "@types/node": "^22.15.0",
     "@types/pngjs": "^6.0.5",
     "playwright-core": "^1.62.1",

@@ -1,4 +1,5 @@
 #include <bblite/runtime.hpp>
+#include <bblite/pal.hpp>
 
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
@@ -114,7 +115,8 @@ const cgltf_accessor* required_accessor(const cgltf_primitive& primitive, cgltf_
 AssetHandle load_gltf(Engine& engine, const std::string& path) {
     cgltf_options options{};
     cgltf_data* raw_data = nullptr;
-    cgltf_result result = cgltf_parse_file(&options, path.c_str(), &raw_data);
+    const std::vector<std::uint8_t> source_bytes = pal::read_binary_file(path);
+    cgltf_result result = cgltf_parse(&options, source_bytes.data(), source_bytes.size(), &raw_data);
     if (result != cgltf_result_success) {
         fail("Unable to parse glTF file '" + path + "'", result);
     }

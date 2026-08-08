@@ -3,6 +3,7 @@
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { CompileAsset, CompileError, compileSource } from "./compiler.js";
+import { emitUpstreamGenerated } from "./upstream-lower.js";
 
 interface CliOptions {
     input: string;
@@ -100,6 +101,7 @@ async function main(): Promise<void> {
 
     mkdirSync(outputPath, { recursive: true });
     await Promise.all(result.manifest.assets.map((asset) => materializeAsset(asset, inputPath, outputPath)));
+    emitUpstreamGenerated(outputPath, result.manifest.features);
     writeFileSync(resolve(outputPath, "main.cpp"), result.cpp);
     writeFileSync(resolve(outputPath, "features.cmake"), result.cmake);
     writeFileSync(resolve(outputPath, "manifest.json"), `${JSON.stringify(result.manifest, null, 2)}\n`);
