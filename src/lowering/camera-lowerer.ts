@@ -7,6 +7,12 @@ export class CameraLowerer {
         const modulePath = "src/camera/arc-rotate.ts";
         const symbolName = "createArcRotateCamera";
         const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
+        const source = this.context.store.getSource(modulePath);
+        const poleEpsilon = this.context.extractNumber(
+            source,
+            /sinB = ([0-9.]+);/,
+            "ArcRotate pole epsilon",
+        );
         const camera = this.context.objectInitializer(declaration, "cam");
         const number = (name: string): string =>
             this.context.floatLiteral(
@@ -15,9 +21,38 @@ export class CameraLowerer {
         return {
             modulePath,
             symbolName,
-            header: "",
-            source: `// ${this.context.provenance(modulePath, symbolName)}
+            header: `#pragma once
+
 #include <bblite/runtime.hpp>
+
+namespace bbl::upstream {
+
+Vec3 arc_rotate_eye_position(const CameraRecord& camera);
+
+} // namespace bbl::upstream
+`,
+            source: `// ${this.context.provenance(modulePath, symbolName)}
+#include <bblite/upstream/camera_math.hpp>
+#include <bblite/runtime.hpp>
+
+#include <cmath>
+
+namespace bbl::upstream {
+
+Vec3 arc_rotate_eye_position(const CameraRecord& camera) {
+    const float cosine_alpha = std::cos(camera.alpha);
+    const float sine_alpha = std::sin(camera.alpha);
+    const float cosine_beta = std::cos(camera.beta);
+    float sine_beta = std::sin(camera.beta);
+    if (sine_beta == 0.0f) sine_beta = ${this.context.floatLiteral(poleEpsilon)};
+    return Vec3{
+        camera.target.x + camera.radius * cosine_alpha * sine_beta,
+        camera.target.y + camera.radius * cosine_beta,
+        camera.target.z + camera.radius * sine_alpha * sine_beta,
+    };
+}
+
+} // namespace bbl::upstream
 
 namespace bbl {
 

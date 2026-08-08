@@ -1,6 +1,7 @@
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/upstream/camera_controls.hpp>
+#include <bblite/upstream/camera_math.hpp>
 
 #include <algorithm>
 #include <array>
@@ -80,20 +81,9 @@ Vec3 normalize(Vec3 value) {
     return multiply(value, 1.0f / length);
 }
 
-Vec3 camera_position(const CameraRecord& camera) {
-    const float sin_beta = std::sin(camera.beta);
-    return add(
-        camera.target,
-        Vec3{
-            camera.radius * std::cos(camera.alpha) * sin_beta,
-            camera.radius * std::cos(camera.beta),
-            camera.radius * std::sin(camera.alpha) * sin_beta,
-        });
-}
-
 Projection create_projection(const CameraRecord& camera, int width, int height) {
     Projection projection;
-    projection.eye = camera_position(camera);
+    projection.eye = upstream::arc_rotate_eye_position(camera);
     projection.forward = normalize(subtract(camera.target, projection.eye));
     projection.right = normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, projection.forward));
     projection.up = cross(projection.forward, projection.right);

@@ -58,6 +58,7 @@ class GeneratedSourceWriter {
                 "upstream/src/camera_arc_rotate.cpp",
                 cameraLowerer.lowerArcRotateFactory(),
                 generated,
+                "upstream/include/bblite/upstream/camera_math.hpp",
             );
             this.writeSource(
                 "upstream/src/camera_controls.cpp",

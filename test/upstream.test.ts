@@ -64,6 +64,8 @@ test("generates ArcRotate and default camera factories from upstream constants",
     const controls = lowerer.lowerControls();
     assert.match(arc.source, /camera\.fov = 0\.8f/);
     assert.match(arc.source, /camera\.angular_sensibility = 1000\.0f/);
+    assert.match(arc.source, /sine_beta = 0\.0001f/);
+    assert.match(arc.header, /arc_rotate_eye_position/);
     assert.match(framing.source, /radius = diagonal \* 1\.5f/);
     assert.match(framing.source, /record\.near_plane = radius \* 0\.01f/);
     assert.match(framing.source, /record\.far_plane = radius \* 1000\.0f/);
