@@ -30,7 +30,7 @@ test("compiles the Babylon Lite primitives example", () => {
     ]);
     assert.match(result.cpp, /bbl::create_box/);
     assert.match(result.cpp, /bbl::create_ground/);
-    assert.match(result.cpp, /bbl::set_diffuse_color/);
+    assert.match(result.cpp, /\.diffuse_color =/);
     assert.match(result.cpp, /bbl::start_engine/);
     assert.doesNotMatch(result.cpp, /document|getElementById|Promise/);
     assert.match(result.cmake, /mesh_factories\.cpp/);
@@ -71,7 +71,7 @@ test("supports aliased Babylon Lite imports", () => {
     `);
 
     assert.match(result.cpp, /create_engine/);
-    assert.match(result.cpp, /set_clear_color/);
+    assert.match(result.cpp, /\.clear_color =/);
 });
 
 test("reports unsupported Babylon Lite APIs with source locations", () => {
@@ -128,7 +128,7 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
     assert.match(result.cpp, /bbl::load_gltf/);
     assert.match(result.cpp, /bbl::load_environment/);
     assert.match(result.cpp, /bbl::create_default_camera/);
-    assert.match(result.cpp, /bbl::set_camera_alpha.+1\.77538f/);
+    assert.match(result.cpp, /\.alpha = 1\.77538f/);
     assert.doesNotMatch(result.cpp, /performance|Object::assign|drawCallCount/);
     assert.match(result.cmake, /gltf_loader\.cpp/);
     assert.deepEqual(result.manifest.generatedSources, [

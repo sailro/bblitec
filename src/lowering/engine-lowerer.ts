@@ -23,6 +23,10 @@ export class EngineLowerer {
 
 #include <utility>
 
+#ifndef BBLITE_ASSET_DIR
+#define BBLITE_ASSET_DIR "."
+#endif
+
 namespace bbl {
 
 Engine create_engine(EngineOptions options) {
@@ -31,6 +35,10 @@ Engine create_engine(EngineOptions options) {
 
 void start_engine(Engine& engine) {
     pal::run_engine(engine);
+}
+
+std::string asset_path(const std::string& relative_path) {
+    return pal::join_path(BBLITE_ASSET_DIR, relative_path);
 }
 
 } // namespace bbl

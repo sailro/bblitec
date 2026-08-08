@@ -221,18 +221,6 @@ LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float inten
 CameraHandle create_arc_rotate_camera(Engine& engine, float alpha, float beta, float radius, Vec3 target);
 CameraHandle create_default_camera(Engine& engine, Scene& scene);
 
-void set_clear_color(Scene& scene, Color4 color);
-void set_camera(Scene& scene, CameraHandle camera);
-void set_position(Engine& engine, MeshHandle mesh, Vec3 position);
-void set_rotation(Engine& engine, MeshHandle mesh, Vec3 rotation);
-void set_rotation_axis(Engine& engine, MeshHandle mesh, int axis, float value);
-void set_scaling(Engine& engine, MeshHandle mesh, Vec3 scaling);
-void set_material(Engine& engine, MeshHandle mesh, MaterialHandle material);
-void set_diffuse_color(Engine& engine, MaterialHandle material, Color3 color);
-void set_camera_alpha(Engine& engine, CameraHandle camera, float alpha);
-void set_camera_beta(Engine& engine, CameraHandle camera, float beta);
-void set_camera_radius(Engine& engine, CameraHandle camera, float radius);
-
 void add_to_scene(Scene& scene, MeshHandle mesh);
 void add_to_scene(Scene& scene, LightHandle light);
 void add_to_scene(Scene& scene, AssetHandle asset);

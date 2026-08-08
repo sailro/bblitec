@@ -83,7 +83,7 @@ The current vertical migration generates these implementations from pinned upstr
 - box/ground mesh factory defaults from `mesh/create-box.ts`, `mesh/create-ground.ts`, and `mesh/mesh-factories.ts`
 - `createStandardMaterial` defaults from `material/standard/create-standard-material.ts`
 
-Their generated sources and provenance are emitted under `generated\<scene>\upstream`. The previous hand-written light, camera, mesh-factory, and standard-material C++ files have been removed, `native\src\environment.cpp` is now only a small PAL-to-engine adapter, and scene lifecycle ownership has moved out of `core.cpp`.
+Their generated sources and provenance are emitted under `generated\<scene>\upstream`. The previous hand-written light, camera, mesh-factory, standard-material, and core C++ files have been removed. `native\src\environment.cpp` is now only a small PAL-to-engine adapter.
 
 The PAL currently owns native file reads, path joining, environment variables, and monotonic timing. SDL remains the window/input/render implementation. Engine, loader, scene, material, and render modules will move from hand-written native implementations to upstream-generated C++ incrementally, starting from the BoomBox reachable graph.
 

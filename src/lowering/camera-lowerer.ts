@@ -224,7 +224,7 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
     CameraRecord& record = engine.cameras[camera.value];
     record.near_plane = radius * ${value(nearScale)};
     record.far_plane = radius * ${value(farScale)};
-    set_camera(scene, camera);
+    scene.camera = camera;
     return camera;
 }
 
@@ -269,7 +269,7 @@ namespace bbl {
 void attach_control(Engine& engine, CameraHandle camera, Scene& scene) {
     if (camera.value >= engine.cameras.size()) throw std::runtime_error("Invalid camera handle.");
     engine.cameras[camera.value].controls_enabled = true;
-    set_camera(scene, camera);
+    scene.camera = camera;
 }
 
 } // namespace bbl

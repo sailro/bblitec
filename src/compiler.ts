@@ -48,7 +48,7 @@ type Feature =
     | "mesh:ground";
 
 const featureSources: Record<Feature, string[]> = {
-    "core": ["src/core.cpp", "src/pal.cpp"],
+    "core": ["src/pal.cpp"],
     "backend:sdl": ["src/sdl_backend.cpp"],
     "camera:arc-rotate": [],
     "camera:default": [],
@@ -290,14 +290,14 @@ class Compiler {
             const property = left.name.text;
 
             if (target.kind === "scene" && property === "clearColor") {
-                this.emit(`bbl::set_clear_color(${target.cpp}, ${this.compileColor4(expression.right)});`);
+                this.emit(`${target.cpp}.clear_color = ${this.compileColor4(expression.right)};`);
                 return;
             }
 
             if (target.kind === "scene" && property === "camera") {
                 const camera = this.compileValue(expression.right);
                 this.expectKind(camera, "camera", expression.right);
-                this.emit(`bbl::set_camera(${target.cpp}, ${camera.cpp});`);
+                this.emit(`${target.cpp}.camera = ${camera.cpp};`);
                 return;
             }
 
@@ -305,21 +305,22 @@ class Compiler {
                 const material = this.compileValue(expression.right);
                 this.expectKind(material, "material", expression.right);
                 this.expectSameEngine(target, material, expression);
-                this.emit(`bbl::set_material(${this.requireEngine(target, expression)}, ${target.cpp}, ${material.cpp});`);
+                this.emit(
+                    `${this.requireEngine(target, expression)}.meshes[${target.cpp}.value].material = ${material.cpp};`,
+                );
                 return;
             }
 
             if (target.kind === "material" && property === "diffuseColor") {
                 this.emit(
-                    `bbl::set_diffuse_color(${this.requireEngine(target, expression)}, ${target.cpp}, ${this.compileColor3(expression.right)});`,
+                    `${this.requireEngine(target, expression)}.materials[${target.cpp}.value].diffuse_color = ${this.compileColor3(expression.right)};`,
                 );
                 return;
             }
 
             if (target.kind === "camera" && (property === "alpha" || property === "beta" || property === "radius")) {
-                const setter = property === "alpha" ? "set_camera_alpha" : property === "beta" ? "set_camera_beta" : "set_camera_radius";
                 this.emit(
-                    `bbl::${setter}(${this.requireEngine(target, expression)}, ${target.cpp}, ${this.compileNumber(expression.right)});`,
+                    `${this.requireEngine(target, expression)}.cameras[${target.cpp}.value].${property} = ${this.compileNumber(expression.right)};`,
                 );
                 return;
             }
@@ -336,8 +337,9 @@ class Compiler {
             if (axis === undefined) {
                 this.fail(left.name, `Unsupported rotation axis '${left.name.text}'.`);
             }
+            const component = ["x", "y", "z"][axis]!;
             this.emit(
-                `bbl::set_rotation_axis(${this.requireEngine(mesh, expression)}, ${mesh.cpp}, ${axis}, ${this.compileNumber(expression.right)});`,
+                `${this.requireEngine(mesh, expression)}.meshes[${mesh.cpp}.value].rotation.${component} = ${this.compileNumber(expression.right)};`,
             );
             return;
         }
@@ -366,9 +368,9 @@ class Compiler {
         }
 
         const vector = `bbl::Vec3{${call.arguments.map((argument) => this.compileNumber(argument)).join(", ")}}`;
-        const setter =
-            owner.name.text === "position" ? "set_position" : owner.name.text === "rotation" ? "set_rotation" : "set_scaling";
-        this.emit(`bbl::${setter}(${this.requireEngine(target, call)}, ${target.cpp}, ${vector});`);
+        this.emit(
+            `${this.requireEngine(target, call)}.meshes[${target.cpp}.value].${owner.name.text} = ${vector};`,
+        );
         return true;
     }
 
