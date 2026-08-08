@@ -13,6 +13,7 @@ import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { EngineLowerer } from "../src/lowering/engine-lowerer.js";
+import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 
 test("loads pinned Babylon Lite TypeScript from published source maps", () => {
@@ -48,6 +49,15 @@ test("generates engine API wrappers over the PAL", () => {
     const lowered = new EngineLowerer(new LoweringContext()).lowerCore();
     assert.match(lowered.source, /return pal::create_engine/);
     assert.match(lowered.source, /pal::run_engine\(engine\)/);
+});
+
+test("generates mesh and standard-material factories from upstream defaults", () => {
+    const lowerer = new FactoryLowerer(new LoweringContext());
+    const mesh = lowerer.lowerMeshFactories();
+    const material = lowerer.lowerStandardMaterialFactory();
+    assert.match(mesh.source, /mesh\.dimensions = Vec3\{resolved_size, resolved_size, resolved_size\}/);
+    assert.match(material.source, /material\.specular_power = 64\.0f/);
+    assert.match(material.source, /material\.back_face_culling = true/);
 });
 
 test("generates the public hemispheric light factory from upstream defaults", () => {

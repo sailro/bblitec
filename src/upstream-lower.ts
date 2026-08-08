@@ -7,6 +7,7 @@ import { EngineLowerer } from "./lowering/engine-lowerer.js";
 import { LightLowerer } from "./lowering/light-lowerer.js";
 import { SceneLowerer } from "./lowering/scene-lowerer.js";
 import { GltfLowerer } from "./lowering/gltf-lowerer.js";
+import { FactoryLowerer } from "./lowering/factory-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 
 export type { LoweredSource } from "./lowering/context.js";
@@ -102,6 +103,21 @@ class GeneratedSourceWriter {
                 new GltfLowerer(context).lowerGlbParser(),
                 generated,
                 "upstream/include/bblite/upstream/gltf_glb_parser.hpp",
+            );
+        }
+        const factories = new FactoryLowerer(context);
+        if (features.includes("material:standard")) {
+            this.writeSource(
+                "upstream/src/material_standard.cpp",
+                factories.lowerStandardMaterialFactory(),
+                generated,
+            );
+        }
+        if (features.includes("mesh:box") || features.includes("mesh:ground")) {
+            this.writeSource(
+                "upstream/src/mesh_factories.cpp",
+                factories.lowerMeshFactories(),
+                generated,
             );
         }
 

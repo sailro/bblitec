@@ -105,6 +105,13 @@ struct MeshRecord {
 
 struct MaterialRecord {
     Color3 diffuse_color{};
+    float alpha = 1.0f;
+    Color3 specular_color{};
+    float specular_power = 64.0f;
+    Color3 emissive_color{0.0f, 0.0f, 0.0f};
+    Color3 ambient_color{0.0f, 0.0f, 0.0f};
+    bool back_face_culling = true;
+    bool disable_lighting = false;
     Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
     Color3 emissive_factor{};
     float metallic_factor = 1.0f;

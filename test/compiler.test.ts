@@ -25,14 +25,15 @@ test("compiles the Babylon Lite primitives example", () => {
         "upstream/src/camera_controls.cpp",
         "upstream/src/light_matrix.cpp",
         "upstream/src/light_hemispheric.cpp",
+        "upstream/src/material_standard.cpp",
+        "upstream/src/mesh_factories.cpp",
     ]);
     assert.match(result.cpp, /bbl::create_box/);
     assert.match(result.cpp, /bbl::create_ground/);
     assert.match(result.cpp, /bbl::set_diffuse_color/);
     assert.match(result.cpp, /bbl::start_engine/);
     assert.doesNotMatch(result.cpp, /document|getElementById|Promise/);
-    assert.match(result.cmake, /mesh_box\.cpp/);
-    assert.match(result.cmake, /mesh_ground\.cpp/);
+    assert.match(result.cmake, /mesh_factories\.cpp/);
 });
 
 test("emits only reached native feature modules", () => {
@@ -53,6 +54,7 @@ test("emits only reached native feature modules", () => {
     assert.deepEqual(result.manifest.generatedSources, [
         "upstream/src/engine.cpp",
         "upstream/src/scene_core.cpp",
+        "upstream/src/mesh_factories.cpp",
     ]);
     assert.doesNotMatch(result.cmake, /material_standard|mesh_ground|camera_/);
 });

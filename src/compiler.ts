@@ -55,9 +55,9 @@ const featureSources: Record<Feature, string[]> = {
     "environment:ibl": ["src/environment.cpp"],
     "light:hemispheric": [],
     "loader:gltf": ["src/gltf_loader.cpp"],
-    "material:standard": ["src/material_standard.cpp"],
-    "mesh:box": ["src/mesh_box.cpp"],
-    "mesh:ground": ["src/mesh_ground.cpp"],
+    "material:standard": [],
+    "mesh:box": [],
+    "mesh:ground": [],
 };
 
 const featureOrder = Object.keys(featureSources) as Feature[];
@@ -137,6 +137,12 @@ class Compiler {
         }
         if (features.includes("loader:gltf")) {
             generatedSources.push("upstream/src/gltf_glb_parser.cpp");
+        }
+        if (features.includes("material:standard")) {
+            generatedSources.push("upstream/src/material_standard.cpp");
+        }
+        if (features.includes("mesh:box") || features.includes("mesh:ground")) {
+            generatedSources.push("upstream/src/mesh_factories.cpp");
         }
         return {
             cpp: this.renderCpp(),
