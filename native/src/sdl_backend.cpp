@@ -1,5 +1,6 @@
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
+#include <bblite/upstream/camera_controls.hpp>
 
 #include <algorithm>
 #include <array>
@@ -991,6 +992,7 @@ void update_camera(CameraRecord& camera) {
     if (!camera.controls_enabled) {
         return;
     }
+    upstream::apply_arc_rotate_inertia(camera);
     int key_count = 0;
     const bool* keys = SDL_GetKeyboardState(&key_count);
     const auto pressed = [keys, key_count](SDL_Scancode scancode) {
@@ -1025,20 +1027,12 @@ void handle_camera_pointer_event(
 
     if (event.type == SDL_EVENT_MOUSE_MOTION) {
         if (state.orbiting) {
-            camera.alpha -= event.motion.xrel / camera.angular_sensibility;
-            camera.beta = std::clamp(
-                camera.beta + event.motion.yrel / camera.angular_sensibility,
-                0.05f,
-                pi - 0.05f);
+            camera.inertial_alpha_offset -= event.motion.xrel / camera.angular_sensibility;
+            camera.inertial_beta_offset -= event.motion.yrel / camera.angular_sensibility;
         }
         if (state.panning) {
-            const Projection projection = create_projection(camera, 1, 1);
-            const float scale = camera.radius / std::max(camera.panning_sensibility * 10.0f, 1.0f);
-            camera.target = add(
-                camera.target,
-                add(
-                    multiply(projection.right, -event.motion.xrel * scale),
-                    multiply(projection.up, event.motion.yrel * scale)));
+            camera.inertial_panning_x += -event.motion.xrel / camera.panning_sensibility;
+            camera.inertial_panning_y += event.motion.yrel / camera.panning_sensibility;
         }
         return;
     }
@@ -1048,9 +1042,8 @@ void handle_camera_pointer_event(
         if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
             delta = -delta;
         }
-        camera.radius = std::max(
-            camera.radius * std::exp(-delta / std::max(camera.wheel_precision * 8.0f, 1.0f)),
-            0.0001f);
+        camera.inertial_radius_offset -=
+            (delta * camera.radius) / std::max(camera.wheel_precision * 10.0f, 1.0f);
     }
 }
 

@@ -1,16 +1,5 @@
 import { LoweredSource, LoweringContext } from "./context.js";
 
-interface ArcRotateDefaults {
-    fov: number;
-    nearPlane: number;
-    farPlane: number;
-    inertia: number;
-    panningInertia: number;
-    angularSensibility: number;
-    panningSensibility: number;
-    wheelPrecision: number;
-}
-
 export class CameraLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
@@ -19,19 +8,10 @@ export class CameraLowerer {
         const symbolName = "createArcRotateCamera";
         const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
         const camera = this.context.objectInitializer(declaration, "cam");
-        const number = (name: string): number =>
-            this.context.numericValue(this.context.propertyInitializer(camera, name), file);
-        const defaults: ArcRotateDefaults = {
-            fov: number("fov"),
-            nearPlane: number("nearPlane"),
-            farPlane: number("farPlane"),
-            inertia: number("inertia"),
-            panningInertia: number("panningInertia"),
-            angularSensibility: number("angularSensibility"),
-            panningSensibility: number("panningSensibility"),
-            wheelPrecision: number("wheelPrecision"),
-        };
-        const value = (input: number): string => this.context.floatLiteral(input);
+        const number = (name: string): string =>
+            this.context.floatLiteral(
+                this.context.numericValue(this.context.propertyInitializer(camera, name), file),
+            );
         return {
             modulePath,
             symbolName,
@@ -52,14 +32,14 @@ CameraHandle create_arc_rotate_camera(
     camera.beta = beta;
     camera.radius = radius;
     camera.target = target;
-    camera.fov = ${value(defaults.fov)};
-    camera.near_plane = ${value(defaults.nearPlane)};
-    camera.far_plane = ${value(defaults.farPlane)};
-    camera.inertia = ${value(defaults.inertia)};
-    camera.panning_inertia = ${value(defaults.panningInertia)};
-    camera.angular_sensibility = ${value(defaults.angularSensibility)};
-    camera.panning_sensibility = ${value(defaults.panningSensibility)};
-    camera.wheel_precision = ${value(defaults.wheelPrecision)};
+    camera.fov = ${number("fov")};
+    camera.near_plane = ${number("nearPlane")};
+    camera.far_plane = ${number("farPlane")};
+    camera.inertia = ${number("inertia")};
+    camera.panning_inertia = ${number("panningInertia")};
+    camera.angular_sensibility = ${number("angularSensibility")};
+    camera.panning_sensibility = ${number("panningSensibility")};
+    camera.wheel_precision = ${number("wheelPrecision")};
     engine.cameras.push_back(camera);
     return CameraHandle{static_cast<std::uint32_t>(engine.cameras.size() - 1)};
 }
@@ -76,26 +56,14 @@ CameraHandle create_arc_rotate_camera(
         if (!source.includes("createArcRotateCamera(-(Math.PI / 2), Math.PI / 2, radius, center)")) {
             throw new Error("Upstream default ArcRotate camera angles changed.");
         }
-        const radiusScale = this.context.extractNumber(
-            source,
-            /radius = diag \* ([0-9.]+)/,
-            "camera radius scale",
-        );
+        const radiusScale = this.context.extractNumber(source, /radius = diag \* ([0-9.]+)/, "camera radius scale");
         const fallbackRadius = this.context.extractNumber(
             source,
             /radius = ([0-9.]+);\s*\n\s*center = vec3\(0, 0, 0\)/,
             "camera fallback radius",
         );
-        const nearScale = this.context.extractNumber(
-            source,
-            /nearPlane = radius \* ([0-9.]+)/,
-            "camera near scale",
-        );
-        const farScale = this.context.extractNumber(
-            source,
-            /farPlane = radius \* ([0-9.]+)/,
-            "camera far scale",
-        );
+        const nearScale = this.context.extractNumber(source, /nearPlane = radius \* ([0-9.]+)/, "camera near scale");
+        const farScale = this.context.extractNumber(source, /farPlane = radius \* ([0-9.]+)/, "camera far scale");
         const value = (input: number): string => this.context.floatLiteral(input);
         return {
             modulePath,
@@ -165,7 +133,6 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         std::numeric_limits<float>::lowest(),
     };
     bool has_bounds = false;
-
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value >= engine.meshes.size()) continue;
         const MeshRecord& mesh = engine.meshes[handle.value];
@@ -196,9 +163,7 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             Vec3{local_min.x, local_max.y, local_max.z},
             Vec3{local_max.x, local_max.y, local_max.z},
         };
-        for (const Vec3 corner : corners) {
-            extend_bounds(transform_bounds_point(corner, mesh), minimum, maximum);
-        }
+        for (const Vec3 corner : corners) extend_bounds(transform_bounds_point(corner, mesh), minimum, maximum);
         has_bounds = true;
     }
 
@@ -220,13 +185,7 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             center = Vec3{};
         }
     }
-
-    const CameraHandle camera = create_arc_rotate_camera(
-        engine,
-        -pi / 2.0f,
-        pi / 2.0f,
-        radius,
-        center);
+    const CameraHandle camera = create_arc_rotate_camera(engine, -pi / 2.0f, pi / 2.0f, radius, center);
     CameraRecord& record = engine.cameras[camera.value];
     record.near_plane = radius * ${value(nearScale)};
     record.far_plane = radius * ${value(farScale)};
@@ -235,6 +194,88 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
 }
 
 } // namespace bbl
+`,
+        };
+    }
+
+    public lowerControls(): LoweredSource {
+        const modulePath = "src/camera/arc-rotate-controls.ts";
+        const symbolName = "attachControl";
+        const source = this.context.store.getSource(modulePath);
+        const rotationEpsilon = this.context.extractNumber(source, /ROTATION_EPSILON = ([0-9.]+)/, "rotation epsilon");
+        const radiusEpsilon = this.context.extractNumber(source, /RADIUS_EPSILON = ([0-9.]+)/, "radius epsilon");
+        const panningEpsilon = this.context.extractNumber(source, /PANNING_EPSILON = ([0-9.]+)/, "panning epsilon");
+        if (!source.includes("camera.inertialAlphaOffset *= camera.inertia")) {
+            throw new Error("Upstream ArcRotate inertia semantics changed.");
+        }
+        const value = (input: number): string => this.context.floatLiteral(input);
+        return {
+            modulePath,
+            symbolName,
+            header: `#pragma once
+
+#include <bblite/runtime.hpp>
+
+namespace bbl::upstream {
+
+void apply_arc_rotate_inertia(CameraRecord& camera);
+
+} // namespace bbl::upstream
+`,
+            source: `// ${this.context.provenance(modulePath, symbolName)}
+#include <bblite/upstream/camera_controls.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
+
+namespace bbl {
+
+void attach_control(Engine& engine, CameraHandle camera, Scene& scene) {
+    if (camera.value >= engine.cameras.size()) throw std::runtime_error("Invalid camera handle.");
+    engine.cameras[camera.value].controls_enabled = true;
+    set_camera(scene, camera);
+}
+
+} // namespace bbl
+
+namespace bbl::upstream {
+
+void apply_arc_rotate_inertia(CameraRecord& camera) {
+    constexpr float rotation_epsilon = ${value(rotationEpsilon)};
+    constexpr float radius_epsilon = ${value(radiusEpsilon)};
+    constexpr float panning_epsilon = ${value(panningEpsilon)};
+    if (camera.inertial_alpha_offset != 0.0f || camera.inertial_beta_offset != 0.0f) {
+        camera.alpha += camera.inertial_alpha_offset;
+        camera.beta += camera.inertial_beta_offset;
+        constexpr float epsilon = 0.01f;
+        camera.beta = std::max(epsilon, std::min(pi - epsilon, camera.beta));
+        camera.inertial_alpha_offset *= camera.inertia;
+        camera.inertial_beta_offset *= camera.inertia;
+        if (std::abs(camera.inertial_alpha_offset) < rotation_epsilon) camera.inertial_alpha_offset = 0.0f;
+        if (std::abs(camera.inertial_beta_offset) < rotation_epsilon) camera.inertial_beta_offset = 0.0f;
+    }
+    if (camera.inertial_radius_offset != 0.0f) {
+        camera.radius -= camera.inertial_radius_offset;
+        camera.radius = std::max(0.01f, camera.radius);
+        camera.inertial_radius_offset *= camera.inertia;
+        if (std::abs(camera.inertial_radius_offset) < radius_epsilon) camera.inertial_radius_offset = 0.0f;
+    }
+    if (camera.inertial_panning_x != 0.0f || camera.inertial_panning_y != 0.0f) {
+        const float cosine = std::cos(camera.alpha);
+        const float sine = std::sin(camera.alpha);
+        const float pan_scale = camera.radius * 0.001f;
+        camera.target.x += -sine * camera.inertial_panning_x * pan_scale;
+        camera.target.y += camera.inertial_panning_y * pan_scale;
+        camera.target.z += cosine * camera.inertial_panning_x * pan_scale;
+        camera.inertial_panning_x *= camera.panning_inertia;
+        camera.inertial_panning_y *= camera.panning_inertia;
+        if (std::abs(camera.inertial_panning_x) < panning_epsilon) camera.inertial_panning_x = 0.0f;
+        if (std::abs(camera.inertial_panning_y) < panning_epsilon) camera.inertial_panning_y = 0.0f;
+    }
+}
+
+} // namespace bbl::upstream
 `,
         };
     }

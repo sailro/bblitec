@@ -93,10 +93,4 @@ void set_camera_radius(Engine& engine, CameraHandle camera, float radius) {
     checked(engine.cameras, camera, "camera").radius = radius;
 }
 
-void attach_control(Engine& engine, CameraHandle camera, Scene& scene) {
-    auto& record = checked(engine.cameras, camera, "camera");
-    record.controls_enabled = true;
-    set_camera(scene, camera);
-}
-
 } // namespace bbl

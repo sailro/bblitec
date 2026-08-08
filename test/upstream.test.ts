@@ -9,7 +9,9 @@ import {
     lowerLightMatrix,
 } from "../src/upstream-lower.js";
 import { LoweringContext } from "../src/lowering/context.js";
+import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 
 test("loads pinned Babylon Lite TypeScript from published source maps", () => {
@@ -34,6 +36,13 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     assert.match(lowered.source, /registered_scenes\.end\(\)/);
 });
 
+test("generates GLB framing validation from upstream constants", () => {
+    const lowered = new GltfLowerer(new LoweringContext()).lowerGlbParser();
+    assert.match(lowered.source, /0x46546c67/);
+    assert.match(lowered.source, /0x4e4f534a/);
+    assert.match(lowered.source, /0x4e4942/);
+});
+
 test("generates the public hemispheric light factory from upstream defaults", () => {
     const lowered = lowerHemisphericFactory();
     assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
@@ -42,13 +51,17 @@ test("generates the public hemispheric light factory from upstream defaults", ()
 });
 
 test("generates ArcRotate and default camera factories from upstream constants", () => {
-    const arc = lowerArcRotateFactory();
+    const lowerer = new CameraLowerer(new LoweringContext());
+    const arc = lowerer.lowerArcRotateFactory();
     const framing = lowerDefaultCameraFactory();
+    const controls = lowerer.lowerControls();
     assert.match(arc.source, /camera\.fov = 0\.8f/);
     assert.match(arc.source, /camera\.angular_sensibility = 1000\.0f/);
     assert.match(framing.source, /radius = diagonal \* 1\.5f/);
     assert.match(framing.source, /record\.near_plane = radius \* 0\.01f/);
     assert.match(framing.source, /record\.far_plane = radius \* 1000\.0f/);
+    assert.match(controls.source, /rotation_epsilon = 0\.001f/);
+    assert.match(controls.source, /camera\.inertial_alpha_offset \*= camera\.inertia/);
 });
 
 test("lowers the reachable upstream light matrix implementation", () => {

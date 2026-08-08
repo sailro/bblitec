@@ -138,6 +138,11 @@ struct CameraRecord {
     float angular_sensibility = 1000.0f;
     float panning_sensibility = 50.0f;
     float wheel_precision = 3.0f;
+    float inertial_alpha_offset = 0.0f;
+    float inertial_beta_offset = 0.0f;
+    float inertial_radius_offset = 0.0f;
+    float inertial_panning_x = 0.0f;
+    float inertial_panning_y = 0.0f;
     bool controls_enabled = false;
 };
 

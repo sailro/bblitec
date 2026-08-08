@@ -5,6 +5,7 @@ import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
 import { LightLowerer } from "./lowering/light-lowerer.js";
 import { SceneLowerer } from "./lowering/scene-lowerer.js";
+import { GltfLowerer } from "./lowering/gltf-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 
 export type { LoweredSource } from "./lowering/context.js";
@@ -46,10 +47,17 @@ class GeneratedSourceWriter {
         );
 
         if (features.includes("camera:arc-rotate") || features.includes("camera:default")) {
+            const cameraLowerer = new CameraLowerer(context);
             this.writeSource(
                 "upstream/src/camera_arc_rotate.cpp",
-                new CameraLowerer(context).lowerArcRotateFactory(),
+                cameraLowerer.lowerArcRotateFactory(),
                 generated,
+            );
+            this.writeSource(
+                "upstream/src/camera_controls.cpp",
+                cameraLowerer.lowerControls(),
+                generated,
+                "upstream/include/bblite/upstream/camera_controls.hpp",
             );
         }
         if (features.includes("camera:default")) {
@@ -79,6 +87,14 @@ class GeneratedSourceWriter {
                 "upstream/src/light_hemispheric.cpp",
                 light.lowerFactory(),
                 generated,
+            );
+        }
+        if (features.includes("loader:gltf")) {
+            this.writeSource(
+                "upstream/src/gltf_glb_parser.cpp",
+                new GltfLowerer(context).lowerGlbParser(),
+                generated,
+                "upstream/include/bblite/upstream/gltf_glb_parser.hpp",
             );
         }
 

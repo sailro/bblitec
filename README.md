@@ -75,8 +75,10 @@ The current vertical migration generates these implementations from pinned upstr
 - `localMatrixFromDirection` from `light/light-matrix.ts`
 - `createArcRotateCamera` from `camera/arc-rotate.ts`
 - `createDefaultCamera` framing constants and factory from `scene/scene-camera.ts`
+- `attachControl` inertia integration from `camera/arc-rotate-controls.ts`; SDL only translates native events into inertial offsets
 - Babylon `.env` magic, manifest layout, face slicing, and spherical-harmonic conversion from `loader-env/env-parse.ts` and `loader-env/load-env.ts`
 - `createSceneContext`, mesh/light/asset routing in `addToScene`, and idempotent `registerScene` semantics from `scene/scene-core.ts`
+- GLB magic/chunk validation and framing from `loader-gltf/gltf-glb-parser.ts`
 
 Their generated sources and provenance are emitted under `generated\<scene>\upstream`. The previous hand-written light and camera C++ files have been removed, `native\src\environment.cpp` is now only a small PAL-to-engine adapter, and scene lifecycle ownership has moved out of `core.cpp`.
 

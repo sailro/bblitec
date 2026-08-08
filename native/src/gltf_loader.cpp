@@ -1,5 +1,6 @@
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
+#include <bblite/upstream/gltf_glb_parser.hpp>
 
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
@@ -116,6 +117,11 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     cgltf_options options{};
     cgltf_data* raw_data = nullptr;
     const std::vector<std::uint8_t> source_bytes = pal::read_binary_file(path);
+    const upstream::ParsedGlbContainer container =
+        upstream::parse_glb_container(source_bytes);
+    if (container.bin_length == 0) {
+        throw std::runtime_error("GLB contains an empty BIN chunk.");
+    }
     cgltf_result result = cgltf_parse(&options, source_bytes.data(), source_bytes.size(), &raw_data);
     if (result != cgltf_result_success) {
         fail("Unable to parse glTF file '" + path + "'", result);

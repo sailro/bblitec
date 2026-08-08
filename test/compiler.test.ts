@@ -21,6 +21,7 @@ test("compiles the Babylon Lite primitives example", () => {
     assert.deepEqual(result.manifest.generatedSources, [
         "upstream/src/scene_core.cpp",
         "upstream/src/camera_arc_rotate.cpp",
+        "upstream/src/camera_controls.cpp",
         "upstream/src/light_matrix.cpp",
         "upstream/src/light_hemispheric.cpp",
     ]);
@@ -127,9 +128,11 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
     assert.deepEqual(result.manifest.generatedSources, [
         "upstream/src/scene_core.cpp",
         "upstream/src/camera_arc_rotate.cpp",
+        "upstream/src/camera_controls.cpp",
         "upstream/src/camera_default.cpp",
         "upstream/src/env_parse.cpp",
         "upstream/src/light_matrix.cpp",
         "upstream/src/light_hemispheric.cpp",
+        "upstream/src/gltf_glb_parser.cpp",
     ]);
 });

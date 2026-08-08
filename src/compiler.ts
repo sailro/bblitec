@@ -118,7 +118,10 @@ class Compiler {
         const runtimeSources = features.flatMap((feature) => featureSources[feature]);
         const generatedSources: string[] = ["upstream/src/scene_core.cpp"];
         if (features.includes("camera:arc-rotate") || features.includes("camera:default")) {
-            generatedSources.push("upstream/src/camera_arc_rotate.cpp");
+            generatedSources.push(
+                "upstream/src/camera_arc_rotate.cpp",
+                "upstream/src/camera_controls.cpp",
+            );
         }
         if (features.includes("camera:default")) {
             generatedSources.push("upstream/src/camera_default.cpp");
@@ -128,6 +131,9 @@ class Compiler {
         }
         if (features.includes("light:hemispheric")) {
             generatedSources.push("upstream/src/light_matrix.cpp", "upstream/src/light_hemispheric.cpp");
+        }
+        if (features.includes("loader:gltf")) {
+            generatedSources.push("upstream/src/gltf_glb_parser.cpp");
         }
         return {
             cpp: this.renderCpp(),
