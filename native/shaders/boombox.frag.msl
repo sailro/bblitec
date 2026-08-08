@@ -3,28 +3,169 @@ using namespace metal;
 
 struct FragmentUniforms {
     float4 lightDirection;
+    float4 lightColor;
+    float4 groundColor;
+    float4 cameraPosition;
     float4 baseColorFactor;
     float4 emissiveFactor;
+    float4 materialFactors;
+    float4 environmentFactors;
+    float4 boundsMin;
+    float4 boundsMax;
+    float4 sphericalHarmonics[9];
 };
 
 struct FragmentInput {
     float4 position [[position]];
+    float3 worldPosition;
     float3 normal;
+    float4 tangent;
     float2 uv;
 };
+
+constant float PI = 3.14159265358979323846;
+
+float3 evaluateIrradiance(float3 normal, constant FragmentUniforms& uniforms) {
+    if (uniforms.materialFactors.w < 0.5) {
+        return float3(0.25);
+    }
+    float3 result = uniforms.sphericalHarmonics[0].rgb;
+    result += uniforms.sphericalHarmonics[1].rgb * normal.y;
+    result += uniforms.sphericalHarmonics[2].rgb * normal.z;
+    result += uniforms.sphericalHarmonics[3].rgb * normal.x;
+    result += uniforms.sphericalHarmonics[4].rgb * normal.y * normal.x;
+    result += uniforms.sphericalHarmonics[5].rgb * normal.y * normal.z;
+    result += uniforms.sphericalHarmonics[6].rgb * (3.0 * normal.z * normal.z - 1.0);
+    result += uniforms.sphericalHarmonics[7].rgb * normal.z * normal.x;
+    result += uniforms.sphericalHarmonics[8].rgb * (normal.x * normal.x - normal.y * normal.y);
+    return clamp(result, 0.0, 4.0);
+}
+
+float distributionGGX(float nDotH, float alphaG) {
+    const float a2 = alphaG * alphaG;
+    const float denominator = nDotH * nDotH * (a2 - 1.0) + 1.0;
+    return a2 / max(PI * denominator * denominator, 0.0001);
+}
+
+float geometrySmithGGX(float nDotL, float nDotV, float alphaG) {
+    const float a2 = alphaG * alphaG;
+    const float gl = nDotL * sqrt(nDotV * (nDotV - a2 * nDotV) + a2);
+    const float gv = nDotV * sqrt(nDotL * (nDotL - a2 * nDotL) + a2);
+    return 0.5 / max(gl + gv, 0.00001);
+}
+
+float3 fresnelSchlick(float cosine, float3 f0) {
+    return f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0);
+}
 
 fragment float4 main0(
     FragmentInput input [[stage_in]],
     texture2d<float> baseColorTexture [[texture(0)]],
     sampler baseColorSampler [[sampler(0)]],
-    texture2d<float> emissiveTexture [[texture(1)]],
-    sampler emissiveSampler [[sampler(1)]],
+    texture2d<float> metallicRoughnessTexture [[texture(1)]],
+    sampler metallicRoughnessSampler [[sampler(1)]],
+    texture2d<float> normalTexture [[texture(2)]],
+    sampler normalSampler [[sampler(2)]],
+    texture2d<float> emissiveTexture [[texture(3)]],
+    sampler emissiveSampler [[sampler(3)]],
+    texturecube<float> environmentTexture [[texture(4)]],
+    sampler environmentSampler [[sampler(4)]],
+    texture2d<float> brdfTexture [[texture(5)]],
+    sampler brdfSampler [[sampler(5)]],
     constant FragmentUniforms& uniforms [[buffer(0)]]) {
-    const float3 normal = normalize(input.normal);
-    const float hemisphere = saturate(dot(normal, normalize(uniforms.lightDirection.xyz)) * 0.5 + 0.5);
+    const float3 geometricNormal = normalize(input.normal);
+    const float3 tangent =
+        normalize(input.tangent.xyz - geometricNormal * dot(input.tangent.xyz, geometricNormal));
+    const float3 bitangent = normalize(cross(geometricNormal, tangent)) * input.tangent.w;
+    const float3 sampledNormal =
+        normalTexture.sample(normalSampler, input.uv).xyz * 2.0 - 1.0;
+    const float3 normal = normalize(
+        tangent * sampledNormal.x +
+        bitangent * sampledNormal.y +
+        geometricNormal * sampledNormal.z);
     const float3 albedo =
         baseColorTexture.sample(baseColorSampler, input.uv).rgb * uniforms.baseColorFactor.rgb;
+    const float3 packed = metallicRoughnessTexture.sample(metallicRoughnessSampler, input.uv).rgb;
+    const float occlusion = packed.r;
+    const float roughness = clamp(packed.g * uniforms.materialFactors.y, 0.04, 1.0);
+    const float metallic = saturate(packed.b * uniforms.materialFactors.x);
+    const float normalizedHeight =
+        (input.worldPosition.y - uniforms.boundsMin.y) /
+        max(uniforms.boundsMax.y - uniforms.boundsMin.y, 0.0001);
+    const float luminance = dot(albedo, float3(0.333333));
+    const bool smokedGlass =
+        normalizedHeight > 0.45 &&
+        geometricNormal.y > 0.3 &&
+        luminance < 0.2 &&
+        roughness < 0.35;
+    if ((uniforms.materialFactors.z < 0.5 && smokedGlass) ||
+        (uniforms.materialFactors.z >= 0.5 && !smokedGlass)) {
+        discard_fragment();
+    }
     const float3 emissive =
         emissiveTexture.sample(emissiveSampler, input.uv).rgb * uniforms.emissiveFactor.rgb;
-    return float4(albedo * (0.25 + 0.75 * hemisphere) + emissive, uniforms.baseColorFactor.a);
+    const float3 viewDirection = normalize(uniforms.cameraPosition.xyz - input.worldPosition);
+    const float nDotVUnclamped = dot(normal, viewDirection);
+    const float nDotV = abs(nDotVUnclamped) + 0.0000001;
+    const float alphaG = roughness * roughness + 0.0005;
+    const float3 surfaceAlbedo = albedo * (1.0 - 0.04) * (1.0 - metallic);
+    const float3 lightDirection = normalize(uniforms.lightDirection.xyz);
+    const float3 halfDirection = normalize(viewDirection + lightDirection);
+    const float nDotL = clamp(dot(normal, lightDirection) * 0.5 + 0.5, 0.0000001, 1.0);
+    const float nDotH = saturate(dot(normal, halfDirection));
+    const float vDotH = saturate(dot(viewDirection, halfDirection));
+    const float3 f0 = mix(float3(0.04), albedo, metallic);
+    const float3 fresnel = fresnelSchlick(vDotH, f0);
+    const float distribution = distributionGGX(nDotH, alphaG);
+    const float geometry = geometrySmithGGX(nDotL, nDotV, alphaG);
+    const float3 directSpecular =
+        fresnel * distribution * geometry * nDotL *
+        uniforms.lightColor.rgb * uniforms.lightColor.a;
+    const float3 groundSky =
+        mix(uniforms.groundColor.rgb, uniforms.lightColor.rgb, nDotL);
+    const float3 directDiffuse =
+        groundSky * surfaceAlbedo * uniforms.lightColor.a;
+    const float3 irradiance = evaluateIrradiance(normal, uniforms);
+    const float3 reflection = reflect(-viewDirection, normal);
+    const float mipLevel = clamp(
+        log2(max(float(environmentTexture.get_width()) * alphaG, 1.0)) *
+            uniforms.environmentFactors.z,
+        0.0,
+        float(environmentTexture.get_num_mip_levels() - 1));
+    float3 environmentRadiance =
+        environmentTexture.sample(environmentSampler, reflection, level(mipLevel)).rgb;
+    environmentRadiance = mix(environmentRadiance, irradiance, alphaG);
+    const float2 brdf =
+        brdfTexture.sample(brdfSampler, float2(nDotV, roughness)).rg;
+    const float3 environmentReflectance = (1.0 - f0) * brdf.x + f0 * brdf.y;
+    const float specularOcclusion = saturate(
+        (nDotVUnclamped + occlusion) * (nDotVUnclamped + occlusion) -
+        1.0 +
+        occlusion);
+    const float horizon = saturate(1.0 + 1.1 * dot(reflection, geometricNormal));
+    const float3 colorSpecularEnvironment =
+        environmentReflectance * specularOcclusion * horizon * horizon;
+    const float3 energyConservation =
+        1.0 + f0 * (1.0 / max(brdf.y, 0.001) - 1.0);
+    const float3 finalIrradiance = irradiance * surfaceAlbedo * occlusion;
+    const float3 finalRadiance =
+        environmentRadiance * colorSpecularEnvironment * energyConservation;
+    const float3 finalDirectSpecular = directSpecular * energyConservation;
+    float3 color =
+        finalIrradiance +
+        finalRadiance +
+        finalDirectSpecular +
+        directDiffuse +
+        emissive;
+    color *= uniforms.environmentFactors.x;
+    if (uniforms.environmentFactors.w > 0.5) {
+        color = 1.0 - exp2(-1.590579 * color);
+    }
+    color = pow(max(color, float3(0.0)), float3(1.0 / 2.2));
+    color = saturate(color);
+    const float3 highContrast = color * color * (3.0 - 2.0 * color);
+    color = uniforms.environmentFactors.y < 1.0
+        ? mix(float3(0.5), color, uniforms.environmentFactors.y)
+        : mix(color, highContrast, uniforms.environmentFactors.y - 1.0);
+    return float4(color, smokedGlass ? 0.72 : uniforms.baseColorFactor.a);
 }

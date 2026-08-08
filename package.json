@@ -33,6 +33,7 @@
     "compile:boombox": "npm run build && node dist/src/cli.js examples/boombox.ts --out generated/boombox --title \"Babylon Lite Native - BoomBox\"",
     "parity:reference": "npm run build && node dist/src/capture-reference.js",
     "parity:boombox": "npm run build && node dist/src/parity-boombox.js",
+    "parity:boombox:gpu": "npm run build && node dist/src/parity-boombox.js --gpu",
     "shaders:build": "pwsh -File tools/compile-shaders.ps1"
   },
   "devDependencies": {

@@ -154,10 +154,10 @@ $env:BBLITE_BENCHMARK_FRAMES = "2000"
 
 ### SDL_GPU fast path
 
-Set `BBLITE_GPU=1` to use the experimental static-buffer, depth-tested SDL_GPU renderer:
+Rendered glTF scenes use the static-buffer, depth-tested SDL_GPU renderer by default. Set `BBLITE_GPU=0` to force the deterministic CPU fallback:
 
 ```powershell
-$env:BBLITE_GPU = "1"
+$env:BBLITE_GPU = "0"
 .\native\build\bblite_native.exe
 ```
 
@@ -179,9 +179,17 @@ cd ..\..
 npm run shaders:build
 ```
 
-On the development machine, the optimized BoomBox CPU fallback measured **5.516 ms/frame** average CPU submission. The SDL_GPU Direct3D 12 path measured **0.117 ms average / 0.078 ms median**, approximately **47× faster** CPU-side.
+On the development machine, the optimized BoomBox CPU fallback measured **5.516 ms/frame** average CPU submission. The full material/IBL SDL_GPU Direct3D 12 path measured **0.122 ms average / 0.079 ms median**, approximately **45× faster** CPU-side.
 
-The GPU path is currently opt-in because its initial shader is a reduced textured/hemispheric implementation. The validated CPU fallback remains the visual-parity path while Babylon Lite's full generated PBR/IBL shader and frame-graph semantics are migrated to the GPU PAL.
+The GPU path remains opt-in while Babylon Lite's remaining background, frame-graph, and exact material semantics are migrated to the GPU PAL.
+
+The SDL_GPU path now supports deterministic swapchain readback, ArcRotate mouse controls, normal and metallic-roughness maps, emissive materials, Babylon `.env` cubemap mips, spherical-harmonic irradiance, the BRDF LUT, and a separate blended smoked-glass pass. Run its local visual regression gate with:
+
+```powershell
+npm run parity:boombox:gpu
+```
+
+The current D3D12 GPU baseline is **4.172 full-image MAD / 17.257 foreground-region MAD**, improving on both the first measurable reduced-shader baseline (**7.720 / 58.573**) and the CPU fallback (**4.452 / 21.191**). The remaining gap is dominated by Babylon Lite's background-ground pass and exact frame-graph/material edge cases.
 
 Configuring without SDL keeps the headless backend available. The generated glTF loader uses the typed JSON runtime; SDL_image is linked only by rendered glTF builds.
 

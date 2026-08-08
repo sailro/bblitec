@@ -19,6 +19,11 @@ interface ParityConfig {
         maxRegionMad: number;
         minWithin1?: number;
     };
+    gpuThresholds?: {
+        maxMad: number;
+        maxRegionMad: number;
+        minWithin1?: number;
+    };
     upstreamThresholds: {
         maxMad: number;
         maxRegionMad: number;
@@ -32,6 +37,7 @@ interface Arguments {
     actual?: string;
     recaptureReference: boolean;
     noFail: boolean;
+    gpu: boolean;
 }
 
 function parseArguments(arguments_: string[]): Arguments {
@@ -40,6 +46,7 @@ function parseArguments(arguments_: string[]): Arguments {
     let actual: string | undefined;
     let recaptureReference = false;
     let noFail = false;
+    let gpu = false;
     for (let index = 0; index < arguments_.length; index += 1) {
         const argument = arguments_[index];
         if (argument === "--config") config = arguments_[++index] ?? config;
@@ -47,6 +54,7 @@ function parseArguments(arguments_: string[]): Arguments {
         else if (argument === "--actual") actual = arguments_[++index];
         else if (argument === "--recapture-reference") recaptureReference = true;
         else if (argument === "--no-fail") noFail = true;
+        else if (argument === "--gpu") gpu = true;
         else throw new Error(`Unknown argument '${argument}'.`);
     }
     return {
@@ -55,6 +63,7 @@ function parseArguments(arguments_: string[]): Arguments {
         ...(actual ? { actual } : {}),
         recaptureReference,
         noFail,
+        gpu,
     };
 }
 
@@ -64,7 +73,7 @@ function defaultExecutable(): string {
         : "native/build-boombox-release/bblite_native";
 }
 
-function runNative(executable: string, screenshot: string): void {
+function runNative(executable: string, screenshot: string, gpu: boolean): void {
     if (!existsSync(executable)) {
         throw new Error(`Native executable not found: ${executable}. Build the BoomBox Release target first.`);
     }
@@ -73,8 +82,13 @@ function runNative(executable: string, screenshot: string): void {
         stdio: "inherit",
         env: {
             ...process.env,
-            SDL_VIDEODRIVER: "dummy",
-            SDL_RENDER_DRIVER: "software",
+            ...(gpu
+                ? { BBLITE_GPU: "1" }
+                : {
+                      BBLITE_GPU: "0",
+                      SDL_VIDEODRIVER: "dummy",
+                      SDL_RENDER_DRIVER: "software",
+                  }),
             BBLITE_MAX_FRAMES: "1",
             BBLITE_SCREENSHOT: resolve(screenshot),
         },
@@ -93,8 +107,14 @@ async function main(): Promise<void> {
     const arguments_ = parseArguments(process.argv.slice(2));
     const config = JSON.parse(readFileSync(resolve(arguments_.config), "utf8")) as ParityConfig;
     const reference = resolve(config.reference);
-    const actual = resolve(arguments_.actual ?? config.actual);
     const outputDirectory = resolve(config.outputDirectory);
+    const actual = resolve(
+        arguments_.actual ??
+            (arguments_.gpu ? `${config.outputDirectory}/boombox-gpu.png` : config.actual),
+    );
+    const thresholds = arguments_.gpu && config.gpuThresholds
+        ? config.gpuThresholds
+        : config.thresholds;
 
     await captureBabylonReference({
         output: reference,
@@ -102,7 +122,11 @@ async function main(): Promise<void> {
         force: arguments_.recaptureReference,
     });
     if (!arguments_.actual) {
-        runNative(resolve(arguments_.executable ?? process.env.BBLITE_NATIVE_EXE ?? defaultExecutable()), actual);
+        runNative(
+            resolve(arguments_.executable ?? process.env.BBLITE_NATIVE_EXE ?? defaultExecutable()),
+            actual,
+            arguments_.gpu,
+        );
     }
 
     const actualDimensions = imageDimensions(actual);
@@ -134,7 +158,7 @@ async function main(): Promise<void> {
             within3: percentage(region.within3, region.regionPixels),
             within5: percentage(region.within5, region.regionPixels),
         },
-        thresholds: config.thresholds,
+        thresholds,
         upstreamThresholds: config.upstreamThresholds,
         files: { actual, reference, diff: diffPath },
     };
@@ -150,14 +174,14 @@ async function main(): Promise<void> {
     console.log(`Diff: ${diffPath}`);
 
     const failures: string[] = [];
-    if (full.mad > config.thresholds.maxMad) {
-        failures.push(`full MAD ${full.mad.toFixed(3)} > ${config.thresholds.maxMad}`);
+    if (full.mad > thresholds.maxMad) {
+        failures.push(`full MAD ${full.mad.toFixed(3)} > ${thresholds.maxMad}`);
     }
-    if (region.mad > config.thresholds.maxRegionMad) {
-        failures.push(`region MAD ${region.mad.toFixed(3)} > ${config.thresholds.maxRegionMad}`);
+    if (region.mad > thresholds.maxRegionMad) {
+        failures.push(`region MAD ${region.mad.toFixed(3)} > ${thresholds.maxRegionMad}`);
     }
-    if (config.thresholds.minWithin1 !== undefined && report.ratios.within1 < config.thresholds.minWithin1) {
-        failures.push(`within1 ${report.ratios.within1.toFixed(4)} < ${config.thresholds.minWithin1}`);
+    if (thresholds.minWithin1 !== undefined && report.ratios.within1 < thresholds.minWithin1) {
+        failures.push(`within1 ${report.ratios.within1.toFixed(4)} < ${thresholds.minWithin1}`);
     }
     if (failures.length > 0) {
         const message = `Parity regression: ${failures.join(", ")}`;

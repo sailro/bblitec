@@ -8,12 +8,15 @@ struct VertexUniforms {
 struct VertexInput {
     float3 position [[attribute(0)]];
     float3 normal [[attribute(1)]];
-    float2 uv [[attribute(2)]];
+    float4 tangent [[attribute(2)]];
+    float2 uv [[attribute(3)]];
 };
 
 struct VertexOutput {
     float4 position [[position]];
+    float3 worldPosition;
     float3 normal;
+    float4 tangent;
     float2 uv;
 };
 
@@ -22,7 +25,9 @@ vertex VertexOutput main0(
     constant VertexUniforms& uniforms [[buffer(0)]]) {
     VertexOutput output;
     output.position = uniforms.viewProjection * float4(input.position, 1.0);
+    output.worldPosition = input.position;
     output.normal = input.normal;
+    output.tangent = input.tangent;
     output.uv = input.uv;
     return output;
 }

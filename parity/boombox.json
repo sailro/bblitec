@@ -10,6 +10,10 @@
     "maxMad": 4.6,
     "maxRegionMad": 21.5
   },
+  "gpuThresholds": {
+    "maxMad": 4.3,
+    "maxRegionMad": 18.0
+  },
   "upstreamThresholds": {
     "maxMad": 0.19,
     "maxRegionMad": 0.03,
