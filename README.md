@@ -8,6 +8,10 @@ The prototype now supports two official-style targets: the primitives scene and 
 
 **Status:** research prototype. The accepted TypeScript and Babylon Lite API surface is intentionally constrained and validated at transpile time.
 
+![Native BoomBox scene rendered by bblitec](docs/images/boombox-native.png)
+
+_The Babylon Lite BoomBox parity scene transpiled to C++ and rendered through the native SDL3 runtime._
+
 ## Pipeline
 
 ```text

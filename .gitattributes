@@ -6,5 +6,6 @@
 *.hpp text eol=lf
 *.json text eol=lf
 *.md text eol=lf
+*.png binary
 *.ts text eol=lf
 *.yml text eol=lf
