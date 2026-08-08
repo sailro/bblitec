@@ -15,6 +15,7 @@ import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { EngineLowerer } from "../src/lowering/engine-lowerer.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
+import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 
 test("loads pinned Babylon Lite TypeScript from published source maps", () => {
@@ -99,6 +100,24 @@ test("lowers the reachable upstream light matrix implementation", () => {
     assert.match(lowered.source, /std::sqrt/);
     assert.match(lowered.source, /m\[15\] = 1\.0f/);
     assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
+});
+
+test("generates the render plan from upstream frame-graph binding semantics", () => {
+    const lowerer = new RendererLowerer(new LoweringContext());
+    const lowered = lowerer.lowerRenderPlan();
+    const shaders = lowerer.lowerShaders();
+    assert.equal(lowered.modulePath, "src/frame-graph/render-task.ts");
+    assert.match(lowered.header, /struct RenderItem/);
+    assert.match(lowered.source, /build_render_plan/);
+    assert.match(lowered.source, /build_pbr_uniforms/);
+    assert.match(lowered.header, /struct PbrUniforms/);
+    assert.match(lowered.source, /PrimitiveKind::gltf/);
+    assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
+    assert.ok(shaders.some((shader) => shader.output.endsWith("boombox.frag.hlsl")));
+    const fragment = shaders.find((shader) => shader.output.endsWith("boombox.frag.hlsl"));
+    assert.equal(typeof fragment?.data, "string");
+    assert.match(String(fragment?.data), /geometrySmithGGX/);
+    assert.match(String(fragment?.data), /1\.590579/);
 });
 
 test("builds a conservative reachable module graph", () => {

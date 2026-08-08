@@ -4,7 +4,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$shaderDirectory = Join-Path $root "native\shaders"
+$shaderDirectory = Join-Path $root "generated\boombox\upstream\shaders"
+if (-not (Test-Path $shaderDirectory)) {
+    throw "Generated shader directory not found. Run npm run compile:boombox first."
+}
 
 if (-not $Dxc) {
     $local = Join-Path $root "tools\shader-compiler\vcpkg_installed\x64-windows\tools\directx-dxc\dxc.exe"

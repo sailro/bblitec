@@ -4,6 +4,9 @@
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/camera_controls.hpp>
 #include <bblite/upstream/camera_math.hpp>
+#if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
+#include <bblite/upstream/renderer_plan.hpp>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -45,23 +48,6 @@ struct GpuMesh {
     SDL_GPUTexture* normal = nullptr;
     SDL_GPUTexture* emissive = nullptr;
     std::uint32_t index_count = 0;
-    MaterialHandle material{};
-    Vec3 bounds_min{};
-    Vec3 bounds_max{};
-};
-
-struct FragmentUniforms {
-    float light_direction[4];
-    float light_color[4];
-    float ground_color[4];
-    float camera_position[4];
-    float base_color_factor[4];
-    float emissive_factor[4];
-    float material_factors[4];
-    float environment_factors[4];
-    float bounds_min[4];
-    float bounds_max[4];
-    float spherical_harmonics[9][4];
 };
 
 struct GpuState {
@@ -461,62 +447,6 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
     return texture;
 }
 
-std::array<float, 16> multiply(const std::array<float, 16>& left, const std::array<float, 16>& right) {
-    std::array<float, 16> result{};
-    for (int column = 0; column < 4; ++column) {
-        for (int row = 0; row < 4; ++row) {
-            for (int index = 0; index < 4; ++index) {
-                result[column * 4 + row] += left[index * 4 + row] * right[column * 4 + index];
-            }
-        }
-    }
-    return result;
-}
-
-float dot(Vec3 left, Vec3 right) {
-    return left.x * right.x + left.y * right.y + left.z * right.z;
-}
-
-Vec3 normalize(Vec3 value) {
-    const float length = std::sqrt(dot(value, value));
-    return length > 0.000001f ? Vec3{value.x / length, value.y / length, value.z / length} : Vec3{};
-}
-
-Vec3 cross(Vec3 left, Vec3 right) {
-    return Vec3{
-        left.y * right.z - left.z * right.y,
-        left.z * right.x - left.x * right.z,
-        left.x * right.y - left.y * right.x,
-    };
-}
-
-std::array<float, 16> view_projection(const CameraRecord& camera, float aspect) {
-    const Vec3 eye = upstream::arc_rotate_eye_position(camera);
-    const Vec3 forward = normalize(Vec3{
-        camera.target.x - eye.x,
-        camera.target.y - eye.y,
-        camera.target.z - eye.z,
-    });
-    const Vec3 right = normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, forward));
-    const Vec3 up = cross(forward, right);
-    std::array<float, 16> view{};
-    view[0] = right.x; view[4] = right.y; view[8] = right.z; view[12] = -dot(right, eye);
-    view[1] = up.x; view[5] = up.y; view[9] = up.z; view[13] = -dot(up, eye);
-    view[2] = forward.x; view[6] = forward.y; view[10] = forward.z; view[14] = -dot(forward, eye);
-    view[15] = 1.0f;
-
-    const float focal = 1.0f / std::tan(camera.fov * 0.5f);
-    std::array<float, 16> projection{};
-    projection[0] = focal / aspect;
-    projection[5] = focal;
-    projection[10] = camera.far_plane / (camera.far_plane - camera.near_plane);
-    projection[11] = 1.0f;
-    projection[14] =
-        (-camera.near_plane * camera.far_plane) /
-        (camera.far_plane - camera.near_plane);
-    return multiply(projection, view);
-}
-
 void create_depth(GpuState& state, std::uint32_t width, std::uint32_t height) {
     if (state.depth && state.depth_width == width && state.depth_height == height) return;
     if (state.depth) SDL_ReleaseGPUTexture(state.device, state.depth);
@@ -687,11 +617,10 @@ bool run_gpu_engine(Engine& engine) {
         state.environment = upload_environment(state.device, scene.environment);
         state.brdf_lut = upload_rgbd_texture(state.device, scene.environment.brdf_lut);
 
-        for (const MeshHandle handle : scene.meshes) {
-            if (handle.value >= engine.meshes.size()) continue;
-            const MeshRecord& mesh = engine.meshes[handle.value];
-            if (mesh.primitive != PrimitiveKind::gltf || mesh.geometry >= engine.geometries.size()) continue;
-            const ModelGeometry& geometry = engine.geometries[mesh.geometry];
+        const std::vector<upstream::RenderItem> render_plan =
+            upstream::build_render_plan(scene, engine);
+        for (const upstream::RenderItem& item : render_plan) {
+            const ModelGeometry& geometry = engine.geometries[item.geometry];
             std::vector<GpuVertex> vertices;
             vertices.reserve(geometry.vertices.size());
             for (const ModelVertex& vertex : geometry.vertices) {
@@ -714,18 +643,15 @@ bool run_gpu_engine(Engine& engine) {
                 geometry.indices.data(),
                 geometry.indices.size() * sizeof(std::uint32_t));
             gpu_mesh.index_count = static_cast<std::uint32_t>(geometry.indices.size());
-            gpu_mesh.material = mesh.material;
-            gpu_mesh.bounds_min = geometry.bounds_min;
-            gpu_mesh.bounds_max = geometry.bounds_max;
             const TextureData* texture = nullptr;
             const TextureData* metallic_roughness = nullptr;
             const TextureData* normal = nullptr;
             const TextureData* emissive = nullptr;
-            if (mesh.material.value < engine.materials.size()) {
-                texture = &engine.materials[mesh.material.value].base_color_texture;
-                metallic_roughness = &engine.materials[mesh.material.value].metallic_roughness_texture;
-                normal = &engine.materials[mesh.material.value].normal_texture;
-                emissive = &engine.materials[mesh.material.value].emissive_texture;
+            if (item.material.value < engine.materials.size()) {
+                texture = &engine.materials[item.material.value].base_color_texture;
+                metallic_roughness = &engine.materials[item.material.value].metallic_roughness_texture;
+                normal = &engine.materials[item.material.value].normal_texture;
+                emissive = &engine.materials[item.material.value].emissive_texture;
             }
             gpu_mesh.base_color = upload_texture(
                 state.device,
@@ -805,8 +731,7 @@ bool run_gpu_engine(Engine& engine) {
             if (capture_frame) create_color(state, swapchain_format, width, height);
             create_depth(state, width, height);
             const std::array<float, 16> matrix =
-                view_projection(camera, static_cast<float>(width) / height);
-            const Vec3 eye = upstream::arc_rotate_eye_position(camera);
+                upstream::build_view_projection(camera, static_cast<float>(width) / height);
             SDL_PushGPUVertexUniformData(command, 0, matrix.data(), sizeof(matrix));
 
             SDL_GPUColorTargetInfo color_info{};
@@ -831,84 +756,14 @@ bool run_gpu_engine(Engine& engine) {
                                          SDL_GPUGraphicsPipeline* pipeline,
                                          float render_mode) {
                 SDL_BindGPUGraphicsPipeline(pass, pipeline);
-                for (const GpuMesh& mesh : state.meshes) {
-                FragmentUniforms fragment{};
-                fragment.light_direction[1] = 1.0f;
-                fragment.light_color[0] =
-                    fragment.light_color[1] =
-                    fragment.light_color[2] = 1.0f;
-                fragment.light_color[3] = 1.0f;
-                if (!scene.lights.empty() && scene.lights.front().value < engine.lights.size()) {
-                    const LightRecord& light = engine.lights[scene.lights.front().value];
-                    const Vec3 matrix_direction{
-                        light.local_matrix[8],
-                        light.local_matrix[9],
-                        light.local_matrix[10],
-                    };
-                    const float matrix_length =
-                        std::sqrt(
-                            matrix_direction.x * matrix_direction.x +
-                            matrix_direction.y * matrix_direction.y +
-                            matrix_direction.z * matrix_direction.z);
-                    const Vec3 direction = matrix_length > 0.000001f
-                        ? Vec3{
-                              matrix_direction.x / matrix_length,
-                              matrix_direction.y / matrix_length,
-                              matrix_direction.z / matrix_length,
-                          }
-                        : light.direction;
-                    fragment.light_direction[0] = direction.x;
-                    fragment.light_direction[1] = direction.y;
-                    fragment.light_direction[2] = direction.z;
-                    fragment.light_color[0] = light.diffuse_color.r;
-                    fragment.light_color[1] = light.diffuse_color.g;
-                    fragment.light_color[2] = light.diffuse_color.b;
-                    fragment.light_color[3] = light.intensity;
-                    fragment.ground_color[0] = light.ground_color.r;
-                    fragment.ground_color[1] = light.ground_color.g;
-                    fragment.ground_color[2] = light.ground_color.b;
-                }
-                fragment.camera_position[0] = eye.x;
-                fragment.camera_position[1] = eye.y;
-                fragment.camera_position[2] = eye.z;
-                fragment.base_color_factor[0] =
-                    fragment.base_color_factor[1] =
-                    fragment.base_color_factor[2] =
-                    fragment.base_color_factor[3] = 1.0f;
-                fragment.material_factors[0] = 1.0f;
-                fragment.material_factors[1] = 1.0f;
-                fragment.material_factors[3] = scene.environment.has_irradiance ? 1.0f : 0.0f;
-                fragment.environment_factors[0] = scene.environment.exposure;
-                fragment.environment_factors[1] = scene.environment.contrast;
-                fragment.environment_factors[2] = 0.8f;
-                fragment.environment_factors[3] = 1.0f;
-                fragment.material_factors[2] = render_mode;
-                fragment.bounds_min[0] = mesh.bounds_min.x;
-                fragment.bounds_min[1] = mesh.bounds_min.y;
-                fragment.bounds_min[2] = mesh.bounds_min.z;
-                fragment.bounds_max[0] = mesh.bounds_max.x;
-                fragment.bounds_max[1] = mesh.bounds_max.y;
-                fragment.bounds_max[2] = mesh.bounds_max.z;
-                for (std::size_t index = 0; index < scene.environment.spherical_harmonics.size(); ++index) {
-                    fragment.spherical_harmonics[index][0] =
-                        scene.environment.spherical_harmonics[index].r;
-                    fragment.spherical_harmonics[index][1] =
-                        scene.environment.spherical_harmonics[index].g;
-                    fragment.spherical_harmonics[index][2] =
-                        scene.environment.spherical_harmonics[index].b;
-                }
-                if (mesh.material.value < engine.materials.size()) {
-                    const MaterialRecord& material = engine.materials[mesh.material.value];
-                    fragment.base_color_factor[0] = material.base_color_factor.r;
-                    fragment.base_color_factor[1] = material.base_color_factor.g;
-                    fragment.base_color_factor[2] = material.base_color_factor.b;
-                    fragment.base_color_factor[3] = material.base_color_factor.a;
-                    fragment.emissive_factor[0] = material.emissive_factor.r;
-                    fragment.emissive_factor[1] = material.emissive_factor.g;
-                    fragment.emissive_factor[2] = material.emissive_factor.b;
-                    fragment.material_factors[0] = material.metallic_factor;
-                    fragment.material_factors[1] = material.roughness_factor;
-                }
+                for (std::size_t mesh_index = 0; mesh_index < state.meshes.size(); ++mesh_index) {
+                const GpuMesh& mesh = state.meshes[mesh_index];
+                const upstream::PbrUniforms fragment = upstream::build_pbr_uniforms(
+                    scene,
+                    engine,
+                    camera,
+                    render_plan[mesh_index],
+                    render_mode);
                 SDL_PushGPUFragmentUniformData(command, 0, &fragment, sizeof(fragment));
                 const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
                 const SDL_GPUBufferBinding index_binding{mesh.indices, 0};

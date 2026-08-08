@@ -143,5 +143,6 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
         "upstream/src/light_hemispheric.cpp",
         "upstream/src/gltf_glb_parser.cpp",
         "upstream/src/gltf_loader.cpp",
+        "upstream/src/renderer_plan.cpp",
     ]);
 });

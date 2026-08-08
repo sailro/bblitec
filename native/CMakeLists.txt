@@ -26,7 +26,7 @@ target_include_directories(
     "${BBLITE_GENERATED_DIR}/upstream/include"
 )
 target_compile_definitions(bblite_native PRIVATE BBLITE_ASSET_DIR="${BBLITE_GENERATED_DIR}/assets")
-target_compile_definitions(bblite_native PRIVATE BBLITE_GPU_SHADER_DIR="${BBLITE_NATIVE_ROOT}/shaders")
+target_compile_definitions(bblite_native PRIVATE BBLITE_GPU_SHADER_DIR="${BBLITE_GENERATED_DIR}/upstream/shaders")
 
 find_package(SDL3 CONFIG QUIET)
 if(SDL3_FOUND)

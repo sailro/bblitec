@@ -8,6 +8,7 @@ import { LightLowerer } from "./lowering/light-lowerer.js";
 import { SceneLowerer } from "./lowering/scene-lowerer.js";
 import { GltfLowerer } from "./lowering/gltf-lowerer.js";
 import { FactoryLowerer } from "./lowering/factory-lowerer.js";
+import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 
 export type { LoweredSource } from "./lowering/context.js";
@@ -115,6 +116,23 @@ class GeneratedSourceWriter {
                 "upstream/src/gltf_loader.cpp",
                 gltf.lowerLoaderAdapter(),
                 generated,
+            );
+            const renderer = new RendererLowerer(context);
+            this.writeSource(
+                "upstream/src/renderer_plan.cpp",
+                renderer.lowerRenderPlan(),
+                generated,
+                "upstream/include/bblite/upstream/renderer_plan.hpp",
+            );
+            for (const shader of renderer.lowerShaders()) {
+                const shaderPath = resolve(this.outputRoot, shader.output);
+                mkdirSync(dirname(shaderPath), { recursive: true });
+                writeFileSync(shaderPath, shader.data);
+            }
+            generated.push(
+                { modulePath: "src/material/pbr/pbr-template.ts", symbolName: "createPbrTemplate" },
+                { modulePath: "src/material/pbr/fragments/ibl-fragment.ts", symbolName: "makeIblCalculation" },
+                { modulePath: "src/frame-graph/scene-uniforms-pack.ts", symbolName: "_packSceneUniforms" },
             );
         }
         const factories = new FactoryLowerer(context);

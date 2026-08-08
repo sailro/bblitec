@@ -1,0 +1,322 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
+import { LoweredSource, LoweringContext } from "./context.js";
+
+const renderTaskModule = "src/frame-graph/render-task.ts";
+const pbrTemplateModule = "src/material/pbr/pbr-template.ts";
+const iblFragmentModule = "src/material/pbr/fragments/ibl-fragment.ts";
+const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
+const templateRoot = fileURLToPath(new URL("../../../src/lowering/templates/renderer/", import.meta.url));
+const nativeShaderRoot = fileURLToPath(new URL("../../../native/shaders/", import.meta.url));
+
+export interface LoweredShader {
+    output: string;
+    data: string | Uint8Array;
+}
+
+export class RendererLowerer {
+    public constructor(private readonly context: LoweringContext) {}
+
+    public lowerRenderPlan(): LoweredSource {
+        const source = this.context.store.getSource(renderTaskModule);
+        for (const symbol of ["buildBindings", "sortTransparentBindings", "drawList"]) {
+            if (!source.includes(`function ${symbol}`)) {
+                throw new Error(`${renderTaskModule} is missing ${symbol}.`);
+            }
+        }
+
+        return {
+            modulePath: renderTaskModule,
+            symbolName: "buildBindings",
+            header: `#pragma once
+
+#include <bblite/runtime.hpp>
+
+#include <array>
+#include <vector>
+
+namespace bbl::upstream {
+
+struct RenderItem {
+    MeshHandle mesh{};
+    std::uint32_t geometry = invalid_handle;
+    MaterialHandle material{};
+};
+
+struct PbrUniforms {
+    std::array<float, 4> light_direction{};
+    std::array<float, 4> light_color{};
+    std::array<float, 4> ground_color{};
+    std::array<float, 4> camera_position{};
+    std::array<float, 4> base_color_factor{};
+    std::array<float, 4> emissive_factor{};
+    std::array<float, 4> material_factors{};
+    std::array<float, 4> environment_factors{};
+    std::array<float, 4> bounds_min{};
+    std::array<float, 4> bounds_max{};
+    std::array<std::array<float, 4>, 9> spherical_harmonics{};
+};
+
+std::vector<RenderItem> build_render_plan(const Scene& scene, const Engine& engine);
+std::array<float, 16> build_view_projection(const CameraRecord& camera, float aspect);
+PbrUniforms build_pbr_uniforms(
+    const Scene& scene,
+    const Engine& engine,
+    const CameraRecord& camera,
+    const RenderItem& item,
+    float render_mode);
+
+} // namespace bbl::upstream
+`,
+            source: `// ${this.context.provenance(
+                renderTaskModule,
+                "buildBindings",
+                `${renderTaskModule}#sortTransparentBindings`,
+            )}
+#include <bblite/upstream/renderer_plan.hpp>
+#include <bblite/upstream/camera_math.hpp>
+
+#include <cmath>
+
+namespace bbl::upstream {
+
+namespace {
+
+float dot(Vec3 left, Vec3 right) {
+    return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
+Vec3 normalize(Vec3 value) {
+    const float length = std::sqrt(dot(value, value));
+    return length > 0.000001f
+        ? Vec3{value.x / length, value.y / length, value.z / length}
+        : Vec3{};
+}
+
+Vec3 cross(Vec3 left, Vec3 right) {
+    return Vec3{
+        left.y * right.z - left.z * right.y,
+        left.z * right.x - left.x * right.z,
+        left.x * right.y - left.y * right.x,
+    };
+}
+
+std::array<float, 16> multiply(
+    const std::array<float, 16>& left,
+    const std::array<float, 16>& right) {
+    std::array<float, 16> result{};
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            for (int index = 0; index < 4; ++index) {
+                result[column * 4 + row] +=
+                    left[index * 4 + row] * right[column * 4 + index];
+            }
+        }
+    }
+    return result;
+}
+
+} // namespace
+
+std::vector<RenderItem> build_render_plan(const Scene& scene, const Engine& engine) {
+    std::vector<RenderItem> result;
+    result.reserve(scene.meshes.size());
+    for (const MeshHandle handle : scene.meshes) {
+        if (handle.value >= engine.meshes.size()) {
+            continue;
+        }
+        const MeshRecord& mesh = engine.meshes[handle.value];
+        if (mesh.primitive != PrimitiveKind::gltf || mesh.geometry >= engine.geometries.size()) {
+            continue;
+        }
+        result.push_back(RenderItem{handle, mesh.geometry, mesh.material});
+    }
+    return result;
+}
+
+std::array<float, 16> build_view_projection(const CameraRecord& camera, float aspect) {
+    const Vec3 eye = arc_rotate_eye_position(camera);
+    const Vec3 forward = normalize(Vec3{
+        camera.target.x - eye.x,
+        camera.target.y - eye.y,
+        camera.target.z - eye.z,
+    });
+    const Vec3 right = normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, forward));
+    const Vec3 up = cross(forward, right);
+    std::array<float, 16> view{};
+    view[0] = right.x;
+    view[4] = right.y;
+    view[8] = right.z;
+    view[12] = -dot(right, eye);
+    view[1] = up.x;
+    view[5] = up.y;
+    view[9] = up.z;
+    view[13] = -dot(up, eye);
+    view[2] = forward.x;
+    view[6] = forward.y;
+    view[10] = forward.z;
+    view[14] = -dot(forward, eye);
+    view[15] = 1.0f;
+
+    const float focal = 1.0f / std::tan(camera.fov * 0.5f);
+    std::array<float, 16> projection{};
+    projection[0] = focal / aspect;
+    projection[5] = focal;
+    projection[10] = camera.far_plane / (camera.far_plane - camera.near_plane);
+    projection[11] = 1.0f;
+    projection[14] =
+        (-camera.near_plane * camera.far_plane) /
+        (camera.far_plane - camera.near_plane);
+    return multiply(projection, view);
+}
+
+PbrUniforms build_pbr_uniforms(
+    const Scene& scene,
+    const Engine& engine,
+    const CameraRecord& camera,
+    const RenderItem& item,
+    float render_mode) {
+    PbrUniforms result;
+    result.light_direction[1] = 1.0f;
+    result.light_color = {1.0f, 1.0f, 1.0f, 1.0f};
+    if (!scene.lights.empty() && scene.lights.front().value < engine.lights.size()) {
+        const LightRecord& light = engine.lights[scene.lights.front().value];
+        const Vec3 matrix_direction{
+            light.local_matrix[8],
+            light.local_matrix[9],
+            light.local_matrix[10],
+        };
+        const float matrix_length = std::sqrt(
+            matrix_direction.x * matrix_direction.x +
+            matrix_direction.y * matrix_direction.y +
+            matrix_direction.z * matrix_direction.z);
+        const Vec3 direction = matrix_length > 0.000001f
+            ? Vec3{
+                  matrix_direction.x / matrix_length,
+                  matrix_direction.y / matrix_length,
+                  matrix_direction.z / matrix_length,
+              }
+            : light.direction;
+        result.light_direction = {direction.x, direction.y, direction.z, 0.0f};
+        result.light_color = {
+            light.diffuse_color.r,
+            light.diffuse_color.g,
+            light.diffuse_color.b,
+            light.intensity,
+        };
+        result.ground_color = {
+            light.ground_color.r,
+            light.ground_color.g,
+            light.ground_color.b,
+            0.0f,
+        };
+    }
+    const Vec3 eye = arc_rotate_eye_position(camera);
+    result.camera_position = {eye.x, eye.y, eye.z, 0.0f};
+    result.base_color_factor = {1.0f, 1.0f, 1.0f, 1.0f};
+    result.material_factors = {
+        1.0f,
+        1.0f,
+        render_mode,
+        scene.environment.has_irradiance ? 1.0f : 0.0f,
+    };
+    result.environment_factors = {
+        scene.environment.exposure,
+        scene.environment.contrast,
+        0.8f,
+        1.0f,
+    };
+    if (item.mesh.value < engine.meshes.size()) {
+        const MeshRecord& mesh = engine.meshes[item.mesh.value];
+        if (item.geometry < engine.geometries.size()) {
+            const ModelGeometry& geometry = engine.geometries[item.geometry];
+            result.bounds_min = {
+                geometry.bounds_min.x,
+                geometry.bounds_min.y,
+                geometry.bounds_min.z,
+                0.0f,
+            };
+            result.bounds_max = {
+                geometry.bounds_max.x,
+                geometry.bounds_max.y,
+                geometry.bounds_max.z,
+                0.0f,
+            };
+        }
+        if (mesh.material.value < engine.materials.size()) {
+            const MaterialRecord& material = engine.materials[mesh.material.value];
+            result.base_color_factor = {
+                material.base_color_factor.r,
+                material.base_color_factor.g,
+                material.base_color_factor.b,
+                material.base_color_factor.a,
+            };
+            result.emissive_factor = {
+                material.emissive_factor.r,
+                material.emissive_factor.g,
+                material.emissive_factor.b,
+                0.0f,
+            };
+            result.material_factors[0] = material.metallic_factor;
+            result.material_factors[1] = material.roughness_factor;
+        }
+    }
+    for (std::size_t index = 0; index < scene.environment.spherical_harmonics.size(); ++index) {
+        result.spherical_harmonics[index] = {
+            scene.environment.spherical_harmonics[index].r,
+            scene.environment.spherical_harmonics[index].g,
+            scene.environment.spherical_harmonics[index].b,
+            0.0f,
+        };
+    }
+    return result;
+}
+
+} // namespace bbl::upstream
+`,
+        };
+    }
+
+    public lowerShaders(): LoweredShader[] {
+        const pbr = this.context.store.getSource(pbrTemplateModule);
+        const ibl = this.context.store.getSource(iblFragmentModule);
+        const sceneUniforms = this.context.store.getSource(sceneUniformsModule);
+        const requiredUpstreamFormulas = [
+            [pbr, "roughness*roughness+0.0005", "GGX roughness"],
+            [pbr, "0.5/(gl+gv)", "Smith geometry"],
+            [ibl, "log2(cubemapDim * alphaG) * scene.vImageInfos.z", "IBL mip selection"],
+            [ibl, "getEnergyConservationFactor", "IBL energy conservation"],
+            [sceneUniforms, "lodGenerationScale ?? 0.8", "environment LOD scale"],
+        ] as const;
+        for (const [source, formula, label] of requiredUpstreamFormulas) {
+            if (!source.includes(formula)) {
+                throw new Error(`Pinned Babylon Lite source is missing ${label}: ${formula}.`);
+            }
+        }
+
+        const sources = [
+            "boombox.vert.hlsl",
+            "boombox.frag.hlsl",
+            "boombox.vert.msl",
+            "boombox.frag.msl",
+        ];
+        const binaries = [
+            "boombox.vert.dxil",
+            "boombox.frag.dxil",
+            "boombox.vert.spv",
+            "boombox.frag.spv",
+        ];
+        const result: LoweredShader[] = sources.map((name) => ({
+            output: `upstream/shaders/${name}`,
+            data: readFileSync(resolve(templateRoot, name), "utf8"),
+        }));
+        result.push(
+            ...binaries.map((name) => ({
+                output: `upstream/shaders/${name}`,
+                data: new Uint8Array(readFileSync(resolve(nativeShaderRoot, name))),
+            })),
+        );
+        return result;
+    }
+}

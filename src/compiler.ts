@@ -142,6 +142,7 @@ class Compiler {
             generatedSources.push(
                 "upstream/src/gltf_glb_parser.cpp",
                 "upstream/src/gltf_loader.cpp",
+                "upstream/src/renderer_plan.cpp",
             );
         }
         if (features.includes("material:standard")) {

@@ -85,9 +85,9 @@ The current vertical migration generates these implementations from pinned upstr
 
 Their generated sources and provenance are emitted under `generated\<scene>\upstream`. The previous hand-written light, camera, mesh-factory, standard-material, core, environment, and glTF loader C++ files have been removed.
 
-The PAL currently owns native file reads, path joining, environment variables, monotonic timing, image decoding, and the SDL window/input/render implementation. `pal_sdl.cpp` still contains transitional scene traversal and PBR calculations; those are the next major block to move into generated Babylon render/frame-graph code.
+The PAL owns native file reads, path joining, environment variables, monotonic timing, image decoding, SDL window/input integration, and SDL_GPU resource/command submission. The compiler now generates the glTF render-item plan and scene-specialized PBR shader sources from pinned Babylon Lite frame-graph, PBR, IBL, and scene-uniform semantics. `pal_sdl.cpp` remains only as the deterministic CPU fallback.
 
-The lowering code is split into dedicated engine, scene, light, camera, environment, and glTF lowerer classes with a shared `LoweringContext`; adding language coverage no longer requires extending one monolithic transpiler file.
+The lowering code is split into dedicated engine, scene, light, camera, environment, glTF, factory, and renderer lowerer classes with a shared `LoweringContext`; adding language coverage no longer requires extending one monolithic transpiler file.
 
 ### TypeScript runtime coverage
 
@@ -169,7 +169,7 @@ The PAL selects shaders for the active SDL_GPU backend:
 | Linux / Android | Vulkan | SPIR-V |
 | macOS / iOS | Metal | MSL |
 
-Shader sources live in `native\shaders`. Rebuild DXIL and SPIR-V with:
+Shader sources are emitted into `generated\boombox\upstream\shaders` by `compile:boombox`; only portable compiled artifact seeds remain under `native\shaders`. Rebuild the generated DXIL and SPIR-V with:
 
 ```powershell
 cd tools\shader-compiler
@@ -179,9 +179,9 @@ cd ..\..
 npm run shaders:build
 ```
 
-On the development machine, the optimized BoomBox CPU fallback measured **5.516 ms/frame** average CPU submission. The full material/IBL SDL_GPU Direct3D 12 path measured **0.122 ms average / 0.079 ms median**, approximately **45× faster** CPU-side.
+On the development machine, the optimized BoomBox CPU fallback measured **5.516 ms/frame** average CPU submission. The compiler-generated material/IBL SDL_GPU Direct3D 12 path measured **0.117 ms average / 0.079 ms median**, approximately **47× faster** CPU-side.
 
-The GPU path remains opt-in while Babylon Lite's remaining background, frame-graph, and exact material semantics are migrated to the GPU PAL.
+The GPU path is the default for generated glTF scenes. Set `BBLITE_GPU=0` only when the deterministic CPU fallback is required.
 
 The SDL_GPU path now supports deterministic swapchain readback, ArcRotate mouse controls, normal and metallic-roughness maps, emissive materials, Babylon `.env` cubemap mips, spherical-harmonic irradiance, the BRDF LUT, and a separate blended smoked-glass pass. Run its local visual regression gate with:
 
