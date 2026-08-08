@@ -130,6 +130,14 @@ struct CameraRecord {
     float beta = 1.1f;
     float radius = 6.0f;
     Vec3 target{};
+    float fov = 0.8f;
+    float near_plane = 0.1f;
+    float far_plane = 1000.0f;
+    float inertia = 0.9f;
+    float panning_inertia = 0.9f;
+    float angular_sensibility = 1000.0f;
+    float panning_sensibility = 50.0f;
+    float wheel_precision = 3.0f;
     bool controls_enabled = false;
 };
 

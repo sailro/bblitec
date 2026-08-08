@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { analyzeUpstreamGraph } from "../src/upstream-graph.js";
-import { lowerHemisphericFactory, lowerLightMatrix } from "../src/upstream-lower.js";
+import {
+    lowerArcRotateFactory,
+    lowerDefaultCameraFactory,
+    lowerEnvParser,
+    lowerHemisphericFactory,
+    lowerLightMatrix,
+} from "../src/upstream-lower.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 
 test("loads pinned Babylon Lite TypeScript from published source maps", () => {
@@ -12,11 +18,28 @@ test("loads pinned Babylon Lite TypeScript from published source maps", () => {
     assert.equal(store.resolvePublicExport("createHemisphericLight").modulePath, "src/light/hemispheric.ts");
 });
 
+test("generates the Babylon environment parser from upstream constants", () => {
+    const lowered = lowerEnvParser();
+    assert.match(lowered.source, /0x86, 0x16, 0x87, 0x96, 0xf6, 0xd6, 0x96, 0x36/);
+    assert.match(lowered.source, /constexpr float c1 = 1\.4999984284682104f/);
+    assert.match(lowered.source, /face\.mime_type = "image\/png"/);
+});
+
 test("generates the public hemispheric light factory from upstream defaults", () => {
     const lowered = lowerHemisphericFactory();
     assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
     assert.match(lowered.source, /light\.diffuse_color = Color3\{1\.0f, 1\.0f, 1\.0f\}/);
     assert.match(lowered.source, /light\.ground_color = Color3\{0\.0f, 0\.0f, 0\.0f\}/);
+});
+
+test("generates ArcRotate and default camera factories from upstream constants", () => {
+    const arc = lowerArcRotateFactory();
+    const framing = lowerDefaultCameraFactory();
+    assert.match(arc.source, /camera\.fov = 0\.8f/);
+    assert.match(arc.source, /camera\.angular_sensibility = 1000\.0f/);
+    assert.match(framing.source, /radius = diagonal \* 1\.5f/);
+    assert.match(framing.source, /record\.near_plane = radius \* 0\.01f/);
+    assert.match(framing.source, /record\.far_plane = radius \* 1000\.0f/);
 });
 
 test("lowers the reachable upstream light matrix implementation", () => {

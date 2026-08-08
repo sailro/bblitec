@@ -69,9 +69,19 @@ npm run analyze:boombox
 
 The current graph contains 218 runtime modules and approximately 1.35 MiB of TypeScript. Its main unsupported pressures are async/await, closures, dynamic imports, and Web platform references such as `fetch`, `navigator`, and `requestAnimationFrame`.
 
-As the first vertical migration, `createHemisphericLight` and its `localMatrixFromDirection` helper are generated from the real upstream `hemispheric.ts` and `light-matrix.ts`. Their generated sources and provenance are emitted under `generated\<scene>\upstream`; the previous hand-written C++ light factory is no longer part of the runtime.
+The current vertical migration generates these implementations from pinned upstream TypeScript:
+
+- `createHemisphericLight` from `light/hemispheric.ts`
+- `localMatrixFromDirection` from `light/light-matrix.ts`
+- `createArcRotateCamera` from `camera/arc-rotate.ts`
+- `createDefaultCamera` framing constants and factory from `scene/scene-camera.ts`
+- Babylon `.env` magic, manifest layout, face slicing, and spherical-harmonic conversion from `loader-env/env-parse.ts` and `loader-env/load-env.ts`
+
+Their generated sources and provenance are emitted under `generated\<scene>\upstream`. The previous hand-written light and camera C++ files have been removed, and `native\src\environment.cpp` is now only a small PAL-to-engine adapter.
 
 The PAL currently owns native file reads, path joining, environment variables, and monotonic timing. SDL remains the window/input/render implementation. Engine, loader, scene, material, and render modules will move from hand-written native implementations to upstream-generated C++ incrementally, starting from the BoomBox reachable graph.
+
+The lowering code is split into dedicated `LightLowerer`, `CameraLowerer`, and `EnvironmentLowerer` classes with a shared `LoweringContext`; adding language coverage no longer requires extending one monolithic transpiler file.
 
 ## Prerequisites
 

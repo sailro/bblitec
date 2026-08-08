@@ -96,8 +96,8 @@ Projection create_projection(const CameraRecord& camera, int width, int height) 
     projection.forward = normalize(subtract(camera.target, projection.eye));
     projection.right = normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, projection.forward));
     projection.up = cross(projection.forward, projection.right);
-    projection.focal = static_cast<float>(height) / (2.0f * std::tan(0.8f * 0.5f));
-    projection.near_plane = std::max(camera.radius * 0.001f, 0.000001f);
+    projection.focal = static_cast<float>(height) / (2.0f * std::tan(camera.fov * 0.5f));
+    projection.near_plane = std::max(camera.near_plane, 0.000001f);
     projection.width = width;
     projection.height = height;
     return projection;
@@ -1025,12 +1025,15 @@ void handle_camera_pointer_event(
 
     if (event.type == SDL_EVENT_MOUSE_MOTION) {
         if (state.orbiting) {
-            camera.alpha -= event.motion.xrel * 0.008f;
-            camera.beta = std::clamp(camera.beta + event.motion.yrel * 0.008f, 0.05f, pi - 0.05f);
+            camera.alpha -= event.motion.xrel / camera.angular_sensibility;
+            camera.beta = std::clamp(
+                camera.beta + event.motion.yrel / camera.angular_sensibility,
+                0.05f,
+                pi - 0.05f);
         }
         if (state.panning) {
             const Projection projection = create_projection(camera, 1, 1);
-            const float scale = camera.radius * 0.0015f;
+            const float scale = camera.radius / std::max(camera.panning_sensibility * 10.0f, 1.0f);
             camera.target = add(
                 camera.target,
                 add(
@@ -1045,7 +1048,9 @@ void handle_camera_pointer_event(
         if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
             delta = -delta;
         }
-        camera.radius = std::max(camera.radius * std::exp(-delta * 0.12f), 0.0001f);
+        camera.radius = std::max(
+            camera.radius * std::exp(-delta / std::max(camera.wheel_precision * 8.0f, 1.0f)),
+            0.0001f);
     }
 }
 

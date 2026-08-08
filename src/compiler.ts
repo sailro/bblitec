@@ -50,8 +50,8 @@ type Feature =
 const featureSources: Record<Feature, string[]> = {
     "core": ["src/core.cpp", "src/pal.cpp"],
     "backend:sdl": ["src/sdl_backend.cpp"],
-    "camera:arc-rotate": ["src/camera_arc_rotate.cpp"],
-    "camera:default": ["src/camera_default.cpp"],
+    "camera:arc-rotate": [],
+    "camera:default": [],
     "environment:ibl": ["src/environment.cpp"],
     "light:hemispheric": [],
     "loader:gltf": ["src/gltf_loader.cpp"],
@@ -116,9 +116,19 @@ class Compiler {
 
         const features = featureOrder.filter((feature) => this.features.has(feature));
         const runtimeSources = features.flatMap((feature) => featureSources[feature]);
-        const generatedSources = features.includes("light:hemispheric")
-            ? ["upstream/src/light_matrix.cpp", "upstream/src/light_hemispheric.cpp"]
-            : [];
+        const generatedSources: string[] = [];
+        if (features.includes("camera:arc-rotate") || features.includes("camera:default")) {
+            generatedSources.push("upstream/src/camera_arc_rotate.cpp");
+        }
+        if (features.includes("camera:default")) {
+            generatedSources.push("upstream/src/camera_default.cpp");
+        }
+        if (features.includes("environment:ibl")) {
+            generatedSources.push("upstream/src/env_parse.cpp");
+        }
+        if (features.includes("light:hemispheric")) {
+            generatedSources.push("upstream/src/light_matrix.cpp", "upstream/src/light_hemispheric.cpp");
+        }
         return {
             cpp: this.renderCpp(),
             cmake: this.renderCmake(features, runtimeSources, generatedSources),
