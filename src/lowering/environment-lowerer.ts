@@ -262,6 +262,9 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/env_parse.hpp>
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <utility>
 
 namespace bbl {
@@ -279,6 +282,46 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
     if (!options.brdf_url.empty()) {
         scene.environment.brdf_lut.bytes = pal::read_binary_file(options.brdf_url);
         scene.environment.brdf_lut.mime_type = "image/png";
+    }
+    if (!options.ground_texture_url.empty()) {
+        scene.environment.ground_texture.bytes =
+            pal::read_binary_file(options.ground_texture_url);
+        scene.environment.ground_texture.mime_type = "image/png";
+        scene.environment.has_ground = true;
+    }
+    Vec3 bounds_min{
+        std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::infinity(),
+    };
+    Vec3 bounds_max{
+        -std::numeric_limits<float>::infinity(),
+        -std::numeric_limits<float>::infinity(),
+        -std::numeric_limits<float>::infinity(),
+    };
+    for (const MeshHandle handle : scene.meshes) {
+        if (handle.value >= scene.engine->meshes.size()) continue;
+        const MeshRecord& mesh = scene.engine->meshes[handle.value];
+        if (mesh.geometry >= scene.engine->geometries.size()) continue;
+        const ModelGeometry& geometry = scene.engine->geometries[mesh.geometry];
+        bounds_min.x = std::min(bounds_min.x, geometry.bounds_min.x);
+        bounds_min.y = std::min(bounds_min.y, geometry.bounds_min.y);
+        bounds_min.z = std::min(bounds_min.z, geometry.bounds_min.z);
+        bounds_max.x = std::max(bounds_max.x, geometry.bounds_max.x);
+        bounds_max.y = std::max(bounds_max.y, geometry.bounds_max.y);
+        bounds_max.z = std::max(bounds_max.z, geometry.bounds_max.z);
+    }
+    if (std::isfinite(bounds_min.x)) {
+        const float dx = bounds_max.x - bounds_min.x;
+        const float dy = bounds_max.y - bounds_min.y;
+        const float dz = bounds_max.z - bounds_min.z;
+        const float diagonal = std::sqrt(dx * dx + dy * dy + dz * dz);
+        scene.environment.ground_size = std::max(15.0f, diagonal * 2.0f) * 1.1f;
+        scene.environment.ground_position = Vec3{
+            bounds_min.x + dx * 0.5f,
+            bounds_min.y - 0.00001f,
+            bounds_min.z + dz * 0.5f,
+        };
     }
     scene.environment.source_url = std::move(options.environment_url);
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};

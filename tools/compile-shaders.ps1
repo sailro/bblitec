@@ -29,7 +29,9 @@ $env:PATH = "$(Split-Path -Parent $Dxc);$env:PATH"
 
 & $Dxc -T vs_6_0 -E main -O3 -Fo "$shaderDirectory\boombox.vert.dxil" "$shaderDirectory\boombox.vert.hlsl"
 & $Dxc -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\boombox.frag.dxil" "$shaderDirectory\boombox.frag.hlsl"
+& $Dxc -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\background-ground.frag.dxil" "$shaderDirectory\background-ground.frag.hlsl"
 & $Dxc "-spirv" "-fspv-target-env=vulkan1.0" -T vs_6_0 -E main -O3 -Fo "$shaderDirectory\boombox.vert.spv" "$shaderDirectory\boombox.vert.hlsl"
 & $Dxc "-spirv" "-fspv-target-env=vulkan1.0" -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\boombox.frag.spv" "$shaderDirectory\boombox.frag.hlsl"
+& $Dxc "-spirv" "-fspv-target-env=vulkan1.0" -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\background-ground.frag.spv" "$shaderDirectory\background-ground.frag.hlsl"
 
 Write-Output "Compiled DXIL and SPIR-V shaders. MSL sources are checked in directly."

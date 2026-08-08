@@ -120,6 +120,10 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
                 kind: "environment",
             },
             {
+                source: "https://assets.babylonjs.com/core/environments/backgroundGround.png",
+                kind: "texture",
+            },
+            {
                 source: "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/master/packages/babylon-lite/assets/brdf-lut.png",
                 kind: "texture",
             },

@@ -7,6 +7,7 @@ const renderTaskModule = "src/frame-graph/render-task.ts";
 const pbrTemplateModule = "src/material/pbr/pbr-template.ts";
 const iblFragmentModule = "src/material/pbr/fragments/ibl-fragment.ts";
 const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
+const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const templateRoot = fileURLToPath(new URL("../../../src/lowering/templates/renderer/", import.meta.url));
 const nativeShaderRoot = fileURLToPath(new URL("../../../native/shaders/", import.meta.url));
 
@@ -58,6 +59,18 @@ struct PbrUniforms {
     std::array<std::array<float, 4>, 9> spherical_harmonics{};
 };
 
+struct BackgroundPlan {
+    std::array<ModelVertex, 4> vertices{};
+    std::array<std::uint32_t, 6> indices{};
+};
+
+struct BackgroundUniforms {
+    std::array<float, 4> primary_color_alpha{};
+    std::array<float, 4> background_center{};
+    std::array<float, 4> camera_exposure{};
+    std::array<float, 4> image_parameters{};
+};
+
 std::vector<RenderItem> build_render_plan(const Scene& scene, const Engine& engine);
 std::array<float, 16> build_view_projection(const CameraRecord& camera, float aspect);
 PbrUniforms build_pbr_uniforms(
@@ -66,6 +79,10 @@ PbrUniforms build_pbr_uniforms(
     const CameraRecord& camera,
     const RenderItem& item,
     float render_mode);
+BackgroundPlan build_background_plan(const EnvironmentState& environment);
+BackgroundUniforms build_background_uniforms(
+    const EnvironmentState& environment,
+    const CameraRecord& camera);
 
 } // namespace bbl::upstream
 `,
@@ -273,6 +290,47 @@ PbrUniforms build_pbr_uniforms(
     return result;
 }
 
+BackgroundPlan build_background_plan(const EnvironmentState& environment) {
+    const float half = environment.ground_size * 0.5f;
+    const Vec3 center = environment.ground_position;
+    BackgroundPlan result;
+    result.vertices = {
+        ModelVertex{Vec3{center.x - half, center.y, center.z - half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{0.0f, 0.0f}},
+        ModelVertex{Vec3{center.x + half, center.y, center.z - half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{1.0f, 0.0f}},
+        ModelVertex{Vec3{center.x + half, center.y, center.z + half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{1.0f, 1.0f}},
+        ModelVertex{Vec3{center.x - half, center.y, center.z + half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{0.0f, 1.0f}},
+    };
+    result.indices = {0, 2, 1, 0, 3, 2};
+    return result;
+}
+
+BackgroundUniforms build_background_uniforms(
+    const EnvironmentState& environment,
+    const CameraRecord& camera) {
+    const Vec3 eye = arc_rotate_eye_position(camera);
+    BackgroundUniforms result;
+    result.primary_color_alpha = {
+        environment.primary_color.r,
+        environment.primary_color.g,
+        environment.primary_color.b,
+        0.9f,
+    };
+    result.background_center = {
+        environment.ground_position.x,
+        environment.ground_position.y,
+        environment.ground_position.z,
+        0.0f,
+    };
+    result.camera_exposure = {
+        eye.x,
+        eye.y,
+        eye.z,
+        environment.exposure,
+    };
+    result.image_parameters = {environment.contrast, 1.0f, 0.0f, 0.0f};
+    return result;
+}
+
 } // namespace bbl::upstream
 `,
         };
@@ -282,12 +340,15 @@ PbrUniforms build_pbr_uniforms(
         const pbr = this.context.store.getSource(pbrTemplateModule);
         const ibl = this.context.store.getSource(iblFragmentModule);
         const sceneUniforms = this.context.store.getSource(sceneUniformsModule);
+        const backgroundGround = this.context.store.getSource(backgroundGroundModule);
         const requiredUpstreamFormulas = [
             [pbr, "roughness*roughness+0.0005", "GGX roughness"],
             [pbr, "0.5/(gl+gv)", "Smith geometry"],
             [ibl, "log2(cubemapDim * alphaG) * scene.vImageInfos.z", "IBL mip selection"],
             [ibl, "getEnergyConservationFactor", "IBL energy conservation"],
             [sceneUniforms, "lodGenerationScale ?? 0.8", "environment LOD scale"],
+            [backgroundGround, "tonemappingCalibration: f32 = 1.590579", "background image processing"],
+            [backgroundGround, "ground renders last", "background ordering"],
         ] as const;
         for (const [source, formula, label] of requiredUpstreamFormulas) {
             if (!source.includes(formula)) {
@@ -300,6 +361,8 @@ PbrUniforms build_pbr_uniforms(
             "boombox.frag.hlsl",
             "boombox.vert.msl",
             "boombox.frag.msl",
+            "background-ground.frag.hlsl",
+            "background-ground.frag.msl",
         ];
         const binaries = [
             "boombox.vert.dxil",

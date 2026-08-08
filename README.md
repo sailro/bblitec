@@ -189,6 +189,8 @@ The SDL_GPU path now supports deterministic swapchain readback, ArcRotate mouse 
 npm run parity:boombox:gpu
 ```
 
+The compiler also generates Babylon Lite's transparent background-ground pass and materializes `groundTextureUrl`. It is temporarily gated behind `BBLITE_BACKGROUND=1` until the paired DDS skybox pass is available; enabling the ground alone does not match the current Babylon.js golden.
+
 The current D3D12 GPU baseline is **4.172 full-image MAD / 17.257 foreground-region MAD**, improving on both the first measurable reduced-shader baseline (**7.720 / 58.573**) and the CPU fallback (**4.452 / 21.191**). The remaining gap is dominated by Babylon Lite's background-ground pass and exact frame-graph/material edge cases.
 
 Configuring without SDL keeps the headless backend available. The generated glTF loader uses the typed JSON runtime; SDL_image is linked only by rendered glTF builds.

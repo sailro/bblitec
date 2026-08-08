@@ -185,6 +185,11 @@ struct EnvironmentState {
     std::uint32_t specular_mip_count = 0;
     std::vector<TextureData> specular_faces;
     TextureData brdf_lut;
+    TextureData ground_texture;
+    bool has_ground = false;
+    float ground_size = 15.0f;
+    Vec3 ground_position{};
+    Color3 primary_color{0.08697356f, 0.08697356f, 0.21222083f};
     std::string source_url;
 };
 

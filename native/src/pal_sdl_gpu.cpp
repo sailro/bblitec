@@ -50,12 +50,21 @@ struct GpuMesh {
     std::uint32_t index_count = 0;
 };
 
+struct GpuBackground {
+    SDL_GPUBuffer* vertices = nullptr;
+    SDL_GPUBuffer* indices = nullptr;
+    SDL_GPUTexture* texture = nullptr;
+    bool enabled = false;
+};
+
 struct GpuState {
     SDL_Window* window = nullptr;
     SDL_GPUDevice* device = nullptr;
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
     SDL_GPUGraphicsPipeline* transparent_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* background_pipeline = nullptr;
     SDL_GPUSampler* sampler = nullptr;
+    SDL_GPUSampler* background_sampler = nullptr;
     SDL_GPUTexture* environment = nullptr;
     SDL_GPUTexture* brdf_lut = nullptr;
     SDL_GPUTexture* color = nullptr;
@@ -65,6 +74,7 @@ struct GpuState {
     std::uint32_t depth_width = 0;
     std::uint32_t depth_height = 0;
     std::vector<GpuMesh> meshes;
+    GpuBackground background;
 };
 
 struct CameraPointerState {
@@ -496,11 +506,16 @@ void release(GpuState& state) {
         SDL_ReleaseGPUTexture(state.device, mesh.normal);
         SDL_ReleaseGPUTexture(state.device, mesh.emissive);
     }
+    if (state.background.vertices) SDL_ReleaseGPUBuffer(state.device, state.background.vertices);
+    if (state.background.indices) SDL_ReleaseGPUBuffer(state.device, state.background.indices);
+    if (state.background.texture) SDL_ReleaseGPUTexture(state.device, state.background.texture);
     if (state.environment) SDL_ReleaseGPUTexture(state.device, state.environment);
     if (state.brdf_lut) SDL_ReleaseGPUTexture(state.device, state.brdf_lut);
     if (state.color) SDL_ReleaseGPUTexture(state.device, state.color);
     if (state.depth) SDL_ReleaseGPUTexture(state.device, state.depth);
+    if (state.background_sampler) SDL_ReleaseGPUSampler(state.device, state.background_sampler);
     if (state.sampler) SDL_ReleaseGPUSampler(state.device, state.sampler);
+    if (state.background_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.background_pipeline);
     if (state.transparent_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.transparent_pipeline);
     if (state.pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.pipeline);
     if (state.window && state.device) SDL_ReleaseWindowFromGPUDevice(state.device, state.window);
@@ -520,6 +535,9 @@ bool run_gpu_engine(Engine& engine) {
         throw std::runtime_error("GPU renderer requires a registered scene.");
     }
     Scene& scene = *engine.registered_scenes.front();
+    const std::string background_flag = environment_variable("BBLITE_BACKGROUND");
+    const bool use_background =
+        background_flag == "1" || background_flag == "true";
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) gpu_error("SDL_Init");
 
     GpuState state;
@@ -559,6 +577,14 @@ bool run_gpu_engine(Engine& engine) {
             load_shader(state.device, "boombox.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
         SDL_GPUShader* fragment_shader =
             load_shader(state.device, "boombox.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 6, 1);
+        SDL_GPUShader* background_fragment_shader = use_background
+            ? load_shader(
+                  state.device,
+                  "background-ground.frag",
+                  SDL_GPU_SHADERSTAGE_FRAGMENT,
+                  1,
+                  1)
+            : nullptr;
 
         SDL_GPUVertexBufferDescription vertex_buffer{};
         vertex_buffer.slot = 0;
@@ -601,9 +627,21 @@ bool run_gpu_engine(Engine& engine) {
         pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
         pipeline_info.depth_stencil_state.enable_depth_write = false;
         state.transparent_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
+        if (background_fragment_shader) {
+            pipeline_info.fragment_shader = background_fragment_shader;
+            color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+            pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+            state.background_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
+        }
         SDL_ReleaseGPUShader(state.device, vertex_shader);
         SDL_ReleaseGPUShader(state.device, fragment_shader);
+        if (background_fragment_shader) {
+            SDL_ReleaseGPUShader(state.device, background_fragment_shader);
+        }
         if (!state.transparent_pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline transparent");
+        if (background_fragment_shader && !state.background_pipeline) {
+            gpu_error("SDL_CreateGPUGraphicsPipeline background");
+        }
 
         SDL_GPUSamplerCreateInfo sampler_info{};
         sampler_info.min_filter = SDL_GPU_FILTER_LINEAR;
@@ -614,8 +652,43 @@ bool run_gpu_engine(Engine& engine) {
         sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
         state.sampler = SDL_CreateGPUSampler(state.device, &sampler_info);
         if (!state.sampler) gpu_error("SDL_CreateGPUSampler");
+        sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        sampler_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        state.background_sampler = SDL_CreateGPUSampler(state.device, &sampler_info);
+        if (!state.background_sampler) gpu_error("SDL_CreateGPUSampler background");
         state.environment = upload_environment(state.device, scene.environment);
         state.brdf_lut = upload_rgbd_texture(state.device, scene.environment.brdf_lut);
+        if (scene.environment.has_ground && use_background) {
+            const upstream::BackgroundPlan background =
+                upstream::build_background_plan(scene.environment);
+            std::array<GpuVertex, 4> vertices{};
+            for (std::size_t index = 0; index < vertices.size(); ++index) {
+                const ModelVertex& vertex = background.vertices[index];
+                vertices[index] = GpuVertex{
+                    {vertex.position.x, vertex.position.y, vertex.position.z},
+                    {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+                    {vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w},
+                    {vertex.uv.x, vertex.uv.y},
+                };
+            }
+            state.background.vertices = upload_buffer(
+                state.device,
+                SDL_GPU_BUFFERUSAGE_VERTEX,
+                vertices.data(),
+                sizeof(vertices));
+            state.background.indices = upload_buffer(
+                state.device,
+                SDL_GPU_BUFFERUSAGE_INDEX,
+                background.indices.data(),
+                sizeof(background.indices));
+            state.background.texture = upload_texture(
+                state.device,
+                scene.environment.ground_texture,
+                false,
+                {255, 255, 255, 255});
+            state.background.enabled = true;
+        }
 
         const std::vector<upstream::RenderItem> render_plan =
             upstream::build_render_plan(scene, engine);
@@ -783,6 +856,29 @@ bool run_gpu_engine(Engine& engine) {
             };
             draw_meshes(state.pipeline, 0.0f);
             draw_meshes(state.transparent_pipeline, 1.0f);
+            if (state.background.enabled) {
+                const upstream::BackgroundUniforms background =
+                    upstream::build_background_uniforms(scene.environment, camera);
+                SDL_BindGPUGraphicsPipeline(pass, state.background_pipeline);
+                SDL_PushGPUFragmentUniformData(
+                    command,
+                    0,
+                    &background,
+                    sizeof(background));
+                const SDL_GPUBufferBinding vertex_binding{state.background.vertices, 0};
+                const SDL_GPUBufferBinding index_binding{state.background.indices, 0};
+                const SDL_GPUTextureSamplerBinding texture_binding{
+                    state.background.texture,
+                    state.background_sampler,
+                };
+                SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+                SDL_BindGPUIndexBuffer(
+                    pass,
+                    &index_binding,
+                    SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
+                SDL_DrawGPUIndexedPrimitives(pass, 6, 1, 0, 0, 0);
+            }
             SDL_EndGPURenderPass(pass);
             if (capture_frame) {
                 SDL_GPUBlitInfo blit{};
