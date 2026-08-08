@@ -76,11 +76,17 @@ class GeneratedSourceWriter {
             );
         }
         if (features.includes("environment:ibl")) {
+            const environment = new EnvironmentLowerer(context);
             this.writeSource(
                 "upstream/src/env_parse.cpp",
-                new EnvironmentLowerer(context).lowerParser(),
+                environment.lowerParser(),
                 generated,
                 "upstream/include/bblite/upstream/env_parse.hpp",
+            );
+            this.writeSource(
+                "upstream/src/environment.cpp",
+                environment.lowerLoaderAdapter(),
+                generated,
             );
         }
         if (features.includes("light:hemispheric")) {
@@ -98,11 +104,17 @@ class GeneratedSourceWriter {
             );
         }
         if (features.includes("loader:gltf")) {
+            const gltf = new GltfLowerer(context);
             this.writeSource(
                 "upstream/src/gltf_glb_parser.cpp",
-                new GltfLowerer(context).lowerGlbParser(),
+                gltf.lowerGlbParser(),
                 generated,
                 "upstream/include/bblite/upstream/gltf_glb_parser.hpp",
+            );
+            this.writeSource(
+                "upstream/src/gltf_loader.cpp",
+                gltf.lowerLoaderAdapter(),
+                generated,
             );
         }
         const factories = new FactoryLowerer(context);

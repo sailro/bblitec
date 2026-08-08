@@ -14,6 +14,7 @@ import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { EngineLowerer } from "../src/lowering/engine-lowerer.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
+import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 
 test("loads pinned Babylon Lite TypeScript from published source maps", () => {
@@ -25,10 +26,14 @@ test("loads pinned Babylon Lite TypeScript from published source maps", () => {
 });
 
 test("generates the Babylon environment parser from upstream constants", () => {
-    const lowered = lowerEnvParser();
+    const lowerer = new EnvironmentLowerer(new LoweringContext());
+    const lowered = lowerer.lowerParser();
+    const adapter = lowerer.lowerLoaderAdapter();
     assert.match(lowered.source, /0x86, 0x16, 0x87, 0x96, 0xf6, 0xd6, 0x96, 0x36/);
     assert.match(lowered.source, /constexpr float c1 = 1\.4999984284682104f/);
     assert.match(lowered.source, /face\.mime_type = "image\/png"/);
+    assert.match(adapter.source, /scene\.environment\.exposure = 0\.8f/);
+    assert.match(adapter.source, /scene\.environment\.contrast = 1\.2f/);
 });
 
 test("generates scene defaults, routing, and idempotent registration", () => {
@@ -39,10 +44,13 @@ test("generates scene defaults, routing, and idempotent registration", () => {
 });
 
 test("generates GLB framing validation from upstream constants", () => {
-    const lowered = new GltfLowerer(new LoweringContext()).lowerGlbParser();
+    const lowerer = new GltfLowerer(new LoweringContext());
+    const lowered = lowerer.lowerGlbParser();
+    const adapter = lowerer.lowerLoaderAdapter();
     assert.match(lowered.source, /0x46546c67/);
     assert.match(lowered.source, /0x4e4f534a/);
     assert.match(lowered.source, /0x4e4942/);
+    assert.match(adapter.source, /return pal::load_glb/);
 });
 
 test("generates engine API wrappers over the PAL", () => {

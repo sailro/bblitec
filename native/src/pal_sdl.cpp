@@ -1,3 +1,4 @@
+// SDL implementation of the platform abstraction layer.
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/upstream/camera_controls.hpp>

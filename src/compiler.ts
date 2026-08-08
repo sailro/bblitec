@@ -49,12 +49,12 @@ type Feature =
 
 const featureSources: Record<Feature, string[]> = {
     "core": ["src/pal.cpp"],
-    "backend:sdl": ["src/sdl_backend.cpp"],
+    "backend:sdl": ["src/pal_sdl.cpp"],
     "camera:arc-rotate": [],
     "camera:default": [],
-    "environment:ibl": ["src/environment.cpp"],
+    "environment:ibl": [],
     "light:hemispheric": [],
-    "loader:gltf": ["src/gltf_loader.cpp"],
+    "loader:gltf": ["src/pal_gltf.cpp"],
     "material:standard": [],
     "mesh:box": [],
     "mesh:ground": [],
@@ -130,13 +130,19 @@ class Compiler {
             generatedSources.push("upstream/src/camera_default.cpp");
         }
         if (features.includes("environment:ibl")) {
-            generatedSources.push("upstream/src/env_parse.cpp");
+            generatedSources.push(
+                "upstream/src/env_parse.cpp",
+                "upstream/src/environment.cpp",
+            );
         }
         if (features.includes("light:hemispheric")) {
             generatedSources.push("upstream/src/light_matrix.cpp", "upstream/src/light_hemispheric.cpp");
         }
         if (features.includes("loader:gltf")) {
-            generatedSources.push("upstream/src/gltf_glb_parser.cpp");
+            generatedSources.push(
+                "upstream/src/gltf_glb_parser.cpp",
+                "upstream/src/gltf_loader.cpp",
+            );
         }
         if (features.includes("material:standard")) {
             generatedSources.push("upstream/src/material_standard.cpp");

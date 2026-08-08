@@ -178,6 +178,8 @@ struct Engine {
 struct EnvironmentState {
     bool enabled = false;
     bool has_irradiance = false;
+    float exposure = 1.0f;
+    float contrast = 1.0f;
     std::array<Color3, 9> spherical_harmonics{};
     std::uint32_t specular_width = 0;
     std::uint32_t specular_mip_count = 0;

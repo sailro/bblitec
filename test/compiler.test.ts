@@ -138,8 +138,10 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
         "upstream/src/camera_controls.cpp",
         "upstream/src/camera_default.cpp",
         "upstream/src/env_parse.cpp",
+        "upstream/src/environment.cpp",
         "upstream/src/light_matrix.cpp",
         "upstream/src/light_hemispheric.cpp",
         "upstream/src/gltf_glb_parser.cpp",
+        "upstream/src/gltf_loader.cpp",
     ]);
 });

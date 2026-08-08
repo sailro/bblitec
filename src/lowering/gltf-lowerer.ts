@@ -94,4 +94,34 @@ ParsedGlbContainer parse_glb_container(const std::vector<std::uint8_t>& bytes) {
 `,
         };
     }
+
+    public lowerLoaderAdapter(): LoweredSource {
+        const modulePath = "src/loader-gltf/load-gltf.ts";
+        const symbolName = "loadGltf";
+        const source = this.context.store.getSource(modulePath);
+        for (const marker of [
+            "export async function loadGltf",
+            "fetchGltfAsset(source)",
+            "loadGltfFeatures(json)",
+        ]) {
+            if (!source.includes(marker)) throw new Error(`Upstream glTF loader contract changed: ${marker}.`);
+        }
+        return {
+            modulePath,
+            symbolName,
+            header: "",
+            source: `// ${this.context.provenance(modulePath, symbolName)}
+#include <bblite/pal.hpp>
+#include <bblite/runtime.hpp>
+
+namespace bbl {
+
+AssetHandle load_gltf(Engine& engine, const std::string& path) {
+    return pal::load_glb(engine, path);
+}
+
+} // namespace bbl
+`,
+        };
+    }
 }

@@ -83,9 +83,9 @@ The current vertical migration generates these implementations from pinned upstr
 - box/ground mesh factory defaults from `mesh/create-box.ts`, `mesh/create-ground.ts`, and `mesh/mesh-factories.ts`
 - `createStandardMaterial` defaults from `material/standard/create-standard-material.ts`
 
-Their generated sources and provenance are emitted under `generated\<scene>\upstream`. The previous hand-written light, camera, mesh-factory, standard-material, and core C++ files have been removed. `native\src\environment.cpp` is now only a small PAL-to-engine adapter.
+Their generated sources and provenance are emitted under `generated\<scene>\upstream`. The previous hand-written light, camera, mesh-factory, standard-material, core, and environment C++ files have been removed. The public glTF loader API is generated; cgltf is currently isolated behind `pal_gltf.cpp` as a temporary native acceleration service.
 
-The PAL currently owns native file reads, path joining, environment variables, and monotonic timing. SDL remains the window/input/render implementation. Engine, loader, scene, material, and render modules will move from hand-written native implementations to upstream-generated C++ incrementally, starting from the BoomBox reachable graph.
+The PAL currently owns native file reads, path joining, environment variables, monotonic timing, cgltf adaptation, and the SDL window/input/render implementation. Every handwritten `.cpp` under `native\src` is now explicitly a PAL file. `pal_sdl.cpp` still contains transitional scene traversal and PBR calculations; those are the next major block to move into generated Babylon render/frame-graph code.
 
 The lowering code is split into dedicated engine, scene, light, camera, environment, and glTF lowerer classes with a shared `LoweringContext`; adding language coverage no longer requires extending one monolithic transpiler file.
 
@@ -190,7 +190,7 @@ Current boundaries are intentional: one entry file, one engine, static scene con
 
 ## Tree shaking and data layout
 
-`features.cmake` lists only reached native modules. For example, a box-only scene links `core.cpp`, `sdl_backend.cpp`, and `mesh_box.cpp`; ground, materials, lights, and cameras are absent unless referenced.
+`features.cmake` lists only reached native and generated modules. For example, a box-only scene links the PAL sources plus generated engine, scene, and mesh factory code; ground, materials, lights, and cameras remain absent unless referenced.
 
 The runtime stores meshes, materials, lights, and cameras in contiguous vectors and exposes small typed handles. Scene membership is stored as handle arrays. This preserves Babylon Lite's data-oriented direction and gives a path to structure-of-arrays storage, SIMD transform passes, job systems, and an SDL GPU backend without changing source-level scene code.
 

@@ -15,7 +15,7 @@
 #include <unordered_map>
 #include <utility>
 
-namespace bbl {
+namespace bbl::pal {
 namespace {
 
 struct CgltfDeleter {
@@ -113,7 +113,7 @@ const cgltf_accessor* required_accessor(const cgltf_primitive& primitive, cgltf_
 
 } // namespace
 
-AssetHandle load_gltf(Engine& engine, const std::string& path) {
+AssetHandle load_glb(Engine& engine, const std::string& path) {
     cgltf_options options{};
     cgltf_data* raw_data = nullptr;
     const std::vector<std::uint8_t> source_bytes = pal::read_binary_file(path);
@@ -242,4 +242,4 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     return AssetHandle{static_cast<std::uint32_t>(engine.assets.size() - 1)};
 }
 
-} // namespace bbl
+} // namespace bbl::pal
