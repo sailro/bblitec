@@ -23,6 +23,7 @@ cbuffer FragmentUniforms : register(b0, space3)
     float4 environmentFactors;
     float4 boundsMin;
     float4 boundsMax;
+    float4 materialOptions;
     float4 sphericalHarmonics[9];
 };
 
@@ -85,22 +86,14 @@ float4 main(FragmentInput input) : SV_Target
         tangent * sampledNormal.x +
         bitangent * sampledNormal.y +
         geometricNormal * sampledNormal.z);
-    const float3 albedo = baseColorTexture.Sample(baseColorSampler, input.uv).rgb * baseColorFactor.rgb;
+    const float4 baseColorSample = baseColorTexture.Sample(baseColorSampler, input.uv);
+    const float3 albedo = baseColorSample.rgb * baseColorFactor.rgb;
+    const float alpha = baseColorSample.a * baseColorFactor.a;
     const float3 packed = metallicRoughnessTexture.Sample(metallicRoughnessSampler, input.uv).rgb;
     const float occlusion = packed.r;
     const float roughness = clamp(packed.g * materialFactors.y, 0.04, 1.0);
     const float metallic = saturate(packed.b * materialFactors.x);
-    const float normalizedHeight =
-        (input.worldPosition.y - boundsMin.y) /
-        max(boundsMax.y - boundsMin.y, 0.0001);
-    const float luminance = dot(albedo, float3(0.333333, 0.333333, 0.333333));
-    const bool smokedGlass =
-        normalizedHeight > 0.45 &&
-        geometricNormal.y > 0.3 &&
-        luminance < 0.2 &&
-        roughness < 0.35;
-    if ((materialFactors.z < 0.5 && smokedGlass) ||
-        (materialFactors.z >= 0.5 && !smokedGlass))
+    if (materialOptions.x > 0.5 && materialOptions.x < 1.5 && alpha < materialOptions.y)
     {
         discard;
     }
@@ -108,7 +101,14 @@ float4 main(FragmentInput input) : SV_Target
     const float3 viewDirection = normalize(cameraPosition.xyz - input.worldPosition);
     const float nDotVUnclamped = dot(normal, viewDirection);
     const float nDotV = abs(nDotVUnclamped) + 0.0000001;
-    const float alphaG = roughness * roughness + 0.0005;
+    const float3 normalDx = ddx(normal);
+    const float3 normalDy = ddy(normal);
+    const float slopeSquare = max(dot(normalDx, normalDx), dot(normalDy, normalDy));
+    const float aaRoughness = pow(saturate(slopeSquare), 0.3333333333);
+    const float aaAlpha = sqrt(slopeSquare) * 0.75;
+    const float alphaG = roughness * roughness + 0.0005 + aaAlpha;
+    const float directRoughness = max(roughness, aaRoughness);
+    const float directAlphaG = directRoughness * directRoughness + 0.0005;
     const float3 surfaceAlbedo = albedo * (1.0 - 0.04) * (1.0 - metallic);
     const float3 lightDirectionNormalized = normalize(lightDirection.xyz);
     const float3 halfDirection = normalize(viewDirection + lightDirectionNormalized);
@@ -117,8 +117,8 @@ float4 main(FragmentInput input) : SV_Target
     const float vDotH = saturate(dot(viewDirection, halfDirection));
     const float3 f0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
     const float3 fresnel = fresnelSchlick(vDotH, f0);
-    const float distribution = distributionGGX(nDotH, alphaG);
-    const float geometry = geometrySmithGGX(nDotL, nDotV, alphaG);
+    const float distribution = distributionGGX(nDotH, directAlphaG);
+    const float geometry = geometrySmithGGX(nDotL, nDotV, directAlphaG);
     const float3 directSpecular =
         fresnel * distribution * geometry * nDotL * lightColor.rgb * lightColor.a;
     const float3 groundSky = lerp(groundColor.rgb, lightColor.rgb, nDotL);
@@ -169,5 +169,5 @@ float4 main(FragmentInput input) : SV_Target
     color = environmentFactors.y < 1.0
         ? lerp(float3(0.5, 0.5, 0.5), color, environmentFactors.y)
         : lerp(color, highContrast, environmentFactors.y - 1.0);
-    return float4(color, smokedGlass ? 0.72 : baseColorFactor.a);
+    return float4(color, materialOptions.x > 1.5 ? alpha : 1.0);
 }

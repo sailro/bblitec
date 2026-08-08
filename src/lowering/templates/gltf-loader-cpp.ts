@@ -307,6 +307,14 @@ MaterialHandle load_material(
     const std::vector<float> emissive = float_array(optional(material_json, "emissiveFactor"));
     if (emissive.size() == 3) material.emissive_factor = Color3{emissive[0], emissive[1], emissive[2]};
     material.double_sided = bool_or(material_json, "doubleSided", false);
+    const std::string alpha_mode = string_or(material_json, "alphaMode", "OPAQUE");
+    material.alpha_mode =
+        alpha_mode == "BLEND"
+            ? MaterialAlphaMode::blend
+            : alpha_mode == "MASK"
+                ? MaterialAlphaMode::mask
+                : MaterialAlphaMode::opaque;
+    material.alpha_cutoff = float_or(material_json, "alphaCutoff", 0.5f);
     engine.materials.push_back(std::move(material));
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }

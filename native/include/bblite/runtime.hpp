@@ -74,6 +74,12 @@ enum class PrimitiveKind {
     ground,
 };
 
+enum class MaterialAlphaMode {
+    opaque,
+    mask,
+    blend,
+};
+
 struct TextureData {
     std::vector<std::uint8_t> bytes;
     std::string mime_type;
@@ -117,6 +123,8 @@ struct MaterialRecord {
     float metallic_factor = 1.0f;
     float roughness_factor = 1.0f;
     bool double_sided = false;
+    MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
+    float alpha_cutoff = 0.5f;
     TextureData base_color_texture;
     TextureData metallic_roughness_texture;
     TextureData normal_texture;

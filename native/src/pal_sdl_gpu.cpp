@@ -68,6 +68,7 @@ struct GpuState {
     SDL_Window* window = nullptr;
     SDL_GPUDevice* device = nullptr;
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* transparent_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* background_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* skybox_pipeline = nullptr;
@@ -447,7 +448,16 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
             if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer environment");
             void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
             if (!mapped) gpu_error("SDL_MapGPUTransferBuffer environment");
-            std::memcpy(mapped, pixels.data(), byte_size);
+            const std::size_t row_size =
+                static_cast<std::size_t>(image_width) * 4 * sizeof(float);
+            for (int row = 0; row < image_height; ++row) {
+                std::memcpy(
+                    static_cast<std::uint8_t*>(mapped) +
+                        static_cast<std::size_t>(row) * row_size,
+                    reinterpret_cast<const std::uint8_t*>(pixels.data()) +
+                        static_cast<std::size_t>(image_height - row - 1) * row_size,
+                    row_size);
+            }
             SDL_UnmapGPUTransferBuffer(device, transfer);
             transfers.push_back(transfer);
             const SDL_GPUTextureTransferInfo source{
@@ -588,6 +598,7 @@ void release(GpuState& state) {
     if (state.sampler) SDL_ReleaseGPUSampler(state.device, state.sampler);
     if (state.background_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.background_pipeline);
     if (state.skybox_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.skybox_pipeline);
+    if (state.double_sided_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.double_sided_pipeline);
     if (state.transparent_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.transparent_pipeline);
     if (state.pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.pipeline);
     if (state.window && state.device) SDL_ReleaseWindowFromGPUDevice(state.device, state.window);
@@ -690,7 +701,7 @@ bool run_gpu_engine(Engine& engine) {
             SDL_GPUVertexInputState{&vertex_buffer, 1, attributes, 4};
         pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
         pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-        pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+        pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
         pipeline_info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
         pipeline_info.rasterizer_state.enable_depth_clip = true;
         pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
@@ -702,6 +713,11 @@ bool run_gpu_engine(Engine& engine) {
         pipeline_info.target_info.has_depth_stencil_target = true;
         state.pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
         if (!state.pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline");
+        pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+        state.double_sided_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
+        if (!state.double_sided_pipeline) {
+            gpu_error("SDL_CreateGPUGraphicsPipeline double-sided");
+        }
         color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
         color_target.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
         color_target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
@@ -709,6 +725,7 @@ bool run_gpu_engine(Engine& engine) {
         color_target.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
         color_target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
         color_target.blend_state.enable_blend = true;
+        pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
         pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
         pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
         pipeline_info.depth_stencil_state.enable_depth_write = false;
@@ -971,15 +988,32 @@ bool run_gpu_engine(Engine& engine) {
             }
             const auto draw_meshes = [&](
                                          SDL_GPUGraphicsPipeline* pipeline,
-                                         float render_mode) {
+                                         float render_mode,
+                                         int sided_mode) {
                 SDL_BindGPUGraphicsPipeline(pass, pipeline);
                 for (std::size_t mesh_index = 0; mesh_index < state.meshes.size(); ++mesh_index) {
                 const GpuMesh& mesh = state.meshes[mesh_index];
+                const upstream::RenderItem& item = render_plan[mesh_index];
+                const bool blend =
+                    item.material.value < engine.materials.size() &&
+                    engine.materials[item.material.value].alpha_mode ==
+                        MaterialAlphaMode::blend;
+                if ((render_mode > 0.5f) != blend) {
+                    continue;
+                }
+                const bool double_sided =
+                    item.material.value < engine.materials.size() &&
+                    engine.materials[item.material.value].double_sided;
+                if (
+                    sided_mode != 2 &&
+                    double_sided != (sided_mode == 1)) {
+                    continue;
+                }
                 const upstream::PbrUniforms fragment = upstream::build_pbr_uniforms(
                     scene,
                     engine,
                     camera,
-                    render_plan[mesh_index],
+                    item,
                     render_mode);
                 SDL_PushGPUFragmentUniformData(command, 0, &fragment, sizeof(fragment));
                 const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
@@ -998,8 +1032,9 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_DrawGPUIndexedPrimitives(pass, mesh.index_count, 1, 0, 0, 0);
                 }
             };
-            draw_meshes(state.pipeline, 0.0f);
-            draw_meshes(state.transparent_pipeline, 1.0f);
+            draw_meshes(state.pipeline, 0.0f, 0);
+            draw_meshes(state.double_sided_pipeline, 0.0f, 1);
+            draw_meshes(state.transparent_pipeline, 1.0f, 2);
             if (state.background.enabled) {
                 const upstream::BackgroundUniforms background =
                     upstream::build_background_uniforms(scene.environment, camera);

@@ -57,6 +57,8 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(lowered.source, /0x4e4942/);
     assert.match(adapter.source, /ts::await\(pal::fetch_array_buffer/);
     assert.match(adapter.source, /read_component/);
+    assert.match(adapter.source, /MaterialAlphaMode::blend/);
+    assert.match(adapter.source, /alpha_cutoff/);
     assert.doesNotMatch(adapter.source, /pal::load_glb/);
 });
 

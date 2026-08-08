@@ -57,6 +57,7 @@ struct PbrUniforms {
     std::array<float, 4> environment_factors{};
     std::array<float, 4> bounds_min{};
     std::array<float, 4> bounds_max{};
+    std::array<float, 4> material_options{};
     std::array<std::array<float, 4>, 9> spherical_harmonics{};
 };
 
@@ -291,6 +292,14 @@ PbrUniforms build_pbr_uniforms(
             };
             result.material_factors[0] = material.metallic_factor;
             result.material_factors[1] = material.roughness_factor;
+            result.material_options[0] =
+                material.alpha_mode == MaterialAlphaMode::blend
+                    ? 2.0f
+                    : material.alpha_mode == MaterialAlphaMode::mask
+                        ? 1.0f
+                        : 0.0f;
+            result.material_options[1] = material.alpha_cutoff;
+            result.material_options[2] = material.double_sided ? 1.0f : 0.0f;
         }
     }
     for (std::size_t index = 0; index < scene.environment.spherical_harmonics.size(); ++index) {

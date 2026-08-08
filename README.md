@@ -179,11 +179,11 @@ cd ..\..
 npm run shaders:build
 ```
 
-On the development machine, the optimized BoomBox CPU fallback measured **5.516 ms/frame** average CPU submission. The compiler-generated material/IBL/skybox SDL_GPU Direct3D 12 path measured **0.113 ms average / 0.080 ms median**, approximately **49× faster** CPU-side.
+On the development machine, the optimized BoomBox CPU fallback measured **5.516 ms/frame** average CPU submission. The compiler-generated material/IBL/skybox SDL_GPU Direct3D 12 path measured **0.111 ms average / 0.073 ms median**, approximately **50× faster** CPU-side.
 
 The GPU path is the default for generated glTF scenes. Set `BBLITE_GPU=0` only when the deterministic CPU fallback is required.
 
-The SDL_GPU path now supports deterministic swapchain readback, ArcRotate mouse controls, normal and metallic-roughness maps, emissive materials, Babylon `.env` cubemap mips, spherical-harmonic irradiance, the BRDF LUT, and a separate blended smoked-glass pass. Run its local visual regression gate with:
+The SDL_GPU path now supports deterministic swapchain readback, ArcRotate mouse controls, normal and metallic-roughness maps, emissive materials, glTF `OPAQUE`/`MASK`/`BLEND` alpha modes, single- and double-sided material buckets, Babylon `.env` cubemap mips, spherical-harmonic irradiance, and the BRDF LUT. Run its local visual regression gate with:
 
 ```powershell
 npm run parity:boombox:gpu
@@ -191,7 +191,7 @@ npm run parity:boombox:gpu
 
 The compiler generates and enables Babylon Lite's RGBA16F DDS skybox by default. It also generates the transparent ground pass and materializes `groundTextureUrl`; set `BBLITE_GROUND=1` to enable that pass explicitly because Babylon.js's current golden does not compose it identically.
 
-The current D3D12 GPU baseline is **1.755 full-image MAD / 17.183 foreground-region MAD**, improving substantially on both the first measurable reduced-shader baseline (**7.720 / 58.573**) and the CPU fallback (**4.452 / 21.191**). The remaining gap is concentrated in foreground material/transparency edge cases.
+The current D3D12 GPU baseline is **0.945 full-image MAD / 7.761 foreground-region MAD**, improving substantially on both the first measurable reduced-shader baseline (**7.720 / 58.573**) and the CPU fallback (**4.452 / 21.191**). The remaining gap is concentrated in fine foreground material and rasterization differences.
 
 Configuring without SDL keeps the headless backend available. The generated glTF loader uses the typed JSON runtime; SDL_image is linked only by rendered glTF builds.
 
