@@ -134,6 +134,7 @@ class GeneratedSourceWriter {
                 { modulePath: "src/material/pbr/fragments/ibl-fragment.ts", symbolName: "makeIblCalculation" },
                 { modulePath: "src/frame-graph/scene-uniforms-pack.ts", symbolName: "_packSceneUniforms" },
                 { modulePath: "src/material/pbr/background-ground.ts", symbolName: "buildGroundRenderable" },
+                { modulePath: "src/material/pbr/background-dds-skybox.ts", symbolName: "buildDdsSkyboxRenderable" },
             );
         }
         const factories = new FactoryLowerer(context);

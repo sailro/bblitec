@@ -124,6 +124,10 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
                 kind: "texture",
             },
             {
+                source: "https://assets.babylonjs.com/core/environments/backgroundSkybox.dds",
+                kind: "texture",
+            },
+            {
                 source: "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/master/packages/babylon-lite/assets/brdf-lut.png",
                 kind: "texture",
             },

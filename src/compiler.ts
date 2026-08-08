@@ -518,13 +518,16 @@ class Compiler {
                 const groundAsset = options[0]
                     ? this.registerAsset(options[0], "texture")
                     : undefined;
+                const skyboxAsset = options[1]
+                    ? this.registerAsset(options[1], "texture")
+                    : undefined;
                 const brdfAsset = options[3]
                     ? this.registerAsset(this.resolveBundledAsset(options[3]), "texture")
                     : undefined;
                 this.features.add("environment:ibl");
                 return {
                     kind: "void",
-                    cpp: `bbl::load_environment(${scene.cpp}, bbl::EnvironmentOptions{bbl::asset_path(${this.cppString(environmentAsset.output)}), ${groundAsset ? `bbl::asset_path(${this.cppString(groundAsset.output)})` : this.cppString("")}, ${this.cppString(options[1])}, ${options[2]}, ${brdfAsset ? `bbl::asset_path(${this.cppString(brdfAsset.output)})` : this.cppString("")}})`,
+                    cpp: `bbl::load_environment(${scene.cpp}, bbl::EnvironmentOptions{bbl::asset_path(${this.cppString(environmentAsset.output)}), ${groundAsset ? `bbl::asset_path(${this.cppString(groundAsset.output)})` : this.cppString("")}, ${skyboxAsset ? `bbl::asset_path(${this.cppString(skyboxAsset.output)})` : this.cppString("")}, ${options[2]}, ${brdfAsset ? `bbl::asset_path(${this.cppString(brdfAsset.output)})` : this.cppString("")}})`,
                 };
             }
 

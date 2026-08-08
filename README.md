@@ -179,7 +179,7 @@ cd ..\..
 npm run shaders:build
 ```
 
-On the development machine, the optimized BoomBox CPU fallback measured **5.516 ms/frame** average CPU submission. The compiler-generated material/IBL SDL_GPU Direct3D 12 path measured **0.117 ms average / 0.079 ms median**, approximately **47× faster** CPU-side.
+On the development machine, the optimized BoomBox CPU fallback measured **5.516 ms/frame** average CPU submission. The compiler-generated material/IBL/skybox SDL_GPU Direct3D 12 path measured **0.113 ms average / 0.080 ms median**, approximately **49× faster** CPU-side.
 
 The GPU path is the default for generated glTF scenes. Set `BBLITE_GPU=0` only when the deterministic CPU fallback is required.
 
@@ -189,9 +189,9 @@ The SDL_GPU path now supports deterministic swapchain readback, ArcRotate mouse 
 npm run parity:boombox:gpu
 ```
 
-The compiler also generates Babylon Lite's transparent background-ground pass and materializes `groundTextureUrl`. It is temporarily gated behind `BBLITE_BACKGROUND=1` until the paired DDS skybox pass is available; enabling the ground alone does not match the current Babylon.js golden.
+The compiler generates and enables Babylon Lite's RGBA16F DDS skybox by default. It also generates the transparent ground pass and materializes `groundTextureUrl`; set `BBLITE_GROUND=1` to enable that pass explicitly because Babylon.js's current golden does not compose it identically.
 
-The current D3D12 GPU baseline is **4.172 full-image MAD / 17.257 foreground-region MAD**, improving on both the first measurable reduced-shader baseline (**7.720 / 58.573**) and the CPU fallback (**4.452 / 21.191**). The remaining gap is dominated by Babylon Lite's background-ground pass and exact frame-graph/material edge cases.
+The current D3D12 GPU baseline is **1.755 full-image MAD / 17.183 foreground-region MAD**, improving substantially on both the first measurable reduced-shader baseline (**7.720 / 58.573**) and the CPU fallback (**4.452 / 21.191**). The remaining gap is concentrated in foreground material/transparency edge cases.
 
 Configuring without SDL keeps the headless backend available. The generated glTF loader uses the typed JSON runtime; SDL_image is linked only by rendered glTF builds.
 

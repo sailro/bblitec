@@ -265,9 +265,25 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 namespace bbl {
+
+namespace {
+
+std::uint32_t read_u32(const std::vector<std::uint8_t>& bytes, std::size_t offset) {
+    if (offset + 4 > bytes.size()) {
+        throw std::runtime_error("DDS header is truncated.");
+    }
+    return
+        static_cast<std::uint32_t>(bytes[offset]) |
+        (static_cast<std::uint32_t>(bytes[offset + 1]) << 8) |
+        (static_cast<std::uint32_t>(bytes[offset + 2]) << 16) |
+        (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
+}
+
+} // namespace
 
 void load_environment(Scene& scene, EnvironmentOptions options) {
     upstream::ParsedEnvironment parsed =
@@ -288,6 +304,20 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
             pal::read_binary_file(options.ground_texture_url);
         scene.environment.ground_texture.mime_type = "image/png";
         scene.environment.has_ground = true;
+    }
+    if (!options.skybox_url.empty()) {
+        scene.environment.skybox_texture.bytes =
+            pal::read_binary_file(options.skybox_url);
+        scene.environment.skybox_texture.mime_type = "image/vnd-ms.dds";
+        const std::vector<std::uint8_t>& dds = scene.environment.skybox_texture.bytes;
+        if (dds.size() < 128 || read_u32(dds, 0) != 0x20534444u) {
+            throw std::runtime_error("Background skybox is not a valid DDS file.");
+        }
+        scene.environment.skybox_width = read_u32(dds, 16);
+        scene.environment.skybox_mip_count = std::max(read_u32(dds, 28), 1u);
+        scene.environment.skybox_data_offset =
+            read_u32(dds, 84) == 808540228u ? 148u : 128u;
+        scene.environment.has_skybox = true;
     }
     Vec3 bounds_min{
         std::numeric_limits<float>::infinity(),
@@ -322,6 +352,9 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
             bounds_min.y - 0.00001f,
             bounds_min.z + dz * 0.5f,
         };
+        scene.environment.skybox_size = std::min(
+            (options.skybox_size > 0.0f ? options.skybox_size : 20.0f) * 1.5f,
+            scene.environment.ground_size * 1.5f);
     }
     scene.environment.source_url = std::move(options.environment_url);
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};

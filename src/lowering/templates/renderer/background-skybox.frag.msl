@@ -1,0 +1,35 @@
+#include <metal_stdlib>
+using namespace metal;
+
+struct SkyboxUniforms {
+    float4 primaryColorExposure;
+    float4 backgroundCenter;
+    float4 imageParameters;
+};
+
+struct FragmentInput {
+    float4 position [[position]];
+    float3 worldPosition;
+    float3 normal;
+    float4 tangent;
+    float2 uv;
+};
+
+fragment float4 main0(
+    FragmentInput input [[stage_in]],
+    texturecube<float> skyboxTexture [[texture(0)]],
+    sampler skyboxSampler [[sampler(0)]],
+    constant SkyboxUniforms& uniforms [[buffer(0)]]) {
+    const float3 direction =
+        normalize(input.worldPosition - uniforms.backgroundCenter.xyz);
+    float3 color =
+        skyboxTexture.sample(skyboxSampler, direction, level(0.0)).rgb *
+        uniforms.primaryColorExposure.rgb;
+    color *= uniforms.primaryColorExposure.a;
+    color = 1.0 - exp2(-1.590579 * color);
+    color = pow(max(color, float3(0.0)), float3(1.0 / 2.2));
+    color = saturate(color);
+    const float3 highContrast = color * color * (3.0 - 2.0 * color);
+    color = mix(color, highContrast, uniforms.imageParameters.x - 1.0);
+    return float4(max(color, float3(0.0)), 1.0);
+}

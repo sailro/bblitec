@@ -37,6 +37,8 @@ test("generates the Babylon environment parser from upstream constants", () => {
     assert.match(adapter.source, /scene\.environment\.contrast = 1\.2f/);
     assert.match(adapter.source, /scene\.environment\.ground_texture/);
     assert.match(adapter.source, /scene\.environment\.ground_size/);
+    assert.match(adapter.source, /scene\.environment\.skybox_width/);
+    assert.match(adapter.source, /0x20534444u/);
 });
 
 test("generates scene defaults, routing, and idempotent registration", () => {
@@ -113,6 +115,7 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /build_render_plan/);
     assert.match(lowered.source, /build_pbr_uniforms/);
     assert.match(lowered.source, /build_background_plan/);
+    assert.match(lowered.source, /build_skybox_plan/);
     assert.match(lowered.header, /struct PbrUniforms/);
     assert.match(lowered.source, /PrimitiveKind::gltf/);
     assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);

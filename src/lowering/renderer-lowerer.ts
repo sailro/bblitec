@@ -8,6 +8,7 @@ const pbrTemplateModule = "src/material/pbr/pbr-template.ts";
 const iblFragmentModule = "src/material/pbr/fragments/ibl-fragment.ts";
 const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
+const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
 const templateRoot = fileURLToPath(new URL("../../../src/lowering/templates/renderer/", import.meta.url));
 const nativeShaderRoot = fileURLToPath(new URL("../../../native/shaders/", import.meta.url));
 
@@ -71,6 +72,17 @@ struct BackgroundUniforms {
     std::array<float, 4> image_parameters{};
 };
 
+struct SkyboxPlan {
+    std::array<ModelVertex, 8> vertices{};
+    std::array<std::uint32_t, 36> indices{};
+};
+
+struct SkyboxUniforms {
+    std::array<float, 4> primary_color_exposure{};
+    std::array<float, 4> background_center{};
+    std::array<float, 4> image_parameters{};
+};
+
 std::vector<RenderItem> build_render_plan(const Scene& scene, const Engine& engine);
 std::array<float, 16> build_view_projection(const CameraRecord& camera, float aspect);
 PbrUniforms build_pbr_uniforms(
@@ -83,6 +95,8 @@ BackgroundPlan build_background_plan(const EnvironmentState& environment);
 BackgroundUniforms build_background_uniforms(
     const EnvironmentState& environment,
     const CameraRecord& camera);
+SkyboxPlan build_skybox_plan(const EnvironmentState& environment);
+SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment);
 
 } // namespace bbl::upstream
 `,
@@ -331,6 +345,57 @@ BackgroundUniforms build_background_uniforms(
     return result;
 }
 
+SkyboxPlan build_skybox_plan(const EnvironmentState& environment) {
+    const float half = environment.skybox_size * 0.5f;
+    const Vec3 center = environment.ground_position;
+    const auto vertex = [center](float x, float y, float z) {
+        return ModelVertex{
+            Vec3{center.x + x, center.y + y, center.z + z},
+            Vec3{0.0f, 1.0f, 0.0f},
+            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
+            Vec2{},
+        };
+    };
+    SkyboxPlan result;
+    result.vertices = {
+        vertex(-half, -half, -half),
+        vertex(half, -half, -half),
+        vertex(-half, half, -half),
+        vertex(half, half, -half),
+        vertex(-half, -half, half),
+        vertex(half, -half, half),
+        vertex(-half, half, half),
+        vertex(half, half, half),
+    };
+    result.indices = {
+        6, 4, 5, 7, 6, 5,
+        0, 2, 3, 1, 0, 3,
+        5, 1, 3, 7, 5, 3,
+        0, 4, 6, 2, 0, 6,
+        3, 2, 6, 7, 3, 6,
+        0, 1, 5, 4, 0, 5,
+    };
+    return result;
+}
+
+SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
+    SkyboxUniforms result;
+    result.primary_color_exposure = {
+        environment.primary_color.r,
+        environment.primary_color.g,
+        environment.primary_color.b,
+        environment.exposure,
+    };
+    result.background_center = {
+        environment.ground_position.x,
+        environment.ground_position.y,
+        environment.ground_position.z,
+        0.0f,
+    };
+    result.image_parameters = {environment.contrast, 0.0f, 0.0f, 0.0f};
+    return result;
+}
+
 } // namespace bbl::upstream
 `,
         };
@@ -341,6 +406,7 @@ BackgroundUniforms build_background_uniforms(
         const ibl = this.context.store.getSource(iblFragmentModule);
         const sceneUniforms = this.context.store.getSource(sceneUniformsModule);
         const backgroundGround = this.context.store.getSource(backgroundGroundModule);
+        const backgroundDds = this.context.store.getSource(backgroundDdsModule);
         const requiredUpstreamFormulas = [
             [pbr, "roughness*roughness+0.0005", "GGX roughness"],
             [pbr, "0.5/(gl+gv)", "Smith geometry"],
@@ -349,6 +415,8 @@ BackgroundUniforms build_background_uniforms(
             [sceneUniforms, "lodGenerationScale ?? 0.8", "environment LOD scale"],
             [backgroundGround, "tonemappingCalibration: f32 = 1.590579", "background image processing"],
             [backgroundGround, "ground renders last", "background ordering"],
+            [backgroundDds, "GPUTextureFormat = \"rgba16float\"", "DDS cubemap format"],
+            [backgroundDds, "pass.drawIndexed(36)", "DDS skybox draw"],
         ] as const;
         for (const [source, formula, label] of requiredUpstreamFormulas) {
             if (!source.includes(formula)) {
@@ -363,6 +431,8 @@ BackgroundUniforms build_background_uniforms(
             "boombox.frag.msl",
             "background-ground.frag.hlsl",
             "background-ground.frag.msl",
+            "background-skybox.frag.hlsl",
+            "background-skybox.frag.msl",
         ];
         const binaries = [
             "boombox.vert.dxil",

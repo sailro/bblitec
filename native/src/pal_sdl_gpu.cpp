@@ -57,12 +57,20 @@ struct GpuBackground {
     bool enabled = false;
 };
 
+struct GpuSkybox {
+    SDL_GPUBuffer* vertices = nullptr;
+    SDL_GPUBuffer* indices = nullptr;
+    SDL_GPUTexture* texture = nullptr;
+    bool enabled = false;
+};
+
 struct GpuState {
     SDL_Window* window = nullptr;
     SDL_GPUDevice* device = nullptr;
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
     SDL_GPUGraphicsPipeline* transparent_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* background_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* skybox_pipeline = nullptr;
     SDL_GPUSampler* sampler = nullptr;
     SDL_GPUSampler* background_sampler = nullptr;
     SDL_GPUTexture* environment = nullptr;
@@ -75,6 +83,7 @@ struct GpuState {
     std::uint32_t depth_height = 0;
     std::vector<GpuMesh> meshes;
     GpuBackground background;
+    GpuSkybox skybox;
 };
 
 struct CameraPointerState {
@@ -457,6 +466,65 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
     return texture;
 }
 
+SDL_GPUTexture* upload_dds_skybox(SDL_GPUDevice* device, const EnvironmentState& environment) {
+    const TextureData& data = environment.skybox_texture;
+    if (
+        !environment.has_skybox ||
+        environment.skybox_width == 0 ||
+        environment.skybox_mip_count == 0 ||
+        environment.skybox_data_offset >= data.bytes.size()) {
+        throw std::runtime_error("DDS skybox metadata is incomplete.");
+    }
+    SDL_GPUTextureCreateInfo texture_info{};
+    texture_info.type = SDL_GPU_TEXTURETYPE_CUBE;
+    texture_info.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+    texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    texture_info.width = environment.skybox_width;
+    texture_info.height = environment.skybox_width;
+    texture_info.layer_count_or_depth = 6;
+    texture_info.num_levels = environment.skybox_mip_count;
+    texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
+    if (!texture) gpu_error("SDL_CreateGPUTexture DDS skybox");
+
+    SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(device);
+    if (!command) gpu_error("SDL_AcquireGPUCommandBuffer DDS skybox");
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
+    std::vector<SDL_GPUTransferBuffer*> transfers;
+    transfers.reserve(static_cast<std::size_t>(environment.skybox_mip_count) * 6);
+    std::size_t offset = environment.skybox_data_offset;
+    for (std::uint32_t face = 0; face < 6; ++face) {
+        for (std::uint32_t mip = 0; mip < environment.skybox_mip_count; ++mip) {
+            const std::uint32_t size = std::max(environment.skybox_width >> mip, 1u);
+            const std::size_t byte_size = static_cast<std::size_t>(size) * size * 8;
+            if (offset + byte_size > data.bytes.size()) {
+                throw std::runtime_error("DDS skybox pixel data is truncated.");
+            }
+            SDL_GPUTransferBufferCreateInfo transfer_info{};
+            transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+            transfer_info.size = static_cast<Uint32>(byte_size);
+            SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(device, &transfer_info);
+            if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer DDS skybox");
+            void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
+            if (!mapped) gpu_error("SDL_MapGPUTransferBuffer DDS skybox");
+            std::memcpy(mapped, data.bytes.data() + offset, byte_size);
+            SDL_UnmapGPUTransferBuffer(device, transfer);
+            transfers.push_back(transfer);
+            const SDL_GPUTextureTransferInfo source{transfer, 0, size, size};
+            const SDL_GPUTextureRegion destination{
+                texture, mip, face, 0, 0, 0, size, size, 1};
+            SDL_UploadToGPUTexture(copy, &source, &destination, false);
+            offset += byte_size;
+        }
+    }
+    SDL_EndGPUCopyPass(copy);
+    if (!SDL_SubmitGPUCommandBuffer(command)) gpu_error("SDL_SubmitGPUCommandBuffer DDS skybox");
+    for (SDL_GPUTransferBuffer* transfer : transfers) {
+        SDL_ReleaseGPUTransferBuffer(device, transfer);
+    }
+    return texture;
+}
+
 void create_depth(GpuState& state, std::uint32_t width, std::uint32_t height) {
     if (state.depth && state.depth_width == width && state.depth_height == height) return;
     if (state.depth) SDL_ReleaseGPUTexture(state.device, state.depth);
@@ -509,6 +577,9 @@ void release(GpuState& state) {
     if (state.background.vertices) SDL_ReleaseGPUBuffer(state.device, state.background.vertices);
     if (state.background.indices) SDL_ReleaseGPUBuffer(state.device, state.background.indices);
     if (state.background.texture) SDL_ReleaseGPUTexture(state.device, state.background.texture);
+    if (state.skybox.vertices) SDL_ReleaseGPUBuffer(state.device, state.skybox.vertices);
+    if (state.skybox.indices) SDL_ReleaseGPUBuffer(state.device, state.skybox.indices);
+    if (state.skybox.texture) SDL_ReleaseGPUTexture(state.device, state.skybox.texture);
     if (state.environment) SDL_ReleaseGPUTexture(state.device, state.environment);
     if (state.brdf_lut) SDL_ReleaseGPUTexture(state.device, state.brdf_lut);
     if (state.color) SDL_ReleaseGPUTexture(state.device, state.color);
@@ -516,6 +587,7 @@ void release(GpuState& state) {
     if (state.background_sampler) SDL_ReleaseGPUSampler(state.device, state.background_sampler);
     if (state.sampler) SDL_ReleaseGPUSampler(state.device, state.sampler);
     if (state.background_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.background_pipeline);
+    if (state.skybox_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.skybox_pipeline);
     if (state.transparent_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.transparent_pipeline);
     if (state.pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.pipeline);
     if (state.window && state.device) SDL_ReleaseWindowFromGPUDevice(state.device, state.window);
@@ -537,7 +609,13 @@ bool run_gpu_engine(Engine& engine) {
     Scene& scene = *engine.registered_scenes.front();
     const std::string background_flag = environment_variable("BBLITE_BACKGROUND");
     const bool use_background =
-        background_flag == "1" || background_flag == "true";
+        background_flag != "0" &&
+        background_flag != "false" &&
+        scene.environment.has_skybox;
+    const std::string ground_flag = environment_variable("BBLITE_GROUND");
+    const bool use_ground =
+        use_background &&
+        (ground_flag == "1" || ground_flag == "true");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) gpu_error("SDL_Init");
 
     GpuState state;
@@ -585,6 +663,14 @@ bool run_gpu_engine(Engine& engine) {
                   1,
                   1)
             : nullptr;
+        SDL_GPUShader* skybox_fragment_shader = use_background
+            ? load_shader(
+                  state.device,
+                  "background-skybox.frag",
+                  SDL_GPU_SHADERSTAGE_FRAGMENT,
+                  1,
+                  1)
+            : nullptr;
 
         SDL_GPUVertexBufferDescription vertex_buffer{};
         vertex_buffer.slot = 0;
@@ -627,8 +713,15 @@ bool run_gpu_engine(Engine& engine) {
         pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
         pipeline_info.depth_stencil_state.enable_depth_write = false;
         state.transparent_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
+        if (skybox_fragment_shader) {
+            pipeline_info.fragment_shader = skybox_fragment_shader;
+            color_target.blend_state.enable_blend = false;
+            pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+            state.skybox_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
+        }
         if (background_fragment_shader) {
             pipeline_info.fragment_shader = background_fragment_shader;
+            color_target.blend_state.enable_blend = true;
             color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
             pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
             state.background_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
@@ -638,9 +731,15 @@ bool run_gpu_engine(Engine& engine) {
         if (background_fragment_shader) {
             SDL_ReleaseGPUShader(state.device, background_fragment_shader);
         }
+        if (skybox_fragment_shader) {
+            SDL_ReleaseGPUShader(state.device, skybox_fragment_shader);
+        }
         if (!state.transparent_pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline transparent");
         if (background_fragment_shader && !state.background_pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline background");
+        }
+        if (skybox_fragment_shader && !state.skybox_pipeline) {
+            gpu_error("SDL_CreateGPUGraphicsPipeline skybox");
         }
 
         SDL_GPUSamplerCreateInfo sampler_info{};
@@ -659,7 +758,33 @@ bool run_gpu_engine(Engine& engine) {
         if (!state.background_sampler) gpu_error("SDL_CreateGPUSampler background");
         state.environment = upload_environment(state.device, scene.environment);
         state.brdf_lut = upload_rgbd_texture(state.device, scene.environment.brdf_lut);
-        if (scene.environment.has_ground && use_background) {
+        if (use_background) {
+            const upstream::SkyboxPlan skybox =
+                upstream::build_skybox_plan(scene.environment);
+            std::array<GpuVertex, 8> vertices{};
+            for (std::size_t index = 0; index < vertices.size(); ++index) {
+                const ModelVertex& vertex = skybox.vertices[index];
+                vertices[index] = GpuVertex{
+                    {vertex.position.x, vertex.position.y, vertex.position.z},
+                    {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+                    {vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w},
+                    {vertex.uv.x, vertex.uv.y},
+                };
+            }
+            state.skybox.vertices = upload_buffer(
+                state.device,
+                SDL_GPU_BUFFERUSAGE_VERTEX,
+                vertices.data(),
+                sizeof(vertices));
+            state.skybox.indices = upload_buffer(
+                state.device,
+                SDL_GPU_BUFFERUSAGE_INDEX,
+                skybox.indices.data(),
+                sizeof(skybox.indices));
+            state.skybox.texture = upload_dds_skybox(state.device, scene.environment);
+            state.skybox.enabled = true;
+        }
+        if (scene.environment.has_ground && use_ground) {
             const upstream::BackgroundPlan background =
                 upstream::build_background_plan(scene.environment);
             std::array<GpuVertex, 4> vertices{};
@@ -825,6 +950,25 @@ bool run_gpu_engine(Engine& engine) {
             depth_info.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
             SDL_GPURenderPass* pass =
                 SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info);
+            if (state.skybox.enabled) {
+                const upstream::SkyboxUniforms skybox =
+                    upstream::build_skybox_uniforms(scene.environment);
+                SDL_BindGPUGraphicsPipeline(pass, state.skybox_pipeline);
+                SDL_PushGPUFragmentUniformData(command, 0, &skybox, sizeof(skybox));
+                const SDL_GPUBufferBinding vertex_binding{state.skybox.vertices, 0};
+                const SDL_GPUBufferBinding index_binding{state.skybox.indices, 0};
+                const SDL_GPUTextureSamplerBinding texture_binding{
+                    state.skybox.texture,
+                    state.background_sampler,
+                };
+                SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+                SDL_BindGPUIndexBuffer(
+                    pass,
+                    &index_binding,
+                    SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
+                SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
+            }
             const auto draw_meshes = [&](
                                          SDL_GPUGraphicsPipeline* pipeline,
                                          float render_mode) {
