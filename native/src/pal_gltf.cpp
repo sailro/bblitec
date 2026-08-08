@@ -1,5 +1,6 @@
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
+#include <bblite/pal_gltf.hpp>
 #include <bblite/upstream/gltf_glb_parser.hpp>
 
 #define CGLTF_IMPLEMENTATION
@@ -113,12 +114,16 @@ const cgltf_accessor* required_accessor(const cgltf_primitive& primitive, cgltf_
 
 } // namespace
 
-AssetHandle load_glb(Engine& engine, const std::string& path) {
+ts::Promise<ts::ArrayBuffer> fetch_array_buffer(const std::string& path) {
+    return ts::Promise<ts::ArrayBuffer>(ts::ArrayBuffer(read_binary_file(path)));
+}
+
+AssetHandle load_glb(Engine& engine, const ts::ArrayBuffer& buffer, const std::string& path) {
     cgltf_options options{};
     cgltf_data* raw_data = nullptr;
-    const std::vector<std::uint8_t> source_bytes = pal::read_binary_file(path);
+    const std::vector<std::uint8_t>& source_bytes = buffer.bytes();
     const upstream::ParsedGlbContainer container =
-        upstream::parse_glb_container(source_bytes);
+        upstream::parse_glb_container(buffer);
     if (container.bin_length == 0) {
         throw std::runtime_error("GLB contains an empty BIN chunk.");
     }

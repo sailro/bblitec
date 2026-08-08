@@ -1,6 +1,9 @@
 // SDL implementation of the platform abstraction layer.
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
+#if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
+#include <bblite/pal_gltf.hpp>
+#endif
 #include <bblite/upstream/camera_controls.hpp>
 #include <bblite/upstream/camera_math.hpp>
 
@@ -25,6 +28,34 @@
 namespace bbl {
 
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL
+#if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
+pal::DecodedImage pal::decode_image(const ts::Blob& blob) {
+    const ts::ArrayBuffer& buffer = blob.array_buffer();
+    SDL_IOStream* stream = SDL_IOFromConstMem(buffer.data(), buffer.byte_length());
+    if (!stream) throw std::runtime_error(std::string("Unable to open image: ") + SDL_GetError());
+    SDL_Surface* source = IMG_Load_IO(stream, true);
+    if (!source) throw std::runtime_error(std::string("Unable to decode image: ") + SDL_GetError());
+    SDL_Surface* converted = SDL_ConvertSurface(source, SDL_PIXELFORMAT_RGBA32);
+    SDL_DestroySurface(source);
+    if (!converted) throw std::runtime_error(std::string("Unable to convert image: ") + SDL_GetError());
+
+    pal::DecodedImage result;
+    result.width = converted->w;
+    result.height = converted->h;
+    result.rgba.resize(static_cast<std::size_t>(result.width) * result.height * 4);
+    for (int y = 0; y < result.height; ++y) {
+        const auto* source_row = static_cast<const std::uint8_t*>(converted->pixels) + y * converted->pitch;
+        std::copy_n(
+            source_row,
+            static_cast<std::size_t>(result.width) * 4,
+            result.rgba.data() + static_cast<std::size_t>(y) * result.width * 4);
+    }
+    SDL_DestroySurface(converted);
+    return result;
+}
+#else
+#endif
+
 namespace {
 
 struct Point2 {
@@ -247,20 +278,18 @@ SDL_Surface* load_surface(const TextureData& data) {
     if (data.bytes.empty()) {
         return nullptr;
     }
-    SDL_IOStream* stream = SDL_IOFromConstMem(data.bytes.data(), data.bytes.size());
-    if (!stream) {
-        throw std::runtime_error(std::string("Unable to open embedded texture: ") + SDL_GetError());
+    pal::DecodedImage image = pal::decode_image(
+        ts::Blob(ts::ArrayBuffer(data.bytes), data.mime_type));
+    SDL_Surface* surface = SDL_CreateSurface(image.width, image.height, SDL_PIXELFORMAT_RGBA32);
+    if (!surface) throw std::runtime_error(std::string("Unable to create image surface: ") + SDL_GetError());
+    for (int y = 0; y < image.height; ++y) {
+        auto* destination = static_cast<std::uint8_t*>(surface->pixels) + y * surface->pitch;
+        std::copy_n(
+            image.rgba.data() + static_cast<std::size_t>(y) * image.width * 4,
+            static_cast<std::size_t>(image.width) * 4,
+            destination);
     }
-    SDL_Surface* surface = IMG_Load_IO(stream, true);
-    if (!surface) {
-        throw std::runtime_error(std::string("Unable to decode embedded texture: ") + SDL_GetError());
-    }
-    SDL_Surface* converted = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA32);
-    SDL_DestroySurface(surface);
-    if (!converted) {
-        throw std::runtime_error(std::string("Unable to convert embedded texture: ") + SDL_GetError());
-    }
-    return converted;
+    return surface;
 }
 
 SDL_Texture* create_texture(SDL_Renderer* renderer, SDL_Surface* surface, SDL_BlendMode blend_mode) {

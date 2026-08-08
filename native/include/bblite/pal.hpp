@@ -5,7 +5,6 @@
 #include <vector>
 
 namespace bbl {
-struct AssetHandle;
 struct Engine;
 struct EngineOptions;
 }
@@ -13,7 +12,6 @@ struct EngineOptions;
 namespace bbl::pal {
 
 Engine create_engine(EngineOptions options);
-AssetHandle load_glb(Engine& engine, const std::string& path);
 void run_engine(Engine& engine);
 std::vector<std::uint8_t> read_binary_file(const std::string& path);
 std::string join_path(const std::string& root, const std::string& relative_path);

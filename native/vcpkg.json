@@ -4,6 +4,7 @@
   "builtin-baseline": "ea1a7396b05637a53bf23c078647ecc0edee4b80",
   "dependencies": [
     "cgltf",
+    "nlohmann-json",
     {
       "name": "sdl3-image",
       "features": [

@@ -107,4 +107,6 @@ test("builds a conservative reachable module graph", () => {
     assert.ok(graph.summary.moduleCount > 5);
     assert.ok(graph.modules.some((module) => module.path === "src/light/light-matrix.ts"));
     assert.ok(graph.summary.diagnostics.closures > 0);
+    assert.equal(graph.capabilities.explicitAnyAllowed, false);
+    assert.equal(graph.capabilities.asyncAwait, "synchronous-aot");
 });

@@ -89,6 +89,19 @@ The PAL currently owns native file reads, path joining, environment variables, m
 
 The lowering code is split into dedicated engine, scene, light, camera, environment, and glTF lowerer classes with a shared `LoweringContext`; adding language coverage no longer requires extending one monolithic transpiler file.
 
+### TypeScript runtime coverage
+
+The native runtime now provides explicitly typed implementations for:
+
+- `ArrayBuffer`, typed arrays, and `DataView`
+- `Blob` and UTF-8 `TextDecoder`
+- `Promise<T>` plus synchronous AOT `await` specialization
+- `JSON.parse` into a typed `JsonValue` variant (`null`, boolean, number, string, array, or object)
+- PAL-backed asset fetch and image decoding
+- compile-time specialization of glTF dynamic feature imports from typed GLB metadata
+
+Explicit TypeScript `any` is forbidden by an AST-level test. Dynamic JSON must be narrowed through typed records or `JsonValue` accessors. The current promise implementation is deliberately immediate: remote assets are materialized during transpilation, so the generated BoomBox loader performs deterministic local PAL reads rather than retaining a native asynchronous scheduler.
+
 ## Prerequisites
 
 - Node.js 22 or newer

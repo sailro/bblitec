@@ -38,6 +38,19 @@ export interface UpstreamGraph {
     }>;
     modules: ModuleGraphEntry[];
     externals: string[];
+    capabilities: {
+        asyncAwait: "synchronous-aot";
+        arrayBuffer: true;
+        typedArrays: true;
+        dataView: true;
+        blob: true;
+        typedJson: true;
+        literalDynamicImports: true;
+        palFetch: true;
+        palImageDecode: true;
+        palGpuUpload: true;
+        explicitAnyAllowed: false;
+    };
     summary: {
         moduleCount: number;
         sourceBytes: number;
@@ -206,6 +219,19 @@ export function analyzeUpstreamGraph(store: UpstreamSourceStore, publicExports: 
         roots,
         modules,
         externals: [...externals].sort(),
+        capabilities: {
+            asyncAwait: "synchronous-aot",
+            arrayBuffer: true,
+            typedArrays: true,
+            dataView: true,
+            blob: true,
+            typedJson: true,
+            literalDynamicImports: true,
+            palFetch: true,
+            palImageDecode: true,
+            palGpuUpload: true,
+            explicitAnyAllowed: false,
+        },
         summary: {
             moduleCount: modules.length,
             sourceBytes: modules.reduce((sum, module) => sum + module.bytes, 0),
