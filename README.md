@@ -20,6 +20,7 @@ Detailed documentation:
 - [Architecture and generated/PAL boundary](docs/architecture.md)
 - [Build, test, parity, and troubleshooting guide](docs/development.md)
 - [Supported subset, metrics, and roadmap](docs/status.md)
+- [Prioritized implementation backlog](TODO.md)
 
 ## Pipeline
 
