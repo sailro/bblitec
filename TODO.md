@@ -299,4 +299,3 @@ Each extension must:
 - [ ] Keep generated provenance examples current with the pinned package.
 - [ ] Remove completed items from this file and summarize them in status/Git
   history rather than leaving an ever-growing checked list.
-
