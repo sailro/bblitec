@@ -6,7 +6,7 @@
 
 This repository contains a working, deliberately narrow Babylon Lite native compiler prototype. It accepts scene-building TypeScript written against `@babylonjs/lite`, removes browser-only setup, lowers supported API calls to typed C++, and emits a native source manifest containing only the runtime features reached by the program.
 
-The prototype now supports two official-style targets: the primitives scene and the BoomBox glTF demo. `examples\boombox.ts` tracks the authoritative parity source at `BabylonJS/Babylon-Lite/lab/lite/src/lite/scene1.ts`; browser-only timing/dataset instrumentation is erased by the compiler. The BoomBox path downloads the source GLB during transpilation, loads its native mesh/material data with `cgltf`, decodes its four embedded PNG textures, and renders it through SDL.
+The prototype now supports two official-style targets: the primitives scene and the BoomBox glTF demo. `examples\boombox.ts` tracks the authoritative parity source at `BabylonJS/Babylon-Lite/lab/lite/src/lite/scene1.ts`; browser-only timing/dataset instrumentation is erased by the compiler. The BoomBox path downloads the source GLB during transpilation, uses generated typed C++ to decode its schema, accessors, hierarchy, materials, and embedded PNGs, then renders it through SDL.
 
 **Status:** research prototype. The accepted TypeScript and Babylon Lite API surface is intentionally constrained and validated at transpile time.
 
@@ -83,9 +83,9 @@ The current vertical migration generates these implementations from pinned upstr
 - box/ground mesh factory defaults from `mesh/create-box.ts`, `mesh/create-ground.ts`, and `mesh/mesh-factories.ts`
 - `createStandardMaterial` defaults from `material/standard/create-standard-material.ts`
 
-Their generated sources and provenance are emitted under `generated\<scene>\upstream`. The previous hand-written light, camera, mesh-factory, standard-material, core, and environment C++ files have been removed. The public glTF loader API is generated; cgltf is currently isolated behind `pal_gltf.cpp` as a temporary native acceleration service.
+Their generated sources and provenance are emitted under `generated\<scene>\upstream`. The previous hand-written light, camera, mesh-factory, standard-material, core, environment, and glTF loader C++ files have been removed.
 
-The PAL currently owns native file reads, path joining, environment variables, monotonic timing, cgltf adaptation, and the SDL window/input/render implementation. Every handwritten `.cpp` under `native\src` is now explicitly a PAL file. `pal_sdl.cpp` still contains transitional scene traversal and PBR calculations; those are the next major block to move into generated Babylon render/frame-graph code.
+The PAL currently owns native file reads, path joining, environment variables, monotonic timing, image decoding, and the SDL window/input/render implementation. `pal_sdl.cpp` still contains transitional scene traversal and PBR calculations; those are the next major block to move into generated Babylon render/frame-graph code.
 
 The lowering code is split into dedicated engine, scene, light, camera, environment, and glTF lowerer classes with a shared `LoweringContext`; adding language coverage no longer requires extending one monolithic transpiler file.
 
@@ -107,7 +107,7 @@ Explicit TypeScript `any` is forbidden by an AST-level test. Dynamic JSON must b
 - Node.js 22 or newer
 - A C++20 compiler
 - CMake 3.24 or newer
-- [vcpkg](https://github.com/microsoft/vcpkg) for SDL3, SDL3_image, and cgltf
+- [vcpkg](https://github.com/microsoft/vcpkg) for SDL3, SDL3_image, and nlohmann-json
 
 The commands below use PowerShell and have been exercised with MSVC on Windows.
 
@@ -152,7 +152,7 @@ $env:BBLITE_BENCHMARK_FRAMES = "2000"
 .\native\build\bblite_native.exe
 ```
 
-Configuring without SDL keeps the headless backend available. The glTF loader itself only requires `cgltf`; SDL_image is linked only by rendered glTF builds.
+Configuring without SDL keeps the headless backend available. The generated glTF loader uses the typed JSON runtime; SDL_image is linked only by rendered glTF builds.
 
 Remote scene assets referenced by supported intrinsics are downloaded during transpilation into the ignored `generated` directory. They are not committed to this repository.
 
@@ -223,4 +223,4 @@ Boehm GC remains a reasonable optional compatibility layer once the compiler sup
 
 ## Acknowledgements
 
-This prototype is not affiliated with or endorsed by the Babylon.js project. Babylon.js and Babylon Lite are Apache-2.0 projects maintained by their respective contributors. SDL, SDL_image, cgltf, and downloaded demo assets remain subject to their respective licenses.
+This prototype is not affiliated with or endorsed by the Babylon.js project. Babylon.js and Babylon Lite are Apache-2.0 projects maintained by their respective contributors. SDL, SDL_image, nlohmann-json, and downloaded demo assets remain subject to their respective licenses.

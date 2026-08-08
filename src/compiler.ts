@@ -54,7 +54,7 @@ const featureSources: Record<Feature, string[]> = {
     "camera:default": [],
     "environment:ibl": [],
     "light:hemispheric": [],
-    "loader:gltf": ["src/pal_gltf.cpp"],
+    "loader:gltf": [],
     "material:standard": [],
     "mesh:box": [],
     "mesh:ground": [],

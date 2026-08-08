@@ -50,7 +50,9 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(lowered.source, /0x46546c67/);
     assert.match(lowered.source, /0x4e4f534a/);
     assert.match(lowered.source, /0x4e4942/);
-    assert.match(adapter.source, /return pal::load_glb/);
+    assert.match(adapter.source, /ts::await\(pal::fetch_array_buffer/);
+    assert.match(adapter.source, /read_component/);
+    assert.doesNotMatch(adapter.source, /pal::load_glb/);
 });
 
 test("generates engine API wrappers over the PAL", () => {

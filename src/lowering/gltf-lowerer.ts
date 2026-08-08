@@ -1,4 +1,5 @@
 import { LoweredSource, LoweringContext } from "./context.js";
+import { gltfLoaderCpp } from "./templates/gltf-loader-cpp.js";
 
 export class GltfLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -108,20 +109,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
             modulePath,
             symbolName,
             header: "",
-            source: `// ${this.context.provenance(modulePath, symbolName)}
-#include <bblite/pal_gltf.hpp>
-#include <bblite/runtime.hpp>
-#include <bblite/ts_runtime.hpp>
-
-namespace bbl {
-
-AssetHandle load_gltf(Engine& engine, const std::string& path) {
-    ts::ArrayBuffer buffer = ts::await(pal::fetch_array_buffer(path));
-    return pal::load_glb(engine, buffer, path);
-}
-
-} // namespace bbl
-`,
+            source: gltfLoaderCpp(this.context.provenance(modulePath, symbolName)),
         };
     }
 }
