@@ -9,8 +9,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -20,8 +20,8 @@ jobs:
   boombox-parity:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -31,6 +31,7 @@ jobs:
         shell: pwsh
         run: |
           $vcpkgRoot = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
+          git -C $vcpkgRoot fetch origin ea1a7396b05637a53bf23c078647ecc0edee4b80 --depth=1
           cmake -S native -B native\build-boombox-release -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$vcpkgRoot\scripts\buildsystems\vcpkg.cmake" `
             -DBBLITE_GENERATED_DIR="$PWD\generated\boombox"
