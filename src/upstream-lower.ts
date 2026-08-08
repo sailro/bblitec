@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { CameraLowerer } from "./lowering/camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
+import { EngineLowerer } from "./lowering/engine-lowerer.js";
 import { LightLowerer } from "./lowering/light-lowerer.js";
 import { SceneLowerer } from "./lowering/scene-lowerer.js";
 import { GltfLowerer } from "./lowering/gltf-lowerer.js";
@@ -40,6 +41,11 @@ class GeneratedSourceWriter {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
 
+        this.writeSource(
+            "upstream/src/engine.cpp",
+            new EngineLowerer(context).lowerCore(),
+            generated,
+        );
         this.writeSource(
             "upstream/src/scene_core.cpp",
             new SceneLowerer(context).lowerCore(),

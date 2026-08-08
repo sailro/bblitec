@@ -1080,7 +1080,7 @@ void print_benchmark(const char* renderer_name, std::vector<double> samples) {
 } // namespace
 #endif
 
-void start_engine(Engine& engine) {
+void pal::run_engine(Engine& engine) {
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("startEngine requires a registered scene.");
     }

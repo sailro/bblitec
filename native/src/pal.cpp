@@ -1,4 +1,5 @@
 #include <bblite/pal.hpp>
+#include <bblite/runtime.hpp>
 
 #include <chrono>
 #include <cstdlib>
@@ -6,8 +7,15 @@
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
+#include <utility>
 
 namespace bbl::pal {
+
+Engine create_engine(EngineOptions options) {
+    Engine engine;
+    engine.options = std::move(options);
+    return engine;
+}
 
 std::vector<std::uint8_t> read_binary_file(const std::string& path) {
     std::ifstream stream(path, std::ios::binary);

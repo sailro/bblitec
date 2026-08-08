@@ -27,12 +27,6 @@ void require_scene_engine(const Scene& scene) {
 
 } // namespace
 
-Engine create_engine(EngineOptions options) {
-    Engine engine;
-    engine.options = std::move(options);
-    return engine;
-}
-
 std::string asset_path(const std::string& relative_path) {
     return pal::join_path(BBLITE_ASSET_DIR, relative_path);
 }

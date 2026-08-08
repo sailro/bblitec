@@ -71,6 +71,7 @@ The current graph contains 218 runtime modules and approximately 1.35 MiB of Typ
 
 The current vertical migration generates these implementations from pinned upstream TypeScript:
 
+- `createEngine` and `startEngine` API wrappers from `engine/engine.ts`, delegating host creation and the run loop to PAL
 - `createHemisphericLight` from `light/hemispheric.ts`
 - `localMatrixFromDirection` from `light/light-matrix.ts`
 - `createArcRotateCamera` from `camera/arc-rotate.ts`
@@ -84,7 +85,7 @@ Their generated sources and provenance are emitted under `generated\<scene>\upst
 
 The PAL currently owns native file reads, path joining, environment variables, and monotonic timing. SDL remains the window/input/render implementation. Engine, loader, scene, material, and render modules will move from hand-written native implementations to upstream-generated C++ incrementally, starting from the BoomBox reachable graph.
 
-The lowering code is split into dedicated `LightLowerer`, `CameraLowerer`, and `EnvironmentLowerer` classes with a shared `LoweringContext`; adding language coverage no longer requires extending one monolithic transpiler file.
+The lowering code is split into dedicated engine, scene, light, camera, environment, and glTF lowerer classes with a shared `LoweringContext`; adding language coverage no longer requires extending one monolithic transpiler file.
 
 ## Prerequisites
 
