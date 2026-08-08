@@ -10,9 +10,16 @@ The prototype now supports two official-style targets: the primitives scene and 
 
 **Status:** research prototype. The accepted TypeScript and Babylon Lite API surface is intentionally constrained and validated at transpile time.
 
-![Native BoomBox scene rendered by bblitec](docs/images/boombox-native.png)
+![Babylon Lite, Babylon.js, and generated SDL_GPU BoomBox comparison](docs/images/boombox-comparison.png)
 
-_The Babylon Lite BoomBox parity scene transpiled to C++ and rendered through the native SDL3 runtime._
+_The original comparison is preserved and the current generated SDL_GPU output
+is appended with its measured size, speed, and parity._
+
+Detailed documentation:
+
+- [Architecture and generated/PAL boundary](docs/architecture.md)
+- [Build, test, parity, and troubleshooting guide](docs/development.md)
+- [Supported subset, metrics, and roadmap](docs/status.md)
 
 ## Pipeline
 
@@ -67,7 +74,11 @@ Generate the conservative BoomBox module graph:
 npm run analyze:boombox
 ```
 
-The current graph contains 218 runtime modules and approximately 1.35 MiB of TypeScript. Its main unsupported pressures are async/await, closures, dynamic imports, and Web platform references such as `fetch`, `navigator`, and `requestAnimationFrame`.
+The current graph contains 218 runtime modules and approximately 1.35 MiB of
+TypeScript. It records async functions, closures, dynamic imports, and Web
+platform references. The supported vertical slice specializes asset fetches,
+dynamic glTF feature imports, and immediate AOT promises; arbitrary closures,
+runtime module loading, and general browser APIs remain future work.
 
 The current vertical migration generates these implementations from pinned upstream TypeScript:
 
@@ -80,8 +91,17 @@ The current vertical migration generates these implementations from pinned upstr
 - Babylon `.env` magic, manifest layout, face slicing, and spherical-harmonic conversion from `loader-env/env-parse.ts` and `loader-env/load-env.ts`
 - `createSceneContext`, mesh/light/asset routing in `addToScene`, and idempotent `registerScene` semantics from `scene/scene-core.ts`
 - GLB magic/chunk validation and framing from `loader-gltf/gltf-glb-parser.ts`
+- the full typed glTF vertical slice from `loader-gltf/load-gltf.ts`, including
+  accessors, geometry, hierarchy, embedded images, metallic-roughness
+  materials, alpha modes, and double-sided state
 - box/ground mesh factory defaults from `mesh/create-box.ts`, `mesh/create-ground.ts`, and `mesh/mesh-factories.ts`
 - `createStandardMaterial` defaults from `material/standard/create-standard-material.ts`
+- render-item planning, camera matrices, and PBR uniforms from
+  `frame-graph/render-task.ts` and scene uniform sources
+- GGX/Smith lighting, specular AA, SH irradiance, BRDF energy conservation,
+  tone mapping, and contrast from the PBR/IBL shader modules
+- transparent background-ground and RGBA16F DDS skybox passes from Babylon
+  Lite's background renderable modules
 
 Their generated sources and provenance are emitted under `generated\<scene>\upstream`. The previous hand-written light, camera, mesh-factory, standard-material, core, environment, and glTF loader C++ files have been removed.
 
@@ -135,7 +155,12 @@ cmake -S native -B native\build `
 cmake --build native\build
 ```
 
-When CMake finds SDL3, the executable opens an SDL window. Primitive meshes render as wireframes; glTF meshes render as textured triangles with back-face culling, painter-depth ordering, normal/metallic-roughness-assisted vertex lighting, and an emissive pass. Babylon-style ArcRotate controls are available: left-drag orbits, right/middle-drag pans, and the mouse wheel zooms. Arrow keys and `W`/`S` remain keyboard fallbacks.
+When CMake finds SDL3, the executable opens an SDL window. Primitive meshes
+render through the fallback path. Generated glTF scenes use SDL_GPU static
+vertex/index buffers, a depth target, metadata-driven material buckets, and
+generated per-pixel PBR/IBL shaders. Babylon-style ArcRotate controls are
+available: left-drag orbits, right/middle-drag pans, and the mouse wheel zooms.
+Arrow keys and `W`/`S` remain keyboard fallbacks.
 
 Set `BBLITE_MAX_FRAMES` to a positive number for automated runs. Set `BBLITE_SCREENSHOT` to a PNG path to capture a deterministic frame:
 
@@ -221,9 +246,15 @@ npm run parity:boombox
 
 The native actual, diff map, and JSON report are written to ignored `artifacts\parity`. The committed golden and its capture metadata live in `reference\boombox`.
 
-Current native regression ceilings are `4.6` full-image MAD and `21.5` foreground-region MAD. They are intentionally separate from Babylon Lite's upstream scene-1 targets (`0.19` and `0.03`, with 99% of foreground pixels within one byte): those remain the long-term parity goal. The current diff map identifies the missing environment ground/background and per-pixel GPU PBR as the dominant gaps.
+The CPU regression ceilings are `4.6` full-image MAD and `21.5`
+foreground-region MAD. The generated GPU ceilings are `1.0` and `8.0`.
+They remain intentionally separate from Babylon Lite's upstream scene-1
+targets (`0.19` and `0.03`, with 99% of foreground pixels within one byte).
 
-The `boombox-parity` GitHub Actions job runs this gate on Windows and uploads the native actual, diff map, and JSON report on every push and pull request.
+The `boombox-parity` GitHub Actions job runs the deterministic CPU gate on
+Windows and uploads the native actual, diff map, and JSON report. GPU parity
+is a local/device gate because hosted runner GPU/backend availability is not a
+stable visual baseline.
 
 ## Supported Babylon Lite subset
 
@@ -234,13 +265,18 @@ The `boombox-parity` GitHub Actions job runs this gate on Windows and uploads th
 | Cameras | `createArcRotateCamera`, `createDefaultCamera`, `attachControl`, `alpha`, `beta`, `radius` |
 | Lighting | `createHemisphericLight` |
 | Geometry | `createBox`, `createGround`, `loadGltf` for triangle GLB files with embedded images |
-| Environment | `loadEnvironment` with Babylon `.env` irradiance, RGBD specular cubemap mips, and the official BRDF LUT |
-| Materials | `createStandardMaterial`, `diffuseColor`, mesh material assignment, glTF metallic-roughness materials |
+| Environment | `loadEnvironment` with Babylon `.env` irradiance, RGBD specular cubemap mips, BRDF LUT, DDS skybox, and generated ground |
+| Materials | `createStandardMaterial`, `diffuseColor`, glTF metallic-roughness, normal, ORM, emissive, alpha modes, and double-sided state |
 | Transforms | `position.set`, `rotation.set`, `scaling.set`, `rotation.x/y/z` |
 | Expressions | Numeric literals, variables, `Math.PI`, unary `+/-`, and `+ - * /` |
 | Browser erasure | `document.getElementById(...)`, `document.querySelector(...)`, `HTMLCanvasElement`, `async`, `await`, and the outer `main().catch(...)` |
 
-Current boundaries are intentional: one entry file, one engine, static scene construction, embedded-image triangle glTF/GLB only, and no arbitrary object allocation, callbacks, animation, skinning, morphing, physics, custom shaders, networking, or audio graph yet. The native path consumes the same `.env` irradiance, RGBD cubemap mips, and BRDF LUT as Babylon Lite, but evaluates them per vertex through SDL's geometry renderer rather than per pixel in a WebGPU PBR shader. It also painter-sorts triangles instead of using a GPU depth buffer, so the BoomBox is substantially closer but not pixel-identical. The source GLB has no alpha or transmission metadata; the native demo infers its smoked-glass lid from dark, smooth, upward-facing material data to preserve the intended transparent appearance.
+Current boundaries are intentional: one entry file, one engine, static scene
+construction, embedded-image triangle glTF/GLB only, and no arbitrary object
+allocation, animation, skinning, morphing, physics, custom user shaders,
+networking, or audio graph yet. The GPU path uses a depth buffer and generated
+per-pixel PBR/IBL shaders. Material behavior is driven by glTF metadata; there
+are no BoomBox geometry or reference-image heuristics.
 
 ## Tree shaking and data layout
 
@@ -256,11 +292,14 @@ Boehm GC remains a reasonable optional compatibility layer once the compiler sup
 
 ## Next architectural milestones
 
-1. Replace painter-depth SDL geometry with an SDL3 GPU depth buffer and per-pixel metallic-roughness/IBL shaders.
-2. Add multi-file module resolution and lower simple user functions, loops, and render callbacks.
-3. Compile glTF assets into a native packed scene format and emit loader-free scene blobs.
-4. Split the current array-of-records storage into hot/cold structure-of-arrays components and add generation-checked handles.
-5. Add optional Boehm-backed managed allocations only for JavaScript semantics that cannot be represented with arenas or ownership.
+1. Replace specialized shader templates with a general composed-WGSL/IR
+   lowering pipeline.
+2. Validate Vulkan/SPIR-V and Metal/MSL on real devices.
+3. Add a second unrelated glTF scene as a generalization gate.
+4. Expand TypeScript and glTF coverage: modules, functions, loops, callbacks,
+   animation, skinning, morphing, and extensions.
+5. Compile assets into a native packed format and add optional managed
+   allocation only for JavaScript semantics that require it.
 
 ## Acknowledgements
 
