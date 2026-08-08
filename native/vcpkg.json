@@ -1,0 +1,15 @@
+{
+  "name": "babylon-lite-native-prototype",
+  "version-string": "0.1.0",
+  "builtin-baseline": "ea1a7396b05637a53bf23c078647ecc0edee4b80",
+  "dependencies": [
+    "cgltf",
+    {
+      "name": "sdl3-image",
+      "features": [
+        "png"
+      ]
+    },
+    "sdl3"
+  ]
+}

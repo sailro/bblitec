@@ -1,0 +1,38 @@
+{
+  "name": "bblitec",
+  "version": "0.1.0",
+  "description": "Experimental Babylon Lite TypeScript-to-C++ transpiler and SDL3 native runtime.",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sailro/bblitec.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sailro/bblitec/issues"
+  },
+  "homepage": "https://github.com/sailro/bblitec#readme",
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "babylon-lite",
+    "cpp",
+    "sdl3",
+    "transpiler",
+    "typescript"
+  ],
+  "bin": {
+    "bblitec": "dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/compiler.test.js",
+    "compile:example": "npm run build && node dist/src/cli.js examples/primitives.ts --out generated/primitives",
+    "compile:boombox": "npm run build && node dist/src/cli.js examples/boombox.ts --out generated/boombox --title \"Babylon Lite Native - BoomBox\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.9.2"
+  }
+}

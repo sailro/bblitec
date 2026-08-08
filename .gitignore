@@ -1,0 +1,11 @@
+dist/
+generated/
+node_modules/
+native/build*/
+native/vcpkg_installed/
+
+.idea/
+.vscode/
+*.suo
+*.user
+CMakeUserPresets.json
