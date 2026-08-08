@@ -152,6 +152,37 @@ $env:BBLITE_BENCHMARK_FRAMES = "2000"
 .\native\build\bblite_native.exe
 ```
 
+### SDL_GPU fast path
+
+Set `BBLITE_GPU=1` to use the experimental static-buffer, depth-tested SDL_GPU renderer:
+
+```powershell
+$env:BBLITE_GPU = "1"
+.\native\build\bblite_native.exe
+```
+
+The PAL selects shaders for the active SDL_GPU backend:
+
+| Platform | SDL_GPU backend | Shader artifact |
+| --- | --- | --- |
+| Windows | Direct3D 12 | DXIL |
+| Linux / Android | Vulkan | SPIR-V |
+| macOS / iOS | Metal | MSL |
+
+Shader sources live in `native\shaders`. Rebuild DXIL and SPIR-V with:
+
+```powershell
+cd tools\shader-compiler
+$env:VCPKG_ROOT = "C:\path\to\vcpkg"
+& "$env:VCPKG_ROOT\vcpkg.exe" install
+cd ..\..
+npm run shaders:build
+```
+
+On the development machine, the optimized BoomBox CPU fallback measured **5.516 ms/frame** average CPU submission. The SDL_GPU Direct3D 12 path measured **0.117 ms average / 0.078 ms median**, approximately **47× faster** CPU-side.
+
+The GPU path is currently opt-in because its initial shader is a reduced textured/hemispheric implementation. The validated CPU fallback remains the visual-parity path while Babylon Lite's full generated PBR/IBL shader and frame-graph semantics are migrated to the GPU PAL.
+
 Configuring without SDL keeps the headless backend available. The generated glTF loader uses the typed JSON runtime; SDL_image is linked only by rendered glTF builds.
 
 Remote scene assets referenced by supported intrinsics are downloaded during transpilation into the ignored `generated` directory. They are not committed to this repository.

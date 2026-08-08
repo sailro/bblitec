@@ -2,6 +2,8 @@
 
 *.cmake text eol=lf
 *.cpp text eol=lf
+*.dxil binary
+*.spv binary
 *.h text eol=lf
 *.hpp text eol=lf
 *.json text eol=lf

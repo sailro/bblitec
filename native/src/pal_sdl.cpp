@@ -1,6 +1,7 @@
 // SDL implementation of the platform abstraction layer.
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
+#include <bblite/pal_gpu.hpp>
 #if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
 #include <bblite/pal_gltf.hpp>
 #endif
@@ -1101,6 +1102,9 @@ void print_benchmark(const char* renderer_name, std::vector<double> samples) {
 #endif
 
 void pal::run_engine(Engine& engine) {
+    if (pal::run_gpu_engine(engine)) {
+        return;
+    }
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("startEngine requires a registered scene.");
     }

@@ -1,0 +1,30 @@
+#include <metal_stdlib>
+using namespace metal;
+
+struct FragmentUniforms {
+    float4 lightDirection;
+    float4 baseColorFactor;
+    float4 emissiveFactor;
+};
+
+struct FragmentInput {
+    float4 position [[position]];
+    float3 normal;
+    float2 uv;
+};
+
+fragment float4 main0(
+    FragmentInput input [[stage_in]],
+    texture2d<float> baseColorTexture [[texture(0)]],
+    sampler baseColorSampler [[sampler(0)]],
+    texture2d<float> emissiveTexture [[texture(1)]],
+    sampler emissiveSampler [[sampler(1)]],
+    constant FragmentUniforms& uniforms [[buffer(0)]]) {
+    const float3 normal = normalize(input.normal);
+    const float hemisphere = saturate(dot(normal, normalize(uniforms.lightDirection.xyz)) * 0.5 + 0.5);
+    const float3 albedo =
+        baseColorTexture.sample(baseColorSampler, input.uv).rgb * uniforms.baseColorFactor.rgb;
+    const float3 emissive =
+        emissiveTexture.sample(emissiveSampler, input.uv).rgb * uniforms.emissiveFactor.rgb;
+    return float4(albedo * (0.25 + 0.75 * hemisphere) + emissive, uniforms.baseColorFactor.a);
+}

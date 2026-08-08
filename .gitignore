@@ -3,6 +3,7 @@ generated/
 node_modules/
 native/build*/
 native/vcpkg_installed/
+tools/shader-compiler/vcpkg_installed/
 artifacts/
 .cache/
 

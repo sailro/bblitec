@@ -32,7 +32,8 @@
     "compile:example": "npm run build && node dist/src/cli.js examples/primitives.ts --out generated/primitives",
     "compile:boombox": "npm run build && node dist/src/cli.js examples/boombox.ts --out generated/boombox --title \"Babylon Lite Native - BoomBox\"",
     "parity:reference": "npm run build && node dist/src/capture-reference.js",
-    "parity:boombox": "npm run build && node dist/src/parity-boombox.js"
+    "parity:boombox": "npm run build && node dist/src/parity-boombox.js",
+    "shaders:build": "pwsh -File tools/compile-shaders.ps1"
   },
   "devDependencies": {
     "@babylonjs/lite": "1.18.0",
