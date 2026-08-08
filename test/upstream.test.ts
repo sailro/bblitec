@@ -8,6 +8,8 @@ import {
     lowerHemisphericFactory,
     lowerLightMatrix,
 } from "../src/upstream-lower.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 
 test("loads pinned Babylon Lite TypeScript from published source maps", () => {
@@ -23,6 +25,13 @@ test("generates the Babylon environment parser from upstream constants", () => {
     assert.match(lowered.source, /0x86, 0x16, 0x87, 0x96, 0xf6, 0xd6, 0x96, 0x36/);
     assert.match(lowered.source, /constexpr float c1 = 1\.4999984284682104f/);
     assert.match(lowered.source, /face\.mime_type = "image\/png"/);
+});
+
+test("generates scene defaults, routing, and idempotent registration", () => {
+    const lowered = new SceneLowerer(new LoweringContext()).lowerCore();
+    assert.match(lowered.source, /scene\.clear_color = Color4\{\s*0\.2f,\s*0\.2f,\s*0\.3f,\s*1\.0f/s);
+    assert.match(lowered.source, /for \(const MeshHandle mesh : record\.meshes\)/);
+    assert.match(lowered.source, /registered_scenes\.end\(\)/);
 });
 
 test("generates the public hemispheric light factory from upstream defaults", () => {

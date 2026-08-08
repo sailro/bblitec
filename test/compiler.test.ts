@@ -19,6 +19,7 @@ test("compiles the Babylon Lite primitives example", () => {
     ]);
     assert.deepEqual(result.manifest.assets, []);
     assert.deepEqual(result.manifest.generatedSources, [
+        "upstream/src/scene_core.cpp",
         "upstream/src/camera_arc_rotate.cpp",
         "upstream/src/light_matrix.cpp",
         "upstream/src/light_hemispheric.cpp",
@@ -47,7 +48,7 @@ test("emits only reached native feature modules", () => {
     `);
 
     assert.deepEqual(result.manifest.features, ["core", "backend:sdl", "mesh:box"]);
-    assert.deepEqual(result.manifest.generatedSources, []);
+    assert.deepEqual(result.manifest.generatedSources, ["upstream/src/scene_core.cpp"]);
     assert.doesNotMatch(result.cmake, /material_standard|mesh_ground|camera_/);
 });
 
@@ -124,6 +125,7 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
     assert.doesNotMatch(result.cpp, /performance|Object::assign|drawCallCount/);
     assert.match(result.cmake, /gltf_loader\.cpp/);
     assert.deepEqual(result.manifest.generatedSources, [
+        "upstream/src/scene_core.cpp",
         "upstream/src/camera_arc_rotate.cpp",
         "upstream/src/camera_default.cpp",
         "upstream/src/env_parse.cpp",

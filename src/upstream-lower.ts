@@ -4,6 +4,7 @@ import { CameraLowerer } from "./lowering/camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
 import { LightLowerer } from "./lowering/light-lowerer.js";
+import { SceneLowerer } from "./lowering/scene-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 
 export type { LoweredSource } from "./lowering/context.js";
@@ -37,6 +38,12 @@ class GeneratedSourceWriter {
     public emit(features: string[]): void {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
+
+        this.writeSource(
+            "upstream/src/scene_core.cpp",
+            new SceneLowerer(context).lowerCore(),
+            generated,
+        );
 
         if (features.includes("camera:arc-rotate") || features.includes("camera:default")) {
             this.writeSource(

@@ -145,6 +145,11 @@ struct Scene;
 
 struct AssetRecord {
     std::vector<MeshHandle> meshes;
+    std::vector<LightHandle> lights;
+    bool has_clear_color = false;
+    Color4 clear_color{};
+    bool has_camera = false;
+    CameraHandle camera{};
 };
 
 struct Engine {

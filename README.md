@@ -76,8 +76,9 @@ The current vertical migration generates these implementations from pinned upstr
 - `createArcRotateCamera` from `camera/arc-rotate.ts`
 - `createDefaultCamera` framing constants and factory from `scene/scene-camera.ts`
 - Babylon `.env` magic, manifest layout, face slicing, and spherical-harmonic conversion from `loader-env/env-parse.ts` and `loader-env/load-env.ts`
+- `createSceneContext`, mesh/light/asset routing in `addToScene`, and idempotent `registerScene` semantics from `scene/scene-core.ts`
 
-Their generated sources and provenance are emitted under `generated\<scene>\upstream`. The previous hand-written light and camera C++ files have been removed, and `native\src\environment.cpp` is now only a small PAL-to-engine adapter.
+Their generated sources and provenance are emitted under `generated\<scene>\upstream`. The previous hand-written light and camera C++ files have been removed, `native\src\environment.cpp` is now only a small PAL-to-engine adapter, and scene lifecycle ownership has moved out of `core.cpp`.
 
 The PAL currently owns native file reads, path joining, environment variables, and monotonic timing. SDL remains the window/input/render implementation. Engine, loader, scene, material, and render modules will move from hand-written native implementations to upstream-generated C++ incrementally, starting from the BoomBox reachable graph.
 

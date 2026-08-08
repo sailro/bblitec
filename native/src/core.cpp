@@ -33,12 +33,6 @@ Engine create_engine(EngineOptions options) {
     return engine;
 }
 
-Scene create_scene_context(Engine& engine) {
-    Scene scene;
-    scene.engine = &engine;
-    return scene;
-}
-
 std::string asset_path(const std::string& relative_path) {
     return pal::join_path(BBLITE_ASSET_DIR, relative_path);
 }
@@ -99,35 +93,10 @@ void set_camera_radius(Engine& engine, CameraHandle camera, float radius) {
     checked(engine.cameras, camera, "camera").radius = radius;
 }
 
-void add_to_scene(Scene& scene, MeshHandle mesh) {
-    require_scene_engine(scene);
-    checked(scene.engine->meshes, mesh, "mesh");
-    scene.meshes.push_back(mesh);
-}
-
-void add_to_scene(Scene& scene, LightHandle light) {
-    require_scene_engine(scene);
-    checked(scene.engine->lights, light, "light");
-    scene.lights.push_back(light);
-}
-
-void add_to_scene(Scene& scene, AssetHandle asset) {
-    require_scene_engine(scene);
-    const auto& record = checked(scene.engine->assets, asset, "asset");
-    for (const MeshHandle mesh : record.meshes) {
-        add_to_scene(scene, mesh);
-    }
-}
-
 void attach_control(Engine& engine, CameraHandle camera, Scene& scene) {
     auto& record = checked(engine.cameras, camera, "camera");
     record.controls_enabled = true;
     set_camera(scene, camera);
-}
-
-void register_scene(Scene& scene) {
-    require_scene_engine(scene);
-    scene.engine->registered_scenes.push_back(&scene);
 }
 
 } // namespace bbl

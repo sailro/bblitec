@@ -116,7 +116,7 @@ class Compiler {
 
         const features = featureOrder.filter((feature) => this.features.has(feature));
         const runtimeSources = features.flatMap((feature) => featureSources[feature]);
-        const generatedSources: string[] = [];
+        const generatedSources: string[] = ["upstream/src/scene_core.cpp"];
         if (features.includes("camera:arc-rotate") || features.includes("camera:default")) {
             generatedSources.push("upstream/src/camera_arc_rotate.cpp");
         }
