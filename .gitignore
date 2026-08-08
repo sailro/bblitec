@@ -3,6 +3,7 @@ generated/
 node_modules/
 native/build*/
 native/vcpkg_installed/
+artifacts/
 
 .idea/
 .vscode/

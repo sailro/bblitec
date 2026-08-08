@@ -1,5 +1,7 @@
 # bblitec
 
+[![CI](https://github.com/sailro/bblitec/actions/workflows/ci.yml/badge.svg)](https://github.com/sailro/bblitec/actions/workflows/ci.yml)
+
 > Experimental Babylon Lite TypeScript-to-C++ transpiler and SDL3 native runtime.
 
 This repository contains a working, deliberately narrow Babylon Lite native compiler prototype. It accepts scene-building TypeScript written against `@babylonjs/lite`, removes browser-only setup, lowers supported API calls to typed C++, and emits a native source manifest containing only the runtime features reached by the program.
@@ -89,6 +91,34 @@ $env:BBLITE_BENCHMARK_FRAMES = "2000"
 Configuring without SDL keeps the headless backend available. The glTF loader itself only requires `cgltf`; SDL_image is linked only by rendered glTF builds.
 
 Remote scene assets referenced by supported intrinsics are downloaded during transpilation into the ignored `generated` directory. They are not committed to this repository.
+
+## Visual parity
+
+`bblitec` adapts the comparison math from Babylon Lite's Apache-2.0
+[`tests/shared/compare-core.ts`](https://github.com/BabylonJS/Babylon-Lite/blob/master/tests/shared/compare-core.ts):
+
+- RGB mean absolute difference (MAD) on the 0–255 scale
+- exact and within-1/3/5-byte pixel ratios
+- foreground-region MAD using Babylon's `[51, 51, 77]` background mask and distance threshold `30`
+- the same red/green/blue diff-map encoding
+
+Capture or refresh the 1280×720 Babylon.js golden from the upstream BoomBox Playground snippet:
+
+```powershell
+npm run parity:reference -- --force
+```
+
+After building `native\build-boombox-release\bblite_native.exe`, render the deterministic native frame and compare it:
+
+```powershell
+npm run parity:boombox
+```
+
+The native actual, diff map, and JSON report are written to ignored `artifacts\parity`. The committed golden and its capture metadata live in `reference\boombox`.
+
+Current native regression ceilings are `4.6` full-image MAD and `21.5` foreground-region MAD. They are intentionally separate from Babylon Lite's upstream scene-1 targets (`0.19` and `0.03`, with 99% of foreground pixels within one byte): those remain the long-term parity goal. The current diff map identifies the missing environment ground/background and per-pixel GPU PBR as the dominant gaps.
+
+The `boombox-parity` GitHub Actions job runs this gate on Windows and uploads the native actual, diff map, and JSON report on every push and pull request.
 
 ## Supported Babylon Lite subset
 
