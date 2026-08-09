@@ -88,8 +88,12 @@ foreach ($entry in $licensePackages.GetEnumerator()) {
 setlocal
 set "BBLITE_ASSET_DIR=%~dp0assets"
 set "BBLITE_GPU_SHADER_DIR=%~dp0shaders"
-"%~dp0bblitec-boombox.exe"
-if errorlevel 1 pause
+set "SDL_GPU_DRIVER=direct3d12"
+"%~dp0bblitec-boombox.exe" > "%~dp0bblitec-boombox.log" 2>&1
+set "RESULT=%ERRORLEVEL%"
+type "%~dp0bblitec-boombox.log"
+if not "%RESULT%"=="0" pause
+exit /b %RESULT%
 '@ | Set-Content (Join-Path $packageDirectory "run-boombox.cmd") -Encoding Ascii
 
 @'
@@ -108,6 +112,7 @@ bblitec BoomBox portable demo (Windows x64)
 
 Run:
   Double-click run-boombox.cmd.
+  It uses Direct3D 12 when available and automatically falls back to SDL_Renderer.
 
 Controls:
   Left drag            Orbit
@@ -117,8 +122,9 @@ Controls:
   W / S                Zoom fallback
 
 Troubleshooting:
-  - Requires Windows 10/11 and a GPU/driver supported by SDL_GPU.
+  - Requires Windows 10/11.
   - run-boombox-cpu.cmd forces the deterministic SDL_Renderer fallback.
+  - bblitec-boombox.log records startup errors and fallback information.
   - Keep the assets and shaders directories beside the executable.
 
 Current D3D12 fidelity baseline:

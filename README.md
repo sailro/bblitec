@@ -256,7 +256,9 @@ npm run package:boombox
 
 The ZIP is written to
 `artifacts\releases\bblitec-boombox-windows-x64.zip` and includes launchers,
-assets, DXIL shaders, native dependencies, and third-party notices.
+assets, DXIL shaders, native dependencies, and third-party notices. The default
+launcher requests Direct3D 12 and automatically falls back to SDL_Renderer if
+the GPU path is unavailable on the target PC.
 
 ## Visual parity
 

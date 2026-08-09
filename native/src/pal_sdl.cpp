@@ -1102,8 +1102,18 @@ void print_benchmark(const char* renderer_name, std::vector<double> samples) {
 #endif
 
 void pal::run_engine(Engine& engine) {
-    if (pal::run_gpu_engine(engine)) {
-        return;
+    try {
+        if (pal::run_gpu_engine(engine)) {
+            return;
+        }
+    } catch (const std::exception& error) {
+        const std::string required = pal::environment_variable("BBLITE_GPU_REQUIRED");
+        if (required == "1" || required == "true") {
+            throw;
+        }
+        std::cerr
+            << "SDL_GPU unavailable (" << error.what()
+            << "); falling back to SDL_Renderer.\n";
     }
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("startEngine requires a registered scene.");

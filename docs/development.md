@@ -148,7 +148,8 @@ npm run package:boombox
 This creates
 `artifacts\releases\bblitec-boombox-windows-x64.zip` containing the executable,
 assets, DXIL shaders, SDL/PNG/zlib/MSVC runtime DLLs, launchers, usage notes,
-asset sources, and dependency licenses.
+asset sources, and dependency licenses. The default launcher requests Direct3D
+12 and falls back to SDL_Renderer when SDL_GPU initialization fails.
 
 ## Visual parity
 
