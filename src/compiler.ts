@@ -49,12 +49,12 @@ type Feature =
 
 const featureSources: Record<Feature, string[]> = {
     "core": ["src/pal.cpp"],
-    "backend:sdl": ["src/pal_sdl.cpp", "src/pal_sdl_gpu.cpp"],
+    "backend:sdl": ["src/pal_sdl.cpp"],
     "camera:arc-rotate": [],
     "camera:default": [],
     "environment:ibl": [],
     "light:hemispheric": [],
-    "loader:gltf": [],
+    "loader:gltf": ["src/pal_sdl_gpu.cpp"],
     "material:standard": [],
     "mesh:box": [],
     "mesh:ground": [],

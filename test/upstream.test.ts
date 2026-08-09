@@ -1,13 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { analyzeUpstreamGraph } from "../src/upstream-graph.js";
-import {
-    lowerArcRotateFactory,
-    lowerDefaultCameraFactory,
-    lowerEnvParser,
-    lowerHemisphericFactory,
-    lowerLightMatrix,
-} from "../src/upstream-lower.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
@@ -16,6 +9,7 @@ import { EngineLowerer } from "../src/lowering/engine-lowerer.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
+import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 
 test("loads pinned Babylon Lite TypeScript from published source maps", () => {
@@ -32,7 +26,7 @@ test("generates the Babylon environment parser from upstream constants", () => {
     const adapter = lowerer.lowerLoaderAdapter();
     assert.match(lowered.source, /0x86, 0x16, 0x87, 0x96, 0xf6, 0xd6, 0x96, 0x36/);
     assert.match(lowered.source, /constexpr float c1 = 1\.4999984284682104f/);
-    assert.match(lowered.source, /face\.mime_type = "image\/png"/);
+    assert.match(lowered.source, /face\.bytes\.assign/);
     assert.match(adapter.source, /scene\.environment\.exposure = 0\.8f/);
     assert.match(adapter.source, /scene\.environment\.contrast = 1\.2f/);
     assert.match(adapter.source, /scene\.environment\.ground_texture/);
@@ -73,12 +67,11 @@ test("generates mesh and standard-material factories from upstream defaults", ()
     const mesh = lowerer.lowerMeshFactories();
     const material = lowerer.lowerStandardMaterialFactory();
     assert.match(mesh.source, /mesh\.dimensions = Vec3\{resolved_size, resolved_size, resolved_size\}/);
-    assert.match(material.source, /material\.specular_power = 64\.0f/);
-    assert.match(material.source, /material\.back_face_culling = true/);
+    assert.match(material.source, /material\.diffuse_color = Color3\{1\.0f, 1\.0f, 1\.0f\}/);
 });
 
 test("generates the public hemispheric light factory from upstream defaults", () => {
-    const lowered = lowerHemisphericFactory();
+    const lowered = new LightLowerer(new LoweringContext()).lowerFactory();
     assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
     assert.match(lowered.source, /light\.diffuse_color = Color3\{1\.0f, 1\.0f, 1\.0f\}/);
     assert.match(lowered.source, /light\.ground_color = Color3\{0\.0f, 0\.0f, 0\.0f\}/);
@@ -87,7 +80,7 @@ test("generates the public hemispheric light factory from upstream defaults", ()
 test("generates ArcRotate and default camera factories from upstream constants", () => {
     const lowerer = new CameraLowerer(new LoweringContext());
     const arc = lowerer.lowerArcRotateFactory();
-    const framing = lowerDefaultCameraFactory();
+    const framing = lowerer.lowerDefaultFactory();
     const controls = lowerer.lowerControls();
     assert.match(arc.source, /camera\.fov = 0\.8f/);
     assert.match(arc.source, /camera\.angular_sensibility = 1000\.0f/);
@@ -101,7 +94,7 @@ test("generates ArcRotate and default camera factories from upstream constants",
 });
 
 test("lowers the reachable upstream light matrix implementation", () => {
-    const lowered = lowerLightMatrix();
+    const lowered = new LightLowerer(new LoweringContext()).lowerMatrix();
     assert.equal(lowered.modulePath, "src/light/light-matrix.ts");
     assert.match(lowered.source, /std::sqrt/);
     assert.match(lowered.source, /m\[15\] = 1\.0f/);
@@ -122,6 +115,7 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /PrimitiveKind::gltf/);
     assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
     assert.ok(shaders.some((shader) => shader.output.endsWith("boombox.frag.hlsl")));
+    assert.ok(shaders.every((shader) => /\.(?:hlsl|msl)$/.test(shader.output)));
     const fragment = shaders.find((shader) => shader.output.endsWith("boombox.frag.hlsl"));
     assert.equal(typeof fragment?.data, "string");
     assert.match(String(fragment?.data), /geometrySmithGGX/);

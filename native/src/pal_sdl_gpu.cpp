@@ -303,7 +303,7 @@ SDL_GPUTexture* upload_texture(
         image.width = image.height = 1;
         image.rgba.assign(fallback.begin(), fallback.end());
     } else {
-        image = decode_image(ts::Blob(ts::ArrayBuffer(texture_data.bytes), texture_data.mime_type));
+        image = decode_image(ts::ArrayBuffer(texture_data.bytes));
     }
     SDL_GPUTextureCreateInfo texture_info{};
     texture_info.type = SDL_GPU_TEXTURETYPE_2D;
@@ -348,8 +348,7 @@ std::vector<float> decode_rgbd(const TextureData& texture_data, int& width, int&
         width = height = 1;
         return {0.0f, 0.0f, 0.0f, 1.0f};
     }
-    const DecodedImage image =
-        decode_image(ts::Blob(ts::ArrayBuffer(texture_data.bytes), texture_data.mime_type));
+    const DecodedImage image = decode_image(ts::ArrayBuffer(texture_data.bytes));
     width = image.width;
     height = image.height;
     std::vector<float> result(static_cast<std::size_t>(width) * height * 4);
@@ -1013,8 +1012,7 @@ bool run_gpu_engine(Engine& engine) {
                     scene,
                     engine,
                     camera,
-                    item,
-                    render_mode);
+                    item);
                 SDL_PushGPUFragmentUniformData(command, 0, &fragment, sizeof(fragment));
                 const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
                 const SDL_GPUBufferBinding index_binding{mesh.indices, 0};

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { chromium } from "playwright-core";
 
-export interface CaptureReferenceOptions {
+interface CaptureReferenceOptions {
     output: string;
     url?: string;
     browserPath?: string;

@@ -5,7 +5,7 @@ import { UpstreamSourceStore } from "./upstream-source.js";
 
 type JsonRecord = Record<string, unknown>;
 
-export interface GltfSpecialization {
+interface GltfSpecialization {
     asset: string;
     extensionsUsed: string[];
     staticModules: string[];

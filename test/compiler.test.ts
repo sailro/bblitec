@@ -18,6 +18,10 @@ test("compiles the Babylon Lite primitives example", () => {
         "mesh:ground",
     ]);
     assert.deepEqual(result.manifest.assets, []);
+    assert.deepEqual(result.manifest.runtimeSources, [
+        "src/pal.cpp",
+        "src/pal_sdl.cpp",
+    ]);
     assert.deepEqual(result.manifest.generatedSources, [
         "upstream/src/engine.cpp",
         "upstream/src/scene_core.cpp",
@@ -107,6 +111,11 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
         "environment:ibl",
         "light:hemispheric",
         "loader:gltf",
+    ]);
+    assert.deepEqual(result.manifest.runtimeSources, [
+        "src/pal.cpp",
+        "src/pal_sdl.cpp",
+        "src/pal_sdl_gpu.cpp",
     ]);
     assert.deepEqual(
         result.manifest.assets.map(({ source, kind }) => ({ source, kind })),

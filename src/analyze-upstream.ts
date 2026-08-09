@@ -46,7 +46,7 @@ console.log(
 );
 console.log(`PAL references: ${graph.summary.diagnostics.platformReferences.join(", ") || "none"}`);
 console.log(
-    "Capabilities: synchronous async/await, ArrayBuffer/DataView/typed arrays, Blob, typed JSON, " +
+    "Capabilities: synchronous async/await, ArrayBuffer/DataView/typed arrays, typed JSON, " +
         "static dynamic imports, PAL fetch/image/GPU upload; explicit any forbidden",
 );
 console.log(`Report: ${output}`);

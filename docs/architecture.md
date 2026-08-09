@@ -88,7 +88,6 @@ strict subset of TypeScript/Web types:
 - `ArrayBuffer`
 - typed arrays
 - `DataView`
-- `Blob`
 - UTF-8 `TextDecoder`
 - immediate AOT `Promise<T>` and `await`
 - `JsonValue` variant and typed narrowing

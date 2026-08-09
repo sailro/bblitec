@@ -30,8 +30,7 @@ namespace bbl {
 
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL
 #if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
-pal::DecodedImage pal::decode_image(const ts::Blob& blob) {
-    const ts::ArrayBuffer& buffer = blob.array_buffer();
+pal::DecodedImage pal::decode_image(const ts::ArrayBuffer& buffer) {
     SDL_IOStream* stream = SDL_IOFromConstMem(buffer.data(), buffer.byte_length());
     if (!stream) throw std::runtime_error(std::string("Unable to open image: ") + SDL_GetError());
     SDL_Surface* source = IMG_Load_IO(stream, true);
@@ -54,7 +53,6 @@ pal::DecodedImage pal::decode_image(const ts::Blob& blob) {
     SDL_DestroySurface(converted);
     return result;
 }
-#else
 #endif
 
 namespace {
@@ -279,8 +277,7 @@ SDL_Surface* load_surface(const TextureData& data) {
     if (data.bytes.empty()) {
         return nullptr;
     }
-    pal::DecodedImage image = pal::decode_image(
-        ts::Blob(ts::ArrayBuffer(data.bytes), data.mime_type));
+    pal::DecodedImage image = pal::decode_image(ts::ArrayBuffer(data.bytes));
     SDL_Surface* surface = SDL_CreateSurface(image.width, image.height, SDL_PIXELFORMAT_RGBA32);
     if (!surface) throw std::runtime_error(std::string("Unable to create image surface: ") + SDL_GetError());
     for (int y = 0; y < image.height; ++y) {

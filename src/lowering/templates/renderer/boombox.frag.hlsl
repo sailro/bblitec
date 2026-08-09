@@ -21,8 +21,6 @@ cbuffer FragmentUniforms : register(b0, space3)
     float4 emissiveFactor;
     float4 materialFactors;
     float4 environmentFactors;
-    float4 boundsMin;
-    float4 boundsMax;
     float4 materialOptions;
     float4 sphericalHarmonics[9];
 };

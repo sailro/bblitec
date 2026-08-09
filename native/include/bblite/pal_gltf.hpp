@@ -15,6 +15,6 @@ struct DecodedImage {
     std::vector<std::uint8_t> rgba;
 };
 
-DecodedImage decode_image(const ts::Blob& blob);
+DecodedImage decode_image(const ts::ArrayBuffer& buffer);
 
 } // namespace bbl::pal

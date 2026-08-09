@@ -75,9 +75,6 @@ void add_to_scene(Scene& scene, AssetHandle asset) {
     if (asset.value >= scene.engine->assets.size()) throw std::runtime_error("Invalid asset handle.");
     const AssetRecord& record = scene.engine->assets[asset.value];
     for (const MeshHandle mesh : record.meshes) add_to_scene(scene, mesh);
-    for (const LightHandle light : record.lights) add_to_scene(scene, light);
-    if (record.has_clear_color) scene.clear_color = record.clear_color;
-    if (record.has_camera && scene.camera.value == invalid_handle) scene.camera = record.camera;
 }
 
 void register_scene(Scene& scene) {

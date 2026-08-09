@@ -14,6 +14,9 @@ export class EnvironmentLowerer {
         const modulePath = "src/loader-env/env-parse.ts";
         const symbolName = "parseEnvFile";
         const constants = this.extractConstants();
+        if (constants.imageType !== "image/png") {
+            throw new Error(`Unsupported pinned environment image type: ${constants.imageType}.`);
+        }
         const magic = constants.magic
             .map((value) => `0x${value.toString(16).padStart(2, "0")}`)
             .join(", ");
@@ -225,7 +228,6 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
         const std::size_t end = start + mipmap.length;
         if (end > bytes.size()) throw std::runtime_error("Environment mipmap exceeds file.");
         TextureData face;
-        face.mime_type = "${constants.imageType}";
         face.bytes.assign(
             bytes.begin() + static_cast<std::ptrdiff_t>(start),
             bytes.begin() + static_cast<std::ptrdiff_t>(end));
@@ -288,7 +290,6 @@ std::uint32_t read_u32(const std::vector<std::uint8_t>& bytes, std::size_t offse
 void load_environment(Scene& scene, EnvironmentOptions options) {
     upstream::ParsedEnvironment parsed =
         upstream::parse_env_file(pal::read_binary_file(options.environment_url));
-    scene.environment.enabled = true;
     scene.environment.has_irradiance = true;
     scene.environment.spherical_harmonics = parsed.spherical_harmonics;
     scene.environment.specular_width = parsed.width;
@@ -297,18 +298,15 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
     scene.environment.brdf_lut = {};
     if (!options.brdf_url.empty()) {
         scene.environment.brdf_lut.bytes = pal::read_binary_file(options.brdf_url);
-        scene.environment.brdf_lut.mime_type = "image/png";
     }
     if (!options.ground_texture_url.empty()) {
         scene.environment.ground_texture.bytes =
             pal::read_binary_file(options.ground_texture_url);
-        scene.environment.ground_texture.mime_type = "image/png";
         scene.environment.has_ground = true;
     }
     if (!options.skybox_url.empty()) {
         scene.environment.skybox_texture.bytes =
             pal::read_binary_file(options.skybox_url);
-        scene.environment.skybox_texture.mime_type = "image/vnd-ms.dds";
         const std::vector<std::uint8_t>& dds = scene.environment.skybox_texture.bytes;
         if (dds.size() < 128 || read_u32(dds, 0) != 0x20534444u) {
             throw std::runtime_error("Background skybox is not a valid DDS file.");
@@ -356,7 +354,6 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
             (options.skybox_size > 0.0f ? options.skybox_size : 20.0f) * 1.5f,
             scene.environment.ground_size * 1.5f);
     }
-    scene.environment.source_url = std::move(options.environment_url);
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};
     scene.environment.contrast = ${this.context.floatLiteral(contrast)};
     scene.clear_color = Color4{0.2f, 0.2f, 0.29f, 1.0f};

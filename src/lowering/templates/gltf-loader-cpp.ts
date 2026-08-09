@@ -274,7 +274,10 @@ TextureData texture_data(
     const std::size_t start = container.bin_offset + view.offset;
     const std::size_t end = start + view.length;
     if (end > buffer.byte_length()) throw std::runtime_error("glTF image exceeds BIN chunk.");
-    result.mime_type = string_or(image, "mimeType");
+    const std::string mime_type = string_or(image, "mimeType");
+    if (mime_type != "image/png") {
+        throw std::runtime_error("Only embedded PNG glTF images are supported.");
+    }
     result.bytes.assign(buffer.bytes().begin() + start, buffer.bytes().begin() + end);
     return result;
 }

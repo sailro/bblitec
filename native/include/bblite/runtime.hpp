@@ -82,7 +82,6 @@ enum class MaterialAlphaMode {
 
 struct TextureData {
     std::vector<std::uint8_t> bytes;
-    std::string mime_type;
 };
 
 struct ModelVertex {
@@ -111,13 +110,6 @@ struct MeshRecord {
 
 struct MaterialRecord {
     Color3 diffuse_color{};
-    float alpha = 1.0f;
-    Color3 specular_color{};
-    float specular_power = 64.0f;
-    Color3 emissive_color{0.0f, 0.0f, 0.0f};
-    Color3 ambient_color{0.0f, 0.0f, 0.0f};
-    bool back_face_culling = true;
-    bool disable_lighting = false;
     Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
     Color3 emissive_factor{};
     float metallic_factor = 1.0f;
@@ -165,11 +157,6 @@ struct Scene;
 
 struct AssetRecord {
     std::vector<MeshHandle> meshes;
-    std::vector<LightHandle> lights;
-    bool has_clear_color = false;
-    Color4 clear_color{};
-    bool has_camera = false;
-    CameraHandle camera{};
 };
 
 struct Engine {
@@ -184,7 +171,6 @@ struct Engine {
 };
 
 struct EnvironmentState {
-    bool enabled = false;
     bool has_irradiance = false;
     float exposure = 1.0f;
     float contrast = 1.0f;
@@ -204,7 +190,6 @@ struct EnvironmentState {
     std::uint32_t skybox_data_offset = 0;
     Vec3 ground_position{};
     Color3 primary_color{0.08697356f, 0.08697356f, 0.21222083f};
-    std::string source_url;
 };
 
 struct Scene {

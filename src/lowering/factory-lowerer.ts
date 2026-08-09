@@ -73,20 +73,10 @@ MeshHandle create_ground(Engine& engine, GroundOptions options) {
         let object = returnStatement.expression;
         while (ts.isAsExpression(object) || ts.isParenthesizedExpression(object)) object = object.expression;
         if (!ts.isObjectLiteralExpression(object)) throw new Error("Upstream standard material defaults changed.");
-        const numeric = (name: string): string =>
-            this.context.floatLiteral(
-                this.context.numericValue(this.context.propertyInitializer(object, name), file),
-            );
         const tuple = (name: string): string =>
             this.context.cppColor3(
                 this.context.numericTuple(this.context.propertyInitializer(object, name), file),
             );
-        const bool = (name: string): string => {
-            const expression = this.context.propertyInitializer(object, name);
-            if (expression.kind === ts.SyntaxKind.TrueKeyword) return "true";
-            if (expression.kind === ts.SyntaxKind.FalseKeyword) return "false";
-            throw new Error(`Upstream standard material '${name}' is not boolean.`);
-        };
         return {
             modulePath,
             symbolName,
@@ -99,13 +89,6 @@ namespace bbl {
 MaterialHandle create_standard_material(Engine& engine) {
     MaterialRecord material;
     material.diffuse_color = ${tuple("diffuseColor")};
-    material.alpha = ${numeric("alpha")};
-    material.specular_color = ${tuple("specularColor")};
-    material.specular_power = ${numeric("specularPower")};
-    material.emissive_color = ${tuple("emissiveColor")};
-    material.ambient_color = ${tuple("ambientColor")};
-    material.back_face_culling = ${bool("backFaceCulling")};
-    material.disable_lighting = ${bool("disableLighting")};
     engine.materials.push_back(material);
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }

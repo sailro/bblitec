@@ -115,7 +115,7 @@ The lowering code is split into dedicated engine, scene, light, camera, environm
 The native runtime now provides explicitly typed implementations for:
 
 - `ArrayBuffer`, typed arrays, and `DataView`
-- `Blob` and UTF-8 `TextDecoder`
+- UTF-8 `TextDecoder`
 - `Promise<T>` plus synchronous AOT `await` specialization
 - `JSON.parse` into a typed `JsonValue` variant (`null`, boolean, number, string, array, or object)
 - PAL-backed asset fetch and image decoding
@@ -141,6 +141,7 @@ npm ci
 npm test
 npm run compile:example
 npm run compile:boombox
+npm run shaders:build
 ```
 
 The generated files are written to `generated\primitives` and `generated\boombox`.
@@ -195,7 +196,9 @@ The PAL selects shaders for the active SDL_GPU backend:
 | Linux / Android | Vulkan | SPIR-V |
 | macOS / iOS | Metal | MSL |
 
-Shader sources are emitted into `generated\boombox\upstream\shaders` by `compile:boombox`; only portable compiled artifact seeds remain under `native\shaders`. Rebuild the generated DXIL and SPIR-V with:
+Shader sources are emitted into `generated\boombox\upstream\shaders` by
+`compile:boombox`. Compile the generated DXIL and SPIR-V before a native GPU
+build with:
 
 ```powershell
 cd tools\shader-compiler

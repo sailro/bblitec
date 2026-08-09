@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { CompileAsset, CompileError, compileSource } from "./compiler.js";
 import { emitUpstreamGenerated } from "./upstream-lower.js";
@@ -101,6 +101,8 @@ async function main(): Promise<void> {
     });
 
     mkdirSync(outputPath, { recursive: true });
+    rmSync(resolve(outputPath, "assets"), { recursive: true, force: true });
+    rmSync(resolve(outputPath, "upstream"), { recursive: true, force: true });
     await Promise.all(result.manifest.assets.map((asset) => materializeAsset(asset, inputPath, outputPath)));
     emitAssetSpecializations(outputPath, result.manifest.assets);
     emitUpstreamGenerated(outputPath, result.manifest.features);

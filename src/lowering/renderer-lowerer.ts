@@ -10,11 +10,10 @@ const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
 const templateRoot = fileURLToPath(new URL("../../../src/lowering/templates/renderer/", import.meta.url));
-const nativeShaderRoot = fileURLToPath(new URL("../../../native/shaders/", import.meta.url));
 
-export interface LoweredShader {
+interface LoweredShader {
     output: string;
-    data: string | Uint8Array;
+    data: string;
 }
 
 export class RendererLowerer {
@@ -41,7 +40,6 @@ export class RendererLowerer {
 namespace bbl::upstream {
 
 struct RenderItem {
-    MeshHandle mesh{};
     std::uint32_t geometry = invalid_handle;
     MaterialHandle material{};
 };
@@ -55,8 +53,6 @@ struct PbrUniforms {
     std::array<float, 4> emissive_factor{};
     std::array<float, 4> material_factors{};
     std::array<float, 4> environment_factors{};
-    std::array<float, 4> bounds_min{};
-    std::array<float, 4> bounds_max{};
     std::array<float, 4> material_options{};
     std::array<std::array<float, 4>, 9> spherical_harmonics{};
 };
@@ -90,8 +86,7 @@ PbrUniforms build_pbr_uniforms(
     const Scene& scene,
     const Engine& engine,
     const CameraRecord& camera,
-    const RenderItem& item,
-    float render_mode);
+    const RenderItem& item);
 BackgroundPlan build_background_plan(const EnvironmentState& environment);
 BackgroundUniforms build_background_uniforms(
     const EnvironmentState& environment,
@@ -162,7 +157,7 @@ std::vector<RenderItem> build_render_plan(const Scene& scene, const Engine& engi
         if (mesh.primitive != PrimitiveKind::gltf || mesh.geometry >= engine.geometries.size()) {
             continue;
         }
-        result.push_back(RenderItem{handle, mesh.geometry, mesh.material});
+        result.push_back(RenderItem{mesh.geometry, mesh.material});
     }
     return result;
 }
@@ -207,8 +202,7 @@ PbrUniforms build_pbr_uniforms(
     const Scene& scene,
     const Engine& engine,
     const CameraRecord& camera,
-    const RenderItem& item,
-    float render_mode) {
+    const RenderItem& item) {
     PbrUniforms result;
     result.light_direction[1] = 1.0f;
     result.light_color = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -250,7 +244,7 @@ PbrUniforms build_pbr_uniforms(
     result.material_factors = {
         1.0f,
         1.0f,
-        render_mode,
+        0.0f,
         scene.environment.has_irradiance ? 1.0f : 0.0f,
     };
     result.environment_factors = {
@@ -259,48 +253,29 @@ PbrUniforms build_pbr_uniforms(
         0.8f,
         1.0f,
     };
-    if (item.mesh.value < engine.meshes.size()) {
-        const MeshRecord& mesh = engine.meshes[item.mesh.value];
-        if (item.geometry < engine.geometries.size()) {
-            const ModelGeometry& geometry = engine.geometries[item.geometry];
-            result.bounds_min = {
-                geometry.bounds_min.x,
-                geometry.bounds_min.y,
-                geometry.bounds_min.z,
-                0.0f,
-            };
-            result.bounds_max = {
-                geometry.bounds_max.x,
-                geometry.bounds_max.y,
-                geometry.bounds_max.z,
-                0.0f,
-            };
-        }
-        if (mesh.material.value < engine.materials.size()) {
-            const MaterialRecord& material = engine.materials[mesh.material.value];
-            result.base_color_factor = {
-                material.base_color_factor.r,
-                material.base_color_factor.g,
-                material.base_color_factor.b,
-                material.base_color_factor.a,
-            };
-            result.emissive_factor = {
-                material.emissive_factor.r,
-                material.emissive_factor.g,
-                material.emissive_factor.b,
-                0.0f,
-            };
-            result.material_factors[0] = material.metallic_factor;
-            result.material_factors[1] = material.roughness_factor;
-            result.material_options[0] =
-                material.alpha_mode == MaterialAlphaMode::blend
-                    ? 2.0f
-                    : material.alpha_mode == MaterialAlphaMode::mask
-                        ? 1.0f
-                        : 0.0f;
-            result.material_options[1] = material.alpha_cutoff;
-            result.material_options[2] = material.double_sided ? 1.0f : 0.0f;
-        }
+    if (item.material.value < engine.materials.size()) {
+        const MaterialRecord& material = engine.materials[item.material.value];
+        result.base_color_factor = {
+            material.base_color_factor.r,
+            material.base_color_factor.g,
+            material.base_color_factor.b,
+            material.base_color_factor.a,
+        };
+        result.emissive_factor = {
+            material.emissive_factor.r,
+            material.emissive_factor.g,
+            material.emissive_factor.b,
+            0.0f,
+        };
+        result.material_factors[0] = material.metallic_factor;
+        result.material_factors[1] = material.roughness_factor;
+        result.material_options[0] =
+            material.alpha_mode == MaterialAlphaMode::blend
+                ? 2.0f
+                : material.alpha_mode == MaterialAlphaMode::mask
+                    ? 1.0f
+                    : 0.0f;
+        result.material_options[1] = material.alpha_cutoff;
     }
     for (std::size_t index = 0; index < scene.environment.spherical_harmonics.size(); ++index) {
         result.spherical_harmonics[index] = {
@@ -443,22 +418,9 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
             "background-skybox.frag.hlsl",
             "background-skybox.frag.msl",
         ];
-        const binaries = [
-            "boombox.vert.dxil",
-            "boombox.frag.dxil",
-            "boombox.vert.spv",
-            "boombox.frag.spv",
-        ];
-        const result: LoweredShader[] = sources.map((name) => ({
+        return sources.map((name) => ({
             output: `upstream/shaders/${name}`,
             data: readFileSync(resolve(templateRoot, name), "utf8"),
         }));
-        result.push(
-            ...binaries.map((name) => ({
-                output: `upstream/shaders/${name}`,
-                data: new Uint8Array(readFileSync(resolve(nativeShaderRoot, name))),
-            })),
-        );
-        return result;
     }
 }

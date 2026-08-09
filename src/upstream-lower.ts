@@ -11,28 +11,6 @@ import { FactoryLowerer } from "./lowering/factory-lowerer.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 
-export type { LoweredSource } from "./lowering/context.js";
-
-export function lowerLightMatrix(store = new UpstreamSourceStore()): LoweredSource {
-    return new LightLowerer(new LoweringContext(store)).lowerMatrix();
-}
-
-export function lowerHemisphericFactory(store = new UpstreamSourceStore()): LoweredSource {
-    return new LightLowerer(new LoweringContext(store)).lowerFactory();
-}
-
-export function lowerArcRotateFactory(store = new UpstreamSourceStore()): LoweredSource {
-    return new CameraLowerer(new LoweringContext(store)).lowerArcRotateFactory();
-}
-
-export function lowerDefaultCameraFactory(store = new UpstreamSourceStore()): LoweredSource {
-    return new CameraLowerer(new LoweringContext(store)).lowerDefaultFactory();
-}
-
-export function lowerEnvParser(store = new UpstreamSourceStore()): LoweredSource {
-    return new EnvironmentLowerer(new LoweringContext(store)).lowerParser();
-}
-
 class GeneratedSourceWriter {
     public constructor(
         private readonly outputRoot: string,
