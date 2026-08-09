@@ -112,6 +112,7 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /build_pbr_uniforms/);
     assert.match(lowered.source, /build_background_plan/);
     assert.match(lowered.source, /build_skybox_plan/);
+    assert.match(lowered.source, /preferred_sample_count\(\).*return 4u/s);
     assert.match(lowered.header, /struct PbrUniforms/);
     assert.match(lowered.source, /PrimitiveKind::gltf/);
     assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
@@ -124,6 +125,7 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.equal(fidelity.sourceLanguage, "WGSL");
     assert.deepEqual(fidelity.compiledArtifacts, ["DXIL", "SPIR-V"]);
     assert.ok(fidelity.invariants.some(({ id }) => id === "rgbd-cubemap-y-flip"));
+    assert.ok(fidelity.invariants.some(({ id }) => id === "surface-msaa"));
 });
 
 test("builds a conservative reachable module graph", () => {

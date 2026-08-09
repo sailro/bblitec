@@ -93,9 +93,13 @@ struct GpuState {
     SDL_GPUTexture* environment = nullptr;
     SDL_GPUTexture* brdf_lut = nullptr;
     SDL_GPUTexture* color = nullptr;
+    SDL_GPUTexture* msaa_color = nullptr;
     SDL_GPUTexture* depth = nullptr;
+    SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
     std::uint32_t color_width = 0;
     std::uint32_t color_height = 0;
+    std::uint32_t msaa_color_width = 0;
+    std::uint32_t msaa_color_height = 0;
     std::uint32_t depth_width = 0;
     std::uint32_t depth_height = 0;
     std::vector<GpuMesh> meshes;
@@ -561,11 +565,39 @@ void create_depth(GpuState& state, std::uint32_t width, std::uint32_t height) {
     info.height = height;
     info.layer_count_or_depth = 1;
     info.num_levels = 1;
-    info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    info.sample_count = state.sample_count;
     state.depth = SDL_CreateGPUTexture(state.device, &info);
     if (!state.depth) gpu_error("SDL_CreateGPUTexture depth");
     state.depth_width = width;
     state.depth_height = height;
+}
+
+void create_msaa_color(
+    GpuState& state,
+    SDL_GPUTextureFormat format,
+    std::uint32_t width,
+    std::uint32_t height) {
+    if (state.sample_count == SDL_GPU_SAMPLECOUNT_1) return;
+    if (
+        state.msaa_color &&
+        state.msaa_color_width == width &&
+        state.msaa_color_height == height) {
+        return;
+    }
+    if (state.msaa_color) SDL_ReleaseGPUTexture(state.device, state.msaa_color);
+    SDL_GPUTextureCreateInfo info{};
+    info.type = SDL_GPU_TEXTURETYPE_2D;
+    info.format = format;
+    info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    info.width = width;
+    info.height = height;
+    info.layer_count_or_depth = 1;
+    info.num_levels = 1;
+    info.sample_count = state.sample_count;
+    state.msaa_color = SDL_CreateGPUTexture(state.device, &info);
+    if (!state.msaa_color) gpu_error("SDL_CreateGPUTexture MSAA color");
+    state.msaa_color_width = width;
+    state.msaa_color_height = height;
 }
 
 void create_color(
@@ -575,6 +607,7 @@ void create_color(
     std::uint32_t height) {
     if (state.color && state.color_width == width && state.color_height == height) return;
     if (state.color) SDL_ReleaseGPUTexture(state.device, state.color);
+    if (state.msaa_color) SDL_ReleaseGPUTexture(state.device, state.msaa_color);
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
     info.format = format;
@@ -980,6 +1013,20 @@ bool run_gpu_engine(Engine& engine) {
             nullptr);
         if (!state.device) gpu_error("SDL_CreateGPUDevice");
         if (!SDL_ClaimWindowForGPUDevice(state.device, state.window)) gpu_error("SDL_ClaimWindowForGPUDevice");
+        const SDL_GPUTextureFormat swapchain_format =
+            SDL_GetGPUSwapchainTextureFormat(state.device, state.window);
+        if (
+            upstream::preferred_sample_count() >= 4 &&
+            SDL_GPUTextureSupportsSampleCount(
+                state.device,
+                swapchain_format,
+                SDL_GPU_SAMPLECOUNT_4) &&
+            SDL_GPUTextureSupportsSampleCount(
+                state.device,
+                SDL_GPU_TEXTUREFORMAT_D16_UNORM,
+                SDL_GPU_SAMPLECOUNT_4)) {
+            state.sample_count = SDL_GPU_SAMPLECOUNT_4;
+        }
         const bool benchmark_mode = !environment_variable("BBLITE_BENCHMARK_FRAMES").empty();
         if (benchmark_mode && SDL_WindowSupportsGPUPresentMode(
                 state.device,
@@ -1052,7 +1099,7 @@ bool run_gpu_engine(Engine& engine) {
         attributes[2] = SDL_GPUVertexAttribute{2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 24};
         attributes[3] = SDL_GPUVertexAttribute{3, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 40};
         SDL_GPUColorTargetDescription color_target{};
-        color_target.format = SDL_GetGPUSwapchainTextureFormat(state.device, state.window);
+        color_target.format = swapchain_format;
         SDL_GPUGraphicsPipelineCreateInfo pipeline_info{};
         pipeline_info.vertex_shader = vertex_shader;
         pipeline_info.fragment_shader = fragment_shader;
@@ -1066,6 +1113,7 @@ bool run_gpu_engine(Engine& engine) {
         pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
         pipeline_info.depth_stencil_state.enable_depth_test = true;
         pipeline_info.depth_stencil_state.enable_depth_write = true;
+        pipeline_info.multisample_state.sample_count = state.sample_count;
         pipeline_info.target_info.color_target_descriptions = &color_target;
         pipeline_info.target_info.num_color_targets = 1;
         pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
@@ -1085,6 +1133,7 @@ bool run_gpu_engine(Engine& engine) {
             id_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             id_pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
             id_pipeline_info.depth_stencil_state.enable_depth_write = true;
+            id_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             id_pipeline_info.target_info.color_target_descriptions = &id_target;
             state.id_pipeline =
                 SDL_CreateGPUGraphicsPipeline(state.device, &id_pipeline_info);
@@ -1100,6 +1149,7 @@ bool run_gpu_engine(Engine& engine) {
             cluster_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             cluster_pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
             cluster_pipeline_info.depth_stencil_state.enable_depth_write = true;
+            cluster_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             cluster_pipeline_info.target_info.color_target_descriptions =
                 &cluster_target;
             state.cluster_pipeline =
@@ -1118,6 +1168,7 @@ bool run_gpu_engine(Engine& engine) {
             diagnostic_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             diagnostic_pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
             diagnostic_pipeline_info.depth_stencil_state.enable_depth_write = true;
+            diagnostic_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             diagnostic_pipeline_info.target_info.color_target_descriptions =
                 diagnostic_targets.data();
             diagnostic_pipeline_info.target_info.num_color_targets =
@@ -1334,8 +1385,6 @@ bool run_gpu_engine(Engine& engine) {
         bool id_buffer_saved = false;
         bool cluster_buffer_saved = false;
         bool diagnostics_saved = false;
-        const SDL_GPUTextureFormat swapchain_format =
-            SDL_GetGPUSwapchainTextureFormat(state.device, state.window);
         const long configured = [&] {
             const std::string value = environment_variable("BBLITE_BENCHMARK_FRAMES");
             return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
@@ -1383,20 +1432,35 @@ bool run_gpu_engine(Engine& engine) {
             const bool capture_diagnostics =
                 !diagnostics_saved && !diagnostic_directory.empty();
             if (capture_frame) create_color(state, swapchain_format, width, height);
+            create_msaa_color(state, swapchain_format, width, height);
             create_depth(state, width, height);
             const std::array<float, 16> matrix =
                 upstream::build_view_projection(camera, static_cast<float>(width) / height);
             SDL_PushGPUVertexUniformData(command, 0, matrix.data(), sizeof(matrix));
 
             SDL_GPUColorTargetInfo color_info{};
-            color_info.texture = capture_frame ? state.color : swapchain;
+            const bool multisampled =
+                state.sample_count != SDL_GPU_SAMPLECOUNT_1;
+            color_info.texture =
+                multisampled
+                    ? state.msaa_color
+                    : capture_frame
+                        ? state.color
+                        : swapchain;
             color_info.clear_color = SDL_FColor{
                 scene.clear_color.r,
                 scene.clear_color.g,
                 scene.clear_color.b,
                 scene.clear_color.a};
             color_info.load_op = SDL_GPU_LOADOP_CLEAR;
-            color_info.store_op = SDL_GPU_STOREOP_STORE;
+            color_info.store_op =
+                multisampled ? SDL_GPU_STOREOP_RESOLVE : SDL_GPU_STOREOP_STORE;
+            color_info.resolve_texture =
+                multisampled
+                    ? capture_frame
+                        ? state.color
+                        : swapchain
+                    : nullptr;
             SDL_GPUDepthStencilTargetInfo depth_info{};
             depth_info.texture = state.depth;
             depth_info.clear_depth = 1.0f;

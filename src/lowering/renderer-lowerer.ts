@@ -12,6 +12,7 @@ const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
 const rgbdDecodeModule = "src/loader-env/rgbd-decode.ts";
+const surfaceModule = "src/engine/surface.ts";
 const templateRoot = fileURLToPath(new URL("../../../src/lowering/templates/renderer/", import.meta.url));
 
 interface LoweredShader {
@@ -24,11 +25,17 @@ export class RendererLowerer {
 
     public lowerRenderPlan(): LoweredSource {
         const source = this.context.store.getSource(renderTaskModule);
+        const surface = this.context.store.getSource(surfaceModule);
         for (const symbol of ["buildBindings", "sortTransparentBindings", "drawList"]) {
             if (!source.includes(`function ${symbol}`)) {
                 throw new Error(`${renderTaskModule} is missing ${symbol}.`);
             }
         }
+        const sampleCount = this.context.extractNumber(
+            surface,
+            /const msaaSamples: 1 \| 4 = options\?\.msaaSamples === 1 \? 1 : ([0-9]+)/,
+            "default MSAA sample count",
+        );
 
         return {
             modulePath: renderTaskModule,
@@ -84,6 +91,7 @@ struct SkyboxUniforms {
 };
 
 std::vector<RenderItem> build_render_plan(const Scene& scene, const Engine& engine);
+std::uint32_t preferred_sample_count();
 std::array<float, 16> build_view_projection(const CameraRecord& camera, float aspect);
 PbrUniforms build_pbr_uniforms(
     const Scene& scene,
@@ -163,6 +171,10 @@ std::vector<RenderItem> build_render_plan(const Scene& scene, const Engine& engi
         result.push_back(RenderItem{mesh.geometry, mesh.material});
     }
     return result;
+}
+
+std::uint32_t preferred_sample_count() {
+    return ${sampleCount}u;
 }
 
 std::array<float, 16> build_view_projection(const CameraRecord& camera, float aspect) {
@@ -444,8 +456,12 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
 
     public fidelityManifest(): RendererFidelityManifest {
         const rgbd = this.context.store.getSource(rgbdDecodeModule);
+        const surface = this.context.store.getSource(surfaceModule);
         if (!rgbd.includes("select(g.y,d.y-1u-g.y,f)")) {
             throw new Error("Pinned Babylon Lite RGBD vertical flip semantics changed.");
+        }
+        if (!surface.includes("Defaults to `4`.")) {
+            throw new Error("Pinned Babylon Lite MSAA default changed.");
         }
         return {
             sourceLanguage: "WGSL",
@@ -465,6 +481,13 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
                 brdfLut: "linear-rgba32f",
             },
             invariants: [
+                {
+                    id: "surface-msaa",
+                    upstreamModule: surfaceModule,
+                    upstreamMarker: "Defaults to `4`.",
+                    nativeBehavior: "SDL_GPU requests 4x MSAA and resolves into the single-sample presentation or capture target.",
+                    validation: ["source marker assertion", "edge MAD attribution"],
+                },
                 {
                     id: "ggx-smith",
                     upstreamModule: pbrTemplateModule,

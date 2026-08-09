@@ -26,21 +26,21 @@ Development machine:
 | Renderer | Full MAD | Foreground MAD | Submission time |
 | --- | ---: | ---: | ---: |
 | CPU fallback | 4.452 | 21.191 | 5.516 ms/frame |
-| Generated SDL_GPU/D3D12 | 0.945 | 7.761 | 0.111 ms average, 0.073 ms median |
+| Generated SDL_GPU/D3D12, 4x MSAA | 0.924 | 7.501 | 0.126 ms average, 0.089 ms median |
 
-The GPU path is approximately 50 times faster CPU-side than the fallback.
+The GPU path is approximately 44 times faster CPU-side than the fallback.
 
 Current GPU diff attribution:
 
 | Region | MAD |
 | --- | ---: |
-| Background | 0.408 |
-| Foreground high-gradient/edges | 15.472 |
-| Foreground interior | 4.213 |
+| Background | 0.405 |
+| Foreground high-gradient/edges | 14.664 |
+| Foreground interior | 4.205 |
 
 The residual error is therefore dominated by raster/high-gradient boundaries,
 not the environment background. Signed foreground bias is approximately
-`[-3.99, -4.13, -4.46]` RGB bytes, so material interiors are also slightly
+`[-4.11, -4.25, -4.56]` RGB bytes, so material interiors are also slightly
 darker than the reference.
 
 The optional GPU ID pass maps all visible BoomBox pixels to draw ID `1`,
@@ -52,11 +52,11 @@ Highest-error triangle clusters in the current capture:
 
 | Cluster | Triangle range | Visible bounds | MAD | Likely region |
 | --- | --- | --- | ---: | --- |
-| 14 | 1664–1791 | `x=786,y=317,w=11,h=10` | 47.470 | antenna/base edge |
-| 15 | 1792–1919 | `x=784,y=221,w=15,h=131` | 36.988 | antenna |
-| 34 | 4224–4351 | `x=473,y=366,w=9,h=76` | 33.596 | left silhouette |
-| 40 | 4992–5119 | `x=758,y=382,w=49,h=120` | 32.881 | right speaker |
-| 43 | 5376–5503 | `x=478,y=345,w=55,h=135` | 28.734 | left body boundary |
+| 14 | 1664–1791 | `x=786,y=317,w=11,h=10` | 44.425 | antenna/base edge |
+| 15 | 1792–1919 | `x=784,y=221,w=15,h=131` | 34.604 | antenna |
+| 34 | 4224–4351 | `x=473,y=366,w=9,h=76` | 34.348 | left silhouette |
+| 40 | 4992–5119 | `x=758,y=382,w=49,h=120` | 32.555 | right speaker |
+| 43 | 5376–5503 | `x=478,y=345,w=55,h=135` | 28.264 | left body boundary |
 
 Current GPU regression ceilings:
 

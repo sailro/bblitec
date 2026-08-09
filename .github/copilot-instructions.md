@@ -129,8 +129,9 @@ Current measured baselines:
 
 - CPU fallback: full MAD `4.452`, foreground MAD `21.191`,
   approximately `5.516 ms/frame`.
-- Generated SDL_GPU/D3D12: full MAD `0.945`, foreground MAD `7.761`,
-  approximately `0.111 ms` average and `0.073 ms` median.
+- Generated SDL_GPU/D3D12 with Babylon-default 4x MSAA: full MAD `0.924`,
+  foreground MAD `7.501`, approximately `0.126 ms` average and `0.089 ms`
+  median.
 - GPU regression ceilings: full MAD `1.0`, foreground MAD `8.0`.
 - Upstream target: full MAD `0.19`, foreground MAD `0.03`, 99% foreground
   pixels within one byte.
