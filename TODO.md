@@ -14,7 +14,7 @@ work.
 - Preserve tree shaking and typed, data-oriented runtime records.
 - Generate before building; validate compiler, CPU parity, and GPU parity
   before completing renderer milestones.
-- Batch pushes because GitHub Actions compute is limited.
+- Complete local validation before committing or pushing.
 
 ## P0 — Prove generalization
 
@@ -262,7 +262,7 @@ Each extension must:
 - [ ] Keep physics behind a separate PAL/dependency boundary.
 - [ ] Avoid coupling renderer migration to a physics choice.
 
-## P1 — Testing and CI
+## P1 — Testing and validation
 
 - [ ] Add unit tests for shader IR and backend emission.
 - [ ] Add generated C++ compile tests for every new TypeScript construct.
@@ -270,11 +270,10 @@ Each extension must:
 - [ ] Add alpha-mode and double-sided material fixture assets.
 - [ ] Add cubemap orientation fixtures.
 - [ ] Add deterministic screenshot tests for resize and camera input.
-- [ ] Add Linux compiler/build CI without necessarily running visual parity.
-- [ ] Add macOS compile CI when MSL validation begins.
-- [ ] Keep hosted visual parity on the deterministic CPU path until GPU runner
-  drivers are stable.
-- [ ] Upload generated provenance and shader artifacts on failed CI jobs.
+- [ ] Add documented Linux compiler/build validation.
+- [ ] Add documented macOS compile validation when MSL work begins.
+- [ ] Add a local validation bundle command that preserves reports,
+  provenance, fidelity contracts, and generated shaders on failure.
 
 ## P1 — Developer experience
 

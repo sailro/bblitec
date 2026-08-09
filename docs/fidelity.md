@@ -132,19 +132,15 @@ speaker grille from the top controls. The next diagnostic layer is
 triangle-cluster IDs plus optional depth, normal, roughness, metallic, direct
 light, and IBL intermediate captures.
 
-## CI artifact meaning
+## Validation artifact meaning
 
-Hosted CI runs the deterministic CPU fallback because hosted GPU drivers are
-not a stable visual baseline. Its artifact is explicitly named
-`boombox-cpu-fallback-parity`.
+There is no hosted CI. Local validation output must keep renderer modes
+separate and retain:
 
-The artifact also contains:
-
-- a README identifying the renderer
-- the committed current-renderer comparison
+- renderer-specific actual, diff, hotspot, and ID images
+- renderer-specific parity reports
 - compile manifest and adaptation ledger
 - provenance
 - renderer fidelity contract
 
-GPU parity remains a local/device gate until a reproducible software or hosted
-GPU backend is selected.
+GPU parity is device-specific and the report records the selected driver.

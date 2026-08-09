@@ -159,5 +159,6 @@ $env:BBLITE_BENCHMARK_FRAMES = "2000"
 - Keep shader formulas tied to upstream markers in
   `renderer-fidelity.json`; do not tune backend shaders against a golden.
 - Avoid unrelated cleanup.
-- Minimize pushes because GitHub Actions compute is limited. Batch validated
-  milestones locally and push intentionally.
+- There is no hosted CI. Complete the documented local validation matrix
+  before committing or pushing.
+- Batch validated milestones and push intentionally.

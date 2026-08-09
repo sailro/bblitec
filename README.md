@@ -1,7 +1,5 @@
 # bblitec
 
-[![CI](https://github.com/sailro/bblitec/actions/workflows/ci.yml/badge.svg)](https://github.com/sailro/bblitec/actions/workflows/ci.yml)
-
 > Experimental Babylon Lite TypeScript-to-C++ transpiler and SDL3 native runtime.
 
 This repository contains a working, deliberately narrow Babylon Lite native compiler prototype. It accepts scene-building TypeScript written against `@babylonjs/lite`, removes browser-only setup, lowers supported API calls to typed C++, and emits a native source manifest containing only the runtime features reached by the program.
@@ -259,10 +257,8 @@ foreground-region MAD. The generated GPU ceilings are `1.0` and `8.0`.
 They remain intentionally separate from Babylon Lite's upstream scene-1
 targets (`0.19` and `0.03`, with 99% of foreground pixels within one byte).
 
-The `boombox-parity` GitHub Actions job runs the deterministic CPU gate on
-Windows and uploads the native actual, diff map, and JSON report. GPU parity
-is a local/device gate because hosted runner GPU/backend availability is not a
-stable visual baseline.
+Validation is intentionally local: compiler tests, native builds, CPU parity,
+and device-specific GPU parity are run on known toolchains and drivers.
 
 ## Supported Babylon Lite subset
 

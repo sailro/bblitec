@@ -108,8 +108,8 @@ npm run parity:boombox
 npm run parity:boombox:gpu
 ```
 
-CI runs the deterministic CPU comparison. Treat GPU parity as a local/device
-gate until hosted runners provide a stable backend and driver baseline.
+There is no hosted CI. CPU parity and GPU parity are local gates; GPU reports
+must always record the backend and driver used.
 
 Outputs are written to `artifacts/parity`:
 
@@ -138,4 +138,4 @@ The committed golden is
 - Ignoring glTF alpha mode, alpha cutoff, or double-sided state.
 - Benchmarking with vsync enabled.
 - Running generation and build in parallel.
-- Pushing every intermediate commit and consuming limited CI compute.
+- Committing or pushing without completing the relevant local validation.
