@@ -118,6 +118,9 @@ Outputs are written to `artifacts/parity`:
 - annotated hotspot map (`hotspots-cpu.png` or `hotspots-gpu.png`)
 - lossless and colorized GPU draw-ID maps (`draw-ids-gpu.png` and
   `draw-ids-visual-gpu.png`)
+- lossless and colorized triangle-cluster maps
+- normal, material, direct-light, IBL, and depth captures from the production
+  PBR shader's diagnostics variant
 - renderer-specific JSON report (`report-cpu.json` or `report-gpu.json`)
 
 Reports include background/edge/interior attribution, signed channel bias, and

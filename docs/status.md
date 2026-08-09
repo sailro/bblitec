@@ -45,8 +45,18 @@ darker than the reference.
 
 The optional GPU ID pass maps all visible BoomBox pixels to draw ID `1`,
 node/mesh `BoomBox`, material `BoomBox_Mat`. Because the source asset is one
-large primitive, finer localization now requires triangle-cluster or
-intermediate PBR diagnostic buffers.
+large primitive, parity also emits 128-triangle cluster IDs and PBR
+intermediate captures for normal, material, direct light, IBL, and depth.
+
+Highest-error triangle clusters in the current capture:
+
+| Cluster | Triangle range | Visible bounds | MAD | Likely region |
+| --- | --- | --- | ---: | --- |
+| 14 | 1664–1791 | `x=786,y=317,w=11,h=10` | 47.470 | antenna/base edge |
+| 15 | 1792–1919 | `x=784,y=221,w=15,h=131` | 36.988 | antenna |
+| 34 | 4224–4351 | `x=473,y=366,w=9,h=76` | 33.596 | left silhouette |
+| 40 | 4992–5119 | `x=758,y=382,w=49,h=120` | 32.881 | right speaker |
+| 43 | 5376–5503 | `x=478,y=345,w=55,h=135` | 28.734 | left body boundary |
 
 Current GPU regression ceilings:
 

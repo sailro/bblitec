@@ -69,13 +69,11 @@ material records.
 
 ### Add deeper per-pixel diagnostics
 
-- [ ] Add optional depth, world-normal, roughness, metallic, diffuse, direct
-  light, and IBL output captures.
 - [ ] Compare each intermediate buffer with an equivalent Babylon WebGPU
   capture.
-- [ ] Add triangle-cluster or mesh-feature IDs for assets such as BoomBox that
-  contain one large primitive/material draw.
-- [ ] Map hotspot tiles to shader variant and intermediate value deltas.
+- [ ] Add base-color/diffuse and final pre-tone-map HDR captures.
+- [ ] Map hotspot tiles to intermediate value deltas and shader variant.
+- [ ] Generate side-by-side annotated intermediate comparisons.
 
 **Done when:** a hotspot can be attributed beyond one draw/material to the
 specific raster or PBR intermediate that diverges.

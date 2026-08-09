@@ -48,6 +48,10 @@ interface RenderItemMetadata {
     meshIndex: number;
     meshName?: string;
     primitiveIndex: number;
+    triangleCount: number;
+    trianglesPerCluster: number;
+    clusterIdStart: number;
+    clusterCount: number;
     materialIndex?: number;
     materialName?: string;
     alphaMode: "OPAQUE" | "MASK" | "BLEND";
@@ -105,6 +109,8 @@ function runNative(
     screenshot: string,
     gpu: boolean,
     idBufferPath?: string,
+    clusterBufferPath?: string,
+    diagnosticDirectory?: string,
 ): void {
     if (!existsSync(executable)) {
         throw new Error(`Native executable not found: ${executable}. Build the BoomBox Release target first.`);
@@ -118,6 +124,12 @@ function runNative(
                 ? {
                       BBLITE_GPU: "1",
                       ...(idBufferPath ? { BBLITE_ID_BUFFER: resolve(idBufferPath) } : {}),
+                      ...(clusterBufferPath
+                          ? { BBLITE_CLUSTER_BUFFER: resolve(clusterBufferPath) }
+                          : {}),
+                      ...(diagnosticDirectory
+                          ? { BBLITE_DIAGNOSTIC_DIR: resolve(diagnosticDirectory) }
+                          : {}),
                   }
                 : {
                       BBLITE_GPU: "0",
@@ -168,6 +180,12 @@ async function main(): Promise<void> {
     const idVisualizationPath = arguments_.gpu
         ? resolve(outputDirectory, "draw-ids-visual-gpu.png")
         : undefined;
+    const clusterBufferPath = arguments_.gpu
+        ? resolve(outputDirectory, "triangle-clusters-gpu.png")
+        : undefined;
+    const clusterVisualizationPath = arguments_.gpu
+        ? resolve(outputDirectory, "triangle-clusters-visual-gpu.png")
+        : undefined;
 
     await captureBabylonReference({
         output: reference,
@@ -180,6 +198,8 @@ async function main(): Promise<void> {
             actual,
             arguments_.gpu,
             idBufferPath,
+            clusterBufferPath,
+            arguments_.gpu ? outputDirectory : undefined,
         );
     }
 
@@ -218,6 +238,14 @@ async function main(): Promise<void> {
         specializations.flatMap((specialization) => specialization.renderItems)
             .map((item) => [item.drawId, item] as const),
     );
+    const renderItemForCluster = (clusterId: number): RenderItemMetadata | undefined =>
+        specializations.flatMap((specialization) => specialization.renderItems)
+            .find(
+                (item) =>
+                    item.clusterCount > 0 &&
+                    clusterId >= item.clusterIdStart &&
+                    clusterId < item.clusterIdStart + item.clusterCount,
+            );
     const drawAttribution = idBreakdown?.draws.map((draw) => ({
         ...draw,
         renderItem: renderItems.get(draw.drawId),
@@ -229,6 +257,68 @@ async function main(): Promise<void> {
             renderItem: renderItems.get(draw.drawId),
         })),
     }));
+    const clusterBreakdown =
+        clusterBufferPath && existsSync(clusterBufferPath)
+            ? analyzeIdBuffer(actual, reference, clusterBufferPath, breakdown.hotspots)
+            : undefined;
+    if (
+        clusterBufferPath &&
+        clusterVisualizationPath &&
+        existsSync(clusterBufferPath)
+    ) {
+        generateIdVisualization(clusterBufferPath, clusterVisualizationPath);
+    }
+    const clusterAttribution = clusterBreakdown?.draws.map((cluster) => {
+        const renderItem = renderItemForCluster(cluster.drawId);
+        return {
+            clusterId: cluster.drawId,
+            clusterIndex: renderItem
+                ? cluster.drawId - renderItem.clusterIdStart
+                : undefined,
+            triangles: renderItem
+                ? {
+                      start:
+                          (cluster.drawId - renderItem.clusterIdStart) *
+                          renderItem.trianglesPerCluster,
+                      count: Math.min(
+                          renderItem.trianglesPerCluster,
+                          renderItem.triangleCount -
+                              (cluster.drawId - renderItem.clusterIdStart) *
+                                  renderItem.trianglesPerCluster,
+                      ),
+                  }
+                : undefined,
+            pixels: cluster.pixels,
+            mad: cluster.mad,
+            maxDiff: cluster.maxDiff,
+            bounds: cluster.bounds,
+            renderItem,
+        };
+    });
+    const hotspotClusterAttribution = clusterBreakdown?.hotspots.map((hotspot) => {
+        const { drawIds, ...region } = hotspot;
+        return {
+            ...region,
+            clusterIds: drawIds.map(({ drawId, pixels }) => ({
+                clusterId: drawId,
+                pixels,
+                renderItem: renderItemForCluster(drawId),
+            })),
+        };
+    });
+    const diagnosticFiles = arguments_.gpu
+        ? Object.fromEntries(
+              [
+                  ["normal", "normal-gpu.png"],
+                  ["material", "material-gpu.png"],
+                  ["directLight", "direct-light-gpu.png"],
+                  ["ibl", "ibl-gpu.png"],
+                  ["depth", "depth-gpu.png"],
+              ]
+                  .map(([key, file]) => [key, resolve(outputDirectory, file!)] as const)
+                  .filter(([, path]) => existsSync(path)),
+          )
+        : {};
     const diffPath = resolve(outputDirectory, `diff-map-${artifactSuffix}.png`);
     const hotspotPath = resolve(outputDirectory, `hotspots-${artifactSuffix}.png`);
     generateDiffMap(actual, reference, diffPath);
@@ -243,6 +333,8 @@ async function main(): Promise<void> {
         breakdown,
         ...(drawAttribution ? { drawAttribution } : {}),
         ...(hotspotAttribution ? { hotspotAttribution } : {}),
+        ...(clusterAttribution ? { clusterAttribution } : {}),
+        ...(hotspotClusterAttribution ? { hotspotClusterAttribution } : {}),
         ratios: {
             exact: percentage(region.exactMatch, region.regionPixels),
             within1: percentage(region.within1, region.regionPixels),
@@ -260,6 +352,13 @@ async function main(): Promise<void> {
             ...(idVisualizationPath && existsSync(idVisualizationPath)
                 ? { drawIdsVisual: idVisualizationPath }
                 : {}),
+            ...(clusterBufferPath && existsSync(clusterBufferPath)
+                ? { triangleClusters: clusterBufferPath }
+                : {}),
+            ...(clusterVisualizationPath && existsSync(clusterVisualizationPath)
+                ? { triangleClustersVisual: clusterVisualizationPath }
+                : {}),
+            ...diagnosticFiles,
         },
     };
     const reportPath = resolve(outputDirectory, `report-${artifactSuffix}.json`);
@@ -283,6 +382,18 @@ async function main(): Promise<void> {
         console.log(
             `Worst draw: ${label} (id=${worst.drawId}, MAD=${worst.mad.toFixed(3)}, ` +
                 `pixels=${worst.pixels})`,
+        );
+    }
+    if (clusterAttribution?.length) {
+        const worst = clusterAttribution[0]!;
+        console.log(
+            `Worst triangle cluster: id=${worst.clusterId}, ` +
+                `triangles=${worst.triangles?.start ?? "?"}..` +
+                `${
+                    worst.triangles
+                        ? worst.triangles.start + worst.triangles.count - 1
+                        : "?"
+                }, MAD=${worst.mad.toFixed(3)}`,
         );
     }
     console.log(

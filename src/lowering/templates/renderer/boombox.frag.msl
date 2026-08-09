@@ -22,6 +22,17 @@ struct FragmentInput {
     float2 uv;
 };
 
+#if defined(BBLITE_DIAGNOSTICS)
+struct FragmentOutput {
+    float4 color [[color(0)]];
+    float4 normal [[color(1)]];
+    float4 material [[color(2)]];
+    float4 direct [[color(3)]];
+    float4 ibl [[color(4)]];
+    float4 depth [[color(5)]];
+};
+#endif
+
 constant float PI = 3.14159265358979323846;
 
 float3 evaluateIrradiance(float3 normal, constant FragmentUniforms& uniforms) {
@@ -57,7 +68,11 @@ float3 fresnelSchlick(float cosine, float3 f0) {
     return f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0);
 }
 
+#if defined(BBLITE_DIAGNOSTICS)
+fragment FragmentOutput main0(
+#else
 fragment float4 main0(
+#endif
     FragmentInput input [[stage_in]],
     texture2d<float> baseColorTexture [[texture(0)]],
     sampler baseColorSampler [[sampler(0)]],
@@ -167,5 +182,16 @@ fragment float4 main0(
     color = uniforms.environmentFactors.y < 1.0
         ? mix(float3(0.5), color, uniforms.environmentFactors.y)
         : mix(color, highContrast, uniforms.environmentFactors.y - 1.0);
+#if defined(BBLITE_DIAGNOSTICS)
+    FragmentOutput output;
+    output.color = float4(color, uniforms.materialOptions.x > 1.5 ? alpha : 1.0);
+    output.normal = float4(normal * 0.5 + 0.5, 1.0);
+    output.material = float4(roughness, metallic, occlusion, 1.0);
+    output.direct = float4(saturate(finalDirectSpecular + directDiffuse), 1.0);
+    output.ibl = float4(saturate(finalIrradiance + finalRadiance), 1.0);
+    output.depth = float4(input.position.z, input.position.z, input.position.z, 1.0);
+    return output;
+#else
     return float4(color, uniforms.materialOptions.x > 1.5 ? alpha : 1.0);
+#endif
 }

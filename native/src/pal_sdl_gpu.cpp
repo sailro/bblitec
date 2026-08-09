@@ -69,6 +69,11 @@ struct IdUniforms {
     float alpha_options[4];
 };
 
+struct ClusterUniforms {
+    std::uint32_t cluster_options[4];
+    float alpha_options[4];
+};
+
 struct GpuState {
     SDL_Window* window = nullptr;
     SDL_GPUDevice* device = nullptr;
@@ -79,6 +84,10 @@ struct GpuState {
     SDL_GPUGraphicsPipeline* skybox_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* id_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* id_double_sided_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* cluster_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* cluster_double_sided_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* diagnostics_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* diagnostics_double_sided_pipeline = nullptr;
     SDL_GPUSampler* sampler = nullptr;
     SDL_GPUSampler* background_sampler = nullptr;
     SDL_GPUTexture* environment = nullptr;
@@ -581,14 +590,15 @@ void create_color(
     state.color_height = height;
 }
 
-void save_id_buffer_png(
+void save_geometry_id_buffer_png(
     GpuState& state,
     std::uint32_t width,
     std::uint32_t height,
     const std::array<float, 16>& view_projection,
     const std::vector<upstream::RenderItem>& render_plan,
     const Engine& engine,
-    const std::string& path) {
+    const std::string& path,
+    bool cluster_ids) {
     SDL_GPUTextureCreateInfo color_info{};
     color_info.type = SDL_GPU_TEXTURETYPE_2D;
     color_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -645,8 +655,19 @@ void save_id_buffer_png(
     for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
         SDL_BindGPUGraphicsPipeline(
             pass,
-            sided_mode == 0 ? state.id_pipeline : state.id_double_sided_pipeline);
+            cluster_ids
+                ? (sided_mode == 0
+                      ? state.cluster_pipeline
+                      : state.cluster_double_sided_pipeline)
+                : (sided_mode == 0
+                      ? state.id_pipeline
+                      : state.id_double_sided_pipeline));
+        std::uint32_t cluster_id_base = 1;
         for (std::size_t mesh_index = 0; mesh_index < state.meshes.size(); ++mesh_index) {
+            const GpuMesh& mesh = state.meshes[mesh_index];
+            const std::uint32_t triangle_count = mesh.index_count / 3;
+            const std::uint32_t current_cluster_base = cluster_id_base;
+            cluster_id_base += (triangle_count + 127u) / 128u;
             const upstream::RenderItem& item = render_plan[mesh_index];
             const MaterialRecord* material =
                 item.material.value < engine.materials.size()
@@ -655,27 +676,48 @@ void save_id_buffer_png(
             const bool double_sided = material && material->double_sided;
             if (double_sided != (sided_mode == 1)) continue;
 
-            const std::uint32_t draw_id = static_cast<std::uint32_t>(mesh_index + 1);
-            IdUniforms uniforms{};
-            uniforms.id_color[0] = static_cast<float>(draw_id & 0xffu) / 255.0f;
-            uniforms.id_color[1] = static_cast<float>((draw_id >> 8) & 0xffu) / 255.0f;
-            uniforms.id_color[2] = static_cast<float>((draw_id >> 16) & 0xffu) / 255.0f;
-            uniforms.id_color[3] = 1.0f;
+            float alpha_options[4]{};
             if (material) {
-                uniforms.alpha_options[0] =
+                alpha_options[0] =
                     material->alpha_mode == MaterialAlphaMode::blend
                         ? 2.0f
                         : material->alpha_mode == MaterialAlphaMode::mask
                             ? 1.0f
                             : 0.0f;
-                uniforms.alpha_options[1] = material->alpha_cutoff;
-                uniforms.alpha_options[2] = material->base_color_factor.a;
+                alpha_options[1] = material->alpha_cutoff;
+                alpha_options[2] = material->base_color_factor.a;
             } else {
-                uniforms.alpha_options[2] = 1.0f;
+                alpha_options[2] = 1.0f;
             }
-            SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
+            if (cluster_ids) {
+                ClusterUniforms uniforms{};
+                uniforms.cluster_options[0] = current_cluster_base;
+                uniforms.cluster_options[1] = 128;
+                std::copy_n(alpha_options, 4, uniforms.alpha_options);
+                SDL_PushGPUFragmentUniformData(
+                    command,
+                    0,
+                    &uniforms,
+                    sizeof(uniforms));
+            } else {
+                const std::uint32_t draw_id =
+                    static_cast<std::uint32_t>(mesh_index + 1);
+                IdUniforms uniforms{};
+                uniforms.id_color[0] =
+                    static_cast<float>(draw_id & 0xffu) / 255.0f;
+                uniforms.id_color[1] =
+                    static_cast<float>((draw_id >> 8) & 0xffu) / 255.0f;
+                uniforms.id_color[2] =
+                    static_cast<float>((draw_id >> 16) & 0xffu) / 255.0f;
+                uniforms.id_color[3] = 1.0f;
+                std::copy_n(alpha_options, 4, uniforms.alpha_options);
+                SDL_PushGPUFragmentUniformData(
+                    command,
+                    0,
+                    &uniforms,
+                    sizeof(uniforms));
+            }
 
-            const GpuMesh& mesh = state.meshes[mesh_index];
             const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
             const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
             const SDL_GPUTextureSamplerBinding texture_binding{
@@ -704,6 +746,155 @@ void save_id_buffer_png(
     SDL_ReleaseGPUTexture(state.device, color);
 }
 
+void save_pbr_diagnostic_buffers(
+    GpuState& state,
+    std::uint32_t width,
+    std::uint32_t height,
+    const std::array<float, 16>& view_projection,
+    const std::vector<upstream::RenderItem>& render_plan,
+    const Scene& scene,
+    const Engine& engine,
+    const CameraRecord& camera,
+    const std::string& output_directory) {
+    std::array<SDL_GPUTexture*, 6> textures{};
+    SDL_GPUTextureCreateInfo texture_info{};
+    texture_info.type = SDL_GPU_TEXTURETYPE_2D;
+    texture_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    texture_info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    texture_info.width = width;
+    texture_info.height = height;
+    texture_info.layer_count_or_depth = 1;
+    texture_info.num_levels = 1;
+    texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    for (SDL_GPUTexture*& texture : textures) {
+        texture = SDL_CreateGPUTexture(state.device, &texture_info);
+        if (!texture) {
+            for (SDL_GPUTexture* created : textures) {
+                if (created) SDL_ReleaseGPUTexture(state.device, created);
+            }
+            gpu_error("SDL_CreateGPUTexture PBR diagnostic");
+        }
+    }
+    SDL_GPUTextureCreateInfo depth_info{};
+    depth_info.type = SDL_GPU_TEXTURETYPE_2D;
+    depth_info.format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+    depth_info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+    depth_info.width = width;
+    depth_info.height = height;
+    depth_info.layer_count_or_depth = 1;
+    depth_info.num_levels = 1;
+    depth_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture* depth = SDL_CreateGPUTexture(state.device, &depth_info);
+    if (!depth) {
+        for (SDL_GPUTexture* texture : textures) {
+            SDL_ReleaseGPUTexture(state.device, texture);
+        }
+        gpu_error("SDL_CreateGPUTexture PBR diagnostic depth");
+    }
+
+    SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(state.device);
+    if (!command) {
+        SDL_ReleaseGPUTexture(state.device, depth);
+        for (SDL_GPUTexture* texture : textures) {
+            SDL_ReleaseGPUTexture(state.device, texture);
+        }
+        gpu_error("SDL_AcquireGPUCommandBuffer PBR diagnostic");
+    }
+    SDL_PushGPUVertexUniformData(
+        command,
+        0,
+        view_projection.data(),
+        sizeof(view_projection));
+    std::array<SDL_GPUColorTargetInfo, 6> targets{};
+    for (std::size_t index = 0; index < targets.size(); ++index) {
+        targets[index].texture = textures[index];
+        targets[index].clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f};
+        targets[index].load_op = SDL_GPU_LOADOP_CLEAR;
+        targets[index].store_op = SDL_GPU_STOREOP_STORE;
+    }
+    SDL_GPUDepthStencilTargetInfo depth_target{};
+    depth_target.texture = depth;
+    depth_target.clear_depth = 1.0f;
+    depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
+    depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
+    depth_target.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+    depth_target.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    SDL_GPURenderPass* pass =
+        SDL_BeginGPURenderPass(
+            command,
+            targets.data(),
+            static_cast<Uint32>(targets.size()),
+            &depth_target);
+    for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
+        SDL_BindGPUGraphicsPipeline(
+            pass,
+            sided_mode == 0
+                ? state.diagnostics_pipeline
+                : state.diagnostics_double_sided_pipeline);
+        for (std::size_t mesh_index = 0; mesh_index < state.meshes.size(); ++mesh_index) {
+            const upstream::RenderItem& item = render_plan[mesh_index];
+            const bool double_sided =
+                item.material.value < engine.materials.size() &&
+                engine.materials[item.material.value].double_sided;
+            if (double_sided != (sided_mode == 1)) continue;
+
+            const upstream::PbrUniforms fragment =
+                upstream::build_pbr_uniforms(scene, engine, camera, item);
+            SDL_PushGPUFragmentUniformData(command, 0, &fragment, sizeof(fragment));
+            const GpuMesh& mesh = state.meshes[mesh_index];
+            const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
+            const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
+            const SDL_GPUTextureSamplerBinding texture_bindings[6]{
+                SDL_GPUTextureSamplerBinding{mesh.base_color, state.sampler},
+                SDL_GPUTextureSamplerBinding{mesh.metallic_roughness, state.sampler},
+                SDL_GPUTextureSamplerBinding{mesh.normal, state.sampler},
+                SDL_GPUTextureSamplerBinding{mesh.emissive, state.sampler},
+                SDL_GPUTextureSamplerBinding{state.environment, state.sampler},
+                SDL_GPUTextureSamplerBinding{state.brdf_lut, state.sampler},
+            };
+            SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+            SDL_BindGPUIndexBuffer(
+                pass,
+                &index_binding,
+                SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            SDL_BindGPUFragmentSamplers(pass, 0, texture_bindings, 6);
+            SDL_DrawGPUIndexedPrimitives(pass, mesh.index_count, 1, 0, 0, 0);
+        }
+    }
+    SDL_EndGPURenderPass(pass);
+    if (!SDL_SubmitGPUCommandBuffer(command)) {
+        SDL_ReleaseGPUTexture(state.device, depth);
+        for (SDL_GPUTexture* texture : textures) {
+            SDL_ReleaseGPUTexture(state.device, texture);
+        }
+        gpu_error("SDL_SubmitGPUCommandBuffer PBR diagnostic");
+    }
+
+    constexpr std::array<const char*, 5> names{
+        "normal-gpu.png",
+        "material-gpu.png",
+        "direct-light-gpu.png",
+        "ibl-gpu.png",
+        "depth-gpu.png",
+    };
+    for (std::size_t index = 0; index < names.size(); ++index) {
+        SDL_GPUCommandBuffer* download = SDL_AcquireGPUCommandBuffer(state.device);
+        if (!download) gpu_error("SDL_AcquireGPUCommandBuffer PBR diagnostic download");
+        save_texture_png(
+            state.device,
+            download,
+            textures[index + 1],
+            SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+            width,
+            height,
+            join_path(output_directory, names[index]));
+    }
+    SDL_ReleaseGPUTexture(state.device, depth);
+    for (SDL_GPUTexture* texture : textures) {
+        SDL_ReleaseGPUTexture(state.device, texture);
+    }
+}
+
 void release(GpuState& state) {
     for (GpuMesh& mesh : state.meshes) {
         SDL_ReleaseGPUBuffer(state.device, mesh.vertices);
@@ -729,6 +920,14 @@ void release(GpuState& state) {
     if (state.skybox_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.skybox_pipeline);
     if (state.id_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.id_pipeline);
     if (state.id_double_sided_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.id_double_sided_pipeline);
+    if (state.cluster_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.cluster_pipeline);
+    if (state.cluster_double_sided_pipeline) {
+        SDL_ReleaseGPUGraphicsPipeline(state.device, state.cluster_double_sided_pipeline);
+    }
+    if (state.diagnostics_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.diagnostics_pipeline);
+    if (state.diagnostics_double_sided_pipeline) {
+        SDL_ReleaseGPUGraphicsPipeline(state.device, state.diagnostics_double_sided_pipeline);
+    }
     if (state.double_sided_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.double_sided_pipeline);
     if (state.transparent_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.transparent_pipeline);
     if (state.pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.pipeline);
@@ -759,6 +958,10 @@ bool run_gpu_engine(Engine& engine) {
         use_background &&
         (ground_flag == "1" || ground_flag == "true");
     const std::string id_buffer_path = environment_variable("BBLITE_ID_BUFFER");
+    const std::string cluster_buffer_path =
+        environment_variable("BBLITE_CLUSTER_BUFFER");
+    const std::string diagnostic_directory =
+        environment_variable("BBLITE_DIAGNOSTIC_DIR");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) gpu_error("SDL_Init");
 
     GpuState state;
@@ -822,6 +1025,22 @@ bool run_gpu_engine(Engine& engine) {
                   1,
                   1)
             : nullptr;
+        SDL_GPUShader* diagnostics_fragment_shader = !diagnostic_directory.empty()
+            ? load_shader(
+                  state.device,
+                  "boombox-diagnostics.frag",
+                  SDL_GPU_SHADERSTAGE_FRAGMENT,
+                  6,
+                  1)
+            : nullptr;
+        SDL_GPUShader* cluster_fragment_shader = !cluster_buffer_path.empty()
+            ? load_shader(
+                  state.device,
+                  "diagnostic-cluster.frag",
+                  SDL_GPU_SHADERSTAGE_FRAGMENT,
+                  1,
+                  1)
+            : nullptr;
 
         SDL_GPUVertexBufferDescription vertex_buffer{};
         vertex_buffer.slot = 0;
@@ -873,6 +1092,42 @@ bool run_gpu_engine(Engine& engine) {
             state.id_double_sided_pipeline =
                 SDL_CreateGPUGraphicsPipeline(state.device, &id_pipeline_info);
         }
+        if (cluster_fragment_shader) {
+            SDL_GPUColorTargetDescription cluster_target{};
+            cluster_target.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+            SDL_GPUGraphicsPipelineCreateInfo cluster_pipeline_info = pipeline_info;
+            cluster_pipeline_info.fragment_shader = cluster_fragment_shader;
+            cluster_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
+            cluster_pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
+            cluster_pipeline_info.depth_stencil_state.enable_depth_write = true;
+            cluster_pipeline_info.target_info.color_target_descriptions =
+                &cluster_target;
+            state.cluster_pipeline =
+                SDL_CreateGPUGraphicsPipeline(state.device, &cluster_pipeline_info);
+            cluster_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+            state.cluster_double_sided_pipeline =
+                SDL_CreateGPUGraphicsPipeline(state.device, &cluster_pipeline_info);
+        }
+        if (diagnostics_fragment_shader) {
+            std::array<SDL_GPUColorTargetDescription, 6> diagnostic_targets{};
+            for (SDL_GPUColorTargetDescription& target : diagnostic_targets) {
+                target.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+            }
+            SDL_GPUGraphicsPipelineCreateInfo diagnostic_pipeline_info = pipeline_info;
+            diagnostic_pipeline_info.fragment_shader = diagnostics_fragment_shader;
+            diagnostic_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
+            diagnostic_pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
+            diagnostic_pipeline_info.depth_stencil_state.enable_depth_write = true;
+            diagnostic_pipeline_info.target_info.color_target_descriptions =
+                diagnostic_targets.data();
+            diagnostic_pipeline_info.target_info.num_color_targets =
+                static_cast<Uint32>(diagnostic_targets.size());
+            state.diagnostics_pipeline =
+                SDL_CreateGPUGraphicsPipeline(state.device, &diagnostic_pipeline_info);
+            diagnostic_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+            state.diagnostics_double_sided_pipeline =
+                SDL_CreateGPUGraphicsPipeline(state.device, &diagnostic_pipeline_info);
+        }
         color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
         color_target.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
         color_target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
@@ -908,6 +1163,12 @@ bool run_gpu_engine(Engine& engine) {
         if (id_fragment_shader) {
             SDL_ReleaseGPUShader(state.device, id_fragment_shader);
         }
+        if (diagnostics_fragment_shader) {
+            SDL_ReleaseGPUShader(state.device, diagnostics_fragment_shader);
+        }
+        if (cluster_fragment_shader) {
+            SDL_ReleaseGPUShader(state.device, cluster_fragment_shader);
+        }
         if (!state.transparent_pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline transparent");
         if (background_fragment_shader && !state.background_pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline background");
@@ -917,6 +1178,16 @@ bool run_gpu_engine(Engine& engine) {
         }
         if (id_fragment_shader && (!state.id_pipeline || !state.id_double_sided_pipeline)) {
             gpu_error("SDL_CreateGPUGraphicsPipeline ID buffer");
+        }
+        if (
+            diagnostics_fragment_shader &&
+            (!state.diagnostics_pipeline || !state.diagnostics_double_sided_pipeline)) {
+            gpu_error("SDL_CreateGPUGraphicsPipeline PBR diagnostic");
+        }
+        if (
+            cluster_fragment_shader &&
+            (!state.cluster_pipeline || !state.cluster_double_sided_pipeline)) {
+            gpu_error("SDL_CreateGPUGraphicsPipeline triangle cluster");
         }
 
         SDL_GPUSamplerCreateInfo sampler_info{};
@@ -1061,6 +1332,8 @@ bool run_gpu_engine(Engine& engine) {
         const std::string screenshot_path = environment_variable("BBLITE_SCREENSHOT");
         bool screenshot_saved = false;
         bool id_buffer_saved = false;
+        bool cluster_buffer_saved = false;
+        bool diagnostics_saved = false;
         const SDL_GPUTextureFormat swapchain_format =
             SDL_GetGPUSwapchainTextureFormat(state.device, state.window);
         const long configured = [&] {
@@ -1105,6 +1378,10 @@ bool run_gpu_engine(Engine& engine) {
             }
             const bool capture_frame = !screenshot_saved && !screenshot_path.empty();
             const bool capture_ids = !id_buffer_saved && !id_buffer_path.empty();
+            const bool capture_clusters =
+                !cluster_buffer_saved && !cluster_buffer_path.empty();
+            const bool capture_diagnostics =
+                !diagnostics_saved && !diagnostic_directory.empty();
             if (capture_frame) create_color(state, swapchain_format, width, height);
             create_depth(state, width, height);
             const std::array<float, 16> matrix =
@@ -1241,15 +1518,41 @@ bool run_gpu_engine(Engine& engine) {
                 gpu_error("SDL_SubmitGPUCommandBuffer");
             }
             if (capture_ids) {
-                save_id_buffer_png(
+                save_geometry_id_buffer_png(
                     state,
                     width,
                     height,
                     matrix,
                     render_plan,
                     engine,
-                    id_buffer_path);
+                    id_buffer_path,
+                    false);
                 id_buffer_saved = true;
+            }
+            if (capture_clusters) {
+                save_geometry_id_buffer_png(
+                    state,
+                    width,
+                    height,
+                    matrix,
+                    render_plan,
+                    engine,
+                    cluster_buffer_path,
+                    true);
+                cluster_buffer_saved = true;
+            }
+            if (capture_diagnostics) {
+                save_pbr_diagnostic_buffers(
+                    state,
+                    width,
+                    height,
+                    matrix,
+                    render_plan,
+                    scene,
+                    engine,
+                    camera,
+                    diagnostic_directory);
+                diagnostics_saved = true;
             }
             if (benchmark && frame >= warmup) {
                 samples.push_back(monotonic_milliseconds() - start);

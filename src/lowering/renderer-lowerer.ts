@@ -424,11 +424,22 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
             "background-skybox.frag.msl",
             "diagnostic-id.frag.hlsl",
             "diagnostic-id.frag.msl",
+            "diagnostic-cluster.frag.hlsl",
+            "diagnostic-cluster.frag.msl",
         ];
-        return sources.map((name) => ({
+        const result = sources.map((name) => ({
             output: `upstream/shaders/${name}`,
             data: readFileSync(resolve(templateRoot, name), "utf8"),
         }));
+        for (const extension of ["hlsl", "msl"] as const) {
+            result.push({
+                output: `upstream/shaders/boombox-diagnostics.frag.${extension}`,
+                data:
+                    "#define BBLITE_DIAGNOSTICS 1\n" +
+                    readFileSync(resolve(templateRoot, `boombox.frag.${extension}`), "utf8"),
+            });
+        }
+        return result;
     }
 
     public fidelityManifest(): RendererFidelityManifest {

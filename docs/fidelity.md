@@ -126,11 +126,14 @@ from glTF node/mesh/primitive order, and reports contain `drawAttribution` and
 `hotspotAttribution` joined with node, mesh, material, alpha mode, and
 double-sided metadata.
 
-BoomBox contains one large primitive and one material, so its current
-attribution correctly identifies `BoomBox_Mat` but cannot yet distinguish the
-speaker grille from the top controls. The next diagnostic layer is
-triangle-cluster IDs plus optional depth, normal, roughness, metallic, direct
-light, and IBL intermediate captures.
+BoomBox contains one large primitive and one material, so parity additionally
+captures stable 128-triangle cluster IDs. The report maps cluster ranges and
+hotspots back to the glTF render item.
+
+The same production PBR shader is macro-specialized into a diagnostics MRT
+variant that captures depth, encoded world normal, roughness/metallic/AO,
+direct light, and IBL. The next fidelity step is capturing equivalent
+intermediates from Babylon WebGPU and comparing each buffer directly.
 
 ## Validation artifact meaning
 

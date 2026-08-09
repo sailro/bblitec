@@ -34,6 +34,18 @@ struct FragmentInput
     float2 uv : TEXCOORD3;
 };
 
+#if defined(BBLITE_DIAGNOSTICS)
+struct FragmentOutput
+{
+    float4 color : SV_Target0;
+    float4 normal : SV_Target1;
+    float4 material : SV_Target2;
+    float4 direct : SV_Target3;
+    float4 ibl : SV_Target4;
+    float4 depth : SV_Target5;
+};
+#endif
+
 static const float PI = 3.14159265358979323846;
 
 float3 evaluateIrradiance(float3 normal)
@@ -74,7 +86,11 @@ float3 fresnelSchlick(float cosine, float3 f0)
     return f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0);
 }
 
+#if defined(BBLITE_DIAGNOSTICS)
+FragmentOutput main(FragmentInput input)
+#else
 float4 main(FragmentInput input) : SV_Target
+#endif
 {
     const float3 geometricNormal = normalize(input.normal);
     const float3 tangent = normalize(input.tangent.xyz - geometricNormal * dot(input.tangent.xyz, geometricNormal));
@@ -167,5 +183,16 @@ float4 main(FragmentInput input) : SV_Target
     color = environmentFactors.y < 1.0
         ? lerp(float3(0.5, 0.5, 0.5), color, environmentFactors.y)
         : lerp(color, highContrast, environmentFactors.y - 1.0);
+#if defined(BBLITE_DIAGNOSTICS)
+    FragmentOutput output;
+    output.color = float4(color, materialOptions.x > 1.5 ? alpha : 1.0);
+    output.normal = float4(normal * 0.5 + 0.5, 1.0);
+    output.material = float4(roughness, metallic, occlusion, 1.0);
+    output.direct = float4(saturate(finalDirectSpecular + directDiffuse), 1.0);
+    output.ibl = float4(saturate(finalIrradiance + finalRadiance), 1.0);
+    output.depth = float4(input.position.z, input.position.z, input.position.z, 1.0);
+    return output;
+#else
     return float4(color, materialOptions.x > 1.5 ? alpha : 1.0);
+#endif
 }

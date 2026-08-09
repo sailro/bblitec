@@ -27,6 +27,10 @@ interface RenderItemSpecialization {
     meshIndex: number;
     meshName?: string;
     primitiveIndex: number;
+    triangleCount: number;
+    trianglesPerCluster: number;
+    clusterIdStart: number;
+    clusterCount: number;
     materialIndex?: number;
     materialName?: string;
     alphaMode: "OPAQUE" | "MASK" | "BLEND";
@@ -63,7 +67,9 @@ function renderItemSpecializations(document: JsonRecord): RenderItemSpecializati
     const nodes = asRecords(document.nodes);
     const meshes = asRecords(document.meshes);
     const materials = asRecords(document.materials);
+    const accessors = asRecords(document.accessors);
     const result: RenderItemSpecialization[] = [];
+    let nextClusterId = 1;
     nodes.forEach((node, nodeIndex) => {
         const meshIndex = asNumber(node.mesh);
         if (meshIndex === undefined) return;
@@ -77,6 +83,22 @@ function renderItemSpecializations(document: JsonRecord): RenderItemSpecializati
                 alphaModeValue === "BLEND" || alphaModeValue === "MASK"
                     ? alphaModeValue
                     : "OPAQUE";
+            const attributes = asRecord(primitive.attributes);
+            const indexAccessor = asNumber(primitive.indices);
+            const positionAccessor = asNumber(attributes?.POSITION);
+            const elementAccessor =
+                indexAccessor === undefined ? positionAccessor : indexAccessor;
+            const elementCount =
+                elementAccessor === undefined
+                    ? 0
+                    : asNumber(accessors[elementAccessor]?.count) ?? 0;
+            const triangleCount = (asNumber(primitive.mode) ?? 4) === 4
+                ? Math.floor(elementCount / 3)
+                : 0;
+            const trianglesPerCluster = 128;
+            const clusterCount = Math.ceil(triangleCount / trianglesPerCluster);
+            const clusterIdStart = clusterCount > 0 ? nextClusterId : 0;
+            nextClusterId += clusterCount;
             result.push({
                 drawId: result.length + 1,
                 nodeIndex,
@@ -84,6 +106,10 @@ function renderItemSpecializations(document: JsonRecord): RenderItemSpecializati
                 meshIndex,
                 ...(asString(mesh.name) ? { meshName: asString(mesh.name)! } : {}),
                 primitiveIndex,
+                triangleCount,
+                trianglesPerCluster,
+                clusterIdStart,
+                clusterCount,
                 ...(materialIndex !== undefined ? { materialIndex } : {}),
                 ...(asString(material?.name) ? { materialName: asString(material?.name)! } : {}),
                 alphaMode,
@@ -185,15 +211,21 @@ export function emitAssetSpecializations(outputRoot: string, assets: CompileAsse
     const gltfAssets = assets.filter((asset) => asset.kind === "gltf");
     if (gltfAssets.length === 0) return;
     let nextDrawId = 1;
+    let nextClusterId = 1;
     const specializations = gltfAssets.map((asset) => {
         const specialization =
             specializeGltf(resolve(outputRoot, "assets", asset.output), asset.output);
         return {
             ...specialization,
-            renderItems: specialization.renderItems.map((item) => ({
-                ...item,
-                drawId: nextDrawId++,
-            })),
+            renderItems: specialization.renderItems.map((item) => {
+                const clusterIdStart = item.clusterCount > 0 ? nextClusterId : 0;
+                nextClusterId += item.clusterCount;
+                return {
+                    ...item,
+                    drawId: nextDrawId++,
+                    clusterIdStart,
+                };
+            }),
         };
     });
     const output = resolve(outputRoot, "upstream/gltf-specialization.json");
