@@ -6,10 +6,12 @@ import { spawnSync } from "node:child_process";
 import { captureBabylonReference } from "./capture-reference.js";
 import {
     analyzeDifference,
+    analyzeIdBuffer,
     compareImages,
     compareRegion,
     generateDiffMap,
     generateHotspotMap,
+    generateIdVisualization,
     imageDimensions,
 } from "./parity.js";
 
@@ -19,6 +21,7 @@ interface ParityConfig {
     reference: string;
     actual: string;
     outputDirectory: string;
+    specialization?: string;
     backgroundColor: [number, number, number];
     backgroundThreshold: number;
     thresholds: {
@@ -36,6 +39,23 @@ interface ParityConfig {
         maxRegionMad: number;
         minWithin1: number;
     };
+}
+
+interface RenderItemMetadata {
+    drawId: number;
+    nodeIndex: number;
+    nodeName?: string;
+    meshIndex: number;
+    meshName?: string;
+    primitiveIndex: number;
+    materialIndex?: number;
+    materialName?: string;
+    alphaMode: "OPAQUE" | "MASK" | "BLEND";
+    doubleSided: boolean;
+}
+
+interface GltfSpecialization {
+    renderItems: RenderItemMetadata[];
 }
 
 interface Arguments {
@@ -80,7 +100,12 @@ function defaultExecutable(): string {
         : "native/build-boombox-release/bblite_native";
 }
 
-function runNative(executable: string, screenshot: string, gpu: boolean): void {
+function runNative(
+    executable: string,
+    screenshot: string,
+    gpu: boolean,
+    idBufferPath?: string,
+): void {
     if (!existsSync(executable)) {
         throw new Error(`Native executable not found: ${executable}. Build the BoomBox Release target first.`);
     }
@@ -90,7 +115,10 @@ function runNative(executable: string, screenshot: string, gpu: boolean): void {
         env: {
             ...process.env,
             ...(gpu
-                ? { BBLITE_GPU: "1" }
+                ? {
+                      BBLITE_GPU: "1",
+                      ...(idBufferPath ? { BBLITE_ID_BUFFER: resolve(idBufferPath) } : {}),
+                  }
                 : {
                       BBLITE_GPU: "0",
                       SDL_VIDEODRIVER: "dummy",
@@ -134,6 +162,12 @@ async function main(): Promise<void> {
               driverSelection: process.env.SDL_RENDER_DRIVER ?? "software",
           };
     const artifactSuffix = arguments_.gpu ? "gpu" : "cpu";
+    const idBufferPath = arguments_.gpu
+        ? resolve(outputDirectory, "draw-ids-gpu.png")
+        : undefined;
+    const idVisualizationPath = arguments_.gpu
+        ? resolve(outputDirectory, "draw-ids-visual-gpu.png")
+        : undefined;
 
     await captureBabylonReference({
         output: reference,
@@ -145,6 +179,7 @@ async function main(): Promise<void> {
             resolve(arguments_.executable ?? process.env.BBLITE_NATIVE_EXE ?? defaultExecutable()),
             actual,
             arguments_.gpu,
+            idBufferPath,
         );
     }
 
@@ -169,6 +204,31 @@ async function main(): Promise<void> {
         config.backgroundColor,
         config.backgroundThreshold,
     );
+    const idBreakdown =
+        idBufferPath && existsSync(idBufferPath)
+            ? analyzeIdBuffer(actual, reference, idBufferPath, breakdown.hotspots)
+            : undefined;
+    if (idBufferPath && idVisualizationPath && existsSync(idBufferPath)) {
+        generateIdVisualization(idBufferPath, idVisualizationPath);
+    }
+    const specializations = config.specialization && existsSync(resolve(config.specialization))
+        ? JSON.parse(readFileSync(resolve(config.specialization), "utf8")) as GltfSpecialization[]
+        : [];
+    const renderItems = new Map(
+        specializations.flatMap((specialization) => specialization.renderItems)
+            .map((item) => [item.drawId, item] as const),
+    );
+    const drawAttribution = idBreakdown?.draws.map((draw) => ({
+        ...draw,
+        renderItem: renderItems.get(draw.drawId),
+    }));
+    const hotspotAttribution = idBreakdown?.hotspots.map((hotspot) => ({
+        ...hotspot,
+        drawIds: hotspot.drawIds.map((draw) => ({
+            ...draw,
+            renderItem: renderItems.get(draw.drawId),
+        })),
+    }));
     const diffPath = resolve(outputDirectory, `diff-map-${artifactSuffix}.png`);
     const hotspotPath = resolve(outputDirectory, `hotspots-${artifactSuffix}.png`);
     generateDiffMap(actual, reference, diffPath);
@@ -181,6 +241,8 @@ async function main(): Promise<void> {
         full,
         region,
         breakdown,
+        ...(drawAttribution ? { drawAttribution } : {}),
+        ...(hotspotAttribution ? { hotspotAttribution } : {}),
         ratios: {
             exact: percentage(region.exactMatch, region.regionPixels),
             within1: percentage(region.within1, region.regionPixels),
@@ -189,7 +251,16 @@ async function main(): Promise<void> {
         },
         thresholds,
         upstreamThresholds: config.upstreamThresholds,
-        files: { actual, reference, diff: diffPath, hotspots: hotspotPath },
+        files: {
+            actual,
+            reference,
+            diff: diffPath,
+            hotspots: hotspotPath,
+            ...(idBufferPath && existsSync(idBufferPath) ? { drawIds: idBufferPath } : {}),
+            ...(idVisualizationPath && existsSync(idVisualizationPath)
+                ? { drawIdsVisual: idVisualizationPath }
+                : {}),
+        },
     };
     const reportPath = resolve(outputDirectory, `report-${artifactSuffix}.json`);
     writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
@@ -202,6 +273,18 @@ async function main(): Promise<void> {
             `within1=${(report.ratios.within1 * 100).toFixed(2)}%, ` +
             `within5=${(report.ratios.within5 * 100).toFixed(2)}%`,
     );
+    if (drawAttribution?.length) {
+        const worst = drawAttribution[0]!;
+        const label =
+            worst.renderItem?.materialName ??
+            worst.renderItem?.meshName ??
+            worst.renderItem?.nodeName ??
+            `draw ${worst.drawId}`;
+        console.log(
+            `Worst draw: ${label} (id=${worst.drawId}, MAD=${worst.mad.toFixed(3)}, ` +
+                `pixels=${worst.pixels})`,
+        );
+    }
     console.log(
         `Diff attribution: background=${breakdown.regions.background.mad.toFixed(3)}, ` +
             `edges=${breakdown.regions.foregroundEdge.mad.toFixed(3)}, ` +

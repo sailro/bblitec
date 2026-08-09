@@ -2,8 +2,9 @@
   "name": "BoomBox",
   "playgroundUrl": "https://playground.babylonjs.com/#QCU8DJ#800",
   "reference": "reference/boombox/babylon-ref-golden.png",
-  "actual": "artifacts/parity/boombox-native.png",
+  "actual": "artifacts/parity/boombox-cpu.png",
   "outputDirectory": "artifacts/parity",
+  "specialization": "generated/boombox/upstream/gltf-specialization.json",
   "backgroundColor": [51, 51, 77],
   "backgroundThreshold": 30,
   "thresholds": {

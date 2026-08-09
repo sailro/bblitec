@@ -1,0 +1,33 @@
+#include <metal_stdlib>
+using namespace metal;
+
+struct IdUniforms {
+    float4 idColor;
+    float4 alphaOptions;
+};
+
+struct FragmentInput {
+    float4 position [[position]];
+    float3 worldPosition;
+    float3 normal;
+    float4 tangent;
+    float2 uv;
+};
+
+fragment float4 main0(
+    FragmentInput input [[stage_in]],
+    texture2d<float> baseColorTexture [[texture(0)]],
+    sampler baseColorSampler [[sampler(0)]],
+    constant IdUniforms& uniforms [[buffer(0)]]) {
+    const float alpha =
+        baseColorTexture.sample(baseColorSampler, input.uv).a *
+        uniforms.alphaOptions.z;
+    if (
+        (uniforms.alphaOptions.x > 0.5 &&
+         uniforms.alphaOptions.x < 1.5 &&
+         alpha < uniforms.alphaOptions.y) ||
+        (uniforms.alphaOptions.x > 1.5 && alpha <= 0.0)) {
+        discard_fragment();
+    }
+    return uniforms.idColor;
+}

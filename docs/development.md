@@ -116,6 +116,8 @@ Outputs are written to `artifacts/parity`:
 - actual PNG
 - renderer-specific diff map (`diff-map-cpu.png` or `diff-map-gpu.png`)
 - annotated hotspot map (`hotspots-cpu.png` or `hotspots-gpu.png`)
+- lossless and colorized GPU draw-ID maps (`draw-ids-gpu.png` and
+  `draw-ids-visual-gpu.png`)
 - renderer-specific JSON report (`report-cpu.json` or `report-gpu.json`)
 
 Reports include background/edge/interior attribution, signed channel bias, and

@@ -43,6 +43,11 @@ not the environment background. Signed foreground bias is approximately
 `[-3.99, -4.13, -4.46]` RGB bytes, so material interiors are also slightly
 darker than the reference.
 
+The optional GPU ID pass maps all visible BoomBox pixels to draw ID `1`,
+node/mesh `BoomBox`, material `BoomBox_Mat`. Because the source asset is one
+large primitive, finer localization now requires triangle-cluster or
+intermediate PBR diagnostic buffers.
+
 Current GPU regression ceilings:
 
 - full-image MAD: `1.0`

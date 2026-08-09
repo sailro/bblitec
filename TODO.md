@@ -67,15 +67,18 @@ variant without editing a scene-specific template.
 **Done when:** PAL iterates generated draw commands without inspecting Babylon
 material records.
 
-### Add draw/material ID diagnostics
+### Add deeper per-pixel diagnostics
 
-- [ ] Generate an optional ID render target keyed by render item and material.
-- [ ] Add render-item/material metadata to parity reports.
-- [ ] Map high-MAD tiles to IDs and upstream material feature sets.
-- [ ] Generate an annotated hotspot image for local investigations.
+- [ ] Add optional depth, world-normal, roughness, metallic, diffuse, direct
+  light, and IBL output captures.
+- [ ] Compare each intermediate buffer with an equivalent Babylon WebGPU
+  capture.
+- [ ] Add triangle-cluster or mesh-feature IDs for assets such as BoomBox that
+  contain one large primitive/material draw.
+- [ ] Map hotspot tiles to shader variant and intermediate value deltas.
 
-**Done when:** a parity hotspot identifies the generated draw, material,
-shader variant, and upstream source features responsible for the pixels.
+**Done when:** a hotspot can be attributed beyond one draw/material to the
+specific raster or PBR intermediate that diverges.
 
 ### Match remaining PBR behavior
 

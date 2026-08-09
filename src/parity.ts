@@ -40,6 +40,24 @@ export interface DiffBreakdown {
     hotspots: DiffHotspot[];
 }
 
+export interface DrawDiffSummary extends DiffRegionSummary {
+    drawId: number;
+    bounds: { x: number; y: number; width: number; height: number };
+}
+
+export interface HotspotDrawAttribution {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    drawIds: Array<{ drawId: number; pixels: number }>;
+}
+
+export interface IdDiffBreakdown {
+    draws: DrawDiffSummary[];
+    hotspots: HotspotDrawAttribution[];
+}
+
 interface PngImage {
     width: number;
     height: number;
@@ -350,6 +368,110 @@ export function generateHotspotMap(
             }
         }
     });
+    mkdirSync(dirname(outputPath), { recursive: true });
+    writeFileSync(outputPath, PNG.sync.write(output));
+}
+
+export function analyzeIdBuffer(
+    actualPath: string,
+    referencePath: string,
+    idPath: string,
+    hotspots: readonly DiffHotspot[] = [],
+): IdDiffBreakdown {
+    const actual = loadPng(actualPath);
+    const reference = loadPng(referencePath);
+    const ids = loadPng(idPath);
+    const width = Math.min(actual.width, reference.width, ids.width);
+    const height = Math.min(actual.height, reference.height, ids.height);
+    const draws = new Map<
+        number,
+        { pixels: number; sum: number; max: number; minX: number; minY: number; maxX: number; maxY: number }
+    >();
+    const idAt = (x: number, y: number): number => {
+        const index = (y * ids.width + x) * 4;
+        return ids.data[index]! | (ids.data[index + 1]! << 8) | (ids.data[index + 2]! << 16);
+    };
+    for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+            const drawId = idAt(x, y);
+            if (drawId === 0) continue;
+            const difference = comparePixel(actual, reference, x, y);
+            const entry = draws.get(drawId) ?? {
+                pixels: 0,
+                sum: 0,
+                max: 0,
+                minX: x,
+                minY: y,
+                maxX: x,
+                maxY: y,
+            };
+            entry.pixels += 1;
+            entry.sum += difference.average;
+            entry.max = Math.max(entry.max, difference.max);
+            entry.minX = Math.min(entry.minX, x);
+            entry.minY = Math.min(entry.minY, y);
+            entry.maxX = Math.max(entry.maxX, x);
+            entry.maxY = Math.max(entry.maxY, y);
+            draws.set(drawId, entry);
+        }
+    }
+    return {
+        draws: [...draws.entries()]
+            .map(([drawId, entry]) => ({
+                drawId,
+                ...regionSummary(entry.pixels, entry.sum, entry.max),
+                bounds: {
+                    x: entry.minX,
+                    y: entry.minY,
+                    width: entry.maxX - entry.minX + 1,
+                    height: entry.maxY - entry.minY + 1,
+                },
+            }))
+            .sort((left, right) => right.mad - left.mad || right.pixels - left.pixels),
+        hotspots: hotspots.map((hotspot) => {
+            const counts = new Map<number, number>();
+            for (let y = hotspot.y; y < hotspot.y + hotspot.height && y < height; y += 1) {
+                for (let x = hotspot.x; x < hotspot.x + hotspot.width && x < width; x += 1) {
+                    const drawId = idAt(x, y);
+                    if (drawId !== 0) counts.set(drawId, (counts.get(drawId) ?? 0) + 1);
+                }
+            }
+            return {
+                x: hotspot.x,
+                y: hotspot.y,
+                width: hotspot.width,
+                height: hotspot.height,
+                drawIds: [...counts.entries()]
+                    .map(([drawId, pixels]) => ({ drawId, pixels }))
+                    .sort((left, right) => right.pixels - left.pixels),
+            };
+        }),
+    };
+}
+
+export function generateIdVisualization(idPath: string, outputPath: string): void {
+    const ids = loadPng(idPath);
+    const output = new PNG({ width: ids.width, height: ids.height });
+    for (let y = 0; y < ids.height; y += 1) {
+        for (let x = 0; x < ids.width; x += 1) {
+            const index = (y * ids.width + x) * 4;
+            const drawId =
+                ids.data[index]! |
+                (ids.data[index + 1]! << 8) |
+                (ids.data[index + 2]! << 16);
+            if (drawId === 0) {
+                output.data[index] = 0;
+                output.data[index + 1] = 0;
+                output.data[index + 2] = 0;
+                output.data[index + 3] = 255;
+                continue;
+            }
+            output.data[index] = 55 + (drawId * 97) % 200;
+            output.data[index + 1] = 55 + (drawId * 57) % 200;
+            output.data[index + 2] = 55 + (drawId * 137) % 200;
+            output.data[index + 3] = 255;
+        }
+    }
     mkdirSync(dirname(outputPath), { recursive: true });
     writeFileSync(outputPath, PNG.sync.write(output));
 }

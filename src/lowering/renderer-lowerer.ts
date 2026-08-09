@@ -422,6 +422,8 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
             "background-ground.frag.msl",
             "background-skybox.frag.hlsl",
             "background-skybox.frag.msl",
+            "diagnostic-id.frag.hlsl",
+            "diagnostic-id.frag.msl",
         ];
         return sources.map((name) => ({
             output: `upstream/shaders/${name}`,

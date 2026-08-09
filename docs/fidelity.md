@@ -98,6 +98,8 @@ Parity reports are renderer-specific:
 - `diff-map-gpu.png`
 - `hotspots-cpu.png`
 - `hotspots-gpu.png`
+- `draw-ids-gpu.png`
+- `draw-ids-visual-gpu.png`
 
 Each report includes:
 
@@ -119,9 +121,16 @@ Interpretation:
 | Uniform signed RGB bias | exposure, gamma, tone mapping, color conversion |
 | Localized hotspot | one material, texture region, mesh, or transparency path |
 
-The next diagnostic step after tile hotspots is an optional generated ID
-buffer that writes draw/material identifiers. That will map a hotspot directly
-to a generated render item and its upstream material feature set.
+GPU parity also captures a lossless draw-ID buffer. Stable IDs are emitted
+from glTF node/mesh/primitive order, and reports contain `drawAttribution` and
+`hotspotAttribution` joined with node, mesh, material, alpha mode, and
+double-sided metadata.
+
+BoomBox contains one large primitive and one material, so its current
+attribution correctly identifies `BoomBox_Mat` but cannot yet distinguish the
+speaker grille from the top controls. The next diagnostic layer is
+triangle-cluster IDs plus optional depth, normal, roughness, metallic, direct
+light, and IBL intermediate captures.
 
 ## CI artifact meaning
 

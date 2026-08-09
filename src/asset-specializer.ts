@@ -9,6 +9,7 @@ interface GltfSpecialization {
     asset: string;
     extensionsUsed: string[];
     staticModules: string[];
+    renderItems: RenderItemSpecialization[];
     features: {
         animations: boolean;
         morphTargets: boolean;
@@ -17,6 +18,19 @@ interface GltfSpecialization {
         nonTrianglePrimitives: boolean;
         extras: boolean;
     };
+}
+
+interface RenderItemSpecialization {
+    drawId: number;
+    nodeIndex: number;
+    nodeName?: string;
+    meshIndex: number;
+    meshName?: string;
+    primitiveIndex: number;
+    materialIndex?: number;
+    materialName?: string;
+    alphaMode: "OPAQUE" | "MASK" | "BLEND";
+    doubleSided: boolean;
 }
 
 function asRecord(value: unknown): JsonRecord | undefined {
@@ -35,6 +49,49 @@ function asStrings(value: unknown): string[] {
     return Array.isArray(value)
         ? value.filter((entry): entry is string => typeof entry === "string")
         : [];
+}
+
+function asNumber(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function asString(value: unknown): string | undefined {
+    return typeof value === "string" ? value : undefined;
+}
+
+function renderItemSpecializations(document: JsonRecord): RenderItemSpecialization[] {
+    const nodes = asRecords(document.nodes);
+    const meshes = asRecords(document.meshes);
+    const materials = asRecords(document.materials);
+    const result: RenderItemSpecialization[] = [];
+    nodes.forEach((node, nodeIndex) => {
+        const meshIndex = asNumber(node.mesh);
+        if (meshIndex === undefined) return;
+        const mesh = meshes[meshIndex];
+        if (!mesh) return;
+        asRecords(mesh.primitives).forEach((primitive, primitiveIndex) => {
+            const materialIndex = asNumber(primitive.material);
+            const material = materialIndex === undefined ? undefined : materials[materialIndex];
+            const alphaModeValue = asString(material?.alphaMode);
+            const alphaMode =
+                alphaModeValue === "BLEND" || alphaModeValue === "MASK"
+                    ? alphaModeValue
+                    : "OPAQUE";
+            result.push({
+                drawId: result.length + 1,
+                nodeIndex,
+                ...(asString(node.name) ? { nodeName: asString(node.name)! } : {}),
+                meshIndex,
+                ...(asString(mesh.name) ? { meshName: asString(mesh.name)! } : {}),
+                primitiveIndex,
+                ...(materialIndex !== undefined ? { materialIndex } : {}),
+                ...(asString(material?.name) ? { materialName: asString(material?.name)! } : {}),
+                alphaMode,
+                doubleSided: material?.doubleSided === true,
+            });
+        });
+    });
+    return result;
 }
 
 function parseGlbJson(path: string): JsonRecord {
@@ -112,6 +169,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
         asset: assetName,
         extensionsUsed,
         staticModules: [...modules].sort(),
+        renderItems: renderItemSpecializations(document),
         features: {
             animations,
             morphTargets,
@@ -126,9 +184,18 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
 export function emitAssetSpecializations(outputRoot: string, assets: CompileAsset[]): void {
     const gltfAssets = assets.filter((asset) => asset.kind === "gltf");
     if (gltfAssets.length === 0) return;
-    const specializations = gltfAssets.map((asset) =>
-        specializeGltf(resolve(outputRoot, "assets", asset.output), asset.output),
-    );
+    let nextDrawId = 1;
+    const specializations = gltfAssets.map((asset) => {
+        const specialization =
+            specializeGltf(resolve(outputRoot, "assets", asset.output), asset.output);
+        return {
+            ...specialization,
+            renderItems: specialization.renderItems.map((item) => ({
+                ...item,
+                drawId: nextDrawId++,
+            })),
+        };
+    });
     const output = resolve(outputRoot, "upstream/gltf-specialization.json");
     mkdirSync(dirname(output), { recursive: true });
     writeFileSync(output, `${JSON.stringify(specializations, null, 2)}\n`);

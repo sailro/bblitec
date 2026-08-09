@@ -6,10 +6,12 @@ import test from "node:test";
 import { PNG } from "pngjs";
 import {
     analyzeDifference,
+    analyzeIdBuffer,
     compareImages,
     compareRegion,
     generateDiffMap,
     generateHotspotMap,
+    generateIdVisualization,
 } from "../src/parity.js";
 
 function writePng(path: string, pixels: Array<[number, number, number, number]>): void {
@@ -27,6 +29,8 @@ test("matches Babylon MAD and foreground-region semantics", () => {
         const actual = join(directory, "actual.png");
         const diff = join(directory, "diff.png");
         const hotspots = join(directory, "hotspots.png");
+        const ids = join(directory, "ids.png");
+        const idsVisual = join(directory, "ids-visual.png");
         writePng(reference, [
             [51, 51, 77, 255],
             [10, 20, 30, 255],
@@ -34,6 +38,10 @@ test("matches Babylon MAD and foreground-region semantics", () => {
         writePng(actual, [
             [51, 51, 77, 255],
             [13, 26, 30, 255],
+        ]);
+        writePng(ids, [
+            [0, 0, 0, 255],
+            [1, 0, 0, 255],
         ]);
 
         assert.deepEqual(compareImages(actual, reference), {
@@ -62,6 +70,20 @@ test("matches Babylon MAD and foreground-region semantics", () => {
         assert.equal(breakdown.regions.foregroundEdge.mad, 3);
         assert.equal(breakdown.regions.foregroundInterior.pixels, 0);
         assert.equal(breakdown.hotspots.length, 1);
+        const idBreakdown = analyzeIdBuffer(actual, reference, ids, breakdown.hotspots);
+        assert.deepEqual(idBreakdown.draws, [
+            {
+                drawId: 1,
+                pixels: 1,
+                mad: 3,
+                maxDiff: 6,
+                bounds: { x: 1, y: 0, width: 1, height: 1 },
+            },
+        ]);
+        assert.deepEqual(idBreakdown.hotspots[0]?.drawIds, [{ drawId: 1, pixels: 1 }]);
+        generateIdVisualization(ids, idsVisual);
+        const idVisualPng = PNG.sync.read(readFileSync(idsVisual));
+        assert.deepEqual([...idVisualPng.data.slice(4, 8)], [152, 112, 192, 255]);
         generateHotspotMap(actual, breakdown.hotspots, hotspots);
         const hotspotPng = PNG.sync.read(readFileSync(hotspots));
         assert.deepEqual([...hotspotPng.data.slice(4, 8)], [255, 64, 64, 255]);

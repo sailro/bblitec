@@ -30,7 +30,9 @@ test("specializes glTF dynamic feature imports without any-typed JSON", () => {
             extensionsUsed: ["KHR_texture_transform"],
             animations: [{}],
             accessors: [{ sparse: {} }],
-            meshes: [{ primitives: [{ mode: 1, targets: [{}] }] }],
+            materials: [{ name: "Glass", alphaMode: "BLEND", doubleSided: true }],
+            meshes: [{ name: "Mesh", primitives: [{ mode: 1, targets: [{}], material: 0 }] }],
+            nodes: [{ name: "Node", mesh: 0 }],
             skins: [{}],
         });
         const specialization = specializeGltf(path, "asset.glb");
@@ -41,6 +43,20 @@ test("specializes glTF dynamic feature imports without any-typed JSON", () => {
         assert.ok(specialization.staticModules.includes("./gltf-feature-skeleton.js"));
         assert.ok(specialization.staticModules.includes("./gltf-feature-sparse.js"));
         assert.ok(specialization.staticModules.includes("./gltf-feature-primitive.js"));
+        assert.deepEqual(specialization.renderItems, [
+            {
+                drawId: 1,
+                nodeIndex: 0,
+                nodeName: "Node",
+                meshIndex: 0,
+                meshName: "Mesh",
+                primitiveIndex: 0,
+                materialIndex: 0,
+                materialName: "Glass",
+                alphaMode: "BLEND",
+                doubleSided: true,
+            },
+        ]);
     } finally {
         rmSync(directory, { recursive: true, force: true });
     }
