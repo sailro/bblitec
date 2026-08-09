@@ -118,8 +118,11 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
         "camera:arc-rotate",
         "camera:default",
         "environment:ibl",
+        "background:ground",
+        "background:skybox",
         "light:hemispheric",
         "loader:gltf",
+        "renderer:pbr",
     ]);
     assert.deepEqual(result.manifest.runtimeSources, [
         "src/pal.cpp",
@@ -183,4 +186,84 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
         "upstream/src/gltf_loader.cpp",
         "upstream/src/renderer_plan.cpp",
     ]);
+});
+
+test("compiles Babylon Lite scene 10 PBR rough sphere", () => {
+    const source = readFileSync(resolve("examples/scene10-pbr-rough.ts"), "utf8");
+    const result = compileSource(source, {
+        fileName: "examples/scene10-pbr-rough.ts",
+    });
+
+    assert.deepEqual(result.manifest.features, [
+        "core",
+        "backend:sdl",
+        "camera:arc-rotate",
+        "light:hemispheric",
+        "material:pbr",
+        "mesh:sphere",
+        "renderer:pbr",
+    ]);
+    assert.deepEqual(result.manifest.runtimeSources, [
+        "src/pal.cpp",
+        "src/pal_sdl.cpp",
+        "src/pal_sdl_gpu.cpp",
+    ]);
+    assert.deepEqual(result.manifest.assets, []);
+    assert.match(result.cpp, /bbl::create_solid_texture/);
+    assert.match(result.cpp, /bbl::create_pbr_material/);
+    assert.match(result.cpp, /bbl::create_sphere/);
+    assert.match(result.cpp, /\.material =/);
+    assert.deepEqual(result.manifest.generatedSources, [
+        "upstream/src/engine.cpp",
+        "upstream/src/scene_core.cpp",
+        "upstream/src/camera_arc_rotate.cpp",
+        "upstream/src/camera_controls.cpp",
+        "upstream/src/light_matrix.cpp",
+        "upstream/src/light_hemispheric.cpp",
+        "upstream/src/renderer_plan.cpp",
+        "upstream/src/material_pbr.cpp",
+        "upstream/src/mesh_factories.cpp",
+    ]);
+});
+
+test("compiles Babylon Lite scene 13 PBR spheres grid", () => {
+    const source = readFileSync(resolve("examples/scene13-pbr-spheres.ts"), "utf8");
+    const result = compileSource(source, {
+        fileName: "examples/scene13-pbr-spheres.ts",
+    });
+
+    assert.deepEqual(result.manifest.features, [
+        "core",
+        "backend:sdl",
+        "camera:arc-rotate",
+        "camera:default",
+        "environment:ibl",
+        "background:ground",
+        "light:hemispheric",
+        "loader:gltf",
+        "renderer:pbr",
+    ]);
+    assert.deepEqual(
+        result.manifest.assets.map(({ source, kind }) => ({ source, kind })),
+        [
+            {
+                source: "https://assets.babylonjs.com/meshes/PBR_Spheres.glb",
+                kind: "gltf",
+            },
+            {
+                source: "https://assets.babylonjs.com/core/environments/environmentSpecular.env",
+                kind: "environment",
+            },
+            {
+                source: "https://assets.babylonjs.com/core/environments/backgroundGround.png",
+                kind: "texture",
+            },
+            {
+                source: "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/master/packages/babylon-lite/assets/brdf-lut.png",
+                kind: "texture",
+            },
+        ],
+    );
+    assert.match(result.cpp, /PBR_Spheres\.glb/);
+    assert.doesNotMatch(result.cpp, /skipSkybox/);
 });

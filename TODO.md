@@ -16,21 +16,7 @@ work.
   before completing renderer milestones.
 - Complete local validation before committing or pushing.
 
-## P0 — Prove generalization
-
-### Add an unrelated reference scene
-
-- [ ] Select a second Babylon Lite scene that uses a different glTF asset,
-  camera framing, material distribution, and environment.
-- [ ] Add its authoritative TypeScript entry under `examples/`.
-- [ ] Add deterministic asset materialization and provenance.
-- [ ] Add reference capture metadata and a committed golden.
-- [ ] Add CPU and GPU parity configurations.
-- [ ] Add a native build target and local parity commands.
-- [ ] Verify no BoomBox-specific assumptions are needed.
-
-**Done when:** both scenes compile from clean checkout, render through the same
-generated renderer, and pass independent visual regression gates.
+## P0 — Expand generalization
 
 ### Replace specialized shader templates with a general shader pipeline
 
@@ -41,8 +27,6 @@ generated renderer, and pass independent visual regression gates.
 - [ ] Lower the required WGSL subset into the IR.
 - [ ] Emit HLSL/DXIL, SPIR-V, MSL, and eventually WGSL from the same IR.
 - [ ] Preserve SDL_GPU binding-space conventions across all outputs.
-- [ ] Generate shader variants from material/mesh/scene feature flags rather
-  than a fixed `boombox` shader name.
 - [ ] Cache identical variants across meshes and scenes.
 - [ ] Add compiler diagnostics for unsupported WGSL constructs.
 - [ ] Investigate Tint or SDL_shadercross as the backend instead of maintaining
@@ -69,14 +53,23 @@ material records.
 
 ### Add deeper per-pixel diagnostics
 
-- [ ] Compare each intermediate buffer with an equivalent Babylon WebGPU
-  capture.
 - [ ] Add base-color/diffuse and final pre-tone-map HDR captures.
 - [ ] Map hotspot tiles to intermediate value deltas and shader variant.
 - [ ] Generate side-by-side annotated intermediate comparisons.
 
 **Done when:** a hotspot can be attributed beyond one draw/material to the
 specific raster or PBR intermediate that diverges.
+
+### Babylon Lite parity ladder
+
+Completed scene 10 and scene 13 baselines are recorded in `docs/status.md`.
+
+- [ ] Scene 32: unlit color and texture baseline.
+- [ ] Scene 248: texture filtering, wrap modes, and mip selection.
+- [ ] Scenes 168/257/266: winding, negative scale, and double-sided normals.
+- [ ] Scene 274: alpha-to-coverage.
+- [ ] Scenes 145/146: geometry renderer outputs.
+- [ ] Scene 176: MosquitoInAmber transmission/IOR/volume.
 
 ### Match remaining PBR behavior
 

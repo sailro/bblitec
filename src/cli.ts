@@ -12,10 +12,11 @@ interface CliOptions {
     title?: string;
     width?: number;
     height?: number;
+    diagnostics: boolean;
 }
 
 function usage(): never {
-    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>]");
+    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--diagnostics]");
     process.exit(2);
 }
 
@@ -37,6 +38,7 @@ function parseArguments(arguments_: string[]): CliOptions {
     let title: string | undefined;
     let width: number | undefined;
     let height: number | undefined;
+    let diagnostics = false;
 
     for (let index = 1; index < arguments_.length; index += 1) {
         const flag = arguments_[index];
@@ -60,6 +62,9 @@ function parseArguments(arguments_: string[]): CliOptions {
                 height = parsePositiveInteger(value, flag);
                 index += 1;
                 break;
+            case "--diagnostics":
+                diagnostics = true;
+                break;
             default:
                 throw new Error(`Unknown argument '${flag}'.`);
         }
@@ -69,7 +74,14 @@ function parseArguments(arguments_: string[]): CliOptions {
         usage();
     }
 
-    return { input, output, ...(title ? { title } : {}), ...(width ? { width } : {}), ...(height ? { height } : {}) };
+    return {
+        input,
+        output,
+        diagnostics,
+        ...(title ? { title } : {}),
+        ...(width ? { width } : {}),
+        ...(height ? { height } : {}),
+    };
 }
 
 async function materializeAsset(asset: CompileAsset, inputPath: string, outputPath: string): Promise<void> {
@@ -105,7 +117,9 @@ async function main(): Promise<void> {
     rmSync(resolve(outputPath, "upstream"), { recursive: true, force: true });
     await Promise.all(result.manifest.assets.map((asset) => materializeAsset(asset, inputPath, outputPath)));
     emitAssetSpecializations(outputPath, result.manifest.assets);
-    emitUpstreamGenerated(outputPath, result.manifest.features);
+    emitUpstreamGenerated(outputPath, result.manifest.features, {
+        diagnostics: options.diagnostics,
+    });
     writeFileSync(resolve(outputPath, "main.cpp"), result.cpp);
     writeFileSync(resolve(outputPath, "features.cmake"), result.cmake);
     writeFileSync(resolve(outputPath, "manifest.json"), `${JSON.stringify(result.manifest, null, 2)}\n`);

@@ -1,10 +1,13 @@
 #include <bblite/pal.hpp>
+#include <bblite/pal_image.hpp>
+#if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
 #include <bblite/pal_gltf.hpp>
+#endif
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/camera_controls.hpp>
 #include <bblite/upstream/camera_math.hpp>
-#if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #endif
 
@@ -14,11 +17,12 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-#if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
+#if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 #include <SDL3_image/SDL_image.h>
@@ -30,7 +34,7 @@
 
 namespace bbl::pal {
 
-#if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
+#if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 namespace {
 
 struct GpuVertex {
@@ -86,8 +90,8 @@ struct GpuState {
     SDL_GPUGraphicsPipeline* id_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* cluster_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* cluster_double_sided_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* diagnostics_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* diagnostics_double_sided_pipeline = nullptr;
+    std::array<SDL_GPUGraphicsPipeline*, 2> diagnostics_pipelines{};
+    std::array<SDL_GPUGraphicsPipeline*, 2> diagnostics_double_sided_pipelines{};
     SDL_GPUSampler* sampler = nullptr;
     SDL_GPUSampler* background_sampler = nullptr;
     SDL_GPUTexture* environment = nullptr;
@@ -174,8 +178,15 @@ void save_texture_png(
     std::uint32_t width,
     std::uint32_t height,
     const std::string& path) {
-    const std::uint32_t row_bytes = width * 4;
-    const std::uint32_t aligned_row_bytes = (row_bytes + 255u) & ~255u;
+    const std::uint32_t bytes_per_pixel =
+        format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
+            ? 8u
+            : format == SDL_GPU_TEXTUREFORMAT_R16_FLOAT
+                ? 2u
+                : 4u;
+    const std::uint32_t source_row_bytes = width * bytes_per_pixel;
+    const std::uint32_t aligned_row_bytes =
+        (source_row_bytes + 255u) & ~255u;
     SDL_GPUTransferBufferCreateInfo transfer_info{};
     transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
     transfer_info.size = aligned_row_bytes * height;
@@ -186,7 +197,7 @@ void save_texture_png(
     const SDL_GPUTextureRegion source{
         swapchain, 0, 0, 0, 0, 0, width, height, 1};
     const SDL_GPUTextureTransferInfo destination{
-        transfer, 0, aligned_row_bytes / 4, height};
+        transfer, 0, aligned_row_bytes / bytes_per_pixel, height};
     SDL_DownloadFromGPUTexture(copy, &source, &destination);
     SDL_EndGPUCopyPass(copy);
     SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(command);
@@ -207,17 +218,62 @@ void save_texture_png(
         SDL_ReleaseGPUTransferBuffer(device, transfer);
         gpu_error("SDL_MapGPUTransferBuffer screenshot");
     }
-    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(row_bytes) * height);
+    const std::uint32_t output_row_bytes = width * 4;
+    std::vector<std::uint8_t> rgba(
+        static_cast<std::size_t>(output_row_bytes) * height);
     const bool bgra =
         format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM ||
         format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB;
+    const auto half_to_byte = [](std::uint16_t value) {
+        const bool negative = (value & 0x8000u) != 0;
+        const std::uint16_t exponent = (value >> 10) & 0x1fu;
+        const std::uint16_t mantissa = value & 0x03ffu;
+        float decoded = 0.0f;
+        if (exponent == 0) {
+            decoded = std::ldexp(static_cast<float>(mantissa), -24);
+        } else if (exponent == 31) {
+            decoded = mantissa == 0
+                ? std::numeric_limits<float>::infinity()
+                : std::numeric_limits<float>::quiet_NaN();
+        } else {
+            decoded = std::ldexp(
+                1.0f + static_cast<float>(mantissa) / 1024.0f,
+                static_cast<int>(exponent) - 15);
+        }
+        if (negative) decoded = -decoded;
+        return static_cast<std::uint8_t>(
+            std::lround(std::clamp(decoded, 0.0f, 1.0f) * 255.0f));
+    };
     for (std::uint32_t y = 0; y < height; ++y) {
         const std::uint8_t* source_row = mapped + static_cast<std::size_t>(y) * aligned_row_bytes;
-        std::uint8_t* destination_row = rgba.data() + static_cast<std::size_t>(y) * row_bytes;
-        std::memcpy(destination_row, source_row, row_bytes);
-        if (bgra) {
+        std::uint8_t* destination_row =
+            rgba.data() + static_cast<std::size_t>(y) * output_row_bytes;
+        if (format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT) {
+            const auto* source_pixels =
+                reinterpret_cast<const std::uint16_t*>(source_row);
             for (std::uint32_t x = 0; x < width; ++x) {
-                std::swap(destination_row[x * 4], destination_row[x * 4 + 2]);
+                for (std::uint32_t channel = 0; channel < 4; ++channel) {
+                    destination_row[x * 4 + channel] =
+                        half_to_byte(source_pixels[x * 4 + channel]);
+                }
+            }
+        } else if (format == SDL_GPU_TEXTUREFORMAT_R16_FLOAT) {
+            const auto* source_pixels =
+                reinterpret_cast<const std::uint16_t*>(source_row);
+            for (std::uint32_t x = 0; x < width; ++x) {
+                destination_row[x * 4] = half_to_byte(source_pixels[x]);
+                destination_row[x * 4 + 1] = 0;
+                destination_row[x * 4 + 2] = 0;
+                destination_row[x * 4 + 3] = 255;
+            }
+        } else {
+            std::memcpy(destination_row, source_row, output_row_bytes);
+            if (bgra) {
+                for (std::uint32_t x = 0; x < width; ++x) {
+                    std::swap(
+                        destination_row[x * 4],
+                        destination_row[x * 4 + 2]);
+                }
             }
         }
     }
@@ -227,7 +283,7 @@ void save_texture_png(
         static_cast<int>(height),
         SDL_PIXELFORMAT_RGBA32,
         rgba.data(),
-        static_cast<int>(row_bytes));
+        static_cast<int>(output_row_bytes));
     if (!surface) {
         SDL_ReleaseGPUFence(device, fence);
         SDL_ReleaseGPUTransferBuffer(device, transfer);
@@ -330,11 +386,17 @@ SDL_GPUTexture* upload_texture(
     texture_info.format = srgb
         ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB
         : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    texture_info.usage =
+        SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
     texture_info.width = image.width;
     texture_info.height = image.height;
     texture_info.layer_count_or_depth = 1;
-    texture_info.num_levels = 1;
+    texture_info.num_levels =
+        1u + static_cast<Uint32>(
+                 std::floor(
+                     std::log2(
+                         static_cast<double>(
+                             std::max(image.width, image.height)))));
     texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
     if (!texture) gpu_error("SDL_CreateGPUTexture");
@@ -358,6 +420,9 @@ SDL_GPUTexture* upload_texture(
         static_cast<Uint32>(image.width), static_cast<Uint32>(image.height), 1};
     SDL_UploadToGPUTexture(copy, &source, &destination, false);
     SDL_EndGPUCopyPass(copy);
+    if (texture_info.num_levels > 1) {
+        SDL_GenerateMipmapsForGPUTexture(command, texture);
+    }
     if (!SDL_SubmitGPUCommandBuffer(command)) gpu_error("SDL_SubmitGPUCommandBuffer");
     SDL_ReleaseGPUTransferBuffer(device, transfer);
     return texture;
@@ -789,23 +854,50 @@ void save_pbr_diagnostic_buffers(
     const Engine& engine,
     const CameraRecord& camera,
     const std::string& output_directory) {
-    std::array<SDL_GPUTexture*, 6> textures{};
+    constexpr std::array<SDL_GPUTextureFormat, 7> formats{
+        SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+        SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+        SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+        SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+        SDL_GPU_TEXTUREFORMAT_R16_FLOAT,
+        SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+        SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+    };
+    std::array<SDL_GPUTexture*, 7> textures{};
+    std::array<SDL_GPUTexture*, 7> multisample_textures{};
+    const bool multisampled = state.sample_count != SDL_GPU_SAMPLECOUNT_1;
+    const auto release_textures = [&] {
+        for (SDL_GPUTexture* texture : multisample_textures) {
+            if (texture) SDL_ReleaseGPUTexture(state.device, texture);
+        }
+        for (SDL_GPUTexture* texture : textures) {
+            if (texture) SDL_ReleaseGPUTexture(state.device, texture);
+        }
+    };
     SDL_GPUTextureCreateInfo texture_info{};
     texture_info.type = SDL_GPU_TEXTURETYPE_2D;
-    texture_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     texture_info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
     texture_info.width = width;
     texture_info.height = height;
     texture_info.layer_count_or_depth = 1;
     texture_info.num_levels = 1;
     texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    for (SDL_GPUTexture*& texture : textures) {
-        texture = SDL_CreateGPUTexture(state.device, &texture_info);
-        if (!texture) {
-            for (SDL_GPUTexture* created : textures) {
-                if (created) SDL_ReleaseGPUTexture(state.device, created);
-            }
+    for (std::size_t index = 0; index < textures.size(); ++index) {
+        texture_info.format = formats[index];
+        textures[index] = SDL_CreateGPUTexture(state.device, &texture_info);
+        if (!textures[index]) {
+            release_textures();
             gpu_error("SDL_CreateGPUTexture PBR diagnostic");
+        }
+        if (multisampled) {
+            texture_info.sample_count = state.sample_count;
+            multisample_textures[index] =
+                SDL_CreateGPUTexture(state.device, &texture_info);
+            texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+            if (!multisample_textures[index]) {
+                release_textures();
+                gpu_error("SDL_CreateGPUTexture PBR diagnostic MSAA");
+            }
         }
     }
     SDL_GPUTextureCreateInfo depth_info{};
@@ -816,21 +908,17 @@ void save_pbr_diagnostic_buffers(
     depth_info.height = height;
     depth_info.layer_count_or_depth = 1;
     depth_info.num_levels = 1;
-    depth_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    depth_info.sample_count = state.sample_count;
     SDL_GPUTexture* depth = SDL_CreateGPUTexture(state.device, &depth_info);
     if (!depth) {
-        for (SDL_GPUTexture* texture : textures) {
-            SDL_ReleaseGPUTexture(state.device, texture);
-        }
+        release_textures();
         gpu_error("SDL_CreateGPUTexture PBR diagnostic depth");
     }
 
     SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(state.device);
     if (!command) {
         SDL_ReleaseGPUTexture(state.device, depth);
-        for (SDL_GPUTexture* texture : textures) {
-            SDL_ReleaseGPUTexture(state.device, texture);
-        }
+        release_textures();
         gpu_error("SDL_AcquireGPUCommandBuffer PBR diagnostic");
     }
     SDL_PushGPUVertexUniformData(
@@ -838,13 +926,6 @@ void save_pbr_diagnostic_buffers(
         0,
         view_projection.data(),
         sizeof(view_projection));
-    std::array<SDL_GPUColorTargetInfo, 6> targets{};
-    for (std::size_t index = 0; index < targets.size(); ++index) {
-        targets[index].texture = textures[index];
-        targets[index].clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f};
-        targets[index].load_op = SDL_GPU_LOADOP_CLEAR;
-        targets[index].store_op = SDL_GPU_STOREOP_STORE;
-    }
     SDL_GPUDepthStencilTargetInfo depth_target{};
     depth_target.texture = depth;
     depth_target.clear_depth = 1.0f;
@@ -852,63 +933,85 @@ void save_pbr_diagnostic_buffers(
     depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
     depth_target.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
     depth_target.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-    SDL_GPURenderPass* pass =
-        SDL_BeginGPURenderPass(
-            command,
-            targets.data(),
-            static_cast<Uint32>(targets.size()),
-            &depth_target);
-    for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
-        SDL_BindGPUGraphicsPipeline(
-            pass,
-            sided_mode == 0
-                ? state.diagnostics_pipeline
-                : state.diagnostics_double_sided_pipeline);
-        for (std::size_t mesh_index = 0; mesh_index < state.meshes.size(); ++mesh_index) {
-            const upstream::RenderItem& item = render_plan[mesh_index];
-            const bool double_sided =
-                item.material.value < engine.materials.size() &&
-                engine.materials[item.material.value].double_sided;
-            if (double_sided != (sided_mode == 1)) continue;
-
-            const upstream::PbrUniforms fragment =
-                upstream::build_pbr_uniforms(scene, engine, camera, item);
-            SDL_PushGPUFragmentUniformData(command, 0, &fragment, sizeof(fragment));
-            const GpuMesh& mesh = state.meshes[mesh_index];
-            const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
-            const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
-            const SDL_GPUTextureSamplerBinding texture_bindings[6]{
-                SDL_GPUTextureSamplerBinding{mesh.base_color, state.sampler},
-                SDL_GPUTextureSamplerBinding{mesh.metallic_roughness, state.sampler},
-                SDL_GPUTextureSamplerBinding{mesh.normal, state.sampler},
-                SDL_GPUTextureSamplerBinding{mesh.emissive, state.sampler},
-                SDL_GPUTextureSamplerBinding{state.environment, state.sampler},
-                SDL_GPUTextureSamplerBinding{state.brdf_lut, state.sampler},
-            };
-            SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
-            SDL_BindGPUIndexBuffer(
-                pass,
-                &index_binding,
-                SDL_GPU_INDEXELEMENTSIZE_32BIT);
-            SDL_BindGPUFragmentSamplers(pass, 0, texture_bindings, 6);
-            SDL_DrawGPUIndexedPrimitives(pass, mesh.index_count, 1, 0, 0, 0);
+    const auto draw_pass = [&](
+                               std::size_t output_offset,
+                               std::size_t output_count,
+                               std::size_t pipeline_index) {
+        std::array<SDL_GPUColorTargetInfo, 4> targets{};
+        for (std::size_t index = 0; index < output_count; ++index) {
+            targets[index].texture = multisampled
+                ? multisample_textures[output_offset + index]
+                : textures[output_offset + index];
+            targets[index].clear_color =
+                output_offset + index == 4
+                    ? SDL_FColor{1.0f, 0.0f, 0.0f, 1.0f}
+                    : SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f};
+            targets[index].load_op = SDL_GPU_LOADOP_CLEAR;
+            targets[index].store_op =
+                multisampled ? SDL_GPU_STOREOP_RESOLVE : SDL_GPU_STOREOP_STORE;
+            targets[index].resolve_texture =
+                multisampled ? textures[output_offset + index] : nullptr;
         }
-    }
-    SDL_EndGPURenderPass(pass);
+        SDL_GPURenderPass* pass =
+            SDL_BeginGPURenderPass(
+                command,
+                targets.data(),
+                static_cast<Uint32>(output_count),
+                &depth_target);
+        for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
+            SDL_BindGPUGraphicsPipeline(
+                pass,
+                sided_mode == 0
+                    ? state.diagnostics_pipelines[pipeline_index]
+                    : state.diagnostics_double_sided_pipelines[pipeline_index]);
+            for (std::size_t mesh_index = 0; mesh_index < state.meshes.size(); ++mesh_index) {
+                const upstream::RenderItem& item = render_plan[mesh_index];
+                const bool double_sided =
+                    item.material.value < engine.materials.size() &&
+                    engine.materials[item.material.value].double_sided;
+                if (double_sided != (sided_mode == 1)) continue;
+
+                const upstream::PbrUniforms fragment =
+                    upstream::build_pbr_uniforms(scene, engine, camera, item);
+                SDL_PushGPUFragmentUniformData(command, 0, &fragment, sizeof(fragment));
+                const GpuMesh& mesh = state.meshes[mesh_index];
+                const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
+                const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
+                const SDL_GPUTextureSamplerBinding texture_bindings[6]{
+                    SDL_GPUTextureSamplerBinding{mesh.base_color, state.sampler},
+                    SDL_GPUTextureSamplerBinding{mesh.metallic_roughness, state.sampler},
+                    SDL_GPUTextureSamplerBinding{mesh.normal, state.sampler},
+                    SDL_GPUTextureSamplerBinding{mesh.emissive, state.sampler},
+                    SDL_GPUTextureSamplerBinding{state.environment, state.sampler},
+                    SDL_GPUTextureSamplerBinding{state.brdf_lut, state.background_sampler},
+                };
+                SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+                SDL_BindGPUIndexBuffer(
+                    pass,
+                    &index_binding,
+                    SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                SDL_BindGPUFragmentSamplers(pass, 0, texture_bindings, 6);
+                SDL_DrawGPUIndexedPrimitives(pass, mesh.index_count, 1, 0, 0, 0);
+            }
+        }
+        SDL_EndGPURenderPass(pass);
+    };
+    draw_pass(0, 4, 0);
+    draw_pass(4, 3, 1);
     if (!SDL_SubmitGPUCommandBuffer(command)) {
         SDL_ReleaseGPUTexture(state.device, depth);
-        for (SDL_GPUTexture* texture : textures) {
-            SDL_ReleaseGPUTexture(state.device, texture);
-        }
+        release_textures();
         gpu_error("SDL_SubmitGPUCommandBuffer PBR diagnostic");
     }
 
-    constexpr std::array<const char*, 5> names{
+    constexpr std::array<const char*, 7> names{
         "normal-gpu.png",
-        "material-gpu.png",
-        "direct-light-gpu.png",
+        "reflectivity-gpu.png",
+        "irradiance-gpu.png",
         "ibl-gpu.png",
-        "depth-gpu.png",
+        "normalized-depth-gpu.png",
+        "albedo-gpu.png",
+        "direct-light-gpu.png",
     };
     for (std::size_t index = 0; index < names.size(); ++index) {
         SDL_GPUCommandBuffer* download = SDL_AcquireGPUCommandBuffer(state.device);
@@ -916,16 +1019,14 @@ void save_pbr_diagnostic_buffers(
         save_texture_png(
             state.device,
             download,
-            textures[index + 1],
-            SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+            textures[index],
+            formats[index],
             width,
             height,
             join_path(output_directory, names[index]));
     }
     SDL_ReleaseGPUTexture(state.device, depth);
-    for (SDL_GPUTexture* texture : textures) {
-        SDL_ReleaseGPUTexture(state.device, texture);
-    }
+    release_textures();
 }
 
 void release(GpuState& state) {
@@ -957,9 +1058,11 @@ void release(GpuState& state) {
     if (state.cluster_double_sided_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(state.device, state.cluster_double_sided_pipeline);
     }
-    if (state.diagnostics_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.diagnostics_pipeline);
-    if (state.diagnostics_double_sided_pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(state.device, state.diagnostics_double_sided_pipeline);
+    for (SDL_GPUGraphicsPipeline* pipeline : state.diagnostics_pipelines) {
+        if (pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
+    }
+    for (SDL_GPUGraphicsPipeline* pipeline : state.diagnostics_double_sided_pipelines) {
+        if (pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
     }
     if (state.double_sided_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.double_sided_pipeline);
     if (state.transparent_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.transparent_pipeline);
@@ -974,7 +1077,7 @@ void release(GpuState& state) {
 #endif
 
 bool run_gpu_engine(Engine& engine) {
-#if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
+#if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
     const std::string enabled = environment_variable("BBLITE_GPU");
     if (enabled == "0" || enabled == "false" || enabled == "off") return false;
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
@@ -982,13 +1085,13 @@ bool run_gpu_engine(Engine& engine) {
     }
     Scene& scene = *engine.registered_scenes.front();
     const std::string background_flag = environment_variable("BBLITE_BACKGROUND");
-    const bool use_background =
+    const bool use_skybox =
         background_flag != "0" &&
         background_flag != "false" &&
         scene.environment.has_skybox;
     const std::string ground_flag = environment_variable("BBLITE_GROUND");
     const bool use_ground =
-        use_background &&
+        scene.environment.has_ground &&
         (ground_flag == "1" || ground_flag == "true");
     const std::string id_buffer_path = environment_variable("BBLITE_ID_BUFFER");
     const std::string cluster_buffer_path =
@@ -1023,6 +1126,18 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_GPU_SAMPLECOUNT_4) &&
             SDL_GPUTextureSupportsSampleCount(
                 state.device,
+                SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                SDL_GPU_SAMPLECOUNT_4) &&
+            SDL_GPUTextureSupportsSampleCount(
+                state.device,
+                SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+                SDL_GPU_SAMPLECOUNT_4) &&
+            SDL_GPUTextureSupportsSampleCount(
+                state.device,
+                SDL_GPU_TEXTUREFORMAT_R16_FLOAT,
+                SDL_GPU_SAMPLECOUNT_4) &&
+            SDL_GPUTextureSupportsSampleCount(
+                state.device,
                 SDL_GPU_TEXTUREFORMAT_D16_UNORM,
                 SDL_GPU_SAMPLECOUNT_4)) {
             state.sample_count = SDL_GPU_SAMPLECOUNT_4;
@@ -1045,10 +1160,10 @@ bool run_gpu_engine(Engine& engine) {
         }
 
         SDL_GPUShader* vertex_shader =
-            load_shader(state.device, "boombox.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
+            load_shader(state.device, "pbr.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
         SDL_GPUShader* fragment_shader =
-            load_shader(state.device, "boombox.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 6, 1);
-        SDL_GPUShader* background_fragment_shader = use_background
+            load_shader(state.device, "pbr.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 6, 1);
+        SDL_GPUShader* background_fragment_shader = use_ground
             ? load_shader(
                   state.device,
                   "background-ground.frag",
@@ -1056,7 +1171,7 @@ bool run_gpu_engine(Engine& engine) {
                   1,
                   1)
             : nullptr;
-        SDL_GPUShader* skybox_fragment_shader = use_background
+        SDL_GPUShader* skybox_fragment_shader = use_skybox
             ? load_shader(
                   state.device,
                   "background-skybox.frag",
@@ -1072,14 +1187,21 @@ bool run_gpu_engine(Engine& engine) {
                   1,
                   1)
             : nullptr;
-        SDL_GPUShader* diagnostics_fragment_shader = !diagnostic_directory.empty()
-            ? load_shader(
-                  state.device,
-                  "boombox-diagnostics.frag",
-                  SDL_GPU_SHADERSTAGE_FRAGMENT,
-                  6,
-                  1)
-            : nullptr;
+        std::array<SDL_GPUShader*, 2> diagnostics_fragment_shaders{};
+        if (!diagnostic_directory.empty()) {
+            diagnostics_fragment_shaders[0] = load_shader(
+                state.device,
+                "pbr-diagnostics-a.frag",
+                SDL_GPU_SHADERSTAGE_FRAGMENT,
+                6,
+                1);
+            diagnostics_fragment_shaders[1] = load_shader(
+                state.device,
+                "pbr-diagnostics-b.frag",
+                SDL_GPU_SHADERSTAGE_FRAGMENT,
+                6,
+                1);
+        }
         SDL_GPUShader* cluster_fragment_shader = !cluster_buffer_path.empty()
             ? load_shader(
                   state.device,
@@ -1158,26 +1280,49 @@ bool run_gpu_engine(Engine& engine) {
             state.cluster_double_sided_pipeline =
                 SDL_CreateGPUGraphicsPipeline(state.device, &cluster_pipeline_info);
         }
-        if (diagnostics_fragment_shader) {
-            std::array<SDL_GPUColorTargetDescription, 6> diagnostic_targets{};
-            for (SDL_GPUColorTargetDescription& target : diagnostic_targets) {
-                target.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        if (diagnostics_fragment_shaders[0]) {
+            for (std::size_t index = 0; index < diagnostics_fragment_shaders.size(); ++index) {
+                std::array<SDL_GPUColorTargetDescription, 4> diagnostic_targets{};
+                const std::size_t target_count = index == 0 ? 4 : 3;
+                constexpr std::array<SDL_GPUTextureFormat, 7> diagnostic_formats{
+                    SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+                    SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                    SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+                    SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+                    SDL_GPU_TEXTUREFORMAT_R16_FLOAT,
+                    SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                    SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+                };
+                for (std::size_t target_index = 0; target_index < target_count; ++target_index) {
+                    diagnostic_targets[target_index].format =
+                        diagnostic_formats[index * 4 + target_index];
+                }
+                SDL_GPUGraphicsPipelineCreateInfo diagnostic_pipeline_info = pipeline_info;
+                diagnostic_pipeline_info.fragment_shader =
+                    diagnostics_fragment_shaders[index];
+                diagnostic_pipeline_info.rasterizer_state.cull_mode =
+                    SDL_GPU_CULLMODE_BACK;
+                diagnostic_pipeline_info.depth_stencil_state.compare_op =
+                    SDL_GPU_COMPAREOP_LESS;
+                diagnostic_pipeline_info.depth_stencil_state.enable_depth_write =
+                    true;
+                diagnostic_pipeline_info.multisample_state.sample_count =
+                    state.sample_count;
+                diagnostic_pipeline_info.target_info.color_target_descriptions =
+                    diagnostic_targets.data();
+                diagnostic_pipeline_info.target_info.num_color_targets =
+                    static_cast<Uint32>(target_count);
+                state.diagnostics_pipelines[index] =
+                    SDL_CreateGPUGraphicsPipeline(
+                        state.device,
+                        &diagnostic_pipeline_info);
+                diagnostic_pipeline_info.rasterizer_state.cull_mode =
+                    SDL_GPU_CULLMODE_NONE;
+                state.diagnostics_double_sided_pipelines[index] =
+                    SDL_CreateGPUGraphicsPipeline(
+                        state.device,
+                        &diagnostic_pipeline_info);
             }
-            SDL_GPUGraphicsPipelineCreateInfo diagnostic_pipeline_info = pipeline_info;
-            diagnostic_pipeline_info.fragment_shader = diagnostics_fragment_shader;
-            diagnostic_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
-            diagnostic_pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
-            diagnostic_pipeline_info.depth_stencil_state.enable_depth_write = true;
-            diagnostic_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
-            diagnostic_pipeline_info.target_info.color_target_descriptions =
-                diagnostic_targets.data();
-            diagnostic_pipeline_info.target_info.num_color_targets =
-                static_cast<Uint32>(diagnostic_targets.size());
-            state.diagnostics_pipeline =
-                SDL_CreateGPUGraphicsPipeline(state.device, &diagnostic_pipeline_info);
-            diagnostic_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-            state.diagnostics_double_sided_pipeline =
-                SDL_CreateGPUGraphicsPipeline(state.device, &diagnostic_pipeline_info);
         }
         color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
         color_target.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
@@ -1214,8 +1359,8 @@ bool run_gpu_engine(Engine& engine) {
         if (id_fragment_shader) {
             SDL_ReleaseGPUShader(state.device, id_fragment_shader);
         }
-        if (diagnostics_fragment_shader) {
-            SDL_ReleaseGPUShader(state.device, diagnostics_fragment_shader);
+        for (SDL_GPUShader* shader : diagnostics_fragment_shaders) {
+            if (shader) SDL_ReleaseGPUShader(state.device, shader);
         }
         if (cluster_fragment_shader) {
             SDL_ReleaseGPUShader(state.device, cluster_fragment_shader);
@@ -1230,10 +1375,14 @@ bool run_gpu_engine(Engine& engine) {
         if (id_fragment_shader && (!state.id_pipeline || !state.id_double_sided_pipeline)) {
             gpu_error("SDL_CreateGPUGraphicsPipeline ID buffer");
         }
-        if (
-            diagnostics_fragment_shader &&
-            (!state.diagnostics_pipeline || !state.diagnostics_double_sided_pipeline)) {
-            gpu_error("SDL_CreateGPUGraphicsPipeline PBR diagnostic");
+        if (diagnostics_fragment_shaders[0]) {
+            for (std::size_t index = 0; index < diagnostics_fragment_shaders.size(); ++index) {
+                if (
+                    !state.diagnostics_pipelines[index] ||
+                    !state.diagnostics_double_sided_pipelines[index]) {
+                    gpu_error("SDL_CreateGPUGraphicsPipeline PBR diagnostic");
+                }
+            }
         }
         if (
             cluster_fragment_shader &&
@@ -1248,6 +1397,7 @@ bool run_gpu_engine(Engine& engine) {
         sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
         sampler_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
         sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+        sampler_info.max_lod = 1000.0f;
         state.sampler = SDL_CreateGPUSampler(state.device, &sampler_info);
         if (!state.sampler) gpu_error("SDL_CreateGPUSampler");
         sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
@@ -1257,7 +1407,7 @@ bool run_gpu_engine(Engine& engine) {
         if (!state.background_sampler) gpu_error("SDL_CreateGPUSampler background");
         state.environment = upload_environment(state.device, scene.environment);
         state.brdf_lut = upload_rgbd_texture(state.device, scene.environment.brdf_lut);
-        if (use_background) {
+        if (use_skybox) {
             const upstream::SkyboxPlan skybox =
                 upstream::build_skybox_plan(scene.environment);
             std::array<GpuVertex, 8> vertices{};
@@ -1526,7 +1676,7 @@ bool run_gpu_engine(Engine& engine) {
                     SDL_GPUTextureSamplerBinding{mesh.normal, state.sampler},
                     SDL_GPUTextureSamplerBinding{mesh.emissive, state.sampler},
                     SDL_GPUTextureSamplerBinding{state.environment, state.sampler},
-                    SDL_GPUTextureSamplerBinding{state.brdf_lut, state.sampler},
+                    SDL_GPUTextureSamplerBinding{state.brdf_lut, state.background_sampler},
                 };
                 SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
                 SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -1618,8 +1768,9 @@ bool run_gpu_engine(Engine& engine) {
                     diagnostic_directory);
                 diagnostics_saved = true;
             }
+            const double end = monotonic_milliseconds();
             if (benchmark && frame >= warmup) {
-                samples.push_back(monotonic_milliseconds() - start);
+                samples.push_back(end - start);
             }
             ++frame;
         }

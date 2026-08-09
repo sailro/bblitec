@@ -33,6 +33,23 @@ SDL3 / SDL_GPU
 `bblitec` is a compiler, not a JavaScript interpreter. Unsupported syntax or
 Babylon APIs produce source-located compile errors.
 
+## Scene orchestration
+
+`src/scene-registry.ts` is the single source of truth for curated targets:
+entry source, generated directory, native build directory, reference source,
+thresholds, and optional attribution capabilities. `scene-command.ts` drives
+generation and parity from that registry.
+
+The registry is not required for new input. `resolveScene()` derives the same
+paths and title from any repository-local TypeScript source. Registration
+promotes an ad-hoc scene into a curated regression target with explicit
+thresholds and optional diagnostics.
+
+`parity-scene.ts` is the common parity runner. Draw IDs, triangle clusters,
+and diagnostic MRTs are optional capabilities, not scene-specific runners.
+`capture-suite-reference.ts` transpiles registered or ad-hoc scene sources for local
+Babylon Lite WebGPU reference capture.
+
 ## Upstream reconstruction
 
 The repository pins `@babylonjs/lite@1.18.0` and source commit
@@ -47,7 +64,7 @@ expected upstream symbols, formulas, and constants still exist.
 
 ## Generated Babylon behavior
 
-For the supported BoomBox path, generated output owns:
+For the supported generated scene paths, output owns:
 
 - engine and scene API wrappers
 - scene registration and resource routing
@@ -101,7 +118,7 @@ dynamic JavaScript object graphs, escaping closures, and cyclic allocations.
 
 ## GPU renderer
 
-SDL_GPU is the default for glTF scenes:
+SDL_GPU is the default for generated PBR scenes:
 
 | Platform | Backend | Shader format |
 | --- | --- | --- |

@@ -14,9 +14,49 @@ the no-`any` rule.
 ## Generate scenes
 
 ```powershell
+npm run scenes:list
+npm run scenes:compile
+```
+
+Individual aliases remain available:
+
+```powershell
 npm run compile:example
 npm run compile:boombox
+npm run compile:scene10
+npm run compile:scene13
 ```
+
+Unregistered scene files use derived defaults and do not require a registry
+edit:
+
+```powershell
+npm run scene -- show examples\my-scene.ts
+npm run scene -- compile examples\my-scene.ts
+npm run scene -- process examples\my-scene.ts
+```
+
+For `examples\my-scene.ts`, defaults are:
+
+- scene ID: `my-scene`
+- generated output: `generated\my-scene`
+- native build directory: `native\build-my-scene-release`
+- reference: `reference\my-scene\babylon-lite-golden.png`
+- parity artifacts: `artifacts\parity\my-scene`
+
+`process` runs generation, shader compilation, CMake configuration, and the
+native build. It compiles only that scene's shader directory. Set `VCPKG_ROOT`
+when CMake cannot discover the vcpkg toolchain;
+set `CMAKE_COMMAND` when `cmake` is not on `PATH`.
+
+Parity can also run without registration:
+
+```powershell
+npm run scene -- parity examples\my-scene.ts --recapture-reference
+```
+
+Add a registry entry only when the scene needs stable thresholds, a custom
+reference source, native environment flags, or diagnostic attribution.
 
 Generation:
 
@@ -61,6 +101,8 @@ Existing development build directories:
 - `native\build-sdl`: primitive/debug target
 - `native\build-boombox`: BoomBox/debug target
 - `native\build-boombox-release`: BoomBox/Release target
+- `native\build-scene10-release`: Babylon Lite scene 10/Release target
+- `native\build-scene13-release`: Babylon Lite scene 13/Release target
 
 Build them sequentially. Concurrent vcpkg/CMake work against the same install
 root is unreliable.
@@ -106,7 +148,13 @@ Run both renderers:
 ```powershell
 npm run parity:boombox
 npm run parity:boombox:gpu
+npm run parity:scene10
+npm run parity:scene13
 ```
+
+All scene metadata lives in `src/scene-registry.ts`. Parity capabilities such
+as draw IDs, triangle clusters, and diagnostic MRTs are enabled per scene in
+that registry and consumed by the common `parity-scene` runner.
 
 There is no hosted CI. CPU parity and GPU parity are local gates; GPU reports
 must always record the backend and driver used.
@@ -119,8 +167,8 @@ Outputs are written to `artifacts/parity`:
 - lossless and colorized GPU draw-ID maps (`draw-ids-gpu.png` and
   `draw-ids-visual-gpu.png`)
 - lossless and colorized triangle-cluster maps
-- normal, material, direct-light, IBL, and depth captures from the production
-  PBR shader's diagnostics variant
+- world-normal, reflectivity, irradiance, IBL, normalized-depth, albedo, and
+  direct-light captures from the production PBR shader's diagnostics variant
 - renderer-specific JSON report (`report-cpu.json` or `report-gpu.json`)
 
 Reports include background/edge/interior attribution, signed channel bias, and

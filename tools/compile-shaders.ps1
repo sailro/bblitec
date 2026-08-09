@@ -1,12 +1,22 @@
 param(
-    [string]$Dxc = $env:DXC_PATH
+    [string]$Dxc = $env:DXC_PATH,
+    [string]$Scene
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$shaderDirectory = Join-Path $root "generated\boombox\upstream\shaders"
-if (-not (Test-Path $shaderDirectory)) {
-    throw "Generated shader directory not found. Run npm run compile:boombox first."
+$shaderDirectories = if ($Scene) {
+    @((Join-Path $root "generated\$Scene\upstream\shaders"))
+} else {
+    @(
+        Get-ChildItem (Join-Path $root "generated") -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName "upstream\shaders" } |
+            Where-Object { Test-Path $_ }
+    )
+}
+$shaderDirectories = @($shaderDirectories | Where-Object { Test-Path $_ })
+if ($shaderDirectories.Count -eq 0) {
+    throw "No generated shader directories found. Run a compile:<scene> command first."
 }
 
 if (-not $Dxc) {
@@ -27,19 +37,21 @@ if (-not $Dxc -or -not (Test-Path $Dxc)) {
 
 $env:PATH = "$(Split-Path -Parent $Dxc);$env:PATH"
 
-& $Dxc -T vs_6_0 -E main -O3 -Fo "$shaderDirectory\boombox.vert.dxil" "$shaderDirectory\boombox.vert.hlsl"
-& $Dxc -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\boombox.frag.dxil" "$shaderDirectory\boombox.frag.hlsl"
-& $Dxc -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\background-ground.frag.dxil" "$shaderDirectory\background-ground.frag.hlsl"
-& $Dxc -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\background-skybox.frag.dxil" "$shaderDirectory\background-skybox.frag.hlsl"
-& $Dxc -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\diagnostic-id.frag.dxil" "$shaderDirectory\diagnostic-id.frag.hlsl"
-& $Dxc -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\diagnostic-cluster.frag.dxil" "$shaderDirectory\diagnostic-cluster.frag.hlsl"
-& $Dxc -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\boombox-diagnostics.frag.dxil" "$shaderDirectory\boombox-diagnostics.frag.hlsl"
-& $Dxc "-spirv" "-fspv-target-env=vulkan1.0" -T vs_6_0 -E main -O3 -Fo "$shaderDirectory\boombox.vert.spv" "$shaderDirectory\boombox.vert.hlsl"
-& $Dxc "-spirv" "-fspv-target-env=vulkan1.0" -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\boombox.frag.spv" "$shaderDirectory\boombox.frag.hlsl"
-& $Dxc "-spirv" "-fspv-target-env=vulkan1.0" -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\background-ground.frag.spv" "$shaderDirectory\background-ground.frag.hlsl"
-& $Dxc "-spirv" "-fspv-target-env=vulkan1.0" -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\background-skybox.frag.spv" "$shaderDirectory\background-skybox.frag.hlsl"
-& $Dxc "-spirv" "-fspv-target-env=vulkan1.0" -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\diagnostic-id.frag.spv" "$shaderDirectory\diagnostic-id.frag.hlsl"
-& $Dxc "-spirv" "-fspv-target-env=vulkan1.0" -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\diagnostic-cluster.frag.spv" "$shaderDirectory\diagnostic-cluster.frag.hlsl"
-& $Dxc "-spirv" "-fspv-target-env=vulkan1.0" -T ps_6_0 -E main -O3 -Fo "$shaderDirectory\boombox-diagnostics.frag.spv" "$shaderDirectory\boombox-diagnostics.frag.hlsl"
+$compiled = 0
+foreach ($shaderDirectory in $shaderDirectories) {
+    foreach ($source in Get-ChildItem $shaderDirectory -Filter "*.hlsl") {
+        $profile = if ($source.Name.EndsWith(".vert.hlsl")) { "vs_6_0" } else { "ps_6_0" }
+        $outputBase = $source.FullName.Substring(0, $source.FullName.Length - ".hlsl".Length)
+        & $Dxc -T $profile -E main -O3 -Fo "$outputBase.dxil" $source.FullName
+        if ($LASTEXITCODE -ne 0) {
+            throw "DXIL compilation failed for $($source.FullName)."
+        }
+        & $Dxc "-spirv" "-fspv-target-env=vulkan1.0" -T $profile -E main -O3 -Fo "$outputBase.spv" $source.FullName
+        if ($LASTEXITCODE -ne 0) {
+            throw "SPIR-V compilation failed for $($source.FullName)."
+        }
+        $compiled += 1
+    }
+}
 
-Write-Output "Compiled DXIL and SPIR-V shaders. MSL sources are checked in directly."
+Write-Output "Compiled $compiled HLSL shaders to DXIL and SPIR-V. MSL sources are checked in directly."

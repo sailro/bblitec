@@ -29,7 +29,7 @@ export interface CompileResult {
     manifest: CompileManifest;
 }
 
-type ValueKind = "asset" | "browser" | "camera" | "engine" | "light" | "material" | "mesh" | "number" | "scene" | "void";
+type ValueKind = "asset" | "browser" | "camera" | "engine" | "light" | "material" | "mesh" | "number" | "scene" | "texture" | "void";
 
 interface Value {
     kind: ValueKind;
@@ -38,6 +38,8 @@ interface Value {
 }
 
 type Feature =
+    | "background:ground"
+    | "background:skybox"
     | "core"
     | "backend:sdl"
     | "camera:arc-rotate"
@@ -45,9 +47,12 @@ type Feature =
     | "environment:ibl"
     | "light:hemispheric"
     | "loader:gltf"
+    | "material:pbr"
     | "material:standard"
     | "mesh:box"
-    | "mesh:ground";
+    | "mesh:ground"
+    | "mesh:sphere"
+    | "renderer:pbr";
 
 const featureSources: Record<Feature, string[]> = {
     "core": ["src/pal.cpp"],
@@ -55,11 +60,16 @@ const featureSources: Record<Feature, string[]> = {
     "camera:arc-rotate": [],
     "camera:default": [],
     "environment:ibl": [],
+    "background:ground": [],
+    "background:skybox": [],
     "light:hemispheric": [],
-    "loader:gltf": ["src/pal_sdl_gpu.cpp"],
+    "loader:gltf": [],
+    "material:pbr": [],
     "material:standard": [],
     "mesh:box": [],
     "mesh:ground": [],
+    "mesh:sphere": [],
+    "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
 };
 
 const featureOrder = Object.keys(featureSources) as Feature[];
@@ -148,13 +158,22 @@ class Compiler {
             generatedSources.push(
                 "upstream/src/gltf_glb_parser.cpp",
                 "upstream/src/gltf_loader.cpp",
-                "upstream/src/renderer_plan.cpp",
             );
+        }
+        if (features.includes("renderer:pbr")) {
+            generatedSources.push("upstream/src/renderer_plan.cpp");
+        }
+        if (features.includes("material:pbr")) {
+            generatedSources.push("upstream/src/material_pbr.cpp");
         }
         if (features.includes("material:standard")) {
             generatedSources.push("upstream/src/material_standard.cpp");
         }
-        if (features.includes("mesh:box") || features.includes("mesh:ground")) {
+        if (
+            features.includes("mesh:box") ||
+            features.includes("mesh:ground") ||
+            features.includes("mesh:sphere")
+        ) {
             generatedSources.push("upstream/src/mesh_factories.cpp");
         }
         return {
@@ -457,6 +476,49 @@ class Compiler {
                 };
             }
 
+            case "createSphere": {
+                this.expectArgumentCount(call, 1, 2);
+                const engine = this.compileValue(call.arguments[0]!);
+                this.expectKind(engine, "engine", call.arguments[0]!);
+                const options = call.arguments[1]
+                    ? this.compileSphereOptions(call.arguments[1])
+                    : ["32u", "1.0f"];
+                this.features.add("mesh:sphere");
+                return {
+                    kind: "mesh",
+                    cpp: `bbl::create_sphere(${engine.cpp}, bbl::SphereOptions{${options[0]}, ${options[1]}})`,
+                    engineCpp: engine.cpp,
+                };
+            }
+
+            case "createSolidTexture2D": {
+                this.expectArgumentCount(call, 4, 5);
+                const engine = this.compileValue(call.arguments[0]!);
+                this.expectKind(engine, "engine", call.arguments[0]!);
+                const channels = call.arguments.slice(1).map((argument) => this.compileNumber(argument));
+                if (channels.length === 3) channels.push("1.0f");
+                this.features.add("material:pbr");
+                return {
+                    kind: "texture",
+                    cpp: `bbl::create_solid_texture(${engine.cpp}, ${channels.join(", ")})`,
+                    engineCpp: engine.cpp,
+                };
+            }
+
+            case "createPbrMaterial": {
+                this.expectArgumentCount(call, 1, 1);
+                const engine = this.requireDefaultEngine(call);
+                const [baseColor, orm] = this.compilePbrMaterialOptions(call.arguments[0]!);
+                this.expectSameEngine(baseColor, orm, call);
+                this.features.add("material:pbr");
+                this.features.add("renderer:pbr");
+                return {
+                    kind: "material",
+                    cpp: `bbl::create_pbr_material(${engine}, ${baseColor.cpp}, ${orm.cpp})`,
+                    engineCpp: engine,
+                };
+            }
+
             case "createStandardMaterial": {
                 this.expectArgumentCount(call, 0, 0);
                 const engine = this.requireDefaultEngine(call);
@@ -509,6 +571,7 @@ class Compiler {
                 const source = this.compileStringLiteral(call.arguments[1]!);
                 const asset = this.registerAsset(source, "gltf");
                 this.features.add("loader:gltf");
+                this.features.add("renderer:pbr");
                 return {
                     kind: "asset",
                     cpp: `bbl::load_gltf(${engine.cpp}, bbl::asset_path(${this.cppString(asset.output)}))`,
@@ -535,6 +598,8 @@ class Compiler {
                     ? this.registerAsset(this.resolveBundledAsset(options[3]), "texture")
                     : undefined;
                 this.features.add("environment:ibl");
+                if (groundAsset) this.features.add("background:ground");
+                if (skyboxAsset) this.features.add("background:skybox");
                 return {
                     kind: "void",
                     cpp: `bbl::load_environment(${scene.cpp}, bbl::EnvironmentOptions{bbl::asset_path(${this.cppString(environmentAsset.output)}), ${groundAsset ? `bbl::asset_path(${this.cppString(groundAsset.output)})` : this.cppString("")}, ${skyboxAsset ? `bbl::asset_path(${this.cppString(skyboxAsset.output)})` : this.cppString("")}, ${options[2]}, ${brdfAsset ? `bbl::asset_path(${this.cppString(brdfAsset.output)})` : this.cppString("")}})`,
@@ -604,6 +669,52 @@ class Compiler {
         const width = this.objectProperty(object, "width");
         const height = this.objectProperty(object, "height");
         return [width ? this.compileNumber(width) : "1.0f", height ? this.compileNumber(height) : "1.0f"];
+    }
+
+    private compileSphereOptions(expression: ts.Expression): [string, string] {
+        const object = this.expectObjectLiteral(expression);
+        const segments = this.objectProperty(object, "segments");
+        const diameter = this.objectProperty(object, "diameter");
+        return [
+            segments ? this.compilePositiveInteger(segments) : "32u",
+            diameter ? this.compileNumber(diameter) : "1.0f",
+        ];
+    }
+
+    private compilePbrMaterialOptions(expression: ts.Expression): [Value, Value] {
+        const object = this.expectObjectLiteral(expression);
+        for (const property of object.properties) {
+            if (
+                !ts.isPropertyAssignment(property) ||
+                !["baseColorTexture", "ormTexture"].includes(
+                    this.propertyName(property.name) ?? "",
+                )
+            ) {
+                this.fail(property, "Scene 10 PBR lowering supports baseColorTexture and ormTexture.");
+            }
+        }
+        const baseColorExpression = this.objectProperty(object, "baseColorTexture");
+        const ormExpression = this.objectProperty(object, "ormTexture");
+        if (!baseColorExpression || !ormExpression) {
+            this.fail(object, "PBR material requires baseColorTexture and ormTexture.");
+        }
+        const baseColor = this.compileValue(baseColorExpression);
+        const orm = this.compileValue(ormExpression);
+        this.expectKind(baseColor, "texture", baseColorExpression);
+        this.expectKind(orm, "texture", ormExpression);
+        return [baseColor, orm];
+    }
+
+    private compilePositiveInteger(expression: ts.Expression): string {
+        const unwrapped = this.unwrap(expression);
+        if (!ts.isNumericLiteral(unwrapped)) {
+            this.fail(unwrapped, "Expected a positive integer literal.");
+        }
+        const value = Number(unwrapped.text);
+        if (!Number.isInteger(value) || value <= 0) {
+            this.fail(unwrapped, "Expected a positive integer literal.");
+        }
+        return `${value}u`;
     }
 
     private compileEnvironmentOptions(expression: ts.Expression): [string, string, string, string] {
@@ -887,7 +998,7 @@ class Compiler {
                 validation: ["ArcRotate constant extraction tests", "native input smoke tests"],
             });
         }
-        if (features.includes("loader:gltf")) {
+        if (features.includes("renderer:pbr")) {
             adaptations.push({
                 id: "sdl-gpu-shader-backends",
                 category: "rendering",

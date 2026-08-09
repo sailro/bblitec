@@ -114,11 +114,11 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /build_skybox_plan/);
     assert.match(lowered.source, /preferred_sample_count\(\).*return 4u/s);
     assert.match(lowered.header, /struct PbrUniforms/);
-    assert.match(lowered.source, /PrimitiveKind::gltf/);
+    assert.match(lowered.source, /mesh\.geometry >= engine\.geometries\.size\(\)/);
     assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
-    assert.ok(shaders.some((shader) => shader.output.endsWith("boombox.frag.hlsl")));
+    assert.ok(shaders.some((shader) => shader.output.endsWith("pbr.frag.hlsl")));
     assert.ok(shaders.every((shader) => /\.(?:hlsl|msl)$/.test(shader.output)));
-    const fragment = shaders.find((shader) => shader.output.endsWith("boombox.frag.hlsl"));
+    const fragment = shaders.find((shader) => shader.output.endsWith("pbr.frag.hlsl"));
     assert.equal(typeof fragment?.data, "string");
     assert.match(String(fragment?.data), /geometrySmithGGX/);
     assert.match(String(fragment?.data), /1\.590579/);

@@ -121,19 +121,23 @@ Interpretation:
 | Uniform signed RGB bias | exposure, gamma, tone mapping, color conversion |
 | Localized hotspot | one material, texture region, mesh, or transparency path |
 
-GPU parity also captures a lossless draw-ID buffer. Stable IDs are emitted
-from glTF node/mesh/primitive order, and reports contain `drawAttribution` and
-`hotspotAttribution` joined with node, mesh, material, alpha mode, and
-double-sided metadata.
+Scenes that enable attribution in the registry also capture a lossless draw-ID
+buffer. Stable IDs are emitted from glTF node/mesh/primitive order, and reports
+contain `drawAttribution` and `hotspotAttribution` joined with node, mesh,
+material, alpha mode, and double-sided metadata.
 
 BoomBox contains one large primitive and one material, so parity additionally
 captures stable 128-triangle cluster IDs. The report maps cluster ranges and
 hotspots back to the glTF render item.
 
 The same production PBR shader is macro-specialized into a diagnostics MRT
-variant that captures depth, encoded world normal, roughness/metallic/AO,
-direct light, and IBL. The next fidelity step is capturing equivalent
-intermediates from Babylon WebGPU and comparing each buffer directly.
+variant that captures encoded world normal, reflectivity, irradiance, IBL,
+normalized view depth, surface albedo, and direct light. Babylon Lite's public
+PBR geometry-renderer task captures equivalent WebGPU oracles for direct
+buffer-by-buffer comparison. Because SDL_GPU supports at most four color
+targets, the native diagnostics are emitted as two passes over the same scene
+and shader formulas. Both passes use the generated 4x MSAA sample count and
+resolve each attachment before readback, matching Babylon Lite's geometry task.
 
 ## Validation artifact meaning
 

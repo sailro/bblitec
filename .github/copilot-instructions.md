@@ -26,6 +26,11 @@ rerunning all compiler, build, and parity checks.
 
 - `src/compiler.ts`: entry-scene AST lowering, feature selection, assets, CMake
   manifest.
+- `src/scene-registry.ts`: curated scene metadata, thresholds, references, and
+  optional attribution capabilities.
+- `src/scene-command.ts`: registered and ad-hoc scene generation/build/parity
+  workflow.
+- `src/parity-scene.ts`: common parity runner for all scenes.
 - `src/upstream-source.ts`: pinned upstream source-map reconstruction.
 - `src/upstream-graph.ts`: conservative reachable-module analysis.
 - `src/upstream-lower.ts`: generated-source orchestration and provenance.
@@ -58,7 +63,7 @@ system API, it belongs in PAL.
 
 ## Renderer rules
 
-- SDL_GPU is the default for generated glTF scenes.
+- SDL_GPU is the default for generated PBR scenes.
 - `BBLITE_GPU=0` forces the CPU fallback.
 - Backends/artifacts:
   - Direct3D 12: DXIL
@@ -88,8 +93,7 @@ shader paths may be stale.
 ```powershell
 npm ci
 npm test
-npm run compile:example
-npm run compile:boombox
+npm run scenes:compile
 npm run shaders:build
 ```
 
@@ -99,6 +103,8 @@ Then build the configured native directories sequentially:
 cmake --build native\build-sdl
 cmake --build native\build-boombox
 cmake --build native\build-boombox-release
+cmake --build native\build-scene10-release
+cmake --build native\build-scene13-release
 ```
 
 On the development Windows machine, MSVC is 14.51 and Windows SDK is
@@ -123,14 +129,17 @@ require:
 npm test
 npm run parity:boombox
 npm run parity:boombox:gpu
+npm run parity:scene10
+npm run parity:scene13
+npm run parity:diagnostics
 ```
 
 Current measured baselines:
 
 - CPU fallback: full MAD `4.452`, foreground MAD `21.191`,
   approximately `5.516 ms/frame`.
-- Generated SDL_GPU/D3D12 with Babylon-default 4x MSAA: full MAD `0.924`,
-  foreground MAD `7.501`, approximately `0.126 ms` average and `0.089 ms`
+- Generated SDL_GPU/D3D12 with Babylon-default 4x MSAA: full MAD `0.447`,
+  foreground MAD `2.003`, approximately `0.126 ms` average and `0.089 ms`
   median.
 - GPU regression ceilings: full MAD `1.0`, foreground MAD `8.0`.
 - Upstream target: full MAD `0.19`, foreground MAD `0.03`, 99% foreground
@@ -153,6 +162,9 @@ $env:BBLITE_BENCHMARK_FRAMES = "2000"
 ## Workflow
 
 - Do not edit generated files as the source of truth.
+- Use `npm run scene -- process <source.ts>` for an unregistered scene.
+- Add a registry entry only for curated thresholds, custom references,
+  environment flags, or attribution capabilities.
 - Add tests when extending compiler or lowering behavior.
 - Keep lowerers focused; do not rebuild a monolithic compiler class.
 - Preserve provenance for generated behavior.

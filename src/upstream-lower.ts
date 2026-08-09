@@ -17,7 +17,7 @@ class GeneratedSourceWriter {
         private readonly store: UpstreamSourceStore,
     ) {}
 
-    public emit(features: string[]): void {
+    public emit(features: string[], options: { diagnostics: boolean }): void {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
 
@@ -95,6 +95,8 @@ class GeneratedSourceWriter {
                 gltf.lowerLoaderAdapter(),
                 generated,
             );
+        }
+        if (features.includes("renderer:pbr")) {
             const renderer = new RendererLowerer(context);
             this.writeSource(
                 "upstream/src/renderer_plan.cpp",
@@ -102,7 +104,11 @@ class GeneratedSourceWriter {
                 generated,
                 "upstream/include/bblite/upstream/renderer_plan.hpp",
             );
-            for (const shader of renderer.lowerShaders()) {
+            for (const shader of renderer.lowerShaders({
+                ground: features.includes("background:ground"),
+                skybox: features.includes("background:skybox"),
+                diagnostics: options.diagnostics,
+            })) {
                 const shaderPath = resolve(this.outputRoot, shader.output);
                 mkdirSync(dirname(shaderPath), { recursive: true });
                 writeFileSync(shaderPath, shader.data);
@@ -128,7 +134,18 @@ class GeneratedSourceWriter {
                 generated,
             );
         }
-        if (features.includes("mesh:box") || features.includes("mesh:ground")) {
+        if (features.includes("material:pbr")) {
+            this.writeSource(
+                "upstream/src/material_pbr.cpp",
+                factories.lowerPbrMaterialFactory(),
+                generated,
+            );
+        }
+        if (
+            features.includes("mesh:box") ||
+            features.includes("mesh:ground") ||
+            features.includes("mesh:sphere")
+        ) {
             this.writeSource(
                 "upstream/src/mesh_factories.cpp",
                 factories.lowerMeshFactories(),
@@ -162,6 +179,13 @@ class GeneratedSourceWriter {
     }
 }
 
-export function emitUpstreamGenerated(outputRoot: string, features: string[]): void {
-    new GeneratedSourceWriter(outputRoot, new UpstreamSourceStore()).emit(features);
+export function emitUpstreamGenerated(
+    outputRoot: string,
+    features: string[],
+    options: { diagnostics: boolean } = { diagnostics: false },
+): void {
+    new GeneratedSourceWriter(outputRoot, new UpstreamSourceStore()).emit(
+        features,
+        options,
+    );
 }

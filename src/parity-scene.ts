@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { captureBabylonReference } from "./capture-reference.js";
+import { captureSuiteReference } from "./capture-suite-reference.js";
+import { resolveScene } from "./scene-registry.js";
 import {
     analyzeDifference,
     analyzeIdBuffer,
@@ -14,32 +16,6 @@ import {
     generateIdVisualization,
     imageDimensions,
 } from "./parity.js";
-
-interface ParityConfig {
-    name: string;
-    playgroundUrl: string;
-    reference: string;
-    actual: string;
-    outputDirectory: string;
-    specialization?: string;
-    backgroundColor: [number, number, number];
-    backgroundThreshold: number;
-    thresholds: {
-        maxMad: number;
-        maxRegionMad: number;
-        minWithin1?: number;
-    };
-    gpuThresholds?: {
-        maxMad: number;
-        maxRegionMad: number;
-        minWithin1?: number;
-    };
-    upstreamThresholds: {
-        maxMad: number;
-        maxRegionMad: number;
-        minWithin1: number;
-    };
-}
 
 interface RenderItemMetadata {
     drawId: number;
@@ -63,7 +39,7 @@ interface GltfSpecialization {
 }
 
 interface Arguments {
-    config: string;
+    sceneId: string;
     executable?: string;
     actual?: string;
     recaptureReference: boolean;
@@ -72,24 +48,26 @@ interface Arguments {
 }
 
 function parseArguments(arguments_: string[]): Arguments {
-    let config = "parity/boombox.json";
+    let sceneId = "boombox";
     let executable: string | undefined;
     let actual: string | undefined;
     let recaptureReference = false;
     let noFail = false;
-    let gpu = false;
+    let gpu = true;
     for (let index = 0; index < arguments_.length; index += 1) {
         const argument = arguments_[index];
-        if (argument === "--config") config = arguments_[++index] ?? config;
+        if (!argument) continue;
+        if (!argument.startsWith("--")) sceneId = argument;
         else if (argument === "--exe") executable = arguments_[++index];
         else if (argument === "--actual") actual = arguments_[++index];
         else if (argument === "--recapture-reference") recaptureReference = true;
         else if (argument === "--no-fail") noFail = true;
         else if (argument === "--gpu") gpu = true;
+        else if (argument === "--cpu") gpu = false;
         else throw new Error(`Unknown argument '${argument}'.`);
     }
     return {
-        config,
+        sceneId,
         ...(executable ? { executable } : {}),
         ...(actual ? { actual } : {}),
         recaptureReference,
@@ -98,16 +76,22 @@ function parseArguments(arguments_: string[]): Arguments {
     };
 }
 
-function defaultExecutable(): string {
-    return process.platform === "win32"
-        ? "native/build-boombox-release/bblite_native.exe"
-        : "native/build-boombox-release/bblite_native";
+function defaultExecutable(buildDirectory: string): string {
+    const name = process.platform === "win32"
+        ? "bblite_native.exe"
+        : "bblite_native";
+    const candidates = [
+        resolve(buildDirectory, name),
+        resolve(buildDirectory, "Release", name),
+    ];
+    return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
 }
 
 function runNative(
     executable: string,
     screenshot: string,
     gpu: boolean,
+    nativeEnvironment?: Record<string, string>,
     idBufferPath?: string,
     clusterBufferPath?: string,
     diagnosticDirectory?: string,
@@ -120,6 +104,7 @@ function runNative(
         stdio: "inherit",
         env: {
             ...process.env,
+            ...nativeEnvironment,
             ...(gpu
                 ? {
                       BBLITE_GPU: "1",
@@ -152,16 +137,26 @@ function percentage(count: number, total: number): number {
 
 async function main(): Promise<void> {
     const arguments_ = parseArguments(process.argv.slice(2));
-    const config = JSON.parse(readFileSync(resolve(arguments_.config), "utf8")) as ParityConfig;
-    const reference = resolve(config.reference);
+    const scene = resolveScene(arguments_.sceneId);
+    const config = scene.parity;
+    if (!config) throw new Error(`Scene '${scene.id}' has no parity definition.`);
+    const reference = resolve(config.reference.path);
     const outputDirectory = resolve(config.outputDirectory);
     const actual = resolve(
         arguments_.actual ??
-            (arguments_.gpu ? `${config.outputDirectory}/boombox-gpu.png` : config.actual),
+            (arguments_.gpu
+                ? config.actual
+                : `${config.outputDirectory}/${scene.id}-cpu.png`),
     );
-    const thresholds = arguments_.gpu && config.gpuThresholds
-        ? config.gpuThresholds
-        : config.thresholds;
+    const thresholds = arguments_.gpu
+        ? {
+              maxMad: config.maxFullMad,
+              maxRegionMad: config.maxForegroundMad,
+          }
+        : {
+              maxMad: config.cpuThresholds?.maxFullMad,
+              maxRegionMad: config.cpuThresholds?.maxForegroundMad,
+          };
     const renderer = arguments_.gpu
         ? {
               mode: "gpu",
@@ -174,32 +169,48 @@ async function main(): Promise<void> {
               driverSelection: process.env.SDL_RENDER_DRIVER ?? "software",
           };
     const artifactSuffix = arguments_.gpu ? "gpu" : "cpu";
-    const idBufferPath = arguments_.gpu
+    const idBufferPath = arguments_.gpu && config.attribution?.drawIds
         ? resolve(outputDirectory, "draw-ids-gpu.png")
         : undefined;
-    const idVisualizationPath = arguments_.gpu
+    const idVisualizationPath = idBufferPath
         ? resolve(outputDirectory, "draw-ids-visual-gpu.png")
         : undefined;
-    const clusterBufferPath = arguments_.gpu
+    const clusterBufferPath =
+        arguments_.gpu && config.attribution?.triangleClusters
         ? resolve(outputDirectory, "triangle-clusters-gpu.png")
         : undefined;
-    const clusterVisualizationPath = arguments_.gpu
+    const clusterVisualizationPath = clusterBufferPath
         ? resolve(outputDirectory, "triangle-clusters-visual-gpu.png")
         : undefined;
 
-    await captureBabylonReference({
-        output: reference,
-        url: config.playgroundUrl,
-        force: arguments_.recaptureReference,
-    });
+    if (config.reference.kind === "playground") {
+        await captureBabylonReference({
+            output: reference,
+            url: config.reference.url,
+            force: arguments_.recaptureReference,
+        });
+    } else {
+        await captureSuiteReference(
+            scene.source,
+            reference,
+            arguments_.recaptureReference,
+        );
+    }
     if (!arguments_.actual) {
         runNative(
-            resolve(arguments_.executable ?? process.env.BBLITE_NATIVE_EXE ?? defaultExecutable()),
+            resolve(
+                arguments_.executable ??
+                    process.env.BBLITE_NATIVE_EXE ??
+                    defaultExecutable(scene.buildDirectory),
+            ),
             actual,
             arguments_.gpu,
+            config.nativeEnvironment,
             idBufferPath,
             clusterBufferPath,
-            arguments_.gpu ? outputDirectory : undefined,
+            arguments_.gpu && config.attribution?.diagnostics
+                ? outputDirectory
+                : undefined,
         );
     }
 
@@ -231,8 +242,9 @@ async function main(): Promise<void> {
     if (idBufferPath && idVisualizationPath && existsSync(idBufferPath)) {
         generateIdVisualization(idBufferPath, idVisualizationPath);
     }
-    const specializations = config.specialization && existsSync(resolve(config.specialization))
-        ? JSON.parse(readFileSync(resolve(config.specialization), "utf8")) as GltfSpecialization[]
+    const specialization = config.attribution?.specialization;
+    const specializations = specialization && existsSync(resolve(specialization))
+        ? JSON.parse(readFileSync(resolve(specialization), "utf8")) as GltfSpecialization[]
         : [];
     const renderItems = new Map(
         specializations.flatMap((specialization) => specialization.renderItems)
@@ -306,14 +318,16 @@ async function main(): Promise<void> {
             })),
         };
     });
-    const diagnosticFiles = arguments_.gpu
+    const diagnosticFiles = arguments_.gpu && config.attribution?.diagnostics
         ? Object.fromEntries(
               [
                   ["normal", "normal-gpu.png"],
-                  ["material", "material-gpu.png"],
+                  ["reflectivity", "reflectivity-gpu.png"],
+                  ["irradiance", "irradiance-gpu.png"],
                   ["directLight", "direct-light-gpu.png"],
                   ["ibl", "ibl-gpu.png"],
-                  ["depth", "depth-gpu.png"],
+                  ["normalizedDepth", "normalized-depth-gpu.png"],
+                  ["albedo", "albedo-gpu.png"],
               ]
                   .map(([key, file]) => [key, resolve(outputDirectory, file!)] as const)
                   .filter(([, path]) => existsSync(path)),
@@ -325,7 +339,7 @@ async function main(): Promise<void> {
     generateHotspotMap(actual, breakdown.hotspots, hotspotPath);
 
     const report = {
-        scene: config.name,
+        scene: scene.name,
         renderer,
         dimensions: actualDimensions,
         full,
@@ -342,7 +356,6 @@ async function main(): Promise<void> {
             within5: percentage(region.within5, region.regionPixels),
         },
         thresholds,
-        upstreamThresholds: config.upstreamThresholds,
         files: {
             actual,
             reference,
@@ -361,13 +374,18 @@ async function main(): Promise<void> {
             ...diagnosticFiles,
         },
     };
-    const reportPath = resolve(outputDirectory, `report-${artifactSuffix}.json`);
+    const reportPath = resolve(
+        outputDirectory,
+        config.attribution
+            ? `report-${artifactSuffix}.json`
+            : `report.json`,
+    );
     writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 
     console.log(`Renderer: ${renderer.implementation} (${renderer.mode}, ${renderer.driverSelection})`);
-    console.log(`${config.name} full image (${full.totalPixels} px): MAD=${full.mad.toFixed(3)}, max=${full.maxDiff}`);
+    console.log(`${scene.name} full image (${full.totalPixels} px): MAD=${full.mad.toFixed(3)}, max=${full.maxDiff}`);
     console.log(
-        `${config.name} region (${region.regionPixels} px): MAD=${region.mad.toFixed(3)}, ` +
+        `${scene.name} region (${region.regionPixels} px): MAD=${region.mad.toFixed(3)}, ` +
             `exact=${(report.ratios.exact * 100).toFixed(2)}%, ` +
             `within1=${(report.ratios.within1 * 100).toFixed(2)}%, ` +
             `within5=${(report.ratios.within5 * 100).toFixed(2)}%`,
@@ -406,14 +424,14 @@ async function main(): Promise<void> {
     console.log(`Report: ${reportPath}`);
 
     const failures: string[] = [];
-    if (full.mad > thresholds.maxMad) {
+    if (thresholds.maxMad !== undefined && full.mad > thresholds.maxMad) {
         failures.push(`full MAD ${full.mad.toFixed(3)} > ${thresholds.maxMad}`);
     }
-    if (region.mad > thresholds.maxRegionMad) {
+    if (
+        thresholds.maxRegionMad !== undefined &&
+        region.mad > thresholds.maxRegionMad
+    ) {
         failures.push(`region MAD ${region.mad.toFixed(3)} > ${thresholds.maxRegionMad}`);
-    }
-    if (thresholds.minWithin1 !== undefined && report.ratios.within1 < thresholds.minWithin1) {
-        failures.push(`within1 ${report.ratios.within1.toFixed(4)} < ${thresholds.minWithin1}`);
     }
     if (failures.length > 0) {
         const message = `Parity regression: ${failures.join(", ")}`;

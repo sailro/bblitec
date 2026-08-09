@@ -2,6 +2,9 @@
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#include <bblite/pal_image.hpp>
+#endif
 #if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
 #include <bblite/pal_gltf.hpp>
 #endif
@@ -21,7 +24,7 @@
 
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL
 #include <SDL3/SDL.h>
-#if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <SDL3_image/SDL_image.h>
 #endif
 #endif
@@ -29,7 +32,7 @@
 namespace bbl {
 
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL
-#if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 pal::DecodedImage pal::decode_image(const ts::ArrayBuffer& buffer) {
     SDL_IOStream* stream = SDL_IOFromConstMem(buffer.data(), buffer.byte_length());
     if (!stream) throw std::runtime_error(std::string("Unable to open image: ") + SDL_GetError());
@@ -1215,7 +1218,7 @@ void pal::run_engine(Engine& engine) {
             if (!screenshot) {
                 throw std::runtime_error(std::string("Unable to read screenshot pixels: ") + SDL_GetError());
             }
-#if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
             const bool saved = IMG_SavePNG(screenshot, screenshot_path.c_str());
 #else
             const bool saved = SDL_SaveBMP(screenshot, screenshot_path.c_str());

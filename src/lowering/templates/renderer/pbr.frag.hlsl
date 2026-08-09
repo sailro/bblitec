@@ -17,6 +17,7 @@ cbuffer FragmentUniforms : register(b0, space3)
     float4 lightColor;
     float4 groundColor;
     float4 cameraPosition;
+    float4 cameraForwardNear;
     float4 baseColorFactor;
     float4 emissiveFactor;
     float4 materialFactors;
@@ -34,15 +35,20 @@ struct FragmentInput
     float2 uv : TEXCOORD3;
 };
 
-#if defined(BBLITE_DIAGNOSTICS)
+#if defined(BBLITE_DIAGNOSTICS_A)
 struct FragmentOutput
 {
-    float4 color : SV_Target0;
-    float4 normal : SV_Target1;
-    float4 material : SV_Target2;
-    float4 direct : SV_Target3;
-    float4 ibl : SV_Target4;
-    float4 depth : SV_Target5;
+    float4 normal : SV_Target0;
+    float4 reflectivity : SV_Target1;
+    float4 irradiance : SV_Target2;
+    float4 ibl : SV_Target3;
+};
+#elif defined(BBLITE_DIAGNOSTICS_B)
+struct FragmentOutput
+{
+    float4 depth : SV_Target0;
+    float4 albedo : SV_Target1;
+    float4 direct : SV_Target2;
 };
 #endif
 
@@ -52,7 +58,7 @@ float3 evaluateIrradiance(float3 normal)
 {
     if (materialFactors.w < 0.5)
     {
-        return 0.25;
+        return 0.0;
     }
     float3 result = sphericalHarmonics[0].rgb;
     result += sphericalHarmonics[1].rgb * normal.y;
@@ -70,7 +76,7 @@ float distributionGGX(float nDotH, float alphaG)
 {
     const float a2 = alphaG * alphaG;
     const float denominator = nDotH * nDotH * (a2 - 1.0) + 1.0;
-    return a2 / max(PI * denominator * denominator, 0.0001);
+    return a2 / (PI * denominator * denominator);
 }
 
 float geometrySmithGGX(float nDotL, float nDotV, float alphaG)
@@ -78,7 +84,7 @@ float geometrySmithGGX(float nDotL, float nDotV, float alphaG)
     const float a2 = alphaG * alphaG;
     const float gl = nDotL * sqrt(nDotV * (nDotV - a2 * nDotV) + a2);
     const float gv = nDotV * sqrt(nDotL * (nDotL - a2 * nDotL) + a2);
-    return 0.5 / max(gl + gv, 0.00001);
+    return 0.5 / (gl + gv);
 }
 
 float3 fresnelSchlick(float cosine, float3 f0)
@@ -86,7 +92,7 @@ float3 fresnelSchlick(float cosine, float3 f0)
     return f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0);
 }
 
-#if defined(BBLITE_DIAGNOSTICS)
+#if defined(BBLITE_DIAGNOSTICS_A) || defined(BBLITE_DIAGNOSTICS_B)
 FragmentOutput main(FragmentInput input)
 #else
 float4 main(FragmentInput input) : SV_Target
@@ -104,7 +110,7 @@ float4 main(FragmentInput input) : SV_Target
     const float3 albedo = baseColorSample.rgb * baseColorFactor.rgb;
     const float alpha = baseColorSample.a * baseColorFactor.a;
     const float3 packed = metallicRoughnessTexture.Sample(metallicRoughnessSampler, input.uv).rgb;
-    const float occlusion = packed.r;
+    const float occlusion = lerp(1.0, packed.r, materialFactors.z);
     const float roughness = clamp(packed.g * materialFactors.y, 0.04, 1.0);
     const float metallic = saturate(packed.b * materialFactors.x);
     if (materialOptions.x > 0.5 && materialOptions.x < 1.5 && alpha < materialOptions.y)
@@ -127,7 +133,7 @@ float4 main(FragmentInput input) : SV_Target
     const float3 lightDirectionNormalized = normalize(lightDirection.xyz);
     const float3 halfDirection = normalize(viewDirection + lightDirectionNormalized);
     const float nDotL = clamp(dot(normal, lightDirectionNormalized) * 0.5 + 0.5, 0.0000001, 1.0);
-    const float nDotH = saturate(dot(normal, halfDirection));
+    const float nDotH = clamp(dot(normal, halfDirection), 0.0000001, 1.0);
     const float vDotH = saturate(dot(viewDirection, halfDirection));
     const float3 f0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
     const float3 fresnel = fresnelSchlick(vDotH, f0);
@@ -164,8 +170,10 @@ float4 main(FragmentInput input) : SV_Target
         1.0 + f0 * (1.0 / max(brdf.y, 0.001) - 1.0);
     const float3 finalIrradiance = irradiance * surfaceAlbedo * occlusion;
     const float3 finalRadiance =
-        environmentRadiance * colorSpecularEnvironment * energyConservation;
-    const float3 finalDirectSpecular = directSpecular * energyConservation;
+        environmentRadiance * colorSpecularEnvironment * energyConservation *
+        materialFactors.w;
+    const float3 finalDirectSpecular =
+        directSpecular * lerp(float3(1.0, 1.0, 1.0), energyConservation, materialFactors.w);
     float3 color =
         finalIrradiance +
         finalRadiance +
@@ -183,14 +191,23 @@ float4 main(FragmentInput input) : SV_Target
     color = environmentFactors.y < 1.0
         ? lerp(float3(0.5, 0.5, 0.5), color, environmentFactors.y)
         : lerp(color, highContrast, environmentFactors.y - 1.0);
-#if defined(BBLITE_DIAGNOSTICS)
+#if defined(BBLITE_DIAGNOSTICS_A)
     FragmentOutput output;
-    output.color = float4(color, materialOptions.x > 1.5 ? alpha : 1.0);
     output.normal = float4(normal * 0.5 + 0.5, 1.0);
-    output.material = float4(roughness, metallic, occlusion, 1.0);
-    output.direct = float4(saturate(finalDirectSpecular + directDiffuse), 1.0);
+    output.reflectivity = float4(f0, 1.0 - roughness);
+    output.irradiance = float4(saturate(directDiffuse + finalIrradiance), 1.0);
     output.ibl = float4(saturate(finalIrradiance + finalRadiance), 1.0);
-    output.depth = float4(input.position.z, input.position.z, input.position.z, 1.0);
+    return output;
+#elif defined(BBLITE_DIAGNOSTICS_B)
+    FragmentOutput output;
+    const float viewDepth =
+        dot(input.worldPosition - cameraPosition.xyz, cameraForwardNear.xyz);
+    const float normalizedDepth =
+        (viewDepth - cameraForwardNear.w) /
+        max(cameraPosition.w - cameraForwardNear.w, 0.0001);
+    output.depth = float4(normalizedDepth, normalizedDepth, normalizedDepth, 1.0);
+    output.albedo = float4(surfaceAlbedo, 1.0);
+    output.direct = float4(saturate(directDiffuse + finalDirectSpecular), 1.0);
     return output;
 #else
     return float4(color, materialOptions.x > 1.5 ? alpha : 1.0);

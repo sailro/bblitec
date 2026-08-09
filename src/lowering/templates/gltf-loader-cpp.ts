@@ -305,6 +305,7 @@ MaterialHandle load_material(
     }
     material.normal_texture = texture_data(
         buffer, container, views, images, textures, optional(material_json, "normalTexture"));
+    material.has_occlusion_texture = optional(material_json, "occlusionTexture") != nullptr;
     material.emissive_texture = texture_data(
         buffer, container, views, images, textures, optional(material_json, "emissiveTexture"));
     const std::vector<float> emissive = float_array(optional(material_json, "emissiveFactor"));

@@ -59,6 +59,7 @@ struct PbrUniforms {
     std::array<float, 4> light_color{};
     std::array<float, 4> ground_color{};
     std::array<float, 4> camera_position{};
+    std::array<float, 4> camera_forward_near{};
     std::array<float, 4> base_color_factor{};
     std::array<float, 4> emissive_factor{};
     std::array<float, 4> material_factors{};
@@ -165,7 +166,7 @@ std::vector<RenderItem> build_render_plan(const Scene& scene, const Engine& engi
             continue;
         }
         const MeshRecord& mesh = engine.meshes[handle.value];
-        if (mesh.primitive != PrimitiveKind::gltf || mesh.geometry >= engine.geometries.size()) {
+        if (mesh.geometry >= engine.geometries.size()) {
             continue;
         }
         result.push_back(RenderItem{mesh.geometry, mesh.material});
@@ -254,7 +255,18 @@ PbrUniforms build_pbr_uniforms(
         };
     }
     const Vec3 eye = arc_rotate_eye_position(camera);
-    result.camera_position = {eye.x, eye.y, eye.z, 0.0f};
+    const Vec3 forward = normalize(Vec3{
+        camera.target.x - eye.x,
+        camera.target.y - eye.y,
+        camera.target.z - eye.z,
+    });
+    result.camera_position = {eye.x, eye.y, eye.z, camera.far_plane};
+    result.camera_forward_near = {
+        forward.x,
+        forward.y,
+        forward.z,
+        camera.near_plane,
+    };
     result.base_color_factor = {1.0f, 1.0f, 1.0f, 1.0f};
     result.material_factors = {
         1.0f,
@@ -266,7 +278,7 @@ PbrUniforms build_pbr_uniforms(
         scene.environment.exposure,
         scene.environment.contrast,
         0.8f,
-        1.0f,
+        scene.environment.has_irradiance ? 1.0f : 0.0f,
     };
     if (item.material.value < engine.materials.size()) {
         const MaterialRecord& material = engine.materials[item.material.value];
@@ -284,6 +296,7 @@ PbrUniforms build_pbr_uniforms(
         };
         result.material_factors[0] = material.metallic_factor;
         result.material_factors[1] = material.roughness_factor;
+        result.material_factors[2] = material.has_occlusion_texture ? 1.0f : 0.0f;
         result.material_options[0] =
             material.alpha_mode == MaterialAlphaMode::blend
                 ? 2.0f
@@ -400,7 +413,11 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
         };
     }
 
-    public lowerShaders(): LoweredShader[] {
+    public lowerShaders(options: {
+        ground: boolean;
+        skybox: boolean;
+        diagnostics: boolean;
+    } = { ground: true, skybox: true, diagnostics: true }): LoweredShader[] {
         const pbr = this.context.store.getSource(pbrTemplateModule);
         const pbrHelper = this.context.store.getSource(pbrHelperCoreModule);
         const ibl = this.context.store.getSource(iblFragmentModule);
@@ -426,30 +443,39 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
         }
 
         const sources = [
-            "boombox.vert.hlsl",
-            "boombox.frag.hlsl",
-            "boombox.vert.msl",
-            "boombox.frag.msl",
-            "background-ground.frag.hlsl",
-            "background-ground.frag.msl",
-            "background-skybox.frag.hlsl",
-            "background-skybox.frag.msl",
-            "diagnostic-id.frag.hlsl",
-            "diagnostic-id.frag.msl",
-            "diagnostic-cluster.frag.hlsl",
-            "diagnostic-cluster.frag.msl",
+            "pbr.vert.hlsl",
+            "pbr.frag.hlsl",
+            "pbr.vert.msl",
+            "pbr.frag.msl",
         ];
+        if (options.ground) {
+            sources.push("background-ground.frag.hlsl", "background-ground.frag.msl");
+        }
+        if (options.skybox) {
+            sources.push("background-skybox.frag.hlsl", "background-skybox.frag.msl");
+        }
+        if (options.diagnostics) {
+            sources.push(
+                "diagnostic-id.frag.hlsl",
+                "diagnostic-id.frag.msl",
+                "diagnostic-cluster.frag.hlsl",
+                "diagnostic-cluster.frag.msl",
+            );
+        }
         const result = sources.map((name) => ({
             output: `upstream/shaders/${name}`,
             data: readFileSync(resolve(templateRoot, name), "utf8"),
         }));
-        for (const extension of ["hlsl", "msl"] as const) {
-            result.push({
-                output: `upstream/shaders/boombox-diagnostics.frag.${extension}`,
-                data:
-                    "#define BBLITE_DIAGNOSTICS 1\n" +
-                    readFileSync(resolve(templateRoot, `boombox.frag.${extension}`), "utf8"),
-            });
+        for (const extension of options.diagnostics ? (["hlsl", "msl"] as const) : []) {
+            for (const variant of ["A", "B"] as const) {
+                result.push({
+                    output:
+                        `upstream/shaders/pbr-diagnostics-${variant.toLowerCase()}.frag.${extension}`,
+                    data:
+                        `#define BBLITE_DIAGNOSTICS_${variant} 1\n` +
+                        readFileSync(resolve(templateRoot, `pbr.frag.${extension}`), "utf8"),
+                });
+            }
         }
         return result;
     }

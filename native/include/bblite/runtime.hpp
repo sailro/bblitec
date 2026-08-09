@@ -72,6 +72,7 @@ enum class PrimitiveKind {
     box,
     gltf,
     ground,
+    sphere,
 };
 
 enum class MaterialAlphaMode {
@@ -82,6 +83,10 @@ enum class MaterialAlphaMode {
 
 struct TextureData {
     std::vector<std::uint8_t> bytes;
+};
+
+struct SolidTexture {
+    Color4 color{};
 };
 
 struct ModelVertex {
@@ -114,6 +119,7 @@ struct MaterialRecord {
     Color3 emissive_factor{};
     float metallic_factor = 1.0f;
     float roughness_factor = 1.0f;
+    bool has_occlusion_texture = false;
     bool double_sided = false;
     MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
     float alpha_cutoff = 0.5f;
@@ -206,6 +212,11 @@ struct GroundOptions {
     float height = 1.0f;
 };
 
+struct SphereOptions {
+    std::uint32_t segments = 32;
+    float diameter = 1.0f;
+};
+
 struct EnvironmentOptions {
     std::string environment_url;
     std::string ground_texture_url;
@@ -220,9 +231,15 @@ std::string asset_path(const std::string& relative_path);
 
 MeshHandle create_box(Engine& engine, float size = 1.0f);
 MeshHandle create_ground(Engine& engine, GroundOptions options = {});
+MeshHandle create_sphere(Engine& engine, SphereOptions options = {});
 AssetHandle load_gltf(Engine& engine, const std::string& path);
 void load_environment(Scene& scene, EnvironmentOptions options);
 MaterialHandle create_standard_material(Engine& engine);
+SolidTexture create_solid_texture(Engine& engine, float r, float g, float b, float a = 1.0f);
+MaterialHandle create_pbr_material(
+    Engine& engine,
+    SolidTexture base_color,
+    SolidTexture orm);
 LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
 CameraHandle create_arc_rotate_camera(Engine& engine, float alpha, float beta, float radius, Vec3 target);
 CameraHandle create_default_camera(Engine& engine, Scene& scene);
