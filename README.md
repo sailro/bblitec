@@ -245,6 +245,19 @@ builds for texture decode and PNG capture.
 
 Remote scene assets referenced by supported intrinsics are downloaded during transpilation into the ignored `generated` directory. They are not committed to this repository.
 
+### Portable Windows demo
+
+Build the BoomBox Release target and compile shaders, then create a
+self-contained Windows x64 archive:
+
+```powershell
+npm run package:boombox
+```
+
+The ZIP is written to
+`artifacts\releases\bblitec-boombox-windows-x64.zip` and includes launchers,
+assets, DXIL shaders, native dependencies, and third-party notices.
+
 ## Visual parity
 
 `bblitec` adapts the comparison math from Babylon Lite's Apache-2.0

@@ -46,6 +46,7 @@
     "parity:diagnostics": "npm run parity:lite-diagnostics && npm run parity:boombox:gpu && npm run parity:diagnostics:compare",
     "parity:scene10": "npm run scene -- parity scene10",
     "parity:scene13": "npm run scene -- parity scene13",
+    "package:boombox": "pwsh -File tools/package-boombox-demo.ps1",
     "shaders:build": "pwsh -File tools/compile-shaders.ps1"
   },
   "devDependencies": {

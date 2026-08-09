@@ -134,6 +134,21 @@ $env:LIB = @(
 - `BBLITE_SCREENSHOT=<path>`: deterministic PNG capture
 - `BBLITE_BENCHMARK_FRAMES=<n>`: warm up, disable vsync, and report
   submission timing
+- `BBLITE_ASSET_DIR=<path>`: override the compiled asset directory
+- `BBLITE_GPU_SHADER_DIR=<path>`: override the compiled shader directory
+
+## Portable BoomBox demo
+
+After building `native\build-boombox-release` and compiling shaders:
+
+```powershell
+npm run package:boombox
+```
+
+This creates
+`artifacts\releases\bblitec-boombox-windows-x64.zip` containing the executable,
+assets, DXIL shaders, SDL/PNG/zlib/MSVC runtime DLLs, launchers, usage notes,
+asset sources, and dependency licenses.
 
 ## Visual parity
 

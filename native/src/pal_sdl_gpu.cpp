@@ -321,8 +321,12 @@ SDL_GPUShader* load_shader(
     } else {
         throw std::runtime_error("SDL_GPU backend has no supported bblitec shader format.");
     }
-    const std::vector<std::uint8_t> code =
-        read_binary_file(join_path(BBLITE_GPU_SHADER_DIR, std::string(base_name) + extension));
+    const std::string shader_override =
+        environment_variable("BBLITE_GPU_SHADER_DIR");
+    const std::vector<std::uint8_t> code = read_binary_file(
+        join_path(
+            shader_override.empty() ? BBLITE_GPU_SHADER_DIR : shader_override,
+            std::string(base_name) + extension));
     SDL_GPUShaderCreateInfo info{};
     info.code_size = code.size();
     info.code = code.data();

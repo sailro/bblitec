@@ -60,6 +60,8 @@ test("generates engine API wrappers over the PAL", () => {
     const lowered = new EngineLowerer(new LoweringContext()).lowerCore();
     assert.match(lowered.source, /return pal::create_engine/);
     assert.match(lowered.source, /pal::run_engine\(engine\)/);
+    assert.match(lowered.source, /BBLITE_ASSET_DIR/);
+    assert.match(lowered.source, /environment_variable\("BBLITE_ASSET_DIR"\)/);
 });
 
 test("generates mesh and standard-material factories from upstream defaults", () => {

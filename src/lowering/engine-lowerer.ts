@@ -38,7 +38,10 @@ void start_engine(Engine& engine) {
 }
 
 std::string asset_path(const std::string& relative_path) {
-    return pal::join_path(BBLITE_ASSET_DIR, relative_path);
+    const std::string override = pal::environment_variable("BBLITE_ASSET_DIR");
+    return pal::join_path(
+        override.empty() ? BBLITE_ASSET_DIR : override,
+        relative_path);
 }
 
 } // namespace bbl
