@@ -132,12 +132,15 @@ hotspots back to the glTF render item.
 
 The same production PBR shader is macro-specialized into a diagnostics MRT
 variant that captures encoded world normal, reflectivity, irradiance, IBL,
-normalized view depth, surface albedo, and direct light. Babylon Lite's public
-PBR geometry-renderer task captures equivalent WebGPU oracles for direct
-buffer-by-buffer comparison. Because SDL_GPU supports at most four color
-targets, the native diagnostics are emitted as two passes over the same scene
-and shader formulas. Both passes use the generated 4x MSAA sample count and
-resolve each attachment before readback, matching Babylon Lite's geometry task.
+normalized view depth, surface albedo, and direct light. Those focused
+BoomBox diagnostics use two passes because SDL_GPU exposes four color targets.
+Both passes use generated 4x MSAA and resolve each attachment before readback.
+
+The generated frame-graph geometry renderer is a separate production path. It
+supports all eleven Babylon geometry texture types split across 7+4 MRT passes,
+optional real color, independent depth, Standard and PBR material views,
+viewport impostor copies, and MSAA resolve. Scenes 145 and 146 gate that path
+against Babylon Lite WebGPU references.
 
 ## Validation artifact meaning
 

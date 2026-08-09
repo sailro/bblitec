@@ -3,8 +3,8 @@
 ## Supported vertical slice
 
 The compiler currently supports the primitives example, the authoritative
-BoomBox parity scene, and Babylon Lite parity scenes 10, 13, 32, 145, 146, 168,
-248, 257, 266, 273, and 274.
+BoomBox parity scene, and Babylon Lite parity scenes 10, 13, 32, 116, 145,
+146, 163, 168, 248, 257, 266, 273, and 274.
 
 | Area | Current support |
 | --- | --- |
@@ -28,9 +28,9 @@ Development machine:
 | Renderer | Full MAD | Foreground MAD | Submission time |
 | --- | ---: | ---: | ---: |
 | CPU fallback | 4.452 | 21.191 | 5.516 ms/frame |
-| Generated SDL_GPU/D3D12, 4x MSAA | 0.447 | 2.003 | 0.126 ms average, 0.089 ms median |
+| Generated SDL_GPU/D3D12, 4x MSAA | 0.447 | 2.003 | 0.119 ms average, 0.083 ms median |
 
-The GPU path is approximately 44 times faster CPU-side than the fallback.
+The GPU path is approximately 46 times faster CPU-side than the fallback.
 
 Current GPU diff attribution:
 
@@ -304,6 +304,8 @@ Remaining compiler work includes:
 1. Replace specialized shader templates with a general Babylon WGSL/IR
    pipeline, potentially using Tint or SDL_shadercross.
 2. Validate generated SPIR-V on Vulkan and MSL on Metal hardware.
-3. Add winding and negative-scale parity targets.
-4. Expand glTF material extensions and animation support toward scene 176.
+3. Add scene 8 for HDR environment loading and PBR glass alpha/intensity
+   controls.
+4. Close the measured Standard/PBR geometry-output residuals and remaining
+   BoomBox material differences.
 5. Continue shrinking PAL to platform-only mechanics.

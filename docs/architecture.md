@@ -68,16 +68,19 @@ For the supported generated scene paths, output owns:
 
 - engine and scene API wrappers
 - scene registration and resource routing
-- ArcRotate camera creation, framing, eye position, inertia, and controls
-- hemispheric light records and local matrices
+- ArcRotate and FreeCamera creation, framing, matrices, inertia, and controls
+- hemispheric and point-light records
 - `.env` parsing and spherical-harmonic conversion
-- typed GLB/JSON parsing, accessors, geometry, hierarchy, materials, and
-  embedded textures
+- external glTF packaging, typed GLB/JSON parsing, accessors, geometry,
+  hierarchy, materials, PNG/JPEG textures, and generated missing normals
+- the reached `.babylon` geometry/material/light/camera slice
 - render-item selection and camera view-projection matrices
-- PBR and background uniform preparation
+- Standard/PBR/custom-shader uniform preparation and reached material views
 - glTF material alpha and double-sided metadata
-- Babylon PBR, IBL, tone mapping, specular AA, DDS skybox, and background
-  shader sources
+- frame-graph render targets/tasks, geometry MRTs, depth-only passes, viewport
+  blits, material overrides, and MSAA resolve
+- Babylon PBR, Standard, custom alpha, IBL, tone mapping, specular AA, DDS
+  skybox, and background shader sources
 
 Generated files are written under `generated/<scene>/upstream`. The
 `provenance.json` file records the upstream modules and symbols used.
@@ -127,7 +130,9 @@ SDL_GPU is the default for generated PBR scenes:
 | macOS / iOS | Metal | MSL |
 
 Shader sources are emitted into `generated/<scene>/upstream/shaders`. DXIL and
-SPIR-V are compiled with DXC; MSL source is emitted directly.
+SPIR-V are compiled with DXC; MSL source is emitted directly. Native builds
+snapshot their reached shader directory so later generation for another scene
+cannot invalidate an existing executable.
 
 Important cross-API details:
 
@@ -140,6 +145,10 @@ Important cross-API details:
   metallic-roughness textures are linear.
 - Material draw buckets honor glTF `OPAQUE`, `MASK`, `BLEND`, alpha cutoff,
   and double-sided flags.
+- Generated frame-graph paths support Standard/PBR geometry outputs, depth-only
+  material views, viewport copies, and hardware MSAA resolve.
+- Typed custom shader variants cover conventional alpha blend/test/discard and
+  alpha-to-coverage; arbitrary user WGSL is not yet accepted.
 - Screenshot capture renders to a readable color texture, blits to the
   write-only swapchain, then downloads from the readable texture.
 

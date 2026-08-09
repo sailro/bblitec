@@ -106,11 +106,15 @@ cmake --build native\build-boombox-release
 cmake --build native\build-scene10-release
 cmake --build native\build-scene13-release
 cmake --build native\build-scene32-release
+cmake --build native\build-scene116-release
+cmake --build native\build-scene145-release
 cmake --build native\build-scene146-release
+cmake --build native\build-scene163-release
 cmake --build native\build-scene168-release
 cmake --build native\build-scene248-release
 cmake --build native\build-scene257-release
 cmake --build native\build-scene266-release
+cmake --build native\build-scene273-release
 cmake --build native\build-scene274-release
 ```
 
@@ -139,11 +143,15 @@ npm run parity:boombox:gpu
 npm run parity:scene10
 npm run parity:scene13
 npm run parity:scene32
+npm run parity:scene116
+npm run parity:scene145
 npm run parity:scene146
+npm run parity:scene163
 npm run parity:scene168
 npm run parity:scene248
 npm run parity:scene257
 npm run parity:scene266
+npm run parity:scene273
 npm run parity:scene274
 npm run parity:diagnostics
 ```
@@ -153,7 +161,7 @@ Current measured baselines:
 - CPU fallback: full MAD `4.452`, foreground MAD `21.191`,
   approximately `5.516 ms/frame`.
 - Generated SDL_GPU/D3D12 with Babylon-default 4x MSAA: full MAD `0.447`,
-  foreground MAD `2.003`, approximately `0.126 ms` average and `0.089 ms`
+  foreground MAD `2.003`, approximately `0.119 ms` average and `0.083 ms`
   median.
 - GPU regression ceilings: full MAD `1.0`, foreground MAD `8.0`.
 - Upstream target: full MAD `0.19`, foreground MAD `0.03`, 99% foreground

@@ -75,15 +75,16 @@ baselines are recorded in `docs/status.md`.
 - [x] Scene 146: PBR geometry renderer outputs, 7+4 MRT split, blits, and resolve.
 - [x] Scene 145: Standard-material geometry renderer outputs via `loadBabylon`.
 - [x] Scene 116: Standard/PBR no-color depth views and offscreen depth display.
+
 ### Next balanced scene batch
 
 1. [ ] Scene 8: HDR glass, PBR alpha, reflectance, material intensities, and
    exposure/contrast.
 
-This batch deliberately reuses the custom shader and frame-graph work before
-adding two contained runtime/PBR extensions. Scene 176 remains deferred until
-scene-color transmission, IOR, volume, and skybox-mode behavior have smaller
-independent gates.
+Scenes 163, 116, and 273 completed the custom-shader, frame-graph, and runtime
+mutation stages of this batch. Scene 8 is the remaining contained PBR/HDR
+extension. Scene 176 remains deferred until scene-color transmission, IOR,
+volume, and skybox-mode behavior have smaller independent gates.
 
 - [ ] Scene 176: MosquitoInAmber transmission/IOR/volume.
 

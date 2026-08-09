@@ -5,11 +5,13 @@
 This repository contains a working, deliberately narrow Babylon Lite native compiler prototype. It accepts scene-building TypeScript written against `@babylonjs/lite`, removes browser-only setup, lowers supported API calls to typed C++, and emits a native source manifest containing only the runtime features reached by the program.
 
 Curated targets currently include primitives, the BoomBox glTF demo, and
-Babylon Lite parity scenes including the HillValley Standard-material
-geometry-output target. New repository-local TypeScript scenes
-can also be processed without registry edits: defaults for generated output,
-native build, reference capture, and parity artifacts are derived from the
-source path.
+Babylon Lite parity scenes 10, 13, 32, 116, 145, 146, 163, 168, 248, 257, 266,
+273, and 274. They cover PBR/Standard rendering, external glTF and `.babylon`
+assets, frame-graph geometry/depth outputs, custom shader alpha behavior,
+negative transforms, runtime scene mutation, and alpha-to-coverage. New
+repository-local TypeScript scenes can also be processed without registry
+edits: defaults for generated output, native build, reference capture, and
+parity artifacts are derived from the source path.
 
 **Status:** research prototype. The accepted TypeScript and Babylon Lite API surface is intentionally constrained and validated at transpile time.
 
@@ -91,7 +93,7 @@ runtime module loading, and general browser APIs remain future work.
 The current vertical migration generates these implementations from pinned upstream TypeScript:
 
 - `createEngine` and `startEngine` API wrappers from `engine/engine.ts`, delegating host creation and the run loop to PAL
-- `createHemisphericLight` from `light/hemispheric.ts`
+- hemispheric and point-light factories from pinned light modules
 - `localMatrixFromDirection` from `light/light-matrix.ts`
 - `createArcRotateCamera` from `camera/arc-rotate.ts`
 - `createFreeCamera` and FreeCamera controls from `camera/free-camera.ts` and
@@ -108,12 +110,14 @@ The current vertical migration generates these implementations from pinned upstr
   `loader-babylon/load-babylon.ts`, including inline geometry/submeshes,
   point lights, FreeCamera data, Standard diffuse/ambient/specular/opacity
   textures, alpha cutouts, and cube reflections
-- box/ground mesh factory defaults from `mesh/create-box.ts`, `mesh/create-ground.ts`, and `mesh/mesh-factories.ts`
-- sphere topology from `mesh/create-sphere.ts`
+- box, ground, plane, sphere, and torus geometry from pinned mesh factories
 - `createStandardMaterial` defaults from `material/standard/create-standard-material.ts`
-- solid-texture quantization and `createPbrMaterial` records
+- solid-texture quantization, reached PBR scalar fields, Standard/PBR no-color
+  material views, and typed custom shader variants
 - render-item planning, camera matrices, and PBR uniforms from
   `frame-graph/render-task.ts` and scene uniform sources
+- typed frame-graph render targets/tasks, 7+4 geometry MRTs, viewport blits,
+  depth-only passes, material overrides, and MSAA resolve
 - GGX/Smith lighting, specular AA, SH irradiance, BRDF energy conservation,
   tone mapping, and contrast from the PBR/IBL shader modules
 - transparent background-ground and RGBA16F DDS skybox passes from Babylon
@@ -232,11 +236,20 @@ cd ..\..
 npm run shaders:build
 ```
 
-On the development machine, the optimized BoomBox CPU fallback measured **5.516 ms/frame** average CPU submission. The compiler-generated 4x-MSAA material/IBL/skybox SDL_GPU Direct3D 12 path measured **0.126 ms average / 0.089 ms median**, approximately **44× faster** CPU-side.
+Each configured native build snapshots its reached shaders into that build
+tree. Rebuild the native target after regenerating or recompiling its shaders;
+one scene's regeneration cannot silently change another scene's executable.
+
+On the development machine, the optimized BoomBox CPU fallback measured **5.516 ms/frame** average CPU submission. The freshly regenerated 4x-MSAA material/IBL/skybox SDL_GPU Direct3D 12 path measured **0.119 ms average / 0.083 ms median**, approximately **46× faster** CPU-side.
 
 The GPU path is the default for generated PBR scenes. Set `BBLITE_GPU=0` only when the deterministic CPU fallback is required.
 
-The SDL_GPU path now supports deterministic swapchain readback, ArcRotate mouse controls, normal and metallic-roughness maps, emissive materials, glTF `OPAQUE`/`MASK`/`BLEND` alpha modes, single- and double-sided material buckets, Babylon `.env` cubemap mips, spherical-harmonic irradiance, and the BRDF LUT. Run its local visual regression gate with:
+The SDL_GPU path now supports deterministic swapchain readback, ArcRotate and
+FreeCamera controls, normal and metallic-roughness maps, emissive materials,
+glTF `OPAQUE`/`MASK`/`BLEND` alpha modes, single- and double-sided material
+buckets, typed custom shader variants, alpha testing/blending/coverage,
+offscreen frame-graph passes, Babylon `.env` cubemap mips, spherical-harmonic
+irradiance, and the BRDF LUT. Run its local visual regression gate with:
 
 ```powershell
 npm run parity:boombox:gpu
@@ -329,22 +342,22 @@ and device-specific GPU parity are run on known toolchains and drivers.
 | Engine | `createEngine`, `createSceneContext`, `registerScene`, `startEngine` |
 | Scene | `scene.clearColor`, `scene.camera`, `scene.fixedDeltaMs`, `addToScene`, reached `onBeforeRender` callbacks |
 | Cameras | `createArcRotateCamera`, `createFreeCamera`, `createDefaultCamera`, `attachControl`, `attachFreeControl`, camera projection properties |
-| Lighting | `createHemisphericLight`; point lights loaded from `.babylon` |
-| Geometry | `createBox`, `createGround`, `createPlane`, `createSphere`, `createTorus`, `loadGltf` for triangle GLB files with embedded images, `loadBabylon` for inline triangle geometry/submeshes |
+| Lighting | `createHemisphericLight`, reached `createPointLight`, and point lights loaded from `.babylon` |
+| Geometry | `createBox`, `createGround`, `createPlane`, `createSphere`, `createTorus`, external or binary triangle glTF with PNG/JPEG images, and `loadBabylon` inline geometry/submeshes |
 | Frame graph | `createRenderTarget`, fixed-size depth-only `createRenderTargetTexture`, `createRenderTask`, per-task cameras and `addMesh` material overrides, `createGeometryRendererTask`, ordered task insertion, viewport copies, and MSAA resolve |
 | Environment | `loadEnvironment` with Babylon `.env` irradiance, RGBD specular cubemap mips, BRDF LUT, DDS skybox, and generated ground |
-| Materials | `createStandardMaterial`, Standard/PBR no-color material views, unlit Standard depth-texture display, `.babylon` Standard diffuse/ambient/specular/opacity/cube-reflection textures, glTF metallic-roughness, normal, ORM, emissive, alpha modes, and double-sided state |
+| Materials | `createStandardMaterial`, reached PBR scalar fields, Standard/PBR no-color views, unlit depth-texture display, typed custom shader variants, `.babylon` diffuse/ambient/specular/opacity/reflection textures, and glTF metallic-roughness, normal, ORM, emissive, alpha, and double-sided state |
 | Transforms | `position.set`, `rotation.set`, `scaling.set`, and component assignments on `position`, `rotation`, and `scaling` |
 | Expressions | Numeric literals, variables, `Math.PI`, unary `+/-`, `+ - * /`, callback increments, and numeric conditions |
 | Browser erasure | `document.getElementById(...)`, `document.querySelector(...)`, `HTMLCanvasElement`, `async`, `await`, and the outer `main().catch(...)` |
 
 Current boundaries are intentional: one entry file, one engine, append-only
-runtime scene membership from reached callbacks, embedded-image triangle
-glTF/GLB only, and no arbitrary object
-allocation, animation, skinning, morphing, physics, custom user shaders,
-networking, or audio graph yet. The GPU path uses a depth buffer and generated
-per-pixel PBR/IBL shaders. Material behavior is driven by glTF metadata; there
-are no BoomBox geometry or reference-image heuristics.
+runtime scene membership from reached callbacks, triangle glTF/GLB and the
+reached `.babylon` slice, and no arbitrary object allocation, animation,
+skinning, morphing, physics, general user-defined WGSL, networking, or audio
+graph yet. Custom shaders are limited to typed reached variants. Material
+behavior is driven by source metadata; there are no BoomBox geometry or
+reference-image heuristics.
 
 ## Tree shaking and data layout
 
@@ -363,9 +376,10 @@ Boehm GC remains a reasonable optional compatibility layer once the compiler sup
 1. Replace specialized shader templates with a general composed-WGSL/IR
    lowering pipeline.
 2. Validate Vulkan/SPIR-V and Metal/MSL on real devices.
-3. Add a second unrelated glTF scene as a generalization gate.
-4. Expand TypeScript and glTF coverage: modules, functions, loops, callbacks,
-   animation, skinning, morphing, and extensions.
+3. Add scene 8 as the next contained gate for HDR environments, PBR glass
+   alpha, reflectance, intensities, and image-processing overrides.
+4. Close remaining PBR gaps such as normal scale, occlusion, transparent
+   ordering, and generated-ground composition.
 5. Compile assets into a native packed format and add optional managed
    allocation only for JavaScript semantics that require it.
 

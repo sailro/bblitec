@@ -60,6 +60,10 @@ native build. It compiles only that scene's shader directory. Set `VCPKG_ROOT`
 when CMake cannot discover the vcpkg toolchain;
 set `CMAKE_COMMAND` when `cmake` is not on `PATH`.
 
+Native builds snapshot generated shaders under their build directory. After
+regenerating or recompiling a scene's shaders, rebuild that scene's native
+target so its executable and shader snapshot remain an atomic pair.
+
 Parity can also run without registration:
 
 ```powershell
@@ -224,8 +228,9 @@ Outputs are written to `artifacts/parity`:
 Reports include background/edge/interior attribution, signed channel bias, and
 the highest-error foreground tiles. See [fidelity.md](fidelity.md).
 
-The committed golden is
-`reference/boombox/babylon-ref-golden.png`.
+Committed goldens live under `reference/<scene>/`; BoomBox uses
+`reference/boombox/babylon-ref-golden.png`, while source-based suite targets
+use `babylon-lite-golden.png`.
 
 ## Common mistakes
 
