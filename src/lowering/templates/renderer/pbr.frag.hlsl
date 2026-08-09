@@ -18,11 +18,15 @@ cbuffer FragmentUniforms : register(b0, space3)
     float4 groundColor;
     float4 cameraPosition;
     float4 cameraForwardNear;
+    float4 viewRight;
+    float4 viewUp;
+    float4 viewForward;
     float4 baseColorFactor;
     float4 emissiveFactor;
     float4 materialFactors;
     float4 environmentFactors;
     float4 materialOptions;
+    float4 normalOptions;
     float4 sphericalHarmonics[9];
 };
 
@@ -33,9 +37,16 @@ struct FragmentInput
     float3 normal : TEXCOORD1;
     float4 tangent : TEXCOORD2;
     float2 uv : TEXCOORD3;
+    float3 localPosition : TEXCOORD4;
+    bool frontFacing : SV_IsFrontFace;
 };
 
-#if defined(BBLITE_DIAGNOSTICS_A)
+#if defined(BBLITE_GEOMETRY_OUTPUT)
+struct FragmentOutput
+{
+    BBLITE_GEOMETRY_OUTPUT_STRUCT
+};
+#elif defined(BBLITE_DIAGNOSTICS_A)
 struct FragmentOutput
 {
     float4 normal : SV_Target0;
@@ -92,20 +103,54 @@ float3 fresnelSchlick(float cosine, float3 f0)
     return f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0);
 }
 
-#if defined(BBLITE_DIAGNOSTICS_A) || defined(BBLITE_DIAGNOSTICS_B)
+#if defined(BBLITE_GEOMETRY_OUTPUT) || defined(BBLITE_DIAGNOSTICS_A) || defined(BBLITE_DIAGNOSTICS_B)
 FragmentOutput main(FragmentInput input)
 #else
 float4 main(FragmentInput input) : SV_Target
 #endif
 {
-    const float3 geometricNormal = normalize(input.normal);
-    const float3 tangent = normalize(input.tangent.xyz - geometricNormal * dot(input.tangent.xyz, geometricNormal));
-    const float3 bitangent = normalize(cross(geometricNormal, tangent)) * input.tangent.w;
+    float3 geometricNormal = normalize(input.normal);
     const float3 sampledNormal = normalTexture.Sample(normalSampler, input.uv).xyz * 2.0 - 1.0;
-    const float3 normal = normalize(
-        tangent * sampledNormal.x +
-        bitangent * sampledNormal.y +
-        geometricNormal * sampledNormal.z);
+    float3 normal;
+    if (normalOptions.y < 0.5)
+    {
+        normal = geometricNormal;
+    }
+    else if (normalOptions.x > 0.5)
+    {
+        const float3 positionDx = ddx(input.worldPosition);
+        const float3 positionDy = ddy(input.worldPosition);
+        const float2 uvDx = ddx(input.uv);
+        const float2 uvDy = ddy(input.uv);
+        const float3 positionDyPerpendicular = cross(positionDy, geometricNormal);
+        const float3 positionDxPerpendicular = cross(geometricNormal, positionDx);
+        const float3 cotangent =
+            positionDyPerpendicular * uvDx.x + positionDxPerpendicular * uvDy.x;
+        const float3 cobitangent =
+            -(positionDyPerpendicular * uvDx.y + positionDxPerpendicular * uvDy.y);
+        const float determinant =
+            max(dot(cotangent, cotangent), dot(cobitangent, cobitangent));
+        const float inverseMaximum = determinant > 0.0 ? rsqrt(determinant) : 0.0;
+        normal = normalize(
+            cotangent * inverseMaximum * sampledNormal.x +
+            cobitangent * inverseMaximum * sampledNormal.y +
+            geometricNormal * sampledNormal.z);
+    }
+    else
+    {
+        const float3 tangent =
+            normalize(input.tangent.xyz - geometricNormal * dot(input.tangent.xyz, geometricNormal));
+        const float3 bitangent = normalize(cross(geometricNormal, tangent)) * input.tangent.w;
+        normal = normalize(
+            tangent * sampledNormal.x +
+            bitangent * sampledNormal.y +
+            geometricNormal * sampledNormal.z);
+    }
+    if (materialOptions.w > 0.5 && !input.frontFacing)
+    {
+        geometricNormal = -geometricNormal;
+        normal = -normal;
+    }
     const float4 baseColorSample = baseColorTexture.Sample(baseColorSampler, input.uv);
     const float3 albedo = baseColorSample.rgb * baseColorFactor.rgb;
     const float alpha = baseColorSample.a * baseColorFactor.a;
@@ -180,6 +225,10 @@ float4 main(FragmentInput input) : SV_Target
         finalDirectSpecular +
         directDiffuse +
         emissive;
+    if (materialOptions.z > 0.5)
+    {
+        color = albedo;
+    }
     color *= environmentFactors.x;
     if (environmentFactors.w > 0.5)
     {
@@ -191,7 +240,11 @@ float4 main(FragmentInput input) : SV_Target
     color = environmentFactors.y < 1.0
         ? lerp(float3(0.5, 0.5, 0.5), color, environmentFactors.y)
         : lerp(color, highContrast, environmentFactors.y - 1.0);
-#if defined(BBLITE_DIAGNOSTICS_A)
+#if defined(BBLITE_GEOMETRY_OUTPUT)
+    FragmentOutput output;
+    BBLITE_GEOMETRY_OUTPUT_WRITES
+    return output;
+#elif defined(BBLITE_DIAGNOSTICS_A)
     FragmentOutput output;
     output.normal = float4(normal * 0.5 + 0.5, 1.0);
     output.reflectivity = float4(f0, 1.0 - roughness);

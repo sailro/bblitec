@@ -44,12 +44,14 @@ function browserModule(sourcePath: string): string {
         .replaceAll(
             '"/brdf-lut.png"',
             '"https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/master/packages/babylon-lite/assets/brdf-lut.png"',
-        )
-        .replace(
-            "await startEngine(engine);",
-            'await startEngine(engine); canvas.dataset.ready = "true";',
         );
-    return ts.transpileModule(source, {
+    const readySource = source.includes("dataset.ready")
+        ? source
+        : source.replace(
+              "await startEngine(engine);",
+              'await startEngine(engine); canvas.dataset.ready = "true";',
+          );
+    return ts.transpileModule(readySource, {
         compilerOptions: {
             module: ts.ModuleKind.ES2022,
             target: ts.ScriptTarget.ES2022,

@@ -7,9 +7,15 @@ import { EngineLowerer } from "./lowering/engine-lowerer.js";
 import { LightLowerer } from "./lowering/light-lowerer.js";
 import { SceneLowerer } from "./lowering/scene-lowerer.js";
 import { GltfLowerer } from "./lowering/gltf-lowerer.js";
+import { BabylonLowerer } from "./lowering/babylon-lowerer.js";
 import { FactoryLowerer } from "./lowering/factory-lowerer.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
+import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
+import type {
+    GeometryOutputTaskManifest,
+    ShaderMaterialVariantName,
+} from "./compiler.js";
 
 class GeneratedSourceWriter {
     public constructor(
@@ -17,7 +23,15 @@ class GeneratedSourceWriter {
         private readonly store: UpstreamSourceStore,
     ) {}
 
-    public emit(features: string[], options: { diagnostics: boolean }): void {
+    public emit(
+        features: string[],
+        options: {
+            idDiagnostics: boolean;
+            pbrDiagnostics: boolean;
+            shaderVariants: ShaderMaterialVariantName[];
+            geometryOutputTasks: GeometryOutputTaskManifest[];
+        },
+    ): void {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
 
@@ -32,7 +46,11 @@ class GeneratedSourceWriter {
             generated,
         );
 
-        if (features.includes("camera:arc-rotate") || features.includes("camera:default")) {
+        if (
+            features.includes("camera:arc-rotate") ||
+            features.includes("camera:default") ||
+            features.includes("camera:free")
+        ) {
             const cameraLowerer = new CameraLowerer(context);
             this.writeSource(
                 "upstream/src/camera_arc_rotate.cpp",
@@ -46,6 +64,13 @@ class GeneratedSourceWriter {
                 generated,
                 "upstream/include/bblite/upstream/camera_controls.hpp",
             );
+            if (features.includes("camera:free")) {
+                this.writeSource(
+                    "upstream/src/camera_free.cpp",
+                    cameraLowerer.lowerFreeFactory(),
+                    generated,
+                );
+            }
         }
         if (features.includes("camera:default")) {
             this.writeSource(
@@ -96,6 +121,13 @@ class GeneratedSourceWriter {
                 generated,
             );
         }
+        if (features.includes("loader:babylon")) {
+            this.writeSource(
+                "upstream/src/babylon_loader.cpp",
+                new BabylonLowerer(context).lowerLoaderAdapter(),
+                generated,
+            );
+        }
         if (features.includes("renderer:pbr")) {
             const renderer = new RendererLowerer(context);
             this.writeSource(
@@ -107,7 +139,14 @@ class GeneratedSourceWriter {
             for (const shader of renderer.lowerShaders({
                 ground: features.includes("background:ground"),
                 skybox: features.includes("background:skybox"),
-                diagnostics: options.diagnostics,
+                shaderVariants: options.shaderVariants,
+                standardMaterial:
+                    features.includes("material:standard") &&
+                    features.includes("renderer:pbr"),
+                idDiagnostics: options.idDiagnostics,
+                pbrDiagnostics: options.pbrDiagnostics,
+                geometryOutputTasks: options.geometryOutputTasks,
+                frameGraph: features.includes("renderer:geometry-output"),
             })) {
                 const shaderPath = resolve(this.outputRoot, shader.output);
                 mkdirSync(dirname(shaderPath), { recursive: true });
@@ -126,6 +165,23 @@ class GeneratedSourceWriter {
                 { modulePath: "src/loader-env/rgbd-decode.ts", symbolName: "uploadCubemapRGBD" },
             );
         }
+        if (features.includes("renderer:geometry-output")) {
+            this.writeSource(
+                "upstream/src/frame_graph_geometry.cpp",
+                new GeometryOutputLowerer(context).lowerTaskRecords(),
+                generated,
+            );
+            generated.push(
+                {
+                    modulePath: "src/material/pbr/pbr-geometry-output-shader.ts",
+                    symbolName: "attachmentExpr",
+                },
+                {
+                    modulePath: "src/frame-graph/copy-to-texture-task.ts",
+                    symbolName: "createCopyToTextureTask",
+                },
+            );
+        }
         const factories = new FactoryLowerer(context);
         if (features.includes("material:standard")) {
             this.writeSource(
@@ -141,10 +197,26 @@ class GeneratedSourceWriter {
                 generated,
             );
         }
+        if (features.includes("material:shader")) {
+            this.writeSource(
+                "upstream/src/material_shader.cpp",
+                factories.lowerShaderMaterialFactory(),
+                generated,
+            );
+        }
+        if (features.includes("material:no-color-view")) {
+            this.writeSource(
+                "upstream/src/material_views.cpp",
+                factories.lowerNoColorMaterialViews(),
+                generated,
+            );
+        }
         if (
             features.includes("mesh:box") ||
             features.includes("mesh:ground") ||
-            features.includes("mesh:sphere")
+            features.includes("mesh:plane") ||
+            features.includes("mesh:sphere") ||
+            features.includes("mesh:torus")
         ) {
             this.writeSource(
                 "upstream/src/mesh_factories.cpp",
@@ -182,7 +254,17 @@ class GeneratedSourceWriter {
 export function emitUpstreamGenerated(
     outputRoot: string,
     features: string[],
-    options: { diagnostics: boolean } = { diagnostics: false },
+    options: {
+        idDiagnostics: boolean;
+        pbrDiagnostics: boolean;
+        shaderVariants: ShaderMaterialVariantName[];
+        geometryOutputTasks: GeometryOutputTaskManifest[];
+    } = {
+        idDiagnostics: false,
+        pbrDiagnostics: false,
+        shaderVariants: [],
+        geometryOutputTasks: [],
+    },
 ): void {
     new GeneratedSourceWriter(outputRoot, new UpstreamSourceStore()).emit(
         features,

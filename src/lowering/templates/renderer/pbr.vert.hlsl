@@ -9,6 +9,8 @@ struct VertexInput
     float3 normal : TEXCOORD1;
     float4 tangent : TEXCOORD2;
     float2 uv : TEXCOORD3;
+    float3 localPosition : TEXCOORD4;
+    float2 uv2 : TEXCOORD5;
 };
 
 struct VertexOutput
@@ -18,6 +20,8 @@ struct VertexOutput
     float3 normal : TEXCOORD1;
     float4 tangent : TEXCOORD2;
     float2 uv : TEXCOORD3;
+    float3 localPosition : TEXCOORD4;
+    float2 uv2 : TEXCOORD5;
 };
 
 VertexOutput main(VertexInput input)
@@ -28,5 +32,7 @@ VertexOutput main(VertexInput input)
     output.normal = input.normal;
     output.tangent = input.tangent;
     output.uv = input.uv;
+    output.localPosition = input.localPosition;
+    output.uv2 = input.uv2;
     return output;
 }

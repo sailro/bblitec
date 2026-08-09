@@ -1,0 +1,197 @@
+#include <metal_stdlib>
+using namespace metal;
+
+struct FragmentUniforms {
+    float4 cameraPosition;
+    float4 cameraForwardNear;
+    float4 viewRight;
+    float4 viewUp;
+    float4 viewForward;
+    float4 lightData;
+    float4 lightDiffuse;
+    float4 lightSpecular;
+    float4 lightDirection;
+    float4 diffuseAlpha;
+    float4 specularPower;
+    float4 emissiveLevel;
+    float4 ambientLevel;
+    float4 textureOptions;
+    float4 uvOptions;
+    float4 materialOptions;
+    float4 reflectionOptions;
+};
+
+struct FragmentInput {
+    float4 position [[position]];
+    float3 worldPosition;
+    float3 normal;
+    float4 tangent;
+    float2 uv;
+    float3 localPosition;
+    float2 uv2;
+};
+
+#if defined(BBLITE_GEOMETRY_OUTPUT)
+struct FragmentOutput {
+    BBLITE_GEOMETRY_OUTPUT_STRUCT
+};
+#endif
+
+#if defined(BBLITE_GEOMETRY_OUTPUT)
+fragment FragmentOutput main0(
+#else
+fragment float4 main0(
+#endif
+    FragmentInput input [[stage_in]],
+    bool frontFacing [[front_facing]],
+    texture2d<float> diffuseTexture [[texture(0)]],
+    sampler diffuseSampler [[sampler(0)]],
+    texture2d<float> specularTexture [[texture(1)]],
+    sampler specularSampler [[sampler(1)]],
+    texture2d<float> opacityTexture [[texture(2)]],
+    sampler opacitySampler [[sampler(2)]],
+    texture2d<float> ambientTexture [[texture(3)]],
+    sampler ambientSampler [[sampler(3)]],
+    texturecube<float> reflectionTexture [[texture(4)]],
+    sampler reflectionSampler [[sampler(4)]],
+    texture2d<float> emissiveTexture [[texture(5)]],
+    sampler emissiveSampler [[sampler(5)]],
+    constant FragmentUniforms& uniforms [[buffer(0)]]) {
+    float3 normalW = normalize(input.normal);
+    if (uniforms.materialOptions.x > 0.5 && !frontFacing) {
+        normalW = -normalW;
+    }
+    const float2 diffuseUv = input.uv * uniforms.uvOptions.xy;
+    const float4 diffuseSample = uniforms.textureOptions.x > 0.5
+        ? diffuseTexture.sample(diffuseSampler, diffuseUv)
+        : float4(1.0);
+    if (diffuseSample.a < uniforms.materialOptions.y) {
+        discard_fragment();
+    }
+    const float3 baseColor =
+        diffuseSample.rgb * uniforms.emissiveLevel.w;
+    const float4 emissiveSample = uniforms.reflectionOptions.z > 0.5
+        ? emissiveTexture.sample(emissiveSampler, input.uv)
+        : float4(0.0);
+    const float3 emissiveTextureColor = emissiveSample.rgb;
+    const float3 emissiveContrib =
+        uniforms.emissiveLevel.rgb +
+        emissiveTextureColor * uniforms.emissiveLevel.w;
+    float alpha = uniforms.diffuseAlpha.a;
+    if (uniforms.textureOptions.z > 0.5) {
+        alpha *= opacityTexture.sample(opacitySampler, input.uv).a *
+            uniforms.materialOptions.z;
+    }
+    const float2 specularUv =
+        uniforms.uvOptions.z > 0.5 ? input.uv2 : input.uv;
+    const float4 specularSample = uniforms.textureOptions.y > 0.5
+        ? specularTexture.sample(specularSampler, specularUv)
+        : float4(uniforms.specularPower.rgb, 1.0);
+    const float3 specularColor = specularSample.rgb;
+    const float2 ambientUv =
+        uniforms.uvOptions.w > 0.5 ? input.uv2 : input.uv;
+    const float3 baseAmbientColor = uniforms.textureOptions.w > 0.5
+        ? ambientTexture.sample(ambientSampler, ambientUv).rgb *
+            uniforms.ambientLevel.w
+        : float3(1.0);
+    const float3 viewDirectionW =
+        normalize(uniforms.cameraPosition.xyz - input.worldPosition);
+    float3 diffuseBase;
+    float3 specularBase;
+    if (uniforms.lightData.w > 2.5) {
+        const float nDotL =
+            0.5 + 0.5 *
+                dot(
+                    normalW,
+                    normalize(uniforms.lightData.xyz));
+        diffuseBase = mix(
+            uniforms.lightDirection.rgb,
+            uniforms.lightDiffuse.rgb,
+            nDotL);
+        const float3 halfDirection =
+            normalize(
+                viewDirectionW +
+                normalize(uniforms.lightData.xyz));
+        const float specularTerm = pow(
+            max(0.0, dot(normalW, halfDirection)),
+            max(1.0, uniforms.specularPower.w));
+        specularBase =
+            specularTerm * uniforms.lightSpecular.rgb;
+    } else {
+        const bool directionalLight =
+            uniforms.lightData.w > 0.5 &&
+            uniforms.lightData.w < 1.5;
+        const float3 lightVector =
+            uniforms.lightData.xyz - input.worldPosition;
+        const float lightDistance = length(lightVector);
+        const float attenuation =
+            !directionalLight &&
+            uniforms.lightDiffuse.a > 0.0
+                ? max(
+                      0.0,
+                      1.0 -
+                          lightDistance /
+                              uniforms.lightDiffuse.a)
+                : 1.0;
+        const float3 resolvedLightDirection =
+            directionalLight
+                ? normalize(-uniforms.lightData.xyz)
+                : lightDistance > 0.000001
+                    ? lightVector / lightDistance
+                    : float3(0.0, 1.0, 0.0);
+        const float nDotL =
+            max(0.0, dot(normalW, resolvedLightDirection));
+        diffuseBase =
+            nDotL * uniforms.lightDiffuse.rgb * attenuation;
+        const float3 halfDirection =
+            normalize(
+                viewDirectionW +
+                resolvedLightDirection);
+        const float specularTerm = pow(
+            max(0.0, dot(normalW, halfDirection)),
+            max(1.0, uniforms.specularPower.w));
+        specularBase =
+            specularTerm *
+            uniforms.lightSpecular.rgb *
+            attenuation;
+    }
+    const float3 finalDiffuse = clamp(
+        diffuseBase * uniforms.diffuseAlpha.rgb +
+            emissiveContrib +
+            uniforms.ambientLevel.rgb,
+        0.0,
+        1.0) * baseColor;
+    const float3 finalSpecular = specularBase * specularColor;
+    const float3 viewFromCamera =
+        normalize(input.worldPosition - uniforms.cameraPosition.xyz);
+    const float3 reflectionColor = uniforms.reflectionOptions.x > 0.5
+        ? reflectionTexture.sample(
+              reflectionSampler,
+              reflect(viewFromCamera, normalW)).rgb *
+            uniforms.reflectionOptions.y
+        : float3(0.0);
+    const float3 litColor =
+        finalDiffuse * baseAmbientColor +
+        finalSpecular +
+        reflectionColor;
+    const float3 unlitColor =
+        clamp(
+            emissiveContrib * uniforms.diffuseAlpha.rgb,
+            0.0,
+            1.0) *
+        baseColor;
+    const float4 color = float4(
+        max(
+            uniforms.materialOptions.w > 0.5
+                ? unlitColor
+                : litColor,
+            0.0),
+        alpha);
+#if defined(BBLITE_GEOMETRY_OUTPUT)
+    FragmentOutput output;
+    BBLITE_GEOMETRY_OUTPUT_WRITES
+    return output;
+#else
+    return color;
+#endif
+}

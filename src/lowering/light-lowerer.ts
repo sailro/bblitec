@@ -83,6 +83,7 @@ namespace bbl {
 
 LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float intensity) {
     LightRecord light;
+    light.kind = LightKind::hemispheric;
     light.direction = direction;
     light.intensity = intensity;
     light.diffuse_color = ${this.context.cppColor3(defaults.diffuseColor)};

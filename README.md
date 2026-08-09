@@ -5,7 +5,8 @@
 This repository contains a working, deliberately narrow Babylon Lite native compiler prototype. It accepts scene-building TypeScript written against `@babylonjs/lite`, removes browser-only setup, lowers supported API calls to typed C++, and emits a native source manifest containing only the runtime features reached by the program.
 
 Curated targets currently include primitives, the BoomBox glTF demo, and
-Babylon Lite parity scenes 10 and 13. New repository-local TypeScript scenes
+Babylon Lite parity scenes including the HillValley Standard-material
+geometry-output target. New repository-local TypeScript scenes
 can also be processed without registry edits: defaults for generated output,
 native build, reference capture, and parity artifacts are derived from the
 source path.
@@ -93,6 +94,8 @@ The current vertical migration generates these implementations from pinned upstr
 - `createHemisphericLight` from `light/hemispheric.ts`
 - `localMatrixFromDirection` from `light/light-matrix.ts`
 - `createArcRotateCamera` from `camera/arc-rotate.ts`
+- `createFreeCamera` and FreeCamera controls from `camera/free-camera.ts` and
+  `camera/free-camera-controls.ts`
 - `createDefaultCamera` framing constants and factory from `scene/scene-camera.ts`
 - `attachControl` inertia integration from `camera/arc-rotate-controls.ts`; SDL only translates native events into inertial offsets
 - Babylon `.env` magic, manifest layout, face slicing, and spherical-harmonic conversion from `loader-env/env-parse.ts` and `loader-env/load-env.ts`
@@ -101,6 +104,10 @@ The current vertical migration generates these implementations from pinned upstr
 - the full typed glTF vertical slice from `loader-gltf/load-gltf.ts`, including
   accessors, geometry, hierarchy, embedded images, metallic-roughness
   materials, alpha modes, and double-sided state
+- the HillValley-required `.babylon` slice from
+  `loader-babylon/load-babylon.ts`, including inline geometry/submeshes,
+  point lights, FreeCamera data, Standard diffuse/ambient/specular/opacity
+  textures, alpha cutouts, and cube reflections
 - box/ground mesh factory defaults from `mesh/create-box.ts`, `mesh/create-ground.ts`, and `mesh/mesh-factories.ts`
 - sphere topology from `mesh/create-sphere.ts`
 - `createStandardMaterial` defaults from `material/standard/create-standard-material.ts`
@@ -288,6 +295,17 @@ The common scene workflow also provides:
 npm run parity:boombox:gpu
 npm run parity:scene10
 npm run parity:scene13
+npm run parity:scene32
+npm run parity:scene116
+npm run parity:scene145
+npm run parity:scene146
+npm run parity:scene163
+npm run parity:scene168
+npm run parity:scene248
+npm run parity:scene257
+npm run parity:scene266
+npm run parity:scene273
+npm run parity:scene274
 npm run scene -- parity examples\my-scene.ts --recapture-reference
 ```
 
@@ -309,18 +327,20 @@ and device-specific GPU parity are run on known toolchains and drivers.
 | Area | Supported source forms |
 | --- | --- |
 | Engine | `createEngine`, `createSceneContext`, `registerScene`, `startEngine` |
-| Scene | `scene.clearColor`, `scene.camera`, `addToScene` |
-| Cameras | `createArcRotateCamera`, `createDefaultCamera`, `attachControl`, `alpha`, `beta`, `radius` |
-| Lighting | `createHemisphericLight` |
-| Geometry | `createBox`, `createGround`, `loadGltf` for triangle GLB files with embedded images |
+| Scene | `scene.clearColor`, `scene.camera`, `scene.fixedDeltaMs`, `addToScene`, reached `onBeforeRender` callbacks |
+| Cameras | `createArcRotateCamera`, `createFreeCamera`, `createDefaultCamera`, `attachControl`, `attachFreeControl`, camera projection properties |
+| Lighting | `createHemisphericLight`; point lights loaded from `.babylon` |
+| Geometry | `createBox`, `createGround`, `createPlane`, `createSphere`, `createTorus`, `loadGltf` for triangle GLB files with embedded images, `loadBabylon` for inline triangle geometry/submeshes |
+| Frame graph | `createRenderTarget`, fixed-size depth-only `createRenderTargetTexture`, `createRenderTask`, per-task cameras and `addMesh` material overrides, `createGeometryRendererTask`, ordered task insertion, viewport copies, and MSAA resolve |
 | Environment | `loadEnvironment` with Babylon `.env` irradiance, RGBD specular cubemap mips, BRDF LUT, DDS skybox, and generated ground |
-| Materials | `createStandardMaterial`, `diffuseColor`, glTF metallic-roughness, normal, ORM, emissive, alpha modes, and double-sided state |
-| Transforms | `position.set`, `rotation.set`, `scaling.set`, `rotation.x/y/z` |
-| Expressions | Numeric literals, variables, `Math.PI`, unary `+/-`, and `+ - * /` |
+| Materials | `createStandardMaterial`, Standard/PBR no-color material views, unlit Standard depth-texture display, `.babylon` Standard diffuse/ambient/specular/opacity/cube-reflection textures, glTF metallic-roughness, normal, ORM, emissive, alpha modes, and double-sided state |
+| Transforms | `position.set`, `rotation.set`, `scaling.set`, and component assignments on `position`, `rotation`, and `scaling` |
+| Expressions | Numeric literals, variables, `Math.PI`, unary `+/-`, `+ - * /`, callback increments, and numeric conditions |
 | Browser erasure | `document.getElementById(...)`, `document.querySelector(...)`, `HTMLCanvasElement`, `async`, `await`, and the outer `main().catch(...)` |
 
-Current boundaries are intentional: one entry file, one engine, static scene
-construction, embedded-image triangle glTF/GLB only, and no arbitrary object
+Current boundaries are intentional: one entry file, one engine, append-only
+runtime scene membership from reached callbacks, embedded-image triangle
+glTF/GLB only, and no arbitrary object
 allocation, animation, skinning, morphing, physics, custom user shaders,
 networking, or audio graph yet. The GPU path uses a depth buffer and generated
 per-pixel PBR/IBL shaders. Material behavior is driven by glTF metadata; there

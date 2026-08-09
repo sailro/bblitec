@@ -31,6 +31,10 @@ std::string join_path(const std::string& root, const std::string& relative_path)
     return (std::filesystem::path(root) / relative_path).lexically_normal().string();
 }
 
+std::string parent_path(const std::string& path) {
+    return std::filesystem::path(path).parent_path().string();
+}
+
 std::string environment_variable(const char* name) {
 #if defined(_MSC_VER)
     char* value = nullptr;

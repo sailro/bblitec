@@ -105,6 +105,13 @@ cmake --build native\build-boombox
 cmake --build native\build-boombox-release
 cmake --build native\build-scene10-release
 cmake --build native\build-scene13-release
+cmake --build native\build-scene32-release
+cmake --build native\build-scene146-release
+cmake --build native\build-scene168-release
+cmake --build native\build-scene248-release
+cmake --build native\build-scene257-release
+cmake --build native\build-scene266-release
+cmake --build native\build-scene274-release
 ```
 
 On the development Windows machine, MSVC is 14.51 and Windows SDK is
@@ -131,6 +138,13 @@ npm run parity:boombox
 npm run parity:boombox:gpu
 npm run parity:scene10
 npm run parity:scene13
+npm run parity:scene32
+npm run parity:scene146
+npm run parity:scene168
+npm run parity:scene248
+npm run parity:scene257
+npm run parity:scene266
+npm run parity:scene274
 npm run parity:diagnostics
 ```
 

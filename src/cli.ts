@@ -5,6 +5,8 @@ import { dirname, resolve } from "node:path";
 import { CompileAsset, CompileError, compileSource } from "./compiler.js";
 import { emitUpstreamGenerated } from "./upstream-lower.js";
 import { emitAssetSpecializations } from "./asset-specializer.js";
+import { packageBabylon } from "./babylon-packager.js";
+import { packageGltf } from "./gltf-packager.js";
 
 interface CliOptions {
     input: string;
@@ -12,11 +14,12 @@ interface CliOptions {
     title?: string;
     width?: number;
     height?: number;
-    diagnostics: boolean;
+    idDiagnostics: boolean;
+    pbrDiagnostics: boolean;
 }
 
 function usage(): never {
-    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--diagnostics]");
+    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--id-diagnostics] [--pbr-diagnostics]");
     process.exit(2);
 }
 
@@ -38,7 +41,8 @@ function parseArguments(arguments_: string[]): CliOptions {
     let title: string | undefined;
     let width: number | undefined;
     let height: number | undefined;
-    let diagnostics = false;
+    let idDiagnostics = false;
+    let pbrDiagnostics = false;
 
     for (let index = 1; index < arguments_.length; index += 1) {
         const flag = arguments_[index];
@@ -62,8 +66,11 @@ function parseArguments(arguments_: string[]): CliOptions {
                 height = parsePositiveInteger(value, flag);
                 index += 1;
                 break;
-            case "--diagnostics":
-                diagnostics = true;
+            case "--id-diagnostics":
+                idDiagnostics = true;
+                break;
+            case "--pbr-diagnostics":
+                pbrDiagnostics = true;
                 break;
             default:
                 throw new Error(`Unknown argument '${flag}'.`);
@@ -77,7 +84,8 @@ function parseArguments(arguments_: string[]): CliOptions {
     return {
         input,
         output,
-        diagnostics,
+        idDiagnostics,
+        pbrDiagnostics,
         ...(title ? { title } : {}),
         ...(width ? { width } : {}),
         ...(height ? { height } : {}),
@@ -87,6 +95,19 @@ function parseArguments(arguments_: string[]): CliOptions {
 async function materializeAsset(asset: CompileAsset, inputPath: string, outputPath: string): Promise<void> {
     const destination = resolve(outputPath, "assets", asset.output);
     mkdirSync(dirname(destination), { recursive: true });
+
+    if (asset.kind === "babylon") {
+        await packageBabylon(asset.source, dirname(inputPath), destination);
+        return;
+    }
+
+    if (asset.kind === "gltf" && /\.gltf(?:[?#]|$)/i.test(asset.source)) {
+        writeFileSync(
+            destination,
+            await packageGltf(asset.source, dirname(inputPath)),
+        );
+        return;
+    }
 
     if (/^https?:\/\//i.test(asset.source)) {
         const response = await fetch(asset.source);
@@ -118,7 +139,10 @@ async function main(): Promise<void> {
     await Promise.all(result.manifest.assets.map((asset) => materializeAsset(asset, inputPath, outputPath)));
     emitAssetSpecializations(outputPath, result.manifest.assets);
     emitUpstreamGenerated(outputPath, result.manifest.features, {
-        diagnostics: options.diagnostics,
+        idDiagnostics: options.idDiagnostics,
+        pbrDiagnostics: options.pbrDiagnostics,
+        shaderVariants: result.manifest.shaderVariants,
+        geometryOutputTasks: result.manifest.geometryOutputTasks,
     });
     writeFileSync(resolve(outputPath, "main.cpp"), result.cpp);
     writeFileSync(resolve(outputPath, "features.cmake"), result.cmake);

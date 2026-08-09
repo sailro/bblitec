@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    writeFileSync,
+} from "node:fs";
+import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { captureBabylonReference } from "./capture-reference.js";
@@ -100,14 +106,27 @@ function runNative(
         throw new Error(`Native executable not found: ${executable}. Build the BoomBox Release target first.`);
     }
     mkdirSync(resolve(screenshot, ".."), { recursive: true });
+    const screenshotFrame = Number.parseInt(
+        nativeEnvironment?.BBLITE_SCREENSHOT_FRAME ?? "0",
+        10,
+    );
+    const maxFrames = Number.isFinite(screenshotFrame) && screenshotFrame >= 0
+        ? screenshotFrame + 1
+        : 1;
+    const nativeBaseEnvironment = Object.fromEntries(
+        Object.entries(process.env).filter(
+            ([name]) => !name.toLowerCase().startsWith("npm_"),
+        ),
+    );
     const result = spawnSync(resolve(executable), [], {
         stdio: "inherit",
         env: {
-            ...process.env,
+            ...nativeBaseEnvironment,
             ...nativeEnvironment,
             ...(gpu
                 ? {
                       BBLITE_GPU: "1",
+                      BBLITE_GPU_REQUIRED: "1",
                       ...(idBufferPath ? { BBLITE_ID_BUFFER: resolve(idBufferPath) } : {}),
                       ...(clusterBufferPath
                           ? { BBLITE_CLUSTER_BUFFER: resolve(clusterBufferPath) }
@@ -121,7 +140,7 @@ function runNative(
                       SDL_VIDEODRIVER: "dummy",
                       SDL_RENDER_DRIVER: "software",
                   }),
-            BBLITE_MAX_FRAMES: "1",
+            BBLITE_MAX_FRAMES: String(maxFrames),
             BBLITE_SCREENSHOT: resolve(screenshot),
         },
     });
@@ -135,13 +154,16 @@ function percentage(count: number, total: number): number {
     return total > 0 ? count / total : 0;
 }
 
-async function main(): Promise<void> {
-    const arguments_ = parseArguments(process.argv.slice(2));
+export async function runSceneParity(
+    inputArguments: string[],
+): Promise<void> {
+    const arguments_ = parseArguments(inputArguments);
     const scene = resolveScene(arguments_.sceneId);
     const config = scene.parity;
     if (!config) throw new Error(`Scene '${scene.id}' has no parity definition.`);
     const reference = resolve(config.reference.path);
     const outputDirectory = resolve(config.outputDirectory);
+    mkdirSync(outputDirectory, { recursive: true });
     const actual = resolve(
         arguments_.actual ??
             (arguments_.gpu
@@ -226,7 +248,6 @@ async function main(): Promise<void> {
         );
     }
 
-    mkdirSync(outputDirectory, { recursive: true });
     const full = compareImages(actual, reference);
     const region = compareRegion(actual, reference, config.backgroundColor, config.backgroundThreshold);
     const breakdown = analyzeDifference(
@@ -440,7 +461,12 @@ async function main(): Promise<void> {
     }
 }
 
-main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-});
+if (
+    process.argv[1] &&
+    resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+    runSceneParity(process.argv.slice(2)).catch((error: unknown) => {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 1;
+    });
+}

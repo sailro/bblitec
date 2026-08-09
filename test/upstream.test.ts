@@ -5,11 +5,13 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
+import { BabylonLowerer } from "../src/lowering/babylon-lowerer.js";
 import { EngineLowerer } from "../src/lowering/engine-lowerer.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
+import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 
 test("loads pinned Babylon Lite TypeScript from published source maps", () => {
@@ -29,6 +31,7 @@ test("generates the Babylon environment parser from upstream constants", () => {
     assert.match(lowered.source, /face\.bytes\.assign/);
     assert.match(adapter.source, /scene\.environment\.exposure = 0\.8f/);
     assert.match(adapter.source, /scene\.environment\.contrast = 1\.2f/);
+    assert.doesNotMatch(adapter.source, /scene\.clear_color/);
     assert.match(adapter.source, /scene\.environment\.ground_texture/);
     assert.match(adapter.source, /scene\.environment\.ground_size/);
     assert.match(adapter.source, /scene\.environment\.skybox_width/);
@@ -39,6 +42,9 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     const lowered = new SceneLowerer(new LoweringContext()).lowerCore();
     assert.match(lowered.source, /scene\.clear_color = Color4\{\s*0\.2f,\s*0\.2f,\s*0\.3f,\s*1\.0f/s);
     assert.match(lowered.source, /for \(const MeshHandle mesh : record\.meshes\)/);
+    assert.match(lowered.source, /scene\.mesh_membership_version/);
+    assert.match(lowered.source, /scene\.material_family_mask/);
+    assert.match(lowered.source, /void on_before_render/);
     assert.match(lowered.source, /registered_scenes\.end\(\)/);
 });
 
@@ -51,9 +57,26 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(lowered.source, /0x4e4942/);
     assert.match(adapter.source, /ts::await\(pal::fetch_array_buffer/);
     assert.match(adapter.source, /read_component/);
+    assert.match(adapter.source, /linear_determinant/);
+    assert.match(adapter.source, /std::swap\(geometry\.indices\[index \+ 1\]/);
+    assert.match(adapter.source, /vertex\.normal = normalize\(vertex\.normal\)/);
+    assert.match(adapter.source, /vertex\.local_position = local_position/);
+    assert.match(adapter.source, /geometry\.has_tangents = tangents != nullptr/);
     assert.match(adapter.source, /MaterialAlphaMode::blend/);
     assert.match(adapter.source, /alpha_cutoff/);
     assert.doesNotMatch(adapter.source, /pal::load_glb/);
+});
+
+test("generates the Babylon loader adapter from pinned scene semantics", () => {
+    const lowered = new BabylonLowerer(
+        new LoweringContext(),
+    ).lowerLoaderAdapter();
+    assert.match(lowered.source, /AssetHandle load_babylon/);
+    assert.match(lowered.source, /material\.standard_material = true/);
+    assert.match(lowered.source, /material\.alpha_cutoff = 0\.4f/);
+    assert.match(lowered.source, /engine\.reflection_cubes/);
+    assert.match(lowered.source, /PrimitiveKind::babylon/);
+    assert.match(lowered.source, /create_free_camera/);
 });
 
 test("generates engine API wrappers over the PAL", () => {
@@ -68,8 +91,40 @@ test("generates mesh and standard-material factories from upstream defaults", ()
     const lowerer = new FactoryLowerer(new LoweringContext());
     const mesh = lowerer.lowerMeshFactories();
     const material = lowerer.lowerStandardMaterialFactory();
+    const shader = lowerer.lowerShaderMaterialFactory();
     assert.match(mesh.source, /mesh\.dimensions = Vec3\{resolved_size, resolved_size, resolved_size\}/);
+    assert.match(mesh.source, /geometry\.vertices\.insert/);
+    assert.match(mesh.source, /geometry\.indices = \{3, 1, 0, 2, 3, 0\}/);
+    assert.match(mesh.source, /mesh\.geometry =/);
+    assert.match(mesh.source, /create_plane\(Engine& engine, PlaneOptions options\)/);
+    assert.match(mesh.source, /create_torus\(Engine& engine, TorusOptions options\)/);
+    assert.match(mesh.source, /Vec2\{1\.0f, 1\.0f\}/);
     assert.match(material.source, /material\.diffuse_color = Color3\{1\.0f, 1\.0f, 1\.0f\}/);
+    assert.match(material.source, /material\.standard_material = true/);
+    assert.match(shader.source, /ShaderMaterialVariant::circular_cutout/);
+    assert.match(shader.source, /material\.alpha_mode = MaterialAlphaMode::blend/);
+    assert.match(shader.source, /material\.shader_depth_write = false/);
+    assert.match(shader.source, /set_alpha_to_coverage/);
+});
+
+test("generates reached PBR material scalar fields", () => {
+    const material = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerPbrMaterialFactory();
+    assert.match(material.source, /material\.metallic_factor/);
+    assert.match(material.source, /material\.roughness_factor/);
+    assert.match(material.source, /material\.direct_intensity/);
+    assert.match(material.source, /material\.environment_intensity/);
+});
+
+test("generates no-color material views from pinned view flags", () => {
+    const lowered = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerNoColorMaterialViews();
+    assert.match(lowered.source, /create_standard_no_color_material_view/);
+    assert.match(lowered.source, /create_pbr_no_color_material_view/);
+    assert.match(lowered.source, /view\.no_color = true/);
+    assert.match(lowered.source, /mark_material_ubo_dirty/);
 });
 
 test("generates the public hemispheric light factory from upstream defaults", () => {
@@ -83,6 +138,7 @@ test("generates ArcRotate and default camera factories from upstream constants",
     const lowerer = new CameraLowerer(new LoweringContext());
     const arc = lowerer.lowerArcRotateFactory();
     const framing = lowerer.lowerDefaultFactory();
+    const free = lowerer.lowerFreeFactory();
     const controls = lowerer.lowerControls();
     assert.match(arc.source, /camera\.fov = 0\.8f/);
     assert.match(arc.source, /camera\.angular_sensibility = 1000\.0f/);
@@ -91,6 +147,8 @@ test("generates ArcRotate and default camera factories from upstream constants",
     assert.match(framing.source, /radius = diagonal \* 1\.5f/);
     assert.match(framing.source, /record\.near_plane = radius \* 0\.01f/);
     assert.match(framing.source, /record\.far_plane = radius \* 1000\.0f/);
+    assert.match(free.source, /camera\.kind = CameraKind::free/);
+    assert.match(free.source, /camera\.angular_sensibility = 2000\.0f/);
     assert.match(controls.source, /rotation_epsilon = 0\.001f/);
     assert.match(controls.source, /camera\.inertial_alpha_offset \*= camera\.inertia/);
 });
@@ -112,6 +170,16 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.header, /struct RenderItem/);
     assert.match(lowered.source, /build_render_plan/);
     assert.match(lowered.source, /build_pbr_uniforms/);
+    assert.doesNotMatch(
+        lowered.source,
+        /result\.light_color = \{1\.0f, 1\.0f, 1\.0f, 1\.0f\};/,
+    );
+    assert.match(
+        lowered.source,
+        /result\.material_options\[3\] = material\.double_sided \? 1\.0f : 0\.0f/,
+    );
+    assert.match(lowered.source, /result\.normal_options\[0\] = 1\.0f/);
+    assert.match(lowered.source, /result\.normal_options\[1\]/);
     assert.match(lowered.source, /build_background_plan/);
     assert.match(lowered.source, /build_skybox_plan/);
     assert.match(lowered.source, /preferred_sample_count\(\).*return 4u/s);
@@ -123,11 +191,138 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     const fragment = shaders.find((shader) => shader.output.endsWith("pbr.frag.hlsl"));
     assert.equal(typeof fragment?.data, "string");
     assert.match(String(fragment?.data), /geometrySmithGGX/);
+    assert.match(String(fragment?.data), /SV_IsFrontFace/);
+    assert.match(String(fragment?.data), /normalOptions\.x > 0\.5/);
+    assert.ok(shaders.some((shader) => shader.output.endsWith("alpha-card.vert.hlsl")));
+    assert.ok(
+        shaders.some((shader) =>
+            shader.output.endsWith("circular-cutout.frag.hlsl"),
+        ),
+    );
     assert.match(String(fragment?.data), /1\.590579/);
     assert.equal(fidelity.sourceLanguage, "WGSL");
     assert.deepEqual(fidelity.compiledArtifacts, ["DXIL", "SPIR-V"]);
     assert.ok(fidelity.invariants.some(({ id }) => id === "rgbd-cubemap-y-flip"));
     assert.ok(fidelity.invariants.some(({ id }) => id === "surface-msaa"));
+});
+
+test("generates typed geometry task records and PBR MRT shaders", () => {
+    const tasks = new GeometryOutputLowerer(
+        new LoweringContext(),
+    ).lowerTaskRecords();
+    const shaders = new RendererLowerer(new LoweringContext()).lowerShaders({
+        ground: false,
+        skybox: false,
+        shaderVariants: [],
+        standardMaterial: false,
+        idDiagnostics: false,
+        pbrDiagnostics: false,
+        geometryOutputTasks: [
+            {
+                shaderIndex: 0,
+                attachments: [
+                    "IRRADIANCE",
+                    "WORLD_POSITION",
+                    "NORMALIZED_VIEW_DEPTH",
+                    "VIEW_NORMAL",
+                    "WORLD_NORMAL",
+                    "REFLECTIVITY",
+                    "ALBEDO",
+                ],
+                emitColor: true,
+            },
+        ],
+    });
+    assert.match(tasks.source, /create_geometry_renderer_task/);
+    assert.match(tasks.source, /create_copy_to_texture_task/);
+    assert.match(tasks.source, /create_render_target_texture/);
+    assert.match(tasks.source, /add_render_task_mesh/);
+    assert.match(tasks.source, /scene\.tasks\.insert/);
+    const geometry = shaders.find((shader) =>
+        shader.output.endsWith("pbr-geometry-0.frag.hlsl"),
+    );
+    assert.match(String(geometry?.data), /SV_Target7/);
+    assert.match(
+        String(geometry?.data),
+        /directDiffuse \+ finalIrradiance/,
+    );
+    assert.match(String(geometry?.data), /input\.worldPosition/);
+    assert.ok(
+        shaders.some((shader) => shader.output.endsWith("blit.frag.hlsl")),
+    );
+});
+
+test("generates standard-material geometry output shaders", () => {
+    const shaders = new RendererLowerer(
+        new LoweringContext(),
+    ).lowerShaders({
+        ground: false,
+        skybox: false,
+        shaderVariants: [],
+        standardMaterial: true,
+        idDiagnostics: false,
+        pbrDiagnostics: false,
+        geometryOutputTasks: [
+            {
+                shaderIndex: 0,
+                attachments: [
+                    "IRRADIANCE",
+                    "WORLD_POSITION",
+                    "REFLECTIVITY",
+                    "ALBEDO",
+                ],
+                emitColor: true,
+            },
+        ],
+    });
+    const geometry = shaders.find((shader) =>
+        shader.output.endsWith("standard-geometry-0.frag.hlsl"),
+    );
+    assert.match(String(geometry?.data), /float4\(0\.0, 0\.0, 0\.0/);
+    assert.match(String(geometry?.data), /pow\(specularSample\.rgb/);
+    assert.match(String(geometry?.data), /reflectionTexture/);
+    assert.match(String(geometry?.data), /output\.color = color/);
+});
+
+test("emits only reached custom shader variants", () => {
+    const lowerer = new RendererLowerer(new LoweringContext());
+    const alphaCard = lowerer.lowerShaders({
+        ground: false,
+        skybox: false,
+        shaderVariants: ["alpha-card"],
+        standardMaterial: false,
+        idDiagnostics: false,
+        pbrDiagnostics: false,
+        geometryOutputTasks: [],
+    });
+    assert.ok(
+        alphaCard.some((shader) =>
+            shader.output.endsWith("alpha-card.frag.hlsl"),
+        ),
+    );
+    assert.ok(
+        !alphaCard.some((shader) =>
+            shader.output.includes("circular-cutout"),
+        ),
+    );
+
+    const circularCutout = lowerer.lowerShaders({
+        ground: false,
+        skybox: false,
+        shaderVariants: ["circular-cutout"],
+        standardMaterial: false,
+        idDiagnostics: false,
+        pbrDiagnostics: false,
+        geometryOutputTasks: [],
+    });
+    const fragment = circularCutout.find((shader) =>
+        shader.output.endsWith("circular-cutout.frag.hlsl"),
+    );
+    assert.match(String(fragment?.data), /distance\(input\.uv/);
+    assert.match(String(fragment?.data), /discard/);
+    assert.ok(
+        !circularCutout.some((shader) => shader.output.includes("alpha-card")),
+    );
 });
 
 test("builds a conservative reachable module graph", () => {

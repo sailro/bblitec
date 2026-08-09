@@ -62,20 +62,36 @@ specific raster or PBR intermediate that diverges.
 
 ### Babylon Lite parity ladder
 
-Completed scene 10 and scene 13 baselines are recorded in `docs/status.md`.
+Completed scene 10, 13, 32, 116, 145, 146, 163, 168, 248, 257, 266, 273, and 274
+baselines are recorded in `docs/status.md`.
 
-- [ ] Scene 32: unlit color and texture baseline.
-- [ ] Scene 248: texture filtering, wrap modes, and mip selection.
-- [ ] Scenes 168/257/266: winding, negative scale, and double-sided normals.
-- [ ] Scene 274: alpha-to-coverage.
-- [ ] Scenes 145/146: geometry renderer outputs.
+- [x] Scene 248: texture filtering, wrap modes, and mip selection.
+- [x] Scene 168: mirrored double-sided winding and shading normals.
+- [x] Scene 257: generated node negative scale.
+- [x] Scene 266: double-sided negative-scale sphere grid.
+- [x] Scene 273: runtime `addToScene` introducing a new material family.
+- [x] Scene 274: alpha-to-coverage.
+- [x] Scene 163: custom shader alpha blend + alpha test/discard.
+- [x] Scene 146: PBR geometry renderer outputs, 7+4 MRT split, blits, and resolve.
+- [x] Scene 145: Standard-material geometry renderer outputs via `loadBabylon`.
+- [x] Scene 116: Standard/PBR no-color depth views and offscreen depth display.
+### Next balanced scene batch
+
+1. [ ] Scene 8: HDR glass, PBR alpha, reflectance, material intensities, and
+   exposure/contrast.
+
+This batch deliberately reuses the custom shader and frame-graph work before
+adding two contained runtime/PBR extensions. Scene 176 remains deferred until
+scene-color transmission, IOR, volume, and skybox-mode behavior have smaller
+independent gates.
+
 - [ ] Scene 176: MosquitoInAmber transmission/IOR/volume.
 
 ### Match remaining PBR behavior
 
 - [ ] Attribute the remaining BoomBox foreground MAD by material and feature.
 - [ ] Implement normal texture scale.
-- [ ] Implement environment intensity and direct intensity as generated
+- [x] Implement environment intensity and direct intensity as generated
   material values.
 - [ ] Validate geometric-normal orientation and double-sided normal flipping.
 - [ ] Match Babylon alpha-blend luminance-over-alpha behavior.

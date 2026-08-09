@@ -2,6 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
+import { runSceneParity } from "./parity-scene.js";
 import { resolveScene, scenes } from "./scene-registry.js";
 
 function runNode(module: string, arguments_: string[]): void {
@@ -29,15 +30,26 @@ function compile(idOrSource: string): void {
             "--title",
             scene.title,
         ];
-        if (scene.parity?.attribution) arguments_.push("--diagnostics");
+        if (
+            scene.parity?.attribution?.drawIds ||
+            scene.parity?.attribution?.triangleClusters
+        ) {
+            arguments_.push("--id-diagnostics");
+        }
+        if (scene.parity?.attribution?.diagnostics) {
+            arguments_.push("--pbr-diagnostics");
+        }
         runNode("dist/src/cli.js", arguments_);
     }
 }
 
-function parity(idOrSource: string, extraArguments: string[]): void {
+async function parity(
+    idOrSource: string,
+    extraArguments: string[],
+): Promise<void> {
     const scene = resolveScene(idOrSource);
     if (!scene.parity) throw new Error(`Scene '${scene.id}' has no parity definition.`);
-    runNode("dist/src/parity-scene.js", [idOrSource, ...extraArguments]);
+    await runSceneParity([idOrSource, ...extraArguments]);
 }
 
 function build(idOrSource: string): void {
@@ -81,7 +93,7 @@ function processScene(idOrSource: string): void {
     build(idOrSource);
 }
 
-function main(): void {
+async function main(): Promise<void> {
     const [command, id, ...rest] = process.argv.slice(2);
     if (command === "list") {
         for (const scene of scenes) {
@@ -108,7 +120,7 @@ function main(): void {
         return;
     }
     if (command === "parity" && id) {
-        parity(id, rest);
+        await parity(id, rest);
         return;
     }
     throw new Error(
@@ -116,9 +128,7 @@ function main(): void {
     );
 }
 
-try {
-    main();
-} catch (error: unknown) {
+main().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
-}
+});

@@ -14,13 +14,36 @@ export interface CompileManifest {
     runtimeSources: string[];
     generatedSources: string[];
     assets: CompileAsset[];
+    shaderVariants: ShaderMaterialVariantName[];
+    geometryOutputTasks: GeometryOutputTaskManifest[];
     adaptations: CompileAdaptation[];
 }
 
 export interface CompileAsset {
     source: string;
     output: string;
-    kind: "environment" | "gltf" | "texture";
+    kind: "babylon" | "environment" | "gltf" | "texture";
+}
+
+export type GeometryTextureTypeName =
+    | "IRRADIANCE"
+    | "WORLD_POSITION"
+    | "LOCAL_POSITION"
+    | "REFLECTIVITY"
+    | "VIEW_DEPTH"
+    | "NORMALIZED_VIEW_DEPTH"
+    | "SCREENSPACE_DEPTH"
+    | "VIEW_NORMAL"
+    | "WORLD_NORMAL"
+    | "ALBEDO"
+    | "LINEAR_VELOCITY";
+
+export type ShaderMaterialVariantName = "alpha-card" | "circular-cutout";
+
+export interface GeometryOutputTaskManifest {
+    shaderIndex: number;
+    attachments: GeometryTextureTypeName[];
+    emitColor: boolean;
 }
 
 export interface CompileResult {
@@ -29,12 +52,29 @@ export interface CompileResult {
     manifest: CompileManifest;
 }
 
-type ValueKind = "asset" | "browser" | "camera" | "engine" | "light" | "material" | "mesh" | "number" | "scene" | "texture" | "void";
+type ValueKind =
+    | "asset"
+    | "browser"
+    | "camera"
+    | "engine"
+    | "light"
+    | "material"
+    | "mesh"
+    | "number"
+    | "render-target"
+    | "render-target-texture"
+    | "render-texture"
+    | "scene"
+    | "task"
+    | "texture"
+    | "void";
 
 interface Value {
     kind: ValueKind;
     cpp: string;
     engineCpp?: string;
+    geometryTask?: GeometryOutputTaskManifest;
+    shaderVariant?: ShaderMaterialVariantName;
 }
 
 type Feature =
@@ -44,35 +84,54 @@ type Feature =
     | "backend:sdl"
     | "camera:arc-rotate"
     | "camera:default"
+    | "camera:free"
     | "environment:ibl"
     | "light:hemispheric"
+    | "loader:babylon"
     | "loader:gltf"
     | "material:pbr"
+    | "material:no-color-view"
+    | "material:shader"
     | "material:standard"
     | "mesh:box"
     | "mesh:ground"
+    | "mesh:plane"
     | "mesh:sphere"
-    | "renderer:pbr";
+    | "mesh:torus"
+    | "renderer:pbr"
+    | "renderer:geometry-output";
 
 const featureSources: Record<Feature, string[]> = {
     "core": ["src/pal.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp"],
     "camera:arc-rotate": [],
     "camera:default": [],
+    "camera:free": [],
     "environment:ibl": [],
     "background:ground": [],
     "background:skybox": [],
     "light:hemispheric": [],
+    "loader:babylon": [],
     "loader:gltf": [],
     "material:pbr": [],
+    "material:no-color-view": [],
+    "material:shader": [],
     "material:standard": [],
     "mesh:box": [],
     "mesh:ground": [],
+    "mesh:plane": [],
     "mesh:sphere": [],
+    "mesh:torus": [],
     "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
+    "renderer:geometry-output": [],
 };
 
 const featureOrder = Object.keys(featureSources) as Feature[];
+
+function basenameWithoutExtension(name: string): string {
+    const dot = name.lastIndexOf(".");
+    return dot > 0 ? name.slice(0, dot) : name;
+}
 
 export class CompileError extends Error {
     public readonly fileName: string;
@@ -109,15 +168,19 @@ interface ResolvedCompileOptions {
 
 class Compiler {
     private readonly imports = new Map<string, string>();
+    private readonly staticConstants = new Map<string, ts.Expression>();
     private readonly variables = new Map<string, Value>();
     private readonly features = new Set<Feature>(["core"]);
     private readonly assets = new Map<string, CompileAsset>();
+    private readonly shaderVariants = new Set<ShaderMaterialVariantName>();
     private readonly body: string[] = [];
     private readonly erasedBrowserExpressions = new Set<number>();
     private readonly erasedBrowserInstrumentation = new Set<number>();
     private readonly unwrappedAwaitExpressions = new Set<number>();
+    private readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
     private hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
+    private indentLevel = 2;
 
     public constructor(
         private readonly sourceFile: ts.SourceFile,
@@ -126,6 +189,7 @@ class Compiler {
 
     public compile(): CompileResult {
         this.collectImports();
+        this.collectStaticConstants();
         for (const statement of this.entryStatements()) {
             this.emitStatement(statement);
         }
@@ -136,11 +200,18 @@ class Compiler {
             "upstream/src/engine.cpp",
             "upstream/src/scene_core.cpp",
         ];
-        if (features.includes("camera:arc-rotate") || features.includes("camera:default")) {
+        if (
+            features.includes("camera:arc-rotate") ||
+            features.includes("camera:default") ||
+            features.includes("camera:free")
+        ) {
             generatedSources.push(
                 "upstream/src/camera_arc_rotate.cpp",
                 "upstream/src/camera_controls.cpp",
             );
+        }
+        if (features.includes("camera:free")) {
+            generatedSources.push("upstream/src/camera_free.cpp");
         }
         if (features.includes("camera:default")) {
             generatedSources.push("upstream/src/camera_default.cpp");
@@ -160,11 +231,23 @@ class Compiler {
                 "upstream/src/gltf_loader.cpp",
             );
         }
+        if (features.includes("loader:babylon")) {
+            generatedSources.push("upstream/src/babylon_loader.cpp");
+        }
         if (features.includes("renderer:pbr")) {
             generatedSources.push("upstream/src/renderer_plan.cpp");
         }
+        if (features.includes("renderer:geometry-output")) {
+            generatedSources.push("upstream/src/frame_graph_geometry.cpp");
+        }
         if (features.includes("material:pbr")) {
             generatedSources.push("upstream/src/material_pbr.cpp");
+        }
+        if (features.includes("material:no-color-view")) {
+            generatedSources.push("upstream/src/material_views.cpp");
+        }
+        if (features.includes("material:shader")) {
+            generatedSources.push("upstream/src/material_shader.cpp");
         }
         if (features.includes("material:standard")) {
             generatedSources.push("upstream/src/material_standard.cpp");
@@ -172,7 +255,9 @@ class Compiler {
         if (
             features.includes("mesh:box") ||
             features.includes("mesh:ground") ||
-            features.includes("mesh:sphere")
+            features.includes("mesh:plane") ||
+            features.includes("mesh:sphere") ||
+            features.includes("mesh:torus")
         ) {
             generatedSources.push("upstream/src/mesh_factories.cpp");
         }
@@ -185,6 +270,8 @@ class Compiler {
                 runtimeSources,
                 generatedSources,
                 assets: [...this.assets.values()],
+                shaderVariants: [...this.shaderVariants],
+                geometryOutputTasks: this.geometryOutputTasks,
                 adaptations: this.compileAdaptations(features),
             },
         };
@@ -207,6 +294,20 @@ class Compiler {
             for (const element of clause.namedBindings.elements) {
                 if (!element.isTypeOnly) {
                     this.imports.set(element.name.text, element.propertyName?.text ?? element.name.text);
+                }
+            }
+        }
+    }
+
+    private collectStaticConstants(): void {
+        for (const statement of this.sourceFile.statements) {
+            if (!ts.isVariableStatement(statement)) continue;
+            for (const declaration of statement.declarationList.declarations) {
+                if (ts.isIdentifier(declaration.name) && declaration.initializer) {
+                    this.staticConstants.set(
+                        declaration.name.text,
+                        declaration.initializer,
+                    );
                 }
             }
         }
@@ -242,6 +343,11 @@ class Compiler {
             return;
         }
 
+        if (ts.isIfStatement(statement)) {
+            this.emitIfStatement(statement);
+            return;
+        }
+
         if (ts.isReturnStatement(statement) && !statement.expression) {
             return;
         }
@@ -251,6 +357,22 @@ class Compiler {
         }
 
         this.fail(statement, `Unsupported statement: ${ts.SyntaxKind[statement.kind]}.`);
+    }
+
+    private emitIfStatement(statement: ts.IfStatement): void {
+        if (statement.elseStatement) {
+            this.fail(statement.elseStatement, "Reached callbacks do not support else branches.");
+        }
+        this.emit(`if (${this.compileCondition(statement.expression)}) {`);
+        this.indentLevel += 1;
+        const statements = ts.isBlock(statement.thenStatement)
+            ? statement.thenStatement.statements
+            : [statement.thenStatement];
+        for (const nested of statements) {
+            this.emitStatement(nested);
+        }
+        this.indentLevel -= 1;
+        this.emit("}");
     }
 
     private emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
@@ -292,12 +414,34 @@ class Compiler {
     private emitExpressionStatement(expression: ts.Expression): void {
         const unwrapped = this.unwrap(expression);
 
-        if (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            [
+                ts.SyntaxKind.EqualsToken,
+                ts.SyntaxKind.PlusEqualsToken,
+                ts.SyntaxKind.MinusEqualsToken,
+            ].includes(unwrapped.operatorToken.kind)
+        ) {
             this.emitAssignment(unwrapped);
             return;
         }
 
+        if (
+            ts.isPostfixUnaryExpression(unwrapped) &&
+            unwrapped.operator === ts.SyntaxKind.PlusPlusToken &&
+            ts.isIdentifier(unwrapped.operand)
+        ) {
+            const target = this.lookup(unwrapped.operand);
+            this.expectKind(target, "number", unwrapped.operand);
+            this.emit(`${target.cpp}++;`);
+            return;
+        }
+
         if (ts.isCallExpression(unwrapped) && this.emitMemberSetCall(unwrapped)) {
+            return;
+        }
+
+        if (ts.isCallExpression(unwrapped) && this.emitTaskMethodCall(unwrapped)) {
             return;
         }
 
@@ -321,6 +465,17 @@ class Compiler {
         }
 
         const left = expression.left;
+        if (
+            ts.isPropertyAccessExpression(left.expression) &&
+            left.expression.name.text === "dataset" &&
+            ts.isIdentifier(left.expression.expression)
+        ) {
+            const target = this.lookup(left.expression.expression);
+            if (target.kind === "browser") {
+                this.erasedBrowserInstrumentation.add(expression.pos);
+                return;
+            }
+        }
         if (ts.isIdentifier(left.expression)) {
             const target = this.lookup(left.expression);
             const property = left.name.text;
@@ -334,6 +489,13 @@ class Compiler {
                 const camera = this.compileValue(expression.right);
                 this.expectKind(camera, "camera", expression.right);
                 this.emit(`${target.cpp}.camera = ${camera.cpp};`);
+                return;
+            }
+
+            if (target.kind === "scene" && property === "fixedDeltaMs") {
+                this.emit(
+                    `${target.cpp}.fixed_delta_ms = ${this.compileNumber(expression.right)};`,
+                );
                 return;
             }
 
@@ -354,9 +516,73 @@ class Compiler {
                 return;
             }
 
-            if (target.kind === "camera" && (property === "alpha" || property === "beta" || property === "radius")) {
+            if (target.kind === "material" && property === "alpha") {
                 this.emit(
-                    `${this.requireEngine(target, expression)}.cameras[${target.cpp}.value].${property} = ${this.compileNumber(expression.right)};`,
+                    `${this.requireEngine(target, expression)}.materials[${target.cpp}.value].base_color_factor.a = ${this.compileNumber(expression.right)};`,
+                );
+                return;
+            }
+
+            if (target.kind === "material" && property === "specularColor") {
+                this.emit(
+                    `${this.requireEngine(target, expression)}.materials[${target.cpp}.value].specular_color = ${this.compileColor3(expression.right)};`,
+                );
+                return;
+            }
+
+            if (target.kind === "material" && property === "specularPower") {
+                this.emit(
+                    `${this.requireEngine(target, expression)}.materials[${target.cpp}.value].specular_power = ${this.compileNumber(expression.right)};`,
+                );
+                return;
+            }
+
+            if (target.kind === "material" && property === "emissiveColor") {
+                this.emit(
+                    `${this.requireEngine(target, expression)}.materials[${target.cpp}.value].emissive_factor = ${this.compileColor3(expression.right)};`,
+                );
+                return;
+            }
+
+            if (target.kind === "material" && property === "disableLighting") {
+                this.emit(
+                    `${this.requireEngine(target, expression)}.materials[${target.cpp}.value].disable_lighting = ${this.compileBoolean(expression.right)};`,
+                );
+                return;
+            }
+
+            if (target.kind === "material" && property === "emissiveTexture") {
+                const texture = this.compileValue(expression.right);
+                this.expectKind(texture, "render-texture", expression.right);
+                this.expectSameEngine(target, texture, expression);
+                const engine = this.requireEngine(target, expression);
+                this.emit(
+                    `${engine}.materials[${target.cpp}.value].emissive_render_texture = ${texture.cpp};`,
+                );
+                this.emit(
+                    `${engine}.materials[${target.cpp}.value].has_emissive_render_texture = true;`,
+                );
+                return;
+            }
+
+            if (
+                target.kind === "camera" &&
+                ["alpha", "beta", "radius", "fov", "nearPlane", "farPlane"].includes(property)
+            ) {
+                const operator =
+                    expression.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken
+                        ? "+="
+                        : expression.operatorToken.kind === ts.SyntaxKind.MinusEqualsToken
+                            ? "-="
+                            : "=";
+                const nativeProperty =
+                    property === "nearPlane"
+                        ? "near_plane"
+                        : property === "farPlane"
+                            ? "far_plane"
+                            : property;
+                this.emit(
+                    `${this.requireEngine(target, expression)}.cameras[${target.cpp}.value].${nativeProperty} ${operator} ${this.compileNumber(expression.right)};`,
                 );
                 return;
             }
@@ -365,7 +591,9 @@ class Compiler {
         if (
             ts.isPropertyAccessExpression(left.expression) &&
             ts.isIdentifier(left.expression.expression) &&
-            left.expression.name.text === "rotation"
+            ["position", "rotation", "scaling"].includes(
+                left.expression.name.text,
+            )
         ) {
             const mesh = this.lookup(left.expression.expression);
             this.expectKind(mesh, "mesh", left.expression.expression);
@@ -375,7 +603,7 @@ class Compiler {
             }
             const component = ["x", "y", "z"][axis]!;
             this.emit(
-                `${this.requireEngine(mesh, expression)}.meshes[${mesh.cpp}.value].rotation.${component} = ${this.compileNumber(expression.right)};`,
+                `${this.requireEngine(mesh, expression)}.meshes[${mesh.cpp}.value].${left.expression.name.text}.${component} = ${this.compileNumber(expression.right)};`,
             );
             return;
         }
@@ -410,11 +638,45 @@ class Compiler {
         return true;
     }
 
+    private emitTaskMethodCall(call: ts.CallExpression): boolean {
+        if (
+            !ts.isPropertyAccessExpression(call.expression) ||
+            call.expression.name.text !== "addMesh" ||
+            !ts.isIdentifier(call.expression.expression)
+        ) {
+            return false;
+        }
+        const task = this.lookup(call.expression.expression);
+        if (task.kind !== "task") return false;
+        this.expectArgumentCount(call, 2, 2);
+        const mesh = this.compileValue(call.arguments[0]!);
+        this.expectKind(mesh, "mesh", call.arguments[0]!);
+        const options = this.expectObjectLiteral(call.arguments[1]!);
+        const materialExpression = this.objectProperty(options, "material");
+        if (!materialExpression || options.properties.length !== 1) {
+            this.fail(
+                options,
+                "Reached RenderTask.addMesh requires only a material override.",
+            );
+        }
+        const material = this.compileValue(materialExpression);
+        this.expectKind(material, "material", materialExpression);
+        this.expectSameEngine(task, mesh, call);
+        this.expectSameEngine(task, material, call);
+        this.emit(
+            `bbl::add_render_task_mesh(${this.requireEngine(task, call)}, ${task.cpp}, ${mesh.cpp}, ${material.cpp});`,
+        );
+        return true;
+    }
+
     private compileValue(expression: ts.Expression): Value {
         const unwrapped = this.unwrap(expression);
 
         if (ts.isIdentifier(unwrapped)) {
             return this.lookup(unwrapped);
+        }
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            return this.compilePropertyAccess(unwrapped);
         }
         if (ts.isCallExpression(unwrapped)) {
             return this.compileCall(unwrapped);
@@ -427,6 +689,83 @@ class Compiler {
         }
 
         this.fail(unwrapped, `Unsupported value expression: ${ts.SyntaxKind[unwrapped.kind]}.`);
+    }
+
+    private compilePropertyAccess(expression: ts.PropertyAccessExpression): Value {
+        if (!ts.isIdentifier(expression.expression)) {
+            this.fail(
+                expression,
+                `Unsupported property value '${expression.getText(this.sourceFile)}'.`,
+            );
+        }
+        const owner = this.lookup(expression.expression);
+        const property = expression.name.text;
+        if (owner.kind === "engine" && property === "scRT") {
+            return {
+                kind: "render-target",
+                cpp: `bbl::swapchain_render_target(${owner.cpp})`,
+                engineCpp: owner.cpp,
+            };
+        }
+        if (owner.kind === "render-target-texture") {
+            if (property === "rt") {
+                return {
+                    kind: "render-target",
+                    cpp: `${owner.cpp}.rt`,
+                    ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
+                };
+            }
+            if (property === "texture") {
+                return {
+                    kind: "render-texture",
+                    cpp: `${owner.cpp}.texture`,
+                    ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
+                };
+            }
+        }
+        if (owner.kind === "task" && owner.geometryTask) {
+            if (property === "outputTexture") {
+                if (!owner.geometryTask.emitColor) {
+                    this.fail(expression, "Geometry task has no targetTexture output.");
+                }
+                return {
+                    kind: "render-texture",
+                    cpp: `bbl::geometry_task_output_texture(${owner.cpp})`,
+                    ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
+                };
+            }
+            const geometryProperties: Record<string, GeometryTextureTypeName> = {
+                geometryIrradianceTexture: "IRRADIANCE",
+                geometryWorldPositionTexture: "WORLD_POSITION",
+                geometryLocalPositionTexture: "LOCAL_POSITION",
+                geometryReflectivityTexture: "REFLECTIVITY",
+                geometryViewDepthTexture: "VIEW_DEPTH",
+                geometryNormalizedViewDepthTexture: "NORMALIZED_VIEW_DEPTH",
+                geometryScreenspaceDepthTexture: "SCREENSPACE_DEPTH",
+                geometryViewNormalTexture: "VIEW_NORMAL",
+                geometryWorldNormalTexture: "WORLD_NORMAL",
+                geometryAlbedoTexture: "ALBEDO",
+                geometryLinearVelocityTexture: "LINEAR_VELOCITY",
+            };
+            const type = geometryProperties[property];
+            if (type) {
+                if (!owner.geometryTask.attachments.includes(type)) {
+                    this.fail(
+                        expression,
+                        `Geometry task did not request ${type}.`,
+                    );
+                }
+                return {
+                    kind: "render-texture",
+                    cpp: `bbl::geometry_task_texture(${owner.cpp}, bbl::GeometryTextureType::${this.geometryEnumMember(type)})`,
+                    ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
+                };
+            }
+        }
+        this.fail(
+            expression,
+            `Unsupported property value '${expression.getText(this.sourceFile)}'.`,
+        );
     }
 
     private compileCall(call: ts.CallExpression): Value {
@@ -454,6 +793,88 @@ class Compiler {
                 return { kind: "scene", cpp: `bbl::create_scene_context(${engine.cpp})`, engineCpp: engine.cpp };
             }
 
+            case "createRenderTarget": {
+                this.expectArgumentCount(call, 1, 1);
+                const engine = this.requireDefaultEngine(call);
+                const options = this.compileRenderTargetOptions(call.arguments[0]!);
+                this.features.add("renderer:pbr");
+                this.features.add("renderer:geometry-output");
+                return {
+                    kind: "render-target",
+                    cpp: `bbl::create_render_target(${engine}, ${options})`,
+                    engineCpp: engine,
+                };
+            }
+
+            case "createRenderTargetTexture": {
+                this.expectArgumentCount(call, 2, 2);
+                const engine = this.compileValue(call.arguments[0]!);
+                this.expectKind(engine, "engine", call.arguments[0]!);
+                const options = this.compileRenderTargetOptions(
+                    call.arguments[1]!,
+                );
+                this.features.add("renderer:pbr");
+                this.features.add("renderer:geometry-output");
+                return {
+                    kind: "render-target-texture",
+                    cpp: `bbl::create_render_target_texture(${engine.cpp}, ${options})`,
+                    engineCpp: engine.cpp,
+                };
+            }
+
+            case "createRenderTask": {
+                this.expectArgumentCount(call, 3, 3);
+                const engine = this.compileValue(call.arguments[1]!);
+                const scene = this.compileValue(call.arguments[2]!);
+                this.expectKind(engine, "engine", call.arguments[1]!);
+                this.expectKind(scene, "scene", call.arguments[2]!);
+                this.expectSameEngine(engine, scene, call);
+                const options = this.compileRenderTaskOptions(call.arguments[0]!);
+                this.features.add("renderer:pbr");
+                this.features.add("renderer:geometry-output");
+                return {
+                    kind: "task",
+                    cpp: `bbl::create_render_task(${engine.cpp}, ${scene.cpp}, ${options})`,
+                    engineCpp: engine.cpp,
+                };
+            }
+
+            case "createGeometryRendererTask": {
+                this.expectArgumentCount(call, 3, 3);
+                const engine = this.compileValue(call.arguments[1]!);
+                const scene = this.compileValue(call.arguments[2]!);
+                this.expectKind(engine, "engine", call.arguments[1]!);
+                this.expectKind(scene, "scene", call.arguments[2]!);
+                this.expectSameEngine(engine, scene, call);
+                const compiled = this.compileGeometryTaskOptions(call.arguments[0]!);
+                this.geometryOutputTasks.push(compiled.manifest);
+                this.features.add("renderer:pbr");
+                this.features.add("renderer:geometry-output");
+                return {
+                    kind: "task",
+                    cpp: `bbl::create_geometry_renderer_task(${engine.cpp}, ${scene.cpp}, ${compiled.cpp})`,
+                    engineCpp: engine.cpp,
+                    geometryTask: compiled.manifest,
+                };
+            }
+
+            case "createCopyToTextureTask": {
+                this.expectArgumentCount(call, 3, 3);
+                const engine = this.compileValue(call.arguments[1]!);
+                const scene = this.compileValue(call.arguments[2]!);
+                this.expectKind(engine, "engine", call.arguments[1]!);
+                this.expectKind(scene, "scene", call.arguments[2]!);
+                this.expectSameEngine(engine, scene, call);
+                const options = this.compileCopyTaskOptions(call.arguments[0]!);
+                this.features.add("renderer:pbr");
+                this.features.add("renderer:geometry-output");
+                return {
+                    kind: "task",
+                    cpp: `bbl::create_copy_to_texture_task(${engine.cpp}, ${scene.cpp}, ${options})`,
+                    engineCpp: engine.cpp,
+                };
+            }
+
             case "createBox": {
                 this.expectArgumentCount(call, 1, 2);
                 const engine = this.compileValue(call.arguments[0]!);
@@ -476,6 +897,21 @@ class Compiler {
                 };
             }
 
+            case "createPlane": {
+                this.expectArgumentCount(call, 1, 2);
+                const engine = this.compileValue(call.arguments[0]!);
+                this.expectKind(engine, "engine", call.arguments[0]!);
+                const options = call.arguments[1]
+                    ? this.compilePlaneOptions(call.arguments[1])
+                    : ["1.0f", "1.0f"];
+                this.features.add("mesh:plane");
+                return {
+                    kind: "mesh",
+                    cpp: `bbl::create_plane(${engine.cpp}, bbl::PlaneOptions{${options[0]}, ${options[1]}})`,
+                    engineCpp: engine.cpp,
+                };
+            }
+
             case "createSphere": {
                 this.expectArgumentCount(call, 1, 2);
                 const engine = this.compileValue(call.arguments[0]!);
@@ -487,6 +923,21 @@ class Compiler {
                 return {
                     kind: "mesh",
                     cpp: `bbl::create_sphere(${engine.cpp}, bbl::SphereOptions{${options[0]}, ${options[1]}})`,
+                    engineCpp: engine.cpp,
+                };
+            }
+
+            case "createTorus": {
+                this.expectArgumentCount(call, 1, 2);
+                const engine = this.compileValue(call.arguments[0]!);
+                this.expectKind(engine, "engine", call.arguments[0]!);
+                const options = call.arguments[1]
+                    ? this.compileTorusOptions(call.arguments[1])
+                    : ["1.0f", "0.5f", "16u"];
+                this.features.add("mesh:torus");
+                return {
+                    kind: "mesh",
+                    cpp: `bbl::create_torus(${engine.cpp}, bbl::TorusOptions{${options[0]}, ${options[1]}, ${options[2]}})`,
                     engineCpp: engine.cpp,
                 };
             }
@@ -508,14 +959,117 @@ class Compiler {
             case "createPbrMaterial": {
                 this.expectArgumentCount(call, 1, 1);
                 const engine = this.requireDefaultEngine(call);
-                const [baseColor, orm] = this.compilePbrMaterialOptions(call.arguments[0]!);
+                const [baseColor, orm, metallic, roughness, direct, environment, unlit] =
+                    this.compilePbrMaterialOptions(call.arguments[0]!);
                 this.expectSameEngine(baseColor, orm, call);
                 this.features.add("material:pbr");
                 this.features.add("renderer:pbr");
                 return {
                     kind: "material",
-                    cpp: `bbl::create_pbr_material(${engine}, ${baseColor.cpp}, ${orm.cpp})`,
+                    cpp: `bbl::create_pbr_material(${engine}, bbl::PbrMaterialOptions{${baseColor.cpp}, ${orm.cpp}, ${metallic}, ${roughness}, ${direct}, ${environment}, ${unlit}})`,
                     engineCpp: engine,
+                };
+            }
+
+            case "createStandardNoColorMaterialView":
+            case "createPbrNoColorMaterialView": {
+                this.expectArgumentCount(call, 1, 1);
+                const source = this.compileValue(call.arguments[0]!);
+                this.expectKind(source, "material", call.arguments[0]!);
+                this.features.add("material:no-color-view");
+                this.features.add("renderer:pbr");
+                return {
+                    kind: "material",
+                    cpp:
+                        importedName === "createStandardNoColorMaterialView"
+                            ? `bbl::create_standard_no_color_material_view(${this.requireEngine(source, call)}, ${source.cpp})`
+                            : `bbl::create_pbr_no_color_material_view(${this.requireEngine(source, call)}, ${source.cpp})`,
+                    engineCpp: this.requireEngine(source, call),
+                };
+            }
+
+            case "markMaterialUboDirty": {
+                this.expectArgumentCount(call, 1, 1);
+                const material = this.compileValue(call.arguments[0]!);
+                this.expectKind(material, "material", call.arguments[0]!);
+                return {
+                    kind: "void",
+                    cpp: `bbl::mark_material_ubo_dirty(${this.requireEngine(material, call)}, ${material.cpp})`,
+                };
+            }
+
+            case "createShaderMaterial": {
+                this.expectArgumentCount(call, 1, 1);
+                const engine = this.requireDefaultEngine(call);
+                const variant = this.compileShaderMaterialOptions(
+                    call.arguments[0]!,
+                );
+                this.shaderVariants.add(variant);
+                this.features.add("material:shader");
+                this.features.add("renderer:pbr");
+                return {
+                    kind: "material",
+                    cpp: `bbl::create_shader_material(${engine}, bbl::ShaderMaterialVariant::${variant.replaceAll("-", "_")})`,
+                    engineCpp: engine,
+                    shaderVariant: variant,
+                };
+            }
+
+            case "setShaderUniform": {
+                this.expectArgumentCount(call, 3, 3);
+                const material = this.compileValue(call.arguments[0]!);
+                this.expectKind(material, "material", call.arguments[0]!);
+                this.expectShaderVariant(material, "alpha-card", call.arguments[0]!);
+                const name = this.compileStringLiteral(call.arguments[1]!);
+                if (name !== "center") {
+                    this.fail(call.arguments[1]!, `Unsupported shader vec2 uniform '${name}'.`);
+                }
+                const value = this.compileVec2(call.arguments[2]!);
+                return {
+                    kind: "void",
+                    cpp: `bbl::set_shader_center(${this.requireEngine(material, call)}, ${material.cpp}, ${value})`,
+                };
+            }
+
+            case "setShaderFloat": {
+                this.expectArgumentCount(call, 3, 3);
+                const material = this.compileValue(call.arguments[0]!);
+                this.expectKind(material, "material", call.arguments[0]!);
+                this.expectShaderVariant(material, "alpha-card", call.arguments[0]!);
+                const name = this.compileStringLiteral(call.arguments[1]!);
+                if (!["angle", "depth", "opacity"].includes(name)) {
+                    this.fail(call.arguments[1]!, `Unsupported shader float uniform '${name}'.`);
+                }
+                return {
+                    kind: "void",
+                    cpp: `bbl::set_shader_float(${this.requireEngine(material, call)}, ${material.cpp}, ${this.cppString(name)}, ${this.compileNumber(call.arguments[2]!)})`,
+                };
+            }
+
+            case "setShaderVector3": {
+                this.expectArgumentCount(call, 3, 3);
+                const material = this.compileValue(call.arguments[0]!);
+                this.expectKind(material, "material", call.arguments[0]!);
+                this.expectShaderVariant(material, "alpha-card", call.arguments[0]!);
+                const name = this.compileStringLiteral(call.arguments[1]!);
+                if (name !== "color") {
+                    this.fail(call.arguments[1]!, `Unsupported shader vec3 uniform '${name}'.`);
+                }
+                return {
+                    kind: "void",
+                    cpp: `bbl::set_shader_vector3(${this.requireEngine(material, call)}, ${material.cpp}, ${this.cppString(name)}, ${this.compileColor3(call.arguments[2]!)})`,
+                };
+            }
+
+            case "setAlphaToCoverage": {
+                this.expectArgumentCount(call, 2, 2);
+                const material = this.compileValue(call.arguments[0]!);
+                this.expectKind(material, "material", call.arguments[0]!);
+                this.expectShaderVariant(material, "alpha-card", call.arguments[0]!);
+                const enabled = this.compileBoolean(call.arguments[1]!);
+                return {
+                    kind: "void",
+                    cpp: `bbl::set_alpha_to_coverage(${this.requireEngine(material, call)}, ${material.cpp}, ${enabled})`,
                 };
             }
 
@@ -564,6 +1118,17 @@ class Compiler {
                 };
             }
 
+            case "createFreeCamera": {
+                this.expectArgumentCount(call, 2, 2);
+                const engine = this.requireDefaultEngine(call);
+                this.features.add("camera:free");
+                return {
+                    kind: "camera",
+                    cpp: `bbl::create_free_camera(${engine}, ${this.compileVec3(call.arguments[0]!)}, ${this.compileVec3(call.arguments[1]!)})`,
+                    engineCpp: engine,
+                };
+            }
+
             case "loadGltf": {
                 this.expectArgumentCount(call, 2, 2);
                 const engine = this.compileValue(call.arguments[0]!);
@@ -575,6 +1140,24 @@ class Compiler {
                 return {
                     kind: "asset",
                     cpp: `bbl::load_gltf(${engine.cpp}, bbl::asset_path(${this.cppString(asset.output)}))`,
+                    engineCpp: engine.cpp,
+                };
+            }
+
+            case "loadBabylon": {
+                this.expectArgumentCount(call, 2, 3);
+                const engine = this.compileValue(call.arguments[0]!);
+                this.expectKind(engine, "engine", call.arguments[0]!);
+                const source = this.compileStringLiteral(call.arguments[1]!);
+                if (call.arguments[2]) this.expectObjectLiteral(call.arguments[2]);
+                const asset = this.registerAsset(source, "babylon");
+                this.features.add("camera:free");
+                this.features.add("loader:babylon");
+                this.features.add("material:standard");
+                this.features.add("renderer:pbr");
+                return {
+                    kind: "asset",
+                    cpp: `bbl::load_babylon(${engine.cpp}, bbl::asset_path(${this.cppString(asset.output)}))`,
                     engineCpp: engine.cpp,
                 };
             }
@@ -618,6 +1201,33 @@ class Compiler {
                 return { kind: "void", cpp: `bbl::add_to_scene(${scene.cpp}, ${resource.cpp})` };
             }
 
+            case "onBeforeRender": {
+                this.expectArgumentCount(call, 2, 2);
+                const scene = this.compileValue(call.arguments[0]!);
+                this.expectKind(scene, "scene", call.arguments[0]!);
+                return {
+                    kind: "void",
+                    cpp: `bbl::on_before_render(${scene.cpp}, ${this.compileFrameCallback(call.arguments[1]!)})`,
+                };
+            }
+
+            case "addTask":
+            case "addTaskAtStart": {
+                this.expectArgumentCount(call, 2, 2);
+                const scene = this.compileValue(call.arguments[0]!);
+                const task = this.compileValue(call.arguments[1]!);
+                this.expectKind(scene, "scene", call.arguments[0]!);
+                this.expectKind(task, "task", call.arguments[1]!);
+                this.expectSameEngine(scene, task, call);
+                return {
+                    kind: "void",
+                    cpp:
+                        importedName === "addTaskAtStart"
+                            ? `bbl::add_task_at_start(${scene.cpp}, ${task.cpp})`
+                            : `bbl::add_task(${scene.cpp}, ${task.cpp})`,
+                };
+            }
+
             case "attachControl": {
                 this.expectArgumentCount(call, 2, 3);
                 const camera = this.compileValue(call.arguments[0]!);
@@ -629,6 +1239,21 @@ class Compiler {
                 return {
                     kind: "void",
                     cpp: `bbl::attach_control(${this.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp})`,
+                };
+            }
+
+            case "attachFreeControl": {
+                this.expectArgumentCount(call, 2, 3);
+                const camera = this.compileValue(call.arguments[0]!);
+                const sceneArgument = call.arguments.length === 3 ? call.arguments[2]! : call.arguments[1]!;
+                const scene = this.compileValue(sceneArgument);
+                this.expectKind(camera, "camera", call.arguments[0]!);
+                this.expectKind(scene, "scene", sceneArgument);
+                this.expectSameEngine(camera, scene, call);
+                this.features.add("camera:free");
+                return {
+                    kind: "void",
+                    cpp: `bbl::attach_free_control(${this.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp})`,
                 };
             }
 
@@ -664,11 +1289,263 @@ class Compiler {
         return this.compileNumber(unwrapped);
     }
 
+    private compileRenderTargetOptions(expression: ts.Expression): string {
+        const object = this.expectObjectLiteral(expression);
+        const samples = this.objectProperty(object, "samples");
+        const colorFormat = this.objectProperty(object, "format");
+        const depthFormat = this.objectProperty(object, "dFormat");
+        const size = this.objectProperty(object, "size");
+        let width = "0u";
+        let height = "0u";
+        if (size) {
+            const unwrappedSize = this.unwrap(size);
+            if (ts.isObjectLiteralExpression(unwrappedSize)) {
+                const widthExpression = this.objectProperty(
+                    unwrappedSize,
+                    "width",
+                );
+                const heightExpression = this.objectProperty(
+                    unwrappedSize,
+                    "height",
+                );
+                if (!widthExpression || !heightExpression) {
+                    this.fail(
+                        unwrappedSize,
+                        "Fixed render target size requires width and height.",
+                    );
+                }
+                width = this.compilePositiveInteger(widthExpression);
+                height = this.compilePositiveInteger(heightExpression);
+            } else {
+                const surface = this.compileValue(unwrappedSize);
+                this.expectKind(surface, "engine", unwrappedSize);
+            }
+        }
+        return `bbl::RenderTargetOptions{${samples ? this.compilePositiveInteger(samples) : "1u"}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`;
+    }
+
+    private compileRenderTaskOptions(expression: ts.Expression): string {
+        const object = this.expectObjectLiteral(expression);
+        const nameExpression = this.objectProperty(object, "name");
+        const targetExpression = this.objectProperty(object, "rt");
+        if (!targetExpression) {
+            this.fail(object, "Render task requires an rt render target.");
+        }
+        const target = this.compileValue(targetExpression);
+        this.expectKind(target, "render-target", targetExpression);
+        const clearColor = this.objectProperty(object, "clrColor");
+        const clear = this.objectProperty(object, "clr");
+        const cameraExpression = this.objectProperty(object, "cam");
+        const camera = cameraExpression
+            ? this.compileValue(cameraExpression)
+            : undefined;
+        if (camera && cameraExpression) {
+            this.expectKind(camera, "camera", cameraExpression);
+            this.expectSameEngine(target, camera, object);
+        }
+        const canvasSize = this.objectProperty(object, "cs");
+        const autoMirror = this.objectProperty(object, "autoMirror");
+        return `bbl::RenderTaskOptions{${this.cppString(
+            nameExpression ? this.compileStringLiteral(nameExpression) : "render-task",
+        )}, ${target.cpp}, ${clearColor ? this.compileColor4(clearColor) : "bbl::Color4{}"}, ${clear ? this.compileBoolean(clear) : "true"}, ${camera?.cpp ?? "bbl::CameraHandle{}"}, ${camera ? "true" : "false"}, ${canvasSize ? this.compileBoolean(canvasSize) : "false"}, ${autoMirror ? this.compileBoolean(autoMirror) : "true"}}`;
+    }
+
+    private compileGeometryTaskOptions(expression: ts.Expression): {
+        cpp: string;
+        manifest: GeometryOutputTaskManifest;
+    } {
+        const object = this.expectObjectLiteral(expression);
+        const nameExpression = this.objectProperty(object, "name");
+        const samplesExpression = this.objectProperty(object, "samples");
+        const descriptionsExpression = this.objectProperty(
+            object,
+            "textureDescriptions",
+        );
+        if (!descriptionsExpression) {
+            this.fail(object, "Geometry renderer task requires textureDescriptions.");
+        }
+        const descriptions = this.unwrap(descriptionsExpression);
+        if (!ts.isArrayLiteralExpression(descriptions)) {
+            this.fail(descriptions, "Geometry textureDescriptions must be an array literal.");
+        }
+        if (
+            descriptions.elements.length === 0 ||
+            descriptions.elements.length > 8
+        ) {
+            this.fail(
+                descriptions,
+                "Geometry textureDescriptions must contain 1-8 entries.",
+            );
+        }
+        const attachments: GeometryTextureTypeName[] = [];
+        const compiledDescriptions = descriptions.elements.map((element) => {
+            const description = this.expectObjectLiteral(element);
+            const typeExpression = this.objectProperty(description, "type");
+            if (!typeExpression) {
+                this.fail(description, "Geometry texture description requires type.");
+            }
+            const type = this.compileGeometryTextureType(typeExpression);
+            if (attachments.includes(type)) {
+                this.fail(typeExpression, `Duplicate geometry texture type ${type}.`);
+            }
+            attachments.push(type);
+            const formatExpression = this.objectProperty(description, "format");
+            const format = formatExpression
+                ? this.compileStringLiteral(formatExpression)
+                : "";
+            if (format && format !== "r16float") {
+                this.fail(
+                    formatExpression!,
+                    `Unsupported geometry texture format override '${format}'.`,
+                );
+            }
+            return `bbl::GeometryTextureDescription{bbl::GeometryTextureType::${this.geometryEnumMember(type)}, ${format === "r16float" ? "bbl::GeometryTextureFormat::r16_float" : "bbl::GeometryTextureFormat::automatic"}}`;
+        });
+        const targetExpression = this.objectProperty(object, "targetTexture");
+        const target = targetExpression
+            ? this.compileValue(targetExpression)
+            : undefined;
+        if (target && targetExpression) {
+            this.expectKind(target, "render-target", targetExpression);
+        }
+        const clearColorExpression = this.objectProperty(
+            object,
+            "targetTextureClearColor",
+        );
+        if (clearColorExpression && !target) {
+            this.fail(
+                clearColorExpression,
+                "targetTextureClearColor requires targetTexture.",
+            );
+        }
+        const manifest: GeometryOutputTaskManifest = {
+            shaderIndex: this.geometryOutputTasks.length,
+            attachments,
+            emitColor: target !== undefined,
+        };
+        return {
+            cpp: `bbl::GeometryTaskOptions{${this.cppString(
+                nameExpression
+                    ? this.compileStringLiteral(nameExpression)
+                    : `geometry-${manifest.shaderIndex}`,
+            )}, ${manifest.shaderIndex}u, ${samplesExpression ? this.compilePositiveInteger(samplesExpression) : "1u"}, {${compiledDescriptions.join(", ")}}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${clearColorExpression ? "true" : "false"}, ${clearColorExpression ? this.compileColor4(clearColorExpression) : "bbl::Color4{}"}}`,
+            manifest,
+        };
+    }
+
+    private compileCopyTaskOptions(expression: ts.Expression): string {
+        const object = this.expectObjectLiteral(expression);
+        const nameExpression = this.objectProperty(object, "name");
+        const sourceExpression = this.objectProperty(object, "sourceTexture");
+        if (!sourceExpression) {
+            this.fail(object, "Copy task requires sourceTexture.");
+        }
+        const source = this.compileValue(sourceExpression);
+        const sourceCpp =
+            source.kind === "render-target"
+                ? `bbl::render_target_texture(${source.cpp})`
+                : source.kind === "render-texture"
+                    ? source.cpp
+                    : this.fail(
+                          sourceExpression,
+                          `Copy source must be a render texture, received ${source.kind}.`,
+                      );
+        const targetExpression = this.objectProperty(object, "targetTexture");
+        const resolveExpression = this.objectProperty(object, "resolveTexture");
+        const target = targetExpression
+            ? this.compileValue(targetExpression)
+            : undefined;
+        const resolveTarget = resolveExpression
+            ? this.compileValue(resolveExpression)
+            : undefined;
+        if (!target && !resolveTarget) {
+            this.fail(object, "Copy task requires targetTexture or resolveTexture.");
+        }
+        if (target && targetExpression) {
+            this.expectKind(target, "render-target", targetExpression);
+        }
+        if (resolveTarget && resolveExpression) {
+            this.expectKind(resolveTarget, "render-target", resolveExpression);
+        }
+        const viewportExpression = this.objectProperty(object, "viewport");
+        let viewport = "bbl::NormalizedViewport{}";
+        if (viewportExpression) {
+            const viewportObject = this.expectObjectLiteral(viewportExpression);
+            viewport = `bbl::NormalizedViewport{${this.requiredObjectNumber(viewportObject, "x")}, ${this.requiredObjectNumber(viewportObject, "y")}, ${this.requiredObjectNumber(viewportObject, "width")}, ${this.requiredObjectNumber(viewportObject, "height")}}`;
+        }
+        return `bbl::CopyTaskOptions{${this.cppString(
+            nameExpression ? this.compileStringLiteral(nameExpression) : "copy-task",
+        )}, ${sourceCpp}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${resolveTarget?.cpp ?? "bbl::RenderTargetHandle{}"}, ${viewportExpression ? "true" : "false"}, ${viewport}}`;
+    }
+
+    private compileGeometryTextureType(
+        expression: ts.Expression,
+    ): GeometryTextureTypeName {
+        const unwrapped = this.unwrap(expression);
+        if (
+            !ts.isPropertyAccessExpression(unwrapped) ||
+            !ts.isIdentifier(unwrapped.expression) ||
+            this.imports.get(unwrapped.expression.text) !== "GeometryTextureType"
+        ) {
+            this.fail(
+                unwrapped,
+                "Expected a GeometryTextureType enum member.",
+            );
+        }
+        const type = unwrapped.name.text as GeometryTextureTypeName;
+        const supported = new Set<GeometryTextureTypeName>([
+            "IRRADIANCE",
+            "WORLD_POSITION",
+            "LOCAL_POSITION",
+            "REFLECTIVITY",
+            "VIEW_DEPTH",
+            "NORMALIZED_VIEW_DEPTH",
+            "SCREENSPACE_DEPTH",
+            "VIEW_NORMAL",
+            "WORLD_NORMAL",
+            "ALBEDO",
+            "LINEAR_VELOCITY",
+        ]);
+        if (!supported.has(type)) {
+            this.fail(unwrapped.name, `Unsupported geometry texture type '${type}'.`);
+        }
+        return type;
+    }
+
+    private geometryEnumMember(type: GeometryTextureTypeName): string {
+        return type.toLowerCase();
+    }
+
     private compileGroundOptions(expression: ts.Expression): [string, string] {
         const object = this.expectObjectLiteral(expression);
         const width = this.objectProperty(object, "width");
         const height = this.objectProperty(object, "height");
         return [width ? this.compileNumber(width) : "1.0f", height ? this.compileNumber(height) : "1.0f"];
+    }
+
+    private compilePlaneOptions(expression: ts.Expression): [string, string] {
+        const object = this.expectObjectLiteral(expression);
+        for (const property of object.properties) {
+            const name =
+                ts.isPropertyAssignment(property) ||
+                ts.isShorthandPropertyAssignment(property)
+                    ? this.propertyName(property.name)
+                    : undefined;
+            if (!name || !["size", "width", "height"].includes(name)) {
+                this.fail(
+                    property,
+                    "Plane options support only size, width, and height.",
+                );
+            }
+        }
+        const size = this.objectProperty(object, "size");
+        const width = this.objectProperty(object, "width");
+        const height = this.objectProperty(object, "height");
+        const compiledSize = size ? this.compileNumber(size) : "1.0f";
+        return [
+            width ? this.compileNumber(width) : compiledSize,
+            height ? this.compileNumber(height) : compiledSize,
+        ];
     }
 
     private compileSphereOptions(expression: ts.Expression): [string, string] {
@@ -681,16 +1558,65 @@ class Compiler {
         ];
     }
 
-    private compilePbrMaterialOptions(expression: ts.Expression): [Value, Value] {
+    private compileTorusOptions(
+        expression: ts.Expression,
+    ): [string, string, string] {
         const object = this.expectObjectLiteral(expression);
         for (const property of object.properties) {
+            const name =
+                ts.isPropertyAssignment(property) ||
+                ts.isShorthandPropertyAssignment(property)
+                    ? this.propertyName(property.name)
+                    : undefined;
             if (
-                !ts.isPropertyAssignment(property) ||
-                !["baseColorTexture", "ormTexture"].includes(
-                    this.propertyName(property.name) ?? "",
-                )
+                !name ||
+                !["diameter", "thickness", "tessellation"].includes(name)
             ) {
-                this.fail(property, "Scene 10 PBR lowering supports baseColorTexture and ormTexture.");
+                this.fail(
+                    property,
+                    "Torus options support diameter, thickness, and tessellation.",
+                );
+            }
+        }
+        const diameter = this.objectProperty(object, "diameter");
+        const thickness = this.objectProperty(object, "thickness");
+        const tessellation = this.objectProperty(object, "tessellation");
+        return [
+            diameter ? this.compileNumber(diameter) : "1.0f",
+            thickness ? this.compileNumber(thickness) : "0.5f",
+            tessellation
+                ? this.compilePositiveInteger(tessellation)
+                : "16u",
+        ];
+    }
+
+    private compilePbrMaterialOptions(
+        expression: ts.Expression,
+    ): [Value, Value, string, string, string, string, string] {
+        const object = this.expectObjectLiteral(expression);
+        const supported = new Set([
+            "baseColorTexture",
+            "ormTexture",
+            "metallicFactor",
+            "roughnessFactor",
+            "directIntensity",
+            "environmentIntensity",
+            "unlit",
+        ]);
+        for (const property of object.properties) {
+            const name =
+                ts.isPropertyAssignment(property) ||
+                ts.isShorthandPropertyAssignment(property)
+                    ? this.propertyName(property.name)
+                    : undefined;
+            if (
+                !name ||
+                !supported.has(name)
+            ) {
+                this.fail(
+                    property,
+                    "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, lighting intensities, and unlit.",
+                );
             }
         }
         const baseColorExpression = this.objectProperty(object, "baseColorTexture");
@@ -702,7 +1628,210 @@ class Compiler {
         const orm = this.compileValue(ormExpression);
         this.expectKind(baseColor, "texture", baseColorExpression);
         this.expectKind(orm, "texture", ormExpression);
-        return [baseColor, orm];
+        const metallic = this.objectProperty(object, "metallicFactor");
+        const roughness = this.objectProperty(object, "roughnessFactor");
+        const direct = this.objectProperty(object, "directIntensity");
+        const environment = this.objectProperty(
+            object,
+            "environmentIntensity",
+        );
+        const unlit = this.objectProperty(object, "unlit");
+        return [
+            baseColor,
+            orm,
+            metallic ? this.compileNumber(metallic) : "1.0f",
+            roughness ? this.compileNumber(roughness) : "1.0f",
+            direct ? this.compileNumber(direct) : "1.0f",
+            environment ? this.compileNumber(environment) : "1.0f",
+            unlit ? this.compileBoolean(unlit) : "false",
+        ];
+    }
+
+    private compileShaderMaterialOptions(
+        expression: ts.Expression,
+    ): ShaderMaterialVariantName {
+        const object = this.expectObjectLiteral(expression);
+        const supportedProperties = new Set([
+            "name",
+            "vertexSource",
+            "fragmentSource",
+            "attributes",
+            "uniforms",
+            "needAlphaBlending",
+            "needAlphaTesting",
+            "backFaceCulling",
+            "depthWrite",
+        ]);
+        for (const property of object.properties) {
+            const name =
+                ts.isPropertyAssignment(property) ||
+                ts.isShorthandPropertyAssignment(property)
+                    ? this.propertyName(property.name)
+                    : undefined;
+            if (!name || !supportedProperties.has(name)) {
+                this.fail(
+                    property,
+                    "Reached shader materials support source, attributes, uniforms, alpha state, culling, and depthWrite only.",
+                );
+            }
+        }
+
+        const vertexExpression = this.objectProperty(object, "vertexSource");
+        const fragmentExpression = this.objectProperty(object, "fragmentSource");
+        const attributesExpression = this.objectProperty(object, "attributes");
+        const uniformsExpression = this.objectProperty(object, "uniforms");
+        if (
+            !vertexExpression ||
+            !fragmentExpression ||
+            !attributesExpression ||
+            !uniformsExpression
+        ) {
+            this.fail(
+                object,
+                "Shader material requires vertexSource, fragmentSource, attributes, and uniforms.",
+            );
+        }
+
+        const vertexSource = this.normalizeShaderSource(
+            this.compileStaticString(vertexExpression),
+        );
+        const fragmentSource = this.normalizeShaderSource(
+            this.compileStaticString(fragmentExpression),
+        );
+        const attributes = this.compileStaticStringArray(attributesExpression);
+        const uniforms = this.compileShaderUniformSignatures(uniformsExpression);
+        const needAlphaBlending = this.compileOptionalStaticBoolean(
+            this.objectProperty(object, "needAlphaBlending"),
+            false,
+        );
+        const needAlphaTesting = this.compileOptionalStaticBoolean(
+            this.objectProperty(object, "needAlphaTesting"),
+            false,
+        );
+        const backFaceCulling = this.compileOptionalStaticBoolean(
+            this.objectProperty(object, "backFaceCulling"),
+            true,
+        );
+        const depthWrite = this.compileOptionalStaticBoolean(
+            this.objectProperty(object, "depthWrite"),
+            !needAlphaBlending,
+        );
+
+        const alphaCardVertex = this.normalizeShaderSource(
+            `struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{let c=cos(shaderUniforms.angle);let s=sin(shaderUniforms.angle);let local=input.position.xy*1.65;let rotated=vec2<f32>(local.x*c-local.y*s,local.x*s+local.y*c);let world=shaderUniforms.center+rotated;var out:VertexOutput;out.position=vec4<f32>(world.x/3.3,world.y/2.2,shaderUniforms.depth,1.0);return out;}`,
+        );
+        const alphaCardFragment = this.normalizeShaderSource(
+            `@fragment fn mainFragment()->@location(0) vec4<f32>{return vec4<f32>(shaderUniforms.color,shaderUniforms.opacity);}`,
+        );
+        if (
+            vertexSource === alphaCardVertex &&
+            fragmentSource === alphaCardFragment &&
+            this.stringArraysEqual(attributes, ["position"]) &&
+            this.stringArraysEqual(uniforms, [
+                "center:vec2<f32>",
+                "angle:f32",
+                "depth:f32",
+                "color:vec3<f32>",
+                "opacity:f32",
+            ]) &&
+            !needAlphaBlending &&
+            !needAlphaTesting &&
+            !backFaceCulling &&
+            depthWrite
+        ) {
+            return "alpha-card";
+        }
+
+        const circularCutoutVertex = this.normalizeShaderSource(
+            `struct VertexOutput{@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);out.uv=input.uv;return out;}`,
+        );
+        const circularCutoutFragment = this.normalizeShaderSource(
+            `struct VertexOutput{@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,};
+@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{if(distance(input.uv,vec2<f32>(0.5,0.5))<0.18){discard;}return vec4<f32>(1.0,0.25,0.05,0.55);}`,
+        );
+        if (
+            vertexSource === circularCutoutVertex &&
+            fragmentSource === circularCutoutFragment &&
+            this.stringArraysEqual(attributes, ["position", "uv"]) &&
+            this.stringArraysEqual(uniforms, ["worldViewProjection"]) &&
+            needAlphaBlending &&
+            needAlphaTesting &&
+            !backFaceCulling &&
+            !depthWrite
+        ) {
+            return "circular-cutout";
+        }
+
+        this.fail(
+            object,
+            "Unsupported reached shader material variant. Add a typed shader variant instead of selecting by scene or material name.",
+        );
+    }
+
+    private compileShaderUniformSignatures(expression: ts.Expression): string[] {
+        const array = this.expectStaticArrayLiteral(expression);
+        return array.elements.map((element) => {
+            const resolved = this.resolveStaticExpression(element);
+            if (
+                ts.isStringLiteral(resolved) ||
+                ts.isNoSubstitutionTemplateLiteral(resolved)
+            ) {
+                return resolved.text;
+            }
+            if (!ts.isObjectLiteralExpression(resolved)) {
+                this.fail(
+                    resolved,
+                    "Shader uniforms must be string or typed object literals.",
+                );
+            }
+            const name = this.objectProperty(resolved, "name");
+            const type = this.objectProperty(resolved, "type");
+            if (!name || !type) {
+                this.fail(
+                    resolved,
+                    "Typed shader uniforms require name and type.",
+                );
+            }
+            return `${this.compileStaticString(name)}:${this.compileStaticString(type)}`;
+        });
+    }
+
+    private compileStaticStringArray(expression: ts.Expression): string[] {
+        return this.expectStaticArrayLiteral(expression).elements.map(
+            (element) => this.compileStaticString(element),
+        );
+    }
+
+    private expectStaticArrayLiteral(
+        expression: ts.Expression,
+    ): ts.ArrayLiteralExpression {
+        const resolved = this.resolveStaticExpression(expression);
+        if (!ts.isArrayLiteralExpression(resolved)) {
+            this.fail(resolved, "Expected a static array literal.");
+        }
+        return resolved;
+    }
+
+    private compileOptionalStaticBoolean(
+        expression: ts.Expression | undefined,
+        fallback: boolean,
+    ): boolean {
+        if (!expression) return fallback;
+        return this.compileBoolean(this.resolveStaticExpression(expression)) ===
+            "true";
+    }
+
+    private normalizeShaderSource(source: string): string {
+        return source.replace(/\s+/g, "");
+    }
+
+    private stringArraysEqual(left: string[], right: string[]): boolean {
+        return (
+            left.length === right.length &&
+            left.every((value, index) => value === right[index])
+        );
     }
 
     private compilePositiveInteger(expression: ts.Expression): string {
@@ -737,12 +1866,110 @@ class Compiler {
             if (unwrapped.elements.length !== 3) {
                 this.fail(unwrapped, "A Vec3 array must contain exactly three numbers.");
             }
+
             return `bbl::Vec3{${unwrapped.elements.map((element) => this.compileNumber(element)).join(", ")}}`;
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
             return `bbl::Vec3{${this.requiredObjectNumber(unwrapped, "x")}, ${this.requiredObjectNumber(unwrapped, "y")}, ${this.requiredObjectNumber(unwrapped, "z")}}`;
         }
         this.fail(unwrapped, "Expected a Vec3 array [x, y, z] or object { x, y, z }.");
+    }
+
+    private compileVec2(expression: ts.Expression): string {
+        const unwrapped = this.unwrap(expression);
+        if (ts.isArrayLiteralExpression(unwrapped) && unwrapped.elements.length === 2) {
+            return `bbl::Vec2{${unwrapped.elements.map((element) => this.compileNumber(element)).join(", ")}}`;
+        }
+        this.fail(unwrapped, "Expected a Vec2 array [x, y].");
+    }
+
+    private compileBoolean(expression: ts.Expression): string {
+        const unwrapped = this.unwrap(expression);
+        if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) return "true";
+        if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) return "false";
+        this.fail(unwrapped, "Expected a boolean literal.");
+    }
+
+    private compileCondition(expression: ts.Expression): string {
+        const unwrapped = this.unwrap(expression);
+        if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.ExclamationToken) {
+            return `!(${this.compileCondition(unwrapped.operand)})`;
+        }
+        if (ts.isBinaryExpression(unwrapped)) {
+            const operator = new Map<ts.SyntaxKind, string>([
+                [ts.SyntaxKind.EqualsEqualsEqualsToken, "=="],
+                [ts.SyntaxKind.ExclamationEqualsEqualsToken, "!="],
+                [ts.SyntaxKind.LessThanToken, "<"],
+                [ts.SyntaxKind.LessThanEqualsToken, "<="],
+                [ts.SyntaxKind.GreaterThanToken, ">"],
+                [ts.SyntaxKind.GreaterThanEqualsToken, ">="],
+                [ts.SyntaxKind.AmpersandAmpersandToken, "&&"],
+                [ts.SyntaxKind.BarBarToken, "||"],
+            ]).get(unwrapped.operatorToken.kind);
+            if (!operator) {
+                this.fail(
+                    unwrapped.operatorToken,
+                    "Reached callback conditions support numeric comparisons and logical operators.",
+                );
+            }
+            if (
+                unwrapped.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+                unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken
+            ) {
+                return `(${this.compileCondition(unwrapped.left)} ${operator} ${this.compileCondition(unwrapped.right)})`;
+            }
+            return `(${this.compileNumber(unwrapped.left)} ${operator} ${this.compileNumber(unwrapped.right)})`;
+        }
+        this.fail(unwrapped, "Expected a reached callback condition.");
+    }
+
+    private compileFrameCallback(expression: ts.Expression): string {
+        const unwrapped = this.unwrap(expression);
+        if (!ts.isArrowFunction(unwrapped) && !ts.isFunctionExpression(unwrapped)) {
+            this.fail(unwrapped, "onBeforeRender requires an inline callback.");
+        }
+        if (!ts.isBlock(unwrapped.body)) {
+            this.fail(unwrapped.body, "onBeforeRender callback requires a block body.");
+        }
+        if (unwrapped.parameters.length > 1) {
+            this.fail(unwrapped, "onBeforeRender callback supports at most one deltaMs parameter.");
+        }
+
+        const parameter = unwrapped.parameters[0];
+        if (parameter && !ts.isIdentifier(parameter.name)) {
+            this.fail(parameter.name, "onBeforeRender deltaMs parameter must be an identifier.");
+        }
+        const parameterName = parameter && ts.isIdentifier(parameter.name)
+            ? parameter.name.text
+            : undefined;
+        const previousParameter = parameterName
+            ? this.variables.get(parameterName)
+            : undefined;
+        if (parameterName && previousParameter) {
+            this.fail(parameter!, `Variable shadowing is not supported for '${parameterName}'.`);
+        }
+
+        const start = this.body.length;
+        const previousIndent = this.indentLevel;
+        this.indentLevel = 0;
+        if (parameterName) {
+            this.variables.set(parameterName, {
+                kind: "number",
+                cpp: this.cppIdentifier(parameterName),
+            });
+        }
+        for (const statement of unwrapped.body.statements) {
+            this.emitStatement(statement);
+        }
+        const callbackBody = this.body.splice(start);
+        this.indentLevel = previousIndent;
+        if (parameterName) {
+            this.variables.delete(parameterName);
+        }
+        const cppParameter = parameterName
+            ? `float ${this.cppIdentifier(parameterName)}`
+            : "float";
+        return `[&](${cppParameter}) {\n${callbackBody.map((line) => `            ${line}`).join("\n")}\n        }`;
     }
 
     private compileColor3(expression: ts.Expression): string {
@@ -768,7 +1995,7 @@ class Compiler {
     }
 
     private compileNumber(expression: ts.Expression): string {
-        const unwrapped = this.unwrap(expression);
+        const unwrapped = this.resolveStaticExpression(expression);
         if (ts.isNumericLiteral(unwrapped)) {
             const value = Number(unwrapped.text);
             if (!Number.isFinite(value)) {
@@ -803,6 +2030,16 @@ class Compiler {
         ) {
             return "bbl::pi";
         }
+        if (
+            ts.isCallExpression(unwrapped) &&
+            ts.isPropertyAccessExpression(unwrapped.expression) &&
+            ts.isIdentifier(unwrapped.expression.expression) &&
+            unwrapped.expression.expression.text === "Math" &&
+            unwrapped.expression.name.text === "sqrt" &&
+            unwrapped.arguments.length === 1
+        ) {
+            return `std::sqrt(${this.compileNumber(unwrapped.arguments[0]!)})`;
+        }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookup(unwrapped);
             this.expectKind(value, "number", unwrapped);
@@ -820,7 +2057,13 @@ class Compiler {
             (ts.isPropertyAccessExpression(unwrapped) &&
                 ts.isIdentifier(unwrapped.expression) &&
                 unwrapped.expression.text === "Math" &&
-                unwrapped.name.text === "PI")
+                unwrapped.name.text === "PI") ||
+            (ts.isCallExpression(unwrapped) &&
+                ts.isPropertyAccessExpression(unwrapped.expression) &&
+                ts.isIdentifier(unwrapped.expression.expression) &&
+                unwrapped.expression.expression.text === "Math" &&
+                unwrapped.expression.name.text === "sqrt" &&
+                unwrapped.arguments.length === 1)
         );
     }
 
@@ -860,11 +2103,32 @@ class Compiler {
     }
 
     private compileStringLiteral(expression: ts.Expression): string {
-        const unwrapped = this.unwrap(expression);
+        const unwrapped = this.resolveStaticExpression(expression);
         if (ts.isStringLiteral(unwrapped) || ts.isNoSubstitutionTemplateLiteral(unwrapped)) {
             return unwrapped.text;
         }
         this.fail(unwrapped, "Expected a string literal.");
+    }
+
+    private compileStaticString(expression: ts.Expression): string {
+        return this.compileStringLiteral(expression);
+    }
+
+    private resolveStaticExpression(
+        expression: ts.Expression,
+        resolving: ReadonlySet<string> = new Set(),
+    ): ts.Expression {
+        const unwrapped = this.unwrap(expression);
+        if (!ts.isIdentifier(unwrapped)) return unwrapped;
+        const initializer = this.staticConstants.get(unwrapped.text);
+        if (!initializer) return unwrapped;
+        if (resolving.has(unwrapped.text)) {
+            this.fail(unwrapped, `Circular static constant '${unwrapped.text}'.`);
+        }
+        return this.resolveStaticExpression(
+            initializer,
+            new Set([...resolving, unwrapped.text]),
+        );
     }
 
     private registerAsset(source: string, kind: CompileAsset["kind"]): CompileAsset {
@@ -875,10 +2139,18 @@ class Compiler {
 
         const sourcePath = source.split(/[?#]/, 1)[0] ?? source;
         const sourceName = sourcePath.split(/[\\/]/).pop() || `${kind}.bin`;
-        const safeName = sourceName.replace(/[^A-Za-z0-9._-]/g, "_");
+        const packagedName =
+            kind === "gltf" && /\.gltf$/i.test(sourceName)
+                ? sourceName.replace(/\.gltf$/i, ".glb")
+                : sourceName;
+        const safeName = packagedName.replace(/[^A-Za-z0-9._-]/g, "_");
+        const output =
+            kind === "babylon"
+                ? `${this.hash(source)}-${basenameWithoutExtension(safeName)}/${safeName}`
+                : `${this.hash(source)}-${safeName}`;
         const asset: CompileAsset = {
             source,
-            output: `${this.hash(source)}-${safeName}`,
+            output,
             kind,
         };
         this.assets.set(source, asset);
@@ -1008,6 +2280,34 @@ class Compiler {
                 validation: ["upstream formula marker tests", "renderer-fidelity.json", "CPU/GPU visual parity"],
             });
         }
+        if (this.shaderVariants.size > 0) {
+            adaptations.push({
+                id: "typed-reached-shader-variants",
+                category: "rendering",
+                sourceSemantics: `Babylon Lite composes the reached custom WGSL shader variant(s): ${[...this.shaderVariants].join(", ")}.`,
+                nativeSemantics: "The compiler validates source, attributes, uniforms, and fixed-function state, then selects typed portable shader variants without scene-name heuristics.",
+                risk: "high",
+                validation: [
+                    "shader variant compiler tests",
+                    "portable shader compilation",
+                    "scene 163/274 native/reference parity",
+                ],
+            });
+        }
+        if (features.includes("renderer:geometry-output")) {
+            adaptations.push({
+                id: "sdl-gpu-frame-graph",
+                category: "rendering",
+                sourceSemantics: `Babylon Lite frame-graph tasks execute with ${this.geometryOutputTasks.length} typed geometry renderer task(s), explicit render lists, render-target textures, and ordered copy/resolve tasks.`,
+                nativeSemantics: "Generated task records preserve cameras, material overrides, geometry attachment order, depth-only targets, and shader semantics while PAL executes SDL_GPU passes, reverse-depth views, MSAA resolve, and viewport blits.",
+                risk: "high",
+                validation: [
+                    "geometry task compiler tests",
+                    "pinned geometry shader marker tests",
+                    "scene 116/145/146 native/reference parity",
+                ],
+            });
+        }
         if (features.includes("environment:ibl")) {
             adaptations.push({
                 id: "background-ground-opt-in",
@@ -1032,6 +2332,19 @@ class Compiler {
     private expectKind(value: Value, kind: ValueKind, node: ts.Node): void {
         if (value.kind !== kind) {
             this.fail(node, `Expected ${kind}, received ${value.kind}.`);
+        }
+    }
+
+    private expectShaderVariant(
+        value: Value,
+        variant: ShaderMaterialVariantName,
+        node: ts.Node,
+    ): void {
+        if (value.shaderVariant !== variant) {
+            this.fail(
+                node,
+                `Shader operation requires the '${variant}' reached variant.`,
+            );
         }
     }
 
@@ -1080,13 +2393,14 @@ class Compiler {
     }
 
     private emit(line: string): void {
-        this.body.push(`        ${line}`);
+        this.body.push(`${"    ".repeat(this.indentLevel)}${line}`);
     }
 
     private renderCpp(): string {
         return `// Generated by bblitec. Do not edit.
 #include <bblite/runtime.hpp>
 
+#include <cmath>
 #include <exception>
 #include <iostream>
 

@@ -25,6 +25,17 @@ npm run compile:example
 npm run compile:boombox
 npm run compile:scene10
 npm run compile:scene13
+npm run compile:scene32
+npm run compile:scene116
+npm run compile:scene145
+npm run compile:scene146
+npm run compile:scene163
+npm run compile:scene168
+npm run compile:scene248
+npm run compile:scene257
+npm run compile:scene266
+npm run compile:scene273
+npm run compile:scene274
 ```
 
 Unregistered scene files use derived defaults and do not require a registry
@@ -103,6 +114,17 @@ Existing development build directories:
 - `native\build-boombox-release`: BoomBox/Release target
 - `native\build-scene10-release`: Babylon Lite scene 10/Release target
 - `native\build-scene13-release`: Babylon Lite scene 13/Release target
+- `native\build-scene32-release`: Babylon Lite scene 32/Release target
+- `native\build-scene116-release`: Babylon Lite scene 116/Release target
+- `native\build-scene145-release`: Babylon Lite scene 145/Release target
+- `native\build-scene146-release`: Babylon Lite scene 146/Release target
+- `native\build-scene163-release`: Babylon Lite scene 163/Release target
+- `native\build-scene168-release`: Babylon Lite scene 168/Release target
+- `native\build-scene248-release`: Babylon Lite scene 248/Release target
+- `native\build-scene257-release`: Babylon Lite scene 257/Release target
+- `native\build-scene266-release`: Babylon Lite scene 266/Release target
+- `native\build-scene273-release`: Babylon Lite scene 273/Release target
+- `native\build-scene274-release`: Babylon Lite scene 274/Release target
 
 Build them sequentially. Concurrent vcpkg/CMake work against the same install
 root is unreliable.
@@ -132,6 +154,7 @@ $env:LIB = @(
 - `BBLITE_GROUND=1`: enable generated transparent ground
 - `BBLITE_MAX_FRAMES=<n>`: automated frame limit
 - `BBLITE_SCREENSHOT=<path>`: deterministic PNG capture
+- `BBLITE_SCREENSHOT_FRAME=<zero-based n>`: defer capture until a callback-driven scene settles
 - `BBLITE_BENCHMARK_FRAMES=<n>`: warm up, disable vsync, and report
   submission timing
 - `BBLITE_ASSET_DIR=<path>`: override the compiled asset directory
@@ -166,6 +189,17 @@ npm run parity:boombox
 npm run parity:boombox:gpu
 npm run parity:scene10
 npm run parity:scene13
+npm run parity:scene32
+npm run parity:scene116
+npm run parity:scene145
+npm run parity:scene146
+npm run parity:scene163
+npm run parity:scene168
+npm run parity:scene248
+npm run parity:scene257
+npm run parity:scene266
+npm run parity:scene273
+npm run parity:scene274
 ```
 
 All scene metadata lives in `src/scene-registry.ts`. Parity capabilities such

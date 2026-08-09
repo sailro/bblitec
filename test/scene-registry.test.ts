@@ -6,10 +6,16 @@ import { getScene, resolveScene, scenes } from "../src/scene-registry.js";
 test("registers unique generated scene targets", () => {
     assert.deepEqual(
         scenes.map(({ id }) => id),
-        ["primitives", "boombox", "scene10", "scene13"],
+        ["primitives", "boombox", "scene10", "scene13", "scene32", "scene163", "scene168", "scene116", "scene145", "scene146", "scene248", "scene257", "scene266", "scene273", "scene274"],
     );
     assert.equal(new Set(scenes.map(({ output }) => output)).size, scenes.length);
     assert.equal(getScene("scene10").parity?.reference.kind, "source");
+    assert.equal(getScene("scene163").parity?.maxFullMad, 0.001);
+    assert.equal(
+        getScene("scene273").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
+        "19",
+    );
+    assert.equal(getScene("scene273").parity?.maxFullMad, 0.001);
     assert.equal(getScene("boombox").parity?.reference.kind, "playground");
     assert.throws(() => getScene("missing"), /Unknown scene/);
 });

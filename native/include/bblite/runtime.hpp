@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <string>
 #include <vector>
@@ -10,6 +11,9 @@ namespace bbl {
 
 inline constexpr float pi = 3.14159265358979323846f;
 inline constexpr std::uint32_t invalid_handle = std::numeric_limits<std::uint32_t>::max();
+inline constexpr std::uint32_t material_family_pbr = 1u << 0;
+inline constexpr std::uint32_t material_family_standard = 1u << 1;
+inline constexpr std::uint32_t material_family_shader = 1u << 2;
 
 struct Vec3 {
     float x = 0.0f;
@@ -68,11 +72,32 @@ struct AssetHandle {
     std::uint32_t value = invalid_handle;
 };
 
+struct RenderTargetHandle {
+    std::uint32_t value = invalid_handle;
+};
+
+struct TaskHandle {
+    std::uint32_t value = invalid_handle;
+};
+
 enum class PrimitiveKind {
+    babylon,
     box,
     gltf,
     ground,
     sphere,
+    torus,
+};
+
+enum class CameraKind {
+    arc_rotate,
+    free,
+};
+
+enum class LightKind {
+    directional,
+    hemispheric,
+    point,
 };
 
 enum class MaterialAlphaMode {
@@ -81,12 +106,170 @@ enum class MaterialAlphaMode {
     blend,
 };
 
-struct TextureData {
-    std::vector<std::uint8_t> bytes;
+enum class ShaderMaterialVariant {
+    alpha_card,
+    circular_cutout,
+};
+
+enum class GeometryTextureType {
+    irradiance,
+    world_position,
+    local_position,
+    reflectivity,
+    view_depth,
+    normalized_view_depth,
+    screenspace_depth,
+    view_normal,
+    world_normal,
+    albedo,
+    linear_velocity,
+};
+
+enum class GeometryTextureFormat {
+    automatic,
+    r16_float,
+};
+
+struct GeometryTextureDescription {
+    GeometryTextureType type = GeometryTextureType::irradiance;
+    GeometryTextureFormat format = GeometryTextureFormat::automatic;
+};
+
+struct NormalizedViewport {
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 1.0f;
+    float height = 1.0f;
+};
+
+struct RenderTargetOptions {
+    std::uint32_t samples = 1;
+    bool has_color = true;
+    bool has_depth = false;
+    bool sampled_depth = false;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
+struct RenderTaskOptions {
+    std::string name;
+    RenderTargetHandle target{};
+    Color4 clear_color{};
+    bool clear = false;
+    CameraHandle camera{};
+    bool has_camera = false;
+    bool canvas_size = false;
+    bool auto_mirror = true;
+};
+
+struct RenderTaskMesh {
+    MeshHandle mesh{};
+    MaterialHandle material{};
+};
+
+struct GeometryTaskOptions {
+    std::string name;
+    std::uint32_t shader_index = 0;
+    std::uint32_t samples = 1;
+    std::vector<GeometryTextureDescription> attachments;
+    RenderTargetHandle target{};
+    bool clear_target = false;
+    Color4 target_clear_color{};
+};
+
+enum class RenderTextureSource {
+    render_target,
+    geometry,
+    geometry_output,
+};
+
+struct RenderTextureRef {
+    RenderTextureSource source = RenderTextureSource::render_target;
+    RenderTargetHandle target{};
+    TaskHandle task{};
+    GeometryTextureType geometry_type = GeometryTextureType::irradiance;
+};
+
+struct CopyTaskOptions {
+    std::string name;
+    RenderTextureRef source{};
+    RenderTargetHandle target{};
+    RenderTargetHandle resolve_target{};
+    bool has_viewport = false;
+    NormalizedViewport viewport{};
+};
+
+enum class FrameTaskKind {
+    render,
+    geometry,
+    copy,
+};
+
+struct RenderTargetRecord {
+    std::uint32_t samples = 1;
+    bool has_color = true;
+    bool has_depth = false;
+    bool sampled_depth = false;
+    bool swapchain = false;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
+struct FrameTaskRecord {
+    FrameTaskKind kind = FrameTaskKind::render;
+    RenderTaskOptions render;
+    std::vector<RenderTaskMesh> render_meshes;
+    GeometryTaskOptions geometry;
+    CopyTaskOptions copy;
+};
+
+struct RenderTargetTexture {
+    RenderTargetHandle rt{};
+    RenderTextureRef texture{};
 };
 
 struct SolidTexture {
     Color4 color{};
+};
+
+struct PbrMaterialOptions {
+    SolidTexture base_color{};
+    SolidTexture orm{};
+    float metallic_factor = 1.0f;
+    float roughness_factor = 1.0f;
+    float direct_intensity = 1.0f;
+    float environment_intensity = 1.0f;
+    bool unlit = false;
+};
+
+enum class TextureFilter {
+    nearest,
+    linear,
+};
+
+enum class TextureMipmapMode {
+    nearest,
+    linear,
+};
+
+enum class TextureAddressMode {
+    repeat,
+    clamp,
+    mirror,
+};
+
+struct TextureSamplerState {
+    TextureFilter min_filter = TextureFilter::linear;
+    TextureFilter mag_filter = TextureFilter::linear;
+    TextureMipmapMode mipmap_mode = TextureMipmapMode::linear;
+    TextureAddressMode address_u = TextureAddressMode::repeat;
+    TextureAddressMode address_v = TextureAddressMode::repeat;
+};
+
+struct TextureData {
+    std::vector<std::uint8_t> bytes;
+    TextureSamplerState sampler{};
+    bool invert_y = false;
 };
 
 struct ModelVertex {
@@ -94,11 +277,14 @@ struct ModelVertex {
     Vec3 normal{0.0f, 1.0f, 0.0f};
     Vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f};
     Vec2 uv{};
+    Vec2 uv2{};
+    Vec3 local_position{};
 };
 
 struct ModelGeometry {
     std::vector<ModelVertex> vertices;
     std::vector<std::uint32_t> indices;
+    bool has_tangents = false;
     Vec3 bounds_min{};
     Vec3 bounds_max{};
 };
@@ -117,21 +303,57 @@ struct MaterialRecord {
     Color3 diffuse_color{};
     Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
     Color3 emissive_factor{};
+    Color3 specular_color{1.0f, 1.0f, 1.0f};
+    Color3 ambient_color{};
+    float specular_power = 64.0f;
+    float diffuse_level = 1.0f;
+    float opacity_level = 1.0f;
+    float ambient_level = 1.0f;
+    float diffuse_u_scale = 1.0f;
+    float diffuse_v_scale = 1.0f;
+    std::uint32_t specular_coord_index = 0;
+    std::uint32_t ambient_coord_index = 0;
     float metallic_factor = 1.0f;
     float roughness_factor = 1.0f;
+    float direct_intensity = 1.0f;
+    float environment_intensity = 1.0f;
     bool has_occlusion_texture = false;
+    bool unlit = false;
+    bool no_color = false;
+    bool disable_lighting = false;
+    bool has_emissive_render_texture = false;
     bool double_sided = false;
+    bool standard_material = false;
+    bool shader_material = false;
+    bool alpha_to_coverage = false;
+    bool shader_alpha_testing = false;
+    bool shader_depth_write = true;
+    ShaderMaterialVariant shader_variant = ShaderMaterialVariant::alpha_card;
+    Vec2 shader_center{};
+    float shader_angle = 0.0f;
+    float shader_depth = 0.5f;
+    Color3 shader_color{};
+    float shader_opacity = 1.0f;
     MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
     float alpha_cutoff = 0.5f;
     TextureData base_color_texture;
     TextureData metallic_roughness_texture;
     TextureData normal_texture;
     TextureData emissive_texture;
+    TextureData opacity_texture;
+    TextureData specular_texture;
+    TextureData ambient_texture;
+    RenderTextureRef emissive_render_texture{};
+    std::uint32_t reflection_cube = invalid_handle;
+    float reflection_level = 1.0f;
 };
 
 struct LightRecord {
+    LightKind kind = LightKind::directional;
+    Vec3 position{};
     Vec3 direction{0.0f, 1.0f, 0.0f};
     float intensity = 1.0f;
+    float range = std::numeric_limits<float>::max();
     Color3 diffuse_color{};
     Color3 specular_color{};
     Color3 ground_color{0.0f, 0.0f, 0.0f};
@@ -139,6 +361,8 @@ struct LightRecord {
 };
 
 struct CameraRecord {
+    CameraKind kind = CameraKind::arc_rotate;
+    Vec3 position{};
     float alpha = -pi / 2.0f;
     float beta = 1.1f;
     float radius = 6.0f;
@@ -149,6 +373,12 @@ struct CameraRecord {
     float inertia = 0.9f;
     float panning_inertia = 0.9f;
     float angular_sensibility = 1000.0f;
+    float speed = 2.0f;
+    float free_yaw = 0.0f;
+    float free_pitch = 0.0f;
+    float inertial_yaw_offset = 0.0f;
+    float inertial_pitch_offset = 0.0f;
+    Vec3 inertial_direction{};
     float panning_sensibility = 50.0f;
     float wheel_precision = 3.0f;
     float inertial_alpha_offset = 0.0f;
@@ -163,6 +393,11 @@ struct Scene;
 
 struct AssetRecord {
     std::vector<MeshHandle> meshes;
+    std::vector<LightHandle> lights;
+    CameraHandle camera{};
+    Color4 clear_color{};
+    bool has_camera = false;
+    bool has_clear_color = false;
 };
 
 struct Engine {
@@ -172,7 +407,11 @@ struct Engine {
     std::vector<LightRecord> lights;
     std::vector<CameraRecord> cameras;
     std::vector<ModelGeometry> geometries;
+    std::vector<std::array<TextureData, 6>> reflection_cubes;
     std::vector<AssetRecord> assets;
+    std::vector<RenderTargetRecord> render_targets;
+    std::vector<FrameTaskRecord> frame_tasks;
+    RenderTargetHandle swapchain_target{};
     std::vector<Scene*> registered_scenes;
 };
 
@@ -204,7 +443,12 @@ struct Scene {
     CameraHandle camera{};
     std::vector<MeshHandle> meshes;
     std::vector<LightHandle> lights;
+    std::vector<TaskHandle> tasks;
+    std::vector<std::function<void(float)>> before_render;
     EnvironmentState environment;
+    float fixed_delta_ms = 0.0f;
+    std::uint64_t mesh_membership_version = 0;
+    std::uint32_t material_family_mask = 0;
 };
 
 struct GroundOptions {
@@ -212,9 +456,20 @@ struct GroundOptions {
     float height = 1.0f;
 };
 
+struct PlaneOptions {
+    float width = 1.0f;
+    float height = 1.0f;
+};
+
 struct SphereOptions {
     std::uint32_t segments = 32;
     float diameter = 1.0f;
+};
+
+struct TorusOptions {
+    float diameter = 1.0f;
+    float thickness = 0.5f;
+    std::uint32_t tessellation = 16;
 };
 
 struct EnvironmentOptions {
@@ -231,23 +486,87 @@ std::string asset_path(const std::string& relative_path);
 
 MeshHandle create_box(Engine& engine, float size = 1.0f);
 MeshHandle create_ground(Engine& engine, GroundOptions options = {});
+MeshHandle create_plane(Engine& engine, PlaneOptions options = {});
 MeshHandle create_sphere(Engine& engine, SphereOptions options = {});
+MeshHandle create_torus(Engine& engine, TorusOptions options = {});
 AssetHandle load_gltf(Engine& engine, const std::string& path);
+AssetHandle load_babylon(Engine& engine, const std::string& path);
 void load_environment(Scene& scene, EnvironmentOptions options);
 MaterialHandle create_standard_material(Engine& engine);
+MaterialHandle create_shader_material(
+    Engine& engine,
+    ShaderMaterialVariant variant);
+void set_shader_center(Engine& engine, MaterialHandle material, Vec2 value);
+void set_shader_float(
+    Engine& engine,
+    MaterialHandle material,
+    const std::string& name,
+    float value);
+void set_shader_vector3(
+    Engine& engine,
+    MaterialHandle material,
+    const std::string& name,
+    Color3 value);
+void set_alpha_to_coverage(
+    Engine& engine,
+    MaterialHandle material,
+    bool enabled);
 SolidTexture create_solid_texture(Engine& engine, float r, float g, float b, float a = 1.0f);
 MaterialHandle create_pbr_material(
     Engine& engine,
-    SolidTexture base_color,
-    SolidTexture orm);
+    PbrMaterialOptions options);
+MaterialHandle create_standard_no_color_material_view(
+    Engine& engine,
+    MaterialHandle source);
+MaterialHandle create_pbr_no_color_material_view(
+    Engine& engine,
+    MaterialHandle source);
+void mark_material_ubo_dirty(Engine& engine, MaterialHandle material);
 LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
 CameraHandle create_arc_rotate_camera(Engine& engine, float alpha, float beta, float radius, Vec3 target);
+CameraHandle create_free_camera(Engine& engine, Vec3 position, Vec3 target);
 CameraHandle create_default_camera(Engine& engine, Scene& scene);
+
+RenderTargetHandle create_render_target(
+    Engine& engine,
+    RenderTargetOptions options);
+RenderTargetTexture create_render_target_texture(
+    Engine& engine,
+    RenderTargetOptions options);
+RenderTargetHandle swapchain_render_target(Engine& engine);
+TaskHandle create_render_task(
+    Engine& engine,
+    Scene& scene,
+    RenderTaskOptions options);
+TaskHandle create_geometry_renderer_task(
+    Engine& engine,
+    Scene& scene,
+    GeometryTaskOptions options);
+TaskHandle create_copy_to_texture_task(
+    Engine& engine,
+    Scene& scene,
+    CopyTaskOptions options);
+RenderTextureRef render_target_texture(RenderTargetHandle target);
+RenderTextureRef geometry_task_texture(
+    TaskHandle task,
+    GeometryTextureType type);
+RenderTextureRef geometry_task_output_texture(TaskHandle task);
+void add_task(Scene& scene, TaskHandle task);
+void add_task_at_start(Scene& scene, TaskHandle task);
+void add_render_task_mesh(
+    Engine& engine,
+    TaskHandle task,
+    MeshHandle mesh,
+    MaterialHandle material);
 
 void add_to_scene(Scene& scene, MeshHandle mesh);
 void add_to_scene(Scene& scene, LightHandle light);
 void add_to_scene(Scene& scene, AssetHandle asset);
+void on_before_render(
+    Scene& scene,
+    std::function<void(float)> callback);
 void attach_control(Engine& engine, CameraHandle camera, Scene& scene);
+void attach_free_control(Engine& engine, CameraHandle camera, Scene& scene);
 void register_scene(Scene& scene);
 void start_engine(Engine& engine);
 

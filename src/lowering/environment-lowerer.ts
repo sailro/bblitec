@@ -356,7 +356,6 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
     }
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};
     scene.environment.contrast = ${this.context.floatLiteral(contrast)};
-    scene.clear_color = Color4{0.2f, 0.2f, 0.29f, 1.0f};
 }
 
 } // namespace bbl

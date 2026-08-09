@@ -40,6 +40,7 @@ Vec3 arc_rotate_eye_position(const CameraRecord& camera);
 namespace bbl::upstream {
 
 Vec3 arc_rotate_eye_position(const CameraRecord& camera) {
+    if (camera.kind == CameraKind::free) return camera.position;
     const float cosine_alpha = std::cos(camera.alpha);
     const float sine_alpha = std::sin(camera.alpha);
     const float cosine_beta = std::cos(camera.beta);
@@ -77,6 +78,60 @@ CameraHandle create_arc_rotate_camera(
     camera.wheel_precision = ${number("wheelPrecision")};
     engine.cameras.push_back(camera);
     return CameraHandle{static_cast<std::uint32_t>(engine.cameras.size() - 1)};
+}
+
+} // namespace bbl
+`,
+        };
+    }
+
+    public lowerFreeFactory(): LoweredSource {
+        const modulePath = "src/camera/free-camera.ts";
+        const symbolName = "createFreeCamera";
+        const source = this.context.store.getSource(modulePath);
+        const number = (name: string): string =>
+            this.context.floatLiteral(
+                this.context.extractNumber(
+                    source,
+                    new RegExp(`${name}: ([0-9.]+)`),
+                    `FreeCamera ${name}`,
+                ),
+            );
+        return {
+            modulePath,
+            symbolName,
+            header: "",
+            source: `// ${this.context.provenance(modulePath, symbolName)}
+#include <bblite/runtime.hpp>
+
+#include <cmath>
+
+namespace bbl {
+
+CameraHandle create_free_camera(
+    Engine& engine,
+    Vec3 position,
+    Vec3 target) {
+    const float dx = target.x - position.x;
+    const float dy = target.y - position.y;
+    const float dz = target.z - position.z;
+    CameraRecord camera;
+    camera.kind = CameraKind::free;
+    camera.position = position;
+    camera.target = target;
+    camera.free_yaw = std::atan2(dx, dz);
+    camera.free_pitch = std::atan2(
+        dy,
+        std::sqrt(dx * dx + dz * dz));
+    camera.fov = ${number("fov")};
+    camera.near_plane = ${number("nearPlane")};
+    camera.far_plane = ${number("farPlane")};
+    camera.speed = ${number("speed")};
+    camera.angular_sensibility = ${number("angularSensitivity")};
+    camera.inertia = ${number("inertia")};
+    engine.cameras.push_back(camera);
+    return CameraHandle{
+        static_cast<std::uint32_t>(engine.cameras.size() - 1)};
 }
 
 } // namespace bbl
@@ -237,11 +292,22 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         const modulePath = "src/camera/arc-rotate-controls.ts";
         const symbolName = "attachControl";
         const source = this.context.store.getSource(modulePath);
+        const freeModule = "src/camera/free-camera-controls.ts";
+        const freeSource = this.context.store.getSource(freeModule);
         const rotationEpsilon = this.context.extractNumber(source, /ROTATION_EPSILON = ([0-9.]+)/, "rotation epsilon");
         const radiusEpsilon = this.context.extractNumber(source, /RADIUS_EPSILON = ([0-9.]+)/, "radius epsilon");
         const panningEpsilon = this.context.extractNumber(source, /PANNING_EPSILON = ([0-9.]+)/, "panning epsilon");
         if (!source.includes("camera.inertialAlphaOffset *= camera.inertia")) {
             throw new Error("Upstream ArcRotate inertia semantics changed.");
+        }
+        for (const marker of [
+            "camera._pitch = Math.max(-maxPitch, Math.min(maxPitch, camera._pitch))",
+            "camera.position.x += sinY * cosP * cdZ + cosY * cdX",
+            "cdX *= inertia",
+        ]) {
+            if (!freeSource.includes(marker)) {
+                throw new Error(`Upstream FreeCamera controls changed: ${marker}.`);
+            }
         }
         const value = (input: number): string => this.context.floatLiteral(input);
         return {
@@ -254,6 +320,7 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
 namespace bbl::upstream {
 
 void apply_arc_rotate_inertia(CameraRecord& camera);
+void apply_free_camera_inertia(CameraRecord& camera);
 
 } // namespace bbl::upstream
 `,
@@ -269,6 +336,19 @@ namespace bbl {
 void attach_control(Engine& engine, CameraHandle camera, Scene& scene) {
     if (camera.value >= engine.cameras.size()) throw std::runtime_error("Invalid camera handle.");
     engine.cameras[camera.value].controls_enabled = true;
+    scene.camera = camera;
+}
+
+void attach_free_control(
+    Engine& engine,
+    CameraHandle camera,
+    Scene& scene) {
+    if (camera.value >= engine.cameras.size()) {
+        throw std::runtime_error("Invalid camera handle.");
+    }
+    CameraRecord& record = engine.cameras[camera.value];
+    record.kind = CameraKind::free;
+    record.controls_enabled = true;
     scene.camera = camera;
 }
 
@@ -290,6 +370,7 @@ void apply_arc_rotate_inertia(CameraRecord& camera) {
         if (std::abs(camera.inertial_alpha_offset) < rotation_epsilon) camera.inertial_alpha_offset = 0.0f;
         if (std::abs(camera.inertial_beta_offset) < rotation_epsilon) camera.inertial_beta_offset = 0.0f;
     }
+
     if (camera.inertial_radius_offset != 0.0f) {
         camera.radius -= camera.inertial_radius_offset;
         camera.radius = std::max(0.01f, camera.radius);
@@ -307,6 +388,53 @@ void apply_arc_rotate_inertia(CameraRecord& camera) {
         camera.inertial_panning_y *= camera.panning_inertia;
         if (std::abs(camera.inertial_panning_x) < panning_epsilon) camera.inertial_panning_x = 0.0f;
         if (std::abs(camera.inertial_panning_y) < panning_epsilon) camera.inertial_panning_y = 0.0f;
+    }
+}
+
+void apply_free_camera_inertia(CameraRecord& camera) {
+    camera.free_yaw += camera.inertial_yaw_offset;
+    camera.free_pitch += camera.inertial_pitch_offset;
+    constexpr float max_pitch = pi / 2.0f - 0.01f;
+    camera.free_pitch =
+        std::max(-max_pitch, std::min(max_pitch, camera.free_pitch));
+    const float cosine_yaw = std::cos(camera.free_yaw);
+    const float sine_yaw = std::sin(camera.free_yaw);
+    const float cosine_pitch = std::cos(camera.free_pitch);
+    const float sine_pitch = std::sin(camera.free_pitch);
+    camera.position.x +=
+        sine_yaw * cosine_pitch * camera.inertial_direction.z +
+        cosine_yaw * camera.inertial_direction.x;
+    camera.position.y +=
+        sine_pitch * camera.inertial_direction.z +
+        camera.inertial_direction.y;
+    camera.position.z +=
+        cosine_yaw * cosine_pitch * camera.inertial_direction.z -
+        sine_yaw * camera.inertial_direction.x;
+    camera.target = Vec3{
+        camera.position.x + sine_yaw * cosine_pitch,
+        camera.position.y + sine_pitch,
+        camera.position.z + cosine_yaw * cosine_pitch,
+    };
+    camera.inertial_direction.x *= camera.inertia;
+    camera.inertial_direction.y *= camera.inertia;
+    camera.inertial_direction.z *= camera.inertia;
+    camera.inertial_yaw_offset *= camera.inertia;
+    camera.inertial_pitch_offset *= camera.inertia;
+    const float epsilon = camera.speed * 0.001f;
+    if (std::abs(camera.inertial_direction.x) < epsilon) {
+        camera.inertial_direction.x = 0.0f;
+    }
+    if (std::abs(camera.inertial_direction.y) < epsilon) {
+        camera.inertial_direction.y = 0.0f;
+    }
+    if (std::abs(camera.inertial_direction.z) < epsilon) {
+        camera.inertial_direction.z = 0.0f;
+    }
+    if (std::abs(camera.inertial_yaw_offset) < epsilon) {
+        camera.inertial_yaw_offset = 0.0f;
+    }
+    if (std::abs(camera.inertial_pitch_offset) < epsilon) {
+        camera.inertial_pitch_offset = 0.0f;
     }
 }
 

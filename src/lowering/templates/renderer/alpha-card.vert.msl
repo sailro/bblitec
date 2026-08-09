@@ -1,0 +1,23 @@
+#include <metal_stdlib>
+using namespace metal;
+
+struct VertexInput {
+    float3 position [[attribute(0)]];
+};
+
+struct CardVertexUniforms {
+    float4 centerAngleDepth;
+};
+
+vertex float4 main0(
+    VertexInput input [[stage_in]],
+    constant CardVertexUniforms& uniforms [[buffer(0)]]) {
+    const float cosine = cos(uniforms.centerAngleDepth.z);
+    const float sine = sin(uniforms.centerAngleDepth.z);
+    const float2 local = input.position.xy * 1.65;
+    const float2 rotated = float2(
+        local.x * cosine - local.y * sine,
+        local.x * sine + local.y * cosine);
+    const float2 world = uniforms.centerAngleDepth.xy + rotated;
+    return float4(world.x / 3.3, world.y / 2.2, 1.0 - uniforms.centerAngleDepth.w, 1.0);
+}

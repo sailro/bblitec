@@ -256,18 +256,54 @@ Vec3 transform_direction(const Matrix& matrix, Vec3 value) {
     return normalize(Vec3{-transformed.x, transformed.y, transformed.z});
 }
 
+float linear_determinant(const Matrix& matrix) {
+    return
+        matrix[0] * (matrix[5] * matrix[10] - matrix[9] * matrix[6]) -
+        matrix[4] * (matrix[1] * matrix[10] - matrix[9] * matrix[2]) +
+        matrix[8] * (matrix[1] * matrix[6] - matrix[5] * matrix[2]);
+}
+
 TextureData texture_data(
     const ts::ArrayBuffer& buffer,
     const upstream::ParsedGlbContainer& container,
     const std::vector<BufferViewInfo>& views,
     const JsonArray& images,
     const JsonArray& textures,
+    const JsonArray& samplers,
     const ts::JsonValue* texture_info) {
     TextureData result;
     if (!texture_info) return result;
     const JsonObject& info = texture_info->as_object();
     const std::size_t texture_index = unsigned_value(required(info, "index"));
     const JsonObject& texture = textures.at(texture_index).as_object();
+    if (const ts::JsonValue* sampler_value = optional(texture, "sampler")) {
+        const JsonObject& sampler =
+            samplers.at(unsigned_value(*sampler_value)).as_object();
+        const std::size_t min_filter = unsigned_or(sampler, "minFilter", 9987);
+        result.sampler.min_filter =
+            min_filter == 9728 || min_filter == 9984 || min_filter == 9986
+                ? TextureFilter::nearest
+                : TextureFilter::linear;
+        result.sampler.mipmap_mode =
+            min_filter == 9984 || min_filter == 9985
+                ? TextureMipmapMode::nearest
+                : TextureMipmapMode::linear;
+        result.sampler.mag_filter =
+            unsigned_or(sampler, "magFilter", 9729) == 9728
+                ? TextureFilter::nearest
+                : TextureFilter::linear;
+        const auto address_mode = [](std::size_t mode) {
+            return mode == 33071
+                ? TextureAddressMode::clamp
+                : mode == 33648
+                    ? TextureAddressMode::mirror
+                    : TextureAddressMode::repeat;
+        };
+        result.sampler.address_u =
+            address_mode(unsigned_or(sampler, "wrapS", 10497));
+        result.sampler.address_v =
+            address_mode(unsigned_or(sampler, "wrapT", 10497));
+    }
     const std::size_t image_index = unsigned_value(required(texture, "source"));
     const JsonObject& image = images.at(image_index).as_object();
     const BufferViewInfo& view = views.at(unsigned_value(required(image, "bufferView")));
@@ -275,8 +311,8 @@ TextureData texture_data(
     const std::size_t end = start + view.length;
     if (end > buffer.byte_length()) throw std::runtime_error("glTF image exceeds BIN chunk.");
     const std::string mime_type = string_or(image, "mimeType");
-    if (mime_type != "image/png") {
-        throw std::runtime_error("Only embedded PNG glTF images are supported.");
+    if (mime_type != "image/png" && mime_type != "image/jpeg") {
+        throw std::runtime_error("Only embedded PNG/JPEG glTF images are supported.");
     }
     result.bytes.assign(buffer.bytes().begin() + start, buffer.bytes().begin() + end);
     return result;
@@ -289,7 +325,8 @@ MaterialHandle load_material(
     const upstream::ParsedGlbContainer& container,
     const std::vector<BufferViewInfo>& views,
     const JsonArray& images,
-    const JsonArray& textures) {
+    const JsonArray& textures,
+    const JsonArray& samplers) {
     MaterialRecord material;
     material.emissive_factor = Color3{0.0f, 0.0f, 0.0f};
     if (const ts::JsonValue* pbr_value = optional(material_json, "pbrMetallicRoughness")) {
@@ -299,15 +336,19 @@ MaterialHandle load_material(
         material.metallic_factor = float_or(pbr, "metallicFactor", 1.0f);
         material.roughness_factor = float_or(pbr, "roughnessFactor", 1.0f);
         material.base_color_texture = texture_data(
-            buffer, container, views, images, textures, optional(pbr, "baseColorTexture"));
+            buffer, container, views, images, textures, samplers, optional(pbr, "baseColorTexture"));
         material.metallic_roughness_texture = texture_data(
-            buffer, container, views, images, textures, optional(pbr, "metallicRoughnessTexture"));
+            buffer, container, views, images, textures, samplers, optional(pbr, "metallicRoughnessTexture"));
     }
     material.normal_texture = texture_data(
-        buffer, container, views, images, textures, optional(material_json, "normalTexture"));
+        buffer, container, views, images, textures, samplers, optional(material_json, "normalTexture"));
     material.has_occlusion_texture = optional(material_json, "occlusionTexture") != nullptr;
+    if (const ts::JsonValue* extensions_value = optional(material_json, "extensions")) {
+        material.unlit =
+            optional(extensions_value->as_object(), "KHR_materials_unlit") != nullptr;
+    }
     material.emissive_texture = texture_data(
-        buffer, container, views, images, textures, optional(material_json, "emissiveTexture"));
+        buffer, container, views, images, textures, samplers, optional(material_json, "emissiveTexture"));
     const std::vector<float> emissive = float_array(optional(material_json, "emissiveFactor"));
     if (emissive.size() == 3) material.emissive_factor = Color3{emissive[0], emissive[1], emissive[2]};
     material.double_sided = bool_or(material_json, "doubleSided", false);
@@ -333,6 +374,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     const JsonArray& accessor_json = array_or_empty(document, "accessors");
     const JsonArray& image_json = array_or_empty(document, "images");
     const JsonArray& texture_json = array_or_empty(document, "textures");
+    const JsonArray& sampler_json = array_or_empty(document, "samplers");
     const JsonArray& material_json = array_or_empty(document, "materials");
     const JsonArray& mesh_json = array_or_empty(document, "meshes");
     const JsonArray& node_json = array_or_empty(document, "nodes");
@@ -364,7 +406,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     materials.reserve(material_json.size());
     for (const ts::JsonValue& value : material_json) {
         materials.push_back(load_material(
-            engine, value.as_object(), buffer, container, views, image_json, texture_json));
+            engine, value.as_object(), buffer, container, views, image_json, texture_json, sampler_json));
     }
 
     std::vector<int> parents(node_json.size(), -1);
@@ -421,13 +463,16 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 std::numeric_limits<float>::lowest(),
             };
             const Matrix& matrix = compute_world(node_index);
+            const float determinant = linear_determinant(matrix);
             for (std::size_t index = 0; index < positions.count; ++index) {
                 ModelVertex vertex;
-                vertex.position = transform_point(matrix, Vec3{
+                const Vec3 local_position{
                     read_component(buffer, container, views, positions, index, 0),
                     read_component(buffer, container, views, positions, index, 1),
                     read_component(buffer, container, views, positions, index, 2),
-                });
+                };
+                vertex.local_position = local_position;
+                vertex.position = transform_point(matrix, local_position);
                 if (normals) {
                     vertex.normal = transform_direction(matrix, Vec3{
                         read_component(buffer, container, views, *normals, index, 0),
@@ -445,7 +490,8 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         tangent.x,
                         tangent.y,
                         tangent.z,
-                        -read_component(buffer, container, views, *tangents, index, 3),
+                        (determinant < 0.0f ? 1.0f : -1.0f) *
+                            read_component(buffer, container, views, *tangents, index, 3),
                     };
                 }
                 if (texcoords) {
@@ -474,6 +520,48 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     geometry.indices[index] = static_cast<std::uint32_t>(index);
                 }
             }
+            if (geometry.indices.size() % 3 != 0) {
+                throw std::runtime_error("Triangle-list glTF indices must be divisible by three.");
+            }
+            if (determinant < 0.0f) {
+                for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
+                    std::swap(geometry.indices[index + 1], geometry.indices[index + 2]);
+                }
+            }
+            if (!normals) {
+                for (ModelVertex& vertex : geometry.vertices) {
+                    vertex.normal = Vec3{};
+                }
+                for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
+                    ModelVertex& a = geometry.vertices.at(geometry.indices[index]);
+                    ModelVertex& b = geometry.vertices.at(geometry.indices[index + 1]);
+                    ModelVertex& c = geometry.vertices.at(geometry.indices[index + 2]);
+                    const Vec3 edge1{
+                        b.position.x - a.position.x,
+                        b.position.y - a.position.y,
+                        b.position.z - a.position.z,
+                    };
+                    const Vec3 edge2{
+                        c.position.x - a.position.x,
+                        c.position.y - a.position.y,
+                        c.position.z - a.position.z,
+                    };
+                    const Vec3 face{
+                        edge2.y * edge1.z - edge2.z * edge1.y,
+                        edge2.z * edge1.x - edge2.x * edge1.z,
+                        edge2.x * edge1.y - edge2.y * edge1.x,
+                    };
+                    for (ModelVertex* vertex : {&a, &b, &c}) {
+                        vertex->normal.x += face.x;
+                        vertex->normal.y += face.y;
+                        vertex->normal.z += face.z;
+                    }
+                }
+                for (ModelVertex& vertex : geometry.vertices) {
+                    vertex.normal = normalize(vertex.normal);
+                }
+            }
+            geometry.has_tangents = tangents != nullptr;
             engine.geometries.push_back(std::move(geometry));
             MeshRecord record;
             record.primitive = PrimitiveKind::gltf;

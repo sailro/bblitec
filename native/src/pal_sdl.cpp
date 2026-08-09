@@ -1013,13 +1013,40 @@ void update_camera(CameraRecord& camera) {
     if (!camera.controls_enabled) {
         return;
     }
-    upstream::apply_arc_rotate_inertia(camera);
     int key_count = 0;
     const bool* keys = SDL_GetKeyboardState(&key_count);
     const auto pressed = [keys, key_count](SDL_Scancode scancode) {
         const int index = static_cast<int>(scancode);
         return index >= 0 && index < key_count && keys[index];
     };
+    if (camera.kind == CameraKind::free) {
+        constexpr float nominal_frame_scale = 0.05270463f;
+        const float movement = camera.speed * nominal_frame_scale;
+        if (pressed(SDL_SCANCODE_W) || pressed(SDL_SCANCODE_UP)) {
+            camera.inertial_direction.z += movement;
+        }
+        if (pressed(SDL_SCANCODE_S) || pressed(SDL_SCANCODE_DOWN)) {
+            camera.inertial_direction.z -= movement;
+        }
+        if (pressed(SDL_SCANCODE_A) || pressed(SDL_SCANCODE_LEFT)) {
+            camera.inertial_direction.x -= movement;
+        }
+        if (pressed(SDL_SCANCODE_D) || pressed(SDL_SCANCODE_RIGHT)) {
+            camera.inertial_direction.x += movement;
+        }
+        if (pressed(SDL_SCANCODE_SPACE) || pressed(SDL_SCANCODE_PAGEUP)) {
+            camera.inertial_direction.y += movement;
+        }
+        if (
+            pressed(SDL_SCANCODE_LSHIFT) ||
+            pressed(SDL_SCANCODE_RSHIFT) ||
+            pressed(SDL_SCANCODE_PAGEDOWN)) {
+            camera.inertial_direction.y -= movement;
+        }
+        upstream::apply_free_camera_inertia(camera);
+        return;
+    }
+    upstream::apply_arc_rotate_inertia(camera);
     if (pressed(SDL_SCANCODE_LEFT)) camera.alpha -= 0.02f;
     if (pressed(SDL_SCANCODE_RIGHT)) camera.alpha += 0.02f;
     if (pressed(SDL_SCANCODE_UP)) camera.beta = std::max(0.1f, camera.beta - 0.02f);
@@ -1047,6 +1074,15 @@ void handle_camera_pointer_event(
     }
 
     if (event.type == SDL_EVENT_MOUSE_MOTION) {
+        if (camera.kind == CameraKind::free) {
+            if (state.orbiting) {
+                camera.inertial_yaw_offset +=
+                    event.motion.xrel / camera.angular_sensibility;
+                camera.inertial_pitch_offset -=
+                    event.motion.yrel / camera.angular_sensibility;
+            }
+            return;
+        }
         if (state.orbiting) {
             camera.inertial_alpha_offset -= event.motion.xrel / camera.angular_sensibility;
             camera.inertial_beta_offset -= event.motion.yrel / camera.angular_sensibility;
@@ -1165,11 +1201,14 @@ void pal::run_engine(Engine& engine) {
             ? warmup_frames + benchmark_frame_count
             : configured_frames("BBLITE_MAX_FRAMES");
     const std::string screenshot_path = pal::environment_variable("BBLITE_SCREENSHOT");
+    const long screenshot_frame =
+        configured_frames("BBLITE_SCREENSHOT_FRAME");
     std::vector<double> benchmark_samples;
     benchmark_samples.reserve(static_cast<std::size_t>(std::max(benchmark_frame_count, 0L)));
     bool screenshot_saved = false;
     long frame_count = 0;
     bool running = true;
+    double previous_frame_time = 0.0;
 
     while (running && (frame_limit <= 0 || frame_count < frame_limit)) {
         SDL_Event event;
@@ -1181,6 +1220,18 @@ void pal::run_engine(Engine& engine) {
         }
 
         const double frame_start = pal::monotonic_milliseconds();
+        const float real_delta_ms =
+            previous_frame_time > 0.0
+                ? static_cast<float>(frame_start - previous_frame_time)
+                : 0.0f;
+        previous_frame_time = frame_start;
+        const float delta_ms =
+            scene.fixed_delta_ms > 0.0f
+                ? scene.fixed_delta_ms
+                : real_delta_ms;
+        for (const auto& callback : scene.before_render) {
+            callback(delta_ms);
+        }
         update_camera(*camera);
 
         int width = engine.options.width;
@@ -1223,7 +1274,10 @@ void pal::run_engine(Engine& engine) {
             }
         }
 
-        if (!screenshot_saved && !screenshot_path.empty()) {
+        if (
+            !screenshot_saved &&
+            !screenshot_path.empty() &&
+            frame_count >= screenshot_frame) {
             SDL_Surface* screenshot = SDL_RenderReadPixels(renderer, nullptr);
             if (!screenshot) {
                 throw std::runtime_error(std::string("Unable to read screenshot pixels: ") + SDL_GetError());

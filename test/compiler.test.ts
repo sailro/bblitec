@@ -226,6 +226,53 @@ test("compiles Babylon Lite scene 10 PBR rough sphere", () => {
     ]);
 });
 
+test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
+    const source = readFileSync(
+        resolve("examples/scene273-runtime-material-family.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "examples/scene273-runtime-material-family.ts",
+    });
+
+    assert.deepEqual(result.manifest.features, [
+        "core",
+        "backend:sdl",
+        "camera:arc-rotate",
+        "light:hemispheric",
+        "material:pbr",
+        "material:standard",
+        "mesh:box",
+        "mesh:ground",
+        "renderer:pbr",
+    ]);
+    assert.match(result.cpp, /\.fixed_delta_ms = 16\.0f/);
+    assert.match(result.cpp, /bbl::on_before_render/);
+    assert.match(result.cpp, /v_frame\+\+/);
+    assert.match(result.cpp, /if \(\(v_frame == 20\.0f\)\)/);
+    assert.match(
+        result.cpp,
+        /PbrMaterialOptions\{[^}]*0\.1f, 0\.4f, 1\.0f, 0\.0f, false\}/,
+    );
+    assert.match(
+        result.cpp,
+        /if \(\(v_frame == \(20\.0f \+ 150\.0f\)\)\)/,
+    );
+    assert.doesNotMatch(result.cpp, /dataset|drawCallCount/);
+    assert.deepEqual(result.manifest.generatedSources, [
+        "upstream/src/engine.cpp",
+        "upstream/src/scene_core.cpp",
+        "upstream/src/camera_arc_rotate.cpp",
+        "upstream/src/camera_controls.cpp",
+        "upstream/src/light_matrix.cpp",
+        "upstream/src/light_hemispheric.cpp",
+        "upstream/src/renderer_plan.cpp",
+        "upstream/src/material_pbr.cpp",
+        "upstream/src/material_standard.cpp",
+        "upstream/src/mesh_factories.cpp",
+    ]);
+});
+
 test("compiles Babylon Lite scene 13 PBR spheres grid", () => {
     const source = readFileSync(resolve("examples/scene13-pbr-spheres.ts"), "utf8");
     const result = compileSource(source, {
@@ -266,4 +313,235 @@ test("compiles Babylon Lite scene 13 PBR spheres grid", () => {
     );
     assert.match(result.cpp, /PBR_Spheres\.glb/);
     assert.doesNotMatch(result.cpp, /skipSkybox/);
+});
+
+test("compiles Babylon Lite scene 32 unlit glTF", () => {
+    const source = readFileSync(resolve("examples/scene32-unlit.ts"), "utf8");
+    const result = compileSource(source, {
+        fileName: "examples/scene32-unlit.ts",
+    });
+
+    assert.ok(result.manifest.features.includes("loader:gltf"));
+    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.match(result.cpp, /\.alpha \+= bbl::pi/);
+    assert.match(result.cpp, /UnlitTest\.glb/);
+});
+
+test("compiles Babylon Lite scene 168 mirrored winding", () => {
+    const source = readFileSync(resolve("examples/scene168-mirrored-winding.ts"), "utf8");
+    const result = compileSource(source, {
+        fileName: "examples/scene168-mirrored-winding.ts",
+    });
+
+    assert.ok(result.manifest.features.includes("loader:gltf"));
+    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.match(result.cpp, /MirroredDoubleSided\.glb/);
+    assert.match(result.cpp, /\.clear_color = bbl::Color4\{0\.05f, 0\.06f, 0\.09f, 1\.0f\}/);
+});
+
+test("compiles Babylon Lite scene 257 negative scale", () => {
+    const source = readFileSync(resolve("examples/scene257-negative-scale.ts"), "utf8");
+    const result = compileSource(source, {
+        fileName: "examples/scene257-negative-scale.ts",
+    });
+
+    assert.ok(result.manifest.features.includes("loader:gltf"));
+    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.match(result.cpp, /std::sqrt\(800\.0f\)/);
+    assert.match(result.cpp, /Node_NegativeScale_01\.glb/);
+});
+
+test("compiles Babylon Lite scene 266 negative scale spheres", () => {
+    const source = readFileSync(resolve("examples/scene266-negative-scale-spheres.ts"), "utf8");
+    const result = compileSource(source, {
+        fileName: "examples/scene266-negative-scale-spheres.ts",
+    });
+
+    assert.ok(result.manifest.features.includes("loader:gltf"));
+    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.match(result.cpp, /NegativeScaleTest\.glb/);
+    assert.match(result.cpp, /bbl::pi \/ 2\.15f/);
+});
+
+test("compiles Babylon Lite scene 274 alpha to coverage", () => {
+    const source = readFileSync(resolve("examples/scene274-alpha-to-coverage.ts"), "utf8");
+    const result = compileSource(source, {
+        fileName: "examples/scene274-alpha-to-coverage.ts",
+    });
+
+    assert.ok(result.manifest.features.includes("material:shader"));
+    assert.ok(result.manifest.features.includes("mesh:plane"));
+    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.match(result.cpp, /bbl::create_shader_material/);
+    assert.match(result.cpp, /bbl::set_alpha_to_coverage/);
+    assert.match(result.cpp, /bbl::create_plane/);
+    assert.deepEqual(result.manifest.shaderVariants, ["alpha-card"]);
+    assert.match(
+        result.cpp,
+        /bbl::ShaderMaterialVariant::alpha_card/,
+    );
+    assert.ok(result.manifest.generatedSources.includes("upstream/src/material_shader.cpp"));
+});
+
+test("compiles Babylon Lite scene 163 shader alpha cutout", () => {
+    const source = readFileSync(
+        resolve("examples/scene163-shader-alpha-cutout.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "examples/scene163-shader-alpha-cutout.ts",
+    });
+
+    assert.ok(result.manifest.features.includes("camera:arc-rotate"));
+    assert.ok(result.manifest.features.includes("material:shader"));
+    assert.ok(result.manifest.features.includes("mesh:plane"));
+    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.deepEqual(result.manifest.shaderVariants, ["circular-cutout"]);
+    assert.match(
+        result.cpp,
+        /bbl::ShaderMaterialVariant::circular_cutout/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::PlaneOptions\{3\.0f, 3\.0f\}/,
+    );
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "typed-reached-shader-variants",
+        ),
+    );
+});
+
+test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
+    const source = readFileSync(
+        resolve("examples/scene146-geometry-output.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "examples/scene146-geometry-output.ts",
+    });
+
+    assert.ok(result.manifest.features.includes("renderer:geometry-output"));
+    assert.deepEqual(result.manifest.geometryOutputTasks, [
+        {
+            shaderIndex: 0,
+            attachments: [
+                "IRRADIANCE",
+                "WORLD_POSITION",
+                "NORMALIZED_VIEW_DEPTH",
+                "VIEW_NORMAL",
+                "WORLD_NORMAL",
+                "REFLECTIVITY",
+                "ALBEDO",
+            ],
+            emitColor: true,
+        },
+        {
+            shaderIndex: 1,
+            attachments: [
+                "LOCAL_POSITION",
+                "VIEW_DEPTH",
+                "SCREENSPACE_DEPTH",
+                "LINEAR_VELOCITY",
+            ],
+            emitColor: false,
+        },
+    ]);
+    assert.match(result.cpp, /bbl::create_geometry_renderer_task/);
+    assert.match(result.cpp, /bbl::geometry_task_texture/);
+    assert.match(result.cpp, /bbl::create_copy_to_texture_task/);
+    assert.match(result.cpp, /bbl::add_task_at_start/);
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/frame_graph_geometry.cpp",
+        ),
+    );
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "sdl-gpu-frame-graph",
+        ),
+    );
+});
+
+test("compiles Babylon Lite scene 116 no-color depth views", () => {
+    const source = readFileSync(
+        resolve("examples/scene116-no-color-depth.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "examples/scene116-no-color-depth.ts",
+    });
+
+    assert.ok(result.manifest.features.includes("material:no-color-view"));
+    assert.ok(result.manifest.features.includes("mesh:torus"));
+    assert.ok(result.manifest.features.includes("renderer:geometry-output"));
+    assert.match(result.cpp, /bbl::create_render_target_texture/);
+    assert.match(result.cpp, /bbl::create_torus/);
+    assert.match(result.cpp, /bbl::create_standard_no_color_material_view/);
+    assert.match(result.cpp, /bbl::create_pbr_no_color_material_view/);
+    assert.match(result.cpp, /bbl::add_render_task_mesh/);
+    assert.match(result.cpp, /emissive_render_texture/);
+    assert.match(
+        result.cpp,
+        /RenderTaskOptions\{"standard-shadow-depth"[\s\S]*v_standardDepthCamera, true, true/,
+    );
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/material_views.cpp",
+        ),
+    );
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/frame_graph_geometry.cpp",
+        ),
+    );
+});
+
+test("compiles Babylon Lite scene 145 standard geometry outputs", () => {
+    const source = readFileSync(
+        resolve("examples/scene145-standard-geometry-output.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "examples/scene145-standard-geometry-output.ts",
+    });
+
+    assert.deepEqual(result.manifest.features, [
+        "core",
+        "backend:sdl",
+        "camera:free",
+        "loader:babylon",
+        "material:standard",
+        "renderer:pbr",
+        "renderer:geometry-output",
+    ]);
+    assert.equal(result.manifest.assets[0]?.kind, "babylon");
+    assert.match(result.manifest.assets[0]?.output ?? "", /HillValley\/HillValley\.babylon$/);
+    assert.match(result.cpp, /bbl::load_babylon/);
+    assert.match(result.cpp, /bbl::create_free_camera/);
+    assert.match(result.cpp, /\.fov = 0\.8985202f/);
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/babylon_loader.cpp",
+        ),
+    );
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/frame_graph_geometry.cpp",
+        ),
+    );
+    assert.equal(result.manifest.geometryOutputTasks.length, 2);
+});
+
+test("compiles Babylon Lite scene 248 external glTF", () => {
+    const source = readFileSync(resolve("examples/scene248-texture-settings.ts"), "utf8");
+    const result = compileSource(source, {
+        fileName: "examples/scene248-texture-settings.ts",
+    });
+    const asset = result.manifest.assets.find(({ kind }) => kind === "gltf");
+    assert.equal(asset?.output.endsWith(".glb"), true);
+    assert.match(asset?.source ?? "", /TextureSettingsTest\.gltf$/);
+    assert.match(result.cpp, /\.fov = 0\.8f/);
+    assert.match(result.cpp, /\.near_plane =/);
+    assert.match(result.cpp, /\.far_plane =/);
 });

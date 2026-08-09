@@ -1,0 +1,11 @@
+#include <metal_stdlib>
+using namespace metal;
+
+struct CardFragmentUniforms {
+    float4 colorOpacity;
+};
+
+fragment float4 main0(
+    constant CardFragmentUniforms& uniforms [[buffer(0)]]) {
+    return uniforms.colorOpacity;
+}

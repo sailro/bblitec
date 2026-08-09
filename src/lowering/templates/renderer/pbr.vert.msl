@@ -10,6 +10,8 @@ struct VertexInput {
     float3 normal [[attribute(1)]];
     float4 tangent [[attribute(2)]];
     float2 uv [[attribute(3)]];
+    float3 localPosition [[attribute(4)]];
+    float2 uv2 [[attribute(5)]];
 };
 
 struct VertexOutput {
@@ -18,6 +20,8 @@ struct VertexOutput {
     float3 normal;
     float4 tangent;
     float2 uv;
+    float3 localPosition;
+    float2 uv2;
 };
 
 vertex VertexOutput main0(
@@ -29,5 +33,7 @@ vertex VertexOutput main0(
     output.normal = input.normal;
     output.tangent = input.tangent;
     output.uv = input.uv;
+    output.localPosition = input.localPosition;
+    output.uv2 = input.uv2;
     return output;
 }
