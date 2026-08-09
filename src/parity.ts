@@ -16,6 +16,30 @@ export interface RegionResult extends CompareResult {
     regionPixels: number;
 }
 
+export interface DiffRegionSummary {
+    pixels: number;
+    mad: number;
+    maxDiff: number;
+}
+
+export interface DiffHotspot extends DiffRegionSummary {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+
+export interface DiffBreakdown {
+    channelMad: { red: number; green: number; blue: number };
+    foregroundBias: { red: number; green: number; blue: number };
+    regions: {
+        background: DiffRegionSummary;
+        foregroundEdge: DiffRegionSummary;
+        foregroundInterior: DiffRegionSummary;
+    };
+    hotspots: DiffHotspot[];
+}
+
 interface PngImage {
     width: number;
     height: number;
@@ -132,4 +156,200 @@ export function generateDiffMap(actualPath: string, referencePath: string, outpu
 
     mkdirSync(dirname(outputPath), { recursive: true });
     writeFileSync(outputPath, PNG.sync.write(diff));
+}
+
+function regionSummary(pixels: number, sum: number, maxDiff: number): DiffRegionSummary {
+    return {
+        pixels,
+        mad: pixels > 0 ? sum / pixels : 0,
+        maxDiff,
+    };
+}
+
+export function analyzeDifference(
+    actualPath: string,
+    referencePath: string,
+    backgroundColor: [number, number, number] = [51, 51, 77],
+    backgroundThreshold = 30,
+    tileSize = 64,
+): DiffBreakdown {
+    const actual = loadPng(actualPath);
+    const reference = loadPng(referencePath);
+    const width = Math.min(actual.width, reference.width);
+    const height = Math.min(actual.height, reference.height);
+    const foreground = new Uint8Array(width * height);
+    const gradient = new Uint8Array(width * height);
+    const channelSum = [0, 0, 0];
+    const foregroundBias = [0, 0, 0];
+    let foregroundPixels = 0;
+
+    const referencePixel = (x: number, y: number, channel: number): number =>
+        reference.data[(y * reference.width + x) * 4 + channel]!;
+    for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+            const index = y * width + x;
+            const red = referencePixel(x, y, 0) - backgroundColor[0];
+            const green = referencePixel(x, y, 1) - backgroundColor[1];
+            const blue = referencePixel(x, y, 2) - backgroundColor[2];
+            foreground[index] =
+                Math.sqrt(red * red + green * green + blue * blue) > backgroundThreshold ? 1 : 0;
+            if (foreground[index]) foregroundPixels += 1;
+            const actualIndex = (y * actual.width + x) * 4;
+            const referenceIndex = (y * reference.width + x) * 4;
+            for (let channel = 0; channel < 3; channel += 1) {
+                const signed = actual.data[actualIndex + channel]! - reference.data[referenceIndex + channel]!;
+                channelSum[channel]! += Math.abs(signed);
+                if (foreground[index]) foregroundBias[channel]! += signed;
+            }
+        }
+    }
+
+    for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+            const index = y * width + x;
+            if (!foreground[index]) continue;
+            let isEdge = false;
+            for (let offsetY = -1; offsetY <= 1 && !isEdge; offsetY += 1) {
+                for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+                    if (offsetX === 0 && offsetY === 0) continue;
+                    const nx = x + offsetX;
+                    const ny = y + offsetY;
+                    if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+                        isEdge = true;
+                        break;
+                    }
+                    const neighbor = ny * width + nx;
+                    if (!foreground[neighbor]) {
+                        isEdge = true;
+                        break;
+                    }
+                    let colorDelta = 0;
+                    for (let channel = 0; channel < 3; channel += 1) {
+                        colorDelta = Math.max(
+                            colorDelta,
+                            Math.abs(referencePixel(x, y, channel) - referencePixel(nx, ny, channel)),
+                        );
+                    }
+                    if (colorDelta > 24) {
+                        isEdge = true;
+                        break;
+                    }
+                }
+            }
+            gradient[index] = isEdge ? 1 : 0;
+        }
+    }
+
+    const sums = {
+        background: { pixels: 0, sum: 0, max: 0 },
+        foregroundEdge: { pixels: 0, sum: 0, max: 0 },
+        foregroundInterior: { pixels: 0, sum: 0, max: 0 },
+    };
+    const tiles: DiffHotspot[] = [];
+    for (let tileY = 0; tileY < height; tileY += tileSize) {
+        for (let tileX = 0; tileX < width; tileX += tileSize) {
+            let tilePixels = 0;
+            let tileSum = 0;
+            let tileMax = 0;
+            const tileWidth = Math.min(tileSize, width - tileX);
+            const tileHeight = Math.min(tileSize, height - tileY);
+            for (let y = tileY; y < tileY + tileHeight; y += 1) {
+                for (let x = tileX; x < tileX + tileWidth; x += 1) {
+                    const index = y * width + x;
+                    const difference = comparePixel(actual, reference, x, y);
+                    const key = !foreground[index]
+                        ? "background"
+                        : gradient[index]
+                            ? "foregroundEdge"
+                            : "foregroundInterior";
+                    sums[key].pixels += 1;
+                    sums[key].sum += difference.average;
+                    sums[key].max = Math.max(sums[key].max, difference.max);
+                    if (foreground[index]) {
+                        tilePixels += 1;
+                        tileSum += difference.average;
+                        tileMax = Math.max(tileMax, difference.max);
+                    }
+                }
+            }
+            const minimumTilePixels =
+                width * height <= tileSize * tileSize
+                    ? 1
+                    : Math.max(16, Math.ceil(tileWidth * tileHeight * 0.01));
+            if (tilePixels >= minimumTilePixels) {
+                tiles.push({
+                    x: tileX,
+                    y: tileY,
+                    width: tileWidth,
+                    height: tileHeight,
+                    ...regionSummary(tilePixels, tileSum, tileMax),
+                });
+            }
+        }
+    }
+    tiles.sort((left, right) => right.mad - left.mad || right.maxDiff - left.maxDiff);
+
+    return {
+        channelMad: {
+            red: channelSum[0]! / (width * height),
+            green: channelSum[1]! / (width * height),
+            blue: channelSum[2]! / (width * height),
+        },
+        foregroundBias: {
+            red: foregroundPixels > 0 ? foregroundBias[0]! / foregroundPixels : 0,
+            green: foregroundPixels > 0 ? foregroundBias[1]! / foregroundPixels : 0,
+            blue: foregroundPixels > 0 ? foregroundBias[2]! / foregroundPixels : 0,
+        },
+        regions: {
+            background: regionSummary(sums.background.pixels, sums.background.sum, sums.background.max),
+            foregroundEdge: regionSummary(
+                sums.foregroundEdge.pixels,
+                sums.foregroundEdge.sum,
+                sums.foregroundEdge.max,
+            ),
+            foregroundInterior: regionSummary(
+                sums.foregroundInterior.pixels,
+                sums.foregroundInterior.sum,
+                sums.foregroundInterior.max,
+            ),
+        },
+        hotspots: tiles.slice(0, 12),
+    };
+}
+
+export function generateHotspotMap(
+    actualPath: string,
+    hotspots: readonly DiffHotspot[],
+    outputPath: string,
+): void {
+    const actual = loadPng(actualPath);
+    const output = new PNG({ width: actual.width, height: actual.height });
+    output.data.set(actual.data);
+    const setPixel = (x: number, y: number, color: [number, number, number]): void => {
+        if (x < 0 || y < 0 || x >= output.width || y >= output.height) return;
+        const index = (y * output.width + x) * 4;
+        output.data[index] = color[0];
+        output.data[index + 1] = color[1];
+        output.data[index + 2] = color[2];
+        output.data[index + 3] = 255;
+    };
+    hotspots.forEach((hotspot, rank) => {
+        const color: [number, number, number] = rank === 0 ? [255, 64, 64] : [255, 190, 0];
+        for (let thickness = 0; thickness < 3; thickness += 1) {
+            const left = hotspot.x + thickness;
+            const top = hotspot.y + thickness;
+            const right = hotspot.x + hotspot.width - 1 - thickness;
+            const bottom = hotspot.y + hotspot.height - 1 - thickness;
+            for (let x = left; x <= right; x += 1) {
+                setPixel(x, top, color);
+                setPixel(x, bottom, color);
+            }
+            for (let y = top; y <= bottom; y += 1) {
+                setPixel(left, y, color);
+                setPixel(right, y, color);
+            }
+        }
+    });
+    mkdirSync(dirname(outputPath), { recursive: true });
+    writeFileSync(outputPath, PNG.sync.write(output));
 }

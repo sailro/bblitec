@@ -155,6 +155,9 @@ $env:BBLITE_BENCHMARK_FRAMES = "2000"
 - Add tests when extending compiler or lowering behavior.
 - Keep lowerers focused; do not rebuild a monolithic compiler class.
 - Preserve provenance for generated behavior.
+- Record every intentional semantic adaptation in generated `fidelity.json`.
+- Keep shader formulas tied to upstream markers in
+  `renderer-fidelity.json`; do not tune backend shaders against a golden.
 - Avoid unrelated cleanup.
 - Minimize pushes because GitHub Actions compute is limited. Batch validated
   milestones locally and push intentionally.

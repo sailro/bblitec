@@ -114,8 +114,12 @@ gate until hosted runners provide a stable backend and driver baseline.
 Outputs are written to `artifacts/parity`:
 
 - actual PNG
-- diff map
-- JSON report
+- renderer-specific diff map (`diff-map-cpu.png` or `diff-map-gpu.png`)
+- annotated hotspot map (`hotspots-cpu.png` or `hotspots-gpu.png`)
+- renderer-specific JSON report (`report-cpu.json` or `report-gpu.json`)
+
+Reports include background/edge/interior attribution, signed channel bias, and
+the highest-error foreground tiles. See [fidelity.md](fidelity.md).
 
 The committed golden is
 `reference/boombox/babylon-ref-golden.png`.

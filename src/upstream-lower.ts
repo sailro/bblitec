@@ -107,12 +107,17 @@ class GeneratedSourceWriter {
                 mkdirSync(dirname(shaderPath), { recursive: true });
                 writeFileSync(shaderPath, shader.data);
             }
+            writeFileSync(
+                resolve(this.outputRoot, "upstream/renderer-fidelity.json"),
+                `${JSON.stringify(renderer.fidelityManifest(), null, 2)}\n`,
+            );
             generated.push(
                 { modulePath: "src/material/pbr/pbr-template.ts", symbolName: "createPbrTemplate" },
                 { modulePath: "src/material/pbr/fragments/ibl-fragment.ts", symbolName: "makeIblCalculation" },
                 { modulePath: "src/frame-graph/scene-uniforms-pack.ts", symbolName: "_packSceneUniforms" },
                 { modulePath: "src/material/pbr/background-ground.ts", symbolName: "buildGroundRenderable" },
                 { modulePath: "src/material/pbr/background-dds-skybox.ts", symbolName: "buildDdsSkyboxRenderable" },
+                { modulePath: "src/loader-env/rgbd-decode.ts", symbolName: "uploadCubemapRGBD" },
             );
         }
         const factories = new FactoryLowerer(context);

@@ -1,14 +1,17 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { RendererFidelityManifest } from "../fidelity.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 const renderTaskModule = "src/frame-graph/render-task.ts";
 const pbrTemplateModule = "src/material/pbr/pbr-template.ts";
+const pbrHelperCoreModule = "src/material/node/blocks/pbr-mr-helper-core.ts";
 const iblFragmentModule = "src/material/pbr/fragments/ibl-fragment.ts";
 const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
+const rgbdDecodeModule = "src/loader-env/rgbd-decode.ts";
 const templateRoot = fileURLToPath(new URL("../../../src/lowering/templates/renderer/", import.meta.url));
 
 interface LoweredShader {
@@ -387,6 +390,7 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
 
     public lowerShaders(): LoweredShader[] {
         const pbr = this.context.store.getSource(pbrTemplateModule);
+        const pbrHelper = this.context.store.getSource(pbrHelperCoreModule);
         const ibl = this.context.store.getSource(iblFragmentModule);
         const sceneUniforms = this.context.store.getSource(sceneUniformsModule);
         const backgroundGround = this.context.store.getSource(backgroundGroundModule);
@@ -394,6 +398,7 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
         const requiredUpstreamFormulas = [
             [pbr, "roughness*roughness+0.0005", "GGX roughness"],
             [pbr, "0.5/(gl+gv)", "Smith geometry"],
+            [pbrHelper, "1.590579", "image-processing calibration"],
             [ibl, "log2(cubemapDim * alphaG) * scene.vImageInfos.z", "IBL mip selection"],
             [ibl, "getEnergyConservationFactor", "IBL energy conservation"],
             [sceneUniforms, "lodGenerationScale ?? 0.8", "environment LOD scale"],
@@ -422,5 +427,67 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
             output: `upstream/shaders/${name}`,
             data: readFileSync(resolve(templateRoot, name), "utf8"),
         }));
+    }
+
+    public fidelityManifest(): RendererFidelityManifest {
+        const rgbd = this.context.store.getSource(rgbdDecodeModule);
+        if (!rgbd.includes("select(g.y,d.y-1u-g.y,f)")) {
+            throw new Error("Pinned Babylon Lite RGBD vertical flip semantics changed.");
+        }
+        return {
+            sourceLanguage: "WGSL",
+            emittedSources: ["HLSL", "MSL"],
+            compiledArtifacts: ["DXIL", "SPIR-V"],
+            bindingContract: {
+                vertexUniformSpace: 1,
+                sampledTextureSpace: 2,
+                fragmentUniformSpace: 3,
+            },
+            textureContract: {
+                baseColor: "sRGB",
+                emissive: "sRGB",
+                normal: "linear",
+                metallicRoughness: "linear",
+                environment: "linear-rgba16f",
+                brdfLut: "linear-rgba32f",
+            },
+            invariants: [
+                {
+                    id: "ggx-smith",
+                    upstreamModule: pbrTemplateModule,
+                    upstreamMarker: "roughness*roughness+0.0005; 0.5/(gl+gv)",
+                    nativeBehavior: "GGX distribution and Smith correlated geometry use Babylon alphaG conventions.",
+                    validation: ["source marker assertions", "GPU parity"],
+                },
+                {
+                    id: "ibl-energy-conservation",
+                    upstreamModule: iblFragmentModule,
+                    upstreamMarker: "getEnergyConservationFactor",
+                    nativeBehavior: "BRDF LUT reflectance is multiplied by Babylon's energy-conservation factor.",
+                    validation: ["source marker assertions", "GPU parity"],
+                },
+                {
+                    id: "environment-lod",
+                    upstreamModule: sceneUniformsModule,
+                    upstreamMarker: "lodGenerationScale ?? 0.8",
+                    nativeBehavior: "Cubemap mip selection uses log2(cubemapDim * alphaG) with scale 0.8.",
+                    validation: ["source marker assertions", "generated uniform tests"],
+                },
+                {
+                    id: "rgbd-cubemap-y-flip",
+                    upstreamModule: rgbdDecodeModule,
+                    upstreamMarker: "select(g.y,d.y-1u-g.y,f)",
+                    nativeBehavior: "RGBD cubemap rows are vertically reversed during SDL_GPU upload.",
+                    validation: ["source marker assertion", "BoomBox foreground parity"],
+                },
+                {
+                    id: "image-processing",
+                    upstreamModule: pbrHelperCoreModule,
+                    upstreamMarker: "1.590579",
+                    nativeBehavior: "Exposure, exponential tone mapping, gamma, and contrast follow Babylon constants and order.",
+                    validation: ["source marker assertions", "GPU parity"],
+                },
+            ],
+        };
     }
 }

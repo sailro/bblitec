@@ -4,7 +4,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { captureBabylonReference } from "./capture-reference.js";
-import { compareImages, compareRegion, generateDiffMap, imageDimensions } from "./parity.js";
+import {
+    analyzeDifference,
+    compareImages,
+    compareRegion,
+    generateDiffMap,
+    generateHotspotMap,
+    imageDimensions,
+} from "./parity.js";
 
 interface ParityConfig {
     name: string;
@@ -115,6 +122,18 @@ async function main(): Promise<void> {
     const thresholds = arguments_.gpu && config.gpuThresholds
         ? config.gpuThresholds
         : config.thresholds;
+    const renderer = arguments_.gpu
+        ? {
+              mode: "gpu",
+              implementation: "SDL_GPU",
+              driverSelection: process.env.SDL_GPU_DRIVER ?? "auto",
+          }
+        : {
+              mode: "cpu-fallback",
+              implementation: "SDL_Renderer",
+              driverSelection: process.env.SDL_RENDER_DRIVER ?? "software",
+          };
+    const artifactSuffix = arguments_.gpu ? "gpu" : "cpu";
 
     await captureBabylonReference({
         output: reference,
@@ -144,14 +163,24 @@ async function main(): Promise<void> {
     mkdirSync(outputDirectory, { recursive: true });
     const full = compareImages(actual, reference);
     const region = compareRegion(actual, reference, config.backgroundColor, config.backgroundThreshold);
-    const diffPath = resolve(outputDirectory, "diff-map.png");
+    const breakdown = analyzeDifference(
+        actual,
+        reference,
+        config.backgroundColor,
+        config.backgroundThreshold,
+    );
+    const diffPath = resolve(outputDirectory, `diff-map-${artifactSuffix}.png`);
+    const hotspotPath = resolve(outputDirectory, `hotspots-${artifactSuffix}.png`);
     generateDiffMap(actual, reference, diffPath);
+    generateHotspotMap(actual, breakdown.hotspots, hotspotPath);
 
     const report = {
         scene: config.name,
+        renderer,
         dimensions: actualDimensions,
         full,
         region,
+        breakdown,
         ratios: {
             exact: percentage(region.exactMatch, region.regionPixels),
             within1: percentage(region.within1, region.regionPixels),
@@ -160,10 +189,12 @@ async function main(): Promise<void> {
         },
         thresholds,
         upstreamThresholds: config.upstreamThresholds,
-        files: { actual, reference, diff: diffPath },
+        files: { actual, reference, diff: diffPath, hotspots: hotspotPath },
     };
-    writeFileSync(resolve(outputDirectory, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
+    const reportPath = resolve(outputDirectory, `report-${artifactSuffix}.json`);
+    writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 
+    console.log(`Renderer: ${renderer.implementation} (${renderer.mode}, ${renderer.driverSelection})`);
     console.log(`${config.name} full image (${full.totalPixels} px): MAD=${full.mad.toFixed(3)}, max=${full.maxDiff}`);
     console.log(
         `${config.name} region (${region.regionPixels} px): MAD=${region.mad.toFixed(3)}, ` +
@@ -171,7 +202,14 @@ async function main(): Promise<void> {
             `within1=${(report.ratios.within1 * 100).toFixed(2)}%, ` +
             `within5=${(report.ratios.within5 * 100).toFixed(2)}%`,
     );
+    console.log(
+        `Diff attribution: background=${breakdown.regions.background.mad.toFixed(3)}, ` +
+            `edges=${breakdown.regions.foregroundEdge.mad.toFixed(3)}, ` +
+            `interior=${breakdown.regions.foregroundInterior.mad.toFixed(3)}`,
+    );
     console.log(`Diff: ${diffPath}`);
+    console.log(`Hotspots: ${hotspotPath}`);
+    console.log(`Report: ${reportPath}`);
 
     const failures: string[] = [];
     if (full.mad > thresholds.maxMad) {

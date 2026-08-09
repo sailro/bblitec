@@ -67,6 +67,16 @@ variant without editing a scene-specific template.
 **Done when:** PAL iterates generated draw commands without inspecting Babylon
 material records.
 
+### Add draw/material ID diagnostics
+
+- [ ] Generate an optional ID render target keyed by render item and material.
+- [ ] Add render-item/material metadata to parity reports.
+- [ ] Map high-MAD tiles to IDs and upstream material feature sets.
+- [ ] Generate an annotated hotspot image for local investigations.
+
+**Done when:** a parity hotspot identifies the generated draw, material,
+shader variant, and upstream source features responsible for the pixels.
+
 ### Match remaining PBR behavior
 
 - [ ] Attribute the remaining BoomBox foreground MAD by material and feature.

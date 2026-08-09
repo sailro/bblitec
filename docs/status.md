@@ -30,6 +30,19 @@ Development machine:
 
 The GPU path is approximately 50 times faster CPU-side than the fallback.
 
+Current GPU diff attribution:
+
+| Region | MAD |
+| --- | ---: |
+| Background | 0.408 |
+| Foreground high-gradient/edges | 15.472 |
+| Foreground interior | 4.213 |
+
+The residual error is therefore dominated by raster/high-gradient boundaries,
+not the environment background. Signed foreground bias is approximately
+`[-3.99, -4.13, -4.46]` RGB bytes, so material interiors are also slightly
+darker than the reference.
+
 Current GPU regression ceilings:
 
 - full-image MAD: `1.0`

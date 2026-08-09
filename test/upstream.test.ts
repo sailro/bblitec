@@ -105,6 +105,7 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     const lowerer = new RendererLowerer(new LoweringContext());
     const lowered = lowerer.lowerRenderPlan();
     const shaders = lowerer.lowerShaders();
+    const fidelity = lowerer.fidelityManifest();
     assert.equal(lowered.modulePath, "src/frame-graph/render-task.ts");
     assert.match(lowered.header, /struct RenderItem/);
     assert.match(lowered.source, /build_render_plan/);
@@ -120,6 +121,9 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.equal(typeof fragment?.data, "string");
     assert.match(String(fragment?.data), /geometrySmithGGX/);
     assert.match(String(fragment?.data), /1\.590579/);
+    assert.equal(fidelity.sourceLanguage, "WGSL");
+    assert.deepEqual(fidelity.compiledArtifacts, ["DXIL", "SPIR-V"]);
+    assert.ok(fidelity.invariants.some(({ id }) => id === "rgbd-cubemap-y-flip"));
 });
 
 test("builds a conservative reachable module graph", () => {

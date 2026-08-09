@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { CompileAdaptation } from "./fidelity.js";
 
 export interface CompileOptions {
     fileName?: string;
@@ -13,6 +14,7 @@ export interface CompileManifest {
     runtimeSources: string[];
     generatedSources: string[];
     assets: CompileAsset[];
+    adaptations: CompileAdaptation[];
 }
 
 export interface CompileAsset {
@@ -101,6 +103,10 @@ class Compiler {
     private readonly features = new Set<Feature>(["core"]);
     private readonly assets = new Map<string, CompileAsset>();
     private readonly body: string[] = [];
+    private readonly erasedBrowserExpressions = new Set<number>();
+    private readonly erasedBrowserInstrumentation = new Set<number>();
+    private readonly unwrappedAwaitExpressions = new Set<number>();
+    private hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
 
     public constructor(
@@ -160,6 +166,7 @@ class Compiler {
                 runtimeSources,
                 generatedSources,
                 assets: [...this.assets.values()],
+                adaptations: this.compileAdaptations(features),
             },
         };
     }
@@ -192,6 +199,7 @@ class Compiler {
                 ts.isFunctionDeclaration(statement) && statement.name?.text === "main" && statement.body !== undefined,
         );
         if (main) {
+            this.hasMainEntry = true;
             return main.body!.statements;
         }
 
@@ -240,6 +248,7 @@ class Compiler {
         }
 
         if (this.isBrowserOnlyExpression(declaration.initializer)) {
+            this.erasedBrowserExpressions.add(declaration.initializer.pos);
             this.variables.set(sourceName, { kind: "browser", cpp: "" });
             return;
         }
@@ -274,6 +283,7 @@ class Compiler {
         }
 
         if (ts.isCallExpression(unwrapped) && this.isBrowserInstrumentationCall(unwrapped)) {
+            this.erasedBrowserInstrumentation.add(unwrapped.pos);
             return;
         }
 
@@ -815,9 +825,89 @@ class Compiler {
             ts.isTypeAssertionExpression(current) ||
             ts.isNonNullExpression(current)
         ) {
+            if (ts.isAwaitExpression(current)) {
+                this.unwrappedAwaitExpressions.add(current.pos);
+            }
             current = current.expression;
         }
         return current;
+    }
+
+    private compileAdaptations(features: Feature[]): CompileAdaptation[] {
+        const adaptations: CompileAdaptation[] = [];
+        if (this.hasMainEntry) {
+            adaptations.push({
+                id: "entry-main-wrapper-erasure",
+                category: "browser-erasure",
+                sourceSemantics: "The TypeScript scene setup is wrapped in a browser-facing main function.",
+                nativeSemantics: "The compiler emits the body of main into the native entry point and omits the browser promise wrapper.",
+                risk: "low",
+                validation: ["compiler entry-order tests", "source-located unsupported syntax errors"],
+            });
+        }
+        const erasedBrowserCount =
+            this.erasedBrowserExpressions.size + this.erasedBrowserInstrumentation.size;
+        if (erasedBrowserCount > 0) {
+            adaptations.push({
+                id: "browser-setup-erasure",
+                category: "browser-erasure",
+                sourceSemantics: `${erasedBrowserCount} DOM, performance, or dataset instrumentation expression(s) execute in the browser.`,
+                nativeSemantics: "Those expressions are erased because window creation, timing, and diagnostics are provided by PAL.",
+                risk: "medium",
+                validation: ["compiler browser-erasure tests", "generated main.cpp inspection"],
+            });
+        }
+        if (this.unwrappedAwaitExpressions.size > 0) {
+            adaptations.push({
+                id: "synchronous-aot-await",
+                category: "async",
+                sourceSemantics: `${this.unwrappedAwaitExpressions.size} await expression(s) suspend JavaScript promises.`,
+                nativeSemantics: "Reachable asset promises resolve immediately because remote data is materialized during compilation.",
+                risk: "medium",
+                validation: ["typed Promise<T> runtime", "local asset manifest", "generated glTF loader tests"],
+            });
+        }
+        if (this.assets.size > 0) {
+            adaptations.push({
+                id: "compile-time-asset-materialization",
+                category: "asset-materialization",
+                sourceSemantics: `${this.assets.size} asset URL(s) are fetched at runtime by Babylon Lite.`,
+                nativeSemantics: "The compiler downloads them into the generated asset directory and generated code performs deterministic local reads.",
+                risk: "medium",
+                validation: ["asset paths in manifest.json", "typed asset specialization tests"],
+            });
+        }
+        if (features.includes("backend:sdl")) {
+            adaptations.push({
+                id: "sdl-platform-boundary",
+                category: "platform",
+                sourceSemantics: "Canvas, pointer, keyboard, timing, and presentation use browser platform APIs.",
+                nativeSemantics: "SDL implements the platform boundary and translates input into generated Babylon camera state.",
+                risk: "medium",
+                validation: ["ArcRotate constant extraction tests", "native input smoke tests"],
+            });
+        }
+        if (features.includes("loader:gltf")) {
+            adaptations.push({
+                id: "sdl-gpu-shader-backends",
+                category: "rendering",
+                sourceSemantics: "Babylon Lite composes WGSL and renders through WebGPU.",
+                nativeSemantics: "The compiler emits equivalent HLSL/MSL sources; DXC produces DXIL/SPIR-V and SDL_GPU selects the native backend.",
+                risk: "high",
+                validation: ["upstream formula marker tests", "renderer-fidelity.json", "CPU/GPU visual parity"],
+            });
+        }
+        if (features.includes("environment:ibl")) {
+            adaptations.push({
+                id: "background-ground-opt-in",
+                category: "rendering",
+                sourceSemantics: "Babylon Lite creates the requested transparent environment ground.",
+                nativeSemantics: "The generated ground is available behind BBLITE_GROUND=1 because the committed Babylon.js golden composes it differently.",
+                risk: "high",
+                validation: ["explicit runtime flag", "separate background render pass", "documented parity reference"],
+            });
+        }
+        return adaptations;
     }
 
     private lookup(identifier: ts.Identifier): Value {

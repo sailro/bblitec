@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PNG } from "pngjs";
-import { compareImages, compareRegion, generateDiffMap } from "../src/parity.js";
+import {
+    analyzeDifference,
+    compareImages,
+    compareRegion,
+    generateDiffMap,
+    generateHotspotMap,
+} from "../src/parity.js";
 
 function writePng(path: string, pixels: Array<[number, number, number, number]>): void {
     const png = new PNG({ width: pixels.length, height: 1 });
@@ -20,6 +26,7 @@ test("matches Babylon MAD and foreground-region semantics", () => {
         const reference = join(directory, "reference.png");
         const actual = join(directory, "actual.png");
         const diff = join(directory, "diff.png");
+        const hotspots = join(directory, "hotspots.png");
         writePng(reference, [
             [51, 51, 77, 255],
             [10, 20, 30, 255],
@@ -48,6 +55,16 @@ test("matches Babylon MAD and foreground-region semantics", () => {
             mad: 3,
             maxDiff: 6,
         });
+        const breakdown = analyzeDifference(actual, reference);
+        assert.deepEqual(breakdown.channelMad, { red: 1.5, green: 3, blue: 0 });
+        assert.deepEqual(breakdown.foregroundBias, { red: 3, green: 6, blue: 0 });
+        assert.equal(breakdown.regions.background.mad, 0);
+        assert.equal(breakdown.regions.foregroundEdge.mad, 3);
+        assert.equal(breakdown.regions.foregroundInterior.pixels, 0);
+        assert.equal(breakdown.hotspots.length, 1);
+        generateHotspotMap(actual, breakdown.hotspots, hotspots);
+        const hotspotPng = PNG.sync.read(readFileSync(hotspots));
+        assert.deepEqual([...hotspotPng.data.slice(4, 8)], [255, 64, 64, 255]);
 
         generateDiffMap(actual, reference, diff);
         const diffPng = PNG.sync.read(readFileSync(diff));

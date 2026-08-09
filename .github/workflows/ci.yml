@@ -17,7 +17,7 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  boombox-parity:
+  boombox-cpu-fallback-parity:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -38,11 +38,28 @@ jobs:
             -DBBLITE_GENERATED_DIR="$PWD\generated\boombox"
       - name: Build native Release target
         run: cmake --build native\build-boombox-release --config Release
-      - name: Compare native render with Babylon.js
+      - name: Compare deterministic CPU fallback with Babylon.js
         run: npm run parity:boombox -- --exe native\build-boombox-release\Release\bblite_native.exe
+      - name: Add renderer and fidelity metadata
+        shell: pwsh
+        run: |
+          @"
+          This hosted artifact is the deterministic SDL_Renderer CPU fallback.
+          It is not the current SDL_GPU renderer.
+
+          The current validated SDL_GPU comparison is included as
+          current-renderer-comparison.png. GPU parity remains a local/device
+          gate because hosted GPU drivers are not a stable visual baseline.
+          "@ | Set-Content artifacts\parity\README.txt
+          Copy-Item docs\images\boombox-comparison.png artifacts\parity\current-renderer-comparison.png
       - name: Upload parity artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: boombox-parity
-          path: artifacts/parity
+          name: boombox-cpu-fallback-parity
+          path: |
+            artifacts/parity
+            generated/boombox/manifest.json
+            generated/boombox/fidelity.json
+            generated/boombox/upstream/provenance.json
+            generated/boombox/upstream/renderer-fidelity.json

@@ -19,6 +19,7 @@ Detailed documentation:
 
 - [Architecture and generated/PAL boundary](docs/architecture.md)
 - [Build, test, parity, and troubleshooting guide](docs/development.md)
+- [Semantic and shader fidelity strategy](docs/fidelity.md)
 - [Supported subset, metrics, and roadmap](docs/status.md)
 - [Prioritized implementation backlog](TODO.md)
 
@@ -248,7 +249,10 @@ After building `native\build-boombox-release\bblite_native.exe`, render the dete
 npm run parity:boombox
 ```
 
-The native actual, diff map, and JSON report are written to ignored `artifacts\parity`. The committed golden and its capture metadata live in `reference\boombox`.
+The native actual, renderer-specific diff map, and JSON report are written to
+ignored `artifacts\parity`. Reports include semantic renderer metadata,
+channel bias, edge/interior attribution, and spatial hotspots. The committed
+golden and its capture metadata live in `reference\boombox`.
 
 The CPU regression ceilings are `4.6` full-image MAD and `21.5`
 foreground-region MAD. The generated GPU ceilings are `1.0` and `8.0`.

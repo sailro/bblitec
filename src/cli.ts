@@ -109,6 +109,17 @@ async function main(): Promise<void> {
     writeFileSync(resolve(outputPath, "main.cpp"), result.cpp);
     writeFileSync(resolve(outputPath, "features.cmake"), result.cmake);
     writeFileSync(resolve(outputPath, "manifest.json"), `${JSON.stringify(result.manifest, null, 2)}\n`);
+    writeFileSync(
+        resolve(outputPath, "fidelity.json"),
+        `${JSON.stringify(
+            {
+                source: result.manifest.source,
+                adaptations: result.manifest.adaptations,
+            },
+            null,
+            2,
+        )}\n`,
+    );
 
     console.log(`Generated ${outputPath}`);
     console.log(`Features: ${result.manifest.features.join(", ")}`);

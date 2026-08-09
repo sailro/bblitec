@@ -64,6 +64,9 @@ For the supported BoomBox path, generated output owns:
 
 Generated files are written under `generated/<scene>/upstream`. The
 `provenance.json` file records the upstream modules and symbols used.
+`fidelity.json` records intentional scene/compiler adaptations, while
+`renderer-fidelity.json` records shader bindings, texture conventions, and
+upstream rendering invariants.
 
 ## Platform abstraction layer
 
