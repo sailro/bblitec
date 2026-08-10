@@ -32,10 +32,13 @@ npm run scene -- compile boombox
 npm run scene -- build boombox
 npm run scene -- process boombox
 npm run scene -- parity boombox
+npm run scene -- geometry scene145 --recapture-reference
 ```
 
 `process` runs compile, scene-local shader compilation, CMake configure, and
 parallel native build in order.
+`geometry` captures each existing geometry-output copy task full-screen in
+Babylon Lite and native without changing the curated scene source.
 
 HDR scene compilation launches headless Chromium to run the pinned
 1024-sample GGX compute shader. Set `CHROME_PATH` when Chrome/Edge is not in a

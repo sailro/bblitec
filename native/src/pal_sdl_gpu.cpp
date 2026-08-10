@@ -1981,6 +1981,8 @@ bool run_gpu_engine(Engine& engine) {
         environment_variable("BBLITE_CLUSTER_BUFFER");
     const std::string diagnostic_directory =
         environment_variable("BBLITE_DIAGNOSTIC_DIR");
+    const std::string copy_task_filter =
+        environment_variable("BBLITE_COPY_TASK");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) gpu_error("SDL_Init");
 
     GpuState state;
@@ -4037,6 +4039,19 @@ bool run_gpu_engine(Engine& engine) {
                     }
 
                     const CopyTaskOptions& copy = task.copy;
+                    const bool filtered_copy =
+                        copy.has_viewport &&
+                        copy.name.find("-impostor-") !=
+                            std::string::npos;
+                    if (
+                        !copy_task_filter.empty() &&
+                        filtered_copy &&
+                        copy.name != copy_task_filter) {
+                        continue;
+                    }
+                    const bool force_full_viewport =
+                        !copy_task_filter.empty() &&
+                        copy.name == copy_task_filter;
                     if (
                         copy.resolve_target.value != invalid_handle &&
                         copy.target.value == invalid_handle) {
@@ -4069,7 +4084,7 @@ bool run_gpu_engine(Engine& engine) {
                     blit_target.texture =
                         target_texture(copy.target, false);
                     blit_target.load_op =
-                        copy.has_viewport
+                        copy.has_viewport && !force_full_viewport
                             ? SDL_GPU_LOADOP_LOAD
                             : SDL_GPU_LOADOP_DONT_CARE;
                     blit_target.store_op = SDL_GPU_STOREOP_STORE;
@@ -4084,7 +4099,17 @@ bool run_gpu_engine(Engine& engine) {
                         target_record.samples == 4
                             ? state.blit_msaa_pipeline
                             : state.blit_pipeline);
-                    if (copy.has_viewport) {
+                    if (force_full_viewport) {
+                        const SDL_GPUViewport viewport{
+                            0.0f,
+                            0.0f,
+                            static_cast<float>(width),
+                            static_cast<float>(height),
+                            0.0f,
+                            1.0f,
+                        };
+                        SDL_SetGPUViewport(blit_pass, &viewport);
+                    } else if (copy.has_viewport) {
                         SDL_GPUViewport viewport{
                             copy.viewport.x * width,
                             (1.0f -

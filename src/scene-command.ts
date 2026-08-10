@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { runSceneParity } from "./parity-scene.js";
+import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
 import { resolveScene, scenes } from "./scene-registry.js";
 
 function runNode(module: string, arguments_: string[]): void {
@@ -270,8 +271,15 @@ async function main(): Promise<void> {
         await parity(id, rest);
         return;
     }
+    if (command === "geometry" && id) {
+        await runGeometryOutputDiagnostics(
+            id,
+            rest.includes("--recapture-reference"),
+        );
+        return;
+    }
     throw new Error(
-        "Usage: scene-command <list | show <id|source.ts> | compile|build|process|parity <id|source.ts|all> [parity options]>",
+        "Usage: scene-command <list | show <id|source.ts> | compile|build|process|parity|geometry <id|source.ts|all> [options]>",
     );
 }
 

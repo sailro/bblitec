@@ -1360,6 +1360,14 @@ SkyboxUniforms build_skybox_uniforms(
         const standardTemplate = this.context.store.getSource(
             standardTemplateModule,
         );
+        if (
+            options.standardMaterial &&
+            standardTemplate.includes("@builtin(front_facing)")
+        ) {
+            throw new Error(
+                "Pinned Standard double-sided normal semantics changed.",
+            );
+        }
         const gridModule = "src/material/grid/grid-material.ts";
         const gridMaterial = this.context.store.getSource(gridModule);
         const shaderPipeline = this.context.store.getSource(shaderPipelineModule);

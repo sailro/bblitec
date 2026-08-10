@@ -82,7 +82,7 @@ function parseArguments(arguments_: string[]): Arguments {
     };
 }
 
-function defaultExecutable(buildDirectory: string): string {
+export function defaultExecutable(buildDirectory: string): string {
     const name = process.platform === "win32"
         ? "bblite_native.exe"
         : "bblite_native";
@@ -93,7 +93,7 @@ function defaultExecutable(buildDirectory: string): string {
     return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
 }
 
-function runNative(
+export function runNative(
     executable: string,
     screenshot: string,
     gpu: boolean,

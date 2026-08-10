@@ -37,8 +37,14 @@ function mimeType(path: string): string {
     }
 }
 
-function browserModule(sourcePath: string): string {
-    const source = readFileSync(resolve(sourcePath), "utf8")
+export type SuiteSourceTransform = (source: string) => string;
+
+function browserModule(
+    sourcePath: string,
+    transform?: SuiteSourceTransform,
+): string {
+    const input = readFileSync(resolve(sourcePath), "utf8");
+    const source = (transform ? transform(input) : input)
         .replaceAll('"@babylonjs/lite"', '"/node_modules/@babylonjs/lite/lib/index.js"')
         .replaceAll('"babylon-lite"', '"/node_modules/@babylonjs/lite/lib/index.js"')
         .replaceAll(
@@ -64,10 +70,11 @@ export async function captureSuiteReference(
     sourcePath: string,
     referencePath: string,
     force: boolean,
+    transform?: SuiteSourceTransform,
 ): Promise<void> {
     if (existsSync(referencePath) && !force) return;
     const root = resolve(".");
-    const moduleSource = browserModule(sourcePath);
+    const moduleSource = browserModule(sourcePath, transform);
     const html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:block}
 </style></head><body><canvas id="renderCanvas" width="1280" height="720"></canvas>

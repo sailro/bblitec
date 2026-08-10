@@ -51,7 +51,7 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 | 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.010}}$ | $\color{#1a7f37}{\textsf{0.081}}$ | material grid, explicit occlusion semantics |
 | 32 | <img src="images/scenes/scene32.png" alt="Scene 32 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | `KHR_materials_unlit` |
 | 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | no-color material views, depth targets |
-| 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="120"> | $\color{#cf222e}{\textsf{1.124}}$ | $\color{#cf222e}{\textsf{1.118}}$ | `.babylon`, Standard geometry outputs, default anisotropy |
+| 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="120"> | $\color{#cf222e}{\textsf{1.077}}$ | $\color{#cf222e}{\textsf{1.071}}$ | `.babylon`, Standard geometry outputs, default anisotropy |
 | 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="120"> | $\color{#9a6700}{\textsf{0.845}}$ | $\color{#9a6700}{\textsf{0.865}}$ | PBR geometry outputs, 7+4 MRT composition |
 | 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | custom shader blend, alpha test, discard |
 | 168 | <img src="images/scenes/scene168.png" alt="Scene 168 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.068}}$ | $\color{#1a7f37}{\textsf{0.389}}$ | mirrored double-sided winding; 100% within one byte |
@@ -68,10 +68,13 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 | 273 | <img src="images/scenes/scene273.png" alt="Scene 273 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | post-registration material-family addition |
 | 274 | <img src="images/scenes/scene274.png" alt="Scene 274 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | 4x-MSAA alpha-to-coverage |
 
-Scene 145's full-size HillValley render is `0.101` MAD; its aggregate residual
-is concentrated in edge coverage inside the six-times-downscaled geometry
-preview tiles. Scene 146's largest residuals are
-view/world-normal and real-color tiles. Scene 13's
+Full-resolution geometry oracles are available with
+`npm run scene -- geometry scene145` and `scene146`. They transform only the
+capture composition in memory; the curated scene inputs remain unchanged.
+Scene 145's largest full-resolution attachment MAD is `0.067` (real color),
+with view/world normal at `0.002`/`0.003`. Scene 146's largest is `0.057`
+(real color), with view/world normal at `0.029`/`0.034`. Their larger mosaic
+scores are concentrated in six-times-downscaled MSAA preview coverage. Scene 13's
 full-image value includes the known generated-ground composition difference.
 Scene 8's skybox outside the glass sphere is effectively exact (`0.00023`
 MAD); the remaining error is concentrated on transparent sphere edges.

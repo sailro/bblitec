@@ -143,6 +143,13 @@ independent depth, viewport copies, and MSAA resolve.
 Frame-graph depth targets select a supported D32/D24 sampled depth format,
 matching Babylon Lite's `depth32float` geometry-target contract instead of the
 former hardcoded D16 adaptation.
+The `scene geometry` diagnostic command selects each existing copy task
+full-screen in the capture harness and native PAL without modifying curated
+scene sources. It emits per-attachment Babylon Lite/native/diff images and a
+JSON report under `artifacts/parity/<scene>/geometry`.
+Standard double-sided materials disable culling but do not flip fragment
+normals. Matching that pinned distinction reduced scene 145 full-resolution
+view/world-normal MAD from `1.459`/`1.446` to `0.002`/`0.003`.
 
 The diagnostic comparison report joins each final-image hotspot to the
 available WebGPU-oracle buffer MADs and its attributed shader variant. Base

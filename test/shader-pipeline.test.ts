@@ -181,7 +181,7 @@ test("generates Tint Standard material and geometry WGSL", () => {
         emitColor: true,
     });
     assert.match(fragment, /texture_cube<f32>/);
-    assert.match(fragment, /@builtin\(front_facing\)/);
+    assert.doesNotMatch(fragment, /@builtin\(front_facing\)/);
     assert.match(fragment, /return color/);
     assert.match(geometry, /struct FragmentOutput/);
     assert.match(geometry, /@location\(2\) color/);

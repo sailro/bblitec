@@ -65,6 +65,7 @@ test("keeps package scene commands registry-driven", () => {
         /process\.env\.BBLITE_CMAKE_GENERATOR \?\? "Ninja"/,
     );
     assert.match(sceneCommand, /windowsNinjaEnvironment/);
+    assert.match(sceneCommand, /runGeometryOutputDiagnostics/);
     const parityScene = readFileSync("src/parity-scene.ts", "utf8");
     assert.match(parityScene, /windowsHide: true/);
     assert.match(parityScene, /BBLITE_TEST_PASS: "1"/);

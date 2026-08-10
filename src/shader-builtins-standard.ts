@@ -157,19 +157,12 @@ struct FragmentInput {
     @location(3) uv: vec2<f32>,
     @location(4) localPosition: vec3<f32>,
     @location(5) uv2: vec2<f32>,
-    @builtin(front_facing) frontFacing: bool,
 };
 
 ${outputDeclaration(task)}
 @fragment
 fn mainFragment(input: FragmentInput) -> ${returnType} {
-    var normalW = normalize(input.normal);
-    if (
-        uniforms.materialOptions.x > 0.5 &&
-        !input.frontFacing
-    ) {
-        normalW = -normalW;
-    }
+    let normalW = normalize(input.normal);
 
     let diffuseUv = input.uv * uniforms.uvOptions.xy;
     var diffuseSample = vec4<f32>(1.0);
