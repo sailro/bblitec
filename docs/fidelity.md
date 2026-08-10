@@ -154,6 +154,9 @@ The `scene geometry` diagnostic command selects each existing copy task
 full-screen in the capture harness and native PAL without modifying curated
 scene sources. It emits per-attachment Babylon Lite/native/diff images and a
 JSON report under `artifacts/parity/<scene>/geometry`.
+Forcing `BBLITE_MSAA=1` is supported but worsens the unchanged 4x-reference
+mosaics: scene 145 rises from `1.077` to `2.336` full MAD and scene 146 from
+`0.845` to `1.174`. The residual is therefore not caused by enabling MSAA.
 Standard double-sided materials disable culling but do not flip fragment
 normals. Matching that pinned distinction reduced scene 145 full-resolution
 view/world-normal MAD from `1.459`/`1.446` to `0.002`/`0.003`.
