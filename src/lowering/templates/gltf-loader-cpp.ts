@@ -840,6 +840,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 : nullptr;
             std::vector<const AccessorInfo*> morph_positions;
             std::vector<const AccessorInfo*> morph_normals;
+            std::vector<const AccessorInfo*> morph_tangents;
             for (const ts::JsonValue& target_value :
                  array_or_empty(primitive, "targets")) {
                 const JsonObject& target =
@@ -855,6 +856,12 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         ? &accessors.at(
                               unsigned_value(
                                   *optional(target, "NORMAL")))
+                        : nullptr);
+                morph_tangents.push_back(
+                    optional(target, "TANGENT")
+                        ? &accessors.at(
+                              unsigned_value(
+                                  *optional(target, "TANGENT")))
                         : nullptr);
             }
             ModelGeometry geometry;
@@ -971,6 +978,9 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 std::vector<Vec3> normal_deltas(
                     positions.count,
                     Vec3{});
+                std::vector<Vec3> tangent_deltas(
+                    positions.count,
+                    Vec3{});
                 for (std::size_t index = 0; index < positions.count; ++index) {
                     if (morph_positions[target]) {
                         position_deltas[index] = Vec3{
@@ -1022,11 +1032,38 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                                 2),
                         };
                     }
+                    if (morph_tangents[target]) {
+                        tangent_deltas[index] = Vec3{
+                            read_component(
+                                buffer,
+                                container,
+                                views,
+                                *morph_tangents[target],
+                                index,
+                                0),
+                            read_component(
+                                buffer,
+                                container,
+                                views,
+                                *morph_tangents[target],
+                                index,
+                                1),
+                            read_component(
+                                buffer,
+                                container,
+                                views,
+                                *morph_tangents[target],
+                                index,
+                                2),
+                        };
+                    }
                 }
                 geometry.morph_positions.push_back(
                     std::move(position_deltas));
                 geometry.morph_normals.push_back(
                     std::move(normal_deltas));
+                geometry.morph_tangents.push_back(
+                    std::move(tangent_deltas));
             }
             if (const ts::JsonValue* indices_value = optional(primitive, "indices")) {
                 const AccessorInfo& indices = accessors.at(unsigned_value(*indices_value));
@@ -1056,6 +1093,8 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     geometry.morph_positions.size());
                 std::vector<std::vector<Vec3>> flat_morph_normals(
                     geometry.morph_normals.size());
+                std::vector<std::vector<Vec3>> flat_morph_tangents(
+                    geometry.morph_tangents.size());
                 for (const std::uint32_t index : geometry.indices) {
                     flat_vertices.push_back(
                         geometry.vertices.at(index));
@@ -1064,6 +1103,8 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                             geometry.morph_positions[target].at(index));
                         flat_morph_normals[target].push_back(
                             geometry.morph_normals[target].at(index));
+                        flat_morph_tangents[target].push_back(
+                            geometry.morph_tangents[target].at(index));
                     }
                 }
                 geometry.vertices = std::move(flat_vertices);
@@ -1071,6 +1112,8 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     std::move(flat_morph_positions);
                 geometry.morph_normals =
                     std::move(flat_morph_normals);
+                geometry.morph_tangents =
+                    std::move(flat_morph_tangents);
                 geometry.indices.resize(geometry.vertices.size());
                 for (
                     std::size_t index = 0;
@@ -1534,6 +1577,11 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         bind.normal.y,
                         bind.normal.z,
                     };
+                    Vec3 morphed_tangent{
+                        -bind.tangent.x,
+                        bind.tangent.y,
+                        bind.tangent.z,
+                    };
                     const std::vector<float>& morph_weights =
                         animation_runtime
                             ->nodes[binding.node]
@@ -1548,6 +1596,8 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                             geometry.morph_positions[target][vertex_index];
                         const Vec3 normal_delta =
                             geometry.morph_normals[target][vertex_index];
+                        const Vec3 tangent_delta =
+                            geometry.morph_tangents[target][vertex_index];
                         morphed_position.x +=
                             position_delta.x * weight;
                         morphed_position.y +=
@@ -1560,9 +1610,16 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                             normal_delta.y * weight;
                         morphed_normal.z +=
                             normal_delta.z * weight;
+                        morphed_tangent.x +=
+                            tangent_delta.x * weight;
+                        morphed_tangent.y +=
+                            tangent_delta.y * weight;
+                        morphed_tangent.z +=
+                            tangent_delta.z * weight;
                     }
                     Vec3 position{};
                     Vec3 normal{};
+                    Vec3 tangent{};
                     if (skin) {
                         const std::array<float, 4> weights{
                             bind.weights.x,
@@ -1586,12 +1643,19 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                                 transform_direction_raw(
                                     joint_matrices[joint],
                                     morphed_normal);
+                            const Vec3 joint_tangent =
+                                transform_direction_raw(
+                                    joint_matrices[joint],
+                                    morphed_tangent);
                             position.x += joint_position.x * weight;
                             position.y += joint_position.y * weight;
                             position.z += joint_position.z * weight;
                             normal.x += joint_normal.x * weight;
                             normal.y += joint_normal.y * weight;
                             normal.z += joint_normal.z * weight;
+                            tangent.x += joint_tangent.x * weight;
+                            tangent.y += joint_tangent.y * weight;
+                            tangent.z += joint_tangent.z * weight;
                         }
                     } else {
                         position = transform_point_raw(
@@ -1600,6 +1664,9 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         normal = transform_direction_raw(
                             mesh_world,
                             morphed_normal);
+                        tangent = transform_direction_raw(
+                            mesh_world,
+                            morphed_tangent);
                     }
                     ModelVertex& vertex =
                         geometry.vertices[vertex_index];
@@ -1613,6 +1680,17 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         normal.y,
                         normal.z,
                     });
+                    const Vec3 native_tangent = normalize(Vec3{
+                        -tangent.x,
+                        tangent.y,
+                        tangent.z,
+                    });
+                    vertex.tangent = Vec4{
+                        native_tangent.x,
+                        native_tangent.y,
+                        native_tangent.z,
+                        bind.tangent.w,
+                    };
                 }
                 if (geometry.flat_normals) {
                     for (

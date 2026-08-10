@@ -7,16 +7,19 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 
 | Area | Current support |
 | --- | --- |
-| Engine/scene | creation, registration, fixed delta, reached before-render callbacks, runtime append |
+| Engine/scene | creation, registration, fixed delta, reached before-render callbacks, runtime material-family append |
 | Cameras | ArcRotate, FreeCamera, default framing, native controls |
 | Lights | hemispheric and point |
-| Geometry | box, ground, plane, sphere, torus, triangle glTF/GLB, reached `.babylon` geometry |
-| Assets | external glTF packaging, embedded PNG/JPEG, `.env`, compile-time RGBE HDR cubemaps, DDS, reached `.babylon` textures |
+| Geometry | box, ground, plane, sphere, torus, indexed triangle glTF/GLB, generated/flat normals, negative transforms, reached `.babylon` geometry |
+| Assets | external glTF packaging, embedded PNG/JPEG, `.env`, exact compile-time RGBE HDR/GGX cubemaps, DDS, reached `.babylon` textures |
 | Materials | Standard, PBR, GridMaterial, unlit, vertex colors, no-color views, typed custom shader variants |
 | Material state | alpha mask/blend/coverage, reflectance, lighting intensities, double-sided, normal scale, transmission, IOR, volume |
+| Animation | deterministic seeking; LINEAR/CUBICSPLINE rotation and translation; LINEAR morph weights |
+| Deformation | recursive skeleton hierarchies, inverse bind matrices, four-weight CPU skinning, animated position/normal/tangent morph targets, post-deformation flat normals |
 | Frame graph | render targets/tasks, material overrides, depth-only passes, 7+4 geometry MRTs, blits, MSAA resolve |
-| Runtime | typed handles/records, immediate AOT promises, typed JSON and binary views |
-| Native renderer | Generated ordered draw lists over SDL_GPU; deterministic SDL_Renderer fallback |
+| Runtime | typed handles/records, immediate AOT promises, typed JSON/binary views, cyclic dynamic GPU vertex uploads |
+| Shaders | generated WGSL through pinned Tint; DXIL/SPIR-V via normalized Tint HLSL and DXC; MSL via Tint |
+| Native renderer | generated ordered draw lists over SDL_GPU, linear RGBA16F transmission, deterministic SDL_Renderer fallback |
 
 Generated behavior is tied to `@babylonjs/lite@1.18.0` at commit
 `7184feda683072980735f9a180e6f567ee5717ba`.
@@ -46,7 +49,7 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 
 | Scene | Preview | Full MAD | Foreground MAD | Primary coverage |
 | ---: | :---: | ---: | ---: | --- |
-| 5 | <img src="images/scenes/scene5.png" alt="Scene 5 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.132}}$ | $\color{#cf222e}{\textsf{2.131}}$ | animated morph targets plus recursive CPU skeleton skinning |
+| 5 | <img src="images/scenes/scene5.png" alt="Scene 5 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.020}}$ | animated morph targets plus recursive CPU skeleton skinning |
 | 8 | <img src="images/scenes/scene8.png" alt="Scene 8 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.129}}$ | $\color{#1a7f37}{\textsf{0.134}}$ | exact 1024-sample HDR GGX, cubemap skybox, glass alpha/reflectance |
 | 10 | <img src="images/scenes/scene10.png" alt="Scene 10 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | generated sphere, no-IBL PBR, geometric normals |
 | 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.010}}$ | $\color{#1a7f37}{\textsf{0.081}}$ | material grid, explicit occlusion semantics |

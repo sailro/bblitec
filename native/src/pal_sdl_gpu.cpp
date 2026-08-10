@@ -3412,6 +3412,10 @@ bool run_gpu_engine(Engine& engine) {
             if (
                 scene.mesh_membership_version !=
                 synced_mesh_membership_version) {
+                if (!SDL_WaitForGPUIdle(state.device)) {
+                    gpu_error(
+                        "SDL_WaitForGPUIdle topology update");
+                }
                 const std::uint32_t added_families =
                     scene.material_family_mask &
                     ~synced_material_family_mask;

@@ -156,6 +156,11 @@ async function parity(
         for (const scene of scenes) {
             if (scene.parity) {
                 await runSceneParity([scene.id, ...extraArguments]);
+                if (process.platform === "win32") {
+                    await new Promise((done) =>
+                        setTimeout(done, 500),
+                    );
+                }
             }
         }
         return;

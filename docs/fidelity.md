@@ -87,8 +87,9 @@ background. Explicit HDR cubemap skyboxes remain enabled by default.
 glTF animation uses pinned LINEAR quaternion interpolation and deterministic
 time seeking, plus CUBICSPLINE quaternion/translation interpolation where
 reached. Morph position/normal deltas are applied before recursive skinning;
-joint inverse-bind matrices, weighted positions, and post-deformation flat
-normals are evaluated before PAL uploads changed vertex buffers.
+joint inverse-bind matrices, weighted positions/normals/tangents, and
+post-deformation flat normals are evaluated before PAL uploads changed vertex
+buffers.
 
 DXC cannot be removed from the D3D12 path because Tint does not emit DXIL.
 Tint does emit SPIR-V, but its separate WGSL texture/sampler binding numbers do

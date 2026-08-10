@@ -318,6 +318,7 @@ struct ModelGeometry {
     std::vector<ModelVertex> bind_vertices;
     std::vector<std::vector<Vec3>> morph_positions;
     std::vector<std::vector<Vec3>> morph_normals;
+    std::vector<std::vector<Vec3>> morph_tangents;
     std::vector<std::uint32_t> indices;
     bool has_tangents = false;
     bool flat_normals = false;
