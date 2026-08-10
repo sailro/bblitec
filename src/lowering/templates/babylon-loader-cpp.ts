@@ -71,6 +71,7 @@ TextureData texture_data(
     result.bytes = pal::read_binary_file(pal::join_path(base_path, relative));
     result.sampler.address_u = address_mode(*found, "wrapU");
     result.sampler.address_v = address_mode(*found, "wrapV");
+    result.sampler.max_anisotropy = 4.0f;
     result.invert_y = true;
     return result;
 }

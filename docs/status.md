@@ -47,14 +47,14 @@ Thresholds live in `src/scene-registry.ts`; run one scene with
 | 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="120"> | 0.010 | 0.081 | material grid, explicit occlusion semantics |
 | 32 | <img src="images/scenes/scene32.png" alt="Scene 32 rendering" width="120"> | 0.000 | 0.000 | `KHR_materials_unlit` |
 | 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="120"> | 0.000021 | 0.000150 | no-color material views, depth targets |
-| 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="120"> | 2.975 | 2.935 | `.babylon`, Standard geometry outputs |
+| 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="120"> | 1.331 | 1.309 | `.babylon`, Standard geometry outputs, default anisotropy |
 | 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="120"> | 0.877 | 0.896 | PBR geometry outputs, 7+4 MRT composition |
 | 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="120"> | 0.000 | 0.000 | custom shader blend, alpha test, discard |
 | 168 | <img src="images/scenes/scene168.png" alt="Scene 168 rendering" width="120"> | 0.068 | 0.389 | mirrored double-sided winding; 100% within one byte |
 | transmission-skybox | <img src="images/scenes/transmission-skybox.png" alt="PBR skybox rendering" width="120"> | 0.091 | 0.091 | independent PBR skybox-mode gate |
 | transmission-scene-color | <img src="images/scenes/transmission-scene-color.png" alt="Scene-color transmission" width="120"> | 0.044 | 0.208 | linear RGBA16F scene-color transmission |
-| transmission-ior | <img src="images/scenes/transmission-ior.png" alt="Transmission IOR" width="120"> | 0.722 | 1.814 | dielectric Fresnel from IOR |
-| transmission-volume | <img src="images/scenes/transmission-volume.png" alt="Transmission volume" width="120"> | 2.553 | 6.815 | Beer-Lambert volume attenuation |
+| transmission-ior | <img src="images/scenes/transmission-ior.png" alt="Transmission IOR" width="120"> | 0.115 | 0.302 | refraction IOR without glTF-only dielectric F0 |
+| transmission-volume | <img src="images/scenes/transmission-volume.png" alt="Transmission volume" width="120"> | 0.170 | 0.454 | Beer-Lambert volume and independent thickness-as-depth |
 | 176 | <img src="images/scenes/scene176.png" alt="Mosquito in Amber" width="120"> | 0.418 | 0.418 | integrated linear transmission, IOR, volume, and scene-color copy |
 | 213 | <img src="images/scenes/scene213.png" alt="Scene 213 rendering" width="120"> | 0.001 | 0.012 | GridMaterial opaque/transparent families and ordered draw lists |
 | 248 | <img src="images/scenes/scene248.png" alt="Scene 248 rendering" width="120"> | 0.001 | 0.005 | external glTF and sampler modes |
@@ -64,8 +64,9 @@ Thresholds live in `src/scene-registry.ts`; run one scene with
 | 273 | <img src="images/scenes/scene273.png" alt="Scene 273 rendering" width="120"> | 0.000 | 0.000 | post-registration material-family addition |
 | 274 | <img src="images/scenes/scene274.png" alt="Scene 274 rendering" width="120"> | 0.000 | 0.000 | 4x-MSAA alpha-to-coverage |
 
-Scene 145's screen-depth mismatch was fixed; its remaining residual is
-edge/raster and texture coverage. Scene 146's largest residuals are
+Scene 145's full-size HillValley render is `0.389` MAD; its aggregate residual
+is concentrated in edge coverage inside the six-times-downscaled geometry
+preview tiles. Scene 146's largest residuals are
 view/world-normal and real-color tiles. Scene 13's
 full-image value includes the known generated-ground composition difference.
 Scene 8's skybox outside the glass sphere is effectively exact (`0.00023`

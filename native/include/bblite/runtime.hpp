@@ -248,6 +248,8 @@ struct PbrMaterialOptions {
     float transmission_factor = 0.0f;
     float index_of_refraction = 1.5f;
     float thickness = 0.0f;
+    bool use_thickness_as_depth = false;
+    bool has_volume = false;
     Color3 attenuation_color{1.0f, 1.0f, 1.0f};
     float attenuation_distance = 1.0f;
 };
@@ -351,6 +353,7 @@ struct MaterialRecord {
     float transmission_factor = 0.0f;
     float index_of_refraction = 1.5f;
     float thickness = 0.0f;
+    bool use_thickness_as_depth = false;
     Color3 attenuation_color{1.0f, 1.0f, 1.0f};
     float attenuation_distance = 1.0f;
     bool has_ior = false;

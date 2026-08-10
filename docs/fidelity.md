@@ -69,6 +69,10 @@ Transmission uses an opaque scene-color copy, dielectric Fresnel
 `((ior-1)/(ior+1))²`, and Beer-Lambert volume attenuation
 `exp(log(color)/distance*thickness)`. Independent skybox, scene-color, IOR,
 volume, and scene 176 gates keep the dependency chain observable.
+The generated material records preserve Babylon's distinction between volume
+attenuation, thickness-based refraction depth, and glTF-only IOR-to-F0
+mapping; direct `createPbrMaterial` refraction options do not implicitly enable
+the glTF dielectric adaptations.
 The scene-color source is RGBA16F and remains linear through opaque and
 transmissive draws; exposure, tone mapping, gamma, and contrast run once in a
 final full-screen pass.

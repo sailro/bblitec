@@ -1053,6 +1053,8 @@ class Compiler {
                     transmission,
                     ior,
                     thickness,
+                    useThicknessAsDepth,
+                    hasVolume,
                     attenuationColor,
                     attenuationDistance,
                 ] =
@@ -1071,7 +1073,7 @@ class Compiler {
                 }
                 return {
                     kind: "material",
-                    cpp: `bbl::create_pbr_material(${engine}, bbl::PbrMaterialOptions{${baseColor.cpp}, ${orm.cpp}, ${metallic}, ${roughness}, ${direct}, ${environment}, ${alpha}, ${reflectance}, ${unlit}, ${doubleSided}, ${skyboxMode}, ${transmission}, ${ior}, ${thickness}, ${attenuationColor}, ${attenuationDistance}})`,
+                    cpp: `bbl::create_pbr_material(${engine}, bbl::PbrMaterialOptions{${baseColor.cpp}, ${orm.cpp}, ${metallic}, ${roughness}, ${direct}, ${environment}, ${alpha}, ${reflectance}, ${unlit}, ${doubleSided}, ${skyboxMode}, ${transmission}, ${ior}, ${thickness}, ${useThicknessAsDepth}, ${hasVolume}, ${attenuationColor}, ${attenuationDistance}})`,
                     engineCpp: engine,
                 };
             }
@@ -1813,6 +1815,8 @@ class Compiler {
         string,
         string,
         string,
+        string,
+        string,
     ] {
         const object = this.expectObjectLiteral(expression);
         const supported = new Set([
@@ -1872,6 +1876,8 @@ class Compiler {
         let transmission = "0.0f";
         let ior = "1.5f";
         let thickness = "0.0f";
+        let useThicknessAsDepth = "false";
+        let hasVolume = "false";
         let attenuationColor = "bbl::Color3{1.0f, 1.0f, 1.0f}";
         let attenuationDistance = "1.0f";
         if (subsurfaceExpression) {
@@ -1887,6 +1893,10 @@ class Compiler {
                     refraction,
                     "indexOfRefraction",
                 );
+                const thicknessAsDepth = this.objectProperty(
+                    refraction,
+                    "useThicknessAsDepth",
+                );
                 transmission = intensity
                     ? this.compileNumber(intensity)
                     : transmissive
@@ -1895,6 +1905,9 @@ class Compiler {
                 ior = indexOfRefraction
                     ? this.compileNumber(indexOfRefraction)
                     : "1.5f";
+                useThicknessAsDepth = thicknessAsDepth
+                    ? this.compileBoolean(thicknessAsDepth)
+                    : "false";
             }
             const thicknessExpression = this.objectProperty(
                 subsurface,
@@ -1911,6 +1924,7 @@ class Compiler {
                 const tint = this.expectObjectLiteral(tintExpression);
                 const color = this.objectProperty(tint, "color");
                 const distance = this.objectProperty(tint, "atDistance");
+                hasVolume = distance ? "true" : "false";
                 attenuationColor = color
                     ? this.compileColor3(color)
                     : attenuationColor;
@@ -1934,6 +1948,8 @@ class Compiler {
             transmission,
             ior,
             thickness,
+            useThicknessAsDepth,
+            hasVolume,
             attenuationColor,
             attenuationDistance,
         ];

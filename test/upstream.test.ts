@@ -86,6 +86,7 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /KHR_materials_volume/);
     assert.match(adapter.source, /material\.transmission_texture/);
     assert.match(adapter.source, /material\.thickness_texture/);
+    assert.match(adapter.source, /material\.use_thickness_as_depth = true/);
     assert.doesNotMatch(adapter.source, /pal::load_glb/);
 });
 
@@ -96,6 +97,7 @@ test("generates the Babylon loader adapter from pinned scene semantics", () => {
     assert.match(lowered.source, /AssetHandle load_babylon/);
     assert.match(lowered.source, /material\.standard_material = true/);
     assert.match(lowered.source, /material\.alpha_cutoff = 0\.4f/);
+    assert.match(lowered.source, /result\.sampler\.max_anisotropy = 4\.0f/);
     assert.match(lowered.source, /engine\.reflection_cubes/);
     assert.match(lowered.source, /PrimitiveKind::babylon/);
     assert.match(lowered.source, /create_free_camera/);
@@ -145,6 +147,12 @@ test("generates reached PBR material scalar fields", () => {
     assert.match(material.source, /material\.direct_intensity/);
     assert.match(material.source, /material\.environment_intensity/);
     assert.match(material.source, /material\.reflectance/);
+    assert.match(material.source, /material\.has_ior = false/);
+    assert.match(
+        material.source,
+        /material\.use_thickness_as_depth = options\.use_thickness_as_depth/,
+    );
+    assert.match(material.source, /material\.has_volume = options\.has_volume/);
     assert.match(material.source, /options\.alpha < 1\.0f/);
 });
 
@@ -199,7 +207,7 @@ test("lowers the reachable upstream light matrix implementation", () => {
 
 test("generates the render plan from upstream frame-graph binding semantics", () => {
     const lowerer = new RendererLowerer(new LoweringContext());
-    const lowered = lowerer.lowerRenderPlan();
+    const lowered = lowerer.lowerRenderPlan({ transmission: true });
     const shaders = lowerer.lowerShaders();
     const fidelity = lowerer.fidelityManifest();
     assert.equal(lowered.modulePath, "src/frame-graph/render-task.ts");
@@ -230,6 +238,10 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /std::stable_sort/);
     assert.match(lowered.source, /bind_render_item/);
     assert.match(lowered.source, /sort_transparent_draws/);
+    assert.match(
+        lowered.source,
+        /material\.use_thickness_as_depth && material\.thickness > 0\.0f/,
+    );
     assert.match(
         lowered.source,
         /left\.sort_distance > right\.sort_distance/,

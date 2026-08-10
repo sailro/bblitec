@@ -585,15 +585,11 @@ MaterialHandle create_pbr_material(
     material.transmission_factor = options.transmission_factor;
     material.index_of_refraction = options.index_of_refraction;
     material.thickness = options.thickness;
+    material.use_thickness_as_depth = options.use_thickness_as_depth;
     material.attenuation_color = options.attenuation_color;
     material.attenuation_distance = options.attenuation_distance;
-    material.has_ior = options.index_of_refraction != 1.5f;
-    material.has_volume =
-        options.thickness > 0.0f ||
-        options.attenuation_distance != 1.0f ||
-        options.attenuation_color.r != 1.0f ||
-        options.attenuation_color.g != 1.0f ||
-        options.attenuation_color.b != 1.0f;
+    material.has_ior = false;
+    material.has_volume = options.has_volume;
     if (material.transmission_factor > 0.0f) {
         material.alpha_mode = MaterialAlphaMode::blend;
     }

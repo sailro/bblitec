@@ -113,10 +113,10 @@ export class RendererLowerer {
                 : 1.0f;
         result.refraction_params = {
             material.transmission_factor,
-            1.0f / (material.has_volume && material.thickness > 0.0f
+            1.0f / (material.use_thickness_as_depth && material.thickness > 0.0f
                 ? ior
                 : 1.0f),
-            material.has_volume
+            material.use_thickness_as_depth
                 ? material.thickness * thickness_scale
                 : 0.0f,
             1.0f / ior,

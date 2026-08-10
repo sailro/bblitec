@@ -373,6 +373,7 @@ MaterialHandle load_material(
                 optional(extensions, "KHR_materials_volume")) {
             const JsonObject& volume = volume_value->as_object();
             material.has_volume = true;
+            material.use_thickness_as_depth = true;
             material.thickness =
                 float_or(volume, "thicknessFactor", 0.0f);
             const std::vector<float> attenuation =

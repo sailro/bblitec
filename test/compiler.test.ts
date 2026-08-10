@@ -350,7 +350,7 @@ test("compiles independent transmission material gates", () => {
     assert.match(result.cpp, /bbl::enable_scene_transmission/);
     assert.match(
         result.cpp,
-        /PbrMaterialOptions\{[^}]*false, false, false, 1\.0f, 1\.5f, 1\.4f, bbl::Color3\{1\.0f, 0\.35f, 0\.06f\}, 1\.5f/,
+        /PbrMaterialOptions\{[^}]*false, false, false, 1\.0f, 1\.5f, 1\.4f, false, true, bbl::Color3\{1\.0f, 0\.35f, 0\.06f\}, 1\.5f/,
     );
 });
 
