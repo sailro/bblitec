@@ -18,6 +18,11 @@ Generated scenes contain:
 | `fidelity.json` | intentional source-to-native semantic differences |
 | `upstream/provenance.json` | pinned upstream modules and symbols |
 | `upstream/renderer-fidelity.json` | shader bindings, formats, formulas, invariants |
+| `upstream/shaders/shader-material-reflection.json` | reached custom WGSL entry points, interfaces, and uniform layouts |
+| `upstream/shaders/*.wgsl` | reached custom material source before typed IR lowering |
+| `upstream/shaders/*.native.wgsl` | SDL binding, location, and depth specialization passed to Tint |
+| `upstream/shaders/*.tint-reflection.txt` | Tint entry-point resource bindings checked against native WGSL |
+| `upstream/shaders/shader-compiler.json` | pinned compiler backend and executable hashes |
 
 Current intentional adaptations include browser-wrapper erasure, immediate AOT
 `await`, compile-time asset materialization, SDL input translation, native
@@ -40,9 +45,34 @@ Generated shaders preserve upstream markers for:
 - GridMaterial object-space derivatives, major/minor lines, hard/cosine line
   paths, max-line composition, and transparent opacity
 
-Backend reflection should ultimately verify uniform layout, binding order,
-varyings, texture sample types, and pipeline state. The long-term goal is one
-composed WGSL/typed-IR pipeline rather than independent textual backends.
+The custom-material WGSL pipeline now reflects uniform layout, binding order,
+attributes, varyings, stages, and entry points; PAL shader creation consumes
+the reflected uniform-buffer counts. Pinned Tint emits native HLSL/MSL from
+the specialized WGSL; register normalization and DXC produce SDL-compatible
+DXIL/SPIR-V.
+GridMaterial now uses generated WGSL and Tint, with scene 213 gating its
+dynamic native specialization.
+Ground and skybox fragments also use generated WGSL, gated by scene 8 and
+BoomBox.
+The shared material vertex stage and Standard fragment variants use generated
+WGSL as well, gated by scenes 145 and 273.
+PBR color, diagnostic, and geometry-output variants now use WGSL through Tint.
+The PBR source is a pinned DXC-SPIR-V/Tint transcription of the previously
+validated native shader; direct Babylon composer extraction remains the next
+provenance improvement.
+
+DXC cannot be removed from the D3D12 path because Tint does not emit DXIL.
+Tint does emit SPIR-V, but its separate WGSL texture/sampler binding numbers do
+not directly satisfy SDL_GPU's dense corresponding-slot contract. Vulkan
+therefore still uses normalized Tint HLSL through DXC pending a verified
+binding-remap transform.
+
+Tint HLSL is normalized before DXC so texture and sampler registers are dense
+and corresponding, as required by SDL_GPU. D3D system-value inputs are ordered
+to preserve the vertex/fragment signature convention used by the existing
+native pipelines. Tint discard statements are lowered to `clip(-1.0)` to avoid
+a D3D12 command-list failure in multisampled pipelines while preserving
+fragment-kill semantics.
 
 ## Parity reports
 

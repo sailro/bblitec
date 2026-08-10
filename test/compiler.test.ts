@@ -110,6 +110,11 @@ test("compiles pinned scene 213 GridMaterial options", () => {
         result.cpp,
         /5\.0f, 0\.5f, 1\.0f, 1\.0f, true, false, true, true/,
     );
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "grid-tint-specialization",
+        ),
+    );
 });
 
 test("reports unsupported Babylon Lite APIs with source locations", () => {

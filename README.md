@@ -22,7 +22,7 @@ Unsupported syntax and APIs fail at compile time with source locations.
 - Generated Standard/PBR/Grid rendering, ordered draw lists, custom alpha
   variants, frame-graph MRT/depth passes, negative transforms, and runtime
   scene mutation.
-- SDL_GPU backends: DXIL/D3D12, SPIR-V/Vulkan, and MSL/Metal sources.
+- WGSL shaders compiled by pinned Tint for D3D12, Vulkan, and Metal.
 - BoomBox D3D12 baseline: `0.311` full MAD, `0.460` foreground MAD,
   `0.176 ms` average CPU submission.
 

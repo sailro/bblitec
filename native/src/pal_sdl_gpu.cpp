@@ -464,7 +464,8 @@ SDL_GPUShader* load_shader(
     const char* base_name,
     SDL_GPUShaderStage stage,
     std::uint32_t samplers,
-    std::uint32_t uniform_buffers) {
+    std::uint32_t uniform_buffers,
+    const char* entrypoint_override = nullptr) {
     const SDL_GPUShaderFormat supported = SDL_GetGPUShaderFormats(device);
     SDL_GPUShaderFormat format = SDL_GPU_SHADERFORMAT_INVALID;
     const char* extension = nullptr;
@@ -483,6 +484,9 @@ SDL_GPUShader* load_shader(
         entrypoint = "main0";
     } else {
         throw std::runtime_error("SDL_GPU backend has no supported bblitec shader format.");
+    }
+    if (entrypoint_override) {
+        entrypoint = entrypoint_override;
     }
     const std::string shader_override =
         environment_variable("BBLITE_GPU_SHADER_DIR");
@@ -1818,17 +1822,20 @@ bool run_gpu_engine(Engine& engine) {
             engine.options.height,
             SDL_WINDOW_RESIZABLE);
         if (!state.window) gpu_error("SDL_CreateWindow");
+        const bool gpu_debug =
+            environment_variable("BBLITE_GPU_DEBUG") == "1";
         state.device = SDL_CreateGPUDevice(
             SDL_GPU_SHADERFORMAT_DXIL |
                 SDL_GPU_SHADERFORMAT_SPIRV |
                 SDL_GPU_SHADERFORMAT_MSL,
-            false,
+            gpu_debug,
             nullptr);
         if (!state.device) gpu_error("SDL_CreateGPUDevice");
         if (!SDL_ClaimWindowForGPUDevice(state.device, state.window)) gpu_error("SDL_ClaimWindowForGPUDevice");
         const SDL_GPUTextureFormat swapchain_format =
             SDL_GetGPUSwapchainTextureFormat(state.device, state.window);
         if (
+            environment_variable("BBLITE_MSAA") != "1" &&
             upstream::preferred_sample_count() >= 4 &&
             SDL_GPUTextureSupportsSampleCount(
                 state.device,
@@ -1870,9 +1877,21 @@ bool run_gpu_engine(Engine& engine) {
         }
 
         SDL_GPUShader* vertex_shader =
-            load_shader(state.device, "pbr.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
+            load_shader(
+                state.device,
+                "pbr.vert",
+                SDL_GPU_SHADERSTAGE_VERTEX,
+                0,
+                1,
+                "mainVertex");
         SDL_GPUShader* fragment_shader =
-            load_shader(state.device, "pbr.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 6, 1);
+            load_shader(
+                state.device,
+                "pbr.frag",
+                SDL_GPU_SHADERSTAGE_FRAGMENT,
+                6,
+                1,
+                "mainFragment");
         const upstream::RenderFeatures render_features =
             upstream::build_render_features(scene, engine);
         const bool use_standard_material =
@@ -1883,7 +1902,8 @@ bool run_gpu_engine(Engine& engine) {
                   "standard.frag",
                   SDL_GPU_SHADERSTAGE_FRAGMENT,
                   6,
-                  1)
+                  1,
+                  "mainFragment")
             : nullptr;
         const bool use_grid_material =
             render_features.grid_material;
@@ -1893,7 +1913,8 @@ bool run_gpu_engine(Engine& engine) {
                   "grid.vert",
                   SDL_GPU_SHADERSTAGE_VERTEX,
                   0,
-                  1)
+                  1,
+                  "mainVertex")
             : nullptr;
         SDL_GPUShader* grid_fragment_shader = use_grid_material
             ? load_shader(
@@ -1901,7 +1922,8 @@ bool run_gpu_engine(Engine& engine) {
                   "grid.frag",
                   SDL_GPU_SHADERSTAGE_FRAGMENT,
                   0,
-                  1)
+                  1,
+                  "mainFragment")
             : nullptr;
         const bool use_no_color_material =
             render_features.no_color_material;
@@ -1912,7 +1934,8 @@ bool run_gpu_engine(Engine& engine) {
                       "depth-only.frag",
                       SDL_GPU_SHADERSTAGE_FRAGMENT,
                       0,
-                      0)
+                      0,
+                      "mainFragment")
                 : nullptr;
         const bool use_alpha_card =
             render_features.shader_alpha_card;
@@ -1924,7 +1947,10 @@ bool run_gpu_engine(Engine& engine) {
                   "alpha-card.vert",
                   SDL_GPU_SHADERSTAGE_VERTEX,
                   0,
-                  1)
+                  upstream::shader_uniform_buffer_count(
+                      ShaderMaterialVariant::alpha_card,
+                      false),
+                  "mainVertex")
             : nullptr;
         SDL_GPUShader* card_fragment_shader = use_alpha_card
             ? load_shader(
@@ -1932,7 +1958,10 @@ bool run_gpu_engine(Engine& engine) {
                   "alpha-card.frag",
                   SDL_GPU_SHADERSTAGE_FRAGMENT,
                   0,
-                  1)
+                  upstream::shader_uniform_buffer_count(
+                      ShaderMaterialVariant::alpha_card,
+                      true),
+                  "mainFragment")
             : nullptr;
         SDL_GPUShader* circular_cutout_vertex_shader = use_circular_cutout
             ? load_shader(
@@ -1940,7 +1969,10 @@ bool run_gpu_engine(Engine& engine) {
                   "circular-cutout.vert",
                   SDL_GPU_SHADERSTAGE_VERTEX,
                   0,
-                  1)
+                  upstream::shader_uniform_buffer_count(
+                      ShaderMaterialVariant::circular_cutout,
+                      false),
+                  "mainVertex")
             : nullptr;
         SDL_GPUShader* circular_cutout_fragment_shader = use_circular_cutout
             ? load_shader(
@@ -1948,7 +1980,10 @@ bool run_gpu_engine(Engine& engine) {
                   "circular-cutout.frag",
                   SDL_GPU_SHADERSTAGE_FRAGMENT,
                   0,
-                  0)
+                  upstream::shader_uniform_buffer_count(
+                      ShaderMaterialVariant::circular_cutout,
+                      true),
+                  "mainFragment")
             : nullptr;
         SDL_GPUShader* background_fragment_shader = use_ground
             ? load_shader(
@@ -1956,7 +1991,8 @@ bool run_gpu_engine(Engine& engine) {
                   "background-ground.frag",
                   SDL_GPU_SHADERSTAGE_FRAGMENT,
                   1,
-                  1)
+                  1,
+                  "mainFragment")
             : nullptr;
         SDL_GPUShader* skybox_fragment_shader = use_skybox
             ? load_shader(
@@ -1964,7 +2000,8 @@ bool run_gpu_engine(Engine& engine) {
                   "background-skybox.frag",
                   SDL_GPU_SHADERSTAGE_FRAGMENT,
                   1,
-                  1)
+                  1,
+                  "mainFragment")
             : nullptr;
         SDL_GPUShader* id_fragment_shader = !id_buffer_path.empty()
             ? load_shader(
@@ -1972,7 +2009,8 @@ bool run_gpu_engine(Engine& engine) {
                   "diagnostic-id.frag",
                   SDL_GPU_SHADERSTAGE_FRAGMENT,
                   1,
-                  1)
+                  1,
+                  "mainFragment")
             : nullptr;
         std::array<SDL_GPUShader*, 3> diagnostics_fragment_shaders{};
         if (!diagnostic_directory.empty()) {
@@ -1981,19 +2019,22 @@ bool run_gpu_engine(Engine& engine) {
                 "pbr-diagnostics-a.frag",
                 SDL_GPU_SHADERSTAGE_FRAGMENT,
                 6,
-                1);
+                1,
+                "mainFragment");
             diagnostics_fragment_shaders[1] = load_shader(
                 state.device,
                 "pbr-diagnostics-b.frag",
                 SDL_GPU_SHADERSTAGE_FRAGMENT,
                 6,
-                1);
+                1,
+                "mainFragment");
             diagnostics_fragment_shaders[2] = load_shader(
                 state.device,
                 "pbr-diagnostics-c.frag",
                 SDL_GPU_SHADERSTAGE_FRAGMENT,
                 6,
-                1);
+                1,
+                "mainFragment");
         }
         SDL_GPUShader* cluster_fragment_shader = !cluster_buffer_path.empty()
             ? load_shader(
@@ -2001,7 +2042,8 @@ bool run_gpu_engine(Engine& engine) {
                   "diagnostic-cluster.frag",
                   SDL_GPU_SHADERSTAGE_FRAGMENT,
                   1,
-                  1)
+                  1,
+                  "mainFragment")
             : nullptr;
 
         SDL_GPUVertexBufferDescription vertex_buffer{};
@@ -2208,7 +2250,8 @@ bool run_gpu_engine(Engine& engine) {
                 shader_name.c_str(),
                 SDL_GPU_SHADERSTAGE_FRAGMENT,
                 6,
-                1);
+                1,
+                "mainFragment");
             const std::string standard_shader_name =
                 "standard-geometry-" +
                 std::to_string(task.geometry.shader_index) +
@@ -2220,7 +2263,8 @@ bool run_gpu_engine(Engine& engine) {
                           standard_shader_name.c_str(),
                           SDL_GPU_SHADERSTAGE_FRAGMENT,
                           6,
-                          1)
+                          1,
+                          "mainFragment")
                     : nullptr;
             std::vector<SDL_GPUColorTargetDescription> geometry_targets;
             geometry_targets.reserve(
@@ -2367,13 +2411,15 @@ bool run_gpu_engine(Engine& engine) {
                 "blit.vert",
                 SDL_GPU_SHADERSTAGE_VERTEX,
                 0,
-                0);
+                0,
+                "mainVertex");
             SDL_GPUShader* blit_fragment_shader = load_shader(
                 state.device,
                 "blit.frag",
                 SDL_GPU_SHADERSTAGE_FRAGMENT,
                 1,
-                0);
+                0,
+                "mainFragment");
             SDL_GPUColorTargetDescription blit_target{};
             blit_target.format = swapchain_format;
             SDL_GPUGraphicsPipelineCreateInfo blit_pipeline_info{};

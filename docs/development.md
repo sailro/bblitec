@@ -150,12 +150,30 @@ Native outputs are self-contained by default: CMake places `assets` and
 executable. `BBLITE_ASSET_DIR` and `BBLITE_GPU_SHADER_DIR` remain explicit
 overrides for diagnostics and unusual layouts.
 
+Shader compilation uses `artifacts\shader-cache`, keyed by source, profile,
+compiler binary, and flags. Identical variants are reused across scenes; the
+cache is disposable.
+
+Build the pinned Tint CLI with:
+
+```powershell
+pwsh -File tools\build-tint.ps1
+```
+
+Reached WGSL shaders require `artifacts\tools\tint\tint.exe` (or `TINT_PATH`).
+Tint validates WGSL and emits HLSL/MSL. DXC must compile HLSL to DXIL for
+D3D12; it also temporarily emits SPIR-V until Tint resource bindings are
+remapped to SDL_GPU's dense texture/sampler convention. Each shader directory
+records the selected backend in `shader-compiler.json`.
+
 ## Runtime switches
 
 | Variable | Purpose |
 | --- | --- |
 | `BBLITE_GPU=0` | force SDL_Renderer fallback |
 | `BBLITE_GPU_REQUIRED=1` | fail instead of falling back |
+| `BBLITE_GPU_DEBUG=1` | enable the backend GPU validation layer |
+| `BBLITE_MSAA=1` | force single-sample rendering for diagnostics |
 | `BBLITE_GROUND=1` | enable generated transparent ground |
 | `BBLITE_MAX_FRAMES=<n>` | automated frame limit |
 | `BBLITE_SCREENSHOT=<path>` | capture PNG |

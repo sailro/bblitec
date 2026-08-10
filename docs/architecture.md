@@ -57,7 +57,15 @@ The current generated slice includes:
 - ordered opaque/transparent draw lists, camera matrices, uniforms, and
   frame-graph tasks
 - Standard/PBR geometry MRTs, depth-only passes, blits, and MSAA resolve
-- HLSL/MSL shader sources tied to pinned WGSL formulas
+- reached custom WGSL lowered through a typed shader IR into reflected HLSL/MSL
+- pinned Tint compilation from native-specialized reached WGSL to HLSL/MSL;
+  DXC emits SDL-layout-compatible DXIL/SPIR-V
+- generated GridMaterial WGSL compiled exclusively through Tint
+- generated frame-graph blit/depth and diagnostic WGSL compiled through Tint
+- generated ground and cubemap-skybox WGSL compiled through Tint
+- shared material vertex and Standard fragment/geometry WGSL through Tint
+- PBR color, diagnostic, and geometry-output WGSL through Tint
+- content-addressed DXIL/SPIR-V reuse across identical scene shader variants
 
 Each scene records:
 
@@ -65,6 +73,12 @@ Each scene records:
 - `fidelity.json`: intentional semantic adaptations
 - `upstream/provenance.json`: upstream modules and symbols
 - `upstream/renderer-fidelity.json`: shader contracts and invariants
+- `upstream/shaders/shader-material-reflection.json`: reached custom shader
+  entry points, attributes, varyings, uniform layouts, bindings, and sizes
+- `upstream/shaders/*.wgsl`: reached custom material source before IR lowering
+- `upstream/shaders/*.native.wgsl`: SDL binding/location/depth specialization
+- `upstream/shaders/*.tint-reflection.txt`: Tint binding reflection check
+- `upstream/shaders/shader-compiler.json`: selected offline compiler backend
 
 ## Runtime and memory
 
@@ -83,9 +97,9 @@ SDL_GPU is the default native renderer:
 
 | Platform | Backend | Artifact |
 | --- | --- | --- |
-| Windows | Direct3D 12 | DXIL |
-| Linux / Android | Vulkan | SPIR-V |
-| macOS / iOS | Metal | MSL |
+| Windows | Direct3D 12 | Tint HLSL → DXC DXIL |
+| Linux / Android | Vulkan | Tint HLSL → DXC SPIR-V (temporary) |
+| macOS / iOS | Metal | Tint MSL |
 
 Important contracts:
 
@@ -104,8 +118,11 @@ The SDL_Renderer path remains a deterministic CPU fallback.
 
 ## Future direction
 
-The largest architectural gap is the shader pipeline. The current typed
-variants should converge on a composed WGSL or shader IR with backend
-reflection, ideally using Tint or SDL_shadercross. Vulkan, Metal, and browser
-WebGPU still require hardware validation; SDL's upstream WebGPU backend remains
-experimental.
+The shader-language migration is complete: all native GPU shaders originate as
+WGSL and compile through Tint. bblitec owns composition, SDL specialization,
+reflection checks, and fixed-function state. The next shader work is replacing
+converted native PBR WGSL with direct extraction from Babylon's full feature
+composer. Tint can emit SPIR-V directly, but its WGSL resource layout does not
+yet match SDL_GPU's dense paired texture/sampler convention; DXC therefore
+temporarily compiles normalized Tint HLSL for Vulkan too. DXC remains mandatory
+for DXIL. Vulkan, Metal, and browser WebGPU still require hardware validation.

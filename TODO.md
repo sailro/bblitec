@@ -13,16 +13,9 @@ baselines belong in [status](docs/status.md) and Git history.
 
 ## P0 — General shader pipeline
 
-- [ ] Extract reachable composed WGSL per material feature set.
-- [ ] Define a typed shader IR for declarations, bindings, varyings,
-  expressions, control flow, and entry points.
-- [ ] Lower the required WGSL subset into the IR.
-- [ ] Emit/reflection-check HLSL/DXIL, SPIR-V, MSL, and eventually WGSL.
-- [ ] Cache identical variants across meshes and scenes.
-- [ ] Evaluate Tint or SDL_shadercross as the backend.
-
-**Done when:** a new material feature does not require another hand-maintained
-backend shader template.
+- [ ] Extract reachable composed WGSL per built-in material feature set.
+- [ ] Emit SDL-compatible SPIR-V directly from Tint instead of recompiling
+  normalized Tint HLSL with DXC.
 
 ## P0 — Renderer correctness
 

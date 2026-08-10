@@ -1,5 +1,9 @@
 import ts from "typescript";
 import { CompileAdaptation } from "./fidelity.js";
+import {
+    normalizeShaderSource,
+    shaderMaterialPrograms,
+} from "./shader-material-programs.js";
 
 export interface CompileOptions {
     fileName?: string;
@@ -1937,10 +1941,10 @@ class Compiler {
             );
         }
 
-        const vertexSource = this.normalizeShaderSource(
+        const vertexSource = normalizeShaderSource(
             this.compileStaticString(vertexExpression),
         );
-        const fragmentSource = this.normalizeShaderSource(
+        const fragmentSource = normalizeShaderSource(
             this.compileStaticString(fragmentExpression),
         );
         const attributes = this.compileStaticStringArray(attributesExpression);
@@ -1962,51 +1966,19 @@ class Compiler {
             !needAlphaBlending,
         );
 
-        const alphaCardVertex = this.normalizeShaderSource(
-            `struct VertexOutput{@builtin(position) position:vec4<f32>,};
-@vertex fn mainVertex(input:VertexInput)->VertexOutput{let c=cos(shaderUniforms.angle);let s=sin(shaderUniforms.angle);let local=input.position.xy*1.65;let rotated=vec2<f32>(local.x*c-local.y*s,local.x*s+local.y*c);let world=shaderUniforms.center+rotated;var out:VertexOutput;out.position=vec4<f32>(world.x/3.3,world.y/2.2,shaderUniforms.depth,1.0);return out;}`,
-        );
-        const alphaCardFragment = this.normalizeShaderSource(
-            `@fragment fn mainFragment()->@location(0) vec4<f32>{return vec4<f32>(shaderUniforms.color,shaderUniforms.opacity);}`,
-        );
-        if (
-            vertexSource === alphaCardVertex &&
-            fragmentSource === alphaCardFragment &&
-            this.stringArraysEqual(attributes, ["position"]) &&
-            this.stringArraysEqual(uniforms, [
-                "center:vec2<f32>",
-                "angle:f32",
-                "depth:f32",
-                "color:vec3<f32>",
-                "opacity:f32",
-            ]) &&
-            !needAlphaBlending &&
-            !needAlphaTesting &&
-            !backFaceCulling &&
-            depthWrite
-        ) {
-            return "alpha-card";
-        }
-
-        const circularCutoutVertex = this.normalizeShaderSource(
-            `struct VertexOutput{@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,};
-@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);out.uv=input.uv;return out;}`,
-        );
-        const circularCutoutFragment = this.normalizeShaderSource(
-            `struct VertexOutput{@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,};
-@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{if(distance(input.uv,vec2<f32>(0.5,0.5))<0.18){discard;}return vec4<f32>(1.0,0.25,0.05,0.55);}`,
-        );
-        if (
-            vertexSource === circularCutoutVertex &&
-            fragmentSource === circularCutoutFragment &&
-            this.stringArraysEqual(attributes, ["position", "uv"]) &&
-            this.stringArraysEqual(uniforms, ["worldViewProjection"]) &&
-            needAlphaBlending &&
-            needAlphaTesting &&
-            !backFaceCulling &&
-            !depthWrite
-        ) {
-            return "circular-cutout";
+        for (const program of shaderMaterialPrograms) {
+            if (
+                vertexSource === normalizeShaderSource(program.vertexSource) &&
+                fragmentSource === normalizeShaderSource(program.fragmentSource) &&
+                this.stringArraysEqual(attributes, program.attributes) &&
+                this.stringArraysEqual(uniforms, program.uniforms) &&
+                needAlphaBlending === program.needAlphaBlending &&
+                needAlphaTesting === program.needAlphaTesting &&
+                backFaceCulling === program.backFaceCulling &&
+                depthWrite === program.depthWrite
+            ) {
+                return program.name;
+            }
         }
 
         this.fail(
@@ -2065,10 +2037,6 @@ class Compiler {
         if (!expression) return fallback;
         return this.compileBoolean(this.resolveStaticExpression(expression)) ===
             "true";
-    }
-
-    private normalizeShaderSource(source: string): string {
-        return source.replace(/\s+/g, "");
     }
 
     private stringArraysEqual(left: string[], right: string[]): boolean {
@@ -2592,7 +2560,7 @@ class Compiler {
                 id: "sdl-gpu-shader-backends",
                 category: "rendering",
                 sourceSemantics: "Babylon Lite composes WGSL and renders through WebGPU.",
-                nativeSemantics: "The compiler emits equivalent HLSL/MSL sources; DXC produces DXIL/SPIR-V and SDL_GPU selects the native backend.",
+                nativeSemantics: "The compiler emits native-specialized WGSL; pinned Tint produces HLSL/MSL, register normalization and DXC produce SDL-compatible DXIL/SPIR-V, and SDL_GPU selects the native backend.",
                 risk: "high",
                 validation: ["upstream formula marker tests", "renderer-fidelity.json", "CPU/GPU visual parity"],
             });
@@ -2611,15 +2579,30 @@ class Compiler {
                 ],
             });
         }
+        if (features.includes("material:grid")) {
+            adaptations.push({
+                id: "grid-tint-specialization",
+                category: "rendering",
+                sourceSemantics: "Babylon Lite composes GridMaterial WGSL variants from antialias, max-line, transparency, premultiplication, and opacity-texture features, with world/view/projection system uniforms.",
+                nativeSemantics: "The compiler emits one generated native WGSL program parameterized by the reached GridMaterial controls, uses the native view-projection matrix plus local position/normal attributes, and compiles it through pinned Tint.",
+                risk: "medium",
+                validation: [
+                    "pinned GridMaterial formula marker tests",
+                    "Tint binding reflection",
+                    "scene 213 native/reference parity",
+                ],
+            });
+        }
         if (this.shaderVariants.size > 0) {
             adaptations.push({
                 id: "typed-reached-shader-variants",
                 category: "rendering",
                 sourceSemantics: `Babylon Lite composes the reached custom WGSL shader variant(s): ${[...this.shaderVariants].join(", ")}.`,
-                nativeSemantics: "The compiler validates source, attributes, uniforms, and fixed-function state, then selects typed portable shader variants without scene-name heuristics.",
+                nativeSemantics: "The compiler validates reached WGSL, attributes, uniforms, and fixed-function state, lowers the supported WGSL subset into typed shader IR, reflects interfaces and uniform layouts, and emits native-specialized WGSL. Pinned Tint emits HLSL/MSL; register normalization and DXC emit SDL-compatible DXIL/SPIR-V.",
                 risk: "high",
                 validation: [
                     "shader variant compiler tests",
+                    "typed WGSL IR and reflection tests",
                     "portable shader compilation",
                     "scene 163/274 native/reference parity",
                 ],

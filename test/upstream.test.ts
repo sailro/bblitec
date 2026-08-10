@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
 import test from "node:test";
 import { analyzeUpstreamGraph } from "../src/upstream-graph.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -207,6 +208,11 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /build_render_draw_lists/);
     assert.match(lowered.source, /build_render_task_draw_lists/);
     assert.match(lowered.source, /build_render_features/);
+    assert.match(lowered.source, /shader_uniform_buffer_count/);
+    assert.match(
+        lowered.source,
+        /ShaderMaterialVariant::circular_cutout:[\s\S]*fragment_stage \? 0u : 1u/,
+    );
     assert.match(lowered.source, /features\.grid_material/);
     assert.match(lowered.source, /features\.no_color_material/);
     assert.match(lowered.source, /std::stable_sort/);
@@ -245,29 +251,34 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.header, /struct PbrUniforms/);
     assert.match(lowered.source, /mesh\.geometry >= engine\.geometries\.size\(\)/);
     assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
-    assert.ok(shaders.some((shader) => shader.output.endsWith("pbr.frag.hlsl")));
-    assert.ok(shaders.every((shader) => /\.(?:hlsl|msl)$/.test(shader.output)));
-    const fragment = shaders.find((shader) => shader.output.endsWith("pbr.frag.hlsl"));
-    assert.equal(typeof fragment?.data, "string");
-    assert.match(String(fragment?.data), /geometrySmithGGX/);
-    assert.match(String(fragment?.data), /SV_IsFrontFace/);
-    assert.match(String(fragment?.data), /normalOptions\.x > 0\.5/);
-    assert.match(String(fragment?.data), /input\.color\.rgb/);
-    assert.match(String(fragment?.data), /input\.color\.a/);
-    assert.match(String(fragment?.data), /dielectricF0 = normalOptions\.z/);
-    assert.match(
-        String(fragment?.data),
-        /evaluateIrradiance\(normal\) \* materialFactors\.w/,
-    );
-    assert.match(String(fragment?.data), /luminanceOverAlpha/);
-    assert.ok(shaders.some((shader) => shader.output.endsWith("alpha-card.vert.hlsl")));
     assert.ok(
         shaders.some((shader) =>
-            shader.output.endsWith("circular-cutout.frag.hlsl"),
+            shader.output.endsWith("pbr.frag.native.wgsl"),
+        ),
+    );
+    assert.ok(
+        shaders.every((shader) => /\.(?:hlsl|msl|wgsl)$/.test(shader.output)),
+    );
+    const fragment = shaders.find((shader) =>
+        shader.output.endsWith("pbr.frag.native.wgsl"),
+    );
+    assert.equal(typeof fragment?.data, "string");
+    assert.match(String(fragment?.data), /@builtin\(front_facing\)/);
+    assert.match(String(fragment?.data), /@location\(6u\) v_118/);
+    assert.match(String(fragment?.data), /textureNumLevels/);
+    assert.match(String(fragment?.data), /3\.141592741/);
+    assert.ok(
+        shaders.some((shader) =>
+            shader.output.endsWith("alpha-card.vert.native.wgsl"),
+        ),
+    );
+    assert.ok(
+        shaders.some((shader) =>
+            shader.output.endsWith("circular-cutout.frag.native.wgsl"),
         ),
     );
     const diagnosticC = shaders.find((shader) =>
-        shader.output.endsWith("pbr-diagnostics-c.frag.hlsl"),
+        shader.output.endsWith("pbr-diagnostics-c.frag.native.wgsl"),
     );
     assert.match(String(diagnosticC?.data), /baseColor/);
     assert.match(String(diagnosticC?.data), /preToneHdr/);
@@ -276,6 +287,14 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.deepEqual(fidelity.compiledArtifacts, ["DXIL", "SPIR-V"]);
     assert.ok(fidelity.invariants.some(({ id }) => id === "rgbd-cubemap-y-flip"));
     assert.ok(fidelity.invariants.some(({ id }) => id === "surface-msaa"));
+});
+
+test("keeps renderer templates backend-language free", () => {
+    const templates = readdirSync("src/lowering/templates/renderer");
+    assert.deepEqual(
+        templates.filter((name) => /\.(?:hlsl|msl)$/.test(name)),
+        [],
+    );
 });
 
 test("generates portable GridMaterial shaders from pinned formulas", () => {
@@ -291,22 +310,26 @@ test("generates portable GridMaterial shaders from pinned formulas", () => {
         pbrDiagnostics: false,
         geometryOutputTasks: [],
     });
-    const hlsl = shaders.find((shader) =>
-        shader.output.endsWith("grid.frag.hlsl"),
+    const wgsl = shaders.find((shader) =>
+        shader.output.endsWith("grid.frag.native.wgsl"),
     );
-    const msl = shaders.find((shader) =>
-        shader.output.endsWith("grid.frag.msl"),
-    );
-    assert.match(String(hlsl?.data), /gridDynamicVisibility/);
+    assert.match(String(wgsl?.data), /gridDynamicVisibility/);
     assert.match(
-        String(hlsl?.data),
+        String(wgsl?.data),
         /Generated from @babylonjs\/lite@1\.18\.0/,
     );
-    assert.match(String(hlsl?.data), /cos\(fraction \* PI\)/);
-    assert.match(String(hlsl?.data), /SQRT2 \/ 4\.0/);
-    assert.match(String(hlsl?.data), /max\(max\(x, y\), z\)/);
-    assert.match(String(msl?.data), /dfdx\(position\)/);
-    assert.match(String(msl?.data), /uniforms\.gridControl\.w \* grid/);
+    assert.match(String(wgsl?.data), /cos\(fraction \* PI\)/);
+    assert.match(String(wgsl?.data), /SQRT2 \/ 4\.0/);
+    assert.match(String(wgsl?.data), /max\(max\(x, y\), z\)/);
+    assert.match(String(wgsl?.data), /dpdx\(position\)/);
+    assert.match(String(wgsl?.data), /uniforms\.gridControl\.w \* grid/);
+    assert.ok(
+        !shaders.some(
+            (shader) =>
+                shader.output.includes("grid.") &&
+                /\.(?:hlsl|msl)$/.test(shader.output),
+        ),
+    );
 });
 
 test("generates typed geometry task records and PBR MRT shaders", () => {
@@ -342,16 +365,23 @@ test("generates typed geometry task records and PBR MRT shaders", () => {
     assert.match(tasks.source, /add_render_task_mesh/);
     assert.match(tasks.source, /scene\.tasks\.insert/);
     const geometry = shaders.find((shader) =>
-        shader.output.endsWith("pbr-geometry-0.frag.hlsl"),
+        shader.output.endsWith("pbr-geometry-0.frag.native.wgsl"),
     );
-    assert.match(String(geometry?.data), /SV_Target7/);
+    assert.match(String(geometry?.data), /@location\(7\) color/);
     assert.match(
         String(geometry?.data),
-        /directDiffuse \+ finalIrradiance/,
+        /bblDirectDiffuse \+ bblFinalIrradiance/,
     );
-    assert.match(String(geometry?.data), /input\.worldPosition/);
+    assert.match(String(geometry?.data), /bblOutput\.f1 = vec4<f32>\(v_1/);
     assert.ok(
-        shaders.some((shader) => shader.output.endsWith("blit.frag.hlsl")),
+        shaders.some((shader) =>
+            shader.output.endsWith("blit.frag.native.wgsl"),
+        ),
+    );
+    assert.ok(
+        shaders.some((shader) =>
+            shader.output.endsWith("depth-only.frag.native.wgsl"),
+        ),
     );
 });
 
@@ -379,12 +409,19 @@ test("generates standard-material geometry output shaders", () => {
         ],
     });
     const geometry = shaders.find((shader) =>
-        shader.output.endsWith("standard-geometry-0.frag.hlsl"),
+        shader.output.endsWith("standard-geometry-0.frag.native.wgsl"),
     );
-    assert.match(String(geometry?.data), /float4\(0\.0, 0\.0, 0\.0/);
+    assert.match(String(geometry?.data), /vec4<f32>\(0\.0, 0\.0, 0\.0/);
     assert.match(String(geometry?.data), /pow\(specularSample\.rgb/);
     assert.match(String(geometry?.data), /reflectionTexture/);
     assert.match(String(geometry?.data), /output\.color = color/);
+    assert.ok(
+        !shaders.some(
+            (shader) =>
+                shader.output.includes("standard") &&
+                /\.(?:hlsl|msl)$/.test(shader.output),
+        ),
+    );
 });
 
 test("emits only reached custom shader variants", () => {
@@ -400,7 +437,12 @@ test("emits only reached custom shader variants", () => {
     });
     assert.ok(
         alphaCard.some((shader) =>
-            shader.output.endsWith("alpha-card.frag.hlsl"),
+            shader.output.endsWith("alpha-card.frag.native.wgsl"),
+        ),
+    );
+    assert.ok(
+        alphaCard.some((shader) =>
+            shader.output.endsWith("alpha-card.frag.wgsl"),
         ),
     );
     assert.ok(
@@ -419,12 +461,19 @@ test("emits only reached custom shader variants", () => {
         geometryOutputTasks: [],
     });
     const fragment = circularCutout.find((shader) =>
-        shader.output.endsWith("circular-cutout.frag.hlsl"),
+        shader.output.endsWith("circular-cutout.frag.native.wgsl"),
     );
     assert.match(String(fragment?.data), /distance\(input\.uv/);
     assert.match(String(fragment?.data), /discard/);
     assert.ok(
         !circularCutout.some((shader) => shader.output.includes("alpha-card")),
+    );
+    assert.ok(
+        !circularCutout.some(
+            (shader) =>
+                shader.output.includes("circular-cutout") &&
+                /\.(?:hlsl|msl)$/.test(shader.output),
+        ),
     );
 });
 

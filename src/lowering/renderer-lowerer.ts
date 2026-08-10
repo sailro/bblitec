@@ -4,9 +4,34 @@ import { resolve } from "node:path";
 import { RendererFidelityManifest } from "../fidelity.js";
 import type {
     GeometryOutputTaskManifest,
-    GeometryTextureTypeName,
     ShaderMaterialVariantName,
 } from "../compiler.js";
+import { emitNativeWgslProgram } from "../shader-wgsl-emitter.js";
+import { lowerWgslShaderProgram } from "../shader-ir.js";
+import type { ShaderProgramReflection } from "../shader-ir.js";
+import {
+    composeStandaloneWgsl,
+    getShaderMaterialProgram,
+    shaderMaterialPrograms,
+} from "../shader-material-programs.js";
+import {
+    gridFragmentWgsl,
+    gridVertexWgsl,
+} from "../shader-builtins-grid.js";
+import {
+    blitFragmentWgsl,
+    blitVertexWgsl,
+    depthOnlyFragmentWgsl,
+    diagnosticClusterFragmentWgsl,
+    diagnosticIdFragmentWgsl,
+} from "../shader-builtins-utility.js";
+import {
+    backgroundGroundFragmentWgsl,
+    backgroundSkyboxFragmentWgsl,
+} from "../shader-builtins-background.js";
+import { materialVertexWgsl } from "../shader-builtins-material.js";
+import { standardFragmentWgsl } from "../shader-builtins-standard.js";
+import { pbrFragmentWgsl } from "../shader-builtins-pbr.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 const renderTaskModule = "src/frame-graph/render-task.ts";
@@ -20,146 +45,13 @@ const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
 const backgroundHdrModule = "src/material/pbr/background-hdr-skybox.ts";
 const rgbdDecodeModule = "src/loader-env/rgbd-decode.ts";
 const surfaceModule = "src/engine/surface.ts";
+const shaderPipelineModule = "src/material/shader/shader-pipeline.ts";
+const sceneUniformsSourceModule = "src/shader/scene-uniforms.ts";
 const templateRoot = fileURLToPath(new URL("../../../src/lowering/templates/renderer/", import.meta.url));
 
 interface LoweredShader {
     output: string;
     data: string;
-}
-
-function geometryExpression(
-    type: GeometryTextureTypeName,
-    language: "hlsl" | "msl",
-): string {
-    const uniforms = language === "hlsl" ? "" : "uniforms.";
-    const vector4 = language === "hlsl" ? "float4" : "float4";
-    const write = "(alpha > 0.4 ? 1.0 : 0.0)";
-    switch (type) {
-        case "IRRADIANCE":
-            return `${vector4}(directDiffuse + finalIrradiance, ${write})`;
-        case "WORLD_POSITION":
-            return `${vector4}(input.worldPosition, ${write})`;
-        case "LOCAL_POSITION":
-            return `${vector4}(input.localPosition, ${write})`;
-        case "REFLECTIVITY":
-            return `${vector4}(f0, 1.0 - roughness) * ${write}`;
-        case "VIEW_DEPTH":
-            return `${vector4}(dot(input.worldPosition - ${uniforms}cameraPosition.xyz, ${uniforms}cameraForwardNear.xyz), 0.0, 0.0, ${write})`;
-        case "NORMALIZED_VIEW_DEPTH":
-            return `${vector4}((dot(input.worldPosition - ${uniforms}cameraPosition.xyz, ${uniforms}cameraForwardNear.xyz) - ${uniforms}cameraForwardNear.w) / max(${uniforms}cameraPosition.w - ${uniforms}cameraForwardNear.w, 0.0001), 0.0, 0.0, ${write})`;
-        case "SCREENSPACE_DEPTH":
-            return `${vector4}(1.0 - input.position.z, 0.0, 0.0, ${write})`;
-        case "VIEW_NORMAL":
-            return `${vector4}(normalize(float3(dot(normal, ${uniforms}viewRight.xyz), dot(normal, ${uniforms}viewUp.xyz), dot(normal, ${uniforms}viewForward.xyz))), ${write})`;
-        case "WORLD_NORMAL":
-            return `${vector4}(normal * 0.5 + 0.5, ${write})`;
-        case "ALBEDO":
-            return `${vector4}(surfaceAlbedo, ${write})`;
-        case "LINEAR_VELOCITY":
-            return `${vector4}(0.0, 0.0, 0.0, ${write})`;
-    }
-}
-
-function geometryShaderPrefix(
-    task: GeometryOutputTaskManifest,
-    language: "hlsl" | "msl",
-    provenance: string,
-): string {
-    const fields = task.attachments.map((_, index) =>
-        language === "hlsl"
-            ? `float4 f${index} : SV_Target${index};`
-            : `float4 f${index} [[color(${index})]];`,
-    );
-    if (task.emitColor) {
-        const index = task.attachments.length;
-        fields.push(
-            language === "hlsl"
-                ? `float4 color : SV_Target${index};`
-                : `float4 color [[color(${index})]];`,
-        );
-    }
-    const writes = task.attachments.map(
-        (type, index) =>
-            `output.f${index} = ${geometryExpression(type, language)};`,
-    );
-    if (task.emitColor) {
-        writes.push(
-            language === "hlsl"
-                ? "output.color = float4(color, materialOptions.x > 1.5 ? alpha : 1.0);"
-                : "output.color = float4(color, uniforms.materialOptions.x > 1.5 ? alpha : 1.0);",
-        );
-    }
-    return `// ${provenance}
-#define BBLITE_GEOMETRY_OUTPUT 1
-#define BBLITE_GEOMETRY_OUTPUT_STRUCT ${fields.join(" ")}
-#define BBLITE_GEOMETRY_OUTPUT_WRITES ${writes.join(" ")}
-`;
-}
-
-function standardGeometryExpression(
-    type: GeometryTextureTypeName,
-    language: "hlsl" | "msl",
-): string {
-    const uniforms = language === "hlsl" ? "" : "uniforms.";
-    const write = "(alpha > 0.4 ? 1.0 : 0.0)";
-    switch (type) {
-        case "IRRADIANCE":
-            return `float4(0.0, 0.0, 0.0, ${write})`;
-        case "WORLD_POSITION":
-            return `float4(input.worldPosition, ${write})`;
-        case "LOCAL_POSITION":
-            return `float4(input.localPosition, ${write})`;
-        case "REFLECTIVITY":
-            return `float4(pow(specularSample.rgb, ${
-                language === "hlsl"
-                    ? "float3(2.2, 2.2, 2.2)"
-                    : "float3(2.2)"
-            }), ${uniforms}textureOptions.y > 0.5 ? specularSample.a : 1.0) * ${write}`;
-        case "VIEW_DEPTH":
-            return `float4(dot(input.worldPosition - ${uniforms}cameraPosition.xyz, ${uniforms}cameraForwardNear.xyz), 0.0, 0.0, ${write})`;
-        case "NORMALIZED_VIEW_DEPTH":
-            return `float4((dot(input.worldPosition - ${uniforms}cameraPosition.xyz, ${uniforms}cameraForwardNear.xyz) - ${uniforms}cameraForwardNear.w) / max(${uniforms}cameraPosition.w - ${uniforms}cameraForwardNear.w, 0.0001), 0.0, 0.0, ${write})`;
-        case "SCREENSPACE_DEPTH":
-            return `float4(input.position.z, 0.0, 0.0, ${write})`;
-        case "VIEW_NORMAL":
-            return `float4(normalize(float3(dot(normalW, ${uniforms}viewRight.xyz), dot(normalW, ${uniforms}viewUp.xyz), dot(normalW, ${uniforms}viewForward.xyz))), ${write})`;
-        case "WORLD_NORMAL":
-            return `float4(normalW * 0.5 + 0.5, ${write})`;
-        case "ALBEDO":
-            return `float4(baseColor, ${write})`;
-        case "LINEAR_VELOCITY":
-            return `float4(0.0, 0.0, 0.0, ${write})`;
-    }
-}
-
-function standardGeometryShaderPrefix(
-    task: GeometryOutputTaskManifest,
-    language: "hlsl" | "msl",
-    provenance: string,
-): string {
-    const fields = task.attachments.map((_, index) =>
-        language === "hlsl"
-            ? `float4 f${index} : SV_Target${index};`
-            : `float4 f${index} [[color(${index})]];`,
-    );
-    if (task.emitColor) {
-        const index = task.attachments.length;
-        fields.push(
-            language === "hlsl"
-                ? `float4 color : SV_Target${index};`
-                : `float4 color [[color(${index})]];`,
-        );
-    }
-    const writes = task.attachments.map(
-        (type, index) =>
-            `output.f${index} = ${standardGeometryExpression(type, language)};`,
-    );
-    if (task.emitColor) writes.push("output.color = color;");
-    return `// ${provenance}
-#define BBLITE_GEOMETRY_OUTPUT 1
-#define BBLITE_GEOMETRY_OUTPUT_STRUCT ${fields.join(" ")}
-#define BBLITE_GEOMETRY_OUTPUT_WRITES ${writes.join(" ")}
-`;
 }
 
 export class RendererLowerer {
@@ -189,6 +81,17 @@ export class RendererLowerer {
             /const msaaSamples: 1 \| 4 = options\?\.msaaSamples === 1 \? 1 : ([0-9]+)/,
             "default MSAA sample count",
         );
+        const shaderBindingCases = shaderMaterialPrograms.map((source) => {
+            const reflection = lowerWgslShaderProgram(source).reflection;
+            const vertex = reflection.uniformBlocks.some(
+                ({ stage }) => stage === "vertex",
+            ) ? 1 : 0;
+            const fragment = reflection.uniformBlocks.some(
+                ({ stage }) => stage === "fragment",
+            ) ? 1 : 0;
+            return `        case ShaderMaterialVariant::${source.name.replaceAll("-", "_")}:
+            return fragment_stage ? ${fragment}u : ${vertex}u;`;
+        }).join("\n");
 
         return {
             modulePath: renderTaskModule,
@@ -366,6 +269,9 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine);
 RenderFeatures build_render_features(
     const Scene& scene,
     const Engine& engine);
+std::uint32_t shader_uniform_buffer_count(
+    ShaderMaterialVariant variant,
+    bool fragment_stage);
 RenderDrawLists build_render_draw_lists(
     const std::vector<RenderItem>& items,
     const Engine& engine);
@@ -658,6 +564,15 @@ RenderFeatures build_render_features(
         }
     }
     return result;
+}
+
+std::uint32_t shader_uniform_buffer_count(
+    ShaderMaterialVariant variant,
+    bool fragment_stage) {
+    switch (variant) {
+${shaderBindingCases}
+    }
+    return 0u;
 }
 
 RenderDrawLists build_render_draw_lists(
@@ -1348,6 +1263,10 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
         );
         const gridModule = "src/material/grid/grid-material.ts";
         const gridMaterial = this.context.store.getSource(gridModule);
+        const shaderPipeline = this.context.store.getSource(shaderPipelineModule);
+        const sceneUniformsSource = this.context.store.getSource(
+            sceneUniformsSourceModule,
+        );
         const requiredUpstreamFormulas: Array<
             readonly [string, string, string]
         > = [
@@ -1420,136 +1339,248 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
             if (!source.includes(formula)) {
                 throw new Error(`Pinned Babylon Lite source is missing ${label}: ${formula}.`);
             }
+            if (options.shaderVariants.length > 0) {
+                for (const marker of [
+                    "function buildShaderPrelude",
+                    "@group(1) @binding(0) var<uniform> shaderSystem",
+                    "@group(1) @binding(1) var<uniform> shaderUniforms",
+                    "@location(${i}) ${attr}: ${attributeWgslType(attr)}",
+                ]) {
+                    if (!shaderPipeline.includes(marker)) {
+                        throw new Error(
+                            `Pinned custom shader composition changed: ${marker}.`,
+                        );
+                    }
+                }
+                if (!sceneUniformsSource.includes(
+                    'import sceneUniformsWgsl from "../../shaders/scene-uniforms.wgsl?raw"',
+                )) {
+                    throw new Error("Pinned scene uniform WGSL import changed.");
+                }
+            }
         }
 
-        const sources = [
-            "pbr.vert.hlsl",
-            "pbr.frag.hlsl",
-            "pbr.vert.msl",
-            "pbr.frag.msl",
-        ];
+        const sources: string[] = [];
+        const result = sources.map((name) => ({
+            output: `upstream/shaders/${name}`,
+            data: readFileSync(resolve(templateRoot, name), "utf8"),
+        }));
+        result.push({
+            output: "upstream/shaders/pbr.vert.native.wgsl",
+            data: materialVertexWgsl(),
+        });
+        const convertedPbr = readFileSync(
+            resolve(templateRoot, "pbr.frag.wgsl"),
+            "utf8",
+        );
+        const pbrProvenance = this.context.provenance(
+            pbrTemplateModule,
+            "createPbrTemplate",
+            `${iblFragmentModule}#getEnergyConservationFactor`,
+        );
+        result.push({
+            output: "upstream/shaders/pbr.frag.native.wgsl",
+            data:
+                `// ${pbrProvenance}\n` +
+                pbrFragmentWgsl(convertedPbr, { kind: "color" }),
+        });
+        if (options.standardMaterial) {
+            result.push({
+                output: "upstream/shaders/standard.frag.native.wgsl",
+                data: standardFragmentWgsl(
+                    this.context.provenance(
+                        standardTemplateModule,
+                        "createStandardTemplate",
+                    ),
+                ),
+            });
+        }
         if (options.ground) {
-            sources.push("background-ground.frag.hlsl", "background-ground.frag.msl");
+            result.push({
+                output:
+                    "upstream/shaders/background-ground.frag.native.wgsl",
+                data: backgroundGroundFragmentWgsl(
+                    this.context.provenance(
+                        backgroundGroundModule,
+                        "buildBackgroundGroundRenderable",
+                    ),
+                ),
+            });
         }
         if (options.skybox) {
-            sources.push("background-skybox.frag.hlsl", "background-skybox.frag.msl");
-        }
-        if (options.shaderVariants.includes("alpha-card")) {
-            sources.push(
-                "alpha-card.vert.hlsl",
-                "alpha-card.frag.hlsl",
-                "alpha-card.vert.msl",
-                "alpha-card.frag.msl",
-            );
-        }
-        if (options.shaderVariants.includes("circular-cutout")) {
-            sources.push(
-                "circular-cutout.vert.hlsl",
-                "circular-cutout.frag.hlsl",
-                "circular-cutout.vert.msl",
-                "circular-cutout.frag.msl",
-            );
-        }
-        if (options.standardMaterial) {
-            sources.push("standard.frag.hlsl", "standard.frag.msl");
+            result.push({
+                output:
+                    "upstream/shaders/background-skybox.frag.native.wgsl",
+                data: backgroundSkyboxFragmentWgsl(
+                    this.context.provenance(
+                        backgroundDdsModule,
+                        "buildDdsSkyboxRenderable",
+                        `${backgroundHdrModule}#buildHdrSkyboxRenderable`,
+                    ),
+                ),
+            });
         }
         if (options.gridMaterial) {
-            sources.push(
-                "grid.vert.hlsl",
-                "grid.frag.hlsl",
-                "grid.vert.msl",
-                "grid.frag.msl",
+            const provenance = this.context.provenance(
+                gridModule,
+                "createGridMaterial",
+            );
+            result.push(
+                {
+                    output: "upstream/shaders/grid.vert.native.wgsl",
+                    data: gridVertexWgsl(provenance),
+                },
+                {
+                    output: "upstream/shaders/grid.frag.native.wgsl",
+                    data: gridFragmentWgsl(provenance),
+                },
             );
         }
         if (options.idDiagnostics) {
-            sources.push(
-                "diagnostic-id.frag.hlsl",
-                "diagnostic-id.frag.msl",
-                "diagnostic-cluster.frag.hlsl",
-                "diagnostic-cluster.frag.msl",
+            result.push(
+                {
+                    output:
+                        "upstream/shaders/diagnostic-id.frag.native.wgsl",
+                    data: diagnosticIdFragmentWgsl(),
+                },
+                {
+                    output:
+                        "upstream/shaders/diagnostic-cluster.frag.native.wgsl",
+                    data: diagnosticClusterFragmentWgsl(),
+                },
             );
         }
         if (
             options.frameGraph ||
             options.geometryOutputTasks.length > 0
         ) {
-            sources.push(
-                "blit.vert.hlsl",
-                "blit.frag.hlsl",
-                "blit.vert.msl",
-                "blit.frag.msl",
-                "depth-only.frag.hlsl",
-                "depth-only.frag.msl",
+            result.push(
+                {
+                    output: "upstream/shaders/blit.vert.native.wgsl",
+                    data: blitVertexWgsl(),
+                },
+                {
+                    output: "upstream/shaders/blit.frag.native.wgsl",
+                    data: blitFragmentWgsl(),
+                },
+                {
+                    output:
+                        "upstream/shaders/depth-only.frag.native.wgsl",
+                    data: depthOnlyFragmentWgsl(),
+                },
             );
         }
-        const result = sources.map((name) => ({
-            output: `upstream/shaders/${name}`,
-            data:
-                (name.startsWith("grid.")
-                    ? `// ${this.context.provenance(
-                          gridModule,
-                          "createGridMaterial",
-                      )}\n`
-                    : "") +
-                readFileSync(resolve(templateRoot, name), "utf8"),
-        }));
-        for (const extension of options.pbrDiagnostics ? (["hlsl", "msl"] as const) : []) {
-            for (const variant of ["A", "B", "C"] as const) {
+        const sceneUniformsWgsl = options.shaderVariants.length > 0
+            ? this.compiledSceneUniformsWgsl()
+            : "";
+        for (const name of options.shaderVariants) {
+            const source = getShaderMaterialProgram(name);
+            const program = lowerWgslShaderProgram(source);
+            result.push(
+                {
+                    output: `upstream/shaders/${name}.vert.wgsl`,
+                    data:
+                        `// ${this.context.provenance(shaderPipelineModule, "buildShaderPrelude")}\n` +
+                        composeStandaloneWgsl(
+                            source,
+                            sceneUniformsWgsl,
+                            "vertex",
+                        ),
+                },
+                {
+                    output: `upstream/shaders/${name}.frag.wgsl`,
+                    data:
+                        `// ${this.context.provenance(shaderPipelineModule, "buildShaderPrelude")}\n` +
+                        composeStandaloneWgsl(
+                            source,
+                            sceneUniformsWgsl,
+                            "fragment",
+                        ),
+                },
+                {
+                    output: `upstream/shaders/${name}.vert.native.wgsl`,
+                    data: emitNativeWgslProgram(program, "vertex"),
+                },
+                {
+                    output: `upstream/shaders/${name}.frag.native.wgsl`,
+                    data: emitNativeWgslProgram(program, "fragment"),
+                },
+            );
+        }
+        if (options.pbrDiagnostics) {
+            for (const variant of ["a", "b", "c"] as const) {
                 result.push({
                     output:
-                        `upstream/shaders/pbr-diagnostics-${variant.toLowerCase()}.frag.${extension}`,
+                        `upstream/shaders/pbr-diagnostics-${variant}.frag.native.wgsl`,
                     data:
-                        `#define BBLITE_DIAGNOSTICS_${variant} 1\n` +
-                        readFileSync(resolve(templateRoot, `pbr.frag.${extension}`), "utf8"),
+                        `// ${pbrProvenance}\n` +
+                        pbrFragmentWgsl(convertedPbr, {
+                            kind: "diagnostic",
+                            group: variant,
+                        }),
                 });
             }
         }
         for (const task of options.geometryOutputTasks) {
-            for (const extension of ["hlsl", "msl"] as const) {
+            result.push({
+                output:
+                    `upstream/shaders/pbr-geometry-${task.shaderIndex}.frag.native.wgsl`,
+                data:
+                    `// ${this.context.provenance(
+                        pbrGeometryModule,
+                        "attachmentExpr",
+                    )}\n` +
+                    pbrFragmentWgsl(convertedPbr, {
+                        kind: "geometry",
+                        task,
+                    }),
+            });
+            if (options.standardMaterial) {
                 result.push({
                     output:
-                        `upstream/shaders/pbr-geometry-${task.shaderIndex}.frag.${extension}`,
-                    data:
-                        geometryShaderPrefix(
-                            task,
-                            extension,
-                            this.context.provenance(
-                                pbrGeometryModule,
-                                "attachmentExpr",
-                            ),
-                        ) +
-                        readFileSync(
-                            resolve(templateRoot, `pbr.frag.${extension}`),
-                            "utf8",
+                        `upstream/shaders/standard-geometry-${task.shaderIndex}.frag.native.wgsl`,
+                    data: standardFragmentWgsl(
+                        this.context.provenance(
+                            standardGeometryModule,
+                            "attachmentExpr",
                         ),
+                        task,
+                    ),
                 });
-            }
-            if (options.standardMaterial) {
-                for (const extension of ["hlsl", "msl"] as const) {
-                    result.push({
-                        output:
-                            `upstream/shaders/standard-geometry-${task.shaderIndex}.frag.${extension}`,
-                        data:
-                            standardGeometryShaderPrefix(
-                                task,
-                                extension,
-                                this.context.provenance(
-                                    standardGeometryModule,
-                                    "attachmentExpr",
-                                ),
-                            ) +
-                            readFileSync(
-                                resolve(
-                                    templateRoot,
-                                    `standard.frag.${extension}`,
-                                ),
-                                "utf8",
-                            ),
-                    });
-                }
             }
         }
         return result;
+    }
+
+    private compiledSceneUniformsWgsl(): string {
+        const compiled = readFileSync(
+            resolve(
+                this.context.store.packageRoot,
+                "lib/shader/scene-uniforms.js",
+            ),
+            "utf8",
+        );
+        const match = compiled.match(
+            /const sceneUniformsWgsl = ("(?:[^"\\]|\\.)*");/,
+        );
+        if (!match?.[1]) {
+            throw new Error("Pinned compiled scene uniform WGSL was not found.");
+        }
+        const parsed: unknown = JSON.parse(match[1]);
+        if (typeof parsed !== "string") {
+            throw new Error("Pinned compiled scene uniform WGSL is not text.");
+        }
+        return parsed;
+    }
+
+    public shaderMaterialReflections(
+        variants: ShaderMaterialVariantName[],
+    ): ShaderProgramReflection[] {
+        return variants.map(
+            (name) =>
+                lowerWgslShaderProgram(getShaderMaterialProgram(name))
+                    .reflection,
+        );
     }
 
     public fidelityManifest(): RendererFidelityManifest {

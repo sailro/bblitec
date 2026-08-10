@@ -176,6 +176,21 @@ class GeneratedSourceWriter {
                 mkdirSync(dirname(shaderPath), { recursive: true });
                 writeFileSync(shaderPath, shader.data);
             }
+            if (options.shaderVariants.length > 0) {
+                writeFileSync(
+                    resolve(
+                        this.outputRoot,
+                        "upstream/shaders/shader-material-reflection.json",
+                    ),
+                    `${JSON.stringify(
+                        renderer.shaderMaterialReflections(
+                            options.shaderVariants,
+                        ),
+                        null,
+                        2,
+                    )}\n`,
+                );
+            }
             writeFileSync(
                 resolve(this.outputRoot, "upstream/renderer-fidelity.json"),
                 `${JSON.stringify(renderer.fidelityManifest(), null, 2)}\n`,

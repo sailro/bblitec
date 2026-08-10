@@ -17,10 +17,13 @@ the platform abstraction layer (PAL).
 - Original TypeScript is reconstructed from published source maps.
 - Generated files include provenance comments and
   `generated/<scene>/upstream/provenance.json`.
+- Optional Tint compilation is pinned separately in `upstream/tint.json`.
 
 Do not silently update the package or source commit. An upstream update
 requires regenerating outputs, reviewing changed formulas/constants, and
 rerunning all compiler, build, and parity checks.
+Do not silently update Tint either; rebuild it explicitly and rerun the custom
+shader compilation and parity gates.
 
 ## Source ownership
 
@@ -34,9 +37,20 @@ rerunning all compiler, build, and parity checks.
 - `src/upstream-source.ts`: pinned upstream source-map reconstruction.
 - `src/upstream-graph.ts`: conservative reachable-module analysis.
 - `src/upstream-lower.ts`: generated-source orchestration and provenance.
+- `src/shader-material-programs.ts`: reached custom WGSL program catalog and
+  fixed-function contracts.
+- `src/shader-ir.ts`: typed WGSL-subset lowering and shader reflection.
+- `src/shader-wgsl-emitter.ts`: native SDL WGSL specialization from typed IR.
+- `src/shader-builtins-grid.ts`: generated native GridMaterial WGSL.
+- `src/shader-builtins-utility.ts`: generated blit, depth, and diagnostic WGSL.
+- `src/shader-builtins-background.ts`: generated ground and skybox WGSL.
+- `src/shader-builtins-material.ts`: shared material vertex WGSL.
+- `src/shader-builtins-standard.ts`: Standard material and geometry WGSL.
+- `src/shader-builtins-pbr.ts`: PBR color, diagnostic, and geometry WGSL
+  variants derived from the pinned converted WGSL template.
 - `src/lowering/*-lowerer.ts`: dedicated upstream lowerers.
-- `src/lowering/templates/`: typed C++ and portable shader templates emitted by
-  lowerers.
+- `src/lowering/templates/`: typed C++ and WGSL source templates emitted by
+  lowerers; do not add backend-language shader templates.
 - `native/include/bblite/`: typed runtime records, handles, TS runtime, PAL
   contracts.
 - `native/src/pal.cpp`: filesystem, paths, environment, timing, host engine.
@@ -66,9 +80,9 @@ system API, it belongs in PAL.
 - SDL_GPU is the default for generated PBR scenes.
 - `BBLITE_GPU=0` forces the CPU fallback.
 - Backends/artifacts:
-  - Direct3D 12: DXIL
-  - Vulkan: SPIR-V
-  - Metal: MSL
+  - Direct3D 12: Tint HLSL → DXC DXIL
+  - Vulkan: Tint HLSL → DXC SPIR-V until direct Tint binding remapping exists
+  - Metal: Tint MSL
 - Generated shader sources live under
   `generated/<scene>/upstream/shaders`.
 - The pinned Babylon formulas include GGX, Smith geometry, specular AA, SH
