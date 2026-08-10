@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import { getScene, resolveScene, scenes } from "../src/scene-registry.js";
 
@@ -41,4 +41,19 @@ test("derives defaults for an unregistered scene source", () => {
 
 test("resolves a registered scene by source path", () => {
     assert.equal(resolveScene("examples/scene10-pbr-rough.ts").id, "scene10");
+});
+
+test("keeps package scene commands registry-driven", () => {
+    const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
+        scripts: Record<string, string>;
+    };
+    const scriptNames = Object.keys(packageJson.scripts);
+    assert.deepEqual(
+        scriptNames.filter((name) => /^(?:compile|parity):scene\d+$/.test(name)),
+        [],
+    );
+    assert.equal(packageJson.scripts["scenes:compile"], "npm run scene -- compile all");
+    assert.equal(packageJson.scripts["scenes:build"], "npm run scene -- build all");
+    assert.equal(packageJson.scripts["scenes:process"], "npm run scene -- process all");
+    assert.equal(packageJson.scripts["scenes:parity"], "npm run scene -- parity all");
 });

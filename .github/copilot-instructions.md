@@ -95,27 +95,7 @@ npm ci
 npm test
 npm run scenes:compile
 npm run shaders:build
-```
-
-Then build the configured native directories sequentially:
-
-```powershell
-cmake --build native\build-sdl
-cmake --build native\build-boombox
-cmake --build native\build-boombox-release
-cmake --build native\build-scene10-release
-cmake --build native\build-scene13-release
-cmake --build native\build-scene32-release
-cmake --build native\build-scene116-release
-cmake --build native\build-scene145-release
-cmake --build native\build-scene146-release
-cmake --build native\build-scene163-release
-cmake --build native\build-scene168-release
-cmake --build native\build-scene248-release
-cmake --build native\build-scene257-release
-cmake --build native\build-scene266-release
-cmake --build native\build-scene273-release
-cmake --build native\build-scene274-release
+npm run scenes:build
 ```
 
 On the development Windows machine, MSVC is 14.51 and Windows SDK is
@@ -138,21 +118,8 @@ require:
 
 ```powershell
 npm test
-npm run parity:boombox
-npm run parity:boombox:gpu
-npm run parity:scene10
-npm run parity:scene13
-npm run parity:scene32
-npm run parity:scene116
-npm run parity:scene145
-npm run parity:scene146
-npm run parity:scene163
-npm run parity:scene168
-npm run parity:scene248
-npm run parity:scene257
-npm run parity:scene266
-npm run parity:scene273
-npm run parity:scene274
+npm run scene -- parity boombox --cpu
+npm run scenes:parity
 npm run parity:diagnostics
 ```
 

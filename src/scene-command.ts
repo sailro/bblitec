@@ -47,13 +47,27 @@ async function parity(
     idOrSource: string,
     extraArguments: string[],
 ): Promise<void> {
+    if (idOrSource === "all") {
+        for (const scene of scenes) {
+            if (scene.parity) {
+                await runSceneParity([scene.id, ...extraArguments]);
+            }
+        }
+        return;
+    }
     const scene = resolveScene(idOrSource);
     if (!scene.parity) throw new Error(`Scene '${scene.id}' has no parity definition.`);
     await runSceneParity([idOrSource, ...extraArguments]);
 }
 
 function build(idOrSource: string): void {
-    const scene = resolveScene(idOrSource);
+    const selected = idOrSource === "all" ? scenes : [resolveScene(idOrSource)];
+    for (const scene of selected) {
+        buildScene(scene);
+    }
+}
+
+function buildScene(scene: (typeof scenes)[number]): void {
     const configureArguments = [
         "-S",
         "native",
@@ -82,14 +96,21 @@ function build(idOrSource: string): void {
     ]);
 }
 
+function compileShaders(sceneId?: string): void {
+    const arguments_ = ["-File", "tools/compile-shaders.ps1"];
+    if (sceneId) arguments_.push("-Scene", sceneId);
+    run(process.platform === "win32" ? "pwsh.exe" : "pwsh", arguments_);
+}
+
 function processScene(idOrSource: string): void {
+    if (idOrSource === "all") {
+        compile("all");
+        compileShaders();
+        for (const scene of scenes) buildScene(scene);
+        return;
+    }
     compile(idOrSource);
-    run(process.platform === "win32" ? "pwsh.exe" : "pwsh", [
-        "-File",
-        "tools/compile-shaders.ps1",
-        "-Scene",
-        resolveScene(idOrSource).id,
-    ]);
+    compileShaders(resolveScene(idOrSource).id);
     build(idOrSource);
 }
 
@@ -124,7 +145,7 @@ async function main(): Promise<void> {
         return;
     }
     throw new Error(
-        "Usage: scene-command <list | show <id|source.ts> | compile <id|source.ts|all> | build <id|source.ts> | process <id|source.ts> | parity <id|source.ts> [--recapture-reference]>",
+        "Usage: scene-command <list | show <id|source.ts> | compile|build|process|parity <id|source.ts|all> [parity options]>",
     );
 }
 

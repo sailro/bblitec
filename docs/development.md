@@ -17,7 +17,7 @@ CMake generator and SDL_GPU backend.
 ```powershell
 npm ci
 npm test
-npm run scenes:list
+npm run scene -- list
 npm run scenes:compile
 npm run shaders:build
 ```
@@ -35,8 +35,15 @@ npm run scene -- parity boombox
 `process` runs compile, scene-local shader compilation, CMake configure, and
 native build in order.
 
-Package aliases such as `compile:scene116` and `parity:scene116` exist for
-curated gates; `src/scene-registry.ts` is their source of truth.
+Aggregate registered-scene workflows are available without duplicating the
+registry in `package.json`:
+
+```powershell
+npm run scenes:compile
+npm run scenes:build
+npm run scenes:process
+npm run scenes:parity
+```
 
 ## Ad-hoc scenes
 
@@ -148,11 +155,11 @@ Refresh a source-based reference only intentionally:
 npm run scene -- parity scene273 --recapture-reference
 ```
 
-BoomBox has separate CPU and GPU aliases:
+BoomBox CPU and GPU runs use the same generic command:
 
 ```powershell
-npm run parity:boombox
-npm run parity:boombox:gpu
+npm run scene -- parity boombox --cpu
+npm run scene -- parity boombox
 npm run parity:diagnostics
 ```
 

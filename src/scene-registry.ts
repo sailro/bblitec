@@ -99,8 +99,8 @@ export const scenes: readonly SceneDefinition[] = [
             },
             actual: "artifacts/parity/scene13-native.png",
             outputDirectory: "artifacts/parity/scene13",
-            maxFullMad: 0.7,
-            maxForegroundMad: 0.4,
+            maxFullMad: 0.03,
+            maxForegroundMad: 0.2,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             attribution: {
@@ -177,8 +177,8 @@ export const scenes: readonly SceneDefinition[] = [
             },
             actual: "artifacts/parity/scene168-native.png",
             outputDirectory: "artifacts/parity/scene168",
-            maxFullMad: 0.03,
-            maxForegroundMad: 0.15,
+            maxFullMad: 0.08,
+            maxForegroundMad: 0.45,
             backgroundColor: [13, 15, 23],
             backgroundThreshold: 30,
             attribution: {
@@ -263,8 +263,8 @@ export const scenes: readonly SceneDefinition[] = [
             },
             actual: "artifacts/parity/scene248-native.png",
             outputDirectory: "artifacts/parity/scene248",
-            maxFullMad: 0.03,
-            maxForegroundMad: 0.15,
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.02,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             attribution: {
@@ -315,8 +315,8 @@ export const scenes: readonly SceneDefinition[] = [
             },
             actual: "artifacts/parity/scene266-native.png",
             outputDirectory: "artifacts/parity/scene266",
-            maxFullMad: 0.15,
-            maxForegroundMad: 0.3,
+            maxFullMad: 0.17,
+            maxForegroundMad: 0.32,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             attribution: {

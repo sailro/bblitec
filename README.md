@@ -1,4 +1,4 @@
-# bblitec
+# Babylon Lite Native
 
 > Experimental Babylon Lite TypeScript-to-C++ compiler with an SDL3/SDL_GPU
 > native runtime.
@@ -41,7 +41,7 @@ npm test
 
 $env:VCPKG_ROOT = "C:\path\to\vcpkg"
 npm run scene -- process boombox
-npm run parity:boombox:gpu
+npm run scene -- parity boombox
 ```
 
 Process an unregistered repository-local scene with derived defaults:

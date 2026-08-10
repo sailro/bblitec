@@ -36,22 +36,23 @@ Regression ceilings remain `1.0` full and `8.0` foreground MAD.
 
 ## Curated parity scenes
 
-Thresholds live in `src/scene-registry.ts`; commands follow
-`npm run parity:scene<ID>`.
+Thresholds live in `src/scene-registry.ts`; run one scene with
+`npm run scene -- parity scene<ID>` or all registered parity scenes with
+`npm run scenes:parity`.
 
 | Scene | Full MAD | Foreground MAD | Primary coverage |
 | ---: | ---: | ---: | --- |
 | 10 | 0.000 | 0.000 | generated sphere, no-IBL PBR, geometric normals |
-| 13 | 0.636 | 0.313 | material grid, explicit occlusion semantics |
+| 13 | 0.016 | 0.136 | material grid, explicit occlusion semantics |
 | 32 | 0.000 | 0.000 | `KHR_materials_unlit` |
 | 116 | 0.000021 | 0.000150 | no-color material views, depth targets |
 | 145 | 5.063 | 5.042 | `.babylon`, Standard geometry outputs |
 | 146 | 1.879 | 1.826 | PBR geometry outputs, 7+4 MRT composition |
 | 163 | 0.000 | 0.000 | custom shader blend, alpha test, discard |
-| 168 | 0.023 | 0.130 | mirrored double-sided winding |
-| 248 | 0.017 | 0.099 | external glTF and sampler modes |
+| 168 | 0.068 | 0.389 | mirrored double-sided winding; 100% within one byte |
+| 248 | 0.001 | 0.005 | external glTF and sampler modes |
 | 257 | 0.009 | 0.066 | negative-scale hierarchy, generated normals |
-| 266 | 0.115 | 0.214 | mirrored double-sided reflective spheres |
+| 266 | 0.151 | 0.285 | mirrored spheres; 99.31% within one byte |
 | 273 | 0.000 | 0.000 | post-registration material-family addition |
 | 274 | 0.000 | 0.000 | 4x-MSAA alpha-to-coverage |
 
