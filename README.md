@@ -1,388 +1,81 @@
 # bblitec
 
-> Experimental Babylon Lite TypeScript-to-C++ transpiler and SDL3 native runtime.
+> Experimental Babylon Lite TypeScript-to-C++ compiler with an SDL3/SDL_GPU
+> native runtime.
 
-This repository contains a working, deliberately narrow Babylon Lite native compiler prototype. It accepts scene-building TypeScript written against `@babylonjs/lite`, removes browser-only setup, lowers supported API calls to typed C++, and emits a native source manifest containing only the runtime features reached by the program.
+`bblitec` compiles a statically analyzable subset of `@babylonjs/lite` scene
+code into C++20. It reconstructs the pinned upstream TypeScript from source
+maps, emits only reached features, materializes remote assets at compile time,
+and keeps handwritten C++ at the platform abstraction layer.
 
-Curated targets currently include primitives, the BoomBox glTF demo, and
-Babylon Lite parity scenes 10, 13, 32, 116, 145, 146, 163, 168, 248, 257, 266,
-273, and 274. They cover PBR/Standard rendering, external glTF and `.babylon`
-assets, frame-graph geometry/depth outputs, custom shader alpha behavior,
-negative transforms, runtime scene mutation, and alpha-to-coverage. New
-repository-local TypeScript scenes can also be processed without registry
-edits: defaults for generated output, native build, reference capture, and
-parity artifacts are derived from the source path.
-
-**Status:** research prototype. The accepted TypeScript and Babylon Lite API surface is intentionally constrained and validated at transpile time.
+**Status:** working research prototype, not a general JavaScript runtime.
+Unsupported syntax and APIs fail at compile time with source locations.
 
 ![Babylon Lite, Babylon.js, and generated SDL_GPU BoomBox comparison](docs/images/boombox-comparison.png)
 
-_The original comparison is preserved and the current generated SDL_GPU output
-is appended with its measured size, speed, and parity._
+## Current proof points
 
-Detailed documentation:
+- Pinned upstream: `@babylonjs/lite@1.18.0`,
+  commit `7184feda683072980735f9a180e6f567ee5717ba`.
+- 13 curated Babylon Lite parity scenes plus BoomBox and primitives.
+- External glTF/GLB and a reached `.babylon` slice.
+- Generated Standard/PBR rendering, custom alpha variants, frame-graph MRT and
+  depth passes, negative transforms, and runtime scene mutation.
+- SDL_GPU backends: DXIL/D3D12, SPIR-V/Vulkan, and MSL/Metal sources.
+- BoomBox D3D12 baseline: `0.447` full MAD, `2.003` foreground MAD,
+  `0.119 ms` average CPU submission.
 
-- [Architecture and generated/PAL boundary](docs/architecture.md)
-- [Build, test, parity, and troubleshooting guide](docs/development.md)
-- [Semantic and shader fidelity strategy](docs/fidelity.md)
-- [Supported subset, metrics, and roadmap](docs/status.md)
-- [Prioritized implementation backlog](TODO.md)
-
-## Pipeline
-
-```text
-Babylon Lite TypeScript
-        |
-        v
-TypeScript AST + intrinsic validation
-        |
-        v
-typed native operations + reached feature set
-        |
-        +--> main.cpp
-        +--> features.cmake
-        +--> manifest.json
-        +--> upstream-generated C++
-                    |
-                    v
-          C++20 engine code + PAL
-                    |
-                    v
-            SDL3 window/input/rendering
-```
-
-`src\scene-registry.ts` adds stable thresholds and diagnostic capabilities for
-curated regression scenes. It is not required for ad-hoc compilation.
-
-This is a compiler, not a JavaScript interpreter. Unsupported JavaScript or Babylon Lite APIs fail with source locations instead of being silently ignored.
-
-## Upstream transpilation direction
-
-The long-term architecture is to transpile the reachable Babylon Lite implementation itself and keep hand-written native code only at the platform abstraction layer (PAL).
-
-`@babylonjs/lite@1.18.0` is pinned as the upstream source artifact. Its package metadata pins GitHub source commit `7184feda683072980735f9a180e6f567ee5717ba`, and its source maps embed the original TypeScript for each published module.
-
-```text
-BoomBox TypeScript imports
-        |
-        v
-Babylon Lite public-export resolution
-        |
-        v
-reachable TypeScript module graph
-        |
-        v
-supported TS lowering + generated C++
-        |
-        v
-PAL (filesystem, paths, environment, clock, SDL)
-```
-
-Generate the conservative BoomBox module graph:
-
-```powershell
-npm run analyze:boombox
-```
-
-The current graph contains 218 runtime modules and approximately 1.35 MiB of
-TypeScript. It records async functions, closures, dynamic imports, and Web
-platform references. The supported vertical slice specializes asset fetches,
-dynamic glTF feature imports, and immediate AOT promises; arbitrary closures,
-runtime module loading, and general browser APIs remain future work.
-
-The current vertical migration generates these implementations from pinned upstream TypeScript:
-
-- `createEngine` and `startEngine` API wrappers from `engine/engine.ts`, delegating host creation and the run loop to PAL
-- hemispheric and point-light factories from pinned light modules
-- `localMatrixFromDirection` from `light/light-matrix.ts`
-- `createArcRotateCamera` from `camera/arc-rotate.ts`
-- `createFreeCamera` and FreeCamera controls from `camera/free-camera.ts` and
-  `camera/free-camera-controls.ts`
-- `createDefaultCamera` framing constants and factory from `scene/scene-camera.ts`
-- `attachControl` inertia integration from `camera/arc-rotate-controls.ts`; SDL only translates native events into inertial offsets
-- Babylon `.env` magic, manifest layout, face slicing, and spherical-harmonic conversion from `loader-env/env-parse.ts` and `loader-env/load-env.ts`
-- `createSceneContext`, mesh/light/asset routing in `addToScene`, and idempotent `registerScene` semantics from `scene/scene-core.ts`
-- GLB magic/chunk validation and framing from `loader-gltf/gltf-glb-parser.ts`
-- the full typed glTF vertical slice from `loader-gltf/load-gltf.ts`, including
-  accessors, geometry, hierarchy, embedded images, metallic-roughness
-  materials, alpha modes, and double-sided state
-- the HillValley-required `.babylon` slice from
-  `loader-babylon/load-babylon.ts`, including inline geometry/submeshes,
-  point lights, FreeCamera data, Standard diffuse/ambient/specular/opacity
-  textures, alpha cutouts, and cube reflections
-- box, ground, plane, sphere, and torus geometry from pinned mesh factories
-- `createStandardMaterial` defaults from `material/standard/create-standard-material.ts`
-- solid-texture quantization, reached PBR scalar fields, Standard/PBR no-color
-  material views, and typed custom shader variants
-- render-item planning, camera matrices, and PBR uniforms from
-  `frame-graph/render-task.ts` and scene uniform sources
-- typed frame-graph render targets/tasks, 7+4 geometry MRTs, viewport blits,
-  depth-only passes, material overrides, and MSAA resolve
-- GGX/Smith lighting, specular AA, SH irradiance, BRDF energy conservation,
-  tone mapping, and contrast from the PBR/IBL shader modules
-- transparent background-ground and RGBA16F DDS skybox passes from Babylon
-  Lite's background renderable modules
-
-Their generated sources and provenance are emitted under `generated\<scene>\upstream`. The previous hand-written light, camera, mesh-factory, standard-material, core, environment, and glTF loader C++ files have been removed.
-
-The PAL owns native file reads, path joining, environment variables, monotonic
-timing, image decoding, SDL window/input integration, and SDL_GPU
-resource/command submission. The compiler generates geometry-backed render
-plans and reached-feature PBR shader variants from pinned Babylon Lite
-frame-graph, PBR, IBL, and scene-uniform semantics. `pal_sdl.cpp` remains only
-as the deterministic CPU fallback.
-
-The lowering code is split into dedicated engine, scene, light, camera, environment, glTF, factory, and renderer lowerer classes with a shared `LoweringContext`; adding language coverage no longer requires extending one monolithic transpiler file.
-
-### TypeScript runtime coverage
-
-The native runtime now provides explicitly typed implementations for:
-
-- `ArrayBuffer`, typed arrays, and `DataView`
-- UTF-8 `TextDecoder`
-- `Promise<T>` plus synchronous AOT `await` specialization
-- `JSON.parse` into a typed `JsonValue` variant (`null`, boolean, number, string, array, or object)
-- PAL-backed asset fetch and image decoding
-- compile-time specialization of glTF dynamic feature imports from typed GLB metadata
-
-Explicit TypeScript `any` is forbidden by an AST-level test. Dynamic JSON must be narrowed through typed records or `JsonValue` accessors. The current promise implementation is deliberately immediate: remote assets are materialized during transpilation, so the generated BoomBox loader performs deterministic local PAL reads rather than retaining a native asynchronous scheduler.
-
-## Prerequisites
-
-- Node.js 22 or newer
-- A C++20 compiler
-- CMake 3.24 or newer
-- [vcpkg](https://github.com/microsoft/vcpkg) for SDL3, SDL3_image, and nlohmann-json
-
-The commands below use PowerShell and have been exercised with MSVC on Windows.
+See [current status](docs/status.md) for the supported subset and all measured
+scene results.
 
 ## Quick start
+
+Requirements: Node.js 22+, CMake 3.24+, a C++20 compiler, vcpkg, and PowerShell
+for shader compilation.
 
 ```powershell
 git clone https://github.com/sailro/bblitec.git
 cd bblitec
 npm ci
 npm test
-npm run scenes:compile
-npm run shaders:build
+
+$env:VCPKG_ROOT = "C:\path\to\vcpkg"
+npm run scene -- process boombox
+npm run parity:boombox:gpu
 ```
 
-List curated scenes or process an unregistered source end-to-end:
+Process an unregistered repository-local scene with derived defaults:
 
 ```powershell
-npm run scenes:list
 npm run scene -- process examples\my-scene.ts
-```
-
-To build the native application, install a C++20 compiler and CMake. SDL3 is declared by `native\vcpkg.json`; configure with a vcpkg toolchain to install and use it:
-
-```powershell
-$env:VCPKG_ROOT = "C:\path\to\vcpkg"
-cmake -S native -B native\build `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
-  -DBBLITE_GENERATED_DIR="$PWD\generated\boombox"
-cmake --build native\build
-```
-
-When CMake finds SDL3, the executable opens an SDL window. Primitive standard
-materials render through the fallback path. Generated PBR scenes use SDL_GPU static
-vertex/index buffers, a depth target, metadata-driven material buckets, and
-generated per-pixel PBR/IBL shaders. Babylon-style ArcRotate controls are
-available: left-drag orbits, right/middle-drag pans, and the mouse wheel zooms.
-Arrow keys and `W`/`S` remain keyboard fallbacks.
-
-Set `BBLITE_MAX_FRAMES` to a positive number for automated runs. Set `BBLITE_SCREENSHOT` to a PNG path to capture a deterministic frame:
-
-```powershell
-$env:BBLITE_MAX_FRAMES = "1"
-$env:BBLITE_SCREENSHOT = "$PWD\boombox.png"
-.\native\build\bblite_native.exe
-```
-
-Set `BBLITE_BENCHMARK_FRAMES` to collect steady-state CPU frame-submission timing after an automatic warmup. Benchmark mode disables vsync and the interactive 1 ms sleep:
-
-```powershell
-$env:BBLITE_BENCHMARK_FRAMES = "2000"
-.\native\build\bblite_native.exe
-```
-
-### SDL_GPU fast path
-
-Generated PBR scenes use the static-buffer, depth-tested SDL_GPU renderer by default. Set `BBLITE_GPU=0` to force the deterministic CPU fallback:
-
-```powershell
-$env:BBLITE_GPU = "0"
-.\native\build\bblite_native.exe
-```
-
-The PAL selects shaders for the active SDL_GPU backend:
-
-| Platform | SDL_GPU backend | Shader artifact |
-| --- | --- | --- |
-| Windows | Direct3D 12 | DXIL |
-| Linux / Android | Vulkan | SPIR-V |
-| macOS / iOS | Metal | MSL |
-
-Shader sources are emitted into each reached
-`generated\<scene>\upstream\shaders` directory. Compile all generated DXIL and
-SPIR-V artifacts before native GPU builds with:
-
-```powershell
-cd tools\shader-compiler
-$env:VCPKG_ROOT = "C:\path\to\vcpkg"
-& "$env:VCPKG_ROOT\vcpkg.exe" install
-cd ..\..
-npm run shaders:build
-```
-
-Each configured native build snapshots its reached shaders into that build
-tree. Rebuild the native target after regenerating or recompiling its shaders;
-one scene's regeneration cannot silently change another scene's executable.
-
-On the development machine, the optimized BoomBox CPU fallback measured **5.516 ms/frame** average CPU submission. The freshly regenerated 4x-MSAA material/IBL/skybox SDL_GPU Direct3D 12 path measured **0.119 ms average / 0.083 ms median**, approximately **46× faster** CPU-side.
-
-The GPU path is the default for generated PBR scenes. Set `BBLITE_GPU=0` only when the deterministic CPU fallback is required.
-
-The SDL_GPU path now supports deterministic swapchain readback, ArcRotate and
-FreeCamera controls, normal and metallic-roughness maps, emissive materials,
-glTF `OPAQUE`/`MASK`/`BLEND` alpha modes, single- and double-sided material
-buckets, typed custom shader variants, alpha testing/blending/coverage,
-offscreen frame-graph passes, Babylon `.env` cubemap mips, spherical-harmonic
-irradiance, and the BRDF LUT. Run its local visual regression gate with:
-
-```powershell
-npm run parity:boombox:gpu
-```
-
-The compiler generates and enables Babylon Lite's RGBA16F DDS skybox by default. It also generates the transparent ground pass and materializes `groundTextureUrl`; set `BBLITE_GROUND=1` to enable that pass explicitly because Babylon.js's current golden does not compose it identically.
-
-The current D3D12 GPU baseline is **0.447 full-image MAD / 2.003 foreground-region MAD**, improving substantially on both the first measurable reduced-shader baseline (**7.720 / 58.573**) and the CPU fallback (**4.452 / 21.191**). The remaining gap is concentrated in fine foreground material and rasterization differences.
-
-Configuring without SDL keeps the headless backend available. The generated
-glTF loader uses the typed JSON runtime; SDL_image is linked by generated PBR
-builds for texture decode and PNG capture.
-
-Remote scene assets referenced by supported intrinsics are downloaded during transpilation into the ignored `generated` directory. They are not committed to this repository.
-
-### Portable Windows demo
-
-Build the BoomBox Release target and compile shaders, then create a
-self-contained Windows x64 archive:
-
-```powershell
-npm run package:boombox
-```
-
-The ZIP is written to
-`artifacts\releases\bblitec-boombox-windows-x64.zip` and includes launchers,
-assets, DXIL shaders, native dependencies, and third-party notices. The default
-launcher requests Direct3D 12 and automatically falls back to SDL_Renderer if
-the GPU path is unavailable on the target PC.
-
-## Visual parity
-
-`bblitec` adapts the comparison math from Babylon Lite's Apache-2.0
-[`tests/shared/compare-core.ts`](https://github.com/BabylonJS/Babylon-Lite/blob/master/tests/shared/compare-core.ts):
-
-- RGB mean absolute difference (MAD) on the 0–255 scale
-- exact and within-1/3/5-byte pixel ratios
-- foreground-region MAD using Babylon's `[51, 51, 77]` background mask and distance threshold `30`
-- the same red/green/blue diff-map encoding
-
-Capture or refresh the 1280×720 Babylon.js golden from the upstream BoomBox Playground snippet:
-
-```powershell
-npm run parity:reference -- --force
-```
-
-After building `native\build-boombox-release\bblite_native.exe`, render the deterministic native frame and compare it:
-
-```powershell
-npm run parity:boombox
-```
-
-The common scene workflow also provides:
-
-```powershell
-npm run parity:boombox:gpu
-npm run parity:scene10
-npm run parity:scene13
-npm run parity:scene32
-npm run parity:scene116
-npm run parity:scene145
-npm run parity:scene146
-npm run parity:scene163
-npm run parity:scene168
-npm run parity:scene248
-npm run parity:scene257
-npm run parity:scene266
-npm run parity:scene273
-npm run parity:scene274
 npm run scene -- parity examples\my-scene.ts --recapture-reference
 ```
 
-The native actual, renderer-specific diff map, and JSON report are written to
-ignored `artifacts\parity`. Reports include semantic renderer metadata,
-channel bias, edge/interior attribution, and spatial hotspots. The committed
-golden and its capture metadata live in `reference\boombox`.
+`process` performs generation, scene-local shader compilation, CMake
+configuration, and native build. CMake chooses the platform generator for a
+fresh build directory; build trees are disposable and generator-specific.
 
-The CPU regression ceilings are `4.6` full-image MAD and `21.5`
-foreground-region MAD. The generated GPU ceilings are `1.0` and `8.0`.
-They remain intentionally separate from Babylon Lite's upstream scene-1
-targets (`0.19` and `0.03`, with 99% of foreground pixels within one byte).
+## Documentation
 
-Validation is intentionally local: compiler tests, native builds, CPU parity,
-and device-specific GPU parity are run on known toolchains and drivers.
-
-## Supported Babylon Lite subset
-
-| Area | Supported source forms |
+| Page | Purpose |
 | --- | --- |
-| Engine | `createEngine`, `createSceneContext`, `registerScene`, `startEngine` |
-| Scene | `scene.clearColor`, `scene.camera`, `scene.fixedDeltaMs`, `addToScene`, reached `onBeforeRender` callbacks |
-| Cameras | `createArcRotateCamera`, `createFreeCamera`, `createDefaultCamera`, `attachControl`, `attachFreeControl`, camera projection properties |
-| Lighting | `createHemisphericLight`, reached `createPointLight`, and point lights loaded from `.babylon` |
-| Geometry | `createBox`, `createGround`, `createPlane`, `createSphere`, `createTorus`, external or binary triangle glTF with PNG/JPEG images, and `loadBabylon` inline geometry/submeshes |
-| Frame graph | `createRenderTarget`, fixed-size depth-only `createRenderTargetTexture`, `createRenderTask`, per-task cameras and `addMesh` material overrides, `createGeometryRendererTask`, ordered task insertion, viewport copies, and MSAA resolve |
-| Environment | `loadEnvironment` with Babylon `.env` irradiance, RGBD specular cubemap mips, BRDF LUT, DDS skybox, and generated ground |
-| Materials | `createStandardMaterial`, reached PBR scalar fields, Standard/PBR no-color views, unlit depth-texture display, typed custom shader variants, `.babylon` diffuse/ambient/specular/opacity/reflection textures, and glTF metallic-roughness, normal, ORM, emissive, alpha, and double-sided state |
-| Transforms | `position.set`, `rotation.set`, `scaling.set`, and component assignments on `position`, `rotation`, and `scaling` |
-| Expressions | Numeric literals, variables, `Math.PI`, unary `+/-`, `+ - * /`, callback increments, and numeric conditions |
-| Browser erasure | `document.getElementById(...)`, `document.querySelector(...)`, `HTMLCanvasElement`, `async`, `await`, and the outer `main().catch(...)` |
+| [Architecture](docs/architecture.md) | Compiler pipeline, ownership boundaries, runtime, renderer |
+| [Development](docs/development.md) | Setup, commands, builds, switches, parity, troubleshooting |
+| [Fidelity](docs/fidelity.md) | Semantic adaptations, shader contracts, diagnostics |
+| [Status](docs/status.md) | Supported subset, measured baselines, known gaps |
+| [TODO](TODO.md) | Prioritized future work only |
 
-Current boundaries are intentional: one entry file, one engine, append-only
-runtime scene membership from reached callbacks, triangle glTF/GLB and the
-reached `.babylon` slice, and no arbitrary object allocation, animation,
-skinning, morphing, physics, general user-defined WGSL, networking, or audio
-graph yet. Custom shaders are limited to typed reached variants. Material
-behavior is driven by source metadata; there are no BoomBox geometry or
-reference-image heuristics.
+## Design constraints
 
-## Tree shaking and data layout
-
-`features.cmake` lists only reached native and generated modules. For example, a box-only scene links the PAL sources plus generated engine, scene, and mesh factory code; ground, materials, lights, and cameras remain absent unless referenced.
-
-The runtime stores meshes, materials, lights, and cameras in contiguous vectors and exposes small typed handles. Scene membership is stored as handle arrays. This preserves Babylon Lite's data-oriented direction and gives a path to structure-of-arrays storage, SIMD transform passes, job systems, and an SDL GPU backend without changing source-level scene code.
-
-## Memory management
-
-The supported subset does not need a tracing garbage collector: generated locals have normal C++ lifetimes, while engine-owned records live in contiguous arenas and are addressed by handles. This is faster and easier to reason about than introducing GC at the first milestone.
-
-Boehm GC remains a reasonable optional compatibility layer once the compiler supports dynamic JavaScript object graphs, closures escaping their scope, cyclic user objects, or runtime module loading. It should be integrated as a separately licensed dependency rather than copying Mono's integration file directly. Native SDL/GPU resources should still use deterministic RAII regardless of whether managed objects use GC.
-
-## Next architectural milestones
-
-1. Replace specialized shader templates with a general composed-WGSL/IR
-   lowering pipeline.
-2. Validate Vulkan/SPIR-V and Metal/MSL on real devices.
-3. Add scene 8 as the next contained gate for HDR environments, PBR glass
-   alpha, reflectance, intensities, and image-processing overrides.
-4. Close remaining PBR gaps such as normal scale, occlusion, transparent
-   ordering, and generated-ground composition.
-5. Compile assets into a native packed format and add optional managed
-   allocation only for JavaScript semantics that require it.
+- Generate Babylon behavior from pinned upstream sources; PAL owns only OS and
+  SDL mechanics.
+- Preserve tree shaking, provenance, typed records, and C++20 portability.
+- Do not tune shaders or loader behavior against a golden image.
+- Keep generated output disposable; fix compiler, lowerer, template, or PAL
+  sources instead.
 
 ## Acknowledgements
 
-This prototype is not affiliated with or endorsed by the Babylon.js project. Babylon.js and Babylon Lite are Apache-2.0 projects maintained by their respective contributors. SDL, SDL_image, nlohmann-json, and downloaded demo assets remain subject to their respective licenses.
+This prototype is not affiliated with or endorsed by Babylon.js. Babylon.js
+and Babylon Lite are Apache-2.0 projects. SDL, SDL_image, nlohmann-json, and
+downloaded assets retain their respective licenses.

@@ -1,156 +1,96 @@
 # Fidelity strategy
 
-Visual parity has two independent sources of risk:
+Parity can fail in two independent layers:
 
-1. TypeScript/Babylon semantics may change while being lowered to C++.
-2. Babylon's WGSL/WebGPU rendering must be represented on D3D12, Vulkan, and
-   Metal without changing formulas, bindings, color spaces, or raster state.
+1. TypeScript/Babylon semantics are lowered incorrectly.
+2. Correct Babylon shader semantics diverge on a native GPU backend.
 
-Treating the final screenshot as one number hides which layer is responsible.
-`bblitec` therefore records adaptations and produces layered diff attribution.
+`bblitec` records both instead of treating the final screenshot as a single
+opaque score.
 
-## Semantic fidelity
+## Semantic contract
 
-Every generated scene now contains:
+Generated scenes contain:
 
-- `manifest.json`: features, runtime/generated sources, assets, and adaptation
-  records
-- `fidelity.json`: the scene's intentional semantic adaptations
-- `upstream/provenance.json`: upstream modules and symbols used by lowerers
+| Artifact | Purpose |
+| --- | --- |
+| `manifest.json` | reached features, sources, assets, adaptations |
+| `fidelity.json` | intentional source-to-native semantic differences |
+| `upstream/provenance.json` | pinned upstream modules and symbols |
+| `upstream/renderer-fidelity.json` | shader bindings, formats, formulas, invariants |
 
-An adaptation record states:
+Current intentional adaptations include browser-wrapper erasure, immediate AOT
+`await`, compile-time asset materialization, SDL input translation, native
+shader backends, and opt-in ground composition.
 
-- source semantics
-- native semantics
-- fidelity risk
-- validation mechanisms
+New high-risk adaptations require an explicit record and a focused test.
 
-Current intentional adaptations include:
+## Shader contract
 
-- browser entry-wrapper and instrumentation erasure
-- synchronous AOT `await`
-- compile-time remote asset materialization
-- SDL platform/input translation
-- WGSL-to-native shader backend translation
-- opt-in environment ground composition
-
-High-risk adaptations should not remain implicit. New adaptations require a
-manifest entry and focused tests.
-
-## Improving semantic confidence
-
-The next levels of validation should be:
-
-1. **Pure-function differential tests:** execute upstream TypeScript and
-   generated C++ for camera math, environment parsing, material formulas, and
-   transforms against the same randomized inputs.
-2. **Scene trace comparison:** record ordered Babylon API calls and resulting
-   typed records in JavaScript, then compare them with generated C++ records.
-3. **Asset canonicalization tests:** compare parsed accessors, hierarchy,
-   materials, and bounds before rendering.
-4. **Mutation/inertia traces:** compare camera and scene state over many
-   frames, not only the final screenshot.
-5. **Property tests:** check invariants such as normalized normals, valid
-   handles, monotonic mip offsets, and stable registration.
-
-This separates transpiler defects from renderer defects before pixels are
-involved.
-
-## Shader fidelity
-
-`generated/<scene>/upstream/renderer-fidelity.json` records:
-
-- WGSL as the source language
-- emitted source and compiled backend formats
-- SDL_GPU binding-space contract
-- texture color-space contract
-- upstream formula markers and native behavior
-- validation associated with each invariant
-
-Current invariants cover:
+Generated shaders preserve upstream markers for:
 
 - GGX distribution and Smith geometry
 - BRDF LUT energy conservation
-- environment mip selection
-- RGBD cubemap vertical orientation
+- environment mip selection and RGBD decoding
+- SH irradiance
 - exposure, tone mapping, gamma, and contrast
+- depth, culling, blending, and multisample state
 
-The long-term solution is not to maintain independent hand-edited HLSL and MSL
-equations. The compiler should parse Babylon's composed WGSL into a typed IR,
-then use one backend pipeline—potentially Tint or SDL_shadercross—to produce
-WGSL, HLSL/DXIL, SPIR-V, and MSL.
+Backend reflection should ultimately verify uniform layout, binding order,
+varyings, texture sample types, and pipeline state. The long-term goal is one
+composed WGSL/typed-IR pipeline rather than independent textual backends.
 
-Backend reflection must verify:
+## Parity reports
 
-- uniform sizes and alignment
-- resource binding order
-- varying locations and interpolation
-- texture dimensions and sample types
-- depth, culling, and blend state
+Reports separate CPU and GPU renderers and include:
 
-## Locating residual visual differences
-
-Parity reports are renderer-specific:
-
-- `report-cpu.json`
-- `report-gpu.json`
-- `diff-map-cpu.png`
-- `diff-map-gpu.png`
-- `hotspots-cpu.png`
-- `hotspots-gpu.png`
-- `draw-ids-gpu.png`
-- `draw-ids-visual-gpu.png`
-
-Each report includes:
-
-- total and foreground MAD
-- per-channel MAD
-- signed foreground RGB bias
-- background MAD
-- foreground high-gradient/edge MAD
-- foreground interior MAD
-- the twelve highest-MAD foreground tiles
+- full and foreground RGB MAD
+- exact and within-1/3/5-byte ratios
+- per-channel MAD and signed foreground bias
+- background, high-gradient edge, and interior MAD
+- highest-error tiles
+- renderer/backend metadata
 
 Interpretation:
 
-| Signal | Likely layer |
+| Signal | Likely source |
 | --- | --- |
-| Background MAD | clear color, skybox, ground, tone mapping |
-| Foreground edge MAD | camera matrices, winding, culling, depth, coverage, MSAA |
-| Foreground interior MAD | material inputs, BRDF, texture color spaces, IBL |
-| Uniform signed RGB bias | exposure, gamma, tone mapping, color conversion |
-| Localized hotspot | one material, texture region, mesh, or transparency path |
+| background | clear color, skybox, ground, image processing |
+| edges | camera, winding, depth, coverage, MSAA |
+| interior | material inputs, color spaces, BRDF, IBL |
+| uniform RGB bias | exposure, gamma, tone mapping |
+| localized hotspot | one draw, material, texture, or mesh region |
 
-Scenes that enable attribution in the registry also capture a lossless draw-ID
-buffer. Stable IDs are emitted from glTF node/mesh/primitive order, and reports
-contain `drawAttribution` and `hotspotAttribution` joined with node, mesh,
-material, alpha mode, and double-sided metadata.
+## Attribution
 
-BoomBox contains one large primitive and one material, so parity additionally
-captures stable 128-triangle cluster IDs. The report maps cluster ranges and
-hotspots back to the glTF render item.
+Registry-enabled scenes can emit draw IDs and triangle-cluster IDs. Reports
+join those IDs to glTF nodes, meshes, materials, alpha mode, and double-sided
+state.
 
-The same production PBR shader is macro-specialized into a diagnostics MRT
-variant that captures encoded world normal, reflectivity, irradiance, IBL,
-normalized view depth, surface albedo, and direct light. Those focused
-BoomBox diagnostics use two passes because SDL_GPU exposes four color targets.
-Both passes use generated 4x MSAA and resolve each attachment before readback.
+BoomBox also emits focused PBR buffers from the production shader:
 
-The generated frame-graph geometry renderer is a separate production path. It
-supports all eleven Babylon geometry texture types split across 7+4 MRT passes,
-optional real color, independent depth, Standard and PBR material views,
-viewport impostor copies, and MSAA resolve. Scenes 145 and 146 gate that path
-against Babylon Lite WebGPU references.
+- world normal
+- reflectivity
+- irradiance and IBL
+- normalized view depth
+- albedo and direct light
 
-## Validation artifact meaning
+These diagnostics use two 4x-MSAA passes because SDL_GPU exposes four color
+targets. Normalized depth is bit-exact against the Babylon Lite WebGPU oracle.
 
-There is no hosted CI. Local validation output must keep renderer modes
-separate and retain:
+Scenes 145 and 146 gate the separate production geometry-renderer path: all
+eleven geometry texture types, split 7+4 MRT passes, optional real color,
+independent depth, viewport copies, and MSAA resolve.
 
-- renderer-specific actual, diff, hotspot, and ID images
-- renderer-specific parity reports
-- compile manifest and adaptation ledger
-- provenance
-- renderer fidelity contract
+## Validation policy
 
-GPU parity is device-specific and the report records the selected driver.
+There is no hosted CI. A validated milestone keeps:
+
+- renderer-specific actual, diff, hotspot, and attribution images
+- renderer-specific JSON reports
+- manifests, fidelity records, and provenance
+- measured local thresholds in `src/scene-registry.ts`
+
+GPU results are device-specific and must record the selected backend. Golden
+images are evidence, not tuning targets: fixes must follow upstream semantics
+or metadata rather than scene or pixel heuristics.
