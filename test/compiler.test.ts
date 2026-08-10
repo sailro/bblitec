@@ -170,6 +170,7 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
             "sdl-platform-boundary",
             "sdl-gpu-shader-backends",
             "background-ground-opt-in",
+            "background-dither-disabled",
         ],
     );
     assert.deepEqual(

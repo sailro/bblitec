@@ -54,9 +54,9 @@ npm run scene -- parity examples\my-scene.ts --recapture-reference
 ```
 
 `process` performs generation, scene-local shader compilation, CMake
-configuration, and a parallel native build. CMake chooses the platform
-generator for a fresh build directory; set `BBLITE_CMAKE_GENERATOR` to
-override it. Build trees are disposable and generator-specific.
+configuration, and a parallel native build. Ninja is the default generator;
+set `BBLITE_CMAKE_GENERATOR` to override it. Build trees are disposable and
+generator-specific.
 
 ## Documentation
 

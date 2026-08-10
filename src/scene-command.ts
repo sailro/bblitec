@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { join, resolve } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { runSceneParity } from "./parity-scene.js";
 import { resolveScene, scenes } from "./scene-registry.js";
 
@@ -9,15 +10,118 @@ function runNode(module: string, arguments_: string[]): void {
     run(process.execPath, [resolve(module), ...arguments_]);
 }
 
-function run(command: string, arguments_: string[]): void {
+function run(
+    command: string,
+    arguments_: string[],
+    environment: NodeJS.ProcessEnv = process.env,
+): void {
     const result = spawnSync(command, arguments_, {
         stdio: "inherit",
-        env: process.env,
+        env: environment,
     });
     if (result.error) throw result.error;
     if (result.status !== 0) {
         throw new Error(`${command} exited with status ${result.status}.`);
     }
+}
+
+function latestDirectory(root: string): string | undefined {
+    if (!existsSync(root)) return undefined;
+    const directories = readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => join(root, entry.name))
+        .sort((left, right) =>
+            right.localeCompare(left, undefined, { numeric: true }));
+    return directories[0];
+}
+
+function windowsNinjaEnvironment(): {
+    environment: NodeJS.ProcessEnv;
+    ninja: string;
+} {
+    const programFilesX86 =
+        process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+    const vswhere = join(
+        programFilesX86,
+        "Microsoft Visual Studio",
+        "Installer",
+        "vswhere.exe",
+    );
+    const vsResult = existsSync(vswhere)
+        ? spawnSync(
+              vswhere,
+              [
+                  "-latest",
+                  "-products",
+                  "*",
+                  "-requires",
+                  "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                  "-property",
+                  "installationPath",
+              ],
+              { encoding: "utf8" },
+          )
+        : undefined;
+    const environmentVsRoot =
+        process.env.VSINSTALLDIR?.replace(/[\\/]+$/, "");
+    const discoveredVsRoot =
+        vsResult?.status === 0 ? vsResult.stdout.trim() : "";
+    const vsRoot = [environmentVsRoot, discoveredVsRoot].find(
+        (candidate) =>
+            !!candidate &&
+            existsSync(join(candidate, "VC", "Tools", "MSVC")),
+    ) ?? "";
+    if (!vsRoot || !existsSync(vsRoot)) {
+        throw new Error(
+            "Ninja requires MSVC. Set VSINSTALLDIR or override BBLITE_CMAKE_GENERATOR.",
+        );
+    }
+    const msvc = latestDirectory(join(vsRoot, "VC", "Tools", "MSVC"));
+    const sdkRoot = join(programFilesX86, "Windows Kits", "10");
+    const sdk = latestDirectory(join(sdkRoot, "Include"));
+    const ninja =
+        process.env.NINJA_PATH ??
+        join(
+            vsRoot,
+            "Common7",
+            "IDE",
+            "CommonExtensions",
+            "Microsoft",
+            "CMake",
+            "Ninja",
+            "ninja.exe",
+        );
+    if (!msvc || !sdk || !existsSync(ninja)) {
+        throw new Error(
+            "Unable to locate MSVC, Windows SDK, or Ninja. Override BBLITE_CMAKE_GENERATOR to use another generator.",
+        );
+    }
+    const sdkVersion = sdk.slice(dirname(sdk).length + 1);
+    return {
+        ninja,
+        environment: {
+            ...process.env,
+            PATH: [
+                join(msvc, "bin", "Hostx64", "x64"),
+                join(sdkRoot, "bin", sdkVersion, "x64"),
+                dirname(ninja),
+                process.env.PATH ?? "",
+            ].join(";"),
+            INCLUDE: [
+                join(msvc, "include"),
+                join(sdk, "ucrt"),
+                join(sdk, "um"),
+                join(sdk, "shared"),
+                join(sdk, "winrt"),
+                join(sdk, "cppwinrt"),
+            ].join(";"),
+            LIB: [
+                join(msvc, "lib", "x64"),
+                join(sdkRoot, "Lib", sdkVersion, "ucrt", "x64"),
+                join(sdkRoot, "Lib", sdkVersion, "um", "x64"),
+            ].join(";"),
+        },
+    };
 }
 
 function compile(idOrSource: string): void {
@@ -68,6 +172,11 @@ function build(idOrSource: string): void {
 }
 
 function buildScene(scene: (typeof scenes)[number]): void {
+    const generator = process.env.BBLITE_CMAKE_GENERATOR ?? "Ninja";
+    const ninja =
+        process.platform === "win32" && generator === "Ninja"
+            ? windowsNinjaEnvironment()
+            : undefined;
     const configureArguments = [
         "-S",
         "native",
@@ -75,10 +184,13 @@ function buildScene(scene: (typeof scenes)[number]): void {
         scene.buildDirectory,
         "-DCMAKE_BUILD_TYPE=Release",
         `-DBBLITE_GENERATED_DIR=${resolve(scene.output)}`,
+        "-G",
+        generator,
     ];
-    const generator = process.env.BBLITE_CMAKE_GENERATOR;
-    if (generator) {
-        configureArguments.push("-G", generator);
+    if (ninja) {
+        configureArguments.push(
+            `-DCMAKE_MAKE_PROGRAM=${ninja.ninja}`,
+        );
     }
     const vcpkgRoot = process.env.VCPKG_ROOT;
     if (vcpkgRoot) {
@@ -91,14 +203,23 @@ function buildScene(scene: (typeof scenes)[number]): void {
             )}`,
         );
     }
-    run(process.env.CMAKE_COMMAND ?? "cmake", configureArguments);
-    run(process.env.CMAKE_COMMAND ?? "cmake", [
-        "--build",
-        scene.buildDirectory,
-        "--config",
-        "Release",
-        "--parallel",
-    ]);
+    const environment = ninja?.environment ?? process.env;
+    run(
+        process.env.CMAKE_COMMAND ?? "cmake",
+        configureArguments,
+        environment,
+    );
+    run(
+        process.env.CMAKE_COMMAND ?? "cmake",
+        [
+            "--build",
+            scene.buildDirectory,
+            "--config",
+            "Release",
+            "--parallel",
+        ],
+        environment,
+    );
 }
 
 function compileShaders(sceneId?: string): void {

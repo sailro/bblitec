@@ -59,4 +59,10 @@ test("keeps package scene commands registry-driven", () => {
     assert.equal(packageJson.scripts["scenes:build"], "npm run scene -- build all");
     assert.equal(packageJson.scripts["scenes:process"], "npm run scene -- process all");
     assert.equal(packageJson.scripts["scenes:parity"], "npm run scene -- parity all");
+    const sceneCommand = readFileSync("src/scene-command.ts", "utf8");
+    assert.match(
+        sceneCommand,
+        /process\.env\.BBLITE_CMAKE_GENERATOR \?\? "Ninja"/,
+    );
+    assert.match(sceneCommand, /windowsNinjaEnvironment/);
 });

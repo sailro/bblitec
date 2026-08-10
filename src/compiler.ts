@@ -2129,20 +2129,6 @@ class Compiler {
             return `${this.compileStaticString(name)}:${this.compileStaticString(type)}`;
         });
     }
-    if (features.includes("renderer:transmission")) {
-        adaptations.push({
-            id: "sdl-gpu-scene-transmission",
-            category: "rendering",
-            sourceSemantics: "Babylon Lite copies scene color before transmissive draws and applies KHR_materials_transmission, IOR Fresnel, and KHR_materials_volume attenuation.",
-            nativeSemantics: "Generated render stages copy opaque scene color into an SDL_GPU sampled texture; Tint WGSL applies dielectric F0 ((ior-1)/(ior+1))^2 and Beer-Lambert exp(log(color)/distance*thickness) attenuation.",
-            risk: "high",
-            validation: [
-                "independent skybox/transmission/IOR/volume gates",
-                "scene 176 MosquitoInAmber parity",
-                "Tint binding reflection",
-            ],
-        });
-    }
     private compileStaticStringArray(expression: ts.Expression): string[] {
         return this.expectStaticArrayLiteral(expression).elements.map(
             (element) => this.compileStaticString(element),
@@ -2692,6 +2678,20 @@ class Compiler {
                 nativeSemantics: "The compiler emits native-specialized WGSL; pinned Tint produces HLSL/MSL, register normalization and DXC produce SDL-compatible DXIL/SPIR-V, and SDL_GPU selects the native backend.",
                 risk: "high",
                 validation: ["upstream formula marker tests", "renderer-fidelity.json", "CPU/GPU visual parity"],
+            });
+        }
+        if (features.includes("renderer:transmission")) {
+            adaptations.push({
+                id: "sdl-gpu-scene-transmission",
+                category: "rendering",
+                sourceSemantics: "Babylon Lite copies scene color before transmissive draws and applies KHR_materials_transmission, IOR Fresnel, and KHR_materials_volume attenuation.",
+                nativeSemantics: "Generated render stages copy opaque scene color into an SDL_GPU sampled texture; Tint WGSL applies dielectric F0 ((ior-1)/(ior+1))^2 and Beer-Lambert exp(log(color)/distance*thickness) attenuation.",
+                risk: "high",
+                validation: [
+                    "independent skybox/transmission/IOR/volume gates",
+                    "scene 176 MosquitoInAmber parity",
+                    "Tint binding reflection",
+                ],
             });
         }
         if (features.includes("environment:hdr")) {

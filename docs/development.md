@@ -4,6 +4,7 @@
 
 - Node.js 22+
 - CMake 3.24+
+- Ninja
 - a C++20 compiler
 - vcpkg
 - PowerShell and DXC for shader compilation
@@ -117,21 +118,23 @@ Manual equivalent:
 
 ```powershell
 cmake -S native -B native\build-boombox-release `
+  -G Ninja `
   -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
   -DBBLITE_GENERATED_DIR="$PWD\generated\boombox"
 cmake --build native\build-boombox-release --config Release
 ```
 
-CMake generators are not hardcoded. A fresh Windows tree may use Visual
-Studio; Linux commonly uses Unix Makefiles or Ninja. Never reuse one build
-directory with a different generator. All build trees are ignored and safe to
+Ninja is the default on every platform. On Windows, the scene command locates
+Visual Studio, the latest MSVC toolset, the Windows SDK, and Visual Studio's
+bundled Ninja without requiring a Developer Command Prompt. Set
+`BBLITE_CMAKE_GENERATOR` to override the default. Never reuse one build
+directory with a different generator; all build trees are ignored and safe to
 delete.
 
 Build scenes sequentially: concurrent vcpkg use is unreliable.
 
-Set `BBLITE_CMAKE_GENERATOR` before configuring fresh build directories to
-select a generator. On the development Windows machine, a Release BoomBox
-benchmark with the same MSVC toolchain measured:
+The default follows this Release BoomBox benchmark on the development Windows
+machine using the same MSVC toolchain:
 
 | Workload | Visual Studio 18 | Ninja |
 | --- | ---: | ---: |
@@ -142,13 +145,15 @@ benchmark with the same MSVC toolchain measured:
 The resulting 1280x720 BoomBox captures were byte-identical (`MAD 0.000`);
 both measured `0.311392` MAD against the same Babylon Lite golden.
 
-Ninja is the preferred iteration generator when it is available from an
-initialized compiler environment:
+Override the generator only when needed:
 
 ```powershell
-$env:BBLITE_CMAKE_GENERATOR = "Ninja"
+$env:BBLITE_CMAKE_GENERATOR = "Visual Studio 18 2026"
 npm run scene -- process boombox
 ```
+
+Ninja places `bblite_native.exe` directly in the build directory; multi-config
+Visual Studio generators place it under `Release`.
 
 Native outputs are self-contained by default: CMake places `assets` and
 `shaders` beside the executable, and runtime lookup is relative to that
