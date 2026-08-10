@@ -213,6 +213,8 @@ export async function runSceneParity(
         arguments_.recaptureReference,
         undefined,
         config.referenceTimeSeconds,
+        config.referenceFrameRate,
+        config.referenceAnimationGroups,
     );
     if (!arguments_.actual) {
         runNative(

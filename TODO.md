@@ -29,13 +29,6 @@ baselines belong in [status](docs/status.md) and Git history.
 - [ ] Validate BRDF LUT and cubemap orientation on Metal hardware.
 - [ ] Investigate iOS after macOS is stable.
 
-### WebGPU
-
-- [ ] Track SDL issue
-  [`#10768`](https://github.com/libsdl-org/SDL/issues/10768).
-- [ ] Evaluate experimental SDL/SDL_shadercross WebGPU forks separately.
-- [ ] Produce SDL-compatible WGSL bindings and an Emscripten proof of concept.
-
 ## P1 — TypeScript compiler coverage
 
 ### Modules and functions
@@ -69,10 +62,17 @@ baselines belong in [status](docs/status.md) and Git history.
 - [ ] Multiple UV sets and texture-coordinate selection.
 - [ ] Texture transforms and vertex colors.
 - [ ] Sparse accessors and additional primitive modes.
-- [ ] Complete animation coverage: scale and STEP channels, group controls,
-  and GPU skinning/morph evaluation.
+- [ ] Complete glTF animation coverage: scale and STEP channels, multiple
+  clips, and richer animation-group controls.
 - [ ] Cameras and punctual lights.
 - [ ] KTX2/Basis and compression investigations.
+
+### Property animation
+
+- [ ] Generalize property bindings beyond reached mesh `position`,
+  `position.x`, `scaling`, and `rotationQuaternion` paths.
+- [ ] Generalize animation targets beyond meshes while retaining typed
+  compile-time path validation.
 
 ### Material extensions
 
@@ -80,6 +80,12 @@ baselines belong in [status](docs/status.md) and Git history.
 - [ ] Transmission/volume, iridescence, anisotropy.
 - [ ] Require typed metadata specialization, focused tests, and a non-BoomBox
   parity scene for each extension.
+- [ ] Generalize Standard lighting beyond the reached two-light uniform slice.
+
+### Shader provenance
+
+- [ ] Replace the pinned converted native PBR WGSL with direct extraction from
+  Babylon Lite's full feature composer.
 
 ### Packed native assets
 

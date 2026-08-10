@@ -1,6 +1,8 @@
 export interface SceneParityDefinition {
     reference: { kind: "source"; path: string };
     referenceTimeSeconds?: number;
+    referenceFrameRate?: number;
+    referenceAnimationGroups?: string[];
     actual: string;
     outputDirectory: string;
     maxFullMad?: number;
@@ -355,6 +357,61 @@ export const scenes: readonly SceneDefinition[] = [
             maxForegroundMad: 0.02,
             backgroundColor: [20, 20, 28],
             backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene151",
+        name: "Scene 151 - Property Transform Animation",
+        source: "examples/scene151-property-transform-animation.ts",
+        output: "generated/scene151",
+        title: "Babylon Lite Native - Property Transform Animation",
+        buildDirectory: "native/build-scene151-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/scene151/babylon-lite-golden.png",
+            },
+            referenceTimeSeconds: 0.5,
+            referenceFrameRate: 12,
+            referenceAnimationGroups: ["group"],
+            actual: "artifacts/parity/scene151-native.png",
+            outputDirectory: "artifacts/parity/scene151",
+            maxFullMad: 0.05,
+            maxForegroundMad: 0.2,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "0.5",
+            },
+        },
+    },
+    {
+        id: "scene154",
+        name: "Scene 154 - STEP Time Animation",
+        source: "examples/scene154-step-time-animation.ts",
+        output: "generated/scene154",
+        title: "Babylon Lite Native - STEP Time Animation",
+        buildDirectory: "native/build-scene154-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/scene154/babylon-lite-golden.png",
+            },
+            referenceTimeSeconds: 0.75,
+            referenceFrameRate: 10,
+            referenceAnimationGroups: [
+                "linearGroup",
+                "stepGroup",
+            ],
+            actual: "artifacts/parity/scene154-native.png",
+            outputDirectory: "artifacts/parity/scene154",
+            maxFullMad: 0.05,
+            maxForegroundMad: 0.2,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "0.75",
+            },
         },
     },
     {

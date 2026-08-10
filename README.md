@@ -17,18 +17,30 @@ Unsupported syntax and APIs fail at compile time with source locations.
 
 - Pinned upstream: `@babylonjs/lite@1.18.0`,
   commit `7184feda683072980735f9a180e6f567ee5717ba`.
-- 24 curated Babylon Lite parity scenes plus BoomBox and primitives.
+- 26 curated Babylon Lite parity scenes plus BoomBox and primitives.
 - External glTF/GLB and a reached `.babylon` slice.
 - Generated Standard/PBR/Grid rendering, ordered draw lists, custom alpha
-  variants, frame-graph MRT/depth passes, negative transforms, and runtime
-  scene mutation.
+  variants, frame-graph MRT/depth passes, negative transforms, runtime scene
+  mutation, property animation, and tree-shaken GPU deformation.
 - Exact HDR GGX preprocessing and transmission/IOR/volume scene-color rendering.
 - WGSL shaders compiled by pinned Tint for D3D12, Vulkan, and Metal.
-- BoomBox D3D12 baseline: `0.001` full MAD, `0.015` foreground MAD,
-  `0.176 ms` average CPU submission.
+- BoomBox D3D12 parity is effectively exact; measured quality and performance
+  baselines live only in [Status](docs/status.md).
 
 See [current status](docs/status.md) for the supported subset and all measured
 scene results.
+
+## Start here in a fresh session
+
+1. Read [Architecture](docs/architecture.md) for ownership and generated/PAL
+   boundaries.
+2. Read [Status](docs/status.md) for the validated vertical slice and current
+   scene metrics.
+3. Read [Fidelity](docs/fidelity.md) before changing renderer, loader,
+   animation, or parity behavior.
+4. Read [Development](docs/development.md) before generating or building.
+5. Use [TODO](TODO.md) only for unfinished priorities; completed history lives
+   in Git and the status page.
 
 ## Quick start
 

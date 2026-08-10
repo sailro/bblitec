@@ -31,6 +31,10 @@ opt-in ground composition.
 
 New high-risk adaptations require an explicit record and a focused test.
 
+Curated references are immutable evidence during ordinary fixes. Do not alter
+scene inputs, thresholds, or goldens to improve a score. Add or recapture a
+reference only as an intentional pinned-scene operation.
+
 ## Shader contract
 
 Generated shaders preserve upstream markers for:
@@ -87,9 +91,21 @@ background. Explicit HDR cubemap skyboxes remain enabled by default.
 glTF animation uses pinned LINEAR quaternion interpolation and deterministic
 time seeking, plus CUBICSPLINE quaternion/translation interpolation where
 reached. Morph position/normal deltas are applied before recursive skinning;
-joint inverse-bind matrices, weighted positions/normals/tangents, and
-post-deformation flat normals are evaluated before PAL uploads changed vertex
-buffers.
+generated joint palettes and morph weights drive vertex-shader
+positions/normals/tangents. Primitives without source normals remain
+deindexed and use a narrow CPU fallback to recompute post-deformation face
+normals, while their positions are still GPU-skinned. See
+[Architecture](architecture.md#animation-and-deformation) for layout,
+specialization, and fallback limits.
+
+Pinned property animations compile static clips and groups into typed native
+records. LINEAR scalar/vector interpolation, quaternion slerp, STEP holds,
+frame/time ranges, looping, speed ratios, and deterministic group seeking are
+generated from the reached Babylon Lite APIs.
+
+Scene 151 gates directional-plus-hemispheric Standard lighting and is
+pixel-exact. The supported light-count boundary is recorded in
+[Status](status.md).
 
 DXC cannot be removed from the D3D12 path because Tint does not emit DXIL.
 Tint does emit SPIR-V, but its separate WGSL texture/sampler binding numbers do
@@ -158,6 +174,13 @@ Standard double-sided materials disable culling but do not flip fragment
 normals. Matching that pinned distinction reduced scene 145 full-resolution
 view/world-normal MAD from `1.459`/`1.446` to `0.002`/`0.003`.
 
+Scenes 145 and 146 display twelve preview tiles produced by downscaling each
+full-resolution MSAA attachment by 6x. Their displayed full-image MAD therefore
+mixes attachment correctness with preview filtering. Use
+`npm run scene -- geometry scene145|scene146` for the full-resolution
+attachment oracle; do not describe this repository diagnostic distinction as
+a renderer feature or infer that MSAA is the root cause.
+
 The diagnostic comparison report joins each final-image hotspot to the
 available WebGPU-oracle buffer MADs and its attributed shader variant. Base
 color and pre-tone HDR are currently native captures only; they are listed as
@@ -175,3 +198,7 @@ There is no hosted CI. A validated milestone keeps:
 GPU results are device-specific and must record the selected backend. Golden
 images are evidence, not tuning targets: fixes must follow upstream semantics
 or metadata rather than scene or pixel heuristics.
+
+On Windows, runtime topology changes wait for GPU idle before appending
+resources. Screenshot/diagnostic capture is deferred until the following frame
+so upload and readback are never submitted in the same D3D12 command list.

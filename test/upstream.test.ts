@@ -7,6 +7,7 @@ import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { BabylonLowerer } from "../src/lowering/babylon-lowerer.js";
+import { AnimationLowerer } from "../src/lowering/animation-lowerer.js";
 import { EngineLowerer } from "../src/lowering/engine-lowerer.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
@@ -58,6 +59,23 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     assert.match(lowered.source, /registered_scenes\.end\(\)/);
 });
 
+test("generates property animation evaluation and seeking", () => {
+    const lowered = new AnimationLowerer(
+        new LoweringContext(),
+    ).lowerPropertyAnimation();
+    assert.match(lowered.source, /slerp_quaternion/);
+    assert.match(
+        lowered.source,
+        /PropertyAnimationInterpolation::step/,
+    );
+    assert.match(lowered.source, /scene\.animation_seekers/);
+    assert.match(lowered.source, /mesh\.scaling = Vec3/);
+    assert.match(
+        lowered.source,
+        /mesh\.has_rotation_quaternion = true/,
+    );
+});
+
 test("generates GLB framing validation from upstream constants", () => {
     const lowerer = new GltfLowerer(new LoweringContext());
     const lowered = lowerer.lowerGlbParser();
@@ -92,6 +110,9 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /inverseBindMatrices/);
     assert.match(adapter.source, /RotationTrack/);
     assert.match(adapter.source, /animation_tick/);
+    assert.match(adapter.source, /geometry\.morph_positions\.size\(\) <= 2/);
+    assert.match(adapter.source, /\.joints\.size\(\) <= 64/);
+    assert.match(adapter.source, /mesh_record\.gpu_deformation/);
     assert.doesNotMatch(adapter.source, /pal::load_glb/);
 });
 
@@ -175,12 +196,21 @@ test("generates the public hemispheric light factory from upstream defaults", ()
     const lowerer = new LightLowerer(new LoweringContext());
     const lowered = lowerer.lowerFactory();
     const point = lowerer.lowerPointFactory();
+    const directional = lowerer.lowerDirectionalFactory();
     assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
     assert.match(lowered.source, /light\.diffuse_color = Color3\{1\.0f, 1\.0f, 1\.0f\}/);
     assert.match(lowered.source, /light\.ground_color = Color3\{0\.0f, 0\.0f, 0\.0f\}/);
     assert.match(point.source, /light\.kind = LightKind::point/);
     assert.match(point.source, /light\.position = position/);
     assert.match(point.source, /light\.range = std::numeric_limits<float>::max\(\)/);
+    assert.match(
+        directional.source,
+        /light\.kind = LightKind::directional/,
+    );
+    assert.match(
+        directional.source,
+        /local_matrix_from_direction/,
+    );
 });
 
 test("generates ArcRotate and default camera factories from upstream constants", () => {

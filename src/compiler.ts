@@ -58,6 +58,9 @@ export interface CompileResult {
 }
 
 type ValueKind =
+    | "animation-clip"
+    | "animation-group"
+    | "animation-manager"
     | "asset"
     | "browser"
     | "camera"
@@ -80,9 +83,12 @@ interface Value {
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     shaderVariant?: ShaderMaterialVariantName;
+    animationFrameRate?: string;
+    animationDuration?: string;
 }
 
 type Feature =
+    | "animation:property"
     | "background:ground"
     | "background:skybox"
     | "core"
@@ -94,6 +100,7 @@ type Feature =
     | "environment:env"
     | "environment:hdr"
     | "light:hemispheric"
+    | "light:directional"
     | "light:point"
     | "loader:babylon"
     | "loader:gltf"
@@ -112,6 +119,7 @@ type Feature =
     | "renderer:geometry-output";
 
 const featureSources: Record<Feature, string[]> = {
+    "animation:property": [],
     "core": ["src/pal.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp"],
     "camera:arc-rotate": [],
@@ -123,6 +131,7 @@ const featureSources: Record<Feature, string[]> = {
     "background:ground": [],
     "background:skybox": [],
     "light:hemispheric": [],
+    "light:directional": [],
     "light:point": [],
     "loader:babylon": [],
     "loader:gltf": [],
@@ -215,6 +224,9 @@ class Compiler {
             "upstream/src/engine.cpp",
             "upstream/src/scene_core.cpp",
         ];
+        if (features.includes("animation:property")) {
+            generatedSources.push("upstream/src/animation_property.cpp");
+        }
         if (
             features.includes("camera:arc-rotate") ||
             features.includes("camera:default") ||
@@ -240,8 +252,17 @@ class Compiler {
         if (features.includes("environment:hdr")) {
             generatedSources.push("upstream/src/environment_hdr.cpp");
         }
+        if (
+            features.includes("light:hemispheric") ||
+            features.includes("light:directional")
+        ) {
+            generatedSources.push("upstream/src/light_matrix.cpp");
+        }
         if (features.includes("light:hemispheric")) {
-            generatedSources.push("upstream/src/light_matrix.cpp", "upstream/src/light_hemispheric.cpp");
+            generatedSources.push("upstream/src/light_hemispheric.cpp");
+        }
+        if (features.includes("light:directional")) {
+            generatedSources.push("upstream/src/light_directional.cpp");
         }
         if (features.includes("light:point")) {
             generatedSources.push("upstream/src/light_point.cpp");
@@ -426,6 +447,10 @@ class Compiler {
         const cppName = this.cppIdentifier(sourceName);
         this.emit(`auto ${cppName} = ${value.cpp};`);
         const stored = { ...value, cpp: cppName };
+        if (value.kind === "animation-clip") {
+            stored.animationFrameRate = `${cppName}.frame_rate`;
+            stored.animationDuration = `${cppName}.duration`;
+        }
         this.variables.set(sourceName, stored);
         if (value.kind === "engine") {
             if (this.defaultEngineCpp) {
@@ -954,6 +979,91 @@ class Compiler {
                 };
             }
 
+            case "createAnimationManager": {
+                this.expectArgumentCount(call, 0, 0);
+                this.features.add("animation:property");
+                return {
+                    kind: "animation-manager",
+                    cpp: "bbl::create_animation_manager()",
+                };
+            }
+
+            case "createPropertyAnimationClip": {
+                this.expectArgumentCount(call, 2, 3);
+                const compiled =
+                    this.compilePropertyAnimationClip(
+                        call.arguments[0]!,
+                        call.arguments[1]!,
+                        call.arguments[2],
+                    );
+                this.features.add("animation:property");
+                return {
+                    kind: "animation-clip",
+                    cpp: compiled.cpp,
+                    animationFrameRate: compiled.frameRate,
+                    animationDuration: compiled.duration,
+                };
+            }
+
+            case "createPropertyAnimationGroup": {
+                this.expectArgumentCount(call, 3, 4);
+                const manager = this.compileValue(call.arguments[0]!);
+                const target = this.compileValue(call.arguments[1]!);
+                const clip = this.compileValue(call.arguments[2]!);
+                this.expectKind(
+                    manager,
+                    "animation-manager",
+                    call.arguments[0]!,
+                );
+                this.expectKind(target, "mesh", call.arguments[1]!);
+                this.expectKind(
+                    clip,
+                    "animation-clip",
+                    call.arguments[2]!,
+                );
+                const options =
+                    this.compilePropertyAnimationGroupOptions(
+                        call.arguments[3],
+                        clip,
+                    );
+                this.features.add("animation:property");
+                return {
+                    kind: "animation-group",
+                    cpp: `bbl::create_property_animation_group(${manager.cpp}, ${target.cpp}, ${clip.cpp}, ${options})`,
+                    engineCpp: this.requireEngine(target, call),
+                };
+            }
+
+            case "startAnimationManager": {
+                this.expectArgumentCount(call, 1, 1);
+                const manager = this.compileValue(call.arguments[0]!);
+                this.expectKind(
+                    manager,
+                    "animation-manager",
+                    call.arguments[0]!,
+                );
+                const scene = this.requireDefaultScene(call);
+                this.features.add("animation:property");
+                return {
+                    kind: "void",
+                    cpp: `bbl::start_animation_manager(${manager.cpp}, ${scene.cpp})`,
+                };
+            }
+
+            case "goToFrame": {
+                this.expectArgumentCount(call, 2, 2);
+                const group = this.compileValue(call.arguments[0]!);
+                this.expectKind(
+                    group,
+                    "animation-group",
+                    call.arguments[0]!,
+                );
+                return {
+                    kind: "void",
+                    cpp: `bbl::go_to_frame(${group.cpp}, ${this.requireEngine(group, call)}, ${this.compileNumber(call.arguments[1]!)})`,
+                };
+            }
+
             case "createBox": {
                 this.expectArgumentCount(call, 1, 2);
                 const engine = this.compileValue(call.arguments[0]!);
@@ -1227,6 +1337,7 @@ class Compiler {
                 this.expectArgumentCount(call, 0, 0);
                 const engine = this.requireDefaultEngine(call);
                 this.features.add("material:standard");
+                this.features.add("renderer:pbr");
                 return { kind: "material", cpp: `bbl::create_standard_material(${engine})`, engineCpp: engine };
             }
 
@@ -1239,6 +1350,21 @@ class Compiler {
                 return {
                     kind: "light",
                     cpp: `bbl::create_hemispheric_light(${engine}, ${direction}, ${intensity})`,
+                    engineCpp: engine,
+                };
+            }
+
+            case "createDirectionalLight": {
+                this.expectArgumentCount(call, 1, 2);
+                const engine = this.requireDefaultEngine(call);
+                const direction = this.compileVec3(call.arguments[0]!);
+                const intensity = call.arguments[1]
+                    ? this.compileNumber(call.arguments[1])
+                    : "1.0f";
+                this.features.add("light:directional");
+                return {
+                    kind: "light",
+                    cpp: `bbl::create_directional_light(${engine}, ${direction}, ${intensity})`,
                     engineCpp: engine,
                 };
             }
@@ -2155,6 +2281,219 @@ class Compiler {
             return `${this.compileStaticString(name)}:${this.compileStaticString(type)}`;
         });
     }
+
+    private compilePropertyAnimationClip(
+        nameExpression: ts.Expression,
+        tracksExpression: ts.Expression,
+        optionsExpression: ts.Expression | undefined,
+    ): {
+        cpp: string;
+        frameRate: string;
+        duration: string;
+    } {
+        const frameRate = optionsExpression
+            ? this.compilePropertyAnimationFrameRate(optionsExpression)
+            : "60.0f";
+        const tracks = this.expectStaticArrayLiteral(tracksExpression);
+        if (tracks.elements.length === 0) {
+            this.fail(
+                tracks,
+                "createPropertyAnimationClip requires at least one track.",
+            );
+        }
+        const compiledTracks = tracks.elements.map((element) => {
+            const track = this.expectObjectLiteral(
+                this.resolveStaticExpression(element),
+            );
+            const pathExpression = this.objectProperty(track, "path");
+            const keysExpression = this.objectProperty(track, "keys");
+            if (!pathExpression || !keysExpression) {
+                this.fail(
+                    track,
+                    "Property animation tracks require path and keys.",
+                );
+            }
+            const path = this.compileStaticString(pathExpression);
+            const pathInfo = new Map<
+                string,
+                { native: string; components: number }
+            >([
+                [
+                    "position",
+                    {
+                        native: "position",
+                        components: 3,
+                    },
+                ],
+                [
+                    "position.x",
+                    {
+                        native: "position_x",
+                        components: 1,
+                    },
+                ],
+                [
+                    "scaling",
+                    {
+                        native: "scaling",
+                        components: 3,
+                    },
+                ],
+                [
+                    "rotationQuaternion",
+                    {
+                        native: "rotation_quaternion",
+                        components: 4,
+                    },
+                ],
+            ]).get(path);
+            if (!pathInfo) {
+                this.fail(
+                    pathExpression,
+                    `Unsupported property animation path '${path}'.`,
+                );
+            }
+            const interpolationExpression =
+                this.objectProperty(track, "interpolation");
+            const interpolation = interpolationExpression
+                ? this.compileStaticString(interpolationExpression)
+                : "linear";
+            if (!["linear", "step"].includes(interpolation)) {
+                this.fail(
+                    interpolationExpression!,
+                    `Unsupported property animation interpolation '${interpolation}'.`,
+                );
+            }
+            const trackFrameRateExpression =
+                this.objectProperty(track, "frameRate");
+            const trackFrameRate = trackFrameRateExpression
+                ? this.compileNumber(trackFrameRateExpression)
+                : frameRate;
+            const keys = this.expectStaticArrayLiteral(keysExpression);
+            if (keys.elements.length === 0) {
+                this.fail(
+                    keys,
+                    `Property animation track '${path}' requires at least one key.`,
+                );
+            }
+            const compiledKeys = keys.elements.map((keyElement) => {
+                const key = this.expectObjectLiteral(
+                    this.resolveStaticExpression(keyElement),
+                );
+                const timeExpression = this.objectProperty(key, "time");
+                const frameExpression = this.objectProperty(key, "frame");
+                const valueExpression = this.objectProperty(key, "value");
+                if (
+                    (!timeExpression && !frameExpression) ||
+                    (timeExpression && frameExpression) ||
+                    !valueExpression
+                ) {
+                    this.fail(
+                        key,
+                        "Property animation keys require value and exactly one of time or frame.",
+                    );
+                }
+                const time = timeExpression
+                    ? this.compileNumber(timeExpression)
+                    : `(${this.compileNumber(frameExpression!)} / ${trackFrameRate})`;
+                const value = this.compilePropertyAnimationKeyValue(
+                    valueExpression,
+                    pathInfo.components,
+                );
+                return `bbl::PropertyAnimationKey{${time}, ${value}}`;
+            });
+            return `bbl::PropertyAnimationTrack{bbl::PropertyAnimationPath::${pathInfo.native}, bbl::PropertyAnimationInterpolation::${interpolation}, {${compiledKeys.join(", ")}}}`;
+        });
+        const name = this.compileStaticString(nameExpression);
+        return {
+            cpp: `bbl::create_property_animation_clip(${this.cppString(name)}, {${compiledTracks.join(", ")}}, ${frameRate})`,
+            frameRate,
+            duration: "0.0f",
+        };
+    }
+
+    private compilePropertyAnimationFrameRate(
+        expression: ts.Expression,
+    ): string {
+        const options = this.expectObjectLiteral(expression);
+        const frameRate = this.objectProperty(options, "frameRate");
+        return frameRate
+            ? this.compileNumber(frameRate)
+            : "60.0f";
+    }
+
+    private compilePropertyAnimationKeyValue(
+        expression: ts.Expression,
+        components: number,
+    ): string {
+        const resolved = this.resolveStaticExpression(expression);
+        const values =
+            components === 1
+                ? [this.compileNumber(resolved)]
+                : this.expectStaticArrayLiteral(resolved).elements.map(
+                      (element) => this.compileNumber(element),
+                  );
+        if (values.length !== components) {
+            this.fail(
+                resolved,
+                `Property animation value requires ${components} components.`,
+            );
+        }
+        while (values.length < 4) values.push("0.0f");
+        return `std::array<float, 4>{${values.join(", ")}}`;
+    }
+
+    private compilePropertyAnimationGroupOptions(
+        expression: ts.Expression | undefined,
+        clip: Value,
+    ): string {
+        const frameRate =
+            clip.animationFrameRate ??
+            this.fail(
+                expression ?? this.sourceFile,
+                "Property animation clip frame rate is unavailable.",
+            );
+        const duration =
+            clip.animationDuration ??
+            this.fail(
+                expression ?? this.sourceFile,
+                "Property animation clip duration is unavailable.",
+            );
+        if (!expression) {
+            return `bbl::PropertyAnimationGroupOptions{0.0f, ${duration}, 1.0f, true}`;
+        }
+        const options = this.expectObjectLiteral(expression);
+        const fromTime = this.objectProperty(options, "fromTime");
+        const fromFrame = this.objectProperty(options, "fromFrame");
+        const toTime = this.objectProperty(options, "toTime");
+        const toFrame = this.objectProperty(options, "toFrame");
+        if (fromTime && fromFrame) {
+            this.fail(
+                options,
+                "Property animation group cannot specify both fromTime and fromFrame.",
+            );
+        }
+        if (toTime && toFrame) {
+            this.fail(
+                options,
+                "Property animation group cannot specify both toTime and toFrame.",
+            );
+        }
+        const from = fromTime
+            ? this.compileNumber(fromTime)
+            : fromFrame
+                ? `(${this.compileNumber(fromFrame)} / ${frameRate})`
+                : "0.0f";
+        const to = toTime
+            ? this.compileNumber(toTime)
+            : toFrame
+                ? `(${this.compileNumber(toFrame)} / ${frameRate})`
+                : duration;
+        const speedRatio = this.objectProperty(options, "speedRatio");
+        const loop = this.objectProperty(options, "loop");
+        return `bbl::PropertyAnimationGroupOptions{${from}, ${to}, ${speedRatio ? this.compileNumber(speedRatio) : "1.0f"}, ${loop ? this.compileBoolean(loop) : "true"}}`;
+    }
+
     private compileStaticStringArray(expression: ts.Expression): string[] {
         return this.expectStaticArrayLiteral(expression).elements.map(
             (element) => this.compileStaticString(element),
@@ -2852,6 +3191,19 @@ class Compiler {
             this.fail(node, "This intrinsic requires createEngine to run first.");
         }
         return this.defaultEngineCpp;
+    }
+
+    private requireDefaultScene(node: ts.Node): Value {
+        const scenes = [...this.variables.values()].filter(
+            (value) => value.kind === "scene",
+        );
+        if (scenes.length !== 1) {
+            this.fail(
+                node,
+                "This intrinsic requires exactly one scene context.",
+            );
+        }
+        return scenes[0]!;
     }
 
     private expectArgumentCount(call: ts.CallExpression, minimum: number, maximum: number): void {

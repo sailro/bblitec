@@ -438,6 +438,22 @@ Matrix inverse_affine(const Matrix& matrix) {
     return result;
 }
 
+Matrix native_matrix(const Matrix& matrix) {
+    Matrix result{};
+    for (std::size_t column = 0; column < 4; ++column) {
+        for (std::size_t row = 0; row < 4; ++row) {
+            const float row_sign = row == 0 ? -1.0f : 1.0f;
+            const float column_sign =
+                column == 0 ? -1.0f : 1.0f;
+            result[column * 4 + row] =
+                matrix[column * 4 + row] *
+                row_sign *
+                column_sign;
+        }
+    }
+    return result;
+}
+
 Vec3 transform_point_raw(const Matrix& matrix, Vec3 value) {
     return Vec3{
         matrix[0] * value.x + matrix[4] * value.y + matrix[8] * value.z + matrix[12],
@@ -1178,6 +1194,20 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             const std::uint32_t mesh_record_index =
                 static_cast<std::uint32_t>(engine.meshes.size() - 1);
             if (animated) {
+                const std::size_t skin_index =
+                    optional(node, "skin")
+                        ? unsigned_value(*optional(node, "skin"))
+                        : std::numeric_limits<std::size_t>::max();
+                const bool gpu_deformation =
+                    geometry.morph_positions.size() <= 2 &&
+                    (
+                        skin_index ==
+                            std::numeric_limits<std::size_t>::max() ||
+                        animation_runtime
+                                ->skins.at(skin_index)
+                                .joints.size() <= 64);
+                engine.meshes[mesh_record_index]
+                    .gpu_deformation = gpu_deformation;
                 animation_runtime
                     ->node_meshes[node_index]
                     .push_back(mesh_record_index);
@@ -1186,9 +1216,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         mesh_record_index,
                         record.geometry,
                         node_index,
-                        optional(node, "skin")
-                            ? unsigned_value(*optional(node, "skin"))
-                            : std::numeric_limits<std::size_t>::max(),
+                        skin_index,
                     });
             }
             asset.meshes.push_back(MeshHandle{mesh_record_index});
@@ -1564,6 +1592,37 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                                 skin->inverse_bind_matrices[joint]));
                     }
                 }
+                MeshRecord& mesh_record =
+                    engine.meshes.at(binding.mesh);
+                mesh_record.bone_matrices.clear();
+                if (skin) {
+                    for (const Matrix& joint_matrix : joint_matrices) {
+                        mesh_record.bone_matrices.push_back(
+                            native_matrix(joint_matrix));
+                    }
+                } else {
+                    mesh_record.bone_matrices.push_back(
+                        native_matrix(mesh_world));
+                }
+                mesh_record.morph_weights = {};
+                const std::vector<float>& node_weights =
+                    animation_runtime
+                        ->nodes[binding.node]
+                        .weights;
+                for (
+                    std::size_t target = 0;
+                    target < node_weights.size() &&
+                    target < mesh_record.morph_weights.size();
+                    ++target) {
+                    mesh_record.morph_weights[target] =
+                        node_weights[target];
+                }
+                if (
+                    mesh_record.gpu_deformation &&
+                    !geometry.flat_normals) {
+                    ++mesh_record.transform_version;
+                    continue;
+                }
                 for (
                     std::size_t vertex_index = 0;
                     vertex_index < geometry.vertices.size();
@@ -1720,7 +1779,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         c.normal = face;
                     }
                 }
-                ++engine.meshes.at(binding.mesh).transform_version;
+                ++mesh_record.transform_version;
             }
         };
         asset.animation_seek =

@@ -20,8 +20,6 @@ CMake generator and SDL_GPU backend.
 npm ci
 npm test
 npm run scene -- list
-npm run scenes:compile
-npm run shaders:build
 ```
 
 Use the generic scene command rather than adding scripts for ordinary work:
@@ -44,15 +42,8 @@ HDR scene compilation launches headless Chromium to run the pinned
 1024-sample GGX compute shader. Set `CHROME_PATH` when Chrome/Edge is not in a
 standard location.
 
-Aggregate registered-scene workflows are available without duplicating the
-registry in `package.json`:
-
-```powershell
-npm run scenes:compile
-npm run scenes:build
-npm run scenes:process
-npm run scenes:parity
-```
+Aggregate registered-scene workflows are registry-driven through
+`scenes:compile`, `scenes:build`, `scenes:process`, and `scenes:parity`.
 
 ## Ad-hoc scenes
 
@@ -135,6 +126,11 @@ directory with a different generator; all build trees are ignored and safe to
 delete.
 
 Build scenes sequentially: concurrent vcpkg use is unreliable.
+
+Set `VCPKG_ROOT` before configuring a new build directory. If a directory was
+first configured without the toolchain, delete that specific
+`native\build-<scene>-release` directory and configure it again; adding the
+toolchain to an existing cache is not reliable.
 
 The default follows this Release BoomBox benchmark on the development Windows
 machine using the same MSVC toolchain:
@@ -234,6 +230,37 @@ live under `reference\<scene>`.
 There is no hosted CI. Run the smallest relevant local gates and the affected
 native builds before committing.
 
+For compiler, renderer, shader-interface, loader, animation, or PAL changes,
+the complete local milestone is the canonical full validation sequence:
+
+```powershell
+npm test
+npm run scenes:compile
+npm run shaders:build
+npm run scenes:process
+npm run scenes:parity
+npm run parity:diagnostics
+```
+
+Do not run generation and native builds concurrently. Do not build multiple
+CMake trees concurrently against the same vcpkg installation.
+
+Current deterministic animation gates:
+
+| Scene | Seek | Coverage |
+| ---: | ---: | --- |
+| 5 | 2.0 s | morph targets plus skeleton |
+| 151 | 0.5 s | grouped position/scaling/quaternion property tracks |
+| 154 | 0.75 s | LINEAR versus STEP property interpolation |
+| 240 | 0.5 s | glTF node transform |
+| 245 | 1.0 s | recursive skeleton hierarchy |
+
+`referenceTimeSeconds`, `referenceFrameRate`, and optional
+`referenceAnimationGroups` in `src/scene-registry.ts` describe browser
+capture seeking. Native parity uses `BBLITE_ANIMATION_SEEK_SECONDS`. Capture
+metadata must match the pinned scene's own frame rate and explicit groups;
+glTF scenes usually seek `scene.animationGroups`.
+
 ## Portable BoomBox package
 
 ```powershell
@@ -251,6 +278,11 @@ The archive is written to
 - generator mismatch: delete the affected `native\build-*` directory and
   configure it again.
 - stale shader/runtime pair: regenerate shaders, then rebuild the same scene.
+- new build cannot find SDL/nlohmann-json: set `VCPKG_ROOT`, delete only that
+  build directory, and reconfigure.
+- D3D12 command-list failure during screenshot after runtime mesh append:
+  capture must occur after the topology-update frame; PAL now defers it
+  automatically.
 
 ## Common mistakes
 
@@ -261,3 +293,4 @@ The archive is written to
 - ignoring alpha mode, cutoff, culling, or draw order
 - building while generation is still running
 - treating the swapchain as readable
+- changing thresholds, references, or scene inputs to hide a semantic bug

@@ -290,6 +290,10 @@ struct StandardUniforms {
     std::array<float, 4> light_diffuse{};
     std::array<float, 4> light_specular{};
     std::array<float, 4> light_direction{};
+    std::array<float, 4> light_data_2{};
+    std::array<float, 4> light_diffuse_2{};
+    std::array<float, 4> light_specular_2{};
+    std::array<float, 4> light_direction_2{};
     std::array<float, 4> diffuse_alpha{};
     std::array<float, 4> specular_power{};
     std::array<float, 4> emissive_level{};
@@ -395,6 +399,7 @@ SkyboxUniforms build_skybox_uniforms(
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <iterator>
 
 namespace bbl::upstream {
@@ -1040,11 +1045,17 @@ StandardUniforms build_standard_uniforms(
     result.view_right = {right.x, right.y, right.z, 0.0f};
     result.view_up = {up.x, up.y, up.z, 0.0f};
     result.view_forward = {forward.x, forward.y, forward.z, 0.0f};
-    if (
-        !scene.lights.empty() &&
-        scene.lights.front().value < engine.lights.size()) {
-        const LightRecord& light =
-            engine.lights[scene.lights.front().value];
+    if (scene.lights.size() > 2) {
+        throw std::runtime_error(
+            "Reached Standard material supports at most two lights.");
+    }
+    const auto write_light =
+        [](
+            const LightRecord& light,
+            std::array<float, 4>& light_data,
+            std::array<float, 4>& light_diffuse,
+            std::array<float, 4>& light_specular,
+            std::array<float, 4>& light_direction) {
         const Vec3 matrix_direction{
             light.local_matrix[8],
             light.local_matrix[9],
@@ -1061,7 +1072,7 @@ StandardUniforms build_standard_uniforms(
                   matrix_direction.z / matrix_length,
               }
             : light.direction;
-        result.light_data = {
+        light_data = {
             light.kind == LightKind::point
                 ? light.position.x
                 : direction.x,
@@ -1077,19 +1088,19 @@ StandardUniforms build_standard_uniforms(
                     ? 1.0f
                     : 0.0f,
         };
-        result.light_diffuse = {
+        light_diffuse = {
             light.diffuse_color.r * light.intensity,
             light.diffuse_color.g * light.intensity,
             light.diffuse_color.b * light.intensity,
             light.kind == LightKind::point ? light.range : 0.0f,
         };
-        result.light_specular = {
+        light_specular = {
             light.specular_color.r * light.intensity,
             light.specular_color.g * light.intensity,
             light.specular_color.b * light.intensity,
             0.0f,
         };
-        result.light_direction = {
+        light_direction = {
             light.kind == LightKind::hemispheric
                 ? light.ground_color.r
                 : direction.x,
@@ -1099,8 +1110,28 @@ StandardUniforms build_standard_uniforms(
             light.kind == LightKind::hemispheric
                 ? light.ground_color.b
                 : direction.z,
-            0.0f,
+            1.0f,
         };
+    };
+    if (
+        !scene.lights.empty() &&
+        scene.lights[0].value < engine.lights.size()) {
+        write_light(
+            engine.lights[scene.lights[0].value],
+            result.light_data,
+            result.light_diffuse,
+            result.light_specular,
+            result.light_direction);
+    }
+    if (
+        scene.lights.size() > 1 &&
+        scene.lights[1].value < engine.lights.size()) {
+        write_light(
+            engine.lights[scene.lights[1].value],
+            result.light_data_2,
+            result.light_diffuse_2,
+            result.light_specular_2,
+            result.light_direction_2);
     }
     if (item.material.value < engine.materials.size()) {
         const MaterialRecord& material =
@@ -1319,6 +1350,7 @@ SkyboxUniforms build_skybox_uniforms(
         pbrDiagnostics: boolean;
         geometryOutputTasks: GeometryOutputTaskManifest[];
         frameGraph?: boolean;
+        gpuDeformation?: boolean;
     } = {
         ground: true,
         skybox: true,
@@ -1330,6 +1362,7 @@ SkyboxUniforms build_skybox_uniforms(
         idDiagnostics: true,
         pbrDiagnostics: true,
         geometryOutputTasks: [],
+        gpuDeformation: false,
     }): LoweredShader[] {
         const pbr = this.context.store.getSource(pbrTemplateModule);
         const pbrExt = this.context.store.getSource(pbrTemplateExtModule);
@@ -1484,7 +1517,7 @@ SkyboxUniforms build_skybox_uniforms(
         }));
         result.push({
             output: "upstream/shaders/pbr.vert.native.wgsl",
-            data: materialVertexWgsl(),
+            data: materialVertexWgsl(options.gpuDeformation),
         });
         let convertedPbr = readFileSync(
             resolve(templateRoot, "pbr.frag.wgsl"),

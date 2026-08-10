@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -105,6 +106,18 @@ enum class MaterialAlphaMode {
     opaque,
     mask,
     blend,
+};
+
+enum class PropertyAnimationPath {
+    position,
+    position_x,
+    scaling,
+    rotation_quaternion,
+};
+
+enum class PropertyAnimationInterpolation {
+    linear,
+    step,
 };
 
 enum class ShaderMaterialVariant {
@@ -330,12 +343,65 @@ struct MeshRecord {
     PrimitiveKind primitive = PrimitiveKind::box;
     Vec3 position{};
     Vec3 rotation{};
+    Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     Vec3 scaling{1.0f, 1.0f, 1.0f};
     Vec3 dimensions{1.0f, 1.0f, 1.0f};
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
     float baked_world_scale = 1.0f;
     std::uint64_t transform_version = 0;
+    bool has_rotation_quaternion = false;
+    bool gpu_deformation = false;
+    std::vector<std::array<float, 16>> bone_matrices;
+    std::array<float, 4> morph_weights{};
+};
+
+struct PropertyAnimationKey {
+    float time = 0.0f;
+    std::array<float, 4> value{};
+};
+
+struct PropertyAnimationTrack {
+    PropertyAnimationPath path = PropertyAnimationPath::position;
+    PropertyAnimationInterpolation interpolation =
+        PropertyAnimationInterpolation::linear;
+    std::vector<PropertyAnimationKey> keys;
+};
+
+struct PropertyAnimationClip {
+    std::string name;
+    std::vector<PropertyAnimationTrack> tracks;
+    float duration = 0.0f;
+    float frame_rate = 60.0f;
+};
+
+struct PropertyAnimationGroupRecord {
+    MeshHandle target{};
+    PropertyAnimationClip clip;
+    float from_time = 0.0f;
+    float to_time = 0.0f;
+    float current_time = 0.0f;
+    float speed_ratio = 1.0f;
+    bool loop = true;
+    bool playing = true;
+};
+
+using PropertyAnimationGroup =
+    std::shared_ptr<PropertyAnimationGroupRecord>;
+
+struct PropertyAnimationManagerRecord {
+    std::vector<PropertyAnimationGroup> groups;
+    bool started = false;
+};
+
+using PropertyAnimationManager =
+    std::shared_ptr<PropertyAnimationManagerRecord>;
+
+struct PropertyAnimationGroupOptions {
+    float from_time = 0.0f;
+    float to_time = 0.0f;
+    float speed_ratio = 1.0f;
+    bool loop = true;
 };
 
 struct MaterialRecord {
@@ -607,6 +673,7 @@ MaterialHandle create_pbr_no_color_material_view(
     MaterialHandle source);
 void mark_material_ubo_dirty(Engine& engine, MaterialHandle material);
 LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
+LightHandle create_directional_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
 LightHandle create_point_light(Engine& engine, Vec3 position, float intensity = 1.0f);
 CameraHandle create_arc_rotate_camera(Engine& engine, float alpha, float beta, float radius, Vec3 target);
 CameraHandle create_free_camera(Engine& engine, Vec3 position, Vec3 target);
@@ -650,6 +717,23 @@ void add_to_scene(Scene& scene, AssetHandle asset);
 void on_before_render(
     Scene& scene,
     std::function<void(float)> callback);
+PropertyAnimationManager create_animation_manager();
+PropertyAnimationClip create_property_animation_clip(
+    std::string name,
+    std::vector<PropertyAnimationTrack> tracks,
+    float frame_rate);
+PropertyAnimationGroup create_property_animation_group(
+    PropertyAnimationManager manager,
+    MeshHandle target,
+    PropertyAnimationClip clip,
+    PropertyAnimationGroupOptions options);
+void start_animation_manager(
+    PropertyAnimationManager manager,
+    Scene& scene);
+void go_to_frame(
+    PropertyAnimationGroup group,
+    Engine& engine,
+    float frame);
 void attach_control(Engine& engine, CameraHandle camera, Scene& scene);
 void attach_free_control(Engine& engine, CameraHandle camera, Scene& scene);
 void register_scene(Scene& scene);

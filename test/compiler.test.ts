@@ -16,11 +16,13 @@ test("compiles the Babylon Lite primitives example", () => {
         "material:standard",
         "mesh:box",
         "mesh:ground",
+        "renderer:pbr",
     ]);
     assert.deepEqual(result.manifest.assets, []);
     assert.deepEqual(result.manifest.runtimeSources, [
         "src/pal.cpp",
         "src/pal_sdl.cpp",
+        "src/pal_sdl_gpu.cpp",
     ]);
     assert.deepEqual(
         result.manifest.adaptations.map(({ id }) => id),
@@ -29,6 +31,7 @@ test("compiles the Babylon Lite primitives example", () => {
             "browser-setup-erasure",
             "synchronous-aot-await",
             "sdl-platform-boundary",
+            "sdl-gpu-shader-backends",
         ],
     );
     assert.deepEqual(result.manifest.generatedSources, [
@@ -38,6 +41,7 @@ test("compiles the Babylon Lite primitives example", () => {
         "upstream/src/camera_controls.cpp",
         "upstream/src/light_matrix.cpp",
         "upstream/src/light_hemispheric.cpp",
+        "upstream/src/renderer_plan.cpp",
         "upstream/src/material_standard.cpp",
         "upstream/src/mesh_factories.cpp",
     ]);
@@ -689,6 +693,36 @@ test("compiles animated and skinned glTF scenes", () => {
         assert.ok(result.manifest.features.includes("loader:gltf"));
         assert.ok(result.manifest.features.includes("renderer:pbr"));
         assert.equal(result.manifest.assets[0]?.kind, "gltf");
+    }
+});
+
+test("compiles property animation scenes", () => {
+    for (const sourcePath of [
+        "examples/scene151-property-transform-animation.ts",
+        "examples/scene154-step-time-animation.ts",
+    ]) {
+        const result = compileSource(
+            readFileSync(resolve(sourcePath), "utf8"),
+            { fileName: sourcePath },
+        );
+        assert.ok(
+            result.manifest.features.includes(
+                "animation:property",
+            ),
+        );
+        assert.ok(
+            result.manifest.features.includes(
+                "light:directional",
+            ),
+        );
+        assert.match(
+            result.cpp,
+            /create_property_animation_group/,
+        );
+        assert.match(
+            result.cpp,
+            /start_animation_manager/,
+        );
     }
 });
 

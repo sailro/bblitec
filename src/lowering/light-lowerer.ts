@@ -157,6 +157,61 @@ LightHandle create_point_light(
         };
     }
 
+    public lowerDirectionalFactory(): LoweredSource {
+        const modulePath = "src/light/directional-light.ts";
+        const symbolName = "createDirectionalLight";
+        const source = this.context.store.getSource(modulePath);
+        for (const marker of [
+            'lightType: "directional" as const',
+            "diffuse: [1, 1, 1]",
+            "specular: [1, 1, 1]",
+            "localMatrixFromDirection",
+        ]) {
+            if (!source.includes(marker)) {
+                throw new Error(
+                    `Pinned directional-light factory changed: ${marker}.`,
+                );
+            }
+        }
+        return {
+            modulePath,
+            symbolName,
+            header: "",
+            source: `// ${this.context.provenance(modulePath, symbolName)}
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/light_matrix.hpp>
+
+namespace bbl {
+
+LightHandle create_directional_light(
+    Engine& engine,
+    Vec3 direction,
+    float intensity) {
+    LightRecord light;
+    light.kind = LightKind::directional;
+    light.direction = direction;
+    light.intensity = intensity;
+    light.diffuse_color = Color3{1.0f, 1.0f, 1.0f};
+    light.specular_color = Color3{1.0f, 1.0f, 1.0f};
+    light.range = std::numeric_limits<float>::max();
+    upstream::local_matrix_from_direction(
+        direction.x,
+        direction.y,
+        direction.z,
+        0.0f,
+        0.0f,
+        0.0f,
+        light.local_matrix);
+    engine.lights.push_back(light);
+    return LightHandle{
+        static_cast<std::uint32_t>(engine.lights.size() - 1)};
+}
+
+} // namespace bbl
+`,
+        };
+    }
+
     private extractHemisphericDefaults(modulePath: string, symbolName: string): HemisphericDefaults {
         const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
         let lightObject: ts.ObjectLiteralExpression | undefined;

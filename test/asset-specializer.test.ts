@@ -49,6 +49,7 @@ test("specializes glTF dynamic feature imports without any-typed JSON", () => {
         assert.ok(specialization.staticModules.includes("./gltf-feature-skeleton.js"));
         assert.ok(specialization.staticModules.includes("./gltf-feature-sparse.js"));
         assert.ok(specialization.staticModules.includes("./gltf-feature-primitive.js"));
+        assert.equal(specialization.features.animations, true);
         assert.deepEqual(specialization.renderItems, [
             {
                 drawId: 1,

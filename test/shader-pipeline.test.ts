@@ -166,11 +166,18 @@ test("generates Tint background WGSL for 2D and cube textures", () => {
 });
 
 test("generates the shared Tint material vertex interface", () => {
-    const vertex = materialVertexWgsl();
+    const staticVertex = materialVertexWgsl();
+    const vertex = materialVertexWgsl(true);
+    assert.doesNotMatch(staticVertex, /DeformationUniforms/);
+    assert.doesNotMatch(staticVertex, /@location\(8\) joints/);
     assert.match(vertex, /@location\(6\) color: vec4<f32>/);
     assert.match(vertex, /@location\(5\) uv2: vec2<f32>/);
     assert.match(vertex, /uniforms\.viewProjection \* vec4<f32>/);
-    assert.match(vertex, /output\.worldPosition = input\.position/);
+    assert.match(vertex, /output\.worldPosition = worldPosition/);
+    assert.match(vertex, /boneMatrices: array<mat4x4<f32>, 64>/);
+    assert.match(vertex, /input\.morphPosition0/);
+    assert.match(vertex, /@location\(15\) morphTangent1: vec3<f32>/);
+    assert.match(vertex, /deformation\.options\.y < 0\.5/);
 });
 
 test("generates Tint Standard material and geometry WGSL", () => {
@@ -181,6 +188,8 @@ test("generates Tint Standard material and geometry WGSL", () => {
         emitColor: true,
     });
     assert.match(fragment, /texture_cube<f32>/);
+    assert.match(fragment, /lightData2: vec4<f32>/);
+    assert.match(fragment, /light1\.diffuse \+ light2\.diffuse/);
     assert.doesNotMatch(fragment, /@builtin\(front_facing\)/);
     assert.match(fragment, /return color/);
     assert.match(geometry, /struct FragmentOutput/);

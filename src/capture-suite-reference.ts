@@ -43,6 +43,8 @@ function browserModule(
     sourcePath: string,
     transform?: SuiteSourceTransform,
     captureTimeSeconds?: number,
+    captureFrameRate = 60,
+    captureAnimationGroups?: string[],
 ): string {
     const input = readFileSync(resolve(sourcePath), "utf8");
     const transformed = transform ? transform(input) : input;
@@ -53,9 +55,13 @@ function browserModule(
     onBeforeRender(scene, () => {
         __animationSeekFrame += 1;
         if (__animationSeekFrame === 10) {
-            for (const group of scene.animationGroups) {
-                goToFrame(group, ${captureTimeSeconds} * 60);
-                pauseAnimation(group);
+            for (const animationGroup of ${
+                captureAnimationGroups?.length
+                    ? `[${captureAnimationGroups.join(", ")}]`
+                    : "scene.animationGroups"
+            }) {
+                goToFrame(animationGroup, ${captureTimeSeconds} * ${captureFrameRate});
+                pauseAnimation(animationGroup);
             }
             canvas.dataset.animationFrozen = "true";
         }
@@ -91,6 +97,8 @@ export async function captureSuiteReference(
     force: boolean,
     transform?: SuiteSourceTransform,
     captureTimeSeconds?: number,
+    captureFrameRate?: number,
+    captureAnimationGroups?: string[],
 ): Promise<void> {
     if (existsSync(referencePath) && !force) return;
     const root = resolve(".");
@@ -98,6 +106,8 @@ export async function captureSuiteReference(
         sourcePath,
         transform,
         captureTimeSeconds,
+        captureFrameRate,
+        captureAnimationGroups,
     );
     const html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:block}

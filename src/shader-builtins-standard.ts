@@ -138,6 +138,10 @@ struct FragmentUniforms {
     lightDiffuse: vec4<f32>,
     lightSpecular: vec4<f32>,
     lightDirection: vec4<f32>,
+    lightData2: vec4<f32>,
+    lightDiffuse2: vec4<f32>,
+    lightSpecular2: vec4<f32>,
+    lightDirection2: vec4<f32>,
     diffuseAlpha: vec4<f32>,
     specularPower: vec4<f32>,
     emissiveLevel: vec4<f32>,
@@ -158,6 +162,81 @@ struct FragmentInput {
     @location(4) localPosition: vec3<f32>,
     @location(5) uv2: vec2<f32>,
 };
+
+struct LightResult {
+    diffuse: vec3<f32>,
+    specular: vec3<f32>,
+};
+
+fn evaluateLight(
+    lightData: vec4<f32>,
+    lightDiffuse: vec4<f32>,
+    lightSpecular: vec4<f32>,
+    lightDirection: vec4<f32>,
+    worldPosition: vec3<f32>,
+    normalW: vec3<f32>,
+    viewDirectionW: vec3<f32>,
+    specularPower: f32,
+) -> LightResult {
+    var result: LightResult;
+    result.diffuse = vec3<f32>(0.0);
+    result.specular = vec3<f32>(0.0);
+    if (lightDirection.w < 0.5) {
+        return result;
+    }
+    if (lightData.w > 2.5) {
+        let resolvedDirection = normalize(lightData.xyz);
+        let nDotL =
+            0.5 + 0.5 * dot(normalW, resolvedDirection);
+        result.diffuse = mix(
+            lightDirection.rgb,
+            lightDiffuse.rgb,
+            nDotL,
+        );
+        let halfDirection = normalize(
+            viewDirectionW + resolvedDirection,
+        );
+        result.specular =
+            pow(
+                max(0.0, dot(normalW, halfDirection)),
+                max(1.0, specularPower),
+            ) *
+            lightSpecular.rgb;
+        return result;
+    }
+    let directionalLight =
+        lightData.w > 0.5 && lightData.w < 1.5;
+    let lightVector = lightData.xyz - worldPosition;
+    let lightDistance = length(lightVector);
+    var attenuation = 1.0;
+    if (!directionalLight && lightDiffuse.a > 0.0) {
+        attenuation = max(
+            0.0,
+            1.0 - lightDistance / lightDiffuse.a,
+        );
+    }
+    var resolvedDirection = vec3<f32>(0.0, 1.0, 0.0);
+    if (directionalLight) {
+        resolvedDirection = normalize(-lightData.xyz);
+    } else if (lightDistance > 0.000001) {
+        resolvedDirection = lightVector / lightDistance;
+    }
+    result.diffuse =
+        max(0.0, dot(normalW, resolvedDirection)) *
+        lightDiffuse.rgb *
+        attenuation;
+    let halfDirection = normalize(
+        viewDirectionW + resolvedDirection,
+    );
+    result.specular =
+        pow(
+            max(0.0, dot(normalW, halfDirection)),
+            max(1.0, specularPower),
+        ) *
+        lightSpecular.rgb *
+        attenuation;
+    return result;
+}
 
 ${outputDeclaration(task)}
 @fragment
@@ -236,78 +315,28 @@ fn mainFragment(input: FragmentInput) -> ${returnType} {
     let viewDirectionW = normalize(
         uniforms.cameraPosition.xyz - input.worldPosition,
     );
-    var diffuseBase: vec3<f32>;
-    var specularBase: vec3<f32>;
-    if (uniforms.lightData.w > 2.5) {
-        let nDotL =
-            0.5 +
-            0.5 *
-            dot(
-                normalW,
-                normalize(uniforms.lightData.xyz),
-            );
-        diffuseBase = mix(
-            uniforms.lightDirection.rgb,
-            uniforms.lightDiffuse.rgb,
-            nDotL,
-        );
-        let halfDirection = normalize(
-            viewDirectionW +
-            normalize(uniforms.lightData.xyz),
-        );
-        let specularTerm = pow(
-            max(0.0, dot(normalW, halfDirection)),
-            max(1.0, uniforms.specularPower.w),
-        );
-        specularBase =
-            specularTerm * uniforms.lightSpecular.rgb;
-    } else {
-        let directionalLight =
-            uniforms.lightData.w > 0.5 &&
-            uniforms.lightData.w < 1.5;
-        let lightVector =
-            uniforms.lightData.xyz - input.worldPosition;
-        let lightDistance = length(lightVector);
-        var attenuation = 1.0;
-        if (
-            !directionalLight &&
-            uniforms.lightDiffuse.a > 0.0
-        ) {
-            attenuation = max(
-                0.0,
-                1.0 -
-                    lightDistance /
-                    uniforms.lightDiffuse.a,
-            );
-        }
-        var resolvedLightDirection = vec3<f32>(0.0, 1.0, 0.0);
-        if (directionalLight) {
-            resolvedLightDirection =
-                normalize(-uniforms.lightData.xyz);
-        } else if (lightDistance > 0.000001) {
-            resolvedLightDirection =
-                lightVector / lightDistance;
-        }
-        let nDotL = max(
-            0.0,
-            dot(normalW, resolvedLightDirection),
-        );
-        diffuseBase =
-            nDotL *
-            uniforms.lightDiffuse.rgb *
-            attenuation;
-        let halfDirection = normalize(
-            viewDirectionW + resolvedLightDirection,
-        );
-        let specularTerm = pow(
-            max(0.0, dot(normalW, halfDirection)),
-            max(1.0, uniforms.specularPower.w),
-        );
-        specularBase =
-            specularTerm *
-            uniforms.lightSpecular.rgb *
-            attenuation;
-    }
+    let light1 = evaluateLight(
+        uniforms.lightData,
+        uniforms.lightDiffuse,
+        uniforms.lightSpecular,
+        uniforms.lightDirection,
+        input.worldPosition,
+        normalW,
+        viewDirectionW,
+        uniforms.specularPower.w,
+    );
+    let light2 = evaluateLight(
+        uniforms.lightData2,
+        uniforms.lightDiffuse2,
+        uniforms.lightSpecular2,
+        uniforms.lightDirection2,
+        input.worldPosition,
+        normalW,
+        viewDirectionW,
+        uniforms.specularPower.w,
+    );
+    let diffuseBase = light1.diffuse + light2.diffuse;
+    let specularBase = light1.specular + light2.specular;
 
     let finalDiffuse = clamp(
         diffuseBase * uniforms.diffuseAlpha.rgb +

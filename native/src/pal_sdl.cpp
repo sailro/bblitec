@@ -222,9 +222,56 @@ Vec3 rotate(Vec3 value, Vec3 rotation) {
     return Vec3{value.x * cos_z - value.y * sin_z, value.x * sin_z + value.y * cos_z, value.z};
 }
 
+Vec3 rotate(Vec3 value, Vec4 quaternion) {
+    const float length = std::sqrt(
+        quaternion.x * quaternion.x +
+        quaternion.y * quaternion.y +
+        quaternion.z * quaternion.z +
+        quaternion.w * quaternion.w);
+    if (length <= 0.000001f) return value;
+    quaternion.x /= length;
+    quaternion.y /= length;
+    quaternion.z /= length;
+    quaternion.w /= length;
+    const Vec3 doubled_cross{
+        2.0f * (
+            quaternion.y * value.z -
+            quaternion.z * value.y),
+        2.0f * (
+            quaternion.z * value.x -
+            quaternion.x * value.z),
+        2.0f * (
+            quaternion.x * value.y -
+            quaternion.y * value.x),
+    };
+    return Vec3{
+        value.x +
+            quaternion.w * doubled_cross.x +
+            (
+                quaternion.y * doubled_cross.z -
+                quaternion.z * doubled_cross.y),
+        value.y +
+            quaternion.w * doubled_cross.y +
+            (
+                quaternion.z * doubled_cross.x -
+                quaternion.x * doubled_cross.z),
+        value.z +
+            quaternion.w * doubled_cross.z +
+            (
+                quaternion.x * doubled_cross.y -
+                quaternion.y * doubled_cross.x),
+    };
+}
+
+Vec3 rotate(Vec3 value, const MeshRecord& mesh) {
+    return mesh.has_rotation_quaternion
+        ? rotate(value, mesh.rotation_quaternion)
+        : rotate(value, mesh.rotation);
+}
+
 Vec3 transform_position(Vec3 value, const MeshRecord& mesh) {
     value = Vec3{value.x * mesh.scaling.x, value.y * mesh.scaling.y, value.z * mesh.scaling.z};
-    return add(rotate(value, mesh.rotation), mesh.position);
+    return add(rotate(value, mesh), mesh.position);
 }
 
 Vec3 transform_normal(Vec3 value, const MeshRecord& mesh) {
@@ -236,7 +283,7 @@ Vec3 transform_normal(Vec3 value, const MeshRecord& mesh) {
         safe_divide(value.y, mesh.scaling.y),
         safe_divide(value.z, mesh.scaling.z),
     };
-    return normalize(rotate(value, mesh.rotation));
+    return normalize(rotate(value, mesh));
 }
 
 #if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF

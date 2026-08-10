@@ -156,12 +156,14 @@ async function main(): Promise<void> {
     rmSync(resolve(outputPath, "assets"), { recursive: true, force: true });
     rmSync(resolve(outputPath, "upstream"), { recursive: true, force: true });
     await Promise.all(result.manifest.assets.map((asset) => materializeAsset(asset, inputPath, outputPath)));
-    emitAssetSpecializations(outputPath, result.manifest.assets);
+    const specializationFeatures =
+        emitAssetSpecializations(outputPath, result.manifest.assets);
     emitUpstreamGenerated(outputPath, result.manifest.features, {
         idDiagnostics: options.idDiagnostics,
         pbrDiagnostics: options.pbrDiagnostics,
         shaderVariants: result.manifest.shaderVariants,
         geometryOutputTasks: result.manifest.geometryOutputTasks,
+        gpuDeformation: specializationFeatures.gpuDeformation,
     });
     writeFileSync(resolve(outputPath, "main.cpp"), result.cpp);
     writeFileSync(resolve(outputPath, "features.cmake"), result.cmake);

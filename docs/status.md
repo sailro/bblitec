@@ -9,15 +9,15 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 | --- | --- |
 | Engine/scene | creation, registration, fixed delta, reached before-render callbacks, runtime material-family append |
 | Cameras | ArcRotate, FreeCamera, default framing, native controls |
-| Lights | hemispheric and point |
+| Lights | directional, hemispheric, and point; two reached Standard lights |
 | Geometry | box, ground, plane, sphere, torus, indexed triangle glTF/GLB, generated/flat normals, negative transforms, reached `.babylon` geometry |
 | Assets | external glTF packaging, embedded PNG/JPEG, `.env`, exact compile-time RGBE HDR/GGX cubemaps, DDS, reached `.babylon` textures |
 | Materials | Standard, PBR, GridMaterial, unlit, vertex colors, no-color views, typed custom shader variants |
 | Material state | alpha mask/blend/coverage, reflectance, lighting intensities, double-sided, normal scale, transmission, IOR, volume |
-| Animation | deterministic seeking; LINEAR/CUBICSPLINE rotation and translation; LINEAR morph weights |
-| Deformation | recursive skeleton hierarchies, inverse bind matrices, four-weight CPU skinning, animated position/normal/tangent morph targets, post-deformation flat normals |
+| Animation | deterministic seeking; property-animation groups for reached mesh position/scaling/quaternion paths with LINEAR/STEP tracks; glTF LINEAR/CUBICSPLINE rotation/translation and LINEAR morph weights |
+| Deformation | recursive skeleton hierarchies, inverse bind matrices, four-weight GPU skinning, GPU position/normal/tangent morph targets, post-deformation flat normals |
 | Frame graph | render targets/tasks, material overrides, depth-only passes, 7+4 geometry MRTs, blits, MSAA resolve |
-| Runtime | typed handles/records, immediate AOT promises, typed JSON/binary views, cyclic dynamic GPU vertex uploads |
+| Runtime | typed handles/records, immediate AOT promises, typed JSON/binary views, tree-shaken GPU deformation and cyclic flat-normal uploads |
 | Shaders | generated WGSL through pinned Tint; DXIL/SPIR-V via normalized Tint HLSL and DXC; MSL via Tint |
 | Native renderer | generated ordered draw lists over SDL_GPU, linear RGBA16F transmission, deterministic SDL_Renderer fallback |
 
@@ -49,41 +49,32 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 
 | Scene | Preview | Full MAD | Foreground MAD | Primary coverage |
 | ---: | :---: | ---: | ---: | --- |
-| 5 | <img src="images/scenes/scene5.png" alt="Scene 5 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.020}}$ | animated morph targets plus recursive CPU skeleton skinning |
-| 8 | <img src="images/scenes/scene8.png" alt="Scene 8 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.129}}$ | $\color{#1a7f37}{\textsf{0.134}}$ | exact 1024-sample HDR GGX, cubemap skybox, glass alpha/reflectance |
+| 5 | <img src="images/scenes/scene5.png" alt="Scene 5 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.020}}$ | GPU morph targets plus recursive GPU skeleton skinning |
+| 8 | <img src="images/scenes/scene8.png" alt="Scene 8 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.129}}$ | $\color{#1a7f37}{\textsf{0.134}}$ | exact 1024-sample HDR GGX, cubemap skybox, glass alpha/reflectance<br><em>Skybox outside the glass sphere is effectively exact (0.00023 MAD); remaining error is concentrated on transparent sphere edges.</em> |
 | 10 | <img src="images/scenes/scene10.png" alt="Scene 10 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | generated sphere, no-IBL PBR, geometric normals |
-| 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.010}}$ | $\color{#1a7f37}{\textsf{0.081}}$ | material grid, explicit occlusion semantics |
+| 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.010}}$ | $\color{#1a7f37}{\textsf{0.081}}$ | material grid, explicit occlusion semantics<br><em>Full-image MAD includes the known generated-ground composition difference.</em> |
 | 32 | <img src="images/scenes/scene32.png" alt="Scene 32 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | `KHR_materials_unlit` |
 | 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | no-color material views, depth targets |
-| 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="120"> | $\color{#cf222e}{\textsf{1.077}}$ | $\color{#cf222e}{\textsf{1.071}}$ | `.babylon`, Standard geometry outputs, default anisotropy |
-| 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="120"> | $\color{#9a6700}{\textsf{0.845}}$ | $\color{#9a6700}{\textsf{0.865}}$ | PBR geometry outputs, 7+4 MRT composition |
+| 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="120"> | $\color{#cf222e}{\textsf{1.077}}$ | $\color{#cf222e}{\textsf{1.071}}$ | `.babylon`, Standard geometry outputs, default anisotropy<br><em>Full-resolution attachment MAD is at most 0.067; view/world normals are 0.002/0.003. The displayed Babylon Lite scene downsamples each MSAA attachment 6x into a 12-tile preview, where most of the remaining difference appears. Run `npm run scene -- geometry scene145`.</em> |
+| 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="120"> | $\color{#9a6700}{\textsf{0.845}}$ | $\color{#9a6700}{\textsf{0.865}}$ | PBR geometry outputs, 7+4 MRT composition<br><em>Full-resolution attachment MAD is at most 0.057; view/world normals are 0.029/0.034. The displayed Babylon Lite scene downsamples each MSAA attachment 6x into a 12-tile preview, where most of the remaining difference appears. Run `npm run scene -- geometry scene146`.</em> |
+| 151 | <img src="images/scenes/scene151.png" alt="Scene 151 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | grouped position, scaling, and quaternion property animation |
+| 154 | <img src="images/scenes/scene154.png" alt="Scene 154 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | LINEAR versus STEP property interpolation |
 | 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | custom shader blend, alpha test, discard |
 | 168 | <img src="images/scenes/scene168.png" alt="Scene 168 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.068}}$ | $\color{#1a7f37}{\textsf{0.389}}$ | mirrored double-sided winding; 100% within one byte |
-| transmission-skybox | <img src="images/scenes/transmission-skybox.png" alt="PBR skybox rendering" width="120"> | $\color{#1a7f37}{\textsf{0.091}}$ | $\color{#1a7f37}{\textsf{0.091}}$ | independent PBR skybox-mode gate |
-| transmission-scene-color | <img src="images/scenes/transmission-scene-color.png" alt="Scene-color transmission" width="120"> | $\color{#1a7f37}{\textsf{0.044}}$ | $\color{#1a7f37}{\textsf{0.208}}$ | linear RGBA16F scene-color transmission |
-| transmission-ior | <img src="images/scenes/transmission-ior.png" alt="Transmission IOR" width="120"> | $\color{#1a7f37}{\textsf{0.115}}$ | $\color{#1a7f37}{\textsf{0.302}}$ | refraction IOR without glTF-only dielectric F0 |
-| transmission-volume | <img src="images/scenes/transmission-volume.png" alt="Transmission volume" width="120"> | $\color{#1a7f37}{\textsf{0.170}}$ | $\color{#1a7f37}{\textsf{0.454}}$ | Beer-Lambert volume and independent thickness-as-depth |
 | 176 | <img src="images/scenes/scene176.png" alt="Mosquito in Amber" width="120"> | $\color{#1a7f37}{\textsf{0.418}}$ | $\color{#1a7f37}{\textsf{0.418}}$ | integrated linear transmission, IOR, volume, and scene-color copy |
 | 213 | <img src="images/scenes/scene213.png" alt="Scene 213 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.001}}$ | GridMaterial opaque/transparent families and ordered draw lists |
 | 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | deterministic glTF node rotation animation |
-| 245 | <img src="images/scenes/scene245.png" alt="Scene 245 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.001}}$ | recursive skeleton hierarchy, inverse bind matrices, CPU skinning |
+| 245 | <img src="images/scenes/scene245.png" alt="Scene 245 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.001}}$ | recursive skeleton hierarchy, inverse bind matrices, GPU skinning |
 | 248 | <img src="images/scenes/scene248.png" alt="Scene 248 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.005}}$ | external glTF and sampler modes |
 | 249 | <img src="images/scenes/scene249.png" alt="Scene 249 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.024}}$ | vertex-color alpha and mask cutoff |
 | 257 | <img src="images/scenes/scene257.png" alt="Scene 257 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.006}}$ | negative-scale hierarchy, generated normals |
 | 266 | <img src="images/scenes/scene266.png" alt="Scene 266 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.130}}$ | $\color{#1a7f37}{\textsf{0.247}}$ | mirrored spheres; 99.46% within one byte |
 | 273 | <img src="images/scenes/scene273.png" alt="Scene 273 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | post-registration material-family addition |
 | 274 | <img src="images/scenes/scene274.png" alt="Scene 274 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | 4x-MSAA alpha-to-coverage |
-
-Full-resolution geometry oracles are available with
-`npm run scene -- geometry scene145` and `scene146`. They transform only the
-capture composition in memory; the curated scene inputs remain unchanged.
-Scene 145's largest full-resolution attachment MAD is `0.067` (real color),
-with view/world normal at `0.002`/`0.003`. Scene 146's largest is `0.057`
-(real color), with view/world normal at `0.029`/`0.034`. Their larger mosaic
-scores are concentrated in six-times-downscaled MSAA preview coverage. Scene 13's
-full-image value includes the known generated-ground composition difference.
-Scene 8's skybox outside the glass sphere is effectively exact (`0.00023`
-MAD); the remaining error is concentrated on transparent sphere edges.
+| transmission-ior | <img src="images/scenes/transmission-ior.png" alt="Transmission IOR" width="120"> | $\color{#1a7f37}{\textsf{0.115}}$ | $\color{#1a7f37}{\textsf{0.302}}$ | refraction IOR without glTF-only dielectric F0 |
+| transmission-scene-color | <img src="images/scenes/transmission-scene-color.png" alt="Scene-color transmission" width="120"> | $\color{#1a7f37}{\textsf{0.044}}$ | $\color{#1a7f37}{\textsf{0.208}}$ | linear RGBA16F scene-color transmission |
+| transmission-skybox | <img src="images/scenes/transmission-skybox.png" alt="PBR skybox rendering" width="120"> | $\color{#1a7f37}{\textsf{0.091}}$ | $\color{#1a7f37}{\textsf{0.091}}$ | independent PBR skybox-mode gate |
+| transmission-volume | <img src="images/scenes/transmission-volume.png" alt="Transmission volume" width="120"> | $\color{#1a7f37}{\textsf{0.170}}$ | $\color{#1a7f37}{\textsf{0.454}}$ | Beer-Lambert volume and independent thickness-as-depth |
 
 ## Diagnostics
 
@@ -126,8 +117,15 @@ deferred until its resource bindings are remapped to SDL_GPU conventions.
 - no general modules/functions/control flow, arbitrary object graphs, or
   runtime module loading
 - no physics, audio, or networking
-- animation currently covers LINEAR/CUBICSPLINE rotation and translation plus
-  LINEAR morph weights; deformation is CPU-evaluated and uploaded cyclically
+- property animation covers LINEAR/STEP scalar/vector tracks, quaternion
+  slerp, group ranges/looping/speed, and deterministic seeking for reached
+  mesh `position`, `position.x`, `scaling`, and `rotationQuaternion` paths
+- glTF animation covers LINEAR/CUBICSPLINE rotation and translation plus
+  LINEAR morph weights; morphing and skinning are vertex-shader evaluated,
+  with CPU fallback beyond 64 joints/two morph targets and CPU face-normal
+  recomputation for primitives without source normals
+- glTF scale/STEP channels, multiple-clip controls, broader property targets,
+  and Standard scenes beyond two simultaneous lights remain unsupported
 - no general user WGSL; reached custom variants use typed WGSL reflection and
   required pinned Tint HLSL/MSL emission plus DXC DXIL/SPIR-V compilation
 - GridMaterial, frame-graph blit/depth, and attribution utilities use
@@ -138,7 +136,4 @@ deferred until its resource bindings are remapped to SDL_GPU conventions.
 - D3D12 is validated locally; Vulkan and Metal artifacts are generated but
   still require real-device validation
 
-## Next priorities
-
-1. Validate Vulkan/SPIR-V and Metal/MSL on real hardware.
-2. Replace converted native PBR WGSL with direct Babylon composer extraction.
+Unfinished priorities are maintained only in [TODO](../TODO.md).

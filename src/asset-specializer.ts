@@ -209,9 +209,18 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
     };
 }
 
-export function emitAssetSpecializations(outputRoot: string, assets: CompileAsset[]): void {
+export interface AssetSpecializationFeatures {
+    gpuDeformation: boolean;
+}
+
+export function emitAssetSpecializations(
+    outputRoot: string,
+    assets: CompileAsset[],
+): AssetSpecializationFeatures {
     const gltfAssets = assets.filter((asset) => asset.kind === "gltf");
-    if (gltfAssets.length === 0) return;
+    if (gltfAssets.length === 0) {
+        return { gpuDeformation: false };
+    }
     let nextDrawId = 1;
     let nextClusterId = 1;
     const specializations = gltfAssets.map((asset) => {
@@ -233,4 +242,9 @@ export function emitAssetSpecializations(outputRoot: string, assets: CompileAsse
     const output = resolve(outputRoot, "upstream/gltf-specialization.json");
     mkdirSync(dirname(output), { recursive: true });
     writeFileSync(output, `${JSON.stringify(specializations, null, 2)}\n`);
+    return {
+        gpuDeformation: specializations.some(
+            (specialization) => specialization.features.animations,
+        ),
+    };
 }

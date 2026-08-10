@@ -10,6 +10,18 @@ The goal is not to reimplement Babylon Lite manually. Prefer generated code
 derived from the pinned upstream TypeScript. Handwritten C++ belongs only in
 the platform abstraction layer (PAL).
 
+## Canonical documentation
+
+Do not duplicate detailed facts in this file:
+
+- `docs/architecture.md`: pipeline, ownership, runtime, renderer, deformation
+- `docs/development.md`: commands, build order, capture metadata, troubleshooting
+- `docs/fidelity.md`: semantic policy, adaptations, diagnostics
+- `docs/status.md`: supported slice, limits, metrics, parity scenes
+- `TODO.md`: unfinished work only
+
+Read the relevant canonical page before changing that area.
+
 ## Pinned upstream
 
 - Package: `@babylonjs/lite@1.18.0`
@@ -27,44 +39,11 @@ shader compilation and parity gates.
 
 ## Source ownership
 
-- `src/compiler.ts`: entry-scene AST lowering, feature selection, assets, CMake
-  manifest.
-- `src/scene-registry.ts`: curated scene metadata, thresholds, references, and
-  optional attribution capabilities.
-- `src/scene-command.ts`: registered and ad-hoc scene generation/build/parity
-  workflow.
-- `src/parity-scene.ts`: common parity runner for all scenes.
-- `src/upstream-source.ts`: pinned upstream source-map reconstruction.
-- `src/upstream-graph.ts`: conservative reachable-module analysis.
-- `src/upstream-lower.ts`: generated-source orchestration and provenance.
-- `src/hdr-prefilter-gpu.ts`: pinned WebGPU 1024-sample HDR GGX prefilter.
-- `src/shader-material-programs.ts`: reached custom WGSL program catalog and
-  fixed-function contracts.
-- `src/shader-ir.ts`: typed WGSL-subset lowering and shader reflection.
-- `src/shader-wgsl-emitter.ts`: native SDL WGSL specialization from typed IR.
-- `src/shader-builtins-grid.ts`: generated native GridMaterial WGSL.
-- `src/shader-builtins-utility.ts`: generated blit, depth, and diagnostic WGSL.
-- `src/shader-builtins-background.ts`: generated ground and skybox WGSL.
-- `src/shader-builtins-material.ts`: shared material vertex WGSL.
-- `src/shader-builtins-standard.ts`: Standard material and geometry WGSL.
-- `src/shader-builtins-pbr.ts`: PBR color, diagnostic, and geometry WGSL
-  variants derived from the pinned converted WGSL template.
-- `src/lowering/*-lowerer.ts`: dedicated upstream lowerers.
-- `src/lowering/templates/`: typed C++ and WGSL source templates emitted by
-  lowerers; do not add backend-language shader templates.
-- `native/include/bblite/`: typed runtime records, handles, TS runtime, PAL
-  contracts.
-- `native/src/pal.cpp`: filesystem, paths, environment, timing, host engine.
-- `native/src/pal_sdl.cpp`: deterministic CPU fallback.
-- `native/src/pal_sdl_gpu.cpp`: SDL window/input, GPU resources, uploads,
-  pipelines, readback, and command submission.
-- `generated/`: disposable compiler output. Never implement fixes directly
-  there.
-
 When logic describes Babylon behavior—scene traversal, camera matrices,
 material properties, render buckets, PBR uniforms, shader equations, skybox or
 ground geometry—it should be generated. When logic calls SDL or an operating
-system API, it belongs in PAL.
+system API, it belongs in PAL. Never implement fixes in `generated/`. The
+complete source map is maintained in `docs/architecture.md`.
 
 ## Type and language rules
 
@@ -80,24 +59,13 @@ system API, it belongs in PAL.
 
 - SDL_GPU is the default for generated PBR scenes.
 - `BBLITE_GPU=0` forces the CPU fallback.
-- Backends/artifacts:
-  - Direct3D 12: Tint HLSL → DXC DXIL
-  - Vulkan: Tint HLSL → DXC SPIR-V until direct Tint binding remapping exists
-  - Metal: Tint MSL
-- Generated shader sources live under
-  `generated/<scene>/upstream/shaders`.
-- The pinned Babylon formulas include GGX, Smith geometry, specular AA, SH
-  irradiance, RGBD cubemap decoding, BRDF LUT use, energy conservation,
-  exposure, tone mapping, and contrast.
-- Babylon RGBD `.env` cubemap images require vertical row reversal when
-  uploaded to SDL_GPU.
-- DDS skyboxes are RGBA16F cubemaps with face-major, mip-minor layout.
 - glTF material handling must be metadata-driven:
   `OPAQUE`, `MASK`, `BLEND`, alpha cutoff, and double-sided state. Do not add
   scene-name, geometry-position, or reference-image heuristics.
-- The generated DDS skybox is enabled by default. The generated transparent
-  ground is opt-in with `BBLITE_GROUND=1` because the committed Babylon.js
-  golden does not compose it identically.
+- Do not conflate property-animation STEP/scaling support with glTF animation;
+  consult the status and architecture pages for the current separate slices.
+- Preserve the shader and texture contracts documented in architecture and
+  fidelity; do not tune backend shaders against a golden.
 
 ## Build order
 
@@ -105,60 +73,16 @@ Generation must complete before native builds. Do not run generation and a
 native build concurrently because `features.cmake`, generated headers, and
 shader paths may be stale.
 
-```powershell
-npm ci
-npm test
-npm run scenes:compile
-npm run shaders:build
-npm run scenes:build
-```
-
-On the development Windows machine, MSVC is 14.51 and Windows SDK is
-10.0.26100.0. If a debug link fails with `LNK1104: ucrtd.lib`, ensure `LIB`
-contains:
-
-```text
-<MSVC>\lib\x64
-<Windows Kits>\Lib\10.0.26100.0\ucrt\x64
-<Windows Kits>\Lib\10.0.26100.0\um\x64
-```
+Follow the ordered workflow in `docs/development.md`.
 
 Do not build multiple CMake trees concurrently against the same vcpkg install.
 An executing debug `.exe` may also cause `LNK1168`.
 
 ## Validation
 
-Use the smallest relevant checks, but renderer/compiler changes normally
-require:
-
-```powershell
-npm test
-npm run scene -- parity boombox --cpu
-npm run scenes:parity
-npm run parity:diagnostics
-```
-
-Current measured baselines:
-
-- CPU fallback: full MAD `2.075`, foreground MAD `21.204`,
-  approximately `5.516 ms/frame`.
-- Generated SDL_GPU/D3D12 with Babylon-default 4x MSAA: full MAD `0.001`,
-  foreground MAD `0.015`, measured against pinned Babylon Lite.
-- GPU regression ceilings: full MAD `0.01`, foreground MAD `0.03`.
-
-Parity reference:
-
-- Source: `examples/boombox.ts` on pinned `@babylonjs/lite`
-- Resolution: 1280x720, DPR 1
-- Background: `[51, 51, 76]`
-- Foreground threshold: Euclidean distance `30`
-
-Benchmark mode uses immediate presentation and three frames in flight:
-
-```powershell
-$env:BBLITE_BENCHMARK_FRAMES = "2000"
-.\native\build-boombox-release\bblite_native.exe
-```
+Use the smallest relevant checks. Complete the validation matrix documented
+in `docs/development.md` for compiler, renderer, loader, shader, animation, or
+PAL milestones.
 
 ## Workflow
 
@@ -166,6 +90,9 @@ $env:BBLITE_BENCHMARK_FRAMES = "2000"
 - Use `npm run scene -- process <source.ts>` for an unregistered scene.
 - Add a registry entry only for curated thresholds, custom references,
   environment flags, or attribution capabilities.
+- Curated scene inputs, thresholds, and goldens are evidence. Do not alter
+  them to improve MAD. New references require an intentional pinned-scene
+  integration or explicit recapture.
 - Add tests when extending compiler or lowering behavior.
 - Keep lowerers focused; do not rebuild a monolithic compiler class.
 - Preserve provenance for generated behavior.

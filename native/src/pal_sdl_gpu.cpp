@@ -8,6 +8,7 @@
 #include <bblite/upstream/camera_controls.hpp>
 #include <bblite/upstream/camera_math.hpp>
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#include <bblite/upstream/render_capabilities.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 #endif
 
@@ -53,7 +54,22 @@ struct GpuVertex {
     float uv2[2];
     float color[4];
     float local_normal[3];
+#if BBLITE_GPU_DEFORMATION
+    float joints[4];
+    float weights[4];
+    float morph_position_0[3];
+    float morph_position_1[3];
+    float morph_normal_0[3];
+    float morph_normal_1[3];
+    float morph_tangent_0[3];
+    float morph_tangent_1[3];
+#endif
 };
+#if BBLITE_GPU_DEFORMATION
+static_assert(sizeof(GpuVertex) == 200);
+#else
+static_assert(sizeof(GpuVertex) == 96);
+#endif
 
 struct GpuMesh {
     SDL_GPUBuffer* vertices = nullptr;
@@ -210,6 +226,14 @@ struct ImageProcessingUniforms {
     float parameters[4];
 };
 
+#if BBLITE_GPU_DEFORMATION
+struct DeformationUniforms {
+    std::array<std::array<float, 16>, 64> bone_matrices{};
+    float morph_weights[4]{};
+    float options[4]{};
+};
+#endif
+
 [[noreturn]] void gpu_error(const char* operation) {
     throw std::runtime_error(std::string(operation) + ": " + SDL_GetError());
 }
@@ -238,6 +262,41 @@ Vec3 rotate_euler(Vec3 value, const Vec3& rotation) {
     };
 }
 
+Vec3 rotate_quaternion(Vec3 value, const Vec4& quaternion) {
+    const float length = std::sqrt(
+        quaternion.x * quaternion.x +
+        quaternion.y * quaternion.y +
+        quaternion.z * quaternion.z +
+        quaternion.w * quaternion.w);
+    if (length <= 0.000001f) return value;
+    const float x = quaternion.x / length;
+    const float y = quaternion.y / length;
+    const float z = quaternion.z / length;
+    const float w = quaternion.w / length;
+    const Vec3 doubled_cross{
+        2.0f * (y * value.z - z * value.y),
+        2.0f * (z * value.x - x * value.z),
+        2.0f * (x * value.y - y * value.x),
+    };
+    return Vec3{
+        value.x +
+            w * doubled_cross.x +
+            (y * doubled_cross.z - z * doubled_cross.y),
+        value.y +
+            w * doubled_cross.y +
+            (z * doubled_cross.x - x * doubled_cross.z),
+        value.z +
+            w * doubled_cross.z +
+            (x * doubled_cross.y - y * doubled_cross.x),
+    };
+}
+
+Vec3 rotate_mesh(Vec3 value, const MeshRecord& mesh) {
+    return mesh.has_rotation_quaternion
+        ? rotate_quaternion(value, mesh.rotation_quaternion)
+        : rotate_euler(value, mesh.rotation);
+}
+
 Vec3 normalize_vec3(Vec3 value) {
     const float length = std::sqrt(
         value.x * value.x +
@@ -252,43 +311,91 @@ Vec3 normalize_vec3(Vec3 value) {
         : Vec3{};
 }
 
+#if BBLITE_GPU_DEFORMATION
+DeformationUniforms build_deformation_uniforms(
+    const MeshRecord& mesh,
+    bool flat_normals) {
+    DeformationUniforms result;
+    for (std::array<float, 16>& matrix : result.bone_matrices) {
+        matrix[0] = 1.0f;
+        matrix[5] = 1.0f;
+        matrix[10] = 1.0f;
+        matrix[15] = 1.0f;
+    }
+    if (!mesh.gpu_deformation) return result;
+    if (mesh.bone_matrices.size() > result.bone_matrices.size()) {
+        throw std::runtime_error(
+            "GPU deformation bone palette exceeds 64 matrices.");
+    }
+    const std::size_t count = std::min(
+        mesh.bone_matrices.size(),
+        result.bone_matrices.size());
+    std::copy_n(
+        mesh.bone_matrices.begin(),
+        count,
+        result.bone_matrices.begin());
+    std::copy(
+        mesh.morph_weights.begin(),
+        mesh.morph_weights.end(),
+        result.morph_weights);
+    result.options[0] = 1.0f;
+    result.options[1] = flat_normals ? 1.0f : 0.0f;
+    return result;
+}
+#endif
+
 std::vector<GpuVertex> transformed_vertices(
     const ModelGeometry& geometry,
     const MeshRecord& mesh) {
+    const std::vector<ModelVertex>& source_vertices =
+        mesh.gpu_deformation &&
+                geometry.bind_vertices.size() ==
+                    geometry.vertices.size()
+            ? geometry.bind_vertices
+            : geometry.vertices;
     std::vector<GpuVertex> result;
-    result.reserve(geometry.vertices.size());
-    for (const ModelVertex& vertex : geometry.vertices) {
+    result.reserve(source_vertices.size());
+    for (
+        std::size_t vertex_index = 0;
+        vertex_index < source_vertices.size();
+        ++vertex_index) {
+        const ModelVertex& vertex =
+            source_vertices[vertex_index];
+        const ModelVertex& normal_vertex =
+            mesh.gpu_deformation && geometry.flat_normals
+                ? geometry.vertices[vertex_index]
+                : vertex;
         Vec3 position{
             vertex.position.x * mesh.scaling.x,
             vertex.position.y * mesh.scaling.y,
             vertex.position.z * mesh.scaling.z,
         };
-        position = rotate_euler(position, mesh.rotation);
+        position = rotate_mesh(position, mesh);
         position.x += mesh.position.x;
         position.y += mesh.position.y;
         position.z += mesh.position.z;
         const Vec3 normal = normalize_vec3(
-            rotate_euler(
+            rotate_mesh(
                 Vec3{
                     mesh.scaling.x != 0.0f
-                        ? vertex.normal.x / mesh.scaling.x
+                        ? normal_vertex.normal.x / mesh.scaling.x
                         : 0.0f,
                     mesh.scaling.y != 0.0f
-                        ? vertex.normal.y / mesh.scaling.y
+                        ? normal_vertex.normal.y / mesh.scaling.y
                         : 0.0f,
                     mesh.scaling.z != 0.0f
-                        ? vertex.normal.z / mesh.scaling.z
+                        ? normal_vertex.normal.z / mesh.scaling.z
                         : 0.0f,
                 },
-                mesh.rotation));
+                mesh));
         const Vec3 tangent = normalize_vec3(
-            rotate_euler(
+            rotate_mesh(
                 Vec3{
                     vertex.tangent.x * mesh.scaling.x,
                     vertex.tangent.y * mesh.scaling.y,
                     vertex.tangent.z * mesh.scaling.z,
                 },
-                mesh.rotation));
+                mesh));
         result.push_back(GpuVertex{
             {position.x, position.y, position.z},
             {normal.x, normal.y, normal.z},
@@ -311,7 +418,98 @@ std::vector<GpuVertex> transformed_vertices(
                 vertex.color.z,
                 vertex.color.w,
             },
-            {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+            {
+                vertex.normal.x,
+                vertex.normal.y,
+                vertex.normal.z,
+            },
+#if BBLITE_GPU_DEFORMATION
+            {
+                static_cast<float>(vertex.joints[0]),
+                static_cast<float>(vertex.joints[1]),
+                static_cast<float>(vertex.joints[2]),
+                static_cast<float>(vertex.joints[3]),
+            },
+            {
+                mesh.gpu_deformation &&
+                        vertex.weights.x +
+                                vertex.weights.y +
+                                vertex.weights.z +
+                                vertex.weights.w <=
+                            0.0f
+                    ? 1.0f
+                    : vertex.weights.x,
+                vertex.weights.y,
+                vertex.weights.z,
+                vertex.weights.w,
+            },
+            {
+                geometry.morph_positions.size() > 0
+                    ? -geometry.morph_positions[0][vertex_index].x
+                    : 0.0f,
+                geometry.morph_positions.size() > 0
+                    ? geometry.morph_positions[0][vertex_index].y
+                    : 0.0f,
+                geometry.morph_positions.size() > 0
+                    ? geometry.morph_positions[0][vertex_index].z
+                    : 0.0f,
+            },
+            {
+                geometry.morph_positions.size() > 1
+                    ? -geometry.morph_positions[1][vertex_index].x
+                    : 0.0f,
+                geometry.morph_positions.size() > 1
+                    ? geometry.morph_positions[1][vertex_index].y
+                    : 0.0f,
+                geometry.morph_positions.size() > 1
+                    ? geometry.morph_positions[1][vertex_index].z
+                    : 0.0f,
+            },
+            {
+                geometry.morph_normals.size() > 0
+                    ? -geometry.morph_normals[0][vertex_index].x
+                    : 0.0f,
+                geometry.morph_normals.size() > 0
+                    ? geometry.morph_normals[0][vertex_index].y
+                    : 0.0f,
+                geometry.morph_normals.size() > 0
+                    ? geometry.morph_normals[0][vertex_index].z
+                    : 0.0f,
+            },
+            {
+                geometry.morph_normals.size() > 1
+                    ? -geometry.morph_normals[1][vertex_index].x
+                    : 0.0f,
+                geometry.morph_normals.size() > 1
+                    ? geometry.morph_normals[1][vertex_index].y
+                    : 0.0f,
+                geometry.morph_normals.size() > 1
+                    ? geometry.morph_normals[1][vertex_index].z
+                    : 0.0f,
+            },
+            {
+                geometry.morph_tangents.size() > 0
+                    ? -geometry.morph_tangents[0][vertex_index].x
+                    : 0.0f,
+                geometry.morph_tangents.size() > 0
+                    ? geometry.morph_tangents[0][vertex_index].y
+                    : 0.0f,
+                geometry.morph_tangents.size() > 0
+                    ? geometry.morph_tangents[0][vertex_index].z
+                    : 0.0f,
+            },
+            {
+                geometry.morph_tangents.size() > 1
+                    ? -geometry.morph_tangents[1][vertex_index].x
+                    : 0.0f,
+                geometry.morph_tangents.size() > 1
+                    ? geometry.morph_tangents[1][vertex_index].y
+                    : 0.0f,
+                geometry.morph_tangents.size() > 1
+                    ? geometry.morph_tangents[1][vertex_index].z
+                    : 0.0f,
+            },
+#endif
         });
     }
     return result;
@@ -2187,7 +2385,11 @@ bool run_gpu_engine(Engine& engine) {
                 "pbr.vert",
                 SDL_GPU_SHADERSTAGE_VERTEX,
                 0,
+#if BBLITE_GPU_DEFORMATION
+                2,
+#else
                 1,
+#endif
                 "mainVertex");
         SDL_GPUShader* fragment_shader =
             load_shader(
@@ -2375,7 +2577,13 @@ bool run_gpu_engine(Engine& engine) {
         vertex_buffer.slot = 0;
         vertex_buffer.pitch = sizeof(GpuVertex);
         vertex_buffer.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+#if BBLITE_GPU_DEFORMATION
+        SDL_GPUVertexAttribute attributes[16]{};
+        constexpr Uint32 attribute_count = 16;
+#else
         SDL_GPUVertexAttribute attributes[8]{};
+        constexpr Uint32 attribute_count = 8;
+#endif
         attributes[0] = SDL_GPUVertexAttribute{0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0};
         attributes[1] = SDL_GPUVertexAttribute{1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 12};
         attributes[2] = SDL_GPUVertexAttribute{2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 24};
@@ -2384,6 +2592,16 @@ bool run_gpu_engine(Engine& engine) {
         attributes[5] = SDL_GPUVertexAttribute{5, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 60};
         attributes[6] = SDL_GPUVertexAttribute{6, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 68};
         attributes[7] = SDL_GPUVertexAttribute{7, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 84};
+#if BBLITE_GPU_DEFORMATION
+        attributes[8] = SDL_GPUVertexAttribute{8, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 96};
+        attributes[9] = SDL_GPUVertexAttribute{9, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 112};
+        attributes[10] = SDL_GPUVertexAttribute{10, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 128};
+        attributes[11] = SDL_GPUVertexAttribute{11, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 140};
+        attributes[12] = SDL_GPUVertexAttribute{12, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 152};
+        attributes[13] = SDL_GPUVertexAttribute{13, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 164};
+        attributes[14] = SDL_GPUVertexAttribute{14, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 176};
+        attributes[15] = SDL_GPUVertexAttribute{15, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 188};
+#endif
         SDL_GPUColorTargetDescription color_target{};
         color_target.format = transmission_enabled
             ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
@@ -2392,7 +2610,12 @@ bool run_gpu_engine(Engine& engine) {
         pipeline_info.vertex_shader = vertex_shader;
         pipeline_info.fragment_shader = fragment_shader;
         pipeline_info.vertex_input_state =
-            SDL_GPUVertexInputState{&vertex_buffer, 1, attributes, 8};
+            SDL_GPUVertexInputState{
+                &vertex_buffer,
+                1,
+                attributes,
+                attribute_count,
+            };
         pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
         pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
         pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
@@ -3394,6 +3617,13 @@ bool run_gpu_engine(Engine& engine) {
                 const MeshRecord& mesh =
                     engine.meshes[item.mesh.value];
                 GpuMesh& gpu_mesh = state.meshes[index];
+                if (
+                    mesh.gpu_deformation &&
+                    !engine.geometries[item.geometry].flat_normals) {
+                    gpu_mesh.transform_version =
+                        mesh.transform_version;
+                    continue;
+                }
                 if (gpu_mesh.transform_version == mesh.transform_version) {
                     continue;
                 }
@@ -3409,6 +3639,7 @@ bool run_gpu_engine(Engine& engine) {
                 gpu_mesh.transform_version =
                     mesh.transform_version;
             }
+            bool topology_updated = false;
             if (
                 scene.mesh_membership_version !=
                 synced_mesh_membership_version) {
@@ -3469,6 +3700,7 @@ bool run_gpu_engine(Engine& engine) {
                     scene.mesh_membership_version;
                 synced_material_family_mask =
                     scene.material_family_mask;
+                topology_updated = true;
             }
             update_camera(camera);
             upstream::sort_transparent_draws(
@@ -3493,7 +3725,9 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_CancelGPUCommandBuffer(command);
                 continue;
             }
-            const bool capture_ready = frame >= screenshot_frame;
+            const bool capture_ready =
+                frame >= screenshot_frame &&
+                !topology_updated;
             const bool capture_frame =
                 capture_ready &&
                 !screenshot_saved &&
@@ -3689,6 +3923,21 @@ bool run_gpu_engine(Engine& engine) {
                             const bool grid_bucket =
                                 draw_item.material_kind ==
                                 upstream::RenderMaterialKind::grid;
+#if BBLITE_GPU_DEFORMATION
+                            if (!grid_bucket) {
+                                const DeformationUniforms deformation =
+                                    build_deformation_uniforms(
+                                        engine.meshes[
+                                            draw_item.mesh.value],
+                                        engine.geometries[
+                                            draw_item.geometry].flat_normals);
+                                SDL_PushGPUVertexUniformData(
+                                    command,
+                                    1,
+                                    &deformation,
+                                    sizeof(deformation));
+                            }
+#endif
                             if (standard_bucket) {
                                 const upstream::StandardUniforms fragment =
                                     upstream::build_standard_uniforms(
@@ -4525,6 +4774,23 @@ bool run_gpu_engine(Engine& engine) {
                                 sizeof(matrix));
                             scene_matrix_bound = true;
                         }
+#if BBLITE_GPU_DEFORMATION
+                        if (
+                            item.material_kind !=
+                            upstream::RenderMaterialKind::grid) {
+                            const DeformationUniforms deformation =
+                                build_deformation_uniforms(
+                                    engine.meshes[
+                                        item.mesh.value],
+                                    engine.geometries[
+                                        item.geometry].flat_normals);
+                            SDL_PushGPUVertexUniformData(
+                                command,
+                                1,
+                                &deformation,
+                                sizeof(deformation));
+                        }
+#endif
                         if (
                             item.material_kind ==
                             upstream::RenderMaterialKind::standard) {

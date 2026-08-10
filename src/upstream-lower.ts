@@ -12,6 +12,7 @@ import { BabylonLowerer } from "./lowering/babylon-lowerer.js";
 import { FactoryLowerer } from "./lowering/factory-lowerer.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
+import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 import type {
     GeometryOutputTaskManifest,
@@ -31,10 +32,23 @@ class GeneratedSourceWriter {
             pbrDiagnostics: boolean;
             shaderVariants: ShaderMaterialVariantName[];
             geometryOutputTasks: GeometryOutputTaskManifest[];
+            gpuDeformation: boolean;
         },
     ): void {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
+        const capabilitiesPath = resolve(
+            this.outputRoot,
+            "upstream/include/bblite/upstream/render_capabilities.hpp",
+        );
+        mkdirSync(dirname(capabilitiesPath), { recursive: true });
+        writeFileSync(
+            capabilitiesPath,
+            `#pragma once
+
+#define BBLITE_GPU_DEFORMATION ${options.gpuDeformation ? 1 : 0}
+`,
+        );
 
         this.writeSource(
             "upstream/src/engine.cpp",
@@ -106,7 +120,10 @@ class GeneratedSourceWriter {
                 );
             }
         }
-        if (features.includes("light:hemispheric")) {
+        if (
+            features.includes("light:hemispheric") ||
+            features.includes("light:directional")
+        ) {
             const light = new LightLowerer(context);
             this.writeSource(
                 "upstream/src/light_matrix.cpp",
@@ -114,9 +131,18 @@ class GeneratedSourceWriter {
                 generated,
                 "upstream/include/bblite/upstream/light_matrix.hpp",
             );
+        }
+        if (features.includes("light:hemispheric")) {
             this.writeSource(
                 "upstream/src/light_hemispheric.cpp",
-                light.lowerFactory(),
+                new LightLowerer(context).lowerFactory(),
+                generated,
+            );
+        }
+        if (features.includes("light:directional")) {
+            this.writeSource(
+                "upstream/src/light_directional.cpp",
+                new LightLowerer(context).lowerDirectionalFactory(),
                 generated,
             );
         }
@@ -124,6 +150,13 @@ class GeneratedSourceWriter {
             this.writeSource(
                 "upstream/src/light_point.cpp",
                 new LightLowerer(context).lowerPointFactory(),
+                generated,
+            );
+        }
+        if (features.includes("animation:property")) {
+            this.writeSource(
+                "upstream/src/animation_property.cpp",
+                new AnimationLowerer(context).lowerPropertyAnimation(),
                 generated,
             );
         }
@@ -176,6 +209,7 @@ class GeneratedSourceWriter {
                 pbrDiagnostics: options.pbrDiagnostics,
                 geometryOutputTasks: options.geometryOutputTasks,
                 frameGraph: features.includes("renderer:geometry-output"),
+                gpuDeformation: options.gpuDeformation,
             });
             for (const shader of shaders) {
                 const shaderPath = resolve(this.outputRoot, shader.output);
@@ -349,11 +383,13 @@ export function emitUpstreamGenerated(
         pbrDiagnostics: boolean;
         shaderVariants: ShaderMaterialVariantName[];
         geometryOutputTasks: GeometryOutputTaskManifest[];
+        gpuDeformation: boolean;
     } = {
         idDiagnostics: false,
         pbrDiagnostics: false,
         shaderVariants: [],
         geometryOutputTasks: [],
+        gpuDeformation: false,
     },
 ): void {
     new GeneratedSourceWriter(outputRoot, new UpstreamSourceStore()).emit(
