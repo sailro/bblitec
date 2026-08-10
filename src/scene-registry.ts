@@ -1,7 +1,5 @@
 export interface SceneParityDefinition {
-    reference:
-        | { kind: "playground"; path: string; url: string }
-        | { kind: "source"; path: string };
+    reference: { kind: "source"; path: string };
     actual: string;
     outputDirectory: string;
     maxFullMad?: number;
@@ -46,16 +44,15 @@ export const scenes: readonly SceneDefinition[] = [
         buildDirectory: "native/build-boombox-release",
         parity: {
             reference: {
-                kind: "playground",
-                path: "reference/boombox/babylon-ref-golden.png",
-                url: "https://playground.babylonjs.com/#QCU8DJ#800",
+                kind: "source",
+                path: "reference/boombox/babylon-lite-golden.png",
             },
             actual: "artifacts/parity/boombox-gpu.png",
             outputDirectory: "artifacts/parity",
-            maxFullMad: 0.5,
-            maxForegroundMad: 1,
-            cpuThresholds: { maxFullMad: 4.6, maxForegroundMad: 21.5 },
-            backgroundColor: [51, 51, 77],
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.03,
+            cpuThresholds: { maxFullMad: 2.2, maxForegroundMad: 21.5 },
+            backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             attribution: {
                 specialization: "generated/boombox/upstream/gltf-specialization.json",

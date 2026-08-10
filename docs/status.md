@@ -27,12 +27,12 @@ Development Windows machine, D3D12, 1280x720:
 
 | Renderer | Full MAD | Foreground MAD | CPU submission |
 | --- | ---: | ---: | ---: |
-| CPU fallback | <span style="color:#cf222e">4.452</span> | <span style="color:#cf222e">21.191</span> | 5.516 ms/frame |
-| SDL_GPU, 4x MSAA | <span style="color:#1a7f37">0.310</span> | <span style="color:#1a7f37">0.457</span> | 0.176 ms average, 0.141 ms median |
+| CPU fallback | <span style="color:#cf222e">2.075</span> | <span style="color:#cf222e">21.204</span> | 5.516 ms/frame |
+| SDL_GPU, 4x MSAA | <span style="color:#1a7f37">0.001</span> | <span style="color:#1a7f37">0.015</span> | 0.176 ms average, 0.141 ms median |
 
-The GPU path is approximately 31 times faster CPU-side. Its remaining error is
-mostly foreground edges (`1.086` MAD); foreground interior MAD is `0.167`.
-Regression ceilings are `0.5` full and `1.0` foreground MAD.
+The GPU path is approximately 31 times faster CPU-side. Against the pinned
+Babylon Lite output, BoomBox rendering is effectively exact. Regression
+ceilings are `0.01` full and `0.03` foreground MAD.
 
 ## Curated parity scenes
 
@@ -92,11 +92,8 @@ Normalized depth is bit-exact against the Babylon Lite WebGPU oracle. See
 Current BoomBox foreground diagnostic MAD: world normal `0.011`, albedo
 `0.000`, reflectivity `0.000`, irradiance `0.040`, normalized depth `0.000`.
 
-Exact position-seeded background dither is intentionally disabled: applying
-the pinned formula across different raster backends decorrelates the noise and
-raises BoomBox full MAD from `0.311` to `0.399`. The retained no-dither floor is
-background `0.300`, edge `1.097`, and interior `0.167` MAD; no further
-source-grounded BoomBox fix was identified.
+Legacy `.env` DDS backgrounds are opt-in so the default native composition
+matches pinned Babylon Lite; explicit HDR skyboxes remain enabled by default.
 
 ## Shader pipeline
 

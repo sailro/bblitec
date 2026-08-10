@@ -19,7 +19,7 @@ test("registers unique generated scene targets", () => {
         "19",
     );
     assert.equal(getScene("scene273").parity?.maxFullMad, 0.001);
-    assert.equal(getScene("boombox").parity?.reference.kind, "playground");
+    assert.equal(getScene("boombox").parity?.reference.kind, "source");
     assert.throws(() => getScene("missing"), /Unknown scene/);
 });
 
@@ -65,4 +65,7 @@ test("keeps package scene commands registry-driven", () => {
         /process\.env\.BBLITE_CMAKE_GENERATOR \?\? "Ninja"/,
     );
     assert.match(sceneCommand, /windowsNinjaEnvironment/);
+    const parityScene = readFileSync("src/parity-scene.ts", "utf8");
+    assert.match(parityScene, /windowsHide: true/);
+    assert.match(parityScene, /BBLITE_TEST_PASS: "1"/);
 });

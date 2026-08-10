@@ -140,20 +140,17 @@ npm run parity:diagnostics
 
 Current measured baselines:
 
-- CPU fallback: full MAD `4.452`, foreground MAD `21.191`,
+- CPU fallback: full MAD `2.075`, foreground MAD `21.204`,
   approximately `5.516 ms/frame`.
-- Generated SDL_GPU/D3D12 with Babylon-default 4x MSAA: full MAD `0.311`,
-  foreground MAD `0.460`, approximately `0.176 ms` average and `0.141 ms`
-  median.
-- GPU regression ceilings: full MAD `0.5`, foreground MAD `1.0`.
-- Upstream target: full MAD `0.19`, foreground MAD `0.03`, 99% foreground
-  pixels within one byte.
+- Generated SDL_GPU/D3D12 with Babylon-default 4x MSAA: full MAD `0.001`,
+  foreground MAD `0.015`, measured against pinned Babylon Lite.
+- GPU regression ceilings: full MAD `0.01`, foreground MAD `0.03`.
 
 Parity reference:
 
-- Playground: `#QCU8DJ#800`
+- Source: `examples/boombox.ts` on pinned `@babylonjs/lite`
 - Resolution: 1280x720, DPR 1
-- Background: `[51, 51, 77]`
+- Background: `[51, 51, 76]`
 - Foreground threshold: Euclidean distance `30`
 
 Benchmark mode uses immediate presentation and three frames in flight:

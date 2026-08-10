@@ -506,6 +506,8 @@ void load_hdr_environment(
     }
     scene.environment.has_ground = false;
     scene.environment.has_skybox = options.use_cubemap_skybox;
+    scene.environment.background_enabled_by_default =
+        options.use_cubemap_skybox;
     scene.environment.skybox_uses_environment =
         options.use_cubemap_skybox;
     scene.environment.skybox_size = options.skybox_size;

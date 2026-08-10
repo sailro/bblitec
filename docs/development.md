@@ -143,7 +143,7 @@ machine using the same MSVC toolchain:
 | one-file rebuild | 2.53 s | 2.21 s |
 
 The resulting 1280x720 BoomBox captures were byte-identical (`MAD 0.000`);
-both measured `0.311392` MAD against the same Babylon Lite golden.
+both measure `0.001` full MAD against the pinned Babylon Lite golden.
 
 Override the generator only when needed:
 

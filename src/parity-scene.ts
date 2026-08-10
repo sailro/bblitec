@@ -9,7 +9,6 @@ import {
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { captureBabylonReference } from "./capture-reference.js";
 import { captureSuiteReference } from "./capture-suite-reference.js";
 import { resolveScene } from "./scene-registry.js";
 import {
@@ -121,6 +120,7 @@ function runNative(
     );
     const result = spawnSync(resolve(executable), [], {
         stdio: "inherit",
+        windowsHide: true,
         env: {
             ...nativeBaseEnvironment,
             ...nativeEnvironment,
@@ -143,6 +143,7 @@ function runNative(
                   }),
             BBLITE_MAX_FRAMES: String(maxFrames),
             BBLITE_SCREENSHOT: resolve(screenshot),
+            BBLITE_TEST_PASS: "1",
         },
     });
     if (result.error) throw result.error;
@@ -206,19 +207,11 @@ export async function runSceneParity(
         ? resolve(outputDirectory, "triangle-clusters-visual-gpu.png")
         : undefined;
 
-    if (config.reference.kind === "playground") {
-        await captureBabylonReference({
-            output: reference,
-            url: config.reference.url,
-            force: arguments_.recaptureReference,
-        });
-    } else {
-        await captureSuiteReference(
-            scene.source,
-            reference,
-            arguments_.recaptureReference,
-        );
-    }
+    await captureSuiteReference(
+        scene.source,
+        reference,
+        arguments_.recaptureReference,
+    );
     if (!arguments_.actual) {
         runNative(
             resolve(

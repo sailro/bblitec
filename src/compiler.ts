@@ -2782,7 +2782,7 @@ class Compiler {
                 id: "background-ground-opt-in",
                 category: "rendering",
                 sourceSemantics: "Babylon Lite creates the requested transparent environment ground.",
-                nativeSemantics: "The generated ground is available behind BBLITE_GROUND=1 because the committed Babylon.js golden composes it differently.",
+                nativeSemantics: "The generated ground is available behind BBLITE_GROUND=1 while background composition parity is validated against the pinned Babylon Lite output.",
                 risk: "high",
                 validation: ["explicit runtime flag", "separate background render pass", "documented parity reference"],
             });
@@ -2795,7 +2795,7 @@ class Compiler {
                 id: "background-dither-disabled",
                 category: "rendering",
                 sourceSemantics: "Babylon Lite adds position-seeded ±0.5/255 dither to generated background fragments.",
-                nativeSemantics: "Native backgrounds omit the dither because backend interpolation differences decorrelate the position-seeded noise; the exact formula increases BoomBox full MAD from 0.311 to 0.399.",
+                nativeSemantics: "Native backgrounds omit the dither because backend interpolation differences decorrelate position-seeded noise.",
                 risk: "medium",
                 validation: [
                     "pinned dither formula experiment",

@@ -485,6 +485,7 @@ struct EnvironmentState {
     TextureData skybox_texture;
     bool has_ground = false;
     bool has_skybox = false;
+    bool background_enabled_by_default = false;
     bool skybox_uses_environment = false;
     float ground_size = 15.0f;
     float skybox_size = 20.0f;

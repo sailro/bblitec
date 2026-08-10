@@ -116,7 +116,7 @@ html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:bloc
             undefined,
             { timeout: 120_000 },
         );
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(3000);
         mkdirSync(resolve(referencePath, ".."), { recursive: true });
         await page.locator("#renderCanvas").screenshot({ path: referencePath });
     } finally {

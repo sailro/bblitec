@@ -1164,18 +1164,22 @@ void pal::run_engine(Engine& engine) {
 
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
+    const bool hidden_test_pass =
+        pal::environment_variable("BBLITE_TEST_PASS") == "1";
     if (!SDL_CreateWindowAndRenderer(
             engine.options.title.c_str(),
             engine.options.width,
             engine.options.height,
-            SDL_WINDOW_RESIZABLE,
+            hidden_test_pass
+                ? SDL_WINDOW_RESIZABLE |
+                    SDL_WINDOW_NOT_FOCUSABLE
+                : SDL_WINDOW_RESIZABLE,
             &window,
             &renderer)) {
         const std::string error = SDL_GetError();
         SDL_Quit();
         throw std::runtime_error("SDL_CreateWindowAndRenderer failed: " + error);
     }
-
     const long benchmark_frame_count = configured_frames("BBLITE_BENCHMARK_FRAMES");
     const bool benchmarking = benchmark_frame_count > 0;
     if (benchmarking && !SDL_SetRenderVSync(renderer, 0)) {
@@ -1216,7 +1220,12 @@ void pal::run_engine(Engine& engine) {
             if (event.type == SDL_EVENT_QUIT) {
                 running = false;
             }
-            handle_camera_pointer_event(event, *camera, pointer_state);
+            if (!hidden_test_pass) {
+                handle_camera_pointer_event(
+                    event,
+                    *camera,
+                    pointer_state);
+            }
         }
 
         const double frame_start = pal::monotonic_milliseconds();

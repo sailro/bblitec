@@ -1964,9 +1964,13 @@ bool run_gpu_engine(Engine& engine) {
     }
     Scene& scene = *engine.registered_scenes.front();
     const std::string background_flag = environment_variable("BBLITE_BACKGROUND");
+    const bool background_enabled =
+        background_flag == "1" ||
+        background_flag == "true" ||
+        (background_flag.empty() &&
+         scene.environment.background_enabled_by_default);
     const bool use_skybox =
-        background_flag != "0" &&
-        background_flag != "false" &&
+        background_enabled &&
         scene.environment.has_skybox;
     const std::string ground_flag = environment_variable("BBLITE_GROUND");
     const bool use_ground =
@@ -1981,11 +1985,16 @@ bool run_gpu_engine(Engine& engine) {
 
     GpuState state;
     try {
+        const bool hidden_test_pass =
+            environment_variable("BBLITE_TEST_PASS") == "1";
         state.window = SDL_CreateWindow(
             engine.options.title.c_str(),
             engine.options.width,
             engine.options.height,
-            SDL_WINDOW_RESIZABLE);
+            hidden_test_pass
+                ? SDL_WINDOW_RESIZABLE |
+                    SDL_WINDOW_NOT_FOCUSABLE
+                : SDL_WINDOW_RESIZABLE);
         if (!state.window) gpu_error("SDL_CreateWindow");
         const bool gpu_debug =
             environment_variable("BBLITE_GPU_DEBUG") == "1";
@@ -3287,7 +3296,12 @@ bool run_gpu_engine(Engine& engine) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
-                handle_camera_pointer_event(event, camera, pointer_state);
+                if (!hidden_test_pass) {
+                    handle_camera_pointer_event(
+                        event,
+                        camera,
+                        pointer_state);
+                }
             }
             const double frame_time = monotonic_milliseconds();
             const float real_delta_ms =

@@ -24,7 +24,7 @@ Unsupported syntax and APIs fail at compile time with source locations.
   scene mutation.
 - Exact HDR GGX preprocessing and transmission/IOR/volume scene-color rendering.
 - WGSL shaders compiled by pinned Tint for D3D12, Vulkan, and Metal.
-- BoomBox D3D12 baseline: `0.311` full MAD, `0.460` foreground MAD,
+- BoomBox D3D12 baseline: `0.001` full MAD, `0.015` foreground MAD,
   `0.176 ms` average CPU submission.
 
 See [current status](docs/status.md) for the supported subset and all measured

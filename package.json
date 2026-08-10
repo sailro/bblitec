@@ -35,7 +35,6 @@
     "scenes:process": "npm run scene -- process all",
     "scenes:parity": "npm run scene -- parity all",
     "analyze:boombox": "npm run build && node dist/src/analyze-upstream.js",
-    "parity:reference": "npm run build && node dist/src/capture-reference.js",
     "parity:lite-diagnostics": "npm run build && node dist/src/capture-lite-diagnostics.js",
     "parity:diagnostics:compare": "npm run build && node dist/src/compare-lite-diagnostics.js",
     "parity:diagnostics": "npm run parity:lite-diagnostics && npm run scene -- parity boombox && npm run parity:diagnostics:compare",
