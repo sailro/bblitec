@@ -171,6 +171,9 @@ MeshHandle create_box(Engine& engine, float size) {
         Vec3{0.0f, -1.0f, 0.0f});
     geometry.bounds_min = Vec3{-half, -half, -half};
     geometry.bounds_max = Vec3{half, half, half};
+    for (ModelVertex& vertex : geometry.vertices) {
+        vertex.local_position = vertex.position;
+    }
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::box;
@@ -212,6 +215,9 @@ MeshHandle create_ground(Engine& engine, GroundOptions options) {
     geometry.indices = {3, 1, 0, 2, 3, 0};
     geometry.bounds_min = Vec3{-half_width, 0.0f, -half_height};
     geometry.bounds_max = Vec3{half_width, 0.0f, half_height};
+    for (ModelVertex& vertex : geometry.vertices) {
+        vertex.local_position = vertex.position;
+    }
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::ground;
@@ -251,6 +257,9 @@ MeshHandle create_plane(Engine& engine, PlaneOptions options) {
     geometry.indices = {0, 1, 2, 0, 2, 3};
     geometry.bounds_min = Vec3{-half_width, -half_height, 0.0f};
     geometry.bounds_max = Vec3{half_width, half_height, 0.0f};
+    for (ModelVertex& vertex : geometry.vertices) {
+        vertex.local_position = vertex.position;
+    }
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::gltf;
@@ -304,6 +313,9 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
     }
     geometry.bounds_min = Vec3{-radius, -radius, -radius};
     geometry.bounds_max = Vec3{radius, radius, radius};
+    for (ModelVertex& vertex : geometry.vertices) {
+        vertex.local_position = vertex.position;
+    }
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::sphere;
@@ -386,6 +398,9 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
         Vec3{-outer_radius, -minor_radius, -outer_radius};
     geometry.bounds_max =
         Vec3{outer_radius, minor_radius, outer_radius};
+    for (ModelVertex& vertex : geometry.vertices) {
+        vertex.local_position = vertex.position;
+    }
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::torus;
@@ -558,10 +573,81 @@ MaterialHandle create_pbr_material(
         options.orm.color.b * options.metallic_factor;
     material.direct_intensity = options.direct_intensity;
     material.environment_intensity = options.environment_intensity;
+    material.base_color_factor.a = options.alpha;
+    material.reflectance = options.reflectance;
+    material.alpha_mode =
+        options.alpha < 1.0f
+            ? MaterialAlphaMode::blend
+            : MaterialAlphaMode::opaque;
     material.unlit = options.unlit;
     material.has_occlusion_texture = true;
     engine.materials.push_back(material);
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
+}
+
+} // namespace bbl
+`,
+        };
+    }
+
+    public lowerGridMaterialFactory(): LoweredSource {
+        const modulePath = "src/material/grid/grid-material.ts";
+        const source = this.context.store.getSource(modulePath);
+        for (const marker of [
+            "const mainColor = options.mainColor ?? [0, 0, 0]",
+            "const lineColor = options.lineColor ?? [0, 0.5, 0.5]",
+            "Math.round(majorUnitFrequency)",
+            "const transparent = opacity < 1",
+            "needAlphaBlending: transparent || hasOpacity",
+            "backFaceCulling",
+        ]) {
+            if (!source.includes(marker)) {
+                throw new Error(
+                    `Pinned GridMaterial semantics changed: ${marker}.`,
+                );
+            }
+        }
+        return {
+            modulePath,
+            symbolName: "createGridMaterial",
+            header: "",
+            source: `// ${this.context.provenance(
+                modulePath,
+                "createGridMaterial",
+            )}
+#include <bblite/runtime.hpp>
+
+#include <cmath>
+
+namespace bbl {
+
+MaterialHandle create_grid_material(
+    Engine& engine,
+    GridMaterialOptions options) {
+    MaterialRecord material;
+    material.grid_material = true;
+    material.grid_main_color = options.main_color;
+    material.grid_line_color = options.line_color;
+    material.grid_control = Vec4{
+        options.grid_ratio,
+        std::round(options.major_unit_frequency),
+        options.minor_unit_visibility,
+        options.opacity,
+    };
+    material.grid_offset = options.grid_offset;
+    material.grid_visibility = options.visibility;
+    material.grid_antialias = options.antialias;
+    material.grid_pre_multiply_alpha =
+        options.pre_multiply_alpha;
+    material.grid_use_max_line = options.use_max_line;
+    material.alpha_mode =
+        options.opacity < 1.0f
+            ? MaterialAlphaMode::blend
+            : MaterialAlphaMode::opaque;
+    material.double_sided = !options.back_face_culling;
+    engine.materials.push_back(material);
+    return MaterialHandle{
+        static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }
 
 } // namespace bbl

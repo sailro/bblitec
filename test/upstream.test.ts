@@ -26,6 +26,7 @@ test("generates the Babylon environment parser from upstream constants", () => {
     const lowerer = new EnvironmentLowerer(new LoweringContext());
     const lowered = lowerer.lowerParser();
     const adapter = lowerer.lowerLoaderAdapter();
+    const hdrAdapter = lowerer.lowerHdrLoaderAdapter();
     assert.match(lowered.source, /0x86, 0x16, 0x87, 0x96, 0xf6, 0xd6, 0x96, 0x36/);
     assert.match(lowered.source, /constexpr float c1 = 1\.4999984284682104f/);
     assert.match(lowered.source, /face\.bytes\.assign/);
@@ -36,6 +37,10 @@ test("generates the Babylon environment parser from upstream constants", () => {
     assert.match(adapter.source, /scene\.environment\.ground_size/);
     assert.match(adapter.source, /scene\.environment\.skybox_width/);
     assert.match(adapter.source, /0x20534444u/);
+    assert.match(hdrAdapter.source, /0x42, 0x42, 0x4c, 0x48, 0x44, 0x52, 0x31/);
+    assert.match(hdrAdapter.source, /scene\.environment\.specular_rgba16f = true/);
+    assert.match(hdrAdapter.source, /scene\.environment\.tone_mapping_enabled = false/);
+    assert.match(hdrAdapter.source, /scene\.environment\.skybox_uses_environment/);
 });
 
 test("generates scene defaults, routing, and idempotent registration", () => {
@@ -62,6 +67,10 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /vertex\.normal = normalize\(vertex\.normal\)/);
     assert.match(adapter.source, /vertex\.local_position = local_position/);
     assert.match(adapter.source, /geometry\.has_tangents = tangents != nullptr/);
+    assert.match(adapter.source, /optional\(attributes, "COLOR_0"\)/);
+    assert.match(adapter.source, /vertex\.color = Vec4/);
+    assert.match(adapter.source, /result\.sampler\.max_anisotropy/);
+    assert.match(adapter.source, /result\.sampler\.max_lod = no_mip/);
     assert.match(adapter.source, /MaterialAlphaMode::blend/);
     assert.match(adapter.source, /alpha_cutoff/);
     assert.doesNotMatch(adapter.source, /pal::load_glb/);
@@ -85,15 +94,18 @@ test("generates engine API wrappers over the PAL", () => {
     assert.match(lowered.source, /pal::run_engine\(engine\)/);
     assert.match(lowered.source, /BBLITE_ASSET_DIR/);
     assert.match(lowered.source, /environment_variable\("BBLITE_ASSET_DIR"\)/);
+    assert.match(lowered.source, /pal::executable_directory\(\)/);
 });
 
 test("generates mesh and standard-material factories from upstream defaults", () => {
     const lowerer = new FactoryLowerer(new LoweringContext());
     const mesh = lowerer.lowerMeshFactories();
     const material = lowerer.lowerStandardMaterialFactory();
+    const grid = lowerer.lowerGridMaterialFactory();
     const shader = lowerer.lowerShaderMaterialFactory();
     assert.match(mesh.source, /mesh\.dimensions = Vec3\{resolved_size, resolved_size, resolved_size\}/);
     assert.match(mesh.source, /geometry\.vertices\.insert/);
+    assert.match(mesh.source, /vertex\.local_position = vertex\.position/);
     assert.match(mesh.source, /geometry\.indices = \{3, 1, 0, 2, 3, 0\}/);
     assert.match(mesh.source, /mesh\.geometry =/);
     assert.match(mesh.source, /create_plane\(Engine& engine, PlaneOptions options\)/);
@@ -101,6 +113,10 @@ test("generates mesh and standard-material factories from upstream defaults", ()
     assert.match(mesh.source, /Vec2\{1\.0f, 1\.0f\}/);
     assert.match(material.source, /material\.diffuse_color = Color3\{1\.0f, 1\.0f, 1\.0f\}/);
     assert.match(material.source, /material\.standard_material = true/);
+    assert.match(grid.source, /material\.grid_material = true/);
+    assert.match(grid.source, /std::round\(options\.major_unit_frequency\)/);
+    assert.match(grid.source, /options\.opacity < 1\.0f/);
+    assert.match(grid.source, /material\.grid_use_max_line/);
     assert.match(shader.source, /ShaderMaterialVariant::circular_cutout/);
     assert.match(shader.source, /material\.alpha_mode = MaterialAlphaMode::blend/);
     assert.match(shader.source, /material\.shader_depth_write = false/);
@@ -115,6 +131,8 @@ test("generates reached PBR material scalar fields", () => {
     assert.match(material.source, /material\.roughness_factor/);
     assert.match(material.source, /material\.direct_intensity/);
     assert.match(material.source, /material\.environment_intensity/);
+    assert.match(material.source, /material\.reflectance/);
+    assert.match(material.source, /options\.alpha < 1\.0f/);
 });
 
 test("generates no-color material views from pinned view flags", () => {
@@ -128,10 +146,15 @@ test("generates no-color material views from pinned view flags", () => {
 });
 
 test("generates the public hemispheric light factory from upstream defaults", () => {
-    const lowered = new LightLowerer(new LoweringContext()).lowerFactory();
+    const lowerer = new LightLowerer(new LoweringContext());
+    const lowered = lowerer.lowerFactory();
+    const point = lowerer.lowerPointFactory();
     assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
     assert.match(lowered.source, /light\.diffuse_color = Color3\{1\.0f, 1\.0f, 1\.0f\}/);
     assert.match(lowered.source, /light\.ground_color = Color3\{0\.0f, 0\.0f, 0\.0f\}/);
+    assert.match(point.source, /light\.kind = LightKind::point/);
+    assert.match(point.source, /light\.position = position/);
+    assert.match(point.source, /light\.range = std::numeric_limits<float>::max\(\)/);
 });
 
 test("generates ArcRotate and default camera factories from upstream constants", () => {
@@ -168,7 +191,42 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     const fidelity = lowerer.fidelityManifest();
     assert.equal(lowered.modulePath, "src/frame-graph/render-task.ts");
     assert.match(lowered.header, /struct RenderItem/);
+    assert.match(lowered.header, /enum class RenderMaterialKind/);
+    assert.match(lowered.header, /enum class RenderBucket/);
+    assert.match(lowered.header, /enum class RenderCullMode/);
+    assert.match(lowered.header, /enum class RenderStage/);
+    assert.match(
+        lowered.header,
+        /RenderStage::skybox,[\s\S]*RenderStage::opaque,[\s\S]*RenderStage::transparent,[\s\S]*RenderStage::ground/,
+    );
+    assert.match(lowered.header, /enum class RenderPipelineKind/);
+    assert.match(lowered.header, /struct RenderDrawCommand/);
+    assert.match(lowered.header, /struct RenderDrawLists/);
+    assert.match(lowered.header, /struct RenderFeatures/);
     assert.match(lowered.source, /build_render_plan/);
+    assert.match(lowered.source, /build_render_draw_lists/);
+    assert.match(lowered.source, /build_render_task_draw_lists/);
+    assert.match(lowered.source, /build_render_features/);
+    assert.match(lowered.source, /features\.grid_material/);
+    assert.match(lowered.source, /features\.no_color_material/);
+    assert.match(lowered.source, /std::stable_sort/);
+    assert.match(lowered.source, /bind_render_item/);
+    assert.match(lowered.source, /sort_transparent_draws/);
+    assert.match(
+        lowered.source,
+        /left\.sort_distance > right\.sort_distance/,
+    );
+    assert.match(lowered.source, /left\.item\.order < right\.item\.order/);
+    assert.match(
+        lowered.source,
+        /material\.alpha_mode == MaterialAlphaMode::blend/,
+    );
+    assert.match(lowered.source, /material\.standard_material/);
+    assert.match(lowered.source, /material\.grid_material/);
+    assert.match(
+        lowered.source,
+        /RenderPipelineKind::grid_transparent_none/,
+    );
     assert.match(lowered.source, /build_pbr_uniforms/);
     assert.doesNotMatch(
         lowered.source,
@@ -182,6 +240,7 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /result\.normal_options\[1\]/);
     assert.match(lowered.source, /build_background_plan/);
     assert.match(lowered.source, /build_skybox_plan/);
+    assert.match(lowered.source, /build_skybox_view_projection/);
     assert.match(lowered.source, /preferred_sample_count\(\).*return 4u/s);
     assert.match(lowered.header, /struct PbrUniforms/);
     assert.match(lowered.source, /mesh\.geometry >= engine\.geometries\.size\(\)/);
@@ -193,17 +252,61 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(String(fragment?.data), /geometrySmithGGX/);
     assert.match(String(fragment?.data), /SV_IsFrontFace/);
     assert.match(String(fragment?.data), /normalOptions\.x > 0\.5/);
+    assert.match(String(fragment?.data), /input\.color\.rgb/);
+    assert.match(String(fragment?.data), /input\.color\.a/);
+    assert.match(String(fragment?.data), /dielectricF0 = normalOptions\.z/);
+    assert.match(
+        String(fragment?.data),
+        /evaluateIrradiance\(normal\) \* materialFactors\.w/,
+    );
+    assert.match(String(fragment?.data), /luminanceOverAlpha/);
     assert.ok(shaders.some((shader) => shader.output.endsWith("alpha-card.vert.hlsl")));
     assert.ok(
         shaders.some((shader) =>
             shader.output.endsWith("circular-cutout.frag.hlsl"),
         ),
     );
+    const diagnosticC = shaders.find((shader) =>
+        shader.output.endsWith("pbr-diagnostics-c.frag.hlsl"),
+    );
+    assert.match(String(diagnosticC?.data), /baseColor/);
+    assert.match(String(diagnosticC?.data), /preToneHdr/);
     assert.match(String(fragment?.data), /1\.590579/);
     assert.equal(fidelity.sourceLanguage, "WGSL");
     assert.deepEqual(fidelity.compiledArtifacts, ["DXIL", "SPIR-V"]);
     assert.ok(fidelity.invariants.some(({ id }) => id === "rgbd-cubemap-y-flip"));
     assert.ok(fidelity.invariants.some(({ id }) => id === "surface-msaa"));
+});
+
+test("generates portable GridMaterial shaders from pinned formulas", () => {
+    const shaders = new RendererLowerer(
+        new LoweringContext(),
+    ).lowerShaders({
+        ground: false,
+        skybox: false,
+        shaderVariants: [],
+        standardMaterial: false,
+        gridMaterial: true,
+        idDiagnostics: false,
+        pbrDiagnostics: false,
+        geometryOutputTasks: [],
+    });
+    const hlsl = shaders.find((shader) =>
+        shader.output.endsWith("grid.frag.hlsl"),
+    );
+    const msl = shaders.find((shader) =>
+        shader.output.endsWith("grid.frag.msl"),
+    );
+    assert.match(String(hlsl?.data), /gridDynamicVisibility/);
+    assert.match(
+        String(hlsl?.data),
+        /Generated from @babylonjs\/lite@1\.18\.0/,
+    );
+    assert.match(String(hlsl?.data), /cos\(fraction \* PI\)/);
+    assert.match(String(hlsl?.data), /SQRT2 \/ 4\.0/);
+    assert.match(String(hlsl?.data), /max\(max\(x, y\), z\)/);
+    assert.match(String(msl?.data), /dfdx\(position\)/);
+    assert.match(String(msl?.data), /uniforms\.gridControl\.w \* grid/);
 });
 
 test("generates typed geometry task records and PBR MRT shaders", () => {

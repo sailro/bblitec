@@ -106,6 +106,57 @@ LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float inten
         };
     }
 
+    public lowerPointFactory(): LoweredSource {
+        const modulePath = "src/light/point-light.ts";
+        const symbolName = "createPointLight";
+        const source = this.context.store.getSource(modulePath);
+        for (const marker of [
+            'lightType: "point" as const',
+            "diffuse: [1, 1, 1]",
+            "specular: [1, 1, 1]",
+            "range: Number.MAX_VALUE",
+        ]) {
+            if (!source.includes(marker)) {
+                throw new Error(`Pinned point-light factory changed: ${marker}.`);
+            }
+        }
+        return {
+            modulePath,
+            symbolName,
+            header: "",
+            source: `// ${this.context.provenance(modulePath, symbolName)}
+#include <bblite/runtime.hpp>
+
+namespace bbl {
+
+LightHandle create_point_light(
+    Engine& engine,
+    Vec3 position,
+    float intensity) {
+    LightRecord light;
+    light.kind = LightKind::point;
+    light.position = position;
+    light.intensity = intensity;
+    light.diffuse_color = Color3{1.0f, 1.0f, 1.0f};
+    light.specular_color = Color3{1.0f, 1.0f, 1.0f};
+    light.range = std::numeric_limits<float>::max();
+    light.local_matrix[0] = 1.0f;
+    light.local_matrix[5] = 1.0f;
+    light.local_matrix[10] = 1.0f;
+    light.local_matrix[12] = position.x;
+    light.local_matrix[13] = position.y;
+    light.local_matrix[14] = position.z;
+    light.local_matrix[15] = 1.0f;
+    engine.lights.push_back(light);
+    return LightHandle{
+        static_cast<std::uint32_t>(engine.lights.size() - 1)};
+}
+
+} // namespace bbl
+`,
+        };
+    }
+
     private extractHemisphericDefaults(modulePath: string, symbolName: string): HemisphericDefaults {
         const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
         let lightObject: ts.ObjectLiteralExpression | undefined;

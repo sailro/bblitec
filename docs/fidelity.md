@@ -21,7 +21,8 @@ Generated scenes contain:
 
 Current intentional adaptations include browser-wrapper erasure, immediate AOT
 `await`, compile-time asset materialization, SDL input translation, native
-shader backends, and opt-in ground composition.
+shader backends, deterministic box-filtered compile-time HDR cubemap mips in
+place of the pinned GGX prefilter, and opt-in ground composition.
 
 New high-risk adaptations require an explicit record and a focused test.
 
@@ -32,9 +33,12 @@ Generated shaders preserve upstream markers for:
 - GGX distribution and Smith geometry
 - BRDF LUT energy conservation
 - environment mip selection and RGBD decoding
+- RGBE parsing, HDR cubemap projection, and infinite-distance skybox sampling
 - SH irradiance
 - exposure, tone mapping, gamma, and contrast
 - depth, culling, blending, and multisample state
+- GridMaterial object-space derivatives, major/minor lines, hard/cosine line
+  paths, max-line composition, and transparent opacity
 
 Backend reflection should ultimately verify uniform layout, binding order,
 varyings, texture sample types, and pipeline state. The long-term goal is one
@@ -74,6 +78,8 @@ BoomBox also emits focused PBR buffers from the production shader:
 - irradiance and IBL
 - normalized view depth
 - albedo and direct light
+- raw base color
+- final pre-tone-map HDR, including a tightly packed RGBA16F sidecar
 
 These diagnostics use two 4x-MSAA passes because SDL_GPU exposes four color
 targets. Normalized depth is bit-exact against the Babylon Lite WebGPU oracle.
@@ -81,6 +87,11 @@ targets. Normalized depth is bit-exact against the Babylon Lite WebGPU oracle.
 Scenes 145 and 146 gate the separate production geometry-renderer path: all
 eleven geometry texture types, split 7+4 MRT passes, optional real color,
 independent depth, viewport copies, and MSAA resolve.
+
+The diagnostic comparison report joins each final-image hotspot to the
+available WebGPU-oracle buffer MADs and its attributed shader variant. Base
+color and pre-tone HDR are currently native captures only; they are listed as
+uncompared artifacts until matching browser readbacks are added.
 
 ## Validation policy
 

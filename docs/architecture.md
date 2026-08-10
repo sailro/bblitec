@@ -48,12 +48,14 @@ scene-local under `generated\<scene>`.
 The current generated slice includes:
 
 - engine, scene, camera, light, mesh, and material APIs
-- external glTF packaging and typed GLB loading
+- external glTF packaging and typed GLB loading, including vertex colors
 - the HillValley-required `.babylon` loader slice
-- Standard/PBR material records, no-color views, and typed custom shaders
+- Standard/PBR/Grid material records, no-color views, and typed custom shaders
 - negative-transform winding, generated normals, and cotangent normal mapping
-- `.env`/DDS environment parsing and background passes
-- render buckets, camera matrices, uniforms, and frame-graph tasks
+- `.env`/DDS parsing plus compile-time RGBE HDR/SH/cubemap materialization
+- generated infinite-distance solid, DDS, and HDR skybox behavior
+- ordered opaque/transparent draw lists, camera matrices, uniforms, and
+  frame-graph tasks
 - Standard/PBR geometry MRTs, depth-only passes, blits, and MSAA resolve
 - HLSL/MSL shader sources tied to pinned WGSL formulas
 
@@ -89,10 +91,14 @@ Important contracts:
 
 - base-color/emissive textures are sRGB; normal/ORM textures are linear
 - `.env` RGBD cubemap rows are vertically reversed for SDL_GPU upload
+- compiled HDR cubemaps are linear RGBA16F with mip-major, face-major layout
 - DDS skyboxes are RGBA16F with face-major, mip-minor layout
 - alpha mode, cutoff, blending, culling, and coverage are material-driven
+- PAL executes generated draw-command indices and pipeline keys rather than
+  rescanning every mesh once per pipeline
 - screenshot capture uses a readable target, then blits to the swapchain
-- native builds snapshot reached shaders to avoid cross-scene drift
+- native builds place reached assets and snapshotted shaders beside the
+  executable to avoid absolute paths and cross-scene drift
 
 The SDL_Renderer path remains a deterministic CPU fallback.
 

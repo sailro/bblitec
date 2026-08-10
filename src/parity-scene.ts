@@ -36,6 +36,7 @@ interface RenderItemMetadata {
     clusterCount: number;
     materialIndex?: number;
     materialName?: string;
+    shaderVariant: "pbr";
     alphaMode: "OPAQUE" | "MASK" | "BLEND";
     doubleSided: boolean;
 }
@@ -349,6 +350,9 @@ export async function runSceneParity(
                   ["ibl", "ibl-gpu.png"],
                   ["normalizedDepth", "normalized-depth-gpu.png"],
                   ["albedo", "albedo-gpu.png"],
+                  ["baseColor", "base-color-gpu.png"],
+                  ["preToneHdr", "pre-tone-hdr-gpu.png"],
+                  ["preToneHdrRaw", "pre-tone-hdr-gpu.rgba16f"],
               ]
                   .map(([key, file]) => [key, resolve(outputDirectory, file!)] as const)
                   .filter(([, path]) => existsSync(path)),

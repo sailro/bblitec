@@ -56,8 +56,38 @@ target_include_directories(
     "${BBLITE_NATIVE_ROOT}/include"
     "${BBLITE_GENERATED_DIR}/upstream/include"
 )
-target_compile_definitions(bblite_native PRIVATE BBLITE_ASSET_DIR="${BBLITE_GENERATED_DIR}/assets")
-target_compile_definitions(bblite_native PRIVATE BBLITE_GPU_SHADER_DIR="${BBLITE_BUILD_SHADER_DIR}")
+target_compile_definitions(bblite_native PRIVATE BBLITE_ASSET_DIR="assets")
+target_compile_definitions(bblite_native PRIVATE BBLITE_GPU_SHADER_DIR="shaders")
+
+if(EXISTS "${BBLITE_GENERATED_DIR}/assets")
+    add_custom_command(
+        TARGET bblite_native
+        POST_BUILD
+        COMMAND
+            "${CMAKE_COMMAND}" -E remove_directory
+            "$<TARGET_FILE_DIR:bblite_native>/assets"
+        COMMAND
+            "${CMAKE_COMMAND}" -E copy_directory
+            "${BBLITE_GENERATED_DIR}/assets"
+            "$<TARGET_FILE_DIR:bblite_native>/assets"
+        VERBATIM
+    )
+endif()
+
+if(BBLITE_GENERATED_SHADER_FILES)
+    add_custom_command(
+        TARGET bblite_native
+        POST_BUILD
+        COMMAND
+            "${CMAKE_COMMAND}" -E remove_directory
+            "$<TARGET_FILE_DIR:bblite_native>/shaders"
+        COMMAND
+            "${CMAKE_COMMAND}" -E copy_directory
+            "${BBLITE_BUILD_SHADER_DIR}"
+            "$<TARGET_FILE_DIR:bblite_native>/shaders"
+        VERBATIM
+    )
+endif()
 
 find_package(SDL3 CONFIG QUIET)
 if(SDL3_FOUND)

@@ -11,11 +11,13 @@ import { LoweredSource, LoweringContext } from "./context.js";
 
 const renderTaskModule = "src/frame-graph/render-task.ts";
 const pbrTemplateModule = "src/material/pbr/pbr-template.ts";
+const pbrTemplateExtModule = "src/material/pbr/pbr-template-ext.ts";
 const pbrHelperCoreModule = "src/material/node/blocks/pbr-mr-helper-core.ts";
 const iblFragmentModule = "src/material/pbr/fragments/ibl-fragment.ts";
 const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
+const backgroundHdrModule = "src/material/pbr/background-hdr-skybox.ts";
 const rgbdDecodeModule = "src/loader-env/rgbd-decode.ts";
 const surfaceModule = "src/engine/surface.ts";
 const templateRoot = fileURLToPath(new URL("../../../src/lowering/templates/renderer/", import.meta.url));
@@ -171,6 +173,17 @@ export class RendererLowerer {
                 throw new Error(`${renderTaskModule} is missing ${symbol}.`);
             }
         }
+        for (const marker of [
+            "b._sortDistance = wc ?",
+            "b._sortDistance! - a._sortDistance!",
+            "a.renderable.order - b.renderable.order",
+        ]) {
+            if (!source.includes(marker)) {
+                throw new Error(
+                    `${renderTaskModule} transparent sorting changed: ${marker}.`,
+                );
+            }
+        }
         const sampleCount = this.context.extractNumber(
             surface,
             /const msaaSamples: 1 \| 4 = options\?\.msaaSamples === 1 \? 1 : ([0-9]+)/,
@@ -189,10 +202,95 @@ export class RendererLowerer {
 
 namespace bbl::upstream {
 
+enum class RenderMaterialKind {
+    pbr,
+    standard,
+    grid,
+    shader,
+};
+
+enum class RenderBucket {
+    opaque,
+    alpha_mask,
+    alpha_blend,
+};
+
+enum class RenderCullMode {
+    back,
+    none,
+};
+
+enum class RenderPipelineKind {
+    pbr_opaque_back,
+    pbr_opaque_none,
+    pbr_transparent_back,
+    pbr_transparent_none,
+    standard_opaque_back,
+    standard_opaque_none,
+    standard_transparent_back,
+    standard_transparent_none,
+    grid_opaque_back,
+    grid_opaque_none,
+    grid_transparent_back,
+    grid_transparent_none,
+    shader_alpha_card,
+    shader_alpha_card_a2c,
+    shader_circular_cutout,
+};
+
+enum class RenderStage {
+    skybox,
+    opaque,
+    transparent,
+    ground,
+};
+
 struct RenderItem {
     MeshHandle mesh{};
     std::uint32_t geometry = invalid_handle;
     MaterialHandle material{};
+    RenderMaterialKind material_kind = RenderMaterialKind::pbr;
+    RenderBucket bucket = RenderBucket::opaque;
+    RenderCullMode cull_mode = RenderCullMode::back;
+    ShaderMaterialVariant shader_variant = ShaderMaterialVariant::alpha_card;
+    bool alpha_to_coverage = false;
+    std::uint32_t order = 0;
+};
+
+struct RenderDrawCommand {
+    std::uint32_t item_index = invalid_handle;
+    RenderItem item{};
+    RenderPipelineKind pipeline =
+        RenderPipelineKind::pbr_opaque_back;
+    float sort_distance = 0.0f;
+};
+
+struct RenderDrawList {
+    std::vector<RenderDrawCommand> commands;
+};
+
+struct RenderDrawLists {
+    RenderDrawList opaque;
+    RenderDrawList transparent;
+};
+
+struct RenderPlan {
+    std::vector<RenderItem> items;
+    RenderDrawLists draw_lists;
+    std::array<RenderStage, 4> stages{
+        RenderStage::skybox,
+        RenderStage::opaque,
+        RenderStage::transparent,
+        RenderStage::ground,
+    };
+};
+
+struct RenderFeatures {
+    bool standard_material = false;
+    bool grid_material = false;
+    bool no_color_material = false;
+    bool shader_alpha_card = false;
+    bool shader_circular_cutout = false;
 };
 
 struct PbrUniforms {
@@ -233,6 +331,14 @@ struct StandardUniforms {
     std::array<float, 4> reflection_options{};
 };
 
+struct GridUniforms {
+    std::array<float, 4> grid_control{};
+    std::array<float, 4> main_color{};
+    std::array<float, 4> line_color{};
+    std::array<float, 4> grid_offset_visibility{};
+    std::array<float, 4> options{};
+};
+
 struct BackgroundPlan {
     std::array<ModelVertex, 4> vertices{};
     std::array<std::uint32_t, 6> indices{};
@@ -256,12 +362,33 @@ struct SkyboxUniforms {
     std::array<float, 4> image_parameters{};
 };
 
-std::vector<RenderItem> build_render_plan(const Scene& scene, const Engine& engine);
+RenderPlan build_render_plan(const Scene& scene, const Engine& engine);
+RenderFeatures build_render_features(
+    const Scene& scene,
+    const Engine& engine);
+RenderDrawLists build_render_draw_lists(
+    const std::vector<RenderItem>& items,
+    const Engine& engine);
+RenderDrawLists build_render_task_draw_lists(
+    const std::vector<RenderItem>& items,
+    const Engine& engine,
+    const FrameTaskRecord& task);
+void sort_transparent_draws(
+    RenderDrawList& transparent,
+    const Engine& engine,
+    const CameraRecord& camera);
+RenderItem bind_render_item(
+    RenderItem item,
+    const Engine& engine,
+    MaterialHandle material);
 std::uint32_t preferred_sample_count();
 std::array<float, 16> build_view_projection(
     const CameraRecord& camera,
     float aspect,
     bool reverse_depth = false);
+std::array<float, 16> build_skybox_view_projection(
+    const CameraRecord& camera,
+    float aspect);
 PbrUniforms build_pbr_uniforms(
     const Scene& scene,
     const Engine& engine,
@@ -271,6 +398,9 @@ StandardUniforms build_standard_uniforms(
     const Scene& scene,
     const Engine& engine,
     const CameraRecord& camera,
+    const RenderItem& item);
+GridUniforms build_grid_uniforms(
+    const Engine& engine,
     const RenderItem& item);
 BackgroundPlan build_background_plan(const EnvironmentState& environment);
 BackgroundUniforms build_background_uniforms(
@@ -289,7 +419,9 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment);
 #include <bblite/upstream/renderer_plan.hpp>
 #include <bblite/upstream/camera_math.hpp>
 
+#include <algorithm>
 #include <cmath>
+#include <iterator>
 
 namespace bbl::upstream {
 
@@ -314,6 +446,30 @@ Vec3 cross(Vec3 left, Vec3 right) {
     };
 }
 
+Vec3 rotate_euler(Vec3 value, const Vec3& rotation) {
+    const float sin_x = std::sin(rotation.x);
+    const float cos_x = std::cos(rotation.x);
+    value = Vec3{
+        value.x,
+        value.y * cos_x - value.z * sin_x,
+        value.y * sin_x + value.z * cos_x,
+    };
+    const float sin_y = std::sin(rotation.y);
+    const float cos_y = std::cos(rotation.y);
+    value = Vec3{
+        value.x * cos_y + value.z * sin_y,
+        value.y,
+        -value.x * sin_y + value.z * cos_y,
+    };
+    const float sin_z = std::sin(rotation.z);
+    const float cos_z = std::cos(rotation.z);
+    return Vec3{
+        value.x * cos_z - value.y * sin_z,
+        value.x * sin_z + value.y * cos_z,
+        value.z,
+    };
+}
+
 std::array<float, 16> multiply(
     const std::array<float, 16>& left,
     const std::array<float, 16>& right) {
@@ -331,9 +487,287 @@ std::array<float, 16> multiply(
 
 } // namespace
 
-std::vector<RenderItem> build_render_plan(const Scene& scene, const Engine& engine) {
-    std::vector<RenderItem> result;
-    result.reserve(scene.meshes.size());
+RenderItem bind_render_item(
+    RenderItem item,
+    const Engine& engine,
+    MaterialHandle material_handle) {
+    item.material = material_handle;
+    if (material_handle.value >= engine.materials.size()) {
+        return item;
+    }
+    const MaterialRecord& material = engine.materials[material_handle.value];
+    item.material_kind = material.grid_material
+        ? RenderMaterialKind::grid
+        : material.shader_material
+            ? RenderMaterialKind::shader
+            : material.standard_material
+            ? RenderMaterialKind::standard
+            : RenderMaterialKind::pbr;
+    item.bucket =
+        material.alpha_mode == MaterialAlphaMode::blend
+            ? RenderBucket::alpha_blend
+            : material.alpha_mode == MaterialAlphaMode::mask
+                ? RenderBucket::alpha_mask
+                : RenderBucket::opaque;
+    item.cull_mode = material.double_sided
+        ? RenderCullMode::none
+        : RenderCullMode::back;
+    item.shader_variant = material.shader_variant;
+    item.alpha_to_coverage = material.alpha_to_coverage;
+    return item;
+}
+
+namespace {
+
+RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
+    const bool transparent =
+        item.bucket == RenderBucket::alpha_blend;
+    const bool double_sided =
+        item.cull_mode == RenderCullMode::none;
+    switch (item.material_kind) {
+        case RenderMaterialKind::pbr:
+            if (transparent) {
+                return double_sided
+                    ? RenderPipelineKind::pbr_transparent_none
+                    : RenderPipelineKind::pbr_transparent_back;
+            }
+            return double_sided
+                ? RenderPipelineKind::pbr_opaque_none
+                : RenderPipelineKind::pbr_opaque_back;
+        case RenderMaterialKind::standard:
+            if (transparent) {
+                return double_sided
+                    ? RenderPipelineKind::standard_transparent_none
+                    : RenderPipelineKind::standard_transparent_back;
+            }
+            return double_sided
+                ? RenderPipelineKind::standard_opaque_none
+                : RenderPipelineKind::standard_opaque_back;
+        case RenderMaterialKind::grid:
+            if (transparent) {
+                return double_sided
+                    ? RenderPipelineKind::grid_transparent_none
+                    : RenderPipelineKind::grid_transparent_back;
+            }
+            return double_sided
+                ? RenderPipelineKind::grid_opaque_none
+                : RenderPipelineKind::grid_opaque_back;
+        case RenderMaterialKind::shader:
+            switch (item.shader_variant) {
+                case ShaderMaterialVariant::alpha_card:
+                    return item.alpha_to_coverage
+                        ? RenderPipelineKind::shader_alpha_card_a2c
+                        : RenderPipelineKind::shader_alpha_card;
+                case ShaderMaterialVariant::circular_cutout:
+                    return RenderPipelineKind::shader_circular_cutout;
+            }
+    }
+    return RenderPipelineKind::pbr_opaque_back;
+}
+
+void append_draw(
+    RenderDrawLists& result,
+    std::uint32_t item_index,
+    const RenderItem& item) {
+    RenderDrawCommand command;
+    command.item_index = item_index;
+    command.item = item;
+    command.pipeline = render_pipeline_kind(item);
+    RenderDrawList& list =
+        item.bucket == RenderBucket::alpha_blend
+            ? result.transparent
+            : result.opaque;
+    list.commands.push_back(command);
+}
+
+std::uint32_t pipeline_order(RenderPipelineKind kind) {
+    switch (kind) {
+        case RenderPipelineKind::pbr_opaque_back:
+        case RenderPipelineKind::pbr_transparent_back:
+            return 0;
+        case RenderPipelineKind::pbr_opaque_none:
+        case RenderPipelineKind::pbr_transparent_none:
+            return 1;
+        case RenderPipelineKind::standard_opaque_back:
+        case RenderPipelineKind::standard_transparent_back:
+            return 2;
+        case RenderPipelineKind::standard_opaque_none:
+        case RenderPipelineKind::standard_transparent_none:
+            return 3;
+        case RenderPipelineKind::grid_opaque_back:
+        case RenderPipelineKind::grid_transparent_back:
+            return 4;
+        case RenderPipelineKind::grid_opaque_none:
+        case RenderPipelineKind::grid_transparent_none:
+            return 5;
+        case RenderPipelineKind::shader_alpha_card:
+        case RenderPipelineKind::shader_alpha_card_a2c:
+        case RenderPipelineKind::shader_circular_cutout:
+            return 6;
+    }
+    return 7;
+}
+
+void order_draw_lists(RenderDrawLists& lists) {
+    const auto compare = [](
+                             const RenderDrawCommand& left,
+                             const RenderDrawCommand& right) {
+        return pipeline_order(left.pipeline) <
+            pipeline_order(right.pipeline);
+    };
+    std::stable_sort(
+        lists.opaque.commands.begin(),
+        lists.opaque.commands.end(),
+        compare);
+}
+
+} // namespace
+
+void include_material_features(
+    RenderFeatures& features,
+    const Engine& engine,
+    MaterialHandle handle) {
+    if (handle.value >= engine.materials.size()) return;
+    const MaterialRecord& material = engine.materials[handle.value];
+    features.standard_material |= material.standard_material;
+    features.grid_material |= material.grid_material;
+    features.no_color_material |= material.no_color;
+    features.shader_alpha_card |=
+        material.shader_material &&
+        material.shader_variant == ShaderMaterialVariant::alpha_card;
+    features.shader_circular_cutout |=
+        material.shader_material &&
+        material.shader_variant == ShaderMaterialVariant::circular_cutout;
+}
+
+RenderFeatures build_render_features(
+    const Scene& scene,
+    const Engine& engine) {
+    RenderFeatures result;
+    for (const MeshHandle handle : scene.meshes) {
+        if (handle.value < engine.meshes.size()) {
+            include_material_features(
+                result,
+                engine,
+                engine.meshes[handle.value].material);
+        }
+    }
+    for (const FrameTaskRecord& task : engine.frame_tasks) {
+        for (const RenderTaskMesh& entry : task.render_meshes) {
+            include_material_features(result, engine, entry.material);
+        }
+    }
+    return result;
+}
+
+RenderDrawLists build_render_draw_lists(
+    const std::vector<RenderItem>& items,
+    const Engine& engine) {
+    RenderDrawLists result;
+    result.opaque.commands.reserve(items.size());
+    result.transparent.commands.reserve(items.size());
+    for (std::size_t index = 0; index < items.size(); ++index) {
+        append_draw(
+            result,
+            static_cast<std::uint32_t>(index),
+            bind_render_item(
+                items[index],
+                engine,
+                items[index].material));
+    }
+    order_draw_lists(result);
+    return result;
+}
+
+RenderDrawLists build_render_task_draw_lists(
+    const std::vector<RenderItem>& items,
+    const Engine& engine,
+    const FrameTaskRecord& task) {
+    if (task.kind != FrameTaskKind::render) {
+        return build_render_draw_lists(items, engine);
+    }
+    if (task.render_meshes.empty()) {
+        return task.render.auto_mirror
+            ? build_render_draw_lists(items, engine)
+            : RenderDrawLists{};
+    }
+    RenderDrawLists result;
+    result.opaque.commands.reserve(task.render_meshes.size());
+    result.transparent.commands.reserve(task.render_meshes.size());
+    for (const RenderTaskMesh& entry : task.render_meshes) {
+        const auto found = std::find_if(
+            items.begin(),
+            items.end(),
+            [&](const RenderItem& item) {
+                return item.mesh.value == entry.mesh.value;
+            });
+        if (found == items.end()) {
+            continue;
+        }
+        const std::uint32_t item_index =
+            static_cast<std::uint32_t>(
+                std::distance(items.begin(), found));
+        append_draw(
+            result,
+            item_index,
+            bind_render_item(*found, engine, entry.material));
+    }
+    order_draw_lists(result);
+    return result;
+}
+
+void sort_transparent_draws(
+    RenderDrawList& transparent,
+    const Engine& engine,
+    const CameraRecord& camera) {
+    const Vec3 eye = arc_rotate_eye_position(camera);
+    const Vec3 forward = normalize(Vec3{
+        camera.target.x - eye.x,
+        camera.target.y - eye.y,
+        camera.target.z - eye.z,
+    });
+    for (RenderDrawCommand& command : transparent.commands) {
+        if (
+            command.item.mesh.value >= engine.meshes.size() ||
+            command.item.geometry >= engine.geometries.size()) {
+            command.sort_distance = 0.0f;
+            continue;
+        }
+        const MeshRecord& mesh = engine.meshes[command.item.mesh.value];
+        const ModelGeometry& geometry =
+            engine.geometries[command.item.geometry];
+        Vec3 center{
+            (geometry.bounds_min.x + geometry.bounds_max.x) * 0.5f *
+                mesh.scaling.x,
+            (geometry.bounds_min.y + geometry.bounds_max.y) * 0.5f *
+                mesh.scaling.y,
+            (geometry.bounds_min.z + geometry.bounds_max.z) * 0.5f *
+                mesh.scaling.z,
+        };
+        center = rotate_euler(center, mesh.rotation);
+        center.x += mesh.position.x;
+        center.y += mesh.position.y;
+        center.z += mesh.position.z;
+        const Vec3 delta{
+            center.x - eye.x,
+            center.y - eye.y,
+            center.z - eye.z,
+        };
+        command.sort_distance = dot(delta, forward);
+    }
+    std::stable_sort(
+        transparent.commands.begin(),
+        transparent.commands.end(),
+        [](const RenderDrawCommand& left, const RenderDrawCommand& right) {
+            return left.sort_distance > right.sort_distance ||
+                (left.sort_distance == right.sort_distance &&
+                 left.item.order < right.item.order);
+        });
+}
+
+RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
+    RenderPlan result;
+    result.items.reserve(scene.meshes.size());
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value >= engine.meshes.size()) {
             continue;
@@ -342,8 +776,15 @@ std::vector<RenderItem> build_render_plan(const Scene& scene, const Engine& engi
         if (mesh.geometry >= engine.geometries.size()) {
             continue;
         }
-        result.push_back(RenderItem{handle, mesh.geometry, mesh.material});
+        RenderItem item;
+        item.mesh = handle;
+        item.geometry = mesh.geometry;
+        item.order = static_cast<std::uint32_t>(result.items.size());
+        result.items.push_back(
+            bind_render_item(item, engine, mesh.material));
     }
+    result.draw_lists =
+        build_render_draw_lists(result.items, engine);
     return result;
 }
 
@@ -396,6 +837,44 @@ std::array<float, 16> build_view_projection(
     return multiply(projection, view);
 }
 
+std::array<float, 16> build_skybox_view_projection(
+    const CameraRecord& camera,
+    float aspect) {
+    const Vec3 eye = arc_rotate_eye_position(camera);
+    const Vec3 forward = normalize(Vec3{
+        camera.target.x - eye.x,
+        camera.target.y - eye.y,
+        camera.target.z - eye.z,
+    });
+    const Vec3 right =
+        normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, forward));
+    const Vec3 up = cross(forward, right);
+    std::array<float, 16> view{};
+    view[0] = right.x;
+    view[4] = right.y;
+    view[8] = right.z;
+    view[1] = up.x;
+    view[5] = up.y;
+    view[9] = up.z;
+    view[2] = forward.x;
+    view[6] = forward.y;
+    view[10] = forward.z;
+    view[15] = 1.0f;
+
+    const float focal = 1.0f / std::tan(camera.fov * 0.5f);
+    std::array<float, 16> projection{};
+    projection[0] = focal / aspect;
+    projection[5] = focal;
+    projection[10] =
+        camera.far_plane /
+        (camera.far_plane - camera.near_plane);
+    projection[11] = 1.0f;
+    projection[14] =
+        (-camera.near_plane * camera.far_plane) /
+        (camera.far_plane - camera.near_plane);
+    return multiply(projection, view);
+}
+
 PbrUniforms build_pbr_uniforms(
     const Scene& scene,
     const Engine& engine,
@@ -421,7 +900,20 @@ PbrUniforms build_pbr_uniforms(
                   matrix_direction.z / matrix_length,
               }
             : light.direction;
-        result.light_direction = {direction.x, direction.y, direction.z, 0.0f};
+        result.light_direction =
+            light.kind == LightKind::point
+                ? std::array<float, 4>{
+                      light.position.x,
+                      light.position.y,
+                      light.position.z,
+                      1.0f,
+                  }
+                : std::array<float, 4>{
+                      direction.x,
+                      direction.y,
+                      direction.z,
+                      0.0f,
+                  };
         result.light_color = {
             light.diffuse_color.r,
             light.diffuse_color.g,
@@ -432,7 +924,7 @@ PbrUniforms build_pbr_uniforms(
             light.ground_color.r,
             light.ground_color.g,
             light.ground_color.b,
-            0.0f,
+            light.kind == LightKind::point ? light.range : 0.0f,
         };
     }
     const Vec3 eye = arc_rotate_eye_position(camera);
@@ -464,7 +956,7 @@ PbrUniforms build_pbr_uniforms(
         scene.environment.exposure,
         scene.environment.contrast,
         0.8f,
-        scene.environment.has_irradiance ? 1.0f : 0.0f,
+        scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
     };
     if (item.material.value < engine.materials.size()) {
         const MaterialRecord& material = engine.materials[item.material.value];
@@ -492,6 +984,7 @@ PbrUniforms build_pbr_uniforms(
         result.material_options[3] = material.double_sided ? 1.0f : 0.0f;
         result.normal_options[1] =
             material.normal_texture.bytes.empty() ? 0.0f : 1.0f;
+        result.normal_options[2] = material.reflectance;
         if (
             item.geometry < engine.geometries.size() &&
             !engine.geometries[item.geometry].has_tangents &&
@@ -667,6 +1160,50 @@ StandardUniforms build_standard_uniforms(
     return result;
 }
 
+GridUniforms build_grid_uniforms(
+    const Engine& engine,
+    const RenderItem& item) {
+    GridUniforms result;
+    if (item.material.value >= engine.materials.size()) {
+        return result;
+    }
+    const MaterialRecord& material =
+        engine.materials[item.material.value];
+    result.grid_control = {
+        material.grid_control.x,
+        material.grid_control.y,
+        material.grid_control.z,
+        material.grid_control.w,
+    };
+    result.main_color = {
+        material.grid_main_color.r,
+        material.grid_main_color.g,
+        material.grid_main_color.b,
+        0.0f,
+    };
+    result.line_color = {
+        material.grid_line_color.r,
+        material.grid_line_color.g,
+        material.grid_line_color.b,
+        0.0f,
+    };
+    result.grid_offset_visibility = {
+        material.grid_offset.x,
+        material.grid_offset.y,
+        material.grid_offset.z,
+        material.grid_visibility,
+    };
+    result.options = {
+        material.alpha_mode == MaterialAlphaMode::blend
+            ? 1.0f
+            : 0.0f,
+        material.grid_antialias ? 1.0f : 0.0f,
+        material.grid_use_max_line ? 1.0f : 0.0f,
+        material.grid_pre_multiply_alpha ? 1.0f : 0.0f,
+    };
+    return result;
+}
+
 BackgroundPlan build_background_plan(const EnvironmentState& environment) {
     const float half = environment.ground_size * 0.5f;
     const Vec3 center = environment.ground_position;
@@ -710,10 +1247,9 @@ BackgroundUniforms build_background_uniforms(
 
 SkyboxPlan build_skybox_plan(const EnvironmentState& environment) {
     const float half = environment.skybox_size * 0.5f;
-    const Vec3 center = environment.ground_position;
-    const auto vertex = [center](float x, float y, float z) {
+    const auto vertex = [](float x, float y, float z) {
         return ModelVertex{
-            Vec3{center.x + x, center.y + y, center.z + z},
+            Vec3{x, y, z},
             Vec3{0.0f, 1.0f, 0.0f},
             Vec4{1.0f, 0.0f, 0.0f, 1.0f},
             Vec2{},
@@ -750,12 +1286,17 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
         environment.exposure,
     };
     result.background_center = {
-        environment.ground_position.x,
-        environment.ground_position.y,
-        environment.ground_position.z,
+        0.0f,
+        0.0f,
+        0.0f,
         0.0f,
     };
-    result.image_parameters = {environment.contrast, 0.0f, 0.0f, 0.0f};
+    result.image_parameters = {
+        environment.contrast,
+        environment.skybox_uses_environment ? 1.0f : 0.0f,
+        environment.tone_mapping_enabled ? 1.0f : 0.0f,
+        0.0f,
+    };
     return result;
 }
 
@@ -769,6 +1310,7 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
         skybox: boolean;
         shaderVariants: ShaderMaterialVariantName[];
         standardMaterial: boolean;
+        gridMaterial?: boolean;
         idDiagnostics: boolean;
         pbrDiagnostics: boolean;
         geometryOutputTasks: GeometryOutputTaskManifest[];
@@ -778,16 +1320,19 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
         skybox: true,
         shaderVariants: ["alpha-card", "circular-cutout"],
         standardMaterial: false,
+        gridMaterial: false,
         idDiagnostics: true,
         pbrDiagnostics: true,
         geometryOutputTasks: [],
     }): LoweredShader[] {
         const pbr = this.context.store.getSource(pbrTemplateModule);
+        const pbrExt = this.context.store.getSource(pbrTemplateExtModule);
         const pbrHelper = this.context.store.getSource(pbrHelperCoreModule);
         const ibl = this.context.store.getSource(iblFragmentModule);
         const sceneUniforms = this.context.store.getSource(sceneUniformsModule);
         const backgroundGround = this.context.store.getSource(backgroundGroundModule);
         const backgroundDds = this.context.store.getSource(backgroundDdsModule);
+        const backgroundHdr = this.context.store.getSource(backgroundHdrModule);
         const pbrGeometryModule =
             "src/material/pbr/pbr-geometry-output-shader.ts";
         const pbrGeometry = this.context.store.getSource(pbrGeometryModule);
@@ -801,19 +1346,29 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
         const standardTemplate = this.context.store.getSource(
             standardTemplateModule,
         );
+        const gridModule = "src/material/grid/grid-material.ts";
+        const gridMaterial = this.context.store.getSource(gridModule);
         const requiredUpstreamFormulas: Array<
             readonly [string, string, string]
         > = [
             [pbr, "roughness*roughness+0.0005", "GGX roughness"],
             [pbr, "0.5/(gl+gv)", "Smith geometry"],
+            [pbr, "luminanceOverAlpha+=dot", "transparent alpha luminance"],
+            [pbr, "finalAlpha=saturate", "transparent alpha fold"],
+            [pbrExt, "baseColor *= input.vColor.rgb", "vertex color base color"],
+            [pbrExt, "alpha *= input.vColor.a", "vertex color alpha"],
             [pbrHelper, "1.590579", "image-processing calibration"],
             [ibl, "log2(cubemapDim * alphaG) * scene.vImageInfos.z", "IBL mip selection"],
             [ibl, "getEnergyConservationFactor", "IBL energy conservation"],
+            [ibl, "finalRadianceScaled", "transparent IBL alpha contribution"],
             [sceneUniforms, "lodGenerationScale ?? 0.8", "environment LOD scale"],
             [backgroundGround, "tonemappingCalibration: f32 = 1.590579", "background image processing"],
             [backgroundGround, "ground renders last", "background ordering"],
             [backgroundDds, "GPUTextureFormat = \"rgba16float\"", "DDS cubemap format"],
             [backgroundDds, "pass.drawIndexed(36)", "DDS skybox draw"],
+            [backgroundDds, "order: 0", "DDS skybox ordering"],
+            [backgroundHdr, "order: 0", "HDR skybox ordering"],
+            [backgroundHdr, "buildHdrSkyboxRenderable", "HDR skybox renderable"],
             [pbrGeometry, "directDiffuse + finalIrradiance", "geometry irradiance"],
             [pbrGeometry, "colorF0, 1.0 - roughness", "geometry reflectivity"],
             [pbrGeometry, "input.clipPos.z", "geometry screen depth"],
@@ -834,6 +1389,30 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
                     standardGeometry,
                     "pow(mat.sc.rgb, vec3<f32>(2.2))",
                     "standard reflectivity output",
+                ],
+            );
+        }
+        if (options.gridMaterial) {
+            requiredUpstreamFormulas.push(
+                [
+                    gridMaterial,
+                    "fr=clamp(fr,-1.0,1.0);return 0.5+0.5*cos(fr*PI);",
+                    "GridMaterial cosine antialiasing",
+                ],
+                [
+                    gridMaterial,
+                    "if(abs(fr)<SQRT2/4.0){return 1.0;}",
+                    "GridMaterial hard line cutoff",
+                ],
+                [
+                    gridMaterial,
+                    "let grid=clamp(max(max(x,y),z),0.0,1.0);",
+                    "GridMaterial max-line composition",
+                ],
+                [
+                    gridMaterial,
+                    "opacity=clamp(grid,0.08,shaderUniforms.gridControl.w*grid);",
+                    "GridMaterial transparent opacity",
                 ],
             );
         }
@@ -874,6 +1453,14 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
         if (options.standardMaterial) {
             sources.push("standard.frag.hlsl", "standard.frag.msl");
         }
+        if (options.gridMaterial) {
+            sources.push(
+                "grid.vert.hlsl",
+                "grid.frag.hlsl",
+                "grid.vert.msl",
+                "grid.frag.msl",
+            );
+        }
         if (options.idDiagnostics) {
             sources.push(
                 "diagnostic-id.frag.hlsl",
@@ -897,10 +1484,17 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
         }
         const result = sources.map((name) => ({
             output: `upstream/shaders/${name}`,
-            data: readFileSync(resolve(templateRoot, name), "utf8"),
+            data:
+                (name.startsWith("grid.")
+                    ? `// ${this.context.provenance(
+                          gridModule,
+                          "createGridMaterial",
+                      )}\n`
+                    : "") +
+                readFileSync(resolve(templateRoot, name), "utf8"),
         }));
         for (const extension of options.pbrDiagnostics ? (["hlsl", "msl"] as const) : []) {
-            for (const variant of ["A", "B"] as const) {
+            for (const variant of ["A", "B", "C"] as const) {
                 result.push({
                     output:
                         `upstream/shaders/pbr-diagnostics-${variant.toLowerCase()}.frag.${extension}`,
@@ -1026,6 +1620,13 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
                     upstreamMarker: "1.590579",
                     nativeBehavior: "Exposure, exponential tone mapping, gamma, and contrast follow Babylon constants and order.",
                     validation: ["source marker assertions", "GPU parity"],
+                },
+                {
+                    id: "hdr-cubemap-skybox",
+                    upstreamModule: backgroundHdrModule,
+                    upstreamMarker: "buildHdrSkyboxRenderable",
+                    nativeBehavior: "Compiled HDR RGBA16F cubemap mip zero is reused for the generated cubemap skybox with exposure, gamma, and contrast.",
+                    validation: ["source marker assertions", "scene 8 GPU parity"],
                 },
             ],
         };

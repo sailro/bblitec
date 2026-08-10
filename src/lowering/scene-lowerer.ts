@@ -54,6 +54,7 @@ std::uint32_t material_family_bit(
     const MaterialHandle material = engine.meshes[mesh.value].material;
     if (material.value >= engine.materials.size()) return 0;
     const MaterialRecord& record = engine.materials[material.value];
+    if (record.grid_material) return material_family_grid;
     if (record.shader_material) return material_family_shader;
     if (record.standard_material) return material_family_standard;
     return material_family_pbr;

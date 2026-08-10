@@ -33,7 +33,7 @@ npm run scene -- parity boombox
 ```
 
 `process` runs compile, scene-local shader compilation, CMake configure, and
-native build in order.
+parallel native build in order.
 
 Aggregate registered-scene workflows are available without duplicating the
 registry in `package.json`:
@@ -124,6 +124,32 @@ delete.
 
 Build scenes sequentially: concurrent vcpkg use is unreliable.
 
+Set `BBLITE_CMAKE_GENERATOR` before configuring fresh build directories to
+select a generator. On the development Windows machine, a Release BoomBox
+benchmark with the same MSVC toolchain measured:
+
+| Workload | Visual Studio 18 | Ninja |
+| --- | ---: | ---: |
+| clean build | 17.77 s | 4.33 s |
+| no-op build | 1.16 s | 0.08 s |
+| one-file rebuild | 2.53 s | 2.21 s |
+
+The resulting 1280x720 BoomBox captures were byte-identical (`MAD 0.000`);
+both measured `0.311392` MAD against the same Babylon Lite golden.
+
+Ninja is the preferred iteration generator when it is available from an
+initialized compiler environment:
+
+```powershell
+$env:BBLITE_CMAKE_GENERATOR = "Ninja"
+npm run scene -- process boombox
+```
+
+Native outputs are self-contained by default: CMake places `assets` and
+`shaders` beside the executable, and runtime lookup is relative to that
+executable. `BBLITE_ASSET_DIR` and `BBLITE_GPU_SHADER_DIR` remain explicit
+overrides for diagnostics and unusual layouts.
+
 ## Runtime switches
 
 | Variable | Purpose |
@@ -142,6 +168,13 @@ Controls: left-drag orbit, right/middle-drag pan, wheel zoom; arrows and
 `W`/`S` are keyboard fallbacks.
 
 ## Parity
+
+Corpus reference capture serves a minimal local page containing only the
+render canvas; it does not include Babylon Lite's showcase loading overlay.
+The gate waits for `canvas.dataset.ready`, which is set only after awaited
+asset loads, scene registration, and `startEngine`, then captures the canvas
+alone. A slow or failed load therefore times out instead of recording the
+progress bar.
 
 Run a curated scene:
 

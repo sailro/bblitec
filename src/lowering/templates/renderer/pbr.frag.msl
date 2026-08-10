@@ -26,6 +26,7 @@ struct FragmentInput {
     float4 tangent;
     float2 uv;
     float3 localPosition;
+    float4 color;
 };
 
 #if defined(BBLITE_GEOMETRY_OUTPUT)
@@ -44,6 +45,11 @@ struct FragmentOutput {
     float4 depth [[color(0)]];
     float4 albedo [[color(1)]];
     float4 direct [[color(2)]];
+};
+#elif defined(BBLITE_DIAGNOSTICS_C)
+struct FragmentOutput {
+    float4 baseColor [[color(0)]];
+    float4 preToneHdr [[color(1)]];
 };
 #endif
 
@@ -82,7 +88,7 @@ float3 fresnelSchlick(float cosine, float3 f0) {
     return f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0);
 }
 
-#if defined(BBLITE_GEOMETRY_OUTPUT) || defined(BBLITE_DIAGNOSTICS_A) || defined(BBLITE_DIAGNOSTICS_B)
+#if defined(BBLITE_GEOMETRY_OUTPUT) || defined(BBLITE_DIAGNOSTICS_A) || defined(BBLITE_DIAGNOSTICS_B) || defined(BBLITE_DIAGNOSTICS_C)
 fragment FragmentOutput main0(
 #else
 fragment float4 main0(
@@ -140,8 +146,10 @@ fragment float4 main0(
         normal = -normal;
     }
     const float4 baseColorSample = baseColorTexture.sample(baseColorSampler, input.uv);
-    const float3 albedo = baseColorSample.rgb * uniforms.baseColorFactor.rgb;
-    const float alpha = baseColorSample.a * uniforms.baseColorFactor.a;
+    const float3 albedo =
+        baseColorSample.rgb * uniforms.baseColorFactor.rgb * input.color.rgb;
+    const float alpha =
+        baseColorSample.a * uniforms.baseColorFactor.a * input.color.a;
     const float3 packed = metallicRoughnessTexture.sample(metallicRoughnessSampler, input.uv).rgb;
     const float occlusion = mix(1.0, packed.r, uniforms.materialFactors.z);
     const float roughness = clamp(packed.g * uniforms.materialFactors.y, 0.04, 1.0);
@@ -165,24 +173,52 @@ fragment float4 main0(
     const float alphaG = roughness * roughness + 0.0005 + aaAlpha;
     const float directRoughness = max(roughness, aaRoughness);
     const float directAlphaG = directRoughness * directRoughness + 0.0005;
-    const float3 surfaceAlbedo = albedo * (1.0 - 0.04) * (1.0 - metallic);
-    const float3 lightDirection = normalize(uniforms.lightDirection.xyz);
+    const float dielectricF0 = uniforms.normalOptions.z;
+    const float3 surfaceAlbedo =
+        albedo * (1.0 - dielectricF0) * (1.0 - metallic);
+    float3 lightDirection;
+    float nDotL;
+    float lightAttenuation = 1.0;
+    float diffuseWeight = 1.0;
+    float3 groundSky;
+    if (uniforms.lightDirection.w > 0.5) {
+        const float3 lightToFragment =
+            uniforms.lightDirection.xyz - input.worldPosition;
+        const float lightDistanceSquared =
+            dot(lightToFragment, lightToFragment);
+        lightDirection = normalize(lightToFragment);
+        nDotL = max(dot(normal, lightDirection), 0.0);
+        lightAttenuation = max(
+            0.0,
+            1.0 -
+                sqrt(lightDistanceSquared) /
+                    max(uniforms.groundColor.w, 0.0001));
+        diffuseWeight = nDotL / PI;
+        groundSky = uniforms.lightColor.rgb;
+    } else {
+        lightDirection = normalize(uniforms.lightDirection.xyz);
+        nDotL = clamp(
+            dot(normal, lightDirection) * 0.5 + 0.5,
+            0.0000001,
+            1.0);
+        groundSky =
+            mix(uniforms.groundColor.rgb, uniforms.lightColor.rgb, nDotL);
+    }
     const float3 halfDirection = normalize(viewDirection + lightDirection);
-    const float nDotL = clamp(dot(normal, lightDirection) * 0.5 + 0.5, 0.0000001, 1.0);
     const float nDotH = clamp(dot(normal, halfDirection), 0.0000001, 1.0);
     const float vDotH = saturate(dot(viewDirection, halfDirection));
-    const float3 f0 = mix(float3(0.04), albedo, metallic);
+    const float3 f0 = mix(float3(dielectricF0), albedo, metallic);
     const float3 fresnel = fresnelSchlick(vDotH, f0);
     const float distribution = distributionGGX(nDotH, directAlphaG);
     const float geometry = geometrySmithGGX(nDotL, nDotV, directAlphaG);
     const float3 directSpecular =
         fresnel * distribution * geometry * nDotL *
-        uniforms.lightColor.rgb * uniforms.lightColor.a;
-    const float3 groundSky =
-        mix(uniforms.groundColor.rgb, uniforms.lightColor.rgb, nDotL);
+        uniforms.lightColor.rgb * uniforms.lightColor.a * lightAttenuation;
     const float3 directDiffuse =
-        groundSky * surfaceAlbedo * uniforms.lightColor.a;
-    const float3 irradiance = evaluateIrradiance(normal, uniforms);
+        groundSky * surfaceAlbedo * diffuseWeight *
+        uniforms.lightColor.a * lightAttenuation;
+    const float3 irradiance =
+        evaluateIrradiance(normal, uniforms) * uniforms.materialFactors.w;
     const float3 reflection = reflect(-viewDirection, normal);
     const float mipLevel = clamp(
         log2(max(float(environmentTexture.get_width()) * alphaG, 1.0)) *
@@ -190,7 +226,8 @@ fragment float4 main0(
         0.0,
         float(environmentTexture.get_num_mip_levels() - 1));
     float3 environmentRadiance =
-        environmentTexture.sample(environmentSampler, reflection, level(mipLevel)).rgb;
+        environmentTexture.sample(environmentSampler, reflection, level(mipLevel)).rgb *
+        uniforms.materialFactors.w;
     environmentRadiance = mix(environmentRadiance, irradiance, alphaG);
     const float2 brdf =
         brdfTexture.sample(brdfSampler, float2(nDotV, roughness)).rg;
@@ -206,8 +243,7 @@ fragment float4 main0(
         1.0 + f0 * (1.0 / max(brdf.y, 0.001) - 1.0);
     const float3 finalIrradiance = irradiance * surfaceAlbedo * occlusion;
     const float3 finalRadiance =
-        environmentRadiance * colorSpecularEnvironment * energyConservation *
-        uniforms.materialFactors.w;
+        environmentRadiance * colorSpecularEnvironment * energyConservation;
     const float3 finalDirectSpecular =
         directSpecular * mix(float3(1.0), energyConservation, uniforms.materialFactors.w);
     float3 color =
@@ -220,7 +256,8 @@ fragment float4 main0(
     {
         color = albedo;
     }
-    color *= uniforms.environmentFactors.x;
+    const float3 preToneColor = color * uniforms.environmentFactors.x;
+    color = preToneColor;
     if (uniforms.environmentFactors.w > 0.5) {
         color = 1.0 - exp2(-1.590579 * color);
     }
@@ -254,7 +291,23 @@ fragment float4 main0(
     output.albedo = float4(surfaceAlbedo, 1.0);
     output.direct = float4(saturate(directDiffuse + finalDirectSpecular), 1.0);
     return output;
+#elif defined(BBLITE_DIAGNOSTICS_C)
+    FragmentOutput output;
+    output.baseColor = float4(albedo, alpha);
+    output.preToneHdr = float4(preToneColor, 1.0);
+    return output;
 #else
-    return float4(color, uniforms.materialOptions.x > 1.5 ? alpha : 1.0);
+    float finalAlpha = alpha;
+    if (uniforms.materialOptions.x > 1.5) {
+        const float luminanceOverAlpha =
+            dot(
+                finalRadiance + finalDirectSpecular,
+                float3(0.2126, 0.7152, 0.0722));
+        finalAlpha =
+            saturate(alpha + luminanceOverAlpha * luminanceOverAlpha);
+    }
+    return float4(
+        color,
+        uniforms.materialOptions.x > 1.5 ? finalAlpha : 1.0);
 #endif
 }

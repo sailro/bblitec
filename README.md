@@ -17,13 +17,14 @@ Unsupported syntax and APIs fail at compile time with source locations.
 
 - Pinned upstream: `@babylonjs/lite@1.18.0`,
   commit `7184feda683072980735f9a180e6f567ee5717ba`.
-- 13 curated Babylon Lite parity scenes plus BoomBox and primitives.
+- 16 curated Babylon Lite parity scenes plus BoomBox and primitives.
 - External glTF/GLB and a reached `.babylon` slice.
-- Generated Standard/PBR rendering, custom alpha variants, frame-graph MRT and
-  depth passes, negative transforms, and runtime scene mutation.
+- Generated Standard/PBR/Grid rendering, ordered draw lists, custom alpha
+  variants, frame-graph MRT/depth passes, negative transforms, and runtime
+  scene mutation.
 - SDL_GPU backends: DXIL/D3D12, SPIR-V/Vulkan, and MSL/Metal sources.
-- BoomBox D3D12 baseline: `0.447` full MAD, `2.003` foreground MAD,
-  `0.119 ms` average CPU submission.
+- BoomBox D3D12 baseline: `0.311` full MAD, `0.460` foreground MAD,
+  `0.176 ms` average CPU submission.
 
 See [current status](docs/status.md) for the supported subset and all measured
 scene results.
@@ -52,8 +53,9 @@ npm run scene -- parity examples\my-scene.ts --recapture-reference
 ```
 
 `process` performs generation, scene-local shader compilation, CMake
-configuration, and native build. CMake chooses the platform generator for a
-fresh build directory; build trees are disposable and generator-specific.
+configuration, and a parallel native build. CMake chooses the platform
+generator for a fresh build directory; set `BBLITE_CMAKE_GENERATOR` to
+override it. Build trees are disposable and generator-specific.
 
 ## Documentation
 

@@ -7,6 +7,7 @@ import { emitUpstreamGenerated } from "./upstream-lower.js";
 import { emitAssetSpecializations } from "./asset-specializer.js";
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
+import { packageHdrEnvironment } from "./hdr-packager.js";
 
 interface CliOptions {
     input: string;
@@ -105,6 +106,24 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
         writeFileSync(
             destination,
             await packageGltf(asset.source, dirname(inputPath)),
+        );
+        return;
+    }
+
+    if (asset.kind === "hdr-environment") {
+        const bytes = /^https?:\/\//i.test(asset.source)
+            ? await fetch(asset.source).then(async (response) => {
+                  if (!response.ok) {
+                      throw new Error(
+                          `Failed to download ${asset.source}: HTTP ${response.status}.`,
+                      );
+                  }
+                  return new Uint8Array(await response.arrayBuffer());
+              })
+            : new Uint8Array(readFileSync(resolve(dirname(inputPath), asset.source)));
+        writeFileSync(
+            destination,
+            packageHdrEnvironment(bytes, asset.faceSize ?? 256),
         );
         return;
     }

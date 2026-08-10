@@ -79,19 +79,31 @@ class GeneratedSourceWriter {
                 generated,
             );
         }
-        if (features.includes("environment:ibl")) {
+        if (
+            features.includes("environment:env") ||
+            features.includes("environment:hdr")
+        ) {
             const environment = new EnvironmentLowerer(context);
-            this.writeSource(
-                "upstream/src/env_parse.cpp",
-                environment.lowerParser(),
-                generated,
-                "upstream/include/bblite/upstream/env_parse.hpp",
-            );
-            this.writeSource(
-                "upstream/src/environment.cpp",
-                environment.lowerLoaderAdapter(),
-                generated,
-            );
+            if (features.includes("environment:env")) {
+                this.writeSource(
+                    "upstream/src/env_parse.cpp",
+                    environment.lowerParser(),
+                    generated,
+                    "upstream/include/bblite/upstream/env_parse.hpp",
+                );
+                this.writeSource(
+                    "upstream/src/environment.cpp",
+                    environment.lowerLoaderAdapter(),
+                    generated,
+                );
+            }
+            if (features.includes("environment:hdr")) {
+                this.writeSource(
+                    "upstream/src/environment_hdr.cpp",
+                    environment.lowerHdrLoaderAdapter(),
+                    generated,
+                );
+            }
         }
         if (features.includes("light:hemispheric")) {
             const light = new LightLowerer(context);
@@ -104,6 +116,13 @@ class GeneratedSourceWriter {
             this.writeSource(
                 "upstream/src/light_hemispheric.cpp",
                 light.lowerFactory(),
+                generated,
+            );
+        }
+        if (features.includes("light:point")) {
+            this.writeSource(
+                "upstream/src/light_point.cpp",
+                new LightLowerer(context).lowerPointFactory(),
                 generated,
             );
         }
@@ -120,6 +139,10 @@ class GeneratedSourceWriter {
                 gltf.lowerLoaderAdapter(),
                 generated,
             );
+            generated.push({
+                modulePath: "src/loader-gltf/gltf-sampler-desc.ts",
+                symbolName: "gltfTexSamplerDesc",
+            });
         }
         if (features.includes("loader:babylon")) {
             this.writeSource(
@@ -143,6 +166,7 @@ class GeneratedSourceWriter {
                 standardMaterial:
                     features.includes("material:standard") &&
                     features.includes("renderer:pbr"),
+                gridMaterial: features.includes("material:grid"),
                 idDiagnostics: options.idDiagnostics,
                 pbrDiagnostics: options.pbrDiagnostics,
                 geometryOutputTasks: options.geometryOutputTasks,
@@ -158,12 +182,29 @@ class GeneratedSourceWriter {
             );
             generated.push(
                 { modulePath: "src/material/pbr/pbr-template.ts", symbolName: "createPbrTemplate" },
+                { modulePath: "src/material/pbr/pbr-template-ext.ts", symbolName: "baseColorMod" },
                 { modulePath: "src/material/pbr/fragments/ibl-fragment.ts", symbolName: "makeIblCalculation" },
                 { modulePath: "src/frame-graph/scene-uniforms-pack.ts", symbolName: "_packSceneUniforms" },
                 { modulePath: "src/material/pbr/background-ground.ts", symbolName: "buildGroundRenderable" },
                 { modulePath: "src/material/pbr/background-dds-skybox.ts", symbolName: "buildDdsSkyboxRenderable" },
                 { modulePath: "src/loader-env/rgbd-decode.ts", symbolName: "uploadCubemapRGBD" },
             );
+            if (features.includes("environment:hdr")) {
+                generated.push(
+                    {
+                        modulePath: "src/loader-hdr/hdr-parser.ts",
+                        symbolName: "parseRGBE,computeSHFromEquirect",
+                    },
+                    {
+                        modulePath: "src/loader-hdr/hdr-ibl-pipeline.ts",
+                        symbolName: "equirectToCubemapGPU,prefilterCubemapGPU",
+                    },
+                    {
+                        modulePath: "src/material/pbr/background-hdr-skybox.ts",
+                        symbolName: "buildHdrSkyboxRenderable",
+                    },
+                );
+            }
         }
         if (features.includes("renderer:geometry-output")) {
             this.writeSource(
@@ -194,6 +235,13 @@ class GeneratedSourceWriter {
             this.writeSource(
                 "upstream/src/material_pbr.cpp",
                 factories.lowerPbrMaterialFactory(),
+                generated,
+            );
+        }
+        if (features.includes("material:grid")) {
+            this.writeSource(
+                "upstream/src/material_grid.cpp",
+                factories.lowerGridMaterialFactory(),
                 generated,
             );
         }

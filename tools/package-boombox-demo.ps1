@@ -1,7 +1,6 @@
 param(
     [string]$OutputRoot = "artifacts\releases",
-    [string]$BuildDirectory = "native\build-boombox-release",
-    [string]$GeneratedDirectory = "generated\boombox"
+    [string]$BuildDirectory = "native\build-boombox-release"
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,10 +10,16 @@ $packageName = "bblitec-boombox-windows-x64"
 $packageDirectory = Join-Path $outputRootPath $packageName
 $archivePath = Join-Path $outputRootPath "$packageName.zip"
 $buildPath = Join-Path $root $BuildDirectory
-$generatedPath = Join-Path $root $GeneratedDirectory
-$executable = Join-Path $buildPath "bblite_native.exe"
-$shaderSource = Join-Path $generatedPath "upstream\shaders"
-$assetSource = Join-Path $generatedPath "assets"
+$executable = @(
+    (Join-Path $buildPath "bblite_native.exe"),
+    (Join-Path $buildPath "Release\bblite_native.exe")
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $executable) {
+    throw "Required portable-demo executable not found under: $buildPath"
+}
+$runtimeDirectory = Split-Path -Parent $executable
+$shaderSource = Join-Path $runtimeDirectory "shaders"
+$assetSource = Join-Path $runtimeDirectory "assets"
 
 foreach ($required in @($executable, $shaderSource, $assetSource)) {
     if (-not (Test-Path $required)) {
@@ -35,8 +40,14 @@ $licenses = Join-Path $packageDirectory "licenses"
 New-Item -ItemType Directory -Path $assets, $shaders, $licenses -Force | Out-Null
 
 Copy-Item $executable (Join-Path $packageDirectory "bblitec-boombox.exe")
-foreach ($dll in @("SDL3.dll", "SDL3_image.dll", "libpng16.dll", "z.dll")) {
-    $source = Join-Path $buildPath $dll
+foreach ($dll in @(
+    "SDL3.dll",
+    "SDL3_image.dll",
+    "jpeg62.dll",
+    "libpng16.dll",
+    "z.dll"
+)) {
+    $source = Join-Path $runtimeDirectory $dll
     if (-not (Test-Path $source)) {
         throw "Required runtime DLL not found: $source"
     }
@@ -55,23 +66,13 @@ if (-not $crtDirectory) {
 Copy-Item (Join-Path $crtDirectory "*.dll") $packageDirectory
 
 Copy-Item (Join-Path $assetSource "*") $assets -Recurse
-foreach ($shader in @(
-    "pbr.vert.dxil",
-    "pbr.frag.dxil",
-    "background-ground.frag.dxil",
-    "background-skybox.frag.dxil"
-)) {
-    $source = Join-Path $shaderSource $shader
-    if (-not (Test-Path $source)) {
-        throw "Required DXIL shader not found: $source"
-    }
-    Copy-Item $source $shaders
-}
+Copy-Item (Join-Path $shaderSource "*") $shaders -Recurse
 
 $vcpkgShare = Join-Path $root "native\vcpkg_installed\x64-windows\share"
 $licensePackages = @{
     "SDL3.txt" = "sdl3"
     "SDL3_image.txt" = "sdl3-image"
+    "libjpeg-turbo.txt" = "libjpeg-turbo"
     "libpng.txt" = "libpng"
     "zlib.txt" = "zlib"
 }
@@ -86,8 +87,6 @@ foreach ($entry in $licensePackages.GetEnumerator()) {
 @'
 @echo off
 setlocal
-set "BBLITE_ASSET_DIR=%~dp0assets"
-set "BBLITE_GPU_SHADER_DIR=%~dp0shaders"
 set "SDL_GPU_DRIVER=direct3d12"
 "%~dp0bblitec-boombox.exe" > "%~dp0bblitec-boombox.log" 2>&1
 set "RESULT=%ERRORLEVEL%"
@@ -99,8 +98,6 @@ exit /b %RESULT%
 @'
 @echo off
 setlocal
-set "BBLITE_ASSET_DIR=%~dp0assets"
-set "BBLITE_GPU_SHADER_DIR=%~dp0shaders"
 set "BBLITE_GPU=0"
 "%~dp0bblitec-boombox.exe"
 if errorlevel 1 pause

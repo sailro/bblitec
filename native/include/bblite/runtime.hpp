@@ -14,6 +14,7 @@ inline constexpr std::uint32_t invalid_handle = std::numeric_limits<std::uint32_
 inline constexpr std::uint32_t material_family_pbr = 1u << 0;
 inline constexpr std::uint32_t material_family_standard = 1u << 1;
 inline constexpr std::uint32_t material_family_shader = 1u << 2;
+inline constexpr std::uint32_t material_family_grid = 1u << 3;
 
 struct Vec3 {
     float x = 0.0f;
@@ -239,7 +240,24 @@ struct PbrMaterialOptions {
     float roughness_factor = 1.0f;
     float direct_intensity = 1.0f;
     float environment_intensity = 1.0f;
+    float alpha = 1.0f;
+    float reflectance = 0.04f;
     bool unlit = false;
+};
+
+struct GridMaterialOptions {
+    Color3 main_color{0.0f, 0.0f, 0.0f};
+    Color3 line_color{0.0f, 0.5f, 0.5f};
+    float grid_ratio = 1.0f;
+    Vec3 grid_offset{};
+    float major_unit_frequency = 10.0f;
+    float minor_unit_visibility = 0.33f;
+    float opacity = 1.0f;
+    float visibility = 1.0f;
+    bool antialias = true;
+    bool pre_multiply_alpha = false;
+    bool use_max_line = false;
+    bool back_face_culling = true;
 };
 
 enum class TextureFilter {
@@ -264,6 +282,8 @@ struct TextureSamplerState {
     TextureMipmapMode mipmap_mode = TextureMipmapMode::linear;
     TextureAddressMode address_u = TextureAddressMode::repeat;
     TextureAddressMode address_v = TextureAddressMode::repeat;
+    float max_anisotropy = 1.0f;
+    float max_lod = 1000.0f;
 };
 
 struct TextureData {
@@ -279,6 +299,7 @@ struct ModelVertex {
     Vec2 uv{};
     Vec2 uv2{};
     Vec3 local_position{};
+    Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
 };
 
 struct ModelGeometry {
@@ -317,6 +338,7 @@ struct MaterialRecord {
     float roughness_factor = 1.0f;
     float direct_intensity = 1.0f;
     float environment_intensity = 1.0f;
+    float reflectance = 0.04f;
     bool has_occlusion_texture = false;
     bool unlit = false;
     bool no_color = false;
@@ -325,6 +347,7 @@ struct MaterialRecord {
     bool double_sided = false;
     bool standard_material = false;
     bool shader_material = false;
+    bool grid_material = false;
     bool alpha_to_coverage = false;
     bool shader_alpha_testing = false;
     bool shader_depth_write = true;
@@ -334,6 +357,14 @@ struct MaterialRecord {
     float shader_depth = 0.5f;
     Color3 shader_color{};
     float shader_opacity = 1.0f;
+    Color3 grid_main_color{0.0f, 0.0f, 0.0f};
+    Color3 grid_line_color{0.0f, 0.5f, 0.5f};
+    Vec4 grid_control{1.0f, 10.0f, 0.33f, 1.0f};
+    Vec3 grid_offset{};
+    float grid_visibility = 1.0f;
+    bool grid_antialias = true;
+    bool grid_pre_multiply_alpha = false;
+    bool grid_use_max_line = false;
     MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
     float alpha_cutoff = 0.5f;
     TextureData base_color_texture;
@@ -419,21 +450,25 @@ struct EnvironmentState {
     bool has_irradiance = false;
     float exposure = 1.0f;
     float contrast = 1.0f;
+    bool tone_mapping_enabled = false;
     std::array<Color3, 9> spherical_harmonics{};
     std::uint32_t specular_width = 0;
     std::uint32_t specular_mip_count = 0;
     std::vector<TextureData> specular_faces;
+    bool specular_rgba16f = false;
     TextureData brdf_lut;
     TextureData ground_texture;
     TextureData skybox_texture;
     bool has_ground = false;
     bool has_skybox = false;
+    bool skybox_uses_environment = false;
     float ground_size = 15.0f;
     float skybox_size = 20.0f;
     std::uint32_t skybox_width = 0;
     std::uint32_t skybox_mip_count = 0;
     std::uint32_t skybox_data_offset = 0;
     Vec3 ground_position{};
+    Vec3 skybox_position{};
     Color3 primary_color{0.08697356f, 0.08697356f, 0.21222083f};
 };
 
@@ -480,6 +515,14 @@ struct EnvironmentOptions {
     std::string brdf_url;
 };
 
+struct HdrEnvironmentOptions {
+    std::string environment_url;
+    std::string brdf_url;
+    bool use_cubemap_skybox = false;
+    float skybox_size = 0.0f;
+    Vec3 skybox_position{};
+};
+
 Engine create_engine(EngineOptions options = {});
 Scene create_scene_context(Engine& engine);
 std::string asset_path(const std::string& relative_path);
@@ -492,7 +535,11 @@ MeshHandle create_torus(Engine& engine, TorusOptions options = {});
 AssetHandle load_gltf(Engine& engine, const std::string& path);
 AssetHandle load_babylon(Engine& engine, const std::string& path);
 void load_environment(Scene& scene, EnvironmentOptions options);
+void load_hdr_environment(Scene& scene, HdrEnvironmentOptions options);
 MaterialHandle create_standard_material(Engine& engine);
+MaterialHandle create_grid_material(
+    Engine& engine,
+    GridMaterialOptions options = {});
 MaterialHandle create_shader_material(
     Engine& engine,
     ShaderMaterialVariant variant);
@@ -523,6 +570,7 @@ MaterialHandle create_pbr_no_color_material_view(
     MaterialHandle source);
 void mark_material_ubo_dirty(Engine& engine, MaterialHandle material);
 LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
+LightHandle create_point_light(Engine& engine, Vec3 position, float intensity = 1.0f);
 CameraHandle create_arc_rotate_camera(Engine& engine, float alpha, float beta, float radius, Vec3 target);
 CameraHandle create_free_camera(Engine& engine, Vec3 position, Vec3 target);
 CameraHandle create_default_camera(Engine& engine, Scene& scene);

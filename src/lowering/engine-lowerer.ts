@@ -24,7 +24,7 @@ export class EngineLowerer {
 #include <utility>
 
 #ifndef BBLITE_ASSET_DIR
-#define BBLITE_ASSET_DIR "."
+#define BBLITE_ASSET_DIR "assets"
 #endif
 
 namespace bbl {
@@ -39,8 +39,11 @@ void start_engine(Engine& engine) {
 
 std::string asset_path(const std::string& relative_path) {
     const std::string override = pal::environment_variable("BBLITE_ASSET_DIR");
+    const std::string root = override.empty()
+        ? pal::join_path(pal::executable_directory(), BBLITE_ASSET_DIR)
+        : override;
     return pal::join_path(
-        override.empty() ? BBLITE_ASSET_DIR : override,
+        root,
         relative_path);
 }
 

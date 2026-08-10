@@ -11,6 +11,7 @@ struct VertexInput
     float2 uv : TEXCOORD3;
     float3 localPosition : TEXCOORD4;
     float2 uv2 : TEXCOORD5;
+    float4 color : TEXCOORD6;
 };
 
 struct VertexOutput
@@ -22,6 +23,7 @@ struct VertexOutput
     float2 uv : TEXCOORD3;
     float3 localPosition : TEXCOORD4;
     float2 uv2 : TEXCOORD5;
+    float4 color : TEXCOORD6;
 };
 
 VertexOutput main(VertexInput input)
@@ -34,5 +36,6 @@ VertexOutput main(VertexInput input)
     output.uv = input.uv;
     output.localPosition = input.localPosition;
     output.uv2 = input.uv2;
+    output.color = input.color;
     return output;
 }

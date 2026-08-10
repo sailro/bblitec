@@ -12,6 +12,7 @@ struct VertexInput {
     float2 uv [[attribute(3)]];
     float3 localPosition [[attribute(4)]];
     float2 uv2 [[attribute(5)]];
+    float4 color [[attribute(6)]];
 };
 
 struct VertexOutput {
@@ -22,6 +23,7 @@ struct VertexOutput {
     float2 uv;
     float3 localPosition;
     float2 uv2;
+    float4 color;
 };
 
 vertex VertexOutput main0(
@@ -35,5 +37,6 @@ vertex VertexOutput main0(
     output.uv = input.uv;
     output.localPosition = input.localPosition;
     output.uv2 = input.uv2;
+    output.color = input.color;
     return output;
 }

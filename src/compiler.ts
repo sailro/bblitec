@@ -22,7 +22,8 @@ export interface CompileManifest {
 export interface CompileAsset {
     source: string;
     output: string;
-    kind: "babylon" | "environment" | "gltf" | "texture";
+    kind: "babylon" | "environment" | "gltf" | "hdr-environment" | "texture";
+    faceSize?: number;
 }
 
 export type GeometryTextureTypeName =
@@ -86,11 +87,15 @@ type Feature =
     | "camera:default"
     | "camera:free"
     | "environment:ibl"
+    | "environment:env"
+    | "environment:hdr"
     | "light:hemispheric"
+    | "light:point"
     | "loader:babylon"
     | "loader:gltf"
     | "material:pbr"
     | "material:no-color-view"
+    | "material:grid"
     | "material:shader"
     | "material:standard"
     | "mesh:box"
@@ -108,13 +113,17 @@ const featureSources: Record<Feature, string[]> = {
     "camera:default": [],
     "camera:free": [],
     "environment:ibl": [],
+    "environment:env": [],
+    "environment:hdr": [],
     "background:ground": [],
     "background:skybox": [],
     "light:hemispheric": [],
+    "light:point": [],
     "loader:babylon": [],
     "loader:gltf": [],
     "material:pbr": [],
     "material:no-color-view": [],
+    "material:grid": [],
     "material:shader": [],
     "material:standard": [],
     "mesh:box": [],
@@ -216,14 +225,20 @@ class Compiler {
         if (features.includes("camera:default")) {
             generatedSources.push("upstream/src/camera_default.cpp");
         }
-        if (features.includes("environment:ibl")) {
+        if (features.includes("environment:env")) {
             generatedSources.push(
                 "upstream/src/env_parse.cpp",
                 "upstream/src/environment.cpp",
             );
         }
+        if (features.includes("environment:hdr")) {
+            generatedSources.push("upstream/src/environment_hdr.cpp");
+        }
         if (features.includes("light:hemispheric")) {
             generatedSources.push("upstream/src/light_matrix.cpp", "upstream/src/light_hemispheric.cpp");
+        }
+        if (features.includes("light:point")) {
+            generatedSources.push("upstream/src/light_point.cpp");
         }
         if (features.includes("loader:gltf")) {
             generatedSources.push(
@@ -245,6 +260,9 @@ class Compiler {
         }
         if (features.includes("material:no-color-view")) {
             generatedSources.push("upstream/src/material_views.cpp");
+        }
+        if (features.includes("material:grid")) {
+            generatedSources.push("upstream/src/material_grid.cpp");
         }
         if (features.includes("material:shader")) {
             generatedSources.push("upstream/src/material_shader.cpp");
@@ -476,6 +494,44 @@ class Compiler {
                 return;
             }
         }
+        if (
+            ts.isPropertyAccessExpression(left.expression) &&
+            left.expression.name.text === "imageProcessing" &&
+            ts.isIdentifier(left.expression.expression)
+        ) {
+            const scene = this.lookup(left.expression.expression);
+            this.expectKind(scene, "scene", left.expression.expression);
+            const property = left.name.text;
+            if (!["exposure", "contrast"].includes(property)) {
+                this.fail(left.name, `Unsupported image-processing property '${property}'.`);
+            }
+            this.emit(
+                `${scene.cpp}.environment.${property} = ${this.compileNumber(expression.right)};`,
+            );
+            return;
+        }
+        if (
+            ts.isPropertyAccessExpression(left.expression) &&
+            left.expression.name.text === "camera" &&
+            ts.isIdentifier(left.expression.expression)
+        ) {
+            const scene = this.lookup(left.expression.expression);
+            this.expectKind(scene, "scene", left.expression.expression);
+            const property = left.name.text;
+            if (!["alpha", "beta", "radius", "fov", "nearPlane", "farPlane"].includes(property)) {
+                this.fail(left.name, `Unsupported camera property '${property}'.`);
+            }
+            const nativeProperty =
+                property === "nearPlane"
+                    ? "near_plane"
+                    : property === "farPlane"
+                        ? "far_plane"
+                        : property;
+            this.emit(
+                `${this.requireEngine(scene, expression)}.cameras[${scene.cpp}.camera.value].${nativeProperty} = ${this.compileNumber(expression.right)};`,
+            );
+            return;
+        }
         if (ts.isIdentifier(left.expression)) {
             const target = this.lookup(left.expression);
             const property = left.name.text;
@@ -705,6 +761,13 @@ class Compiler {
                 kind: "render-target",
                 cpp: `bbl::swapchain_render_target(${owner.cpp})`,
                 engineCpp: owner.cpp,
+            };
+        }
+        if (owner.kind === "scene" && property === "camera") {
+            return {
+                kind: "camera",
+                cpp: `${owner.cpp}.camera`,
+                ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
             };
         }
         if (owner.kind === "render-target-texture") {
@@ -959,14 +1022,52 @@ class Compiler {
             case "createPbrMaterial": {
                 this.expectArgumentCount(call, 1, 1);
                 const engine = this.requireDefaultEngine(call);
-                const [baseColor, orm, metallic, roughness, direct, environment, unlit] =
+                const [
+                    baseColor,
+                    orm,
+                    metallic,
+                    roughness,
+                    direct,
+                    environment,
+                    alpha,
+                    reflectance,
+                    unlit,
+                ] =
                     this.compilePbrMaterialOptions(call.arguments[0]!);
                 this.expectSameEngine(baseColor, orm, call);
                 this.features.add("material:pbr");
                 this.features.add("renderer:pbr");
                 return {
                     kind: "material",
-                    cpp: `bbl::create_pbr_material(${engine}, bbl::PbrMaterialOptions{${baseColor.cpp}, ${orm.cpp}, ${metallic}, ${roughness}, ${direct}, ${environment}, ${unlit}})`,
+                    cpp: `bbl::create_pbr_material(${engine}, bbl::PbrMaterialOptions{${baseColor.cpp}, ${orm.cpp}, ${metallic}, ${roughness}, ${direct}, ${environment}, ${alpha}, ${reflectance}, ${unlit}})`,
+                    engineCpp: engine,
+                };
+            }
+
+            case "createGridMaterial": {
+                this.expectArgumentCount(call, 0, 1);
+                const engine = this.requireDefaultEngine(call);
+                const options = call.arguments[0]
+                    ? this.compileGridMaterialOptions(call.arguments[0])
+                    : [
+                          "bbl::Color3{0.0f, 0.0f, 0.0f}",
+                          "bbl::Color3{0.0f, 0.5f, 0.5f}",
+                          "1.0f",
+                          "bbl::Vec3{}",
+                          "10.0f",
+                          "0.33f",
+                          "1.0f",
+                          "1.0f",
+                          "true",
+                          "false",
+                          "false",
+                          "true",
+                      ];
+                this.features.add("material:grid");
+                this.features.add("renderer:pbr");
+                return {
+                    kind: "material",
+                    cpp: `bbl::create_grid_material(${engine}, bbl::GridMaterialOptions{${options.join(", ")}})`,
                     engineCpp: engine,
                 };
             }
@@ -1093,6 +1194,21 @@ class Compiler {
                 };
             }
 
+            case "createPointLight": {
+                this.expectArgumentCount(call, 1, 2);
+                const engine = this.requireDefaultEngine(call);
+                const position = this.compileVec3(call.arguments[0]!);
+                const intensity = call.arguments[1]
+                    ? this.compileNumber(call.arguments[1])
+                    : "1.0f";
+                this.features.add("light:point");
+                return {
+                    kind: "light",
+                    cpp: `bbl::create_point_light(${engine}, ${position}, ${intensity})`,
+                    engineCpp: engine,
+                };
+            }
+
             case "createArcRotateCamera": {
                 this.expectArgumentCount(call, 4, 4);
                 const engine = this.requireDefaultEngine(call);
@@ -1181,11 +1297,52 @@ class Compiler {
                     ? this.registerAsset(this.resolveBundledAsset(options[3]), "texture")
                     : undefined;
                 this.features.add("environment:ibl");
+                this.features.add("environment:env");
                 if (groundAsset) this.features.add("background:ground");
                 if (skyboxAsset) this.features.add("background:skybox");
                 return {
                     kind: "void",
                     cpp: `bbl::load_environment(${scene.cpp}, bbl::EnvironmentOptions{bbl::asset_path(${this.cppString(environmentAsset.output)}), ${groundAsset ? `bbl::asset_path(${this.cppString(groundAsset.output)})` : this.cppString("")}, ${skyboxAsset ? `bbl::asset_path(${this.cppString(skyboxAsset.output)})` : this.cppString("")}, ${options[2]}, ${brdfAsset ? `bbl::asset_path(${this.cppString(brdfAsset.output)})` : this.cppString("")}})`,
+                };
+            }
+
+            case "loadHdrEnvironment": {
+                this.expectArgumentCount(call, 2, 3);
+                const scene = this.compileValue(call.arguments[0]!);
+                this.expectKind(scene, "scene", call.arguments[0]!);
+                const source = this.compileStringLiteral(call.arguments[1]!);
+                const options = call.arguments[2]
+                    ? this.compileHdrEnvironmentOptions(call.arguments[2])
+                    : {
+                          faceSize: 256,
+                          useCubemapSkybox: false,
+                          skipGround: false,
+                          skyboxSize: "0.0f",
+                          skyboxPosition: "bbl::Vec3{}",
+                      };
+                if (!options.skipGround) {
+                    this.fail(
+                        call.arguments[2] ?? call,
+                        "Reached HDR environment lowering currently requires skipGround: true.",
+                    );
+                }
+                const environmentAsset = this.registerAsset(
+                    source,
+                    "hdr-environment",
+                    options.faceSize,
+                );
+                const brdfAsset = this.registerAsset(
+                    this.resolveBundledAsset("/brdf-lut.png"),
+                    "texture",
+                );
+                this.features.add("environment:ibl");
+                this.features.add("environment:hdr");
+                if (options.useCubemapSkybox) {
+                    this.features.add("background:skybox");
+                }
+                return {
+                    kind: "void",
+                    cpp: `bbl::load_hdr_environment(${scene.cpp}, bbl::HdrEnvironmentOptions{bbl::asset_path(${this.cppString(environmentAsset.output)}), bbl::asset_path(${this.cppString(brdfAsset.output)}), ${options.useCubemapSkybox ? "true" : "false"}, ${options.skyboxSize}, ${options.skyboxPosition}})`,
                 };
             }
 
@@ -1592,7 +1749,7 @@ class Compiler {
 
     private compilePbrMaterialOptions(
         expression: ts.Expression,
-    ): [Value, Value, string, string, string, string, string] {
+    ): [Value, Value, string, string, string, string, string, string, string] {
         const object = this.expectObjectLiteral(expression);
         const supported = new Set([
             "baseColorTexture",
@@ -1601,6 +1758,8 @@ class Compiler {
             "roughnessFactor",
             "directIntensity",
             "environmentIntensity",
+            "alpha",
+            "reflectance",
             "unlit",
         ]);
         for (const property of object.properties) {
@@ -1615,7 +1774,7 @@ class Compiler {
             ) {
                 this.fail(
                     property,
-                    "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, lighting intensities, and unlit.",
+                    "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, lighting intensities, and unlit.",
                 );
             }
         }
@@ -1635,6 +1794,8 @@ class Compiler {
             object,
             "environmentIntensity",
         );
+        const alpha = this.objectProperty(object, "alpha");
+        const reflectance = this.objectProperty(object, "reflectance");
         const unlit = this.objectProperty(object, "unlit");
         return [
             baseColor,
@@ -1643,7 +1804,91 @@ class Compiler {
             roughness ? this.compileNumber(roughness) : "1.0f",
             direct ? this.compileNumber(direct) : "1.0f",
             environment ? this.compileNumber(environment) : "1.0f",
+            alpha ? this.compileNumber(alpha) : "1.0f",
+            reflectance ? this.compileNumber(reflectance) : "0.04f",
             unlit ? this.compileBoolean(unlit) : "false",
+        ];
+    }
+
+    private compileGridMaterialOptions(expression: ts.Expression): string[] {
+        const object = this.expectObjectLiteral(expression);
+        const supported = new Set([
+            "name",
+            "mainColor",
+            "lineColor",
+            "gridRatio",
+            "gridOffset",
+            "majorUnitFrequency",
+            "minorUnitVisibility",
+            "opacity",
+            "antialias",
+            "preMultiplyAlpha",
+            "useMaxLine",
+            "visibility",
+            "backFaceCulling",
+        ]);
+        for (const property of object.properties) {
+            const name =
+                ts.isPropertyAssignment(property) ||
+                ts.isShorthandPropertyAssignment(property)
+                    ? this.propertyName(property.name)
+                    : undefined;
+            if (!name || !supported.has(name)) {
+                this.fail(
+                    property,
+                    "Grid material options support colors, object-space spacing/offset, line frequency/visibility, opacity, antialiasing, premultiplication, max-line composition, visibility, and culling.",
+                );
+            }
+        }
+        const mainColor = this.objectProperty(object, "mainColor");
+        const lineColor = this.objectProperty(object, "lineColor");
+        const gridRatio = this.objectProperty(object, "gridRatio");
+        const gridOffset = this.objectProperty(object, "gridOffset");
+        const majorUnitFrequency = this.objectProperty(
+            object,
+            "majorUnitFrequency",
+        );
+        const minorUnitVisibility = this.objectProperty(
+            object,
+            "minorUnitVisibility",
+        );
+        const opacity = this.objectProperty(object, "opacity");
+        const visibility = this.objectProperty(object, "visibility");
+        const antialias = this.objectProperty(object, "antialias");
+        const preMultiplyAlpha = this.objectProperty(
+            object,
+            "preMultiplyAlpha",
+        );
+        const useMaxLine = this.objectProperty(object, "useMaxLine");
+        const backFaceCulling = this.objectProperty(
+            object,
+            "backFaceCulling",
+        );
+        return [
+            mainColor
+                ? this.compileColor3(mainColor)
+                : "bbl::Color3{0.0f, 0.0f, 0.0f}",
+            lineColor
+                ? this.compileColor3(lineColor)
+                : "bbl::Color3{0.0f, 0.5f, 0.5f}",
+            gridRatio ? this.compileNumber(gridRatio) : "1.0f",
+            gridOffset ? this.compileVec3(gridOffset) : "bbl::Vec3{}",
+            majorUnitFrequency
+                ? this.compileNumber(majorUnitFrequency)
+                : "10.0f",
+            minorUnitVisibility
+                ? this.compileNumber(minorUnitVisibility)
+                : "0.33f",
+            opacity ? this.compileNumber(opacity) : "1.0f",
+            visibility ? this.compileNumber(visibility) : "1.0f",
+            antialias ? this.compileBoolean(antialias) : "true",
+            preMultiplyAlpha
+                ? this.compileBoolean(preMultiplyAlpha)
+                : "false",
+            useMaxLine ? this.compileBoolean(useMaxLine) : "false",
+            backFaceCulling
+                ? this.compileBoolean(backFaceCulling)
+                : "true",
         ];
     }
 
@@ -1797,7 +2042,6 @@ class Compiler {
             return `${this.compileStaticString(name)}:${this.compileStaticString(type)}`;
         });
     }
-
     private compileStaticStringArray(expression: ts.Expression): string[] {
         return this.expectStaticArrayLiteral(expression).elements.map(
             (element) => this.compileStaticString(element),
@@ -1858,6 +2102,71 @@ class Compiler {
             skyboxSize ? this.compileNumber(skyboxSize) : "1000.0f",
             brdfUrl ? this.compileStringLiteral(brdfUrl) : "",
         ];
+    }
+
+    private compileHdrEnvironmentOptions(expression: ts.Expression): {
+        faceSize: number;
+        useCubemapSkybox: boolean;
+        skipGround: boolean;
+        skyboxSize: string;
+        skyboxPosition: string;
+    } {
+        const object = this.expectObjectLiteral(expression);
+        const supported = new Set([
+            "faceSize",
+            "useCubemapSkybox",
+            "skipGround",
+            "skyboxSize",
+            "skyboxPosition",
+        ]);
+        for (const property of object.properties) {
+            const name =
+                ts.isPropertyAssignment(property) ||
+                ts.isShorthandPropertyAssignment(property)
+                    ? this.propertyName(property.name)
+                    : undefined;
+            if (!name || !supported.has(name)) {
+                this.fail(
+                    property,
+                    "HDR environment options support faceSize, cubemap skybox, ground skipping, skybox size, and skybox position.",
+                );
+            }
+        }
+        const faceSizeExpression = this.objectProperty(object, "faceSize");
+        const faceSize = faceSizeExpression
+            ? Number(this.compilePositiveInteger(faceSizeExpression).slice(0, -1))
+            : 256;
+        if ((faceSize & (faceSize - 1)) !== 0 || faceSize > 2048) {
+            this.fail(
+                faceSizeExpression ?? object,
+                "HDR faceSize must be a power of two no larger than 2048.",
+            );
+        }
+        const useCubemapSkybox = this.compileOptionalStaticBoolean(
+            this.objectProperty(object, "useCubemapSkybox"),
+            false,
+        );
+        const skipGround = this.compileOptionalStaticBoolean(
+            this.objectProperty(object, "skipGround"),
+            false,
+        );
+        const skyboxSize = this.objectProperty(object, "skyboxSize");
+        const skyboxPosition = this.objectProperty(object, "skyboxPosition");
+        if (useCubemapSkybox && (!skyboxSize || !skyboxPosition)) {
+            this.fail(
+                object,
+                "Reached HDR cubemap skyboxes require explicit skyboxSize and skyboxPosition.",
+            );
+        }
+        return {
+            faceSize,
+            useCubemapSkybox,
+            skipGround,
+            skyboxSize: skyboxSize ? this.compileNumber(skyboxSize) : "0.0f",
+            skyboxPosition: skyboxPosition
+                ? this.compileVec3(skyboxPosition)
+                : "bbl::Vec3{}",
+        };
     }
 
     private compileVec3(expression: ts.Expression): string {
@@ -2131,8 +2440,13 @@ class Compiler {
         );
     }
 
-    private registerAsset(source: string, kind: CompileAsset["kind"]): CompileAsset {
-        const existing = this.assets.get(source);
+    private registerAsset(
+        source: string,
+        kind: CompileAsset["kind"],
+        faceSize?: number,
+    ): CompileAsset {
+        const key = `${kind}:${source}:${faceSize ?? ""}`;
+        const existing = this.assets.get(key);
         if (existing) {
             return existing;
         }
@@ -2142,6 +2456,8 @@ class Compiler {
         const packagedName =
             kind === "gltf" && /\.gltf$/i.test(sourceName)
                 ? sourceName.replace(/\.gltf$/i, ".glb")
+                : kind === "hdr-environment"
+                    ? sourceName.replace(/\.hdr$/i, ".bblhdr")
                 : sourceName;
         const safeName = packagedName.replace(/[^A-Za-z0-9._-]/g, "_");
         const output =
@@ -2152,8 +2468,9 @@ class Compiler {
             source,
             output,
             kind,
+            ...(faceSize === undefined ? {} : { faceSize }),
         };
-        this.assets.set(source, asset);
+        this.assets.set(key, asset);
         return asset;
     }
 
@@ -2280,6 +2597,20 @@ class Compiler {
                 validation: ["upstream formula marker tests", "renderer-fidelity.json", "CPU/GPU visual parity"],
             });
         }
+        if (features.includes("environment:hdr")) {
+            adaptations.push({
+                id: "compile-time-hdr-cubemap",
+                category: "asset-materialization",
+                sourceSemantics: "Babylon Lite decodes RGBE, converts the equirectangular panorama to RGBA16F cubemap faces, and generates a GGX-prefiltered mip chain on the GPU.",
+                nativeSemantics: "The compiler performs the pinned RGBE decode, spherical-harmonics integration, and cubemap projection, then stores a deterministic RGBA16F box-filtered mip chain for native upload.",
+                risk: "high",
+                validation: [
+                    "pinned HDR parser and cubemap marker tests",
+                    "generated HDR package validation",
+                    "scene 8 native/reference parity",
+                ],
+            });
+        }
         if (this.shaderVariants.size > 0) {
             adaptations.push({
                 id: "typed-reached-shader-variants",
@@ -2308,7 +2639,7 @@ class Compiler {
                 ],
             });
         }
-        if (features.includes("environment:ibl")) {
+        if (features.includes("background:ground")) {
             adaptations.push({
                 id: "background-ground-opt-in",
                 category: "rendering",

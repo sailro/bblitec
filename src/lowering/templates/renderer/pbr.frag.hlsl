@@ -38,6 +38,7 @@ struct FragmentInput
     float4 tangent : TEXCOORD2;
     float2 uv : TEXCOORD3;
     float3 localPosition : TEXCOORD4;
+    float4 color : TEXCOORD6;
     bool frontFacing : SV_IsFrontFace;
 };
 
@@ -60,6 +61,12 @@ struct FragmentOutput
     float4 depth : SV_Target0;
     float4 albedo : SV_Target1;
     float4 direct : SV_Target2;
+};
+#elif defined(BBLITE_DIAGNOSTICS_C)
+struct FragmentOutput
+{
+    float4 baseColor : SV_Target0;
+    float4 preToneHdr : SV_Target1;
 };
 #endif
 
@@ -103,7 +110,7 @@ float3 fresnelSchlick(float cosine, float3 f0)
     return f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0);
 }
 
-#if defined(BBLITE_GEOMETRY_OUTPUT) || defined(BBLITE_DIAGNOSTICS_A) || defined(BBLITE_DIAGNOSTICS_B)
+#if defined(BBLITE_GEOMETRY_OUTPUT) || defined(BBLITE_DIAGNOSTICS_A) || defined(BBLITE_DIAGNOSTICS_B) || defined(BBLITE_DIAGNOSTICS_C)
 FragmentOutput main(FragmentInput input)
 #else
 float4 main(FragmentInput input) : SV_Target
@@ -152,8 +159,8 @@ float4 main(FragmentInput input) : SV_Target
         normal = -normal;
     }
     const float4 baseColorSample = baseColorTexture.Sample(baseColorSampler, input.uv);
-    const float3 albedo = baseColorSample.rgb * baseColorFactor.rgb;
-    const float alpha = baseColorSample.a * baseColorFactor.a;
+    const float3 albedo = baseColorSample.rgb * baseColorFactor.rgb * input.color.rgb;
+    const float alpha = baseColorSample.a * baseColorFactor.a * input.color.a;
     const float3 packed = metallicRoughnessTexture.Sample(metallicRoughnessSampler, input.uv).rgb;
     const float occlusion = lerp(1.0, packed.r, materialFactors.z);
     const float roughness = clamp(packed.g * materialFactors.y, 0.04, 1.0);
@@ -174,22 +181,52 @@ float4 main(FragmentInput input) : SV_Target
     const float alphaG = roughness * roughness + 0.0005 + aaAlpha;
     const float directRoughness = max(roughness, aaRoughness);
     const float directAlphaG = directRoughness * directRoughness + 0.0005;
-    const float3 surfaceAlbedo = albedo * (1.0 - 0.04) * (1.0 - metallic);
-    const float3 lightDirectionNormalized = normalize(lightDirection.xyz);
+    const float dielectricF0 = normalOptions.z;
+    const float3 surfaceAlbedo =
+        albedo * (1.0 - dielectricF0) * (1.0 - metallic);
+    float3 lightDirectionNormalized;
+    float nDotL;
+    float lightAttenuation = 1.0;
+    float diffuseWeight = 1.0;
+    float3 groundSky;
+    if (lightDirection.w > 0.5)
+    {
+        const float3 lightToFragment = lightDirection.xyz - input.worldPosition;
+        const float lightDistanceSquared = dot(lightToFragment, lightToFragment);
+        lightDirectionNormalized = normalize(lightToFragment);
+        nDotL = max(dot(normal, lightDirectionNormalized), 0.0);
+        lightAttenuation = max(
+            0.0,
+            1.0 - sqrt(lightDistanceSquared) / max(groundColor.w, 0.0001));
+        diffuseWeight = nDotL / PI;
+        groundSky = lightColor.rgb;
+    }
+    else
+    {
+        lightDirectionNormalized = normalize(lightDirection.xyz);
+        nDotL = clamp(
+            dot(normal, lightDirectionNormalized) * 0.5 + 0.5,
+            0.0000001,
+            1.0);
+        groundSky = lerp(groundColor.rgb, lightColor.rgb, nDotL);
+    }
     const float3 halfDirection = normalize(viewDirection + lightDirectionNormalized);
-    const float nDotL = clamp(dot(normal, lightDirectionNormalized) * 0.5 + 0.5, 0.0000001, 1.0);
     const float nDotH = clamp(dot(normal, halfDirection), 0.0000001, 1.0);
     const float vDotH = saturate(dot(viewDirection, halfDirection));
-    const float3 f0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
+    const float3 f0 =
+        lerp(float3(dielectricF0, dielectricF0, dielectricF0), albedo, metallic);
     const float3 fresnel = fresnelSchlick(vDotH, f0);
     const float distribution = distributionGGX(nDotH, directAlphaG);
     const float geometry = geometrySmithGGX(nDotL, nDotV, directAlphaG);
     const float3 directSpecular =
-        fresnel * distribution * geometry * nDotL * lightColor.rgb * lightColor.a;
-    const float3 groundSky = lerp(groundColor.rgb, lightColor.rgb, nDotL);
-    const float3 directDiffuse = groundSky * surfaceAlbedo * lightColor.a;
+        fresnel * distribution * geometry * nDotL * lightColor.rgb *
+        lightColor.a * lightAttenuation;
+    const float3 directDiffuse =
+        groundSky * surfaceAlbedo * diffuseWeight *
+        lightColor.a * lightAttenuation;
 
-    const float3 irradiance = evaluateIrradiance(normal);
+    const float3 irradiance =
+        evaluateIrradiance(normal) * materialFactors.w;
     const float3 reflection = reflect(-viewDirection, normal);
     uint cubeWidth = 1;
     uint cubeHeight = 1;
@@ -200,7 +237,8 @@ float4 main(FragmentInput input) : SV_Target
         0.0,
         float(mipLevels - 1));
     float3 environmentRadiance =
-        environmentTexture.SampleLevel(environmentSampler, reflection, mipLevel).rgb;
+        environmentTexture.SampleLevel(environmentSampler, reflection, mipLevel).rgb *
+        materialFactors.w;
     environmentRadiance = lerp(environmentRadiance, irradiance, alphaG);
     const float2 brdf = brdfTexture.Sample(brdfSampler, float2(nDotV, roughness)).rg;
     const float3 environmentReflectance = (1.0 - f0) * brdf.x + f0 * brdf.y;
@@ -215,8 +253,7 @@ float4 main(FragmentInput input) : SV_Target
         1.0 + f0 * (1.0 / max(brdf.y, 0.001) - 1.0);
     const float3 finalIrradiance = irradiance * surfaceAlbedo * occlusion;
     const float3 finalRadiance =
-        environmentRadiance * colorSpecularEnvironment * energyConservation *
-        materialFactors.w;
+        environmentRadiance * colorSpecularEnvironment * energyConservation;
     const float3 finalDirectSpecular =
         directSpecular * lerp(float3(1.0, 1.0, 1.0), energyConservation, materialFactors.w);
     float3 color =
@@ -229,7 +266,8 @@ float4 main(FragmentInput input) : SV_Target
     {
         color = albedo;
     }
-    color *= environmentFactors.x;
+    const float3 preToneColor = color * environmentFactors.x;
+    color = preToneColor;
     if (environmentFactors.w > 0.5)
     {
         color = 1.0 - exp2(-1.590579 * color);
@@ -262,7 +300,22 @@ float4 main(FragmentInput input) : SV_Target
     output.albedo = float4(surfaceAlbedo, 1.0);
     output.direct = float4(saturate(directDiffuse + finalDirectSpecular), 1.0);
     return output;
+#elif defined(BBLITE_DIAGNOSTICS_C)
+    FragmentOutput output;
+    output.baseColor = float4(albedo, alpha);
+    output.preToneHdr = float4(preToneColor, 1.0);
+    return output;
 #else
-    return float4(color, materialOptions.x > 1.5 ? alpha : 1.0);
+    float finalAlpha = alpha;
+    if (materialOptions.x > 1.5)
+    {
+        const float luminanceOverAlpha =
+            dot(
+                finalRadiance + finalDirectSpecular,
+                float3(0.2126, 0.7152, 0.0722));
+        finalAlpha =
+            saturate(alpha + luminanceOverAlpha * luminanceOverAlpha);
+    }
+    return float4(color, materialOptions.x > 1.5 ? finalAlpha : 1.0);
 #endif
 }

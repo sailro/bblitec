@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PNG } from "pngjs";
 import {
@@ -14,6 +14,19 @@ interface DiagnosticPair {
     name: string;
     native: string;
     babylon: string;
+}
+
+interface HotspotBounds {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+
+interface ParityReport {
+    dimensions?: { width: number; height: number };
+    breakdown?: { hotspots?: HotspotBounds[] };
+    hotspotAttribution?: unknown[];
 }
 
 const pairs: DiagnosticPair[] = [
@@ -49,6 +62,45 @@ function background(path: string): [number, number, number] {
     return [png.data[0]!, png.data[1]!, png.data[2]!];
 }
 
+function compareBounds(
+    actualPath: string,
+    referencePath: string,
+    bounds: HotspotBounds,
+): { mad: number; maxDiff: number; pixels: number } {
+    const actual = PNG.sync.read(readFileSync(resolve(actualPath)));
+    const reference = PNG.sync.read(readFileSync(resolve(referencePath)));
+    if (
+        actual.width !== reference.width ||
+        actual.height !== reference.height
+    ) {
+        throw new Error("Diagnostic dimensions differ.");
+    }
+    let total = 0;
+    let maxDiff = 0;
+    let pixels = 0;
+    const maxX = Math.min(bounds.x + bounds.width, actual.width);
+    const maxY = Math.min(bounds.y + bounds.height, actual.height);
+    for (let y = Math.max(bounds.y, 0); y < maxY; y += 1) {
+        for (let x = Math.max(bounds.x, 0); x < maxX; x += 1) {
+            const offset = (y * actual.width + x) * 4;
+            for (let channel = 0; channel < 3; channel += 1) {
+                const difference = Math.abs(
+                    actual.data[offset + channel]! -
+                        reference.data[offset + channel]!,
+                );
+                total += difference;
+                maxDiff = Math.max(maxDiff, difference);
+            }
+            pixels += 1;
+        }
+    }
+    return {
+        mad: pixels > 0 ? total / (pixels * 3) : 0,
+        maxDiff,
+        pixels,
+    };
+}
+
 function main(): void {
     const outputDirectory = resolve("artifacts/parity/lite-diagnostics/compare");
     mkdirSync(outputDirectory, { recursive: true });
@@ -68,7 +120,44 @@ function main(): void {
         };
     });
     const output = resolve(outputDirectory, "comparison.json");
-    writeFileSync(output, `${JSON.stringify({ results }, null, 2)}\n`);
+    const parityReportPath = resolve("artifacts/parity/report-gpu.json");
+    const parityReport = existsSync(parityReportPath)
+        ? JSON.parse(readFileSync(parityReportPath, "utf8")) as ParityReport
+        : undefined;
+    const hotspots = parityReport?.breakdown?.hotspots ?? [];
+    const hotspotDiagnostics = hotspots.map((hotspot, index) => ({
+        hotspot,
+        attribution: parityReport?.hotspotAttribution?.[index],
+        buffers: Object.fromEntries(
+            pairs.map((pair) => [
+                pair.name,
+                compareBounds(pair.native, pair.babylon, hotspot),
+            ]),
+        ),
+    }));
+    const uncomparedNative = {
+        baseColor: {
+            path: resolve("artifacts/parity/base-color-gpu.png"),
+            encoding: "linear-rgba8",
+        },
+        preToneHdrPreview: {
+            path: resolve("artifacts/parity/pre-tone-hdr-gpu.png"),
+            encoding: "clamped-rgba8-preview",
+        },
+        preToneHdrRaw: {
+            path: resolve("artifacts/parity/pre-tone-hdr-gpu.rgba16f"),
+            encoding: "little-endian-rgba16float",
+            ...parityReport?.dimensions,
+        },
+    };
+    writeFileSync(
+        output,
+        `${JSON.stringify(
+            { results, hotspotDiagnostics, uncomparedNative },
+            null,
+            2,
+        )}\n`,
+    );
     for (const result of results) {
         console.log(
             `${result.name}: full MAD=${result.full.mad.toFixed(3)}, ` +

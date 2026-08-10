@@ -295,6 +295,7 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
     scene.environment.specular_width = parsed.width;
     scene.environment.specular_mip_count = parsed.mip_count;
     scene.environment.specular_faces = std::move(parsed.faces);
+    scene.environment.specular_rgba16f = false;
     scene.environment.brdf_lut = {};
     if (!options.brdf_url.empty()) {
         scene.environment.brdf_lut.bytes = pal::read_binary_file(options.brdf_url);
@@ -316,6 +317,7 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
         scene.environment.skybox_data_offset =
             read_u32(dds, 84) == 808540228u ? 148u : 128u;
         scene.environment.has_skybox = true;
+        scene.environment.skybox_uses_environment = false;
     }
     Vec3 bounds_min{
         std::numeric_limits<float>::infinity(),
@@ -350,12 +352,162 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
             bounds_min.y - 0.00001f,
             bounds_min.z + dz * 0.5f,
         };
+        scene.environment.skybox_position =
+            scene.environment.ground_position;
         scene.environment.skybox_size = std::min(
             (options.skybox_size > 0.0f ? options.skybox_size : 20.0f) * 1.5f,
             scene.environment.ground_size * 1.5f);
     }
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};
     scene.environment.contrast = ${this.context.floatLiteral(contrast)};
+    scene.environment.tone_mapping_enabled = true;
+}
+
+} // namespace bbl
+`,
+        };
+    }
+
+    public lowerHdrLoaderAdapter(): LoweredSource {
+        const modulePath = "src/loader-hdr/load-hdr.ts";
+        const symbolName = "loadHdrEnvironment";
+        const source = this.context.store.getSource(modulePath);
+        const exposure = this.context.extractNumber(
+            source,
+            /imageProcessing\.exposure = ([0-9.]+)/,
+            "HDR environment exposure",
+        );
+        const contrast = this.context.extractNumber(
+            source,
+            /imageProcessing\.contrast = ([0-9.]+)/,
+            "HDR environment contrast",
+        );
+        for (const marker of [
+            "parseRGBE(buffer)",
+            "computeSHFromEquirect",
+            "equirectToCubemapGPU",
+            "prefilterCubemapGPU",
+            "scene.imageProcessing.toneMappingEnabled = false",
+        ]) {
+            if (!source.includes(marker)) {
+                throw new Error(`Pinned HDR environment loader changed: ${marker}.`);
+            }
+        }
+        return {
+            modulePath,
+            symbolName,
+            header: "",
+            source: `// ${this.context.provenance(
+                modulePath,
+                symbolName,
+                "src/loader-hdr/hdr-parser.ts#parseRGBE,computeSHFromEquirect and src/loader-hdr/hdr-ibl-pipeline.ts",
+            )}
+#include <bblite/pal.hpp>
+#include <bblite/runtime.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <stdexcept>
+
+namespace bbl {
+namespace {
+
+std::uint32_t hdr_u32(
+    const std::vector<std::uint8_t>& bytes,
+    std::size_t offset) {
+    if (offset + 4 > bytes.size()) {
+        throw std::runtime_error("Compiled HDR package is truncated.");
+    }
+    return
+        static_cast<std::uint32_t>(bytes[offset]) |
+        (static_cast<std::uint32_t>(bytes[offset + 1]) << 8) |
+        (static_cast<std::uint32_t>(bytes[offset + 2]) << 16) |
+        (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
+}
+
+float hdr_f32(
+    const std::vector<std::uint8_t>& bytes,
+    std::size_t offset) {
+    const std::uint32_t bits = hdr_u32(bytes, offset);
+    float result = 0.0f;
+    static_assert(sizeof(result) == sizeof(bits));
+    std::memcpy(&result, &bits, sizeof(result));
+    return result;
+}
+
+} // namespace
+
+void load_hdr_environment(
+    Scene& scene,
+    HdrEnvironmentOptions options) {
+    const std::vector<std::uint8_t> bytes =
+        pal::read_binary_file(options.environment_url);
+    static constexpr std::array<std::uint8_t, 8> magic{
+        0x42, 0x42, 0x4c, 0x48, 0x44, 0x52, 0x31, 0x00};
+    if (
+        bytes.size() < 124 ||
+        !std::equal(magic.begin(), magic.end(), bytes.begin())) {
+        throw std::runtime_error("Invalid compiled HDR environment package.");
+    }
+    const std::uint32_t width = hdr_u32(bytes, 8);
+    const std::uint32_t mip_count = hdr_u32(bytes, 12);
+    if (width == 0 || mip_count == 0) {
+        throw std::runtime_error("Compiled HDR environment has invalid dimensions.");
+    }
+
+    scene.environment.has_irradiance = true;
+    for (std::size_t coefficient = 0; coefficient < 9; ++coefficient) {
+        scene.environment.spherical_harmonics[coefficient] = Color3{
+            hdr_f32(bytes, 16 + coefficient * 12),
+            hdr_f32(bytes, 20 + coefficient * 12),
+            hdr_f32(bytes, 24 + coefficient * 12),
+        };
+    }
+    scene.environment.specular_width = width;
+    scene.environment.specular_mip_count = mip_count;
+    scene.environment.specular_rgba16f = true;
+    scene.environment.specular_faces.clear();
+    scene.environment.specular_faces.reserve(
+        static_cast<std::size_t>(mip_count) * 6);
+    std::size_t offset = 124;
+    for (std::uint32_t mip = 0; mip < mip_count; ++mip) {
+        const std::uint32_t size = std::max(width >> mip, 1u);
+        const std::size_t byte_size =
+            static_cast<std::size_t>(size) * size * 8;
+        for (std::uint32_t face = 0; face < 6; ++face) {
+            if (offset + byte_size > bytes.size()) {
+                throw std::runtime_error(
+                    "Compiled HDR environment pixel data is truncated.");
+            }
+            TextureData data;
+            data.bytes.assign(
+                bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                bytes.begin() +
+                    static_cast<std::ptrdiff_t>(offset + byte_size));
+            scene.environment.specular_faces.push_back(std::move(data));
+            offset += byte_size;
+        }
+    }
+    if (offset != bytes.size()) {
+        throw std::runtime_error(
+            "Compiled HDR environment has trailing pixel data.");
+    }
+
+    scene.environment.brdf_lut = {};
+    if (!options.brdf_url.empty()) {
+        scene.environment.brdf_lut.bytes =
+            pal::read_binary_file(options.brdf_url);
+    }
+    scene.environment.has_ground = false;
+    scene.environment.has_skybox = options.use_cubemap_skybox;
+    scene.environment.skybox_uses_environment =
+        options.use_cubemap_skybox;
+    scene.environment.skybox_size = options.skybox_size;
+    scene.environment.skybox_position = options.skybox_position;
+    scene.environment.exposure = ${this.context.floatLiteral(exposure)};
+    scene.environment.contrast = ${this.context.floatLiteral(contrast)};
+    scene.environment.tone_mapping_enabled = false;
 }
 
 } // namespace bbl

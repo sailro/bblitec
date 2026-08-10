@@ -276,34 +276,40 @@ TextureData texture_data(
     const JsonObject& info = texture_info->as_object();
     const std::size_t texture_index = unsigned_value(required(info, "index"));
     const JsonObject& texture = textures.at(texture_index).as_object();
+    const JsonObject* sampler = nullptr;
     if (const ts::JsonValue* sampler_value = optional(texture, "sampler")) {
-        const JsonObject& sampler =
-            samplers.at(unsigned_value(*sampler_value)).as_object();
-        const std::size_t min_filter = unsigned_or(sampler, "minFilter", 9987);
-        result.sampler.min_filter =
-            min_filter == 9728 || min_filter == 9984 || min_filter == 9986
-                ? TextureFilter::nearest
-                : TextureFilter::linear;
-        result.sampler.mipmap_mode =
-            min_filter == 9984 || min_filter == 9985
-                ? TextureMipmapMode::nearest
-                : TextureMipmapMode::linear;
-        result.sampler.mag_filter =
-            unsigned_or(sampler, "magFilter", 9729) == 9728
-                ? TextureFilter::nearest
-                : TextureFilter::linear;
-        const auto address_mode = [](std::size_t mode) {
-            return mode == 33071
-                ? TextureAddressMode::clamp
-                : mode == 33648
-                    ? TextureAddressMode::mirror
-                    : TextureAddressMode::repeat;
-        };
-        result.sampler.address_u =
-            address_mode(unsigned_or(sampler, "wrapS", 10497));
-        result.sampler.address_v =
-            address_mode(unsigned_or(sampler, "wrapT", 10497));
+        sampler = &samplers.at(unsigned_value(*sampler_value)).as_object();
     }
+    const std::size_t min_filter =
+        sampler ? unsigned_or(*sampler, "minFilter", 9987) : 9987;
+    const std::size_t mag_filter =
+        sampler ? unsigned_or(*sampler, "magFilter", 9729) : 9729;
+    const bool min_nearest = min_filter % 2 == 0;
+    const bool mip_nearest = min_filter == 9984 || min_filter == 9985;
+    const bool no_mip = min_filter == 9728 || min_filter == 9729;
+    const bool mag_linear = mag_filter != 9728;
+    result.sampler.min_filter =
+        min_nearest ? TextureFilter::nearest : TextureFilter::linear;
+    result.sampler.mipmap_mode =
+        mip_nearest ? TextureMipmapMode::nearest : TextureMipmapMode::linear;
+    result.sampler.mag_filter =
+        mag_linear ? TextureFilter::linear : TextureFilter::nearest;
+    result.sampler.max_lod = no_mip ? 0.0f : 1000.0f;
+    result.sampler.max_anisotropy =
+        mag_linear && !min_nearest && !mip_nearest && !no_mip
+            ? 4.0f
+            : 1.0f;
+    const auto address_mode = [](std::size_t mode) {
+        return mode == 33071
+            ? TextureAddressMode::clamp
+            : mode == 33648
+                ? TextureAddressMode::mirror
+                : TextureAddressMode::repeat;
+    };
+    result.sampler.address_u = address_mode(
+        sampler ? unsigned_or(*sampler, "wrapS", 10497) : 10497);
+    result.sampler.address_v = address_mode(
+        sampler ? unsigned_or(*sampler, "wrapT", 10497) : 10497);
     const std::size_t image_index = unsigned_value(required(texture, "source"));
     const JsonObject& image = images.at(image_index).as_object();
     const BufferViewInfo& view = views.at(unsigned_value(required(image, "bufferView")));
@@ -450,6 +456,9 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             const AccessorInfo* texcoords = optional(attributes, "TEXCOORD_0")
                 ? &accessors.at(unsigned_value(*optional(attributes, "TEXCOORD_0")))
                 : nullptr;
+            const AccessorInfo* colors = optional(attributes, "COLOR_0")
+                ? &accessors.at(unsigned_value(*optional(attributes, "COLOR_0")))
+                : nullptr;
             ModelGeometry geometry;
             geometry.vertices.resize(positions.count);
             geometry.bounds_min = Vec3{
@@ -498,6 +507,16 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     vertex.uv = Vec2{
                         read_component(buffer, container, views, *texcoords, index, 0),
                         read_component(buffer, container, views, *texcoords, index, 1),
+                    };
+                }
+                if (colors) {
+                    vertex.color = Vec4{
+                        read_component(buffer, container, views, *colors, index, 0),
+                        read_component(buffer, container, views, *colors, index, 1),
+                        read_component(buffer, container, views, *colors, index, 2),
+                        colors->type == "VEC4"
+                            ? read_component(buffer, container, views, *colors, index, 3)
+                            : 1.0f,
                     };
                 }
                 geometry.bounds_min.x = std::min(geometry.bounds_min.x, vertex.position.x);

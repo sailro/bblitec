@@ -76,6 +76,10 @@ function buildScene(scene: (typeof scenes)[number]): void {
         "-DCMAKE_BUILD_TYPE=Release",
         `-DBBLITE_GENERATED_DIR=${resolve(scene.output)}`,
     ];
+    const generator = process.env.BBLITE_CMAKE_GENERATOR;
+    if (generator) {
+        configureArguments.push("-G", generator);
+    }
     const vcpkgRoot = process.env.VCPKG_ROOT;
     if (vcpkgRoot) {
         configureArguments.push(
@@ -93,6 +97,7 @@ function buildScene(scene: (typeof scenes)[number]): void {
         scene.buildDirectory,
         "--config",
         "Release",
+        "--parallel",
     ]);
 }
 

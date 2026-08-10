@@ -98,12 +98,27 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         const modulePath = "src/loader-gltf/load-gltf.ts";
         const symbolName = "loadGltf";
         const source = this.context.store.getSource(modulePath);
+        const samplerSource = this.context.store.getSource(
+            "src/loader-gltf/gltf-sampler-desc.ts",
+        );
         for (const marker of [
             "export async function loadGltf",
             "fetchGltfAsset(source)",
             "loadGltfFeatures(json)",
         ]) {
             if (!source.includes(marker)) throw new Error(`Upstream glTF loader contract changed: ${marker}.`);
+        }
+        for (const marker of [
+            "const minNearest = !!minF && minF % 2 === 0",
+            "const mipNearest = minF === 9984 || minF === 9985",
+            "const noMip = minF === 9728 || minF === 9729",
+            "maxAnisotropy: magLinear && !minNearest && !mipNearest && !noMip ? 4 : 1",
+        ]) {
+            if (!samplerSource.includes(marker)) {
+                throw new Error(
+                    `Upstream glTF sampler contract changed: ${marker}.`,
+                );
+            }
         }
         return {
             modulePath,

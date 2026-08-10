@@ -21,13 +21,21 @@ float4 main(FragmentInput input) : SV_Target
 {
     const float3 direction = normalize(input.worldPosition - backgroundCenter.xyz);
     float3 color =
-        skyboxTexture.SampleLevel(skyboxSampler, direction, 0.0).rgb *
-        primaryColorExposure.rgb;
+        skyboxTexture.SampleLevel(skyboxSampler, direction, 0.0).rgb;
+    if (imageParameters.y < 0.5)
+    {
+        color *= primaryColorExposure.rgb;
+    }
     color *= primaryColorExposure.a;
-    color = 1.0 - exp2(-1.590579 * color);
+    if (imageParameters.z > 0.5)
+    {
+        color = 1.0 - exp2(-1.590579 * color);
+    }
     color = pow(max(color, 0.0), 1.0 / 2.2);
     color = saturate(color);
     const float3 highContrast = color * color * (3.0 - 2.0 * color);
-    color = lerp(color, highContrast, imageParameters.x - 1.0);
+    color = imageParameters.x < 1.0
+        ? lerp(float3(0.5, 0.5, 0.5), color, imageParameters.x)
+        : lerp(color, highContrast, imageParameters.x - 1.0);
     return float4(max(color, 0.0), 1.0);
 }

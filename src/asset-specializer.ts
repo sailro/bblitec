@@ -33,6 +33,7 @@ interface RenderItemSpecialization {
     clusterCount: number;
     materialIndex?: number;
     materialName?: string;
+    shaderVariant: "pbr";
     alphaMode: "OPAQUE" | "MASK" | "BLEND";
     doubleSided: boolean;
 }
@@ -112,6 +113,7 @@ function renderItemSpecializations(document: JsonRecord): RenderItemSpecializati
                 clusterCount,
                 ...(materialIndex !== undefined ? { materialIndex } : {}),
                 ...(asString(material?.name) ? { materialName: asString(material?.name)! } : {}),
+                shaderVariant: "pbr",
                 alphaMode,
                 doubleSided: material?.doubleSided === true,
             });

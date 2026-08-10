@@ -87,6 +87,31 @@ test("supports aliased Babylon Lite imports", () => {
     assert.match(result.cpp, /\.clear_color =/);
 });
 
+test("compiles pinned scene 213 GridMaterial options", () => {
+    const source = readFileSync(
+        resolve("examples/scene213-grid-material.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "examples/scene213-grid-material.ts",
+    });
+
+    assert.ok(result.manifest.features.includes("material:grid"));
+    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/material_grid.cpp",
+        ),
+    );
+    assert.match(result.cpp, /bbl::create_grid_material/);
+    assert.match(result.cpp, /bbl::GridMaterialOptions/);
+    assert.match(result.cpp, /0\.6f, 1\.0f, true, false, false, true/);
+    assert.match(
+        result.cpp,
+        /5\.0f, 0\.5f, 1\.0f, 1\.0f, true, false, true, true/,
+    );
+});
+
 test("reports unsupported Babylon Lite APIs with source locations", () => {
     assert.throws(
         () =>
@@ -118,6 +143,7 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
         "camera:arc-rotate",
         "camera:default",
         "environment:ibl",
+        "environment:env",
         "background:ground",
         "background:skybox",
         "light:hemispheric",
@@ -226,6 +252,85 @@ test("compiles Babylon Lite scene 10 PBR rough sphere", () => {
     ]);
 });
 
+test("compiles Babylon Lite scene 8 HDR glass sphere", () => {
+    const source = readFileSync(
+        resolve("examples/scene8-hdr-glass.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "examples/scene8-hdr-glass.ts",
+    });
+
+    assert.deepEqual(result.manifest.features, [
+        "core",
+        "backend:sdl",
+        "camera:arc-rotate",
+        "environment:ibl",
+        "environment:hdr",
+        "background:skybox",
+        "light:point",
+        "material:pbr",
+        "mesh:sphere",
+        "renderer:pbr",
+    ]);
+    assert.deepEqual(
+        result.manifest.assets.map(({ source, kind, faceSize }) => ({
+            source,
+            kind,
+            ...(faceSize === undefined ? {} : { faceSize }),
+        })),
+        [
+            {
+                source: "https://playground.babylonjs.com/textures/room.hdr",
+                kind: "hdr-environment",
+                faceSize: 512,
+            },
+            {
+                source: "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/master/packages/babylon-lite/assets/brdf-lut.png",
+                kind: "texture",
+            },
+        ],
+    );
+    assert.match(result.cpp, /bbl::load_hdr_environment/);
+    assert.match(result.cpp, /bbl::create_point_light/);
+    assert.match(result.cpp, /\.environment\.exposure = 0\.66f/);
+    assert.match(result.cpp, /\.environment\.contrast = 1\.66f/);
+    assert.match(
+        result.cpp,
+        /PbrMaterialOptions\{[^}]*0\.0f, 0\.7f, 0\.5f, 0\.2f, false\}/,
+    );
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/environment_hdr.cpp",
+        ),
+    );
+    assert.ok(
+        !result.manifest.generatedSources.includes(
+            "upstream/src/env_parse.cpp",
+        ),
+    );
+    assert.ok(
+        !result.manifest.generatedSources.includes(
+            "upstream/src/environment.cpp",
+        ),
+    );
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/light_point.cpp",
+        ),
+    );
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "compile-time-hdr-cubemap",
+        ),
+    );
+    assert.ok(
+        !result.manifest.adaptations.some(
+            ({ id }) => id === "background-ground-opt-in",
+        ),
+    );
+});
+
 test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     const source = readFileSync(
         resolve("examples/scene273-runtime-material-family.ts"),
@@ -252,7 +357,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     assert.match(result.cpp, /if \(\(v_frame == 20\.0f\)\)/);
     assert.match(
         result.cpp,
-        /PbrMaterialOptions\{[^}]*0\.1f, 0\.4f, 1\.0f, 0\.0f, false\}/,
+        /PbrMaterialOptions\{[^}]*0\.1f, 0\.4f, 1\.0f, 0\.0f, 1\.0f, 0\.04f, false\}/,
     );
     assert.match(
         result.cpp,
@@ -285,6 +390,7 @@ test("compiles Babylon Lite scene 13 PBR spheres grid", () => {
         "camera:arc-rotate",
         "camera:default",
         "environment:ibl",
+        "environment:env",
         "background:ground",
         "light:hemispheric",
         "loader:gltf",
@@ -544,4 +650,19 @@ test("compiles Babylon Lite scene 248 external glTF", () => {
     assert.match(result.cpp, /\.fov = 0\.8f/);
     assert.match(result.cpp, /\.near_plane =/);
     assert.match(result.cpp, /\.far_plane =/);
+});
+
+test("compiles Babylon Lite scene 249 vertex alpha clip", () => {
+    const source = readFileSync(
+        resolve("examples/scene249-vertex-alpha-clip.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "examples/scene249-vertex-alpha-clip.ts",
+    });
+    const asset = result.manifest.assets.find(({ kind }) => kind === "gltf");
+    assert.match(asset?.source ?? "", /VertexColorAlphaClipTest\.gltf$/);
+    assert.equal(asset?.output.endsWith(".glb"), true);
+    assert.ok(result.manifest.features.includes("loader:gltf"));
+    assert.ok(result.manifest.features.includes("renderer:pbr"));
 });
