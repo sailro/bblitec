@@ -137,6 +137,9 @@ targets. Normalized depth is bit-exact against the Babylon Lite WebGPU oracle.
 Scenes 145 and 146 gate the separate production geometry-renderer path: all
 eleven geometry texture types, split 7+4 MRT passes, optional real color,
 independent depth, viewport copies, and MSAA resolve.
+Frame-graph depth targets select a supported D32/D24 sampled depth format,
+matching Babylon Lite's `depth32float` geometry-target contract instead of the
+former hardcoded D16 adaptation.
 
 The diagnostic comparison report joins each final-image hotspot to the
 available WebGPU-oracle buffer MADs and its attributed shader variant. Base

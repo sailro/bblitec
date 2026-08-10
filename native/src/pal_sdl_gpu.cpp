@@ -178,6 +178,8 @@ struct GpuState {
     SDL_GPUTexture* transmission_color = nullptr;
     SDL_GPUTexture* msaa_color = nullptr;
     SDL_GPUTexture* depth = nullptr;
+    SDL_GPUTextureFormat depth_format =
+        SDL_GPU_TEXTUREFORMAT_D16_UNORM;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
     std::uint32_t color_width = 0;
     std::uint32_t color_height = 0;
@@ -1019,7 +1021,7 @@ void create_depth(GpuState& state, std::uint32_t width, std::uint32_t height) {
     if (state.depth) SDL_ReleaseGPUTexture(state.device, state.depth);
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
-    info.format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+    info.format = state.depth_format;
     info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
     info.width = width;
     info.height = height;
@@ -1346,7 +1348,7 @@ void create_frame_graph_textures(
         if (record.has_depth) {
             target.depth = create_frame_texture(
                 state.device,
-                SDL_GPU_TEXTUREFORMAT_D16_UNORM,
+                state.depth_format,
                 samples,
                 target.width,
                 target.height,
@@ -1397,7 +1399,7 @@ void create_frame_graph_textures(
         }
         task.depth = create_frame_texture(
             state.device,
-            SDL_GPU_TEXTUREFORMAT_D16_UNORM,
+            state.depth_format,
             samples,
             width,
             height,
@@ -1428,7 +1430,7 @@ void save_geometry_id_buffer_png(
 
     SDL_GPUTextureCreateInfo depth_info{};
     depth_info.type = SDL_GPU_TEXTURETYPE_2D;
-    depth_info.format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+    depth_info.format = state.depth_format;
     depth_info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
     depth_info.width = width;
     depth_info.height = height;
@@ -1622,7 +1624,7 @@ void save_pbr_diagnostic_buffers(
     }
     SDL_GPUTextureCreateInfo depth_info{};
     depth_info.type = SDL_GPU_TEXTURETYPE_2D;
-    depth_info.format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+    depth_info.format = state.depth_format;
     depth_info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
     depth_info.width = width;
     depth_info.height = height;
@@ -1995,6 +1997,20 @@ bool run_gpu_engine(Engine& engine) {
             nullptr);
         if (!state.device) gpu_error("SDL_CreateGPUDevice");
         if (!SDL_ClaimWindowForGPUDevice(state.device, state.window)) gpu_error("SDL_ClaimWindowForGPUDevice");
+        for (const SDL_GPUTextureFormat candidate : {
+                 SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
+                 SDL_GPU_TEXTUREFORMAT_D24_UNORM,
+             }) {
+            if (SDL_GPUTextureSupportsFormat(
+                    state.device,
+                    candidate,
+                    SDL_GPU_TEXTURETYPE_2D,
+                    SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET |
+                        SDL_GPU_TEXTUREUSAGE_SAMPLER)) {
+                state.depth_format = candidate;
+                break;
+            }
+        }
         const SDL_GPUTextureFormat swapchain_format =
             SDL_GetGPUSwapchainTextureFormat(state.device, state.window);
         const bool transmission_enabled = scene.transmission_enabled;
@@ -2019,7 +2035,7 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_GPU_SAMPLECOUNT_4) &&
             SDL_GPUTextureSupportsSampleCount(
                 state.device,
-                SDL_GPU_TEXTUREFORMAT_D16_UNORM,
+                state.depth_format,
                 SDL_GPU_SAMPLECOUNT_4)) {
             state.sample_count = SDL_GPU_SAMPLECOUNT_4;
         }
@@ -2263,7 +2279,8 @@ bool run_gpu_engine(Engine& engine) {
         pipeline_info.multisample_state.sample_count = state.sample_count;
         pipeline_info.target_info.color_target_descriptions = &color_target;
         pipeline_info.target_info.num_color_targets = 1;
-        pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+        pipeline_info.target_info.depth_stencil_format =
+            state.depth_format;
         pipeline_info.target_info.has_depth_stencil_target = true;
         state.pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
         if (!state.pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline");
@@ -2375,7 +2392,7 @@ bool run_gpu_engine(Engine& engine) {
                 nullptr;
             depth_pipeline_info.target_info.num_color_targets = 0;
             depth_pipeline_info.target_info.depth_stencil_format =
-                SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+                state.depth_format;
             depth_pipeline_info.target_info.has_depth_stencil_target = true;
             state.depth_only_pipelines[index] =
                 SDL_CreateGPUGraphicsPipeline(
