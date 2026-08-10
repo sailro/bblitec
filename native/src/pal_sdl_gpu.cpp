@@ -4155,44 +4155,6 @@ bool run_gpu_engine(Engine& engine) {
                             throw std::runtime_error(
                                 "Resolve source must be a render target.");
                         }
-                        const RenderTargetRecord& source_record =
-                            engine.render_targets[
-                                copy.source.target.value];
-                        if (
-                            task_sample_count(
-                                state,
-                                source_record.samples) ==
-                            SDL_GPU_SAMPLECOUNT_1) {
-                            SDL_GPUBlitInfo blit{};
-                            blit.source = SDL_GPUBlitRegion{
-                                target_texture(
-                                    copy.source.target,
-                                    false),
-                                0,
-                                0,
-                                0,
-                                0,
-                                width,
-                                height,
-                            };
-                            blit.destination = SDL_GPUBlitRegion{
-                                target_texture(
-                                    copy.resolve_target,
-                                    false),
-                                0,
-                                0,
-                                0,
-                                0,
-                                width,
-                                height,
-                            };
-                            blit.load_op =
-                                SDL_GPU_LOADOP_DONT_CARE;
-                            blit.flip_mode = SDL_FLIP_NONE;
-                            blit.filter = SDL_GPU_FILTER_NEAREST;
-                            SDL_BlitGPUTexture(command, &blit);
-                            continue;
-                        }
                         SDL_GPUColorTargetInfo resolve_info{};
                         resolve_info.texture =
                             target_texture(copy.source.target, false);
