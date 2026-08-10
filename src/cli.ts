@@ -123,7 +123,7 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
             : new Uint8Array(readFileSync(resolve(dirname(inputPath), asset.source)));
         writeFileSync(
             destination,
-            packageHdrEnvironment(bytes, asset.faceSize ?? 256),
+            await packageHdrEnvironment(bytes, asset.faceSize ?? 256),
         );
         return;
     }

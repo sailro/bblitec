@@ -580,6 +580,23 @@ MaterialHandle create_pbr_material(
             ? MaterialAlphaMode::blend
             : MaterialAlphaMode::opaque;
     material.unlit = options.unlit;
+    material.double_sided = options.double_sided;
+    material.skybox_mode = options.skybox_mode;
+    material.transmission_factor = options.transmission_factor;
+    material.index_of_refraction = options.index_of_refraction;
+    material.thickness = options.thickness;
+    material.attenuation_color = options.attenuation_color;
+    material.attenuation_distance = options.attenuation_distance;
+    material.has_ior = options.index_of_refraction != 1.5f;
+    material.has_volume =
+        options.thickness > 0.0f ||
+        options.attenuation_distance != 1.0f ||
+        options.attenuation_color.r != 1.0f ||
+        options.attenuation_color.g != 1.0f ||
+        options.attenuation_color.b != 1.0f;
+    if (material.transmission_factor > 0.0f) {
+        material.alpha_mode = MaterialAlphaMode::blend;
+    }
     material.has_occlusion_texture = true;
     engine.materials.push_back(material);
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};

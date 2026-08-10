@@ -243,6 +243,13 @@ struct PbrMaterialOptions {
     float alpha = 1.0f;
     float reflectance = 0.04f;
     bool unlit = false;
+    bool double_sided = false;
+    bool skybox_mode = false;
+    float transmission_factor = 0.0f;
+    float index_of_refraction = 1.5f;
+    float thickness = 0.0f;
+    Color3 attenuation_color{1.0f, 1.0f, 1.0f};
+    float attenuation_distance = 1.0f;
 };
 
 struct GridMaterialOptions {
@@ -339,6 +346,16 @@ struct MaterialRecord {
     float direct_intensity = 1.0f;
     float environment_intensity = 1.0f;
     float reflectance = 0.04f;
+    float normal_texture_scale = 1.0f;
+    float transmission_factor = 0.0f;
+    float index_of_refraction = 1.5f;
+    float thickness = 0.0f;
+    Color3 attenuation_color{1.0f, 1.0f, 1.0f};
+    float attenuation_distance = 1.0f;
+    bool has_ior = false;
+    bool has_volume = false;
+    bool skybox_mode = false;
+    bool specular_aa = false;
     bool has_occlusion_texture = false;
     bool unlit = false;
     bool no_color = false;
@@ -370,6 +387,8 @@ struct MaterialRecord {
     TextureData base_color_texture;
     TextureData metallic_roughness_texture;
     TextureData normal_texture;
+    TextureData transmission_texture;
+    TextureData thickness_texture;
     TextureData emissive_texture;
     TextureData opacity_texture;
     TextureData specular_texture;
@@ -450,6 +469,7 @@ struct EnvironmentState {
     bool has_irradiance = false;
     float exposure = 1.0f;
     float contrast = 1.0f;
+    float lod_generation_scale = 0.8f;
     bool tone_mapping_enabled = false;
     std::array<Color3, 9> spherical_harmonics{};
     std::uint32_t specular_width = 0;
@@ -484,6 +504,7 @@ struct Scene {
     float fixed_delta_ms = 0.0f;
     std::uint64_t mesh_membership_version = 0;
     std::uint32_t material_family_mask = 0;
+    bool transmission_enabled = false;
 };
 
 struct GroundOptions {
@@ -616,6 +637,7 @@ void on_before_render(
 void attach_control(Engine& engine, CameraHandle camera, Scene& scene);
 void attach_free_control(Engine& engine, CameraHandle camera, Scene& scene);
 void register_scene(Scene& scene);
+void enable_scene_transmission(Scene& scene);
 void start_engine(Engine& engine);
 
 } // namespace bbl

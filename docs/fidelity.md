@@ -26,8 +26,8 @@ Generated scenes contain:
 
 Current intentional adaptations include browser-wrapper erasure, immediate AOT
 `await`, compile-time asset materialization, SDL input translation, native
-shader backends, deterministic box-filtered compile-time HDR cubemap mips in
-place of the pinned GGX prefilter, and opt-in ground composition.
+shader backends, disabled cross-backend position-seeded background dither, and
+opt-in ground composition.
 
 New high-risk adaptations require an explicit record and a focused test.
 
@@ -60,6 +60,19 @@ PBR color, diagnostic, and geometry-output variants now use WGSL through Tint.
 The PBR source is a pinned DXC-SPIR-V/Tint transcription of the previously
 validated native shader; direct Babylon composer extraction remains the next
 provenance improvement.
+
+HDR environments preserve mip zero and use the pinned WebGPU 1024-sample GGX
+prefilter for higher mips. The generated package records the pinned module,
+shader, source commit, and sample count.
+
+Transmission uses an opaque scene-color copy, dielectric Fresnel
+`((ior-1)/(ior+1))²`, and Beer-Lambert volume attenuation
+`exp(log(color)/distance*thickness)`. Independent skybox, scene-color, IOR,
+volume, and scene 176 gates keep the dependency chain observable.
+
+Generated ground remains opt-in. Enabling it against the committed scene 13
+golden raises full MAD from `0.010` to `8.354`, confirming that the reference
+does not compose that background pass equivalently.
 
 DXC cannot be removed from the D3D12 path because Tint does not emit DXIL.
 Tint does emit SPIR-V, but its separate WGSL texture/sampler binding numbers do

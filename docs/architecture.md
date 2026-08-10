@@ -52,11 +52,13 @@ The current generated slice includes:
 - the HillValley-required `.babylon` loader slice
 - Standard/PBR/Grid material records, no-color views, and typed custom shaders
 - negative-transform winding, generated normals, and cotangent normal mapping
-- `.env`/DDS parsing plus compile-time RGBE HDR/SH/cubemap materialization
+- `.env`/DDS parsing plus compile-time RGBE HDR/SH/cubemap materialization and
+  pinned 1024-sample GGX prefiltering
 - generated infinite-distance solid, DDS, and HDR skybox behavior
 - ordered opaque/transparent draw lists, camera matrices, uniforms, and
   frame-graph tasks
 - Standard/PBR geometry MRTs, depth-only passes, blits, and MSAA resolve
+- opaque scene-color copy followed by transmission/IOR/volume transparent draws
 - reached custom WGSL lowered through a typed shader IR into reflected HLSL/MSL
 - pinned Tint compilation from native-specialized reached WGSL to HLSL/MSL;
   DXC emits SDL-layout-compatible DXIL/SPIR-V
@@ -79,6 +81,7 @@ Each scene records:
 - `upstream/shaders/*.native.wgsl`: SDL binding/location/depth specialization
 - `upstream/shaders/*.tint-reflection.txt`: Tint binding reflection check
 - `upstream/shaders/shader-compiler.json`: selected offline compiler backend
+- `upstream/shaders/composition.json`: reached WGSL modules and content hashes
 
 ## Runtime and memory
 

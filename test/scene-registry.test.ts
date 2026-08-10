@@ -6,12 +6,13 @@ import { getScene, resolveScene, scenes } from "../src/scene-registry.js";
 test("registers unique generated scene targets", () => {
     assert.deepEqual(
         scenes.map(({ id }) => id),
-        ["primitives", "boombox", "scene8", "scene10", "scene13", "scene32", "scene163", "scene168", "scene213", "scene116", "scene145", "scene146", "scene248", "scene249", "scene257", "scene266", "scene273", "scene274"],
+        ["primitives", "boombox", "scene8", "scene10", "scene13", "scene32", "scene163", "scene168", "transmission-skybox", "transmission-scene-color", "transmission-ior", "transmission-volume", "scene176", "scene213", "scene116", "scene145", "scene146", "scene248", "scene249", "scene257", "scene266", "scene273", "scene274"],
     );
     assert.equal(new Set(scenes.map(({ output }) => output)).size, scenes.length);
     assert.equal(getScene("scene10").parity?.reference.kind, "source");
     assert.equal(getScene("scene163").parity?.maxFullMad, 0.001);
     assert.equal(getScene("scene8").parity?.maxFullMad, 0.2);
+    assert.equal(getScene("scene176").parity?.reference.kind, "source");
     assert.equal(getScene("scene213").parity?.reference.kind, "source");
     assert.equal(
         getScene("scene273").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,

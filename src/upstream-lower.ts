@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { CameraLowerer } from "./lowering/camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
@@ -155,13 +156,17 @@ class GeneratedSourceWriter {
             const renderer = new RendererLowerer(context);
             this.writeSource(
                 "upstream/src/renderer_plan.cpp",
-                renderer.lowerRenderPlan(),
+                renderer.lowerRenderPlan({
+                    transmission: features.includes("renderer:transmission"),
+                }),
                 generated,
                 "upstream/include/bblite/upstream/renderer_plan.hpp",
             );
-            for (const shader of renderer.lowerShaders({
+            const shaders = renderer.lowerShaders({
                 ground: features.includes("background:ground"),
                 skybox: features.includes("background:skybox"),
+                transmission: features.includes("renderer:transmission"),
+                normalTextureScale: features.includes("loader:gltf"),
                 shaderVariants: options.shaderVariants,
                 standardMaterial:
                     features.includes("material:standard") &&
@@ -171,11 +176,33 @@ class GeneratedSourceWriter {
                 pbrDiagnostics: options.pbrDiagnostics,
                 geometryOutputTasks: options.geometryOutputTasks,
                 frameGraph: features.includes("renderer:geometry-output"),
-            })) {
+            });
+            for (const shader of shaders) {
                 const shaderPath = resolve(this.outputRoot, shader.output);
                 mkdirSync(dirname(shaderPath), { recursive: true });
                 writeFileSync(shaderPath, shader.data);
             }
+            writeFileSync(
+                resolve(
+                    this.outputRoot,
+                    "upstream/shaders/composition.json",
+                ),
+                `${JSON.stringify(
+                    {
+                        modules: shaders
+                            .filter(({ output }) =>
+                                output.endsWith(".wgsl"))
+                            .map(({ output, data }) => ({
+                                output,
+                                sha256: createHash("sha256")
+                                    .update(data)
+                                    .digest("hex"),
+                            })),
+                    },
+                    null,
+                    2,
+                )}\n`,
+            );
             if (options.shaderVariants.length > 0) {
                 writeFileSync(
                     resolve(

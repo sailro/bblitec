@@ -7,6 +7,7 @@
 - a C++20 compiler
 - vcpkg
 - PowerShell and DXC for shader compilation
+- Chrome or Edge with WebGPU for exact HDR GGX asset prefiltering and browser references
 
 The documented Windows toolchain is MSVC 14.51 with Windows SDK
 10.0.26100.0. Linux and macOS use the same generated sources with their native
@@ -34,6 +35,10 @@ npm run scene -- parity boombox
 
 `process` runs compile, scene-local shader compilation, CMake configure, and
 parallel native build in order.
+
+HDR scene compilation launches headless Chromium to run the pinned
+1024-sample GGX compute shader. Set `CHROME_PATH` when Chrome/Edge is not in a
+standard location.
 
 Aggregate registered-scene workflows are available without duplicating the
 registry in `package.json`:

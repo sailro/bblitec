@@ -18,6 +18,8 @@ test("packages external glTF buffers and images into a GLB", async () => {
                 buffers: [{ uri: "mesh.bin", byteLength: 4 }],
                 bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 4 }],
                 images: [{ uri: "textures/color.png" }],
+                textures: [{ source: 0 }],
+                materials: [{ normalTexture: { index: 0, scale: 0.35 } }],
             }),
         );
         const glb = Buffer.from(await packageGltf("scene.gltf", directory));
@@ -29,11 +31,18 @@ test("packages external glTF buffers and images into a GLB", async () => {
             buffers: Array<{ byteLength: number }>;
             bufferViews: Array<{ buffer: number; byteOffset: number; byteLength: number }>;
             images: Array<{ bufferView: number; mimeType: string; uri?: string }>;
+            materials: Array<{
+                normalTexture: { index: number; scale: number };
+            }>;
         };
         assert.equal(document.buffers.length, 1);
         assert.equal(document.bufferViews.length, 2);
         assert.deepEqual(document.images, [{ bufferView: 1, mimeType: "image/png" }]);
         assert.equal(document.images[0]?.uri, undefined);
+        assert.deepEqual(document.materials[0]?.normalTexture, {
+            index: 0,
+            scale: 0.35,
+        });
     } finally {
         rmSync(directory, { recursive: true, force: true });
     }

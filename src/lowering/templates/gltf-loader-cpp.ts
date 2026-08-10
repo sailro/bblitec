@@ -335,6 +335,7 @@ MaterialHandle load_material(
     const JsonArray& samplers) {
     MaterialRecord material;
     material.emissive_factor = Color3{0.0f, 0.0f, 0.0f};
+    material.specular_aa = true;
     if (const ts::JsonValue* pbr_value = optional(material_json, "pbrMetallicRoughness")) {
         const JsonObject& pbr = pbr_value->as_object();
         const std::vector<float> base = float_array(optional(pbr, "baseColorFactor"));
@@ -346,12 +347,74 @@ MaterialHandle load_material(
         material.metallic_roughness_texture = texture_data(
             buffer, container, views, images, textures, samplers, optional(pbr, "metallicRoughnessTexture"));
     }
+    const ts::JsonValue* normal_texture =
+        optional(material_json, "normalTexture");
     material.normal_texture = texture_data(
-        buffer, container, views, images, textures, samplers, optional(material_json, "normalTexture"));
+        buffer, container, views, images, textures, samplers, normal_texture);
+    if (normal_texture) {
+        material.normal_texture_scale =
+            float_or(normal_texture->as_object(), "scale", 1.0f);
+    }
     material.has_occlusion_texture = optional(material_json, "occlusionTexture") != nullptr;
     if (const ts::JsonValue* extensions_value = optional(material_json, "extensions")) {
-        material.unlit =
-            optional(extensions_value->as_object(), "KHR_materials_unlit") != nullptr;
+        const JsonObject& extensions = extensions_value->as_object();
+        material.unlit = optional(extensions, "KHR_materials_unlit") != nullptr;
+        if (const ts::JsonValue* ior_value =
+                optional(extensions, "KHR_materials_ior")) {
+            material.has_ior = true;
+            material.index_of_refraction =
+                float_or(ior_value->as_object(), "ior", 1.5f);
+            const float ratio =
+                (material.index_of_refraction - 1.0f) /
+                (material.index_of_refraction + 1.0f);
+            material.reflectance = ratio * ratio;
+        }
+        if (const ts::JsonValue* volume_value =
+                optional(extensions, "KHR_materials_volume")) {
+            const JsonObject& volume = volume_value->as_object();
+            material.has_volume = true;
+            material.thickness =
+                float_or(volume, "thicknessFactor", 0.0f);
+            const std::vector<float> attenuation =
+                float_array(optional(volume, "attenuationColor"));
+            if (attenuation.size() == 3) {
+                material.attenuation_color = Color3{
+                    attenuation[0],
+                    attenuation[1],
+                    attenuation[2],
+                };
+            }
+            material.attenuation_distance =
+                float_or(volume, "attenuationDistance", 1.0f);
+            material.thickness_texture = texture_data(
+                buffer,
+                container,
+                views,
+                images,
+                textures,
+                samplers,
+                optional(volume, "thicknessTexture"));
+        }
+        if (const ts::JsonValue* transmission_value =
+                optional(extensions, "KHR_materials_transmission")) {
+            const JsonObject& transmission =
+                transmission_value->as_object();
+            material.transmission_factor =
+                float_or(transmission, "transmissionFactor", 0.0f);
+            material.transmission_texture = texture_data(
+                buffer,
+                container,
+                views,
+                images,
+                textures,
+                samplers,
+                optional(transmission, "transmissionTexture"));
+            if (
+                material.transmission_factor > 0.0f ||
+                !material.transmission_texture.bytes.empty()) {
+                material.alpha_mode = MaterialAlphaMode::blend;
+            }
+        }
     }
     material.emissive_texture = texture_data(
         buffer, container, views, images, textures, samplers, optional(material_json, "emissiveTexture"));

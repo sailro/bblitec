@@ -39,6 +39,11 @@ const pbrTemplateModule = "src/material/pbr/pbr-template.ts";
 const pbrTemplateExtModule = "src/material/pbr/pbr-template-ext.ts";
 const pbrHelperCoreModule = "src/material/node/blocks/pbr-mr-helper-core.ts";
 const iblFragmentModule = "src/material/pbr/fragments/ibl-fragment.ts";
+const iblSkyboxModule = "src/material/pbr/fragments/ibl-skybox-wgsl.ts";
+const refractionModule =
+    "src/material/pbr/fragments/refraction-rtt-fragment.ts";
+const dielectricLoaderModule = "src/loader-gltf/gltf-ext-dielectric.ts";
+const transmissionFrameGraphModule = "src/frame-graph/transmission.ts";
 const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
@@ -57,7 +62,7 @@ interface LoweredShader {
 export class RendererLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerRenderPlan(): LoweredSource {
+    public lowerRenderPlan(options: { transmission?: boolean } = {}): LoweredSource {
         const source = this.context.store.getSource(renderTaskModule);
         const surface = this.context.store.getSource(surfaceModule);
         for (const symbol of ["buildBindings", "sortTransparentBindings", "drawList"]) {
@@ -92,6 +97,56 @@ export class RendererLowerer {
             return `        case ShaderMaterialVariant::${source.name.replaceAll("-", "_")}:
             return fragment_stage ? ${fragment}u : ${vertex}u;`;
         }).join("\n");
+        const transmissionUniformFields = options.transmission
+            ? `    std::array<float, 4> refraction_params{};
+    std::array<float, 4> volume_params{};
+    std::array<float, 4> transmission_options{};
+    std::array<std::array<float, 4>, 4> view_projection{};
+`
+            : "";
+        const transmissionMaterialUniforms = options.transmission
+            ? `        const float ior = std::max(material.index_of_refraction, 1.0001f);
+        result.refraction_params = {
+            material.transmission_factor,
+            1.0f / (material.has_volume && material.thickness > 0.0f
+                ? ior
+                : 1.0f),
+            material.has_volume ? material.thickness : 0.0f,
+            1.0f / ior,
+        };
+        const float attenuation_distance =
+            std::max(material.attenuation_distance, 0.0001f);
+        result.volume_params = {
+            std::log(std::max(material.attenuation_color.r, 0.000001f)) /
+                attenuation_distance,
+            std::log(std::max(material.attenuation_color.g, 0.000001f)) /
+                attenuation_distance,
+            std::log(std::max(material.attenuation_color.b, 0.000001f)) /
+                attenuation_distance,
+            0.0f,
+        };
+        result.transmission_options = {
+            material.skybox_mode ? 1.0f : 0.0f,
+            material.has_volume ? 1.0f : 0.0f,
+            material.transmission_texture.bytes.empty() ? 0.0f : 1.0f,
+            material.thickness_texture.bytes.empty() ? 0.0f : 1.0f,
+        };
+`
+            : "";
+        const transmissionViewProjection = options.transmission
+            ? `    const std::array<float, 16> view_projection =
+        build_view_projection(
+            camera,
+            static_cast<float>(engine.options.width) /
+                std::max(engine.options.height, 1));
+    for (std::size_t column = 0; column < 4; ++column) {
+        for (std::size_t row = 0; row < 4; ++row) {
+            result.view_projection[column][row] =
+                view_projection[column * 4 + row];
+        }
+    }
+`
+            : "";
 
         return {
             modulePath: renderTaskModule,
@@ -157,6 +212,8 @@ struct RenderItem {
     RenderCullMode cull_mode = RenderCullMode::back;
     ShaderMaterialVariant shader_variant = ShaderMaterialVariant::alpha_card;
     bool alpha_to_coverage = false;
+    bool transmissive = false;
+    bool skybox_mode = false;
     std::uint32_t order = 0;
 };
 
@@ -211,6 +268,7 @@ struct PbrUniforms {
     std::array<float, 4> environment_factors{};
     std::array<float, 4> material_options{};
     std::array<float, 4> normal_options{};
+${transmissionUniformFields}\
     std::array<std::array<float, 4>, 9> spherical_harmonics{};
 };
 
@@ -420,6 +478,12 @@ RenderItem bind_render_item(
         : RenderCullMode::back;
     item.shader_variant = material.shader_variant;
     item.alpha_to_coverage = material.alpha_to_coverage;
+    item.transmissive = material.transmission_factor > 0.0f ||
+        !material.transmission_texture.bytes.empty();
+    item.skybox_mode = material.skybox_mode;
+    if (item.transmissive) {
+        item.bucket = RenderBucket::alpha_blend;
+    }
     return item;
 }
 
@@ -870,7 +934,7 @@ PbrUniforms build_pbr_uniforms(
     result.environment_factors = {
         scene.environment.exposure,
         scene.environment.contrast,
-        0.8f,
+        scene.environment.lod_generation_scale,
         scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
     };
     if (item.material.value < engine.materials.size()) {
@@ -885,7 +949,7 @@ PbrUniforms build_pbr_uniforms(
             material.emissive_factor.r,
             material.emissive_factor.g,
             material.emissive_factor.b,
-            0.0f,
+            material.specular_aa ? 1.0f : 0.0f,
         };
         result.material_factors[0] = material.metallic_factor;
         result.material_factors[1] = material.roughness_factor;
@@ -899,7 +963,14 @@ PbrUniforms build_pbr_uniforms(
         result.material_options[3] = material.double_sided ? 1.0f : 0.0f;
         result.normal_options[1] =
             material.normal_texture.bytes.empty() ? 0.0f : 1.0f;
-        result.normal_options[2] = material.reflectance;
+        const float dielectric_ratio =
+            (material.index_of_refraction - 1.0f) /
+            (material.index_of_refraction + 1.0f);
+        result.normal_options[2] =
+            material.has_ior
+                ? dielectric_ratio * dielectric_ratio
+                : material.reflectance;
+        result.normal_options[3] = material.normal_texture_scale;
         if (
             item.geometry < engine.geometries.size() &&
             !engine.geometries[item.geometry].has_tangents &&
@@ -913,7 +984,9 @@ PbrUniforms build_pbr_uniforms(
                     ? 1.0f
                     : 0.0f;
         result.material_options[1] = material.alpha_cutoff;
+${transmissionMaterialUniforms}\
     }
+${transmissionViewProjection}\
     for (std::size_t index = 0; index < scene.environment.spherical_harmonics.size(); ++index) {
         result.spherical_harmonics[index] = {
             scene.environment.spherical_harmonics[index].r,
@@ -1223,6 +1296,8 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
     public lowerShaders(options: {
         ground: boolean;
         skybox: boolean;
+        transmission?: boolean;
+        normalTextureScale?: boolean;
         shaderVariants: ShaderMaterialVariantName[];
         standardMaterial: boolean;
         gridMaterial?: boolean;
@@ -1233,6 +1308,8 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
     } = {
         ground: true,
         skybox: true,
+        transmission: true,
+        normalTextureScale: true,
         shaderVariants: ["alpha-card", "circular-cutout"],
         standardMaterial: false,
         gridMaterial: false,
@@ -1244,6 +1321,14 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
         const pbrExt = this.context.store.getSource(pbrTemplateExtModule);
         const pbrHelper = this.context.store.getSource(pbrHelperCoreModule);
         const ibl = this.context.store.getSource(iblFragmentModule);
+        const iblSkybox = this.context.store.getSource(iblSkyboxModule);
+        const refraction = this.context.store.getSource(refractionModule);
+        const dielectric = this.context.store.getSource(
+            dielectricLoaderModule,
+        );
+        const transmissionFrameGraph = this.context.store.getSource(
+            transmissionFrameGraphModule,
+        );
         const sceneUniforms = this.context.store.getSource(sceneUniformsModule);
         const backgroundGround = this.context.store.getSource(backgroundGroundModule);
         const backgroundDds = this.context.store.getSource(backgroundDdsModule);
@@ -1280,6 +1365,16 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
             [ibl, "log2(cubemapDim * alphaG) * scene.vImageInfos.z", "IBL mip selection"],
             [ibl, "getEnergyConservationFactor", "IBL energy conservation"],
             [ibl, "finalRadianceScaled", "transparent IBL alpha contribution"],
+            [ibl, "environmentHorizonOcclusion", "IBL horizon occlusion"],
+            [ibl, "let seo = clamp", "IBL specular occlusion"],
+            [ibl, "vec2<f32>(NdotV, roughness)", "BRDF LUT coordinates"],
+            [ibl, "let R = rotateY(R_raw", "environment cubemap rotation"],
+            [iblSkybox, "let R = input.worldPos - scene.vEyePosition.xyz", "PBR skybox view ray"],
+            [refraction, "let rd=refract(-V,N,material.refractionParams.y)", "scene-color refraction ray"],
+            [refraction, "let ab=exp(material.volumeParams.rgb*th)", "Beer-Lambert attenuation"],
+            [refraction, "colorSpecularEnvReflectance.rgb", "transmission Fresnel complement"],
+            [dielectric, "((ior - 1) / (ior + 1)) ** 2 / 0.04", "glTF IOR Fresnel"],
+            [transmissionFrameGraph, "updateTransmissionTexture(state, engine)", "scene-color copy ordering"],
             [sceneUniforms, "lodGenerationScale ?? 0.8", "environment LOD scale"],
             [backgroundGround, "tonemappingCalibration: f32 = 1.590579", "background image processing"],
             [backgroundGround, "ground renders last", "background ordering"],
@@ -1369,10 +1464,40 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
             output: "upstream/shaders/pbr.vert.native.wgsl",
             data: materialVertexWgsl(),
         });
-        const convertedPbr = readFileSync(
+        let convertedPbr = readFileSync(
             resolve(templateRoot, "pbr.frag.wgsl"),
             "utf8",
         );
+        if (!options.normalTextureScale) {
+            convertedPbr = convertedPbr.replace(
+                /  let v_8_raw = \(\(textureSample\(normalTexture, normalSampler, v_4\)\.xyz \* 2\.0f\) - vec3<f32>\(1\.0f\)\);\r?\n  let v_8 = vec3<f32>\(\r?\n    v_8_raw\.xy \* FragmentUniforms\.normalOptions\.w,\r?\n    v_8_raw\.z,\r?\n  \);/,
+                "  let v_8 = ((textureSample(normalTexture, normalSampler, v_4).xyz * 2.0f) - vec3<f32>(1.0f));",
+            );
+        }
+        if (!options.transmission) {
+            convertedPbr = convertedPbr.replace(
+                /@group\(2u\) @binding\(12u\)[\s\S]*?@group\(2u\) @binding\(17u\) var thicknessSampler : sampler;\r?\n\r?\n/,
+                "",
+            );
+            convertedPbr = convertedPbr.replace(
+                /  refractionParams : vec4<f32>,\r?\n  volumeParams : vec4<f32>,\r?\n  transmissionOptions : vec4<f32>,\r?\n  viewProjection : mat4x4<f32>,\r?\n/,
+                "",
+            );
+            const transmissionStart = convertedPbr.indexOf(
+                "  var shadedColor = ",
+            );
+            const transmissionEnd = convertedPbr.indexOf(
+                "  var v_105 : vec3<f32>;",
+                transmissionStart,
+            );
+            if (transmissionStart < 0 || transmissionEnd < 0) {
+                throw new Error("PBR transmission shader markers changed.");
+            }
+            convertedPbr =
+                convertedPbr.slice(0, transmissionStart) +
+                "  let v_104 = (select(((((((v_89 * v_52) * v_34) + v_101) + v_102) + ((((v_70 * v_52) * v_71) * v_81) * v_69)) + v_40), v_31, vec3<bool>(v_103, v_103, v_103)) * FragmentUniforms.environmentFactors.x);\n" +
+                convertedPbr.slice(transmissionEnd);
+        }
         const pbrProvenance = this.context.provenance(
             pbrTemplateModule,
             "createPbrTemplate",
@@ -1586,11 +1711,45 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
     public fidelityManifest(): RendererFidelityManifest {
         const rgbd = this.context.store.getSource(rgbdDecodeModule);
         const surface = this.context.store.getSource(surfaceModule);
+        const iblSkybox = this.context.store.getSource(iblSkyboxModule);
+        const refraction = this.context.store.getSource(refractionModule);
+        const dielectric = this.context.store.getSource(
+            dielectricLoaderModule,
+        );
+        const transmissionFrameGraph = this.context.store.getSource(
+            transmissionFrameGraphModule,
+        );
         if (!rgbd.includes("select(g.y,d.y-1u-g.y,f)")) {
             throw new Error("Pinned Babylon Lite RGBD vertical flip semantics changed.");
         }
         if (!surface.includes("Defaults to `4`.")) {
             throw new Error("Pinned Babylon Lite MSAA default changed.");
+        }
+        for (const [source, marker, label] of [
+            [
+                iblSkybox,
+                "let R = input.worldPos - scene.vEyePosition.xyz",
+                "PBR skybox mode",
+            ],
+            [
+                refraction,
+                "let ab=exp(material.volumeParams.rgb*th)",
+                "volume attenuation",
+            ],
+            [
+                dielectric,
+                "((ior - 1) / (ior + 1)) ** 2 / 0.04",
+                "IOR Fresnel",
+            ],
+            [
+                transmissionFrameGraph,
+                "updateTransmissionTexture(state, engine)",
+                "scene-color copy",
+            ],
+        ] as const) {
+            if (!source.includes(marker)) {
+                throw new Error(`Pinned Babylon Lite ${label} changed.`);
+            }
         }
         return {
             sourceLanguage: "WGSL",
@@ -1618,6 +1777,48 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
                     validation: ["source marker assertion", "edge MAD attribution"],
                 },
                 {
+                    id: "pbr-skybox-mode",
+                    upstreamModule: iblSkyboxModule,
+                    upstreamMarker:
+                        "let R = input.worldPos - scene.vEyePosition.xyz",
+                    nativeBehavior:
+                        "Skybox-mode PBR materials sample the environment along the camera-to-fragment ray and omit diffuse irradiance.",
+                    validation: ["source marker assertion", "skybox gate parity"],
+                },
+                {
+                    id: "scene-color-transmission",
+                    upstreamModule: transmissionFrameGraphModule,
+                    upstreamMarker:
+                        "updateTransmissionTexture(state, engine)",
+                    nativeBehavior:
+                        "PAL copies completed opaque scene color before the first transmissive draw, then resumes the render pass.",
+                    validation: [
+                        "source marker assertion",
+                        "scene-color gate parity",
+                    ],
+                },
+                {
+                    id: "ior-fresnel",
+                    upstreamModule: dielectricLoaderModule,
+                    upstreamMarker:
+                        "((ior - 1) / (ior + 1)) ** 2 / 0.04",
+                    nativeBehavior:
+                        "KHR_materials_ior maps to dielectric F0=((ior-1)/(ior+1))^2 and the transmitted lobe uses the Fresnel complement.",
+                    validation: ["source marker assertion", "IOR gate parity"],
+                },
+                {
+                    id: "volume-beer-lambert",
+                    upstreamModule: refractionModule,
+                    upstreamMarker:
+                        "let ab=exp(material.volumeParams.rgb*th)",
+                    nativeBehavior:
+                        "KHR_materials_volume attenuation uses exp(log(attenuationColor)/attenuationDistance * thickness).",
+                    validation: [
+                        "source marker assertion",
+                        "volume gate parity",
+                    ],
+                },
+                {
                     id: "ggx-smith",
                     upstreamModule: pbrTemplateModule,
                     upstreamMarker: "roughness*roughness+0.0005; 0.5/(gl+gv)",
@@ -1632,11 +1833,39 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
                     validation: ["source marker assertions", "GPU parity"],
                 },
                 {
+                    id: "ibl-horizon-occlusion",
+                    upstreamModule: iblFragmentModule,
+                    upstreamMarker: "environmentHorizonOcclusion",
+                    nativeBehavior: "Normal-mapped IBL squares Babylon's saturated reflection-to-geometric-normal horizon term.",
+                    validation: ["source marker assertions", "BoomBox diagnostics"],
+                },
+                {
+                    id: "ibl-specular-occlusion",
+                    upstreamModule: iblFragmentModule,
+                    upstreamMarker: "let seo = clamp",
+                    nativeBehavior: "Specular environment reflectance uses Babylon's NdotV and ambient-occlusion polynomial.",
+                    validation: ["source marker assertions", "BoomBox diagnostics"],
+                },
+                {
                     id: "environment-lod",
                     upstreamModule: sceneUniformsModule,
                     upstreamMarker: "lodGenerationScale ?? 0.8",
-                    nativeBehavior: "Cubemap mip selection uses log2(cubemapDim * alphaG) with scale 0.8.",
+                    nativeBehavior: "Cubemap mip selection uses log2(cubemapDim * alphaG) with the environment's pinned lodGenerationScale.",
                     validation: ["source marker assertions", "generated uniform tests"],
+                },
+                {
+                    id: "brdf-lut-coordinates",
+                    upstreamModule: iblFragmentModule,
+                    upstreamMarker: "vec2<f32>(NdotV, roughness)",
+                    nativeBehavior: "The BRDF LUT is sampled with NdotV on X and perceptual roughness on Y.",
+                    validation: ["source marker assertions", "BoomBox reflectivity diagnostics"],
+                },
+                {
+                    id: "environment-cubemap-orientation",
+                    upstreamModule: iblFragmentModule,
+                    upstreamMarker: "let R = rotateY(R_raw",
+                    nativeBehavior: "Reflection and irradiance directions use Babylon's Y-axis environment rotation before cubemap sampling.",
+                    validation: ["source marker assertions", "scene 8 and BoomBox parity"],
                 },
                 {
                     id: "rgbd-cubemap-y-flip",

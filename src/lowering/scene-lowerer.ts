@@ -127,6 +127,11 @@ void register_scene(Scene& scene) {
     }
 }
 
+void enable_scene_transmission(Scene& scene) {
+    require_scene_engine(scene);
+    scene.transmission_enabled = true;
+}
+
 } // namespace bbl
 `,
         };

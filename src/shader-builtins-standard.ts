@@ -52,7 +52,7 @@ function geometryExpression(type: GeometryTextureTypeName): string {
             )`;
         case "SCREENSPACE_DEPTH":
             return `vec4<f32>(
-                input.position.z,
+                1.0 - input.position.z,
                 0.0,
                 0.0,
                 ${write},

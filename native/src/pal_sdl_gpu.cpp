@@ -38,6 +38,12 @@ namespace bbl::pal {
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 namespace {
 
+#if defined(BBLITE_RENDERER_TRANSMISSION)
+constexpr std::uint32_t pbr_texture_binding_count = 9;
+#else
+constexpr std::uint32_t pbr_texture_binding_count = 6;
+#endif
+
 struct GpuVertex {
     float position[3];
     float normal[3];
@@ -56,12 +62,16 @@ struct GpuMesh {
     SDL_GPUTexture* metallic_roughness = nullptr;
     SDL_GPUTexture* normal = nullptr;
     SDL_GPUTexture* emissive = nullptr;
+    SDL_GPUTexture* transmission = nullptr;
+    SDL_GPUTexture* thickness = nullptr;
     SDL_GPUTexture* standard_emissive = nullptr;
     SDL_GPUTexture* reflection = nullptr;
     SDL_GPUSampler* base_color_sampler = nullptr;
     SDL_GPUSampler* metallic_roughness_sampler = nullptr;
     SDL_GPUSampler* normal_sampler = nullptr;
     SDL_GPUSampler* emissive_sampler = nullptr;
+    SDL_GPUSampler* transmission_sampler = nullptr;
+    SDL_GPUSampler* thickness_sampler = nullptr;
     SDL_GPUSampler* standard_emissive_sampler = nullptr;
     std::uint32_t index_count = 0;
 };
@@ -163,11 +173,14 @@ struct GpuState {
     SDL_GPUTexture* reflection_fallback = nullptr;
     std::vector<SDL_GPUTexture*> reflection_cubes;
     SDL_GPUTexture* color = nullptr;
+    SDL_GPUTexture* transmission_color = nullptr;
     SDL_GPUTexture* msaa_color = nullptr;
     SDL_GPUTexture* depth = nullptr;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
     std::uint32_t color_width = 0;
     std::uint32_t color_height = 0;
+    std::uint32_t transmission_width = 0;
+    std::uint32_t transmission_height = 0;
     std::uint32_t msaa_color_width = 0;
     std::uint32_t msaa_color_height = 0;
     std::uint32_t depth_width = 0;
@@ -1062,6 +1075,50 @@ void create_color(
     state.color_height = height;
 }
 
+void create_transmission_color(
+    GpuState& state,
+    SDL_GPUTextureFormat format,
+    std::uint32_t width,
+    std::uint32_t height) {
+    if (
+        state.transmission_color &&
+        state.transmission_width == width &&
+        state.transmission_height == height) {
+        return;
+    }
+    if (state.transmission_color) {
+        SDL_ReleaseGPUTexture(state.device, state.transmission_color);
+    }
+    SDL_GPUTextureCreateInfo info{};
+    info.type = SDL_GPU_TEXTURETYPE_2D;
+    info.format = format;
+    info.usage =
+        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+        SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    info.width = width;
+    info.height = height;
+    info.layer_count_or_depth = 1;
+    const std::uint32_t full_mip_count =
+        static_cast<std::uint32_t>(
+            std::floor(std::log2(
+                static_cast<float>(std::max(width, height))))) +
+        1u;
+    info.num_levels =
+        std::max(
+            1u,
+            full_mip_count > 4u
+                ? full_mip_count - 4u
+                : 1u);
+    info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    state.transmission_color =
+        SDL_CreateGPUTexture(state.device, &info);
+    if (!state.transmission_color) {
+        gpu_error("SDL_CreateGPUTexture transmission color");
+    }
+    state.transmission_width = width;
+    state.transmission_height = height;
+}
+
 SDL_GPUSampleCount task_sample_count(
     const GpuState& state,
     std::uint32_t requested) {
@@ -1553,20 +1610,27 @@ void save_pbr_diagnostic_buffers(
                 const GpuMesh& mesh = state.meshes[mesh_index];
                 const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
                 const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
-                const SDL_GPUTextureSamplerBinding texture_bindings[6]{
+                const SDL_GPUTextureSamplerBinding texture_bindings[9]{
                     SDL_GPUTextureSamplerBinding{mesh.base_color, mesh.base_color_sampler},
                     SDL_GPUTextureSamplerBinding{mesh.metallic_roughness, mesh.metallic_roughness_sampler},
                     SDL_GPUTextureSamplerBinding{mesh.normal, mesh.normal_sampler},
                     SDL_GPUTextureSamplerBinding{mesh.emissive, mesh.emissive_sampler},
                     SDL_GPUTextureSamplerBinding{state.environment, state.sampler},
                     SDL_GPUTextureSamplerBinding{state.brdf_lut, state.background_sampler},
+                    SDL_GPUTextureSamplerBinding{mesh.base_color, mesh.base_color_sampler},
+                    SDL_GPUTextureSamplerBinding{mesh.transmission, mesh.transmission_sampler},
+                    SDL_GPUTextureSamplerBinding{mesh.thickness, mesh.thickness_sampler},
                 };
                 SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
                 SDL_BindGPUIndexBuffer(
                     pass,
                     &index_binding,
                     SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                SDL_BindGPUFragmentSamplers(pass, 0, texture_bindings, 6);
+                SDL_BindGPUFragmentSamplers(
+                    pass,
+                    0,
+                    texture_bindings,
+                    pbr_texture_binding_count);
                 SDL_DrawGPUIndexedPrimitives(pass, mesh.index_count, 1, 0, 0, 0);
             }
         }
@@ -1660,11 +1724,15 @@ void release(GpuState& state) {
         SDL_ReleaseGPUTexture(state.device, mesh.metallic_roughness);
         SDL_ReleaseGPUTexture(state.device, mesh.normal);
         SDL_ReleaseGPUTexture(state.device, mesh.emissive);
+        SDL_ReleaseGPUTexture(state.device, mesh.transmission);
+        SDL_ReleaseGPUTexture(state.device, mesh.thickness);
         SDL_ReleaseGPUTexture(state.device, mesh.standard_emissive);
         SDL_ReleaseGPUSampler(state.device, mesh.base_color_sampler);
         SDL_ReleaseGPUSampler(state.device, mesh.metallic_roughness_sampler);
         SDL_ReleaseGPUSampler(state.device, mesh.normal_sampler);
         SDL_ReleaseGPUSampler(state.device, mesh.emissive_sampler);
+        SDL_ReleaseGPUSampler(state.device, mesh.transmission_sampler);
+        SDL_ReleaseGPUSampler(state.device, mesh.thickness_sampler);
         SDL_ReleaseGPUSampler(
             state.device,
             mesh.standard_emissive_sampler);
@@ -1688,6 +1756,9 @@ void release(GpuState& state) {
         SDL_ReleaseGPUTexture(state.device, texture);
     }
     if (state.color) SDL_ReleaseGPUTexture(state.device, state.color);
+    if (state.transmission_color) {
+        SDL_ReleaseGPUTexture(state.device, state.transmission_color);
+    }
     if (state.depth) SDL_ReleaseGPUTexture(state.device, state.depth);
     if (state.background_sampler) SDL_ReleaseGPUSampler(state.device, state.background_sampler);
     if (state.depth_sampler) {
@@ -1889,7 +1960,7 @@ bool run_gpu_engine(Engine& engine) {
                 state.device,
                 "pbr.frag",
                 SDL_GPU_SHADERSTAGE_FRAGMENT,
-                6,
+                pbr_texture_binding_count,
                 1,
                 "mainFragment");
         const upstream::RenderFeatures render_features =
@@ -2018,21 +2089,21 @@ bool run_gpu_engine(Engine& engine) {
                 state.device,
                 "pbr-diagnostics-a.frag",
                 SDL_GPU_SHADERSTAGE_FRAGMENT,
-                6,
+                pbr_texture_binding_count,
                 1,
                 "mainFragment");
             diagnostics_fragment_shaders[1] = load_shader(
                 state.device,
                 "pbr-diagnostics-b.frag",
                 SDL_GPU_SHADERSTAGE_FRAGMENT,
-                6,
+                pbr_texture_binding_count,
                 1,
                 "mainFragment");
             diagnostics_fragment_shaders[2] = load_shader(
                 state.device,
                 "pbr-diagnostics-c.frag",
                 SDL_GPU_SHADERSTAGE_FRAGMENT,
-                6,
+                pbr_texture_binding_count,
                 1,
                 "mainFragment");
         }
@@ -2874,6 +2945,8 @@ bool run_gpu_engine(Engine& engine) {
             const TextureData* metallic_roughness = nullptr;
             const TextureData* normal = nullptr;
             const TextureData* emissive = nullptr;
+            const TextureData* transmission = nullptr;
+            const TextureData* thickness = nullptr;
             const TextureData* standard_emissive = nullptr;
             const bool standard_material =
                 item.material_kind == upstream::RenderMaterialKind::standard;
@@ -2890,6 +2963,12 @@ bool run_gpu_engine(Engine& engine) {
                 emissive = standard_material
                     ? &material.ambient_texture
                     : &material.emissive_texture;
+                transmission = standard_material
+                    ? nullptr
+                    : &material.transmission_texture;
+                thickness = standard_material
+                    ? nullptr
+                    : &material.thickness_texture;
                 standard_emissive = standard_material
                     ? &material.emissive_texture
                     : nullptr;
@@ -2944,6 +3023,24 @@ bool run_gpu_engine(Engine& engine) {
             gpu_mesh.emissive_sampler = create_texture_sampler(
                 state.device,
                 emissive ? emissive->sampler : TextureSamplerState{});
+            gpu_mesh.transmission = upload_texture(
+                state.device,
+                transmission ? *transmission : TextureData{},
+                false,
+                {255, 255, 255, 255});
+            gpu_mesh.transmission_sampler = create_texture_sampler(
+                state.device,
+                transmission
+                    ? transmission->sampler
+                    : TextureSamplerState{});
+            gpu_mesh.thickness = upload_texture(
+                state.device,
+                thickness ? *thickness : TextureData{},
+                false,
+                {255, 255, 255, 255});
+            gpu_mesh.thickness_sampler = create_texture_sampler(
+                state.device,
+                thickness ? thickness->sampler : TextureSamplerState{});
             gpu_mesh.standard_emissive = upload_texture(
                 state.device,
                 standard_emissive
@@ -3355,7 +3452,7 @@ bool run_gpu_engine(Engine& engine) {
                             };
                             if (!grid_bucket) {
                                 SDL_GPUTextureSamplerBinding
-                                    texture_bindings[6]{
+                                    texture_bindings[9]{
                                     SDL_GPUTextureSamplerBinding{
                                         mesh.base_color,
                                         mesh.base_color_sampler,
@@ -3382,6 +3479,18 @@ bool run_gpu_engine(Engine& engine) {
                                         state.brdf_lut,
                                         state.background_sampler,
                                     },
+                                    SDL_GPUTextureSamplerBinding{
+                                        mesh.base_color,
+                                        mesh.base_color_sampler,
+                                    },
+                                    SDL_GPUTextureSamplerBinding{
+                                        mesh.transmission,
+                                        mesh.transmission_sampler,
+                                    },
+                                    SDL_GPUTextureSamplerBinding{
+                                        mesh.thickness,
+                                        mesh.thickness_sampler,
+                                    },
                                     };
                                 if (standard_bucket) {
                                     texture_bindings[5] =
@@ -3404,7 +3513,9 @@ bool run_gpu_engine(Engine& engine) {
                                     task_pass,
                                     0,
                                     texture_bindings,
-                                    6);
+                                    standard_bucket
+                                        ? 6
+                                        : pbr_texture_binding_count);
                             }
                             SDL_BindGPUVertexBuffers(
                                 task_pass,
@@ -3834,18 +3945,37 @@ bool run_gpu_engine(Engine& engine) {
                     gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
                 }
             } else {
-            if (capture_frame) create_color(state, swapchain_format, width, height);
+            const bool transmission_enabled =
+                scene.transmission_enabled &&
+                std::any_of(
+                    engine.materials.begin(),
+                    engine.materials.end(),
+                    [](const MaterialRecord& material) {
+                        return material.transmission_factor > 0.0f ||
+                            !material.transmission_texture.bytes.empty();
+                    });
+            if (capture_frame || transmission_enabled) {
+                create_color(state, swapchain_format, width, height);
+            }
+            if (transmission_enabled) {
+                create_transmission_color(
+                    state,
+                    swapchain_format,
+                    width,
+                    height);
+            }
             create_msaa_color(state, swapchain_format, width, height);
             create_depth(state, width, height);
             SDL_PushGPUVertexUniformData(command, 0, matrix.data(), sizeof(matrix));
 
             SDL_GPUColorTargetInfo color_info{};
             const bool multisampled =
-                state.sample_count != SDL_GPU_SAMPLECOUNT_1;
+                state.sample_count != SDL_GPU_SAMPLECOUNT_1 &&
+                !transmission_enabled;
             color_info.texture =
                 multisampled
                     ? state.msaa_color
-                    : capture_frame
+                    : capture_frame || transmission_enabled
                         ? state.color
                         : swapchain;
             color_info.clear_color = SDL_FColor{
@@ -3867,10 +3997,14 @@ bool run_gpu_engine(Engine& engine) {
             depth_info.clear_depth = 1.0f;
             depth_info.load_op = SDL_GPU_LOADOP_CLEAR;
             depth_info.store_op = SDL_GPU_STOREOP_DONT_CARE;
+            if (transmission_enabled) {
+                depth_info.store_op = SDL_GPU_STOREOP_STORE;
+            }
             depth_info.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
             depth_info.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
             SDL_GPURenderPass* pass =
                 SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info);
+            bool transmission_copied = false;
             bool scene_matrix_bound = true;
             const auto draw_skybox = [&] {
                 if (!state.skybox.enabled) return;
@@ -3969,6 +4103,52 @@ bool run_gpu_engine(Engine& engine) {
                             ? &engine.materials[
                                   item.material.value]
                             : nullptr;
+                    if (
+                        transmission_enabled &&
+                        !transmission_copied &&
+                        material &&
+                        (material->transmission_factor > 0.0f ||
+                         !material->transmission_texture.bytes.empty())) {
+                        SDL_EndGPURenderPass(pass);
+                        SDL_GPUBlitInfo transmission_blit{};
+                        transmission_blit.source = SDL_GPUBlitRegion{
+                            state.color,
+                            0,
+                            0,
+                            0,
+                            0,
+                            width,
+                            height,
+                        };
+                        transmission_blit.destination = SDL_GPUBlitRegion{
+                            state.transmission_color,
+                            0,
+                            0,
+                            0,
+                            0,
+                            width,
+                            height,
+                        };
+                        transmission_blit.load_op =
+                            SDL_GPU_LOADOP_DONT_CARE;
+                        transmission_blit.flip_mode = SDL_FLIP_NONE;
+                        transmission_blit.filter = SDL_GPU_FILTER_LINEAR;
+                        SDL_BlitGPUTexture(command, &transmission_blit);
+                        SDL_GenerateMipmapsForGPUTexture(
+                            command,
+                            state.transmission_color);
+                        color_info.load_op = SDL_GPU_LOADOP_LOAD;
+                        color_info.store_op = SDL_GPU_STOREOP_STORE;
+                        depth_info.load_op = SDL_GPU_LOADOP_LOAD;
+                        pass = SDL_BeginGPURenderPass(
+                            command,
+                            &color_info,
+                            1,
+                            &depth_info);
+                        SDL_BindGPUGraphicsPipeline(pass, pipeline);
+                        bound_pipeline = pipeline;
+                        transmission_copied = true;
+                    }
                     if (
                         item.material_kind ==
                         upstream::RenderMaterialKind::shader) {
@@ -4085,7 +4265,7 @@ bool run_gpu_engine(Engine& engine) {
                             item.material_kind ==
                             upstream::RenderMaterialKind::standard;
                         SDL_GPUTextureSamplerBinding
-                            texture_bindings[6]{
+                            texture_bindings[9]{
                                 SDL_GPUTextureSamplerBinding{
                                     mesh.base_color,
                                     mesh.base_color_sampler,
@@ -4117,12 +4297,28 @@ bool run_gpu_engine(Engine& engine) {
                                               .standard_emissive_sampler
                                         : state.background_sampler,
                                 },
+                                SDL_GPUTextureSamplerBinding{
+                                    transmission_enabled
+                                        ? state.transmission_color
+                                        : mesh.base_color,
+                                    transmission_enabled
+                                        ? state.background_sampler
+                                        : mesh.base_color_sampler,
+                                },
+                                SDL_GPUTextureSamplerBinding{
+                                    mesh.transmission,
+                                    mesh.transmission_sampler,
+                                },
+                                SDL_GPUTextureSamplerBinding{
+                                    mesh.thickness,
+                                    mesh.thickness_sampler,
+                                },
                             };
                         SDL_BindGPUFragmentSamplers(
                             pass,
                             0,
                             texture_bindings,
-                            6);
+                            standard ? 6 : pbr_texture_binding_count);
                     }
                     SDL_DrawGPUIndexedPrimitives(
                         pass,
@@ -4182,7 +4378,7 @@ bool run_gpu_engine(Engine& engine) {
                 }
             }
             SDL_EndGPURenderPass(pass);
-            if (capture_frame) {
+            if (capture_frame || transmission_enabled) {
                 SDL_GPUBlitInfo blit{};
                 blit.source = SDL_GPUBlitRegion{state.color, 0, 0, 0, 0, width, height};
                 blit.destination = SDL_GPUBlitRegion{swapchain, 0, 0, 0, 0, width, height};
@@ -4190,6 +4386,8 @@ bool run_gpu_engine(Engine& engine) {
                 blit.flip_mode = SDL_FLIP_NONE;
                 blit.filter = SDL_GPU_FILTER_NEAREST;
                 SDL_BlitGPUTexture(command, &blit);
+            }
+            if (capture_frame) {
                 save_texture_png(
                     state.device,
                     command,

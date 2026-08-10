@@ -37,6 +37,7 @@ shader compilation and parity gates.
 - `src/upstream-source.ts`: pinned upstream source-map reconstruction.
 - `src/upstream-graph.ts`: conservative reachable-module analysis.
 - `src/upstream-lower.ts`: generated-source orchestration and provenance.
+- `src/hdr-prefilter-gpu.ts`: pinned WebGPU 1024-sample HDR GGX prefilter.
 - `src/shader-material-programs.ts`: reached custom WGSL program catalog and
   fixed-function contracts.
 - `src/shader-ir.ts`: typed WGSL-subset lowering and shader reflection.

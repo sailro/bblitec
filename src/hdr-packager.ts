@@ -1,3 +1,5 @@
+import { prefilterCubemapGgx } from "./hdr-prefilter-gpu.js";
+
 const hdrMagic = new Uint8Array([0x42, 0x42, 0x4c, 0x48, 0x44, 0x52, 0x31, 0x00]);
 
 interface HdrImage {
@@ -356,45 +358,11 @@ function cubemapMipZero(image: HdrImage, faceSize: number): Uint16Array[] {
     return result;
 }
 
-function halfToFloat(value: number): number {
-    const sign = (value & 0x8000) !== 0 ? -1 : 1;
-    const exponent = (value >> 10) & 0x1f;
-    const mantissa = value & 0x3ff;
-    if (exponent === 0) return sign * mantissa * 2 ** -24;
-    if (exponent === 0x1f) return mantissa === 0 ? sign * Number.POSITIVE_INFINITY : Number.NaN;
-    return sign * (1 + mantissa / 1024) * 2 ** (exponent - 15);
-}
-
-function downsampleFace(source: Uint16Array, sourceSize: number): Uint16Array {
-    const size = Math.max(sourceSize >> 1, 1);
-    const result = new Uint16Array(size * size * 4);
-    for (let y = 0; y < size; y += 1) {
-        for (let x = 0; x < size; x += 1) {
-            const destination = (y * size + x) * 4;
-            for (let channel = 0; channel < 3; channel += 1) {
-                let sum = 0;
-                for (let offsetY = 0; offsetY < 2; offsetY += 1) {
-                    for (let offsetX = 0; offsetX < 2; offsetX += 1) {
-                        const sourceX = Math.min(x * 2 + offsetX, sourceSize - 1);
-                        const sourceY = Math.min(y * 2 + offsetY, sourceSize - 1);
-                        sum += halfToFloat(
-                            source[(sourceY * sourceSize + sourceX) * 4 + channel]!,
-                        );
-                    }
-                }
-                result[destination + channel] = floatToHalf(sum * 0.25);
-            }
-            result[destination + 3] = 0x3c00;
-        }
-    }
-    return result;
-}
-
 function mipLevelCount(size: number): number {
     return Math.floor(Math.log2(size)) + 1;
 }
 
-export function packageHdrEnvironment(bytes: Uint8Array, faceSize: number): Uint8Array {
+export async function packageHdrEnvironment(bytes: Uint8Array, faceSize: number): Promise<Uint8Array> {
     if (
         !Number.isInteger(faceSize) ||
         faceSize < 1 ||
@@ -406,12 +374,8 @@ export function packageHdrEnvironment(bytes: Uint8Array, faceSize: number): Uint
     const image = parseRgbe(bytes);
     const sphericalHarmonics = computeSphericalHarmonics(image);
     const mipCount = mipLevelCount(faceSize);
-    const levels: Uint16Array[][] = [cubemapMipZero(image, faceSize)];
-    let size = faceSize;
-    for (let mip = 1; mip < mipCount; mip += 1) {
-        levels.push(levels[mip - 1]!.map((face) => downsampleFace(face, size)));
-        size = Math.max(size >> 1, 1);
-    }
+    const mipZero = cubemapMipZero(image, faceSize);
+    const levels = await prefilterCubemapGgx(mipZero, faceSize, mipCount, image);
 
     const headerSize = hdrMagic.length + 8 + sphericalHarmonics.byteLength;
     const payloadSize = levels.reduce(

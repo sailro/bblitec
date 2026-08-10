@@ -17,11 +17,12 @@ Unsupported syntax and APIs fail at compile time with source locations.
 
 - Pinned upstream: `@babylonjs/lite@1.18.0`,
   commit `7184feda683072980735f9a180e6f567ee5717ba`.
-- 16 curated Babylon Lite parity scenes plus BoomBox and primitives.
+- 21 curated Babylon Lite parity scenes plus BoomBox and primitives.
 - External glTF/GLB and a reached `.babylon` slice.
 - Generated Standard/PBR/Grid rendering, ordered draw lists, custom alpha
   variants, frame-graph MRT/depth passes, negative transforms, and runtime
   scene mutation.
+- Exact HDR GGX preprocessing and transmission/IOR/volume scene-color rendering.
 - WGSL shaders compiled by pinned Tint for D3D12, Vulkan, and Metal.
 - BoomBox D3D12 baseline: `0.311` full MAD, `0.460` foreground MAD,
   `0.176 ms` average CPU submission.
@@ -31,8 +32,8 @@ scene results.
 
 ## Quick start
 
-Requirements: Node.js 22+, CMake 3.24+, a C++20 compiler, vcpkg, and PowerShell
-for shader compilation.
+Requirements: Node.js 22+, CMake 3.24+, a C++20 compiler, vcpkg, PowerShell,
+and Chrome/Edge with WebGPU for shader and HDR asset compilation.
 
 ```powershell
 git clone https://github.com/sailro/bblitec.git

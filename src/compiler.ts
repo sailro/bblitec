@@ -108,6 +108,7 @@ type Feature =
     | "mesh:sphere"
     | "mesh:torus"
     | "renderer:pbr"
+    | "renderer:transmission"
     | "renderer:geometry-output";
 
 const featureSources: Record<Feature, string[]> = {
@@ -136,6 +137,7 @@ const featureSources: Record<Feature, string[]> = {
     "mesh:sphere": [],
     "mesh:torus": [],
     "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
+    "renderer:transmission": [],
     "renderer:geometry-output": [],
 };
 
@@ -1036,15 +1038,46 @@ class Compiler {
                     alpha,
                     reflectance,
                     unlit,
+                    doubleSided,
+                    skyboxMode,
+                    transmission,
+                    ior,
+                    thickness,
+                    attenuationColor,
+                    attenuationDistance,
                 ] =
                     this.compilePbrMaterialOptions(call.arguments[0]!);
                 this.expectSameEngine(baseColor, orm, call);
                 this.features.add("material:pbr");
                 this.features.add("renderer:pbr");
+                if (
+                    skyboxMode !== "false" ||
+                    transmission !== "0.0f" ||
+                    thickness !== "0.0f" ||
+                    attenuationColor !== "bbl::Color3{1.0f, 1.0f, 1.0f}" ||
+                    attenuationDistance !== "1.0f"
+                ) {
+                    this.features.add("renderer:transmission");
+                }
                 return {
                     kind: "material",
-                    cpp: `bbl::create_pbr_material(${engine}, bbl::PbrMaterialOptions{${baseColor.cpp}, ${orm.cpp}, ${metallic}, ${roughness}, ${direct}, ${environment}, ${alpha}, ${reflectance}, ${unlit}})`,
+                    cpp: `bbl::create_pbr_material(${engine}, bbl::PbrMaterialOptions{${baseColor.cpp}, ${orm.cpp}, ${metallic}, ${roughness}, ${direct}, ${environment}, ${alpha}, ${reflectance}, ${unlit}, ${doubleSided}, ${skyboxMode}, ${transmission}, ${ior}, ${thickness}, ${attenuationColor}, ${attenuationDistance}})`,
                     engineCpp: engine,
+                };
+            }
+
+            case "enableSceneTransmission": {
+                this.expectArgumentCount(call, 2, 2);
+                const scene = this.compileValue(call.arguments[0]!);
+                const engine = this.compileValue(call.arguments[1]!);
+                this.expectKind(scene, "scene", call.arguments[0]!);
+                this.expectKind(engine, "engine", call.arguments[1]!);
+                this.expectSameEngine(scene, engine, call);
+                this.features.add("renderer:pbr");
+                this.features.add("renderer:transmission");
+                return {
+                    kind: "void",
+                    cpp: `bbl::enable_scene_transmission(${scene.cpp})`,
                 };
             }
 
@@ -1753,7 +1786,24 @@ class Compiler {
 
     private compilePbrMaterialOptions(
         expression: ts.Expression,
-    ): [Value, Value, string, string, string, string, string, string, string] {
+    ): [
+        Value,
+        Value,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+    ] {
         const object = this.expectObjectLiteral(expression);
         const supported = new Set([
             "baseColorTexture",
@@ -1765,6 +1815,10 @@ class Compiler {
             "alpha",
             "reflectance",
             "unlit",
+            "doubleSided",
+            "skyboxMode",
+            "transmissive",
+            "subsurface",
         ]);
         for (const property of object.properties) {
             const name =
@@ -1778,7 +1832,7 @@ class Compiler {
             ) {
                 this.fail(
                     property,
-                    "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, lighting intensities, and unlit.",
+                    "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, lighting intensities, skybox mode, and transmission subsurface fields.",
                 );
             }
         }
@@ -1801,6 +1855,60 @@ class Compiler {
         const alpha = this.objectProperty(object, "alpha");
         const reflectance = this.objectProperty(object, "reflectance");
         const unlit = this.objectProperty(object, "unlit");
+        const doubleSided = this.objectProperty(object, "doubleSided");
+        const skyboxMode = this.objectProperty(object, "skyboxMode");
+        const transmissive = this.objectProperty(object, "transmissive");
+        const subsurfaceExpression = this.objectProperty(object, "subsurface");
+        let transmission = "0.0f";
+        let ior = "1.5f";
+        let thickness = "0.0f";
+        let attenuationColor = "bbl::Color3{1.0f, 1.0f, 1.0f}";
+        let attenuationDistance = "1.0f";
+        if (subsurfaceExpression) {
+            const subsurface = this.expectObjectLiteral(subsurfaceExpression);
+            const refractionExpression = this.objectProperty(
+                subsurface,
+                "refraction",
+            );
+            if (refractionExpression) {
+                const refraction = this.expectObjectLiteral(refractionExpression);
+                const intensity = this.objectProperty(refraction, "intensity");
+                const indexOfRefraction = this.objectProperty(
+                    refraction,
+                    "indexOfRefraction",
+                );
+                transmission = intensity
+                    ? this.compileNumber(intensity)
+                    : transmissive
+                        ? "1.0f"
+                        : "0.0f";
+                ior = indexOfRefraction
+                    ? this.compileNumber(indexOfRefraction)
+                    : "1.5f";
+            }
+            const thicknessExpression = this.objectProperty(
+                subsurface,
+                "thickness",
+            );
+            if (thicknessExpression) {
+                const thicknessObject =
+                    this.expectObjectLiteral(thicknessExpression);
+                const maximum = this.objectProperty(thicknessObject, "max");
+                thickness = maximum ? this.compileNumber(maximum) : "1.0f";
+            }
+            const tintExpression = this.objectProperty(subsurface, "tint");
+            if (tintExpression) {
+                const tint = this.expectObjectLiteral(tintExpression);
+                const color = this.objectProperty(tint, "color");
+                const distance = this.objectProperty(tint, "atDistance");
+                attenuationColor = color
+                    ? this.compileColor3(color)
+                    : attenuationColor;
+                attenuationDistance = distance
+                    ? this.compileNumber(distance)
+                    : attenuationDistance;
+            }
+        }
         return [
             baseColor,
             orm,
@@ -1811,6 +1919,13 @@ class Compiler {
             alpha ? this.compileNumber(alpha) : "1.0f",
             reflectance ? this.compileNumber(reflectance) : "0.04f",
             unlit ? this.compileBoolean(unlit) : "false",
+            doubleSided ? this.compileBoolean(doubleSided) : "false",
+            skyboxMode ? this.compileBoolean(skyboxMode) : "false",
+            transmission,
+            ior,
+            thickness,
+            attenuationColor,
+            attenuationDistance,
         ];
     }
 
@@ -2012,6 +2127,20 @@ class Compiler {
                 );
             }
             return `${this.compileStaticString(name)}:${this.compileStaticString(type)}`;
+        });
+    }
+    if (features.includes("renderer:transmission")) {
+        adaptations.push({
+            id: "sdl-gpu-scene-transmission",
+            category: "rendering",
+            sourceSemantics: "Babylon Lite copies scene color before transmissive draws and applies KHR_materials_transmission, IOR Fresnel, and KHR_materials_volume attenuation.",
+            nativeSemantics: "Generated render stages copy opaque scene color into an SDL_GPU sampled texture; Tint WGSL applies dielectric F0 ((ior-1)/(ior+1))^2 and Beer-Lambert exp(log(color)/distance*thickness) attenuation.",
+            risk: "high",
+            validation: [
+                "independent skybox/transmission/IOR/volume gates",
+                "scene 176 MosquitoInAmber parity",
+                "Tint binding reflection",
+            ],
         });
     }
     private compileStaticStringArray(expression: ts.Expression): string[] {
@@ -2570,7 +2699,7 @@ class Compiler {
                 id: "compile-time-hdr-cubemap",
                 category: "asset-materialization",
                 sourceSemantics: "Babylon Lite decodes RGBE, converts the equirectangular panorama to RGBA16F cubemap faces, and generates a GGX-prefiltered mip chain on the GPU.",
-                nativeSemantics: "The compiler performs the pinned RGBE decode, spherical-harmonics integration, and cubemap projection, then stores a deterministic RGBA16F box-filtered mip chain for native upload.",
+                nativeSemantics: "The compiler performs the pinned RGBE decode, spherical-harmonics integration, and cubemap projection, preserves mip zero exactly, then uses the pinned 1024-sample GGX WebGPU prefilter to store a deterministic RGBA16F mip chain for native upload.",
                 risk: "high",
                 validation: [
                     "pinned HDR parser and cubemap marker tests",
@@ -2630,6 +2759,23 @@ class Compiler {
                 nativeSemantics: "The generated ground is available behind BBLITE_GROUND=1 because the committed Babylon.js golden composes it differently.",
                 risk: "high",
                 validation: ["explicit runtime flag", "separate background render pass", "documented parity reference"],
+            });
+        }
+        if (
+            features.includes("background:skybox") ||
+            features.includes("background:ground")
+        ) {
+            adaptations.push({
+                id: "background-dither-disabled",
+                category: "rendering",
+                sourceSemantics: "Babylon Lite adds position-seeded ±0.5/255 dither to generated background fragments.",
+                nativeSemantics: "Native backgrounds omit the dither because backend interpolation differences decorrelate the position-seeded noise; the exact formula increases BoomBox full MAD from 0.311 to 0.399.",
+                risk: "medium",
+                validation: [
+                    "pinned dither formula experiment",
+                    "BoomBox background attribution",
+                    "documented no-dither regression floor",
+                ],
             });
         }
         return adaptations;

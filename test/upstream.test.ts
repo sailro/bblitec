@@ -40,6 +40,10 @@ test("generates the Babylon environment parser from upstream constants", () => {
     assert.match(adapter.source, /0x20534444u/);
     assert.match(hdrAdapter.source, /0x42, 0x42, 0x4c, 0x48, 0x44, 0x52, 0x31/);
     assert.match(hdrAdapter.source, /scene\.environment\.specular_rgba16f = true/);
+    assert.match(
+        hdrAdapter.source,
+        /scene\.environment\.lod_generation_scale =\s*1\.0f/,
+    );
     assert.match(hdrAdapter.source, /scene\.environment\.tone_mapping_enabled = false/);
     assert.match(hdrAdapter.source, /scene\.environment\.skybox_uses_environment/);
 });
@@ -74,6 +78,13 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /result\.sampler\.max_lod = no_mip/);
     assert.match(adapter.source, /MaterialAlphaMode::blend/);
     assert.match(adapter.source, /alpha_cutoff/);
+    assert.match(adapter.source, /normal_texture_scale/);
+    assert.match(adapter.source, /material\.specular_aa = true/);
+    assert.match(adapter.source, /KHR_materials_transmission/);
+    assert.match(adapter.source, /KHR_materials_ior/);
+    assert.match(adapter.source, /KHR_materials_volume/);
+    assert.match(adapter.source, /material\.transmission_texture/);
+    assert.match(adapter.source, /material\.thickness_texture/);
     assert.doesNotMatch(adapter.source, /pal::load_glb/);
 });
 
@@ -266,6 +277,10 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(String(fragment?.data), /@builtin\(front_facing\)/);
     assert.match(String(fragment?.data), /@location\(6u\) v_118/);
     assert.match(String(fragment?.data), /textureNumLevels/);
+    assert.match(
+        String(fragment?.data),
+        /select\([\s\S]*FragmentUniforms\.normalOptions\.y > 0\.5f/,
+    );
     assert.match(String(fragment?.data), /3\.141592741/);
     assert.ok(
         shaders.some((shader) =>
@@ -287,6 +302,36 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.deepEqual(fidelity.compiledArtifacts, ["DXIL", "SPIR-V"]);
     assert.ok(fidelity.invariants.some(({ id }) => id === "rgbd-cubemap-y-flip"));
     assert.ok(fidelity.invariants.some(({ id }) => id === "surface-msaa"));
+    assert.ok(fidelity.invariants.some(({ id }) => id === "pbr-skybox-mode"));
+    assert.ok(
+        fidelity.invariants.some(
+            ({ id }) => id === "scene-color-transmission",
+        ),
+    );
+    assert.ok(fidelity.invariants.some(({ id }) => id === "ior-fresnel"));
+    assert.ok(
+        fidelity.invariants.some(({ id }) => id === "volume-beer-lambert"),
+    );
+    assert.ok(
+        fidelity.invariants.some(
+            ({ id }) => id === "ibl-horizon-occlusion",
+        ),
+    );
+    assert.ok(
+        fidelity.invariants.some(
+            ({ id }) => id === "ibl-specular-occlusion",
+        ),
+    );
+    assert.ok(
+        fidelity.invariants.some(
+            ({ id }) => id === "brdf-lut-coordinates",
+        ),
+    );
+    assert.ok(
+        fidelity.invariants.some(
+            ({ id }) => id === "environment-cubemap-orientation",
+        ),
+    );
 });
 
 test("keeps renderer templates backend-language free", () => {
@@ -295,6 +340,29 @@ test("keeps renderer templates backend-language free", () => {
         templates.filter((name) => /\.(?:hlsl|msl)$/.test(name)),
         [],
     );
+});
+
+test("emits only reached WGSL composition modules", () => {
+    const lowerer = new RendererLowerer(new LoweringContext());
+    const shaders = lowerer.lowerShaders({
+        ground: false,
+        skybox: false,
+        shaderVariants: [],
+        standardMaterial: false,
+        gridMaterial: true,
+        idDiagnostics: false,
+        pbrDiagnostics: false,
+        geometryOutputTasks: [],
+    });
+    const modules = shaders
+        .filter(({ output }) => output.endsWith(".wgsl"))
+        .map(({ output }) => output);
+    assert.ok(modules.includes("upstream/shaders/pbr.vert.native.wgsl"));
+    assert.ok(modules.includes("upstream/shaders/pbr.frag.native.wgsl"));
+    assert.ok(modules.includes("upstream/shaders/grid.vert.native.wgsl"));
+    assert.ok(modules.includes("upstream/shaders/grid.frag.native.wgsl"));
+    assert.ok(!modules.some((output) => output.includes("standard")));
+    assert.ok(!modules.some((output) => output.includes("background")));
 });
 
 test("generates portable GridMaterial shaders from pinned formulas", () => {
@@ -401,6 +469,7 @@ test("generates standard-material geometry output shaders", () => {
                 attachments: [
                     "IRRADIANCE",
                     "WORLD_POSITION",
+                    "SCREENSPACE_DEPTH",
                     "REFLECTIVITY",
                     "ALBEDO",
                 ],
@@ -412,6 +481,10 @@ test("generates standard-material geometry output shaders", () => {
         shader.output.endsWith("standard-geometry-0.frag.native.wgsl"),
     );
     assert.match(String(geometry?.data), /vec4<f32>\(0\.0, 0\.0, 0\.0/);
+    assert.match(
+        String(geometry?.data),
+        /1\.0 - input\.position\.z/,
+    );
     assert.match(String(geometry?.data), /pow\(specularSample\.rgb/);
     assert.match(String(geometry?.data), /reflectionTexture/);
     assert.match(String(geometry?.data), /output\.color = color/);

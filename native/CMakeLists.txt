@@ -99,6 +99,12 @@ else()
 endif()
 
 if("renderer:pbr" IN_LIST BBLITE_RUNTIME_FEATURES)
+    if("renderer:transmission" IN_LIST BBLITE_RUNTIME_FEATURES)
+        target_compile_definitions(
+            bblite_native
+            PRIVATE BBLITE_RENDERER_TRANSMISSION=1
+        )
+    endif()
     if(SDL3_FOUND)
         find_package(SDL3_image CONFIG REQUIRED)
         target_link_libraries(

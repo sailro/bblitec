@@ -302,7 +302,7 @@ test("compiles Babylon Lite scene 8 HDR glass sphere", () => {
     assert.match(result.cpp, /\.environment\.contrast = 1\.66f/);
     assert.match(
         result.cpp,
-        /PbrMaterialOptions\{[^}]*0\.0f, 0\.7f, 0\.5f, 0\.2f, false\}/,
+        /PbrMaterialOptions\{[^}]*0\.0f, 0\.7f, 0\.5f, 0\.2f, false, false, false, 0\.0f, 1\.5f/,
     );
     assert.ok(
         result.manifest.generatedSources.includes(
@@ -336,6 +336,23 @@ test("compiles Babylon Lite scene 8 HDR glass sphere", () => {
     );
 });
 
+test("compiles independent transmission material gates", () => {
+    const source = readFileSync(
+        resolve("examples/transmission-volume-gate.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "examples/transmission-volume-gate.ts",
+    });
+
+    assert.ok(result.manifest.features.includes("renderer:transmission"));
+    assert.match(result.cpp, /bbl::enable_scene_transmission/);
+    assert.match(
+        result.cpp,
+        /PbrMaterialOptions\{[^}]*false, false, false, 1\.0f, 1\.5f, 1\.4f, bbl::Color3\{1\.0f, 0\.35f, 0\.06f\}, 1\.5f/,
+    );
+});
+
 test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     const source = readFileSync(
         resolve("examples/scene273-runtime-material-family.ts"),
@@ -362,7 +379,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     assert.match(result.cpp, /if \(\(v_frame == 20\.0f\)\)/);
     assert.match(
         result.cpp,
-        /PbrMaterialOptions\{[^}]*0\.1f, 0\.4f, 1\.0f, 0\.0f, 1\.0f, 0\.04f, false\}/,
+        /PbrMaterialOptions\{[^}]*0\.1f, 0\.4f, 1\.0f, 0\.0f, 1\.0f, 0\.04f, false, false, false, 0\.0f, 1\.5f/,
     );
     assert.match(
         result.cpp,

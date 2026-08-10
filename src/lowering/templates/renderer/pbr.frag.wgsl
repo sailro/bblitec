@@ -26,6 +26,18 @@ diagnostic(off, derivative_uniformity);
 
 @group(2u) @binding(11u) var brdfSampler : sampler;
 
+@group(2u) @binding(12u) var sceneColorTexture : texture_2d<f32>;
+
+@group(2u) @binding(13u) var sceneColorSampler : sampler;
+
+@group(2u) @binding(14u) var transmissionTexture : texture_2d<f32>;
+
+@group(2u) @binding(15u) var transmissionSampler : sampler;
+
+@group(2u) @binding(16u) var thicknessTexture : texture_2d<f32>;
+
+@group(2u) @binding(17u) var thicknessSampler : sampler;
+
 struct S {
   lightDirection : vec4<f32>,
   lightColor : vec4<f32>,
@@ -41,6 +53,10 @@ struct S {
   environmentFactors : vec4<f32>,
   materialOptions : vec4<f32>,
   normalOptions : vec4<f32>,
+  refractionParams : vec4<f32>,
+  volumeParams : vec4<f32>,
+  transmissionOptions : vec4<f32>,
+  viewProjection : mat4x4<f32>,
   sphericalHarmonics : array<vec4<f32>, 9u>,
 }
 
@@ -50,7 +66,11 @@ var<private> v : vec4<f32>;
 
 fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>, v_5 : vec4<f32>, v_6 : bool) {
   let v_7 = normalize(v_2);
-  let v_8 = ((textureSample(normalTexture, normalSampler, v_4).xyz * 2.0f) - vec3<f32>(1.0f));
+  let v_8_raw = ((textureSample(normalTexture, normalSampler, v_4).xyz * 2.0f) - vec3<f32>(1.0f));
+  let v_8 = vec3<f32>(
+    v_8_raw.xy * FragmentUniforms.normalOptions.w,
+    v_8_raw.z,
+  );
   var v_9 : vec3<f32>;
   if ((FragmentUniforms.normalOptions.y < 0.5f)) {
     v_9 = v_7;
@@ -130,8 +150,18 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
   let v_44 = dpdx(v_28);
   let v_45 = dpdy(v_28);
   let v_46 = max(dot(v_44, v_44), dot(v_45, v_45));
-  let v_47 = pow(clamp(v_46, 0.0f, 1.0f), 0.3333333432674407959f);
-  let v_48 = (((v_35 * v_35) + 0.00050000002374872565f) + (sqrt(v_46) * 0.75f));
+  let v_47 = select(
+    0.0f,
+    pow(clamp(v_46, 0.0f, 1.0f), 0.3333333432674407959f),
+    FragmentUniforms.normalOptions.y > 0.5f ||
+      FragmentUniforms.emissiveFactor.w > 0.5f,
+  );
+  let v_48 = (((v_35 * v_35) + 0.00050000002374872565f) + select(
+    0.0f,
+    sqrt(v_46) * 0.75f,
+    FragmentUniforms.normalOptions.y > 0.5f ||
+      FragmentUniforms.emissiveFactor.w > 0.5f,
+  ));
   let v_49 = max(v_35, v_47);
   let v_50 = ((v_49 * v_49) + 0.00050000002374872565f);
   let v_51 = FragmentUniforms.normalOptions.z;
@@ -211,7 +241,67 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
   let v_101 = ((v_94 * (((((v_76 * v_95.x) + (v_75 * v_96)) * v_98) * v_99) * v_99)) * v_100);
   let v_102 = (((v_80 * v_81) * v_69) * mix(vec3<f32>(1.0f), v_100, vec3<f32>(v_88, v_88, v_88)));
   let v_103 = (FragmentUniforms.materialOptions.z > 0.5f);
-  let v_104 = (select(((((((v_89 * v_52) * v_34) + v_101) + v_102) + ((((v_70 * v_52) * v_71) * v_81) * v_69)) + v_40), v_31, vec3<bool>(v_103, v_103, v_103)) * FragmentUniforms.environmentFactors.x);
+  var shadedColor = (((((v_89 * v_52) * v_34) + v_101) + v_102) + ((((v_70 * v_52) * v_71) * v_81) * v_69)) + v_40;
+  if (FragmentUniforms.transmissionOptions.x > 0.5f) {
+    let skyDirection = normalize(v_1 - FragmentUniforms.cameraPosition.xyz);
+    let skyLod = clamp(
+      log2(max(f32(textureDimensions(environmentTexture).x) * v_48, 1.0f)) *
+        FragmentUniforms.environmentFactors.z,
+      0.0f,
+      f32(textureNumLevels(environmentTexture) - 1u),
+    );
+    shadedColor =
+      textureSampleLevel(environmentTexture, environmentSampler, skyDirection, skyLod).rgb *
+        v_88 +
+      v_40;
+  } else if (FragmentUniforms.refractionParams.x > 0.0f) {
+    let transmissionSample = textureSample(
+      transmissionTexture,
+      transmissionSampler,
+      v_4,
+    ).r;
+    let transmissionIntensity = FragmentUniforms.refractionParams.x *
+      mix(1.0f, transmissionSample, FragmentUniforms.transmissionOptions.z);
+    let thicknessSample = textureSample(
+      thicknessTexture,
+      thicknessSampler,
+      v_4,
+    ).g;
+    let thickness = FragmentUniforms.refractionParams.z *
+      mix(1.0f, thicknessSample, FragmentUniforms.transmissionOptions.w);
+    let refractedDirection = refract(
+      -(v_41),
+      v_28,
+      FragmentUniforms.refractionParams.y,
+    );
+    let refractedClip = FragmentUniforms.viewProjection *
+      vec4<f32>(v_1 + refractedDirection * thickness, 1.0f);
+    let refractedUv = (refractedClip.xy / refractedClip.w) *
+      vec2<f32>(0.5f, -0.5f) + vec2<f32>(0.5f);
+    let refractionLod = clamp(
+      log2(f32(textureDimensions(sceneColorTexture).x) *
+        mix(v_48, 0.0f, clamp(FragmentUniforms.refractionParams.w * 3.0f - 2.0f, 0.0f, 1.0f))) -
+        4.0f,
+      0.0f,
+      f32(textureNumLevels(sceneColorTexture) - 1u),
+    );
+    let sceneTransmission = textureSampleLevel(
+      sceneColorTexture,
+      sceneColorSampler,
+      refractedUv,
+      refractionLod,
+    ).rgb * FragmentUniforms.materialFactors.w;
+    let absorption = exp(FragmentUniforms.volumeParams.rgb * thickness);
+    let environmentReflectance =
+      (((v_76 * v_95.x) + (v_75 * v_96)) * v_98 * v_99 * v_99) * v_100;
+    let transmitted = sceneTransmission * v_31 * transmissionIntensity *
+      absorption * (vec3<f32>(1.0f) - environmentReflectance);
+    let opaqueRatio = 1.0f - transmissionIntensity;
+    shadedColor = ((v_89 * v_52) * v_34) * opaqueRatio + v_101 + v_102 +
+      ((((v_70 * v_52) * v_71) * v_81) * v_69) * opaqueRatio +
+      transmitted + v_40;
+  }
+  let v_104 = (select(shadedColor, v_31, vec3<bool>(v_103, v_103, v_103)) * FragmentUniforms.environmentFactors.x);
   var v_105 : vec3<f32>;
   if ((FragmentUniforms.environmentFactors.w > 0.5f)) {
     v_105 = (vec3<f32>(1.0f) - exp2((v_104 * -1.59057903289794921875f)));

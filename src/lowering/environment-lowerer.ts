@@ -382,6 +382,11 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
             /imageProcessing\.contrast = ([0-9.]+)/,
             "HDR environment contrast",
         );
+        const lodGenerationScale = this.context.extractNumber(
+            source,
+            /assembleEnvironmentTextures\([\s\S]*?,\s*([0-9.]+),\s*engine\)/,
+            "HDR environment LOD generation scale",
+        );
         for (const marker of [
             "parseRGBE(buffer)",
             "computeSHFromEquirect",
@@ -507,6 +512,8 @@ void load_hdr_environment(
     scene.environment.skybox_position = options.skybox_position;
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};
     scene.environment.contrast = ${this.context.floatLiteral(contrast)};
+    scene.environment.lod_generation_scale =
+        ${this.context.floatLiteral(lodGenerationScale)};
     scene.environment.tone_mapping_enabled = false;
 }
 

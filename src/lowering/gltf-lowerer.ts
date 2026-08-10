@@ -108,6 +108,22 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         ]) {
             if (!source.includes(marker)) throw new Error(`Upstream glTF loader contract changed: ${marker}.`);
         }
+        const dielectricSource = this.context.store.getSource(
+            "src/loader-gltf/gltf-ext-dielectric.ts",
+        );
+        for (const marker of [
+            "KHR_materials_transmission",
+            "KHR_materials_ior",
+            "KHR_materials_volume",
+            "((ior - 1) / (ior + 1)) ** 2 / 0.04",
+            "attenuationDistance",
+        ]) {
+            if (!dielectricSource.includes(marker)) {
+                throw new Error(
+                    `Upstream glTF dielectric contract changed: ${marker}.`,
+                );
+            }
+        }
         for (const marker of [
             "const minNearest = !!minF && minF % 2 === 0",
             "const mipNearest = minF === 9984 || minF === 9985",

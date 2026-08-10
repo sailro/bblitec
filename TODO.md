@@ -11,79 +11,22 @@ baselines belong in [status](docs/status.md) and Git history.
 - do not add scene, geometry, or golden-image heuristics
 - validate generation, native builds, and relevant parity gates locally
 
-## P0 — General shader pipeline
-
-- [ ] Extract reachable composed WGSL per built-in material feature set.
-- [ ] Emit SDL-compatible SPIR-V directly from Tint instead of recompiling
-  normalized Tint HLSL with DXC.
-
-## P0 — Renderer correctness
-
-Corpus gates for each subject:
-
-| Subject | Corpus scene |
-| --- | --- |
-| opaque/mask/blend/double-sided/A2C buckets | 249 plus existing 10/163/168/274 |
-| transparent back-to-front sorting | 145 for meshes; 55 for billboards |
-| mixed material families and PAL decision removal | 213 (GridMaterial opaque + transparent) |
-| skybox/opaque/transparent/background ordering | 8 plus existing 13 |
-| base color and pre-tone-map diagnostics | BoomBox and 146 |
-| hotspot/intermediate attribution | BoomBox |
-| Standard/PBR geometry-output residuals | 145 and 146 |
-| normal texture scale | 253 (`AnimateAllTheThings`, broad dependency set) |
-| transparent luminance-over-alpha | 8 |
-| horizon/specular occlusion | 73 or focused BoomBox diagnostics |
-| BRDF/cubemap orientation | 20 and 265 |
-| generated-ground composition | 13 |
-| background noise/dither | 112 (also requires KTX2) |
-
-- [x] Generate material kind, alpha bucket, cull mode, shader variant, and
-  alpha-to-coverage classification from Babylon render-task semantics.
-- [x] Generate ordered draw-command lists so PAL no longer filters classified
-  render items; scene 213 gates mixed GridMaterial opaque/transparent draws.
-- [x] Sort transparent mesh draws back-to-front per frame (scene 145).
-- [x] Move material-family/pipeline discovery and ordering decisions out of
-  PAL; PAL now consumes generated features, stages, and draw lists.
-- [x] Generate final skybox/opaque/transparent/ground ordering (scenes 8/13).
-- [x] Add raw base-color and pre-tone-map HDR diagnostics.
-- [x] Map final-image hotspots to shader variants and available intermediate
-  buffer deltas.
-- [ ] Reduce scene 145 geometry-output residuals; scene 146 is now
-  `0.868 / 0.889`.
-- [ ] Reduce BoomBox below `0.19` full and `0.03` foreground MAD.
-
-### Remaining PBR gaps
-
-- [ ] Replace the deterministic HDR box-filtered mip representation with the
-  pinned 1024-sample GGX prefilter; scene 8 already gates mip zero, glass
-  controls, skybox composition, and image processing.
-- [ ] Implement normal texture scale.
-- [x] Match the pinned glTF 4x anisotropic sampler gate (BoomBox/249).
-- [x] Match Babylon transparent luminance-over-alpha behavior (scene 8).
-- [ ] Add horizon/specular occlusion gates.
-- [ ] Validate BRDF LUT and cubemap orientation on every backend.
-- [ ] Revisit generated-ground composition against a Babylon Lite golden.
-- [ ] Match position-seeded background dither without cross-backend noise
-  decorrelation.
-
-## P0 — Next scene gates
-
-- [ ] Add smaller independent gates for skybox mode, scene-color transmission,
-  IOR, and volume.
-- [ ] Scene 176: MosquitoInAmber, after those prerequisites pass.
-
 ## P0 — Backend portability
 
 ### Vulkan
 
+- [ ] Emit SDL-compatible SPIR-V directly from Tint instead of recompiling
+  normalized Tint HLSL with DXC.
 - [ ] Build and run generated SPIR-V on Linux.
 - [ ] Validate depth, clip space, cubemap orientation, and texture color spaces.
+- [ ] Validate BRDF LUT and cubemap orientation on Vulkan hardware.
 - [ ] Test discrete and integrated adapters.
 
 ### Metal
 
 - [ ] Build and run generated MSL on macOS.
 - [ ] Validate uniform layout, derivatives, cubemaps, and blending.
+- [ ] Validate BRDF LUT and cubemap orientation on Metal hardware.
 - [ ] Investigate iOS after macOS is stable.
 
 ### WebGPU
