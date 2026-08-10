@@ -27,8 +27,8 @@ Development Windows machine, D3D12, 1280x720:
 
 | Renderer | Full MAD | Foreground MAD | CPU submission |
 | --- | ---: | ---: | ---: |
-| CPU fallback | <span style="color:#cf222e">2.075</span> | <span style="color:#cf222e">21.204</span> | 5.516 ms/frame |
-| SDL_GPU, 4x MSAA | <span style="color:#1a7f37">0.001</span> | <span style="color:#1a7f37">0.015</span> | 0.176 ms average, 0.141 ms median |
+| CPU fallback | $\color{#cf222e}{\textsf{2.075}}$ | $\color{#cf222e}{\textsf{21.204}}$ | 5.516 ms/frame |
+| SDL_GPU, 4x MSAA | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.015}}$ | 0.176 ms average, 0.141 ms median |
 
 The GPU path is approximately 31 times faster CPU-side. Against the pinned
 Babylon Lite output, BoomBox rendering is effectively exact. Regression
@@ -40,33 +40,33 @@ Thresholds live in `src/scene-registry.ts`; run one scene with
 `npm run scene -- parity scene<ID>` or all registered parity scenes with
 `npm run scenes:parity`.
 
-MAD severity: <span style="color:#1a7f37">green below 0.500</span>,
-<span style="color:#9a6700">yellow from 0.500 to below 1.000</span>, and
-<span style="color:#cf222e">red above 1.000</span>.
+MAD severity: $\color{#1a7f37}{\textsf{green below 0.500}}$,
+$\color{#9a6700}{\textsf{yellow from 0.500 to below 1.000}}$, and
+$\color{#cf222e}{\textsf{red above 1.000}}$.
 
 | Scene | Preview | Full MAD | Foreground MAD | Primary coverage |
 | ---: | :---: | ---: | ---: | --- |
-| 8 | <img src="images/scenes/scene8.png" alt="Scene 8 rendering" width="120"> | <span style="color:#1a7f37">0.129</span> | <span style="color:#1a7f37">0.134</span> | exact 1024-sample HDR GGX, cubemap skybox, glass alpha/reflectance |
-| 10 | <img src="images/scenes/scene10.png" alt="Scene 10 rendering" width="120"> | <span style="color:#1a7f37">0.000</span> | <span style="color:#1a7f37">0.000</span> | generated sphere, no-IBL PBR, geometric normals |
-| 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="120"> | <span style="color:#1a7f37">0.010</span> | <span style="color:#1a7f37">0.081</span> | material grid, explicit occlusion semantics |
-| 32 | <img src="images/scenes/scene32.png" alt="Scene 32 rendering" width="120"> | <span style="color:#1a7f37">0.000</span> | <span style="color:#1a7f37">0.000</span> | `KHR_materials_unlit` |
-| 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="120"> | <span style="color:#1a7f37">0.000</span> | <span style="color:#1a7f37">0.000</span> | no-color material views, depth targets |
-| 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="120"> | <span style="color:#cf222e">1.124</span> | <span style="color:#cf222e">1.118</span> | `.babylon`, Standard geometry outputs, default anisotropy |
-| 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="120"> | <span style="color:#9a6700">0.845</span> | <span style="color:#9a6700">0.865</span> | PBR geometry outputs, 7+4 MRT composition |
-| 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="120"> | <span style="color:#1a7f37">0.000</span> | <span style="color:#1a7f37">0.000</span> | custom shader blend, alpha test, discard |
-| 168 | <img src="images/scenes/scene168.png" alt="Scene 168 rendering" width="120"> | <span style="color:#1a7f37">0.068</span> | <span style="color:#1a7f37">0.389</span> | mirrored double-sided winding; 100% within one byte |
-| transmission-skybox | <img src="images/scenes/transmission-skybox.png" alt="PBR skybox rendering" width="120"> | <span style="color:#1a7f37">0.091</span> | <span style="color:#1a7f37">0.091</span> | independent PBR skybox-mode gate |
-| transmission-scene-color | <img src="images/scenes/transmission-scene-color.png" alt="Scene-color transmission" width="120"> | <span style="color:#1a7f37">0.044</span> | <span style="color:#1a7f37">0.208</span> | linear RGBA16F scene-color transmission |
-| transmission-ior | <img src="images/scenes/transmission-ior.png" alt="Transmission IOR" width="120"> | <span style="color:#1a7f37">0.115</span> | <span style="color:#1a7f37">0.302</span> | refraction IOR without glTF-only dielectric F0 |
-| transmission-volume | <img src="images/scenes/transmission-volume.png" alt="Transmission volume" width="120"> | <span style="color:#1a7f37">0.170</span> | <span style="color:#1a7f37">0.454</span> | Beer-Lambert volume and independent thickness-as-depth |
-| 176 | <img src="images/scenes/scene176.png" alt="Mosquito in Amber" width="120"> | <span style="color:#1a7f37">0.418</span> | <span style="color:#1a7f37">0.418</span> | integrated linear transmission, IOR, volume, and scene-color copy |
-| 213 | <img src="images/scenes/scene213.png" alt="Scene 213 rendering" width="120"> | <span style="color:#1a7f37">0.000</span> | <span style="color:#1a7f37">0.001</span> | GridMaterial opaque/transparent families and ordered draw lists |
-| 248 | <img src="images/scenes/scene248.png" alt="Scene 248 rendering" width="120"> | <span style="color:#1a7f37">0.001</span> | <span style="color:#1a7f37">0.005</span> | external glTF and sampler modes |
-| 249 | <img src="images/scenes/scene249.png" alt="Scene 249 rendering" width="120"> | <span style="color:#1a7f37">0.001</span> | <span style="color:#1a7f37">0.024</span> | vertex-color alpha and mask cutoff |
-| 257 | <img src="images/scenes/scene257.png" alt="Scene 257 rendering" width="120"> | <span style="color:#1a7f37">0.001</span> | <span style="color:#1a7f37">0.006</span> | negative-scale hierarchy, generated normals |
-| 266 | <img src="images/scenes/scene266.png" alt="Scene 266 rendering" width="120"> | <span style="color:#1a7f37">0.130</span> | <span style="color:#1a7f37">0.247</span> | mirrored spheres; 99.46% within one byte |
-| 273 | <img src="images/scenes/scene273.png" alt="Scene 273 rendering" width="120"> | <span style="color:#1a7f37">0.000</span> | <span style="color:#1a7f37">0.000</span> | post-registration material-family addition |
-| 274 | <img src="images/scenes/scene274.png" alt="Scene 274 rendering" width="120"> | <span style="color:#1a7f37">0.000</span> | <span style="color:#1a7f37">0.000</span> | 4x-MSAA alpha-to-coverage |
+| 8 | <img src="images/scenes/scene8.png" alt="Scene 8 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.129}}$ | $\color{#1a7f37}{\textsf{0.134}}$ | exact 1024-sample HDR GGX, cubemap skybox, glass alpha/reflectance |
+| 10 | <img src="images/scenes/scene10.png" alt="Scene 10 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | generated sphere, no-IBL PBR, geometric normals |
+| 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.010}}$ | $\color{#1a7f37}{\textsf{0.081}}$ | material grid, explicit occlusion semantics |
+| 32 | <img src="images/scenes/scene32.png" alt="Scene 32 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | `KHR_materials_unlit` |
+| 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | no-color material views, depth targets |
+| 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="120"> | $\color{#cf222e}{\textsf{1.124}}$ | $\color{#cf222e}{\textsf{1.118}}$ | `.babylon`, Standard geometry outputs, default anisotropy |
+| 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="120"> | $\color{#9a6700}{\textsf{0.845}}$ | $\color{#9a6700}{\textsf{0.865}}$ | PBR geometry outputs, 7+4 MRT composition |
+| 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | custom shader blend, alpha test, discard |
+| 168 | <img src="images/scenes/scene168.png" alt="Scene 168 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.068}}$ | $\color{#1a7f37}{\textsf{0.389}}$ | mirrored double-sided winding; 100% within one byte |
+| transmission-skybox | <img src="images/scenes/transmission-skybox.png" alt="PBR skybox rendering" width="120"> | $\color{#1a7f37}{\textsf{0.091}}$ | $\color{#1a7f37}{\textsf{0.091}}$ | independent PBR skybox-mode gate |
+| transmission-scene-color | <img src="images/scenes/transmission-scene-color.png" alt="Scene-color transmission" width="120"> | $\color{#1a7f37}{\textsf{0.044}}$ | $\color{#1a7f37}{\textsf{0.208}}$ | linear RGBA16F scene-color transmission |
+| transmission-ior | <img src="images/scenes/transmission-ior.png" alt="Transmission IOR" width="120"> | $\color{#1a7f37}{\textsf{0.115}}$ | $\color{#1a7f37}{\textsf{0.302}}$ | refraction IOR without glTF-only dielectric F0 |
+| transmission-volume | <img src="images/scenes/transmission-volume.png" alt="Transmission volume" width="120"> | $\color{#1a7f37}{\textsf{0.170}}$ | $\color{#1a7f37}{\textsf{0.454}}$ | Beer-Lambert volume and independent thickness-as-depth |
+| 176 | <img src="images/scenes/scene176.png" alt="Mosquito in Amber" width="120"> | $\color{#1a7f37}{\textsf{0.418}}$ | $\color{#1a7f37}{\textsf{0.418}}$ | integrated linear transmission, IOR, volume, and scene-color copy |
+| 213 | <img src="images/scenes/scene213.png" alt="Scene 213 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.001}}$ | GridMaterial opaque/transparent families and ordered draw lists |
+| 248 | <img src="images/scenes/scene248.png" alt="Scene 248 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.005}}$ | external glTF and sampler modes |
+| 249 | <img src="images/scenes/scene249.png" alt="Scene 249 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.024}}$ | vertex-color alpha and mask cutoff |
+| 257 | <img src="images/scenes/scene257.png" alt="Scene 257 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.006}}$ | negative-scale hierarchy, generated normals |
+| 266 | <img src="images/scenes/scene266.png" alt="Scene 266 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.130}}$ | $\color{#1a7f37}{\textsf{0.247}}$ | mirrored spheres; 99.46% within one byte |
+| 273 | <img src="images/scenes/scene273.png" alt="Scene 273 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | post-registration material-family addition |
+| 274 | <img src="images/scenes/scene274.png" alt="Scene 274 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | 4x-MSAA alpha-to-coverage |
 
 Scene 145's full-size HillValley render is `0.101` MAD; its aggregate residual
 is concentrated in edge coverage inside the six-times-downscaled geometry
