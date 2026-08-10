@@ -285,12 +285,25 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
       0.0f,
       f32(textureNumLevels(sceneColorTexture) - 1u),
     );
-    let sceneTransmission = textureSampleLevel(
+    var sceneTransmission = textureSampleLevel(
       sceneColorTexture,
       sceneColorSampler,
       refractedUv,
       refractionLod,
-    ).rgb * FragmentUniforms.materialFactors.w;
+    ).rgb;
+    sceneTransmission = pow(
+      max(sceneTransmission, vec3<f32>(0.0f)),
+      vec3<f32>(2.2f),
+    );
+    if (FragmentUniforms.environmentFactors.w > 0.5f) {
+      sceneTransmission = -log2(
+        max(vec3<f32>(1.0f) - sceneTransmission, vec3<f32>(0.000001f)),
+      ) / 1.59057903289794921875f;
+    }
+    sceneTransmission =
+      sceneTransmission /
+      max(FragmentUniforms.environmentFactors.x, 0.0001f) *
+      FragmentUniforms.materialFactors.w;
     let absorption = exp(FragmentUniforms.volumeParams.rgb * thickness);
     let environmentReflectance =
       (((v_76 * v_95.x) + (v_75 * v_96)) * v_98 * v_99 * v_99) * v_100;

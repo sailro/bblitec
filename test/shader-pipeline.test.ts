@@ -205,6 +205,8 @@ test("generates Tint PBR color, diagnostics, and geometry WGSL", () => {
     assert.match(color, /fn mainFragment/);
     assert.match(color, /@location\(6u\) v_118/);
     assert.match(color, /normalOptions\.w/);
+    assert.match(color, /sceneTransmission = pow/);
+    assert.match(color, /sceneTransmission = -log2/);
     assert.match(color, /@binding\(12u\) var sceneColorTexture/);
     assert.match(color, /refract\(/);
     assert.match(color, /exp\(FragmentUniforms\.volumeParams\.rgb \* thickness\)/);

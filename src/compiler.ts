@@ -508,8 +508,18 @@ class Compiler {
             const scene = this.lookup(left.expression.expression);
             this.expectKind(scene, "scene", left.expression.expression);
             const property = left.name.text;
-            if (!["exposure", "contrast"].includes(property)) {
+            if (
+                !["exposure", "contrast", "toneMappingEnabled"].includes(
+                    property,
+                )
+            ) {
                 this.fail(left.name, `Unsupported image-processing property '${property}'.`);
+            }
+            if (property === "toneMappingEnabled") {
+                this.emit(
+                    `${scene.cpp}.environment.tone_mapping_enabled = ${this.compileBoolean(expression.right)};`,
+                );
+                return;
             }
             this.emit(
                 `${scene.cpp}.environment.${property} = ${this.compileNumber(expression.right)};`,

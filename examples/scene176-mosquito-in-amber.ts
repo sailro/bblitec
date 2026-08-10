@@ -44,6 +44,7 @@ async function main(): Promise<void> {
         "https://assets.babylonjs.com/environments/studio.env",
         { skipSkybox: true, skipGround: true, brdfUrl: "/brdf-lut.png" },
     );
+    scene.imageProcessing.toneMappingEnabled = false;
     scene.imageProcessing.exposure = 1;
     scene.imageProcessing.contrast = 1;
 
