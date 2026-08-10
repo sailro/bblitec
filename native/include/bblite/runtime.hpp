@@ -309,12 +309,18 @@ struct ModelVertex {
     Vec2 uv2{};
     Vec3 local_position{};
     Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
+    std::array<std::uint16_t, 4> joints{};
+    Vec4 weights{};
 };
 
 struct ModelGeometry {
     std::vector<ModelVertex> vertices;
+    std::vector<ModelVertex> bind_vertices;
+    std::vector<std::vector<Vec3>> morph_positions;
+    std::vector<std::vector<Vec3>> morph_normals;
     std::vector<std::uint32_t> indices;
     bool has_tangents = false;
+    bool flat_normals = false;
     Vec3 bounds_min{};
     Vec3 bounds_max{};
 };
@@ -328,6 +334,7 @@ struct MeshRecord {
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
     float baked_world_scale = 1.0f;
+    std::uint64_t transform_version = 0;
 };
 
 struct MaterialRecord {
@@ -452,6 +459,8 @@ struct AssetRecord {
     Color4 clear_color{};
     bool has_camera = false;
     bool has_clear_color = false;
+    std::function<void(float)> animation_tick;
+    std::function<void(float)> animation_seek;
 };
 
 struct Engine {
@@ -505,6 +514,7 @@ struct Scene {
     std::vector<LightHandle> lights;
     std::vector<TaskHandle> tasks;
     std::vector<std::function<void(float)>> before_render;
+    std::vector<std::function<void(float)>> animation_seekers;
     EnvironmentState environment;
     float fixed_delta_ms = 0.0f;
     std::uint64_t mesh_membership_version = 0;

@@ -69,7 +69,9 @@ baselines belong in [status](docs/status.md) and Git history.
 - [ ] Multiple UV sets and texture-coordinate selection.
 - [ ] Texture transforms and vertex colors.
 - [ ] Sparse accessors and additional primitive modes.
-- [ ] Animation, skinning, morph targets, cameras, and punctual lights.
+- [ ] Complete animation coverage: scale and STEP channels, group controls,
+  and GPU skinning/morph evaluation.
+- [ ] Cameras and punctual lights.
 - [ ] KTX2/Basis and compression investigations.
 
 ### Material extensions

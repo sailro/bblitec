@@ -46,6 +46,7 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 
 | Scene | Preview | Full MAD | Foreground MAD | Primary coverage |
 | ---: | :---: | ---: | ---: | --- |
+| 5 | <img src="images/scenes/scene5.png" alt="Scene 5 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.132}}$ | $\color{#cf222e}{\textsf{2.131}}$ | animated morph targets plus recursive CPU skeleton skinning |
 | 8 | <img src="images/scenes/scene8.png" alt="Scene 8 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.129}}$ | $\color{#1a7f37}{\textsf{0.134}}$ | exact 1024-sample HDR GGX, cubemap skybox, glass alpha/reflectance |
 | 10 | <img src="images/scenes/scene10.png" alt="Scene 10 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | generated sphere, no-IBL PBR, geometric normals |
 | 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.010}}$ | $\color{#1a7f37}{\textsf{0.081}}$ | material grid, explicit occlusion semantics |
@@ -61,6 +62,8 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 | transmission-volume | <img src="images/scenes/transmission-volume.png" alt="Transmission volume" width="120"> | $\color{#1a7f37}{\textsf{0.170}}$ | $\color{#1a7f37}{\textsf{0.454}}$ | Beer-Lambert volume and independent thickness-as-depth |
 | 176 | <img src="images/scenes/scene176.png" alt="Mosquito in Amber" width="120"> | $\color{#1a7f37}{\textsf{0.418}}$ | $\color{#1a7f37}{\textsf{0.418}}$ | integrated linear transmission, IOR, volume, and scene-color copy |
 | 213 | <img src="images/scenes/scene213.png" alt="Scene 213 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.001}}$ | GridMaterial opaque/transparent families and ordered draw lists |
+| 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | deterministic glTF node rotation animation |
+| 245 | <img src="images/scenes/scene245.png" alt="Scene 245 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.001}}$ | recursive skeleton hierarchy, inverse bind matrices, CPU skinning |
 | 248 | <img src="images/scenes/scene248.png" alt="Scene 248 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.005}}$ | external glTF and sampler modes |
 | 249 | <img src="images/scenes/scene249.png" alt="Scene 249 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.024}}$ | vertex-color alpha and mask cutoff |
 | 257 | <img src="images/scenes/scene257.png" alt="Scene 257 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.006}}$ | negative-scale hierarchy, generated normals |
@@ -119,7 +122,9 @@ deferred until its resource bindings are remapped to SDL_GPU conventions.
 - selected TypeScript expressions, assignments, callbacks, and intrinsics
 - no general modules/functions/control flow, arbitrary object graphs, or
   runtime module loading
-- no animation, skinning, morph targets, physics, audio, or networking
+- no physics, audio, or networking
+- animation currently covers LINEAR/CUBICSPLINE rotation and translation plus
+  LINEAR morph weights; deformation is CPU-evaluated and uploaded cyclically
 - no general user WGSL; reached custom variants use typed WGSL reflection and
   required pinned Tint HLSL/MSL emission plus DXC DXIL/SPIR-V compilation
 - GridMaterial, frame-graph blit/depth, and attribution utilities use

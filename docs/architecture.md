@@ -49,6 +49,8 @@ The current generated slice includes:
 
 - engine, scene, camera, light, mesh, and material APIs
 - external glTF packaging and typed GLB loading, including vertex colors
+- glTF rotation animation, recursive skeleton hierarchies, inverse bind
+  matrices, animated morph targets, and CPU-deformed dynamic vertex uploads
 - the HillValley-required `.babylon` loader slice
 - Standard/PBR/Grid material records, no-color views, and typed custom shaders
 - negative-transform winding, generated normals, and cotangent normal mapping

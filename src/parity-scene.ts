@@ -211,6 +211,8 @@ export async function runSceneParity(
         scene.source,
         reference,
         arguments_.recaptureReference,
+        undefined,
+        config.referenceTimeSeconds,
     );
     if (!arguments_.actual) {
         runNative(

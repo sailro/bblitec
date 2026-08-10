@@ -42,9 +42,28 @@ export type SuiteSourceTransform = (source: string) => string;
 function browserModule(
     sourcePath: string,
     transform?: SuiteSourceTransform,
+    captureTimeSeconds?: number,
 ): string {
     const input = readFileSync(resolve(sourcePath), "utf8");
-    const source = (transform ? transform(input) : input)
+    const transformed = transform ? transform(input) : input;
+    const framed = captureTimeSeconds !== undefined
+        ? transformed.replace(
+              "await registerScene(scene);",
+              `let __animationSeekFrame = 0;
+    onBeforeRender(scene, () => {
+        __animationSeekFrame += 1;
+        if (__animationSeekFrame === 10) {
+            for (const group of scene.animationGroups) {
+                goToFrame(group, ${captureTimeSeconds} * 60);
+                pauseAnimation(group);
+            }
+            canvas.dataset.animationFrozen = "true";
+        }
+    });
+    await registerScene(scene);`,
+          )
+        : transformed;
+    const source = framed
         .replaceAll('"@babylonjs/lite"', '"/node_modules/@babylonjs/lite/lib/index.js"')
         .replaceAll('"babylon-lite"', '"/node_modules/@babylonjs/lite/lib/index.js"')
         .replaceAll(
@@ -71,10 +90,15 @@ export async function captureSuiteReference(
     referencePath: string,
     force: boolean,
     transform?: SuiteSourceTransform,
+    captureTimeSeconds?: number,
 ): Promise<void> {
     if (existsSync(referencePath) && !force) return;
     const root = resolve(".");
-    const moduleSource = browserModule(sourcePath, transform);
+    const moduleSource = browserModule(
+        sourcePath,
+        transform,
+        captureTimeSeconds,
+    );
     const html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:block}
 </style></head><body><canvas id="renderCanvas" width="1280" height="720"></canvas>
@@ -114,6 +138,16 @@ html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:bloc
             viewport: { width: 1280, height: 720 },
             deviceScaleFactor: 1,
         });
+        page.on("pageerror", (error) => {
+            console.error(`Reference page error: ${error.message}`);
+        });
+        page.on("console", (message) => {
+            if (message.type() === "error") {
+                console.error(
+                    `Reference console error: ${message.text()}`,
+                );
+            }
+        });
         await page.goto(`http://127.0.0.1:${address.port}/scene.html`, {
             waitUntil: "domcontentloaded",
             timeout: 120_000,
@@ -123,6 +157,15 @@ html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:bloc
             undefined,
             { timeout: 120_000 },
         );
+        if (captureTimeSeconds !== undefined) {
+            await page.waitForFunction(
+                () =>
+                    document.getElementById("renderCanvas")
+                        ?.dataset.animationFrozen === "true",
+                undefined,
+                { timeout: 120_000 },
+            );
+        }
         await page.waitForTimeout(3000);
         mkdirSync(resolve(referencePath, ".."), { recursive: true });
         await page.locator("#renderCanvas").screenshot({ path: referencePath });

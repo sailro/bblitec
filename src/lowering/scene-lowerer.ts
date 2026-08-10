@@ -105,6 +105,12 @@ void add_to_scene(Scene& scene, AssetHandle asset) {
     for (const LightHandle light : record.lights) add_to_scene(scene, light);
     if (record.has_camera) scene.camera = record.camera;
     if (record.has_clear_color) scene.clear_color = record.clear_color;
+    if (record.animation_tick) {
+        scene.before_render.push_back(record.animation_tick);
+    }
+    if (record.animation_seek) {
+        scene.animation_seekers.push_back(record.animation_seek);
+    }
 }
 
 void on_before_render(

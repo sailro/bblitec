@@ -667,12 +667,29 @@ test("compiles Babylon Lite scene 248 external glTF", () => {
     const result = compileSource(source, {
         fileName: "examples/scene248-texture-settings.ts",
     });
+
     const asset = result.manifest.assets.find(({ kind }) => kind === "gltf");
     assert.equal(asset?.output.endsWith(".glb"), true);
     assert.match(asset?.source ?? "", /TextureSettingsTest\.gltf$/);
     assert.match(result.cpp, /\.fov = 0\.8f/);
     assert.match(result.cpp, /\.near_plane =/);
     assert.match(result.cpp, /\.far_plane =/);
+});
+
+test("compiles animated and skinned glTF scenes", () => {
+    for (const sourcePath of [
+        "examples/scene5-alien.ts",
+        "examples/scene240-animated-triangle.ts",
+        "examples/scene245-recursive-skeletons.ts",
+    ]) {
+        const result = compileSource(
+            readFileSync(resolve(sourcePath), "utf8"),
+            { fileName: sourcePath },
+        );
+        assert.ok(result.manifest.features.includes("loader:gltf"));
+        assert.ok(result.manifest.features.includes("renderer:pbr"));
+        assert.equal(result.manifest.assets[0]?.kind, "gltf");
+    }
 });
 
 test("compiles Babylon Lite scene 249 vertex alpha clip", () => {

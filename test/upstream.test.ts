@@ -69,7 +69,7 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /read_component/);
     assert.match(adapter.source, /linear_determinant/);
     assert.match(adapter.source, /std::swap\(geometry\.indices\[index \+ 1\]/);
-    assert.match(adapter.source, /vertex\.normal = normalize\(vertex\.normal\)/);
+    assert.match(adapter.source, /geometry\.flat_normals = true/);
     assert.match(adapter.source, /vertex\.local_position = local_position/);
     assert.match(adapter.source, /geometry\.has_tangents = tangents != nullptr/);
     assert.match(adapter.source, /optional\(attributes, "COLOR_0"\)/);
@@ -87,6 +87,11 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /material\.transmission_texture/);
     assert.match(adapter.source, /material\.thickness_texture/);
     assert.match(adapter.source, /material\.use_thickness_as_depth = true/);
+    assert.match(adapter.source, /JOINTS_0/);
+    assert.match(adapter.source, /WEIGHTS_0/);
+    assert.match(adapter.source, /inverseBindMatrices/);
+    assert.match(adapter.source, /RotationTrack/);
+    assert.match(adapter.source, /animation_tick/);
     assert.doesNotMatch(adapter.source, /pal::load_glb/);
 });
 

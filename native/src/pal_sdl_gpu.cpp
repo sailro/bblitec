@@ -74,6 +74,7 @@ struct GpuMesh {
     SDL_GPUSampler* thickness_sampler = nullptr;
     SDL_GPUSampler* standard_emissive_sampler = nullptr;
     std::uint32_t index_count = 0;
+    std::uint64_t transform_version = 0;
 };
 
 struct GpuBackground {
@@ -249,6 +250,71 @@ Vec3 normalize_vec3(Vec3 value) {
               value.z / length,
           }
         : Vec3{};
+}
+
+std::vector<GpuVertex> transformed_vertices(
+    const ModelGeometry& geometry,
+    const MeshRecord& mesh) {
+    std::vector<GpuVertex> result;
+    result.reserve(geometry.vertices.size());
+    for (const ModelVertex& vertex : geometry.vertices) {
+        Vec3 position{
+            vertex.position.x * mesh.scaling.x,
+            vertex.position.y * mesh.scaling.y,
+            vertex.position.z * mesh.scaling.z,
+        };
+        position = rotate_euler(position, mesh.rotation);
+        position.x += mesh.position.x;
+        position.y += mesh.position.y;
+        position.z += mesh.position.z;
+        const Vec3 normal = normalize_vec3(
+            rotate_euler(
+                Vec3{
+                    mesh.scaling.x != 0.0f
+                        ? vertex.normal.x / mesh.scaling.x
+                        : 0.0f,
+                    mesh.scaling.y != 0.0f
+                        ? vertex.normal.y / mesh.scaling.y
+                        : 0.0f,
+                    mesh.scaling.z != 0.0f
+                        ? vertex.normal.z / mesh.scaling.z
+                        : 0.0f,
+                },
+                mesh.rotation));
+        const Vec3 tangent = normalize_vec3(
+            rotate_euler(
+                Vec3{
+                    vertex.tangent.x * mesh.scaling.x,
+                    vertex.tangent.y * mesh.scaling.y,
+                    vertex.tangent.z * mesh.scaling.z,
+                },
+                mesh.rotation));
+        result.push_back(GpuVertex{
+            {position.x, position.y, position.z},
+            {normal.x, normal.y, normal.z},
+            {
+                tangent.x,
+                tangent.y,
+                tangent.z,
+                vertex.tangent.w,
+            },
+            {vertex.uv.x, vertex.uv.y},
+            {
+                vertex.local_position.x,
+                vertex.local_position.y,
+                vertex.local_position.z,
+            },
+            {vertex.uv2.x, vertex.uv2.y},
+            {
+                vertex.color.x,
+                vertex.color.y,
+                vertex.color.z,
+                vertex.color.w,
+            },
+            {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+        });
+    }
+    return result;
 }
 
 void handle_camera_pointer_event(
@@ -564,6 +630,45 @@ SDL_GPUBuffer* upload_buffer(
     if (!SDL_SubmitGPUCommandBuffer(command)) gpu_error("SDL_SubmitGPUCommandBuffer");
     SDL_ReleaseGPUTransferBuffer(device, transfer);
     return buffer;
+}
+
+void update_buffer(
+    SDL_GPUDevice* device,
+    SDL_GPUBuffer* buffer,
+    const void* data,
+    std::size_t size) {
+    SDL_GPUTransferBufferCreateInfo transfer_info{};
+    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    transfer_info.size = static_cast<Uint32>(size);
+    SDL_GPUTransferBuffer* transfer =
+        SDL_CreateGPUTransferBuffer(device, &transfer_info);
+    if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer");
+    void* mapped =
+        SDL_MapGPUTransferBuffer(device, transfer, false);
+    if (!mapped) gpu_error("SDL_MapGPUTransferBuffer");
+    std::memcpy(mapped, data, size);
+    SDL_UnmapGPUTransferBuffer(device, transfer);
+
+    SDL_GPUCommandBuffer* command =
+        SDL_AcquireGPUCommandBuffer(device);
+    if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
+    const SDL_GPUTransferBufferLocation source{transfer, 0};
+    const SDL_GPUBufferRegion destination{
+        buffer,
+        0,
+        static_cast<Uint32>(size),
+    };
+    SDL_UploadToGPUBuffer(
+        copy,
+        &source,
+        &destination,
+        true);
+    SDL_EndGPUCopyPass(copy);
+    if (!SDL_SubmitGPUCommandBuffer(command)) {
+        gpu_error("SDL_SubmitGPUCommandBuffer");
+    }
+    SDL_ReleaseGPUTransferBuffer(device, transfer);
 }
 
 SDL_GPUTexture* upload_texture(
@@ -1963,6 +2068,15 @@ bool run_gpu_engine(Engine& engine) {
         throw std::runtime_error("GPU renderer requires a registered scene.");
     }
     Scene& scene = *engine.registered_scenes.front();
+    const std::string animation_seek =
+        environment_variable("BBLITE_ANIMATION_SEEK_SECONDS");
+    if (!animation_seek.empty()) {
+        const float time =
+            std::strtof(animation_seek.c_str(), nullptr);
+        for (const auto& seek : scene.animation_seekers) {
+            seek(time);
+        }
+    }
     const std::string background_flag = environment_variable("BBLITE_BACKGROUND");
     const bool background_enabled =
         background_flag == "1" ||
@@ -3059,59 +3173,8 @@ bool run_gpu_engine(Engine& engine) {
             const ModelGeometry& geometry = engine.geometries[item.geometry];
             const MeshRecord& mesh_record =
                 engine.meshes[item.mesh.value];
-            std::vector<GpuVertex> vertices;
-            vertices.reserve(geometry.vertices.size());
-            for (const ModelVertex& vertex : geometry.vertices) {
-                Vec3 position{
-                    vertex.position.x * mesh_record.scaling.x,
-                    vertex.position.y * mesh_record.scaling.y,
-                    vertex.position.z * mesh_record.scaling.z,
-                };
-                position = rotate_euler(position, mesh_record.rotation);
-                position.x += mesh_record.position.x;
-                position.y += mesh_record.position.y;
-                position.z += mesh_record.position.z;
-                Vec3 normal = normalize_vec3(
-                    rotate_euler(
-                        Vec3{
-                            mesh_record.scaling.x != 0.0f
-                                ? vertex.normal.x /
-                                    mesh_record.scaling.x
-                                : 0.0f,
-                            mesh_record.scaling.y != 0.0f
-                                ? vertex.normal.y /
-                                    mesh_record.scaling.y
-                                : 0.0f,
-                            mesh_record.scaling.z != 0.0f
-                                ? vertex.normal.z /
-                                    mesh_record.scaling.z
-                                : 0.0f,
-                        },
-                        mesh_record.rotation));
-                Vec3 tangent = normalize_vec3(
-                    rotate_euler(
-                        Vec3{
-                            vertex.tangent.x * mesh_record.scaling.x,
-                            vertex.tangent.y * mesh_record.scaling.y,
-                            vertex.tangent.z * mesh_record.scaling.z,
-                        },
-                        mesh_record.rotation));
-                vertices.push_back(GpuVertex{
-                    {position.x, position.y, position.z},
-                    {normal.x, normal.y, normal.z},
-                    {
-                        tangent.x,
-                        tangent.y,
-                        tangent.z,
-                        vertex.tangent.w,
-                    },
-                    {vertex.uv.x, vertex.uv.y},
-                    {vertex.local_position.x, vertex.local_position.y, vertex.local_position.z},
-                    {vertex.uv2.x, vertex.uv2.y},
-                    {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
-                    {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-                });
-            }
+            const std::vector<GpuVertex> vertices =
+                transformed_vertices(geometry, mesh_record);
             GpuMesh gpu_mesh;
             gpu_mesh.vertices = upload_buffer(
                 state.device,
@@ -3123,7 +3186,9 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_GPU_BUFFERUSAGE_INDEX,
                 geometry.indices.data(),
                 geometry.indices.size() * sizeof(std::uint32_t));
-            gpu_mesh.index_count = static_cast<std::uint32_t>(geometry.indices.size());
+            gpu_mesh.index_count =             static_cast<std::uint32_t>(geometry.indices.size());
+            gpu_mesh.transform_version =
+            mesh_record.transform_version;
             const TextureData* texture = nullptr;
             const TextureData* metallic_roughness = nullptr;
             const TextureData* normal = nullptr;
@@ -3318,6 +3383,31 @@ bool run_gpu_engine(Engine& engine) {
                     : real_delta_ms;
             for (const auto& callback : scene.before_render) {
                 callback(delta_ms);
+            }
+            for (
+                std::size_t index = 0;
+                index < render_plan.items.size() &&
+                index < state.meshes.size();
+                ++index) {
+                const upstream::RenderItem& item =
+                    render_plan.items[index];
+                const MeshRecord& mesh =
+                    engine.meshes[item.mesh.value];
+                GpuMesh& gpu_mesh = state.meshes[index];
+                if (gpu_mesh.transform_version == mesh.transform_version) {
+                    continue;
+                }
+                const std::vector<GpuVertex> vertices =
+                    transformed_vertices(
+                        engine.geometries[item.geometry],
+                        mesh);
+                update_buffer(
+                    state.device,
+                    gpu_mesh.vertices,
+                    vertices.data(),
+                    vertices.size() * sizeof(GpuVertex));
+                gpu_mesh.transform_version =
+                    mesh.transform_version;
             }
             if (
                 scene.mesh_membership_version !=
@@ -4743,6 +4833,9 @@ bool run_gpu_engine(Engine& engine) {
                 << " | average=" << (sum / samples.size())
                 << " ms | median=" << samples[samples.size() / 2]
                 << " ms\n";
+        }
+        if (!SDL_WaitForGPUIdle(state.device)) {
+            gpu_error("SDL_WaitForGPUIdle");
         }
         release(state);
         return true;

@@ -111,6 +111,35 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         const dielectricSource = this.context.store.getSource(
             "src/loader-gltf/gltf-ext-dielectric.ts",
         );
+        const animationSource = this.context.store.getSource(
+            "src/loader-gltf/gltf-animation.ts",
+        );
+        const skeletonSource = this.context.store.getSource(
+            "src/loader-gltf/gltf-feature-skeleton.ts",
+        );
+        for (const marker of [
+            "INTERP_CUBIC",
+            "PATH_TRANSLATION",
+            "PATH_ROTATION",
+            "PATH_WEIGHTS",
+            "inverseBindMatrices",
+        ]) {
+            if (!animationSource.includes(marker)) {
+                throw new Error(
+                    `Upstream glTF animation contract changed: ${marker}.`,
+                );
+            }
+        }
+        for (const marker of [
+            "computeBoneTextureData",
+            "createSkeleton",
+        ]) {
+            if (!skeletonSource.includes(marker)) {
+                throw new Error(
+                    `Upstream glTF skeleton contract changed: ${marker}.`,
+                );
+            }
+        }
         for (const marker of [
             "KHR_materials_transmission",
             "KHR_materials_ior",

@@ -84,6 +84,12 @@ Legacy `.env` DDS backgrounds are likewise opt-in with
 `BBLITE_BACKGROUND=1`; pinned Babylon Lite BoomBox output keeps the clear
 background. Explicit HDR cubemap skyboxes remain enabled by default.
 
+glTF animation uses pinned LINEAR quaternion interpolation and deterministic
+time seeking, plus CUBICSPLINE quaternion/translation interpolation where
+reached. Morph position/normal deltas are applied before recursive skinning;
+joint inverse-bind matrices, weighted positions, and post-deformation flat
+normals are evaluated before PAL uploads changed vertex buffers.
+
 DXC cannot be removed from the D3D12 path because Tint does not emit DXIL.
 Tint does emit SPIR-V, but its separate WGSL texture/sampler binding numbers do
 not directly satisfy SDL_GPU's dense corresponding-slot contract. Vulkan

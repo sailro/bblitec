@@ -12,6 +12,7 @@ export function gltfLoaderCpp(provenance: string): string {
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -88,6 +89,68 @@ struct AccessorInfo {
     std::uint32_t component_type = 0;
     std::string type;
     bool normalized = false;
+};
+
+using Matrix = std::array<float, 16>;
+
+struct RotationTrack {
+    std::size_t node = 0;
+    bool cubic = false;
+    std::vector<float> times;
+    std::vector<Vec4> values;
+    std::vector<Vec4> in_tangents;
+    std::vector<Vec4> out_tangents;
+};
+
+struct TranslationTrack {
+    std::size_t node = 0;
+    bool cubic = false;
+    std::vector<float> times;
+    std::vector<Vec3> values;
+    std::vector<Vec3> in_tangents;
+    std::vector<Vec3> out_tangents;
+};
+
+struct WeightTrack {
+    std::size_t node = 0;
+    std::size_t target_count = 0;
+    std::vector<float> times;
+    std::vector<float> values;
+};
+
+struct AnimatedNode {
+    Vec3 translation{};
+    Vec4 rotation{0.0f, 0.0f, 0.0f, 1.0f};
+    Vec3 scale{1.0f, 1.0f, 1.0f};
+    int parent = -1;
+    Matrix world{};
+    bool computed = false;
+    std::vector<float> weights;
+};
+
+struct SkinRuntime {
+    std::vector<std::size_t> joints;
+    std::vector<Matrix> inverse_bind_matrices;
+};
+
+struct AnimatedMeshBinding {
+    std::uint32_t mesh = 0;
+    std::uint32_t geometry = 0;
+    std::size_t node = 0;
+    std::size_t skin = std::numeric_limits<std::size_t>::max();
+};
+
+struct AnimationRuntime {
+    float time = 0.0f;
+    float duration = 0.0f;
+    bool paused = false;
+    std::vector<RotationTrack> rotation_tracks;
+    std::vector<TranslationTrack> translation_tracks;
+    std::vector<WeightTrack> weight_tracks;
+    std::vector<std::vector<std::uint32_t>> node_meshes;
+    std::vector<AnimatedNode> nodes;
+    std::vector<SkinRuntime> skins;
+    std::vector<AnimatedMeshBinding> meshes;
 };
 
 std::size_t component_size(std::uint32_t component_type) {
@@ -181,7 +244,86 @@ Vec3 normalize(Vec3 value) {
         : Vec3{0.0f, 1.0f, 0.0f};
 }
 
-using Matrix = std::array<float, 16>;
+Vec4 normalize_quaternion(Vec4 value) {
+    const float length = std::sqrt(
+        value.x * value.x +
+        value.y * value.y +
+        value.z * value.z +
+        value.w * value.w);
+    return length > 0.000001f
+        ? Vec4{
+              value.x / length,
+              value.y / length,
+              value.z / length,
+              value.w / length,
+          }
+        : Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+}
+
+Vec4 interpolate_quaternion(Vec4 left, Vec4 right, float amount) {
+    float dot =
+        left.x * right.x +
+        left.y * right.y +
+        left.z * right.z +
+        left.w * right.w;
+    if (dot < 0.0f) {
+        right = Vec4{-right.x, -right.y, -right.z, -right.w};
+    }
+    return normalize_quaternion(Vec4{
+        left.x + (right.x - left.x) * amount,
+        left.y + (right.y - left.y) * amount,
+        left.z + (right.z - left.z) * amount,
+        left.w + (right.w - left.w) * amount,
+    });
+}
+
+Vec4 cubic_quaternion(
+    Vec4 left,
+    Vec4 left_tangent,
+    Vec4 right,
+    Vec4 right_tangent,
+    float amount,
+    float span) {
+    const float amount2 = amount * amount;
+    const float amount3 = amount2 * amount;
+    const float h00 = 2.0f * amount3 - 3.0f * amount2 + 1.0f;
+    const float h10 = amount3 - 2.0f * amount2 + amount;
+    const float h01 = -2.0f * amount3 + 3.0f * amount2;
+    const float h11 = amount3 - amount2;
+    return normalize_quaternion(Vec4{
+        h00 * left.x + h10 * span * left_tangent.x +
+            h01 * right.x + h11 * span * right_tangent.x,
+        h00 * left.y + h10 * span * left_tangent.y +
+            h01 * right.y + h11 * span * right_tangent.y,
+        h00 * left.z + h10 * span * left_tangent.z +
+            h01 * right.z + h11 * span * right_tangent.z,
+        h00 * left.w + h10 * span * left_tangent.w +
+            h01 * right.w + h11 * span * right_tangent.w,
+    });
+}
+
+Vec3 cubic_vec3(
+    Vec3 left,
+    Vec3 left_tangent,
+    Vec3 right,
+    Vec3 right_tangent,
+    float amount,
+    float span) {
+    const float amount2 = amount * amount;
+    const float amount3 = amount2 * amount;
+    const float h00 = 2.0f * amount3 - 3.0f * amount2 + 1.0f;
+    const float h10 = amount3 - 2.0f * amount2 + amount;
+    const float h01 = -2.0f * amount3 + 3.0f * amount2;
+    const float h11 = amount3 - amount2;
+    return Vec3{
+        h00 * left.x + h10 * span * left_tangent.x +
+            h01 * right.x + h11 * span * right_tangent.x,
+        h00 * left.y + h10 * span * left_tangent.y +
+            h01 * right.y + h11 * span * right_tangent.y,
+        h00 * left.z + h10 * span * left_tangent.z +
+            h01 * right.z + h11 * span * right_tangent.z,
+    };
+}
 
 Matrix identity_matrix() {
     Matrix result{};
@@ -238,21 +380,87 @@ Matrix local_matrix(const JsonObject& node) {
     return result;
 }
 
-Vec3 transform_point(const Matrix& matrix, Vec3 value) {
-    const Vec3 transformed{
+Matrix trs_matrix(
+    Vec3 translation,
+    Vec4 rotation,
+    Vec3 scale) {
+    const float x = rotation.x;
+    const float y = rotation.y;
+    const float z = rotation.z;
+    const float w = rotation.w;
+    Matrix result = identity_matrix();
+    result[0] = (1.0f - 2.0f * (y * y + z * z)) * scale.x;
+    result[1] = (2.0f * (x * y + z * w)) * scale.x;
+    result[2] = (2.0f * (x * z - y * w)) * scale.x;
+    result[4] = (2.0f * (x * y - z * w)) * scale.y;
+    result[5] = (1.0f - 2.0f * (x * x + z * z)) * scale.y;
+    result[6] = (2.0f * (y * z + x * w)) * scale.y;
+    result[8] = (2.0f * (x * z + y * w)) * scale.z;
+    result[9] = (2.0f * (y * z - x * w)) * scale.z;
+    result[10] = (1.0f - 2.0f * (x * x + y * y)) * scale.z;
+    result[12] = translation.x;
+    result[13] = translation.y;
+    result[14] = translation.z;
+    return result;
+}
+
+Matrix inverse_affine(const Matrix& matrix) {
+    const float determinant =
+        matrix[0] * (matrix[5] * matrix[10] - matrix[9] * matrix[6]) -
+        matrix[4] * (matrix[1] * matrix[10] - matrix[9] * matrix[2]) +
+        matrix[8] * (matrix[1] * matrix[6] - matrix[5] * matrix[2]);
+    if (std::abs(determinant) < 0.000001f) {
+        return identity_matrix();
+    }
+    const float inverse_determinant = 1.0f / determinant;
+    Matrix result = identity_matrix();
+    result[0] = (matrix[5] * matrix[10] - matrix[9] * matrix[6]) * inverse_determinant;
+    result[1] = (matrix[9] * matrix[2] - matrix[1] * matrix[10]) * inverse_determinant;
+    result[2] = (matrix[1] * matrix[6] - matrix[5] * matrix[2]) * inverse_determinant;
+    result[4] = (matrix[8] * matrix[6] - matrix[4] * matrix[10]) * inverse_determinant;
+    result[5] = (matrix[0] * matrix[10] - matrix[8] * matrix[2]) * inverse_determinant;
+    result[6] = (matrix[4] * matrix[2] - matrix[0] * matrix[6]) * inverse_determinant;
+    result[8] = (matrix[4] * matrix[9] - matrix[8] * matrix[5]) * inverse_determinant;
+    result[9] = (matrix[8] * matrix[1] - matrix[0] * matrix[9]) * inverse_determinant;
+    result[10] = (matrix[0] * matrix[5] - matrix[4] * matrix[1]) * inverse_determinant;
+    result[12] = -(
+        result[0] * matrix[12] +
+        result[4] * matrix[13] +
+        result[8] * matrix[14]);
+    result[13] = -(
+        result[1] * matrix[12] +
+        result[5] * matrix[13] +
+        result[9] * matrix[14]);
+    result[14] = -(
+        result[2] * matrix[12] +
+        result[6] * matrix[13] +
+        result[10] * matrix[14]);
+    return result;
+}
+
+Vec3 transform_point_raw(const Matrix& matrix, Vec3 value) {
+    return Vec3{
         matrix[0] * value.x + matrix[4] * value.y + matrix[8] * value.z + matrix[12],
         matrix[1] * value.x + matrix[5] * value.y + matrix[9] * value.z + matrix[13],
         matrix[2] * value.x + matrix[6] * value.y + matrix[10] * value.z + matrix[14],
     };
-    return Vec3{-transformed.x, transformed.y, transformed.z};
 }
 
-Vec3 transform_direction(const Matrix& matrix, Vec3 value) {
-    const Vec3 transformed{
+Vec3 transform_direction_raw(const Matrix& matrix, Vec3 value) {
+    return Vec3{
         matrix[0] * value.x + matrix[4] * value.y + matrix[8] * value.z,
         matrix[1] * value.x + matrix[5] * value.y + matrix[9] * value.z,
         matrix[2] * value.x + matrix[6] * value.y + matrix[10] * value.z,
     };
+}
+
+Vec3 transform_point(const Matrix& matrix, Vec3 value) {
+    const Vec3 transformed = transform_point_raw(matrix, value);
+    return Vec3{-transformed.x, transformed.y, transformed.z};
+}
+
+Vec3 transform_direction(const Matrix& matrix, Vec3 value) {
+    const Vec3 transformed = transform_direction_raw(matrix, value);
     return normalize(Vec3{-transformed.x, transformed.y, transformed.z});
 }
 
@@ -448,6 +656,10 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     const JsonArray& material_json = array_or_empty(document, "materials");
     const JsonArray& mesh_json = array_or_empty(document, "meshes");
     const JsonArray& node_json = array_or_empty(document, "nodes");
+    const JsonArray& skin_json = array_or_empty(document, "skins");
+    const JsonArray& animation_json =
+        array_or_empty(document, "animations");
+    const bool animated = !animation_json.empty();
 
     std::vector<BufferViewInfo> views;
     views.reserve(view_json.size());
@@ -499,6 +711,103 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     };
 
     AssetRecord asset;
+    const auto animation_runtime =
+        std::make_shared<AnimationRuntime>();
+    animation_runtime->node_meshes.resize(node_json.size());
+    animation_runtime->nodes.resize(node_json.size());
+    for (std::size_t index = 0; index < node_json.size(); ++index) {
+        const JsonObject& node = node_json[index].as_object();
+        AnimatedNode& animated_node =
+            animation_runtime->nodes[index];
+        animated_node.parent = parents[index];
+        const std::vector<float> translation =
+            float_array(optional(node, "translation"));
+        if (translation.size() == 3) {
+            animated_node.translation = Vec3{
+                translation[0],
+                translation[1],
+                translation[2],
+            };
+        }
+        const std::vector<float> rotation =
+            float_array(optional(node, "rotation"));
+        if (rotation.size() == 4) {
+            animated_node.rotation = Vec4{
+                rotation[0],
+                rotation[1],
+                rotation[2],
+                rotation[3],
+            };
+        }
+        const std::vector<float> scale =
+            float_array(optional(node, "scale"));
+        if (scale.size() == 3) {
+            animated_node.scale = Vec3{
+                scale[0],
+                scale[1],
+                scale[2],
+            };
+        }
+        animated_node.weights =
+            float_array(optional(node, "weights"));
+        if (
+            animated_node.weights.empty() &&
+            optional(node, "mesh")) {
+            animated_node.weights = float_array(
+                optional(
+                    mesh_json.at(
+                        unsigned_value(
+                            *optional(node, "mesh")))
+                        .as_object(),
+                    "weights"));
+        }
+    }
+    for (const ts::JsonValue& skin_value : skin_json) {
+        const JsonObject& skin = skin_value.as_object();
+        SkinRuntime runtime_skin;
+        for (const ts::JsonValue& joint :
+             array_or_empty(skin, "joints")) {
+            runtime_skin.joints.push_back(
+                unsigned_value(joint));
+        }
+        const ts::JsonValue* inverse_bind_value =
+            optional(skin, "inverseBindMatrices");
+        if (inverse_bind_value) {
+            const AccessorInfo& inverse_bind =
+                accessors.at(unsigned_value(*inverse_bind_value));
+            if (
+                inverse_bind.type != "MAT4" ||
+                inverse_bind.count !=
+                    runtime_skin.joints.size()) {
+                throw std::runtime_error(
+                    "glTF inverse bind matrix layout is invalid.");
+            }
+            for (
+                std::size_t matrix_index = 0;
+                matrix_index < inverse_bind.count;
+                ++matrix_index) {
+                Matrix matrix{};
+                for (std::size_t component = 0; component < 16; ++component) {
+                    matrix[component] = read_component(
+                        buffer,
+                        container,
+                        views,
+                        inverse_bind,
+                        matrix_index,
+                        component);
+                }
+                runtime_skin
+                    .inverse_bind_matrices
+                    .push_back(matrix);
+            }
+        } else {
+            runtime_skin.inverse_bind_matrices.assign(
+                runtime_skin.joints.size(),
+                identity_matrix());
+        }
+        animation_runtime->skins.push_back(
+            std::move(runtime_skin));
+    }
     for (std::size_t node_index = 0; node_index < node_json.size(); ++node_index) {
         const JsonObject& node = node_json[node_index].as_object();
         const ts::JsonValue* mesh_value = optional(node, "mesh");
@@ -523,6 +832,31 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             const AccessorInfo* colors = optional(attributes, "COLOR_0")
                 ? &accessors.at(unsigned_value(*optional(attributes, "COLOR_0")))
                 : nullptr;
+            const AccessorInfo* joints = optional(attributes, "JOINTS_0")
+                ? &accessors.at(unsigned_value(*optional(attributes, "JOINTS_0")))
+                : nullptr;
+            const AccessorInfo* weights = optional(attributes, "WEIGHTS_0")
+                ? &accessors.at(unsigned_value(*optional(attributes, "WEIGHTS_0")))
+                : nullptr;
+            std::vector<const AccessorInfo*> morph_positions;
+            std::vector<const AccessorInfo*> morph_normals;
+            for (const ts::JsonValue& target_value :
+                 array_or_empty(primitive, "targets")) {
+                const JsonObject& target =
+                    target_value.as_object();
+                morph_positions.push_back(
+                    optional(target, "POSITION")
+                        ? &accessors.at(
+                              unsigned_value(
+                                  *optional(target, "POSITION")))
+                        : nullptr);
+                morph_normals.push_back(
+                    optional(target, "NORMAL")
+                        ? &accessors.at(
+                              unsigned_value(
+                                  *optional(target, "NORMAL")))
+                        : nullptr);
+            }
             ModelGeometry geometry;
             geometry.vertices.resize(positions.count);
             geometry.bounds_min = Vec3{
@@ -545,20 +879,40 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     read_component(buffer, container, views, positions, index, 2),
                 };
                 vertex.local_position = local_position;
-                vertex.position = transform_point(matrix, local_position);
+                vertex.position = animated
+                    ? Vec3{
+                          -local_position.x,
+                          local_position.y,
+                          local_position.z,
+                      }
+                    : transform_point(matrix, local_position);
                 if (normals) {
-                    vertex.normal = transform_direction(matrix, Vec3{
+                    const Vec3 local_normal{
                         read_component(buffer, container, views, *normals, index, 0),
                         read_component(buffer, container, views, *normals, index, 1),
                         read_component(buffer, container, views, *normals, index, 2),
-                    });
+                    };
+                    vertex.normal = animated
+                        ? normalize(Vec3{
+                              -local_normal.x,
+                              local_normal.y,
+                              local_normal.z,
+                          })
+                        : transform_direction(matrix, local_normal);
                 }
                 if (tangents) {
-                    const Vec3 tangent = transform_direction(matrix, Vec3{
+                    const Vec3 local_tangent{
                         read_component(buffer, container, views, *tangents, index, 0),
                         read_component(buffer, container, views, *tangents, index, 1),
                         read_component(buffer, container, views, *tangents, index, 2),
-                    });
+                    };
+                    const Vec3 tangent = animated
+                        ? normalize(Vec3{
+                              -local_tangent.x,
+                              local_tangent.y,
+                              local_tangent.z,
+                          })
+                        : transform_direction(matrix, local_tangent);
                     vertex.tangent = Vec4{
                         tangent.x,
                         tangent.y,
@@ -583,6 +937,25 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                             : 1.0f,
                     };
                 }
+                if (joints && weights) {
+                    for (std::size_t component = 0; component < 4; ++component) {
+                        vertex.joints[component] =
+                            static_cast<std::uint16_t>(
+                                read_component(
+                                    buffer,
+                                    container,
+                                    views,
+                                    *joints,
+                                    index,
+                                    component));
+                    }
+                    vertex.weights = Vec4{
+                        read_component(buffer, container, views, *weights, index, 0),
+                        read_component(buffer, container, views, *weights, index, 1),
+                        read_component(buffer, container, views, *weights, index, 2),
+                        read_component(buffer, container, views, *weights, index, 3),
+                    };
+                }
                 geometry.bounds_min.x = std::min(geometry.bounds_min.x, vertex.position.x);
                 geometry.bounds_min.y = std::min(geometry.bounds_min.y, vertex.position.y);
                 geometry.bounds_min.z = std::min(geometry.bounds_min.z, vertex.position.z);
@@ -590,6 +963,70 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 geometry.bounds_max.y = std::max(geometry.bounds_max.y, vertex.position.y);
                 geometry.bounds_max.z = std::max(geometry.bounds_max.z, vertex.position.z);
                 geometry.vertices[index] = vertex;
+            }
+            for (std::size_t target = 0; target < morph_positions.size(); ++target) {
+                std::vector<Vec3> position_deltas(
+                    positions.count,
+                    Vec3{});
+                std::vector<Vec3> normal_deltas(
+                    positions.count,
+                    Vec3{});
+                for (std::size_t index = 0; index < positions.count; ++index) {
+                    if (morph_positions[target]) {
+                        position_deltas[index] = Vec3{
+                            read_component(
+                                buffer,
+                                container,
+                                views,
+                                *morph_positions[target],
+                                index,
+                                0),
+                            read_component(
+                                buffer,
+                                container,
+                                views,
+                                *morph_positions[target],
+                                index,
+                                1),
+                            read_component(
+                                buffer,
+                                container,
+                                views,
+                                *morph_positions[target],
+                                index,
+                                2),
+                        };
+                    }
+                    if (morph_normals[target]) {
+                        normal_deltas[index] = Vec3{
+                            read_component(
+                                buffer,
+                                container,
+                                views,
+                                *morph_normals[target],
+                                index,
+                                0),
+                            read_component(
+                                buffer,
+                                container,
+                                views,
+                                *morph_normals[target],
+                                index,
+                                1),
+                            read_component(
+                                buffer,
+                                container,
+                                views,
+                                *morph_normals[target],
+                                index,
+                                2),
+                        };
+                    }
+                }
+                geometry.morph_positions.push_back(
+                    std::move(position_deltas));
+                geometry.morph_normals.push_back(
+                    std::move(normal_deltas));
             }
             if (const ts::JsonValue* indices_value = optional(primitive, "indices")) {
                 const AccessorInfo& indices = accessors.at(unsigned_value(*indices_value));
@@ -612,13 +1049,43 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 }
             }
             if (!normals) {
-                for (ModelVertex& vertex : geometry.vertices) {
-                    vertex.normal = Vec3{};
+                geometry.flat_normals = true;
+                std::vector<ModelVertex> flat_vertices;
+                flat_vertices.reserve(geometry.indices.size());
+                std::vector<std::vector<Vec3>> flat_morph_positions(
+                    geometry.morph_positions.size());
+                std::vector<std::vector<Vec3>> flat_morph_normals(
+                    geometry.morph_normals.size());
+                for (const std::uint32_t index : geometry.indices) {
+                    flat_vertices.push_back(
+                        geometry.vertices.at(index));
+                    for (std::size_t target = 0; target < flat_morph_positions.size(); ++target) {
+                        flat_morph_positions[target].push_back(
+                            geometry.morph_positions[target].at(index));
+                        flat_morph_normals[target].push_back(
+                            geometry.morph_normals[target].at(index));
+                    }
                 }
-                for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
-                    ModelVertex& a = geometry.vertices.at(geometry.indices[index]);
-                    ModelVertex& b = geometry.vertices.at(geometry.indices[index + 1]);
-                    ModelVertex& c = geometry.vertices.at(geometry.indices[index + 2]);
+                geometry.vertices = std::move(flat_vertices);
+                geometry.morph_positions =
+                    std::move(flat_morph_positions);
+                geometry.morph_normals =
+                    std::move(flat_morph_normals);
+                geometry.indices.resize(geometry.vertices.size());
+                for (
+                    std::size_t index = 0;
+                    index < geometry.indices.size();
+                    ++index) {
+                    geometry.indices[index] =
+                        static_cast<std::uint32_t>(index);
+                }
+                for (
+                    std::size_t index = 0;
+                    index < geometry.vertices.size();
+                    index += 3) {
+                    ModelVertex& a = geometry.vertices[index];
+                    ModelVertex& b = geometry.vertices[index + 1];
+                    ModelVertex& c = geometry.vertices[index + 2];
                     const Vec3 edge1{
                         b.position.x - a.position.x,
                         b.position.y - a.position.y,
@@ -634,17 +1101,16 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         edge2.z * edge1.x - edge2.x * edge1.z,
                         edge2.x * edge1.y - edge2.y * edge1.x,
                     };
-                    for (ModelVertex* vertex : {&a, &b, &c}) {
-                        vertex->normal.x += face.x;
-                        vertex->normal.y += face.y;
-                        vertex->normal.z += face.z;
-                    }
-                }
-                for (ModelVertex& vertex : geometry.vertices) {
-                    vertex.normal = normalize(vertex.normal);
+                    const Vec3 normal = normalize(face);
+                    a.normal = normal;
+                    b.normal = normal;
+                    c.normal = normal;
                 }
             }
             geometry.has_tangents = tangents != nullptr;
+            if (animated) {
+                geometry.bind_vertices = geometry.vertices;
+            }
             engine.geometries.push_back(std::move(geometry));
             MeshRecord record;
             record.primitive = PrimitiveKind::gltf;
@@ -666,8 +1132,531 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             const std::size_t material_index = unsigned_or(primitive, "material", 0);
             if (material_index < materials.size()) record.material = materials[material_index];
             engine.meshes.push_back(record);
-            asset.meshes.push_back(MeshHandle{static_cast<std::uint32_t>(engine.meshes.size() - 1)});
+            const std::uint32_t mesh_record_index =
+                static_cast<std::uint32_t>(engine.meshes.size() - 1);
+            if (animated) {
+                animation_runtime
+                    ->node_meshes[node_index]
+                    .push_back(mesh_record_index);
+                animation_runtime->meshes.push_back(
+                    AnimatedMeshBinding{
+                        mesh_record_index,
+                        record.geometry,
+                        node_index,
+                        optional(node, "skin")
+                            ? unsigned_value(*optional(node, "skin"))
+                            : std::numeric_limits<std::size_t>::max(),
+                    });
+            }
+            asset.meshes.push_back(MeshHandle{mesh_record_index});
         }
+    }
+    if (animated) {
+        for (const ts::JsonValue& animation_value : animation_json) {
+            const JsonObject& animation =
+                animation_value.as_object();
+            const JsonArray& animation_samplers =
+                array_or_empty(animation, "samplers");
+            for (const ts::JsonValue& channel_value :
+                 array_or_empty(animation, "channels")) {
+                const JsonObject& channel =
+                    channel_value.as_object();
+                const JsonObject& target =
+                    required(channel, "target").as_object();
+                const std::string path_name =
+                    required(target, "path").as_string();
+                if (
+                    path_name != "rotation" &&
+                    path_name != "translation" &&
+                    path_name != "weights") {
+                    throw std::runtime_error(
+                        "Reached glTF animation lowering currently supports rotation and weights channels.");
+                }
+                const std::size_t sampler_index =
+                    unsigned_value(required(channel, "sampler"));
+                const JsonObject& sampler =
+                    animation_samplers.at(sampler_index).as_object();
+                const std::string interpolation =
+                    string_or(sampler, "interpolation", "LINEAR");
+                if (
+                    interpolation != "LINEAR" &&
+                    interpolation != "CUBICSPLINE") {
+                    throw std::runtime_error(
+                        "Reached glTF animation lowering supports LINEAR and CUBICSPLINE interpolation.");
+                }
+                const AccessorInfo& input =
+                    accessors.at(unsigned_value(required(sampler, "input")));
+                const AccessorInfo& output =
+                    accessors.at(unsigned_value(required(sampler, "output")));
+                const std::size_t target_node =
+                    unsigned_value(required(target, "node"));
+                if (input.type != "SCALAR") {
+                    throw std::runtime_error(
+                        "glTF animation input accessor must be SCALAR.");
+                }
+                for (std::size_t index = 0; index < input.count; ++index) {
+                    const float time = read_component(
+                        buffer,
+                        container,
+                        views,
+                        input,
+                        index,
+                        0);
+                    animation_runtime->duration =
+                        std::max(
+                            animation_runtime->duration,
+                            time);
+                }
+                if (path_name == "rotation") {
+                    const bool cubic =
+                        interpolation == "CUBICSPLINE";
+                    if (
+                        output.type != "VEC4" ||
+                        output.count !=
+                            input.count * (cubic ? 3u : 1u)) {
+                        throw std::runtime_error(
+                            "glTF rotation animation accessor layout is invalid.");
+                    }
+                    RotationTrack track;
+                    track.node = target_node;
+                    track.cubic = cubic;
+                    for (std::size_t index = 0; index < input.count; ++index) {
+                        track.times.push_back(
+                            read_component(
+                                buffer,
+                                container,
+                                views,
+                                input,
+                                index,
+                                0));
+                        const std::size_t value_index =
+                            cubic ? index * 3 + 1 : index;
+                        const auto read_quaternion =
+                            [&](std::size_t output_index) {
+                            return Vec4{
+                                read_component(buffer, container, views, output, output_index, 0),
+                                read_component(buffer, container, views, output, output_index, 1),
+                                read_component(buffer, container, views, output, output_index, 2),
+                                read_component(buffer, container, views, output, output_index, 3),
+                            };
+                        };
+                        track.values.push_back(
+                            read_quaternion(value_index));
+                        if (cubic) {
+                            track.in_tangents.push_back(
+                                read_quaternion(index * 3));
+                            track.out_tangents.push_back(
+                                read_quaternion(index * 3 + 2));
+                        }
+                    }
+                    animation_runtime
+                        ->rotation_tracks
+                        .push_back(std::move(track));
+                } else if (path_name == "translation") {
+                    const bool cubic =
+                        interpolation == "CUBICSPLINE";
+                    if (
+                        output.type != "VEC3" ||
+                        output.count !=
+                            input.count * (cubic ? 3u : 1u)) {
+                        throw std::runtime_error(
+                            "glTF translation animation accessor layout is invalid.");
+                    }
+                    TranslationTrack track;
+                    track.node = target_node;
+                    track.cubic = cubic;
+                    for (std::size_t index = 0; index < input.count; ++index) {
+                        track.times.push_back(
+                            read_component(buffer, container, views, input, index, 0));
+                        const std::size_t value_index =
+                            cubic ? index * 3 + 1 : index;
+                        const auto read_translation =
+                            [&](std::size_t output_index) {
+                            return Vec3{
+                                read_component(buffer, container, views, output, output_index, 0),
+                                read_component(buffer, container, views, output, output_index, 1),
+                                read_component(buffer, container, views, output, output_index, 2),
+                            };
+                        };
+                        track.values.push_back(
+                            read_translation(value_index));
+                        if (cubic) {
+                            track.in_tangents.push_back(
+                                read_translation(index * 3));
+                            track.out_tangents.push_back(
+                                read_translation(index * 3 + 2));
+                        }
+                    }
+                    animation_runtime
+                        ->translation_tracks
+                        .push_back(std::move(track));
+                } else {
+                    if (interpolation != "LINEAR") {
+                        throw std::runtime_error(
+                            "glTF weights animation currently requires LINEAR interpolation.");
+                    }
+                    if (
+                        output.type != "SCALAR" ||
+                        input.count == 0 ||
+                        output.count % input.count != 0) {
+                        throw std::runtime_error(
+                            "glTF weights animation accessor layout is invalid.");
+                    }
+                    WeightTrack track;
+                    track.node = target_node;
+                    track.target_count =
+                        output.count / input.count;
+                    for (std::size_t index = 0; index < input.count; ++index) {
+                        track.times.push_back(
+                            read_component(
+                                buffer,
+                                container,
+                                views,
+                                input,
+                                index,
+                                0));
+                        for (std::size_t target_index = 0; target_index < track.target_count; ++target_index) {
+                            track.values.push_back(
+                                read_component(
+                                    buffer,
+                                    container,
+                                    views,
+                                    output,
+                                    index * track.target_count + target_index,
+                                    0));
+                        }
+                    }
+                    animation_runtime
+                        ->weight_tracks
+                        .push_back(std::move(track));
+                }
+            }
+        }
+        const auto apply_animation_time =
+            [animation_runtime, &engine](float time) {
+            if (animation_runtime->duration <= 0.0f) return;
+            animation_runtime->time =
+                std::fmod(
+                    std::max(time, 0.0f),
+                    animation_runtime->duration);
+            for (const RotationTrack& track :
+                 animation_runtime->rotation_tracks) {
+                if (
+                    track.times.empty() ||
+                    track.node >=
+                        animation_runtime->node_meshes.size()) {
+                    continue;
+                }
+                std::size_t right = 1;
+                while (
+                    right < track.times.size() &&
+                    track.times[right] <
+                        animation_runtime->time) {
+                    ++right;
+                }
+                if (right >= track.times.size()) {
+                    right = track.times.size() - 1;
+                }
+                const std::size_t left =
+                    right > 0 ? right - 1 : 0;
+                const float span =
+                    track.times[right] - track.times[left];
+                const float amount =
+                    span > 0.0f
+                        ? (animation_runtime->time -
+                           track.times[left]) /
+                            span
+                        : 0.0f;
+                animation_runtime->nodes[track.node].rotation =
+                    track.cubic
+                        ? cubic_quaternion(
+                              track.values[left],
+                              track.out_tangents[left],
+                              track.values[right],
+                              track.in_tangents[right],
+                              amount,
+                              span)
+                        : interpolate_quaternion(
+                              track.values[left],
+                              track.values[right],
+                              amount);
+            }
+            for (const TranslationTrack& track :
+                 animation_runtime->translation_tracks) {
+                if (
+                    track.times.empty() ||
+                    track.node >= animation_runtime->nodes.size()) {
+                    continue;
+                }
+                std::size_t right = 1;
+                while (
+                    right < track.times.size() &&
+                    track.times[right] <
+                        animation_runtime->time) {
+                    ++right;
+                }
+                if (right >= track.times.size()) {
+                    right = track.times.size() - 1;
+                }
+                const std::size_t left =
+                    right > 0 ? right - 1 : 0;
+                const float span =
+                    track.times[right] - track.times[left];
+                const float amount =
+                    span > 0.0f
+                        ? (animation_runtime->time -
+                           track.times[left]) /
+                            span
+                        : 0.0f;
+                const Vec3 left_value = track.values[left];
+                const Vec3 right_value = track.values[right];
+                animation_runtime->nodes[track.node].translation =
+                    track.cubic
+                        ? cubic_vec3(
+                              left_value,
+                              track.out_tangents[left],
+                              right_value,
+                              track.in_tangents[right],
+                              amount,
+                              span)
+                        : Vec3{
+                              left_value.x +
+                                  (right_value.x - left_value.x) *
+                                      amount,
+                              left_value.y +
+                                  (right_value.y - left_value.y) *
+                                      amount,
+                              left_value.z +
+                                  (right_value.z - left_value.z) *
+                                      amount,
+                          };
+            }
+            for (const WeightTrack& track :
+                 animation_runtime->weight_tracks) {
+                if (
+                    track.times.empty() ||
+                    track.node >= animation_runtime->nodes.size()) {
+                    continue;
+                }
+                std::size_t right = 1;
+                while (
+                    right < track.times.size() &&
+                    track.times[right] <
+                        animation_runtime->time) {
+                    ++right;
+                }
+                if (right >= track.times.size()) {
+                    right = track.times.size() - 1;
+                }
+                const std::size_t left =
+                    right > 0 ? right - 1 : 0;
+                const float span =
+                    track.times[right] - track.times[left];
+                const float amount =
+                    span > 0.0f
+                        ? (animation_runtime->time -
+                           track.times[left]) /
+                            span
+                        : 0.0f;
+                AnimatedNode& node =
+                    animation_runtime->nodes[track.node];
+                node.weights.resize(track.target_count);
+                for (std::size_t target = 0; target < track.target_count; ++target) {
+                    const float left_value =
+                        track.values[left * track.target_count + target];
+                    const float right_value =
+                        track.values[right * track.target_count + target];
+                    node.weights[target] =
+                        left_value +
+                        (right_value - left_value) * amount;
+                }
+            }
+            for (AnimatedNode& node : animation_runtime->nodes) {
+                node.computed = false;
+            }
+            std::function<const Matrix&(std::size_t)> compute_animated_world =
+                [&](std::size_t node_index) -> const Matrix& {
+                AnimatedNode& node =
+                    animation_runtime->nodes.at(node_index);
+                if (node.computed) return node.world;
+                const Matrix local = trs_matrix(
+                    node.translation,
+                    node.rotation,
+                    node.scale);
+                node.world = node.parent >= 0
+                    ? multiply_matrix(
+                          compute_animated_world(
+                              static_cast<std::size_t>(
+                                  node.parent)),
+                          local)
+                    : local;
+                node.computed = true;
+                return node.world;
+            };
+            for (const AnimatedMeshBinding& binding :
+                 animation_runtime->meshes) {
+                ModelGeometry& geometry =
+                    engine.geometries.at(binding.geometry);
+                if (
+                    geometry.bind_vertices.size() !=
+                    geometry.vertices.size()) {
+                    continue;
+                }
+                const Matrix& mesh_world =
+                    compute_animated_world(binding.node);
+                const bool skinned =
+                    binding.skin <
+                    animation_runtime->skins.size();
+                const SkinRuntime* skin = skinned
+                    ? &animation_runtime->skins[binding.skin]
+                    : nullptr;
+                std::vector<Matrix> joint_matrices;
+                if (skin) {
+                    joint_matrices.reserve(skin->joints.size());
+                    for (std::size_t joint = 0; joint < skin->joints.size(); ++joint) {
+                        joint_matrices.push_back(
+                            multiply_matrix(
+                                compute_animated_world(
+                                    skin->joints[joint]),
+                                skin->inverse_bind_matrices[joint]));
+                    }
+                }
+                for (
+                    std::size_t vertex_index = 0;
+                    vertex_index < geometry.vertices.size();
+                    ++vertex_index) {
+                    const ModelVertex& bind =
+                        geometry.bind_vertices[vertex_index];
+                    Vec3 morphed_position =
+                        bind.local_position;
+                    Vec3 morphed_normal{
+                        -bind.normal.x,
+                        bind.normal.y,
+                        bind.normal.z,
+                    };
+                    const std::vector<float>& morph_weights =
+                        animation_runtime
+                            ->nodes[binding.node]
+                            .weights;
+                    for (
+                        std::size_t target = 0;
+                        target < morph_weights.size() &&
+                        target < geometry.morph_positions.size();
+                        ++target) {
+                        const float weight = morph_weights[target];
+                        const Vec3 position_delta =
+                            geometry.morph_positions[target][vertex_index];
+                        const Vec3 normal_delta =
+                            geometry.morph_normals[target][vertex_index];
+                        morphed_position.x +=
+                            position_delta.x * weight;
+                        morphed_position.y +=
+                            position_delta.y * weight;
+                        morphed_position.z +=
+                            position_delta.z * weight;
+                        morphed_normal.x +=
+                            normal_delta.x * weight;
+                        morphed_normal.y +=
+                            normal_delta.y * weight;
+                        morphed_normal.z +=
+                            normal_delta.z * weight;
+                    }
+                    Vec3 position{};
+                    Vec3 normal{};
+                    if (skin) {
+                        const std::array<float, 4> weights{
+                            bind.weights.x,
+                            bind.weights.y,
+                            bind.weights.z,
+                            bind.weights.w,
+                        };
+                        for (std::size_t influence = 0; influence < 4; ++influence) {
+                            const float weight = weights[influence];
+                            const std::size_t joint = bind.joints[influence];
+                            if (
+                                weight <= 0.0f ||
+                                joint >= joint_matrices.size()) {
+                                continue;
+                            }
+                            const Vec3 joint_position =
+                                transform_point_raw(
+                                    joint_matrices[joint],
+                                    morphed_position);
+                            const Vec3 joint_normal =
+                                transform_direction_raw(
+                                    joint_matrices[joint],
+                                    morphed_normal);
+                            position.x += joint_position.x * weight;
+                            position.y += joint_position.y * weight;
+                            position.z += joint_position.z * weight;
+                            normal.x += joint_normal.x * weight;
+                            normal.y += joint_normal.y * weight;
+                            normal.z += joint_normal.z * weight;
+                        }
+                    } else {
+                        position = transform_point_raw(
+                            mesh_world,
+                            morphed_position);
+                        normal = transform_direction_raw(
+                            mesh_world,
+                            morphed_normal);
+                    }
+                    ModelVertex& vertex =
+                        geometry.vertices[vertex_index];
+                    vertex.position = Vec3{
+                        -position.x,
+                        position.y,
+                        position.z,
+                    };
+                    vertex.normal = normalize(Vec3{
+                        -normal.x,
+                        normal.y,
+                        normal.z,
+                    });
+                }
+                if (geometry.flat_normals) {
+                    for (
+                        std::size_t index = 0;
+                        index < geometry.vertices.size();
+                        index += 3) {
+                        ModelVertex& a = geometry.vertices[index];
+                        ModelVertex& b = geometry.vertices[index + 1];
+                        ModelVertex& c = geometry.vertices[index + 2];
+                        const Vec3 edge1{
+                            b.position.x - a.position.x,
+                            b.position.y - a.position.y,
+                            b.position.z - a.position.z,
+                        };
+                        const Vec3 edge2{
+                            c.position.x - a.position.x,
+                            c.position.y - a.position.y,
+                            c.position.z - a.position.z,
+                        };
+                        const Vec3 face = normalize(Vec3{
+                            edge2.y * edge1.z - edge2.z * edge1.y,
+                            edge2.z * edge1.x - edge2.x * edge1.z,
+                            edge2.x * edge1.y - edge2.y * edge1.x,
+                        });
+                        a.normal = face;
+                        b.normal = face;
+                        c.normal = face;
+                    }
+                }
+                ++engine.meshes.at(binding.mesh).transform_version;
+            }
+        };
+        asset.animation_seek =
+            [animation_runtime, apply_animation_time](float time) {
+            animation_runtime->paused = true;
+            apply_animation_time(time);
+        };
+        asset.animation_tick =
+            [animation_runtime, apply_animation_time](float delta_ms) {
+            if (animation_runtime->paused) return;
+            apply_animation_time(
+                animation_runtime->time +
+                    delta_ms * 0.001f);
+        };
     }
     if (asset.meshes.empty()) throw std::runtime_error("glTF contains no renderable meshes.");
     engine.assets.push_back(std::move(asset));

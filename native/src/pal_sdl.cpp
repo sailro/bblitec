@@ -1156,6 +1156,16 @@ void pal::run_engine(Engine& engine) {
     }
 
     Scene& scene = *engine.registered_scenes.front();
+    const std::string animation_seek =
+        pal::environment_variable(
+            "BBLITE_ANIMATION_SEEK_SECONDS");
+    if (!animation_seek.empty()) {
+        const float time =
+            std::strtof(animation_seek.c_str(), nullptr);
+        for (const auto& seek : scene.animation_seekers) {
+            seek(time);
+        }
+    }
 
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {

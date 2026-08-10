@@ -1,5 +1,6 @@
 export interface SceneParityDefinition {
     reference: { kind: "source"; path: string };
+    referenceTimeSeconds?: number;
     actual: string;
     outputDirectory: string;
     maxFullMad?: number;
@@ -80,6 +81,30 @@ export const scenes: readonly SceneDefinition[] = [
             maxForegroundMad: 0.2,
             backgroundColor: [0, 0, 0],
             backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene5",
+        name: "Scene 5 - Alien Morph and Skeleton",
+        source: "examples/scene5-alien.ts",
+        output: "generated/scene5",
+        title: "Babylon Lite Native - Alien",
+        buildDirectory: "native/build-scene5-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/scene5/babylon-lite-golden.png",
+            },
+            referenceTimeSeconds: 2,
+            actual: "artifacts/parity/scene5-native.png",
+            outputDirectory: "artifacts/parity/scene5",
+            maxFullMad: 0.2,
+            maxForegroundMad: 2.5,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "2",
+            },
         },
     },
     {
@@ -333,6 +358,30 @@ export const scenes: readonly SceneDefinition[] = [
         },
     },
     {
+        id: "scene240",
+        name: "Scene 240 - Animated Triangle",
+        source: "examples/scene240-animated-triangle.ts",
+        output: "generated/scene240",
+        title: "Babylon Lite Native - Animated Triangle",
+        buildDirectory: "native/build-scene240-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/scene240/babylon-lite-golden.png",
+            },
+            referenceTimeSeconds: 0.5,
+            actual: "artifacts/parity/scene240-native.png",
+            outputDirectory: "artifacts/parity/scene240",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "0.5",
+            },
+        },
+    },
+    {
         id: "scene116",
         name: "Scene 116 - No-Color Depth Views",
         source: "examples/scene116-no-color-depth.ts",
@@ -415,6 +464,30 @@ export const scenes: readonly SceneDefinition[] = [
                 drawIds: true,
                 triangleClusters: true,
                 diagnostics: false,
+            },
+        },
+    },
+    {
+        id: "scene245",
+        name: "Scene 245 - Recursive Skeletons",
+        source: "examples/scene245-recursive-skeletons.ts",
+        output: "generated/scene245",
+        title: "Babylon Lite Native - Recursive Skeletons",
+        buildDirectory: "native/build-scene245-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/scene245/babylon-lite-golden.png",
+            },
+            referenceTimeSeconds: 1,
+            actual: "artifacts/parity/scene245-native.png",
+            outputDirectory: "artifacts/parity/scene245",
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.01,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "1",
             },
         },
     },
