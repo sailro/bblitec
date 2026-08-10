@@ -69,6 +69,9 @@ Transmission uses an opaque scene-color copy, dielectric Fresnel
 `((ior-1)/(ior+1))²`, and Beer-Lambert volume attenuation
 `exp(log(color)/distance*thickness)`. Independent skybox, scene-color, IOR,
 volume, and scene 176 gates keep the dependency chain observable.
+The scene-color source is RGBA16F and remains linear through opaque and
+transmissive draws; exposure, tone mapping, gamma, and contrast run once in a
+final full-screen pass.
 
 Generated ground remains opt-in. Enabling it against the committed scene 13
 golden raises full MAD from `0.010` to `8.354`, confirming that the reference

@@ -160,6 +160,7 @@ struct GpuState {
     SDL_GPUGraphicsPipeline* cluster_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* blit_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* blit_msaa_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* image_processing_pipeline = nullptr;
     std::array<SDL_GPUGraphicsPipeline*, 2> depth_only_pipelines{};
     std::array<SDL_GPUGraphicsPipeline*, 2>
         depth_only_double_sided_pipelines{};
@@ -173,12 +174,15 @@ struct GpuState {
     SDL_GPUTexture* reflection_fallback = nullptr;
     std::vector<SDL_GPUTexture*> reflection_cubes;
     SDL_GPUTexture* color = nullptr;
+    SDL_GPUTexture* processed_color = nullptr;
     SDL_GPUTexture* transmission_color = nullptr;
     SDL_GPUTexture* msaa_color = nullptr;
     SDL_GPUTexture* depth = nullptr;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
     std::uint32_t color_width = 0;
     std::uint32_t color_height = 0;
+    std::uint32_t processed_color_width = 0;
+    std::uint32_t processed_color_height = 0;
     std::uint32_t transmission_width = 0;
     std::uint32_t transmission_height = 0;
     std::uint32_t msaa_color_width = 0;
@@ -197,6 +201,10 @@ struct GpuState {
 struct CameraPointerState {
     bool orbiting = false;
     bool panning = false;
+};
+
+struct ImageProcessingUniforms {
+    float parameters[4];
 };
 
 [[noreturn]] void gpu_error(const char* operation) {
@@ -1059,6 +1067,9 @@ void create_color(
     std::uint32_t height) {
     if (state.color && state.color_width == width && state.color_height == height) return;
     if (state.color) SDL_ReleaseGPUTexture(state.device, state.color);
+    if (state.processed_color) {
+        SDL_ReleaseGPUTexture(state.device, state.processed_color);
+    }
     if (state.msaa_color) SDL_ReleaseGPUTexture(state.device, state.msaa_color);
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
@@ -1075,11 +1086,87 @@ void create_color(
     state.color_height = height;
 }
 
-void create_transmission_color(
+void create_processed_color(
     GpuState& state,
     SDL_GPUTextureFormat format,
     std::uint32_t width,
     std::uint32_t height) {
+    if (
+        state.processed_color &&
+        state.processed_color_width == width &&
+        state.processed_color_height == height) {
+        return;
+    }
+    if (state.processed_color) {
+        SDL_ReleaseGPUTexture(state.device, state.processed_color);
+    }
+    SDL_GPUTextureCreateInfo info{};
+    info.type = SDL_GPU_TEXTURETYPE_2D;
+    info.format = format;
+    info.usage =
+        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+        SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    info.width = width;
+    info.height = height;
+    info.layer_count_or_depth = 1;
+    info.num_levels = 1;
+    info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    state.processed_color =
+        SDL_CreateGPUTexture(state.device, &info);
+    if (!state.processed_color) {
+        gpu_error("SDL_CreateGPUTexture processed color");
+    }
+    state.processed_color_width = width;
+    state.processed_color_height = height;
+}
+
+float inverse_image_processed_channel(
+    float value,
+    float exposure,
+    float contrast,
+    bool tone_mapping) {
+    float color = std::clamp(value, 0.0f, 1.0f);
+    if (contrast < 1.0f) {
+        color = contrast > 0.0f
+            ? std::clamp(
+                  (color - 0.5f * (1.0f - contrast)) / contrast,
+                  0.0f,
+                  1.0f)
+            : 0.5f;
+    } else if (contrast > 1.0f) {
+        const float mix_amount = contrast - 1.0f;
+        float low = 0.0f;
+        float high = 1.0f;
+        for (std::uint32_t index = 0; index < 16; ++index) {
+            const float middle = (low + high) * 0.5f;
+            const float smooth =
+                middle * middle * (3.0f - 2.0f * middle);
+            const float output =
+                middle + (smooth - middle) * mix_amount;
+            if (output < color) {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        color = (low + high) * 0.5f;
+    }
+    color = std::pow(color, 2.2f);
+    if (tone_mapping) {
+        color =
+            -std::log2(std::max(1.0f - color, 0.000001f)) /
+            1.59057903289794921875f;
+    }
+    return exposure > 0.0f ? color / exposure : color;
+}
+
+void create_transmission_color(
+    GpuState& state,
+    std::uint32_t width,
+    std::uint32_t height) {
+    constexpr std::uint32_t transmission_size = 1024;
+    width = transmission_size;
+    height = transmission_size;
     if (
         state.transmission_color &&
         state.transmission_width == width &&
@@ -1091,7 +1178,7 @@ void create_transmission_color(
     }
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
-    info.format = format;
+    info.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
     info.usage =
         SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
         SDL_GPU_TEXTUREUSAGE_SAMPLER;
@@ -1779,6 +1866,11 @@ void release(GpuState& state) {
     if (state.blit_msaa_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(state.device, state.blit_msaa_pipeline);
     }
+    if (state.image_processing_pipeline) {
+        SDL_ReleaseGPUGraphicsPipeline(
+            state.device,
+            state.image_processing_pipeline);
+    }
     for (SDL_GPUGraphicsPipeline* pipeline : state.depth_only_pipelines) {
         if (pipeline) {
             SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
@@ -1905,6 +1997,7 @@ bool run_gpu_engine(Engine& engine) {
         if (!SDL_ClaimWindowForGPUDevice(state.device, state.window)) gpu_error("SDL_ClaimWindowForGPUDevice");
         const SDL_GPUTextureFormat swapchain_format =
             SDL_GetGPUSwapchainTextureFormat(state.device, state.window);
+        const bool transmission_enabled = scene.transmission_enabled;
         if (
             environment_variable("BBLITE_MSAA") != "1" &&
             upstream::preferred_sample_count() >= 4 &&
@@ -1963,6 +2056,26 @@ bool run_gpu_engine(Engine& engine) {
                 pbr_texture_binding_count,
                 1,
                 "mainFragment");
+        SDL_GPUShader* image_processing_vertex_shader =
+            transmission_enabled
+                ? load_shader(
+                      state.device,
+                      "image-processing.vert",
+                      SDL_GPU_SHADERSTAGE_VERTEX,
+                      0,
+                      0,
+                      "mainVertex")
+                : nullptr;
+        SDL_GPUShader* image_processing_fragment_shader =
+            transmission_enabled
+                ? load_shader(
+                      state.device,
+                      "image-processing.frag",
+                      SDL_GPU_SHADERSTAGE_FRAGMENT,
+                      1,
+                      1,
+                      "mainFragment")
+                : nullptr;
         const upstream::RenderFeatures render_features =
             upstream::build_render_features(scene, engine);
         const bool use_standard_material =
@@ -2131,7 +2244,9 @@ bool run_gpu_engine(Engine& engine) {
         attributes[6] = SDL_GPUVertexAttribute{6, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 68};
         attributes[7] = SDL_GPUVertexAttribute{7, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 84};
         SDL_GPUColorTargetDescription color_target{};
-        color_target.format = swapchain_format;
+        color_target.format = transmission_enabled
+            ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
+            : swapchain_format;
         SDL_GPUGraphicsPipelineCreateInfo pipeline_info{};
         pipeline_info.vertex_shader = vertex_shader;
         pipeline_info.fragment_shader = fragment_shader;
@@ -2156,6 +2271,36 @@ bool run_gpu_engine(Engine& engine) {
         state.double_sided_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
         if (!state.double_sided_pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline double-sided");
+        }
+        if (
+            image_processing_vertex_shader &&
+            image_processing_fragment_shader) {
+            SDL_GPUColorTargetDescription image_processing_target{};
+            image_processing_target.format = swapchain_format;
+            SDL_GPUGraphicsPipelineCreateInfo image_processing_info{};
+            image_processing_info.vertex_shader =
+                image_processing_vertex_shader;
+            image_processing_info.fragment_shader =
+                image_processing_fragment_shader;
+            image_processing_info.primitive_type =
+                SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+            image_processing_info.rasterizer_state.fill_mode =
+                SDL_GPU_FILLMODE_FILL;
+            image_processing_info.rasterizer_state.cull_mode =
+                SDL_GPU_CULLMODE_NONE;
+            image_processing_info.multisample_state.sample_count =
+                SDL_GPU_SAMPLECOUNT_1;
+            image_processing_info.target_info.color_target_descriptions =
+                &image_processing_target;
+            image_processing_info.target_info.num_color_targets = 1;
+            state.image_processing_pipeline =
+                SDL_CreateGPUGraphicsPipeline(
+                    state.device,
+                    &image_processing_info);
+            if (!state.image_processing_pipeline) {
+                gpu_error(
+                    "SDL_CreateGPUGraphicsPipeline image processing");
+            }
         }
         if (standard_fragment_shader) {
             SDL_GPUGraphicsPipelineCreateInfo standard_pipeline_info =
@@ -2694,6 +2839,16 @@ bool run_gpu_engine(Engine& engine) {
         }
         SDL_ReleaseGPUShader(state.device, vertex_shader);
         SDL_ReleaseGPUShader(state.device, fragment_shader);
+        if (image_processing_vertex_shader) {
+            SDL_ReleaseGPUShader(
+                state.device,
+                image_processing_vertex_shader);
+        }
+        if (image_processing_fragment_shader) {
+            SDL_ReleaseGPUShader(
+                state.device,
+                image_processing_fragment_shader);
+        }
         if (standard_fragment_shader) {
             SDL_ReleaseGPUShader(state.device, standard_fragment_shader);
         }
@@ -3945,20 +4100,21 @@ bool run_gpu_engine(Engine& engine) {
                     gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
                 }
             } else {
-            const bool transmission_enabled =
-                scene.transmission_enabled &&
-                std::any_of(
-                    engine.materials.begin(),
-                    engine.materials.end(),
-                    [](const MaterialRecord& material) {
-                        return material.transmission_factor > 0.0f ||
-                            !material.transmission_texture.bytes.empty();
-                    });
             if (capture_frame || transmission_enabled) {
-                create_color(state, swapchain_format, width, height);
+                create_color(
+                    state,
+                    transmission_enabled
+                        ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
+                        : swapchain_format,
+                    width,
+                    height);
             }
             if (transmission_enabled) {
                 create_transmission_color(
+                    state,
+                    width,
+                    height);
+                create_processed_color(
                     state,
                     swapchain_format,
                     width,
@@ -3978,11 +4134,29 @@ bool run_gpu_engine(Engine& engine) {
                     : capture_frame || transmission_enabled
                         ? state.color
                         : swapchain;
-            color_info.clear_color = SDL_FColor{
-                scene.clear_color.r,
-                scene.clear_color.g,
-                scene.clear_color.b,
-                scene.clear_color.a};
+            color_info.clear_color = transmission_enabled
+                ? SDL_FColor{
+                      inverse_image_processed_channel(
+                          scene.clear_color.r,
+                          scene.environment.exposure,
+                          scene.environment.contrast,
+                          scene.environment.tone_mapping_enabled),
+                      inverse_image_processed_channel(
+                          scene.clear_color.g,
+                          scene.environment.exposure,
+                          scene.environment.contrast,
+                          scene.environment.tone_mapping_enabled),
+                      inverse_image_processed_channel(
+                          scene.clear_color.b,
+                          scene.environment.exposure,
+                          scene.environment.contrast,
+                          scene.environment.tone_mapping_enabled),
+                      scene.clear_color.a}
+                : SDL_FColor{
+                      scene.clear_color.r,
+                      scene.clear_color.g,
+                      scene.clear_color.b,
+                      scene.clear_color.a};
             color_info.load_op = SDL_GPU_LOADOP_CLEAR;
             color_info.store_op =
                 multisampled ? SDL_GPU_STOREOP_RESOLVE : SDL_GPU_STOREOP_STORE;
@@ -4009,7 +4183,9 @@ bool run_gpu_engine(Engine& engine) {
             const auto draw_skybox = [&] {
                 if (!state.skybox.enabled) return;
                 const upstream::SkyboxUniforms skybox =
-                    upstream::build_skybox_uniforms(scene.environment);
+                    upstream::build_skybox_uniforms(
+                        scene.environment,
+                        transmission_enabled);
                 SDL_PushGPUVertexUniformData(
                     command,
                     0,
@@ -4126,8 +4302,8 @@ bool run_gpu_engine(Engine& engine) {
                             0,
                             0,
                             0,
-                            width,
-                            height,
+                            state.transmission_width,
+                            state.transmission_height,
                         };
                         transmission_blit.load_op =
                             SDL_GPU_LOADOP_DONT_CARE;
@@ -4378,9 +4554,65 @@ bool run_gpu_engine(Engine& engine) {
                 }
             }
             SDL_EndGPURenderPass(pass);
+            SDL_GPUTexture* visible_color = state.color;
+            if (transmission_enabled) {
+                SDL_GPUColorTargetInfo image_processing_target{};
+                image_processing_target.texture =
+                    state.processed_color;
+                image_processing_target.load_op =
+                    SDL_GPU_LOADOP_DONT_CARE;
+                image_processing_target.store_op =
+                    SDL_GPU_STOREOP_STORE;
+                SDL_GPURenderPass* image_processing_pass =
+                    SDL_BeginGPURenderPass(
+                        command,
+                        &image_processing_target,
+                        1,
+                        nullptr);
+                SDL_BindGPUGraphicsPipeline(
+                    image_processing_pass,
+                    state.image_processing_pipeline);
+                const ImageProcessingUniforms image_processing{{
+                    scene.environment.exposure,
+                    scene.environment.contrast,
+                    scene.environment.tone_mapping_enabled
+                        ? 1.0f
+                        : 0.0f,
+                    0.0f,
+                }};
+                SDL_PushGPUFragmentUniformData(
+                    command,
+                    0,
+                    &image_processing,
+                    sizeof(image_processing));
+                const SDL_GPUTextureSamplerBinding source_binding{
+                    state.color,
+                    state.background_sampler,
+                };
+                SDL_BindGPUFragmentSamplers(
+                    image_processing_pass,
+                    0,
+                    &source_binding,
+                    1);
+                SDL_DrawGPUPrimitives(
+                    image_processing_pass,
+                    3,
+                    1,
+                    0,
+                    0);
+                SDL_EndGPURenderPass(image_processing_pass);
+                visible_color = state.processed_color;
+            }
             if (capture_frame || transmission_enabled) {
                 SDL_GPUBlitInfo blit{};
-                blit.source = SDL_GPUBlitRegion{state.color, 0, 0, 0, 0, width, height};
+                blit.source = SDL_GPUBlitRegion{
+                    visible_color,
+                    0,
+                    0,
+                    0,
+                    0,
+                    width,
+                    height};
                 blit.destination = SDL_GPUBlitRegion{swapchain, 0, 0, 0, 0, width, height};
                 blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
                 blit.flip_mode = SDL_FLIP_NONE;
@@ -4391,7 +4623,7 @@ bool run_gpu_engine(Engine& engine) {
                 save_texture_png(
                     state.device,
                     command,
-                    state.color,
+                    visible_color,
                     swapchain_format,
                     width,
                     height,

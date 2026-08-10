@@ -58,7 +58,8 @@ The current generated slice includes:
 - ordered opaque/transparent draw lists, camera matrices, uniforms, and
   frame-graph tasks
 - Standard/PBR geometry MRTs, depth-only passes, blits, and MSAA resolve
-- opaque scene-color copy followed by transmission/IOR/volume transparent draws
+- linear RGBA16F opaque/transmission rendering followed by one final
+  image-processing pass
 - reached custom WGSL lowered through a typed shader IR into reflected HLSL/MSL
 - pinned Tint compilation from native-specialized reached WGSL to HLSL/MSL;
   DXC emits SDL-layout-compatible DXIL/SPIR-V

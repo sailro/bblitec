@@ -79,6 +79,7 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /MaterialAlphaMode::blend/);
     assert.match(adapter.source, /alpha_cutoff/);
     assert.match(adapter.source, /normal_texture_scale/);
+    assert.match(adapter.source, /record\.baked_world_scale/);
     assert.match(adapter.source, /material\.specular_aa = true/);
     assert.match(adapter.source, /KHR_materials_transmission/);
     assert.match(adapter.source, /KHR_materials_ior/);

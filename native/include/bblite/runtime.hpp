@@ -325,6 +325,7 @@ struct MeshRecord {
     Vec3 dimensions{1.0f, 1.0f, 1.0f};
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
+    float baked_world_scale = 1.0f;
 };
 
 struct MaterialRecord {

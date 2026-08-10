@@ -12,6 +12,7 @@ import {
     depthOnlyFragmentWgsl,
     diagnosticClusterFragmentWgsl,
     diagnosticIdFragmentWgsl,
+    imageProcessingFragmentWgsl,
 } from "../src/shader-builtins-utility.js";
 import {
     backgroundGroundFragmentWgsl,
@@ -143,6 +144,8 @@ test("generates Tint utility WGSL entry points and bindings", () => {
     assert.match(blitVertexWgsl(), /@builtin\(vertex_index\)/);
     assert.match(blitFragmentWgsl(), /@group\(2\) @binding\(1\) var sourceSampler/);
     assert.match(blitFragmentWgsl(), /textureSampleLevel/);
+    assert.match(imageProcessingFragmentWgsl(), /source\.rgb \* uniforms\.parameters\.x/);
+    assert.match(imageProcessingFragmentWgsl(), /1\.590579/);
     assert.match(depthOnlyFragmentWgsl(), /@fragment\s+fn mainFragment\(\)/);
     assert.match(diagnosticIdFragmentWgsl(), /@group\(3\) @binding\(0\)/);
     assert.match(diagnosticIdFragmentWgsl(), /textureSample/);
@@ -159,6 +162,7 @@ test("generates Tint background WGSL for 2D and cube textures", () => {
     assert.match(skybox, /texture_cube<f32>/);
     assert.match(skybox, /textureSampleLevel/);
     assert.match(skybox, /primaryColorExposure/);
+    assert.match(skybox, /imageParameters\.w < 0\.5/);
 });
 
 test("generates the shared Tint material vertex interface", () => {
@@ -205,8 +209,9 @@ test("generates Tint PBR color, diagnostics, and geometry WGSL", () => {
     assert.match(color, /fn mainFragment/);
     assert.match(color, /@location\(6u\) v_118/);
     assert.match(color, /normalOptions\.w/);
-    assert.match(color, /sceneTransmission = pow/);
-    assert.match(color, /sceneTransmission = -log2/);
+    assert.doesNotMatch(color, /sceneTransmission = pow/);
+    assert.doesNotMatch(color, /sceneTransmission = -log2/);
+    assert.match(color, /imageProcessingOptions\.x/);
     assert.match(color, /@binding\(12u\) var sceneColorTexture/);
     assert.match(color, /refract\(/);
     assert.match(color, /exp\(FragmentUniforms\.volumeParams\.rgb \* thickness\)/);

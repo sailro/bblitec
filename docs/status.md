@@ -52,10 +52,10 @@ Thresholds live in `src/scene-registry.ts`; run one scene with
 | 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="120"> | 0.000 | 0.000 | custom shader blend, alpha test, discard |
 | 168 | <img src="images/scenes/scene168.png" alt="Scene 168 rendering" width="120"> | 0.068 | 0.389 | mirrored double-sided winding; 100% within one byte |
 | transmission-skybox | <img src="images/scenes/transmission-skybox.png" alt="PBR skybox rendering" width="120"> | 0.091 | 0.091 | independent PBR skybox-mode gate |
-| transmission-scene-color | <img src="images/scenes/transmission-scene-color.png" alt="Scene-color transmission" width="120"> | 0.384 | 2.873 | scene-color copy and transmission |
-| transmission-ior | <img src="images/scenes/transmission-ior.png" alt="Transmission IOR" width="120"> | 0.855 | 2.164 | dielectric Fresnel from IOR |
-| transmission-volume | <img src="images/scenes/transmission-volume.png" alt="Transmission volume" width="120"> | 2.584 | 6.896 | Beer-Lambert volume attenuation |
-| 176 | <img src="images/scenes/scene176.png" alt="Mosquito in Amber" width="120"> | 5.221 | 5.220 | integrated transmission, IOR, volume, and scene-color copy |
+| transmission-scene-color | <img src="images/scenes/transmission-scene-color.png" alt="Scene-color transmission" width="120"> | 0.044 | 0.208 | linear RGBA16F scene-color transmission |
+| transmission-ior | <img src="images/scenes/transmission-ior.png" alt="Transmission IOR" width="120"> | 0.722 | 1.814 | dielectric Fresnel from IOR |
+| transmission-volume | <img src="images/scenes/transmission-volume.png" alt="Transmission volume" width="120"> | 2.553 | 6.815 | Beer-Lambert volume attenuation |
+| 176 | <img src="images/scenes/scene176.png" alt="Mosquito in Amber" width="120"> | 0.418 | 0.418 | integrated linear transmission, IOR, volume, and scene-color copy |
 | 213 | <img src="images/scenes/scene213.png" alt="Scene 213 rendering" width="120"> | 0.001 | 0.012 | GridMaterial opaque/transparent families and ordered draw lists |
 | 248 | <img src="images/scenes/scene248.png" alt="Scene 248 rendering" width="120"> | 0.001 | 0.005 | external glTF and sampler modes |
 | 249 | <img src="images/scenes/scene249.png" alt="Scene 249 rendering" width="120"> | 0.001 | 0.028 | vertex-color alpha and mask cutoff |

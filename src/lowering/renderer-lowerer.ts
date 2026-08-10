@@ -24,6 +24,7 @@ import {
     depthOnlyFragmentWgsl,
     diagnosticClusterFragmentWgsl,
     diagnosticIdFragmentWgsl,
+    imageProcessingFragmentWgsl,
 } from "../shader-builtins-utility.js";
 import {
     backgroundGroundFragmentWgsl,
@@ -106,12 +107,18 @@ export class RendererLowerer {
             : "";
         const transmissionMaterialUniforms = options.transmission
             ? `        const float ior = std::max(material.index_of_refraction, 1.0001f);
+        const float thickness_scale =
+            item.mesh.value < engine.meshes.size()
+                ? engine.meshes[item.mesh.value].baked_world_scale
+                : 1.0f;
         result.refraction_params = {
             material.transmission_factor,
             1.0f / (material.has_volume && material.thickness > 0.0f
                 ? ior
                 : 1.0f),
-            material.has_volume ? material.thickness : 0.0f,
+            material.has_volume
+                ? material.thickness * thickness_scale
+                : 0.0f,
             1.0f / ior,
         };
         const float attenuation_distance =
@@ -268,6 +275,7 @@ struct PbrUniforms {
     std::array<float, 4> environment_factors{};
     std::array<float, 4> material_options{};
     std::array<float, 4> normal_options{};
+    std::array<float, 4> image_processing_options{};
 ${transmissionUniformFields}\
     std::array<std::array<float, 4>, 9> spherical_harmonics{};
 };
@@ -371,7 +379,9 @@ BackgroundUniforms build_background_uniforms(
     const EnvironmentState& environment,
     const CameraRecord& camera);
 SkyboxPlan build_skybox_plan(const EnvironmentState& environment);
-SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment);
+SkyboxUniforms build_skybox_uniforms(
+    const EnvironmentState& environment,
+    bool linear_image_processing);
 
 } // namespace bbl::upstream
 `,
@@ -937,6 +947,8 @@ PbrUniforms build_pbr_uniforms(
         scene.environment.lod_generation_scale,
         scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
     };
+    result.image_processing_options[0] =
+        scene.transmission_enabled ? 1.0f : 0.0f;
     if (item.material.value < engine.materials.size()) {
         const MaterialRecord& material = engine.materials[item.material.value];
         result.base_color_factor = {
@@ -1265,7 +1277,9 @@ SkyboxPlan build_skybox_plan(const EnvironmentState& environment) {
     return result;
 }
 
-SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
+SkyboxUniforms build_skybox_uniforms(
+    const EnvironmentState& environment,
+    bool linear_image_processing) {
     SkyboxUniforms result;
     result.primary_color_exposure = {
         environment.primary_color.r,
@@ -1283,7 +1297,7 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
         environment.contrast,
         environment.skybox_uses_environment ? 1.0f : 0.0f,
         environment.tone_mapping_enabled ? 1.0f : 0.0f,
-        0.0f,
+        linear_image_processing ? 1.0f : 0.0f,
     };
     return result;
 }
@@ -1495,7 +1509,8 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
             }
             convertedPbr =
                 convertedPbr.slice(0, transmissionStart) +
-                "  let v_104 = (select(((((((v_89 * v_52) * v_34) + v_101) + v_102) + ((((v_70 * v_52) * v_71) * v_81) * v_69)) + v_40), v_31, vec3<bool>(v_103, v_103, v_103)) * FragmentUniforms.environmentFactors.x);\n" +
+                "  let linearColor = select(((((((v_89 * v_52) * v_34) + v_101) + v_102) + ((((v_70 * v_52) * v_71) * v_81) * v_69)) + v_40), v_31, vec3<bool>(v_103, v_103, v_103));\n" +
+                "  let v_104 = linearColor * FragmentUniforms.environmentFactors.x;\n" +
                 convertedPbr.slice(transmissionEnd);
         }
         const pbrProvenance = this.context.provenance(
@@ -1544,6 +1559,20 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
                     ),
                 ),
             });
+        }
+        if (options.transmission) {
+            result.push(
+                {
+                    output:
+                        "upstream/shaders/image-processing.vert.native.wgsl",
+                    data: blitVertexWgsl(),
+                },
+                {
+                    output:
+                        "upstream/shaders/image-processing.frag.native.wgsl",
+                    data: imageProcessingFragmentWgsl(),
+                },
+            );
         }
         if (options.gridMaterial) {
             const provenance = this.context.provenance(
@@ -1791,7 +1820,7 @@ SkyboxUniforms build_skybox_uniforms(const EnvironmentState& environment) {
                     upstreamMarker:
                         "updateTransmissionTexture(state, engine)",
                     nativeBehavior:
-                        "PAL copies completed opaque scene color before the first transmissive draw, then resumes the render pass.",
+                        "PAL renders linear RGBA16F scene color, copies completed opaque color and its pinned mip chain before the first transmissive draw, then applies image processing once to the final visible output.",
                     validation: [
                         "source marker assertion",
                         "scene-color gate parity",

@@ -102,29 +102,31 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
     if (uniforms.imageParameters.y < 0.5) {
         color *= uniforms.primaryColorExposure.rgb;
     }
-    color *= uniforms.primaryColorExposure.a;
-    if (uniforms.imageParameters.z > 0.5) {
-        color = vec3<f32>(1.0) - exp2(-1.590579 * color);
-    }
-    color = pow(
-        max(color, vec3<f32>(0.0)),
-        vec3<f32>(1.0 / 2.2),
-    );
-    color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
-    let highContrast =
-        color * color * (vec3<f32>(3.0) - 2.0 * color);
-    if (uniforms.imageParameters.x < 1.0) {
-        color = mix(
-            vec3<f32>(0.5),
-            color,
-            uniforms.imageParameters.x,
+    if (uniforms.imageParameters.w < 0.5) {
+        color *= uniforms.primaryColorExposure.a;
+        if (uniforms.imageParameters.z > 0.5) {
+            color = vec3<f32>(1.0) - exp2(-1.590579 * color);
+        }
+        color = pow(
+            max(color, vec3<f32>(0.0)),
+            vec3<f32>(1.0 / 2.2),
         );
-    } else {
-        color = mix(
-            color,
-            highContrast,
-            uniforms.imageParameters.x - 1.0,
-        );
+        color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+        let highContrast =
+            color * color * (vec3<f32>(3.0) - 2.0 * color);
+        if (uniforms.imageParameters.x < 1.0) {
+            color = mix(
+                vec3<f32>(0.5),
+                color,
+                uniforms.imageParameters.x,
+            );
+        } else {
+            color = mix(
+                color,
+                highContrast,
+                uniforms.imageParameters.x - 1.0,
+            );
+        }
     }
     return vec4<f32>(max(color, vec3<f32>(0.0)), 1.0);
 }

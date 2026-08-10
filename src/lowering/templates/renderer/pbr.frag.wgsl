@@ -53,6 +53,7 @@ struct S {
   environmentFactors : vec4<f32>,
   materialOptions : vec4<f32>,
   normalOptions : vec4<f32>,
+  imageProcessingOptions : vec4<f32>,
   refractionParams : vec4<f32>,
   volumeParams : vec4<f32>,
   transmissionOptions : vec4<f32>,
@@ -285,36 +286,24 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
       0.0f,
       f32(textureNumLevels(sceneColorTexture) - 1u),
     );
-    var sceneTransmission = textureSampleLevel(
+    let sceneTransmission = textureSampleLevel(
       sceneColorTexture,
       sceneColorSampler,
       refractedUv,
       refractionLod,
-    ).rgb;
-    sceneTransmission = pow(
-      max(sceneTransmission, vec3<f32>(0.0f)),
-      vec3<f32>(2.2f),
-    );
-    if (FragmentUniforms.environmentFactors.w > 0.5f) {
-      sceneTransmission = -log2(
-        max(vec3<f32>(1.0f) - sceneTransmission, vec3<f32>(0.000001f)),
-      ) / 1.59057903289794921875f;
-    }
-    sceneTransmission =
-      sceneTransmission /
-      max(FragmentUniforms.environmentFactors.x, 0.0001f) *
-      FragmentUniforms.materialFactors.w;
+    ).rgb * FragmentUniforms.materialFactors.w;
     let absorption = exp(FragmentUniforms.volumeParams.rgb * thickness);
     let environmentReflectance =
-      (((v_76 * v_95.x) + (v_75 * v_96)) * v_98 * v_99 * v_99) * v_100;
-    let transmitted = sceneTransmission * v_31 * transmissionIntensity *
+      ((v_76 * v_95.x) + (v_75 * v_96)) * v_98 * v_99 * v_99;
+    let transmitted = sceneTransmission * v_52 * transmissionIntensity *
       absorption * (vec3<f32>(1.0f) - environmentReflectance);
     let opaqueRatio = 1.0f - transmissionIntensity;
     shadedColor = ((v_89 * v_52) * v_34) * opaqueRatio + v_101 + v_102 +
       ((((v_70 * v_52) * v_71) * v_81) * v_69) * opaqueRatio +
       transmitted + v_40;
   }
-  let v_104 = (select(shadedColor, v_31, vec3<bool>(v_103, v_103, v_103)) * FragmentUniforms.environmentFactors.x);
+  let linearColor = select(shadedColor, v_31, vec3<bool>(v_103, v_103, v_103));
+  let v_104 = linearColor * FragmentUniforms.environmentFactors.x;
   var v_105 : vec3<f32>;
   if ((FragmentUniforms.environmentFactors.w > 0.5f)) {
     v_105 = (vec3<f32>(1.0f) - exp2((v_104 * -1.59057903289794921875f)));
@@ -331,6 +320,11 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
     v_108 = mix(v_106, ((v_106 * v_106) * (vec3<f32>(3.0f) - (v_106 * 2.0f))), vec3<f32>(v_109, v_109, v_109));
   }
   let v_110 = v_108;
+  let finalColor = select(
+    v_108,
+    linearColor,
+    FragmentUniforms.imageProcessingOptions.x > 0.5f,
+  );
   let v_111 = (v_37 > 1.5f);
   var v_112 : f32;
   if (v_111) {
@@ -339,7 +333,7 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
   } else {
     v_112 = v_32;
   }
-  v = vec4<f32>(v_110.x, v_110.y, v_110.z, select(1.0f, v_112, v_111));
+  v = vec4<f32>(finalColor.x, finalColor.y, finalColor.z, select(1.0f, v_112, v_111));
 }
 
 @fragment

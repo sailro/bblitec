@@ -47,6 +47,53 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
 `;
 }
 
+export function imageProcessingFragmentWgsl(): string {
+    return `@group(2) @binding(0) var sourceTexture: texture_2d<f32>;
+@group(2) @binding(1) var sourceSampler: sampler;
+
+struct ImageProcessingUniforms {
+    parameters: vec4<f32>,
+}
+@group(3) @binding(0) var<uniform> uniforms: ImageProcessingUniforms;
+
+struct FragmentInput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@fragment
+fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
+    let source = textureSampleLevel(
+        sourceTexture,
+        sourceSampler,
+        input.uv,
+        0.0,
+    );
+    var color = source.rgb * uniforms.parameters.x;
+    if (uniforms.parameters.z > 0.5) {
+        color = vec3<f32>(1.0) - exp2(-1.590579 * color);
+    }
+    color = clamp(
+        pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2)),
+        vec3<f32>(0.0),
+        vec3<f32>(1.0),
+    );
+    let highContrast =
+        color * color * (vec3<f32>(3.0) - 2.0 * color);
+    if (uniforms.parameters.y < 1.0) {
+        color = mix(vec3<f32>(0.5), color, uniforms.parameters.y);
+    } else {
+        color = mix(
+            color,
+            highContrast,
+            uniforms.parameters.y - 1.0,
+        );
+    }
+    return vec4<f32>(max(color, vec3<f32>(0.0)), source.a);
+}
+`;
+}
+
 export function depthOnlyFragmentWgsl(): string {
     return `@fragment
 fn mainFragment() {

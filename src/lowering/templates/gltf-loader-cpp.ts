@@ -648,6 +648,20 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             MeshRecord record;
             record.primitive = PrimitiveKind::gltf;
             record.geometry = static_cast<std::uint32_t>(engine.geometries.size() - 1);
+            record.baked_world_scale = std::max({
+                std::sqrt(
+                    matrix[0] * matrix[0] +
+                    matrix[1] * matrix[1] +
+                    matrix[2] * matrix[2]),
+                std::sqrt(
+                    matrix[4] * matrix[4] +
+                    matrix[5] * matrix[5] +
+                    matrix[6] * matrix[6]),
+                std::sqrt(
+                    matrix[8] * matrix[8] +
+                    matrix[9] * matrix[9] +
+                    matrix[10] * matrix[10]),
+            });
             const std::size_t material_index = unsigned_or(primitive, "material", 0);
             if (material_index < materials.size()) record.material = materials[material_index];
             engine.meshes.push_back(record);
