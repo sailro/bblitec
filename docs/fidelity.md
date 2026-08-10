@@ -174,12 +174,17 @@ Standard double-sided materials disable culling but do not flip fragment
 normals. Matching that pinned distinction reduced scene 145 full-resolution
 view/world-normal MAD from `1.459`/`1.446` to `0.002`/`0.003`.
 
-Scenes 145 and 146 display twelve preview tiles produced by downscaling each
-full-resolution MSAA attachment by 6x. Their displayed full-image MAD therefore
-mixes attachment correctness with preview filtering. Use
-`npm run scene -- geometry scene145|scene146` for the full-resolution
-attachment oracle; do not describe this repository diagnostic distinction as
-a renderer feature or infer that MSAA is the root cause.
+Scenes 145 and 146 resolve each geometry attachment at full resolution, then
+bilinearly downscale it into one of twelve preview regions on a 4x-MSAA target
+before the final mosaic resolve. Babylon Lite floors each normalized viewport
+edge to integer target pixels and applies the same rectangle as a scissor.
+SDL_GPU previously received fractional viewport bounds without that scissor,
+which introduced partial-sample coverage at tile boundaries. Preserving the
+JavaScript double-precision viewport expressions and the pinned floor/scissor
+contract reduced scene 145 full MAD from `1.077` to `0.063` and scene 146 from
+`0.845` to `0.021`, without another pass or a scene-specific path. The
+full-resolution attachment maxima remain `0.067` and `0.057`; use
+`npm run scene -- geometry scene145|scene146` to inspect them individually.
 
 The diagnostic comparison report joins each final-image hotspot to the
 available WebGPU-oracle buffer MADs and its attributed shader variant. Base

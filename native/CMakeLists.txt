@@ -118,6 +118,18 @@ else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PBR_RENDERER=0)
 endif()
 
+if("renderer:geometry-output" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_GEOMETRY_OUTPUT=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_GEOMETRY_OUTPUT=0
+    )
+endif()
+
 if(
     "loader:gltf" IN_LIST BBLITE_RUNTIME_FEATURES OR
     "loader:babylon" IN_LIST BBLITE_RUNTIME_FEATURES

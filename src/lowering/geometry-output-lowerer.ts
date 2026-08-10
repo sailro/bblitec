@@ -23,7 +23,16 @@ export class GeometryOutputLowerer {
                 throw new Error(`Pinned geometry renderer contract changed: ${marker}.`);
             }
         }
-        for (const marker of ["resolveTexture", "viewport", "sourceTexture"]) {
+        for (const marker of [
+            "resolveTexture",
+            "viewport",
+            "sourceTexture",
+            "const x = Math.floor(v.x * w);",
+            "const vw = Math.floor((v.x + v.width) * w) - x;",
+            "const yTop = Math.floor(v.y * h);",
+            "const vh = Math.floor((v.y + v.height) * h) - yTop;",
+            "pass.setScissorRect(v.x, v.y, v.w, v.h);",
+        ]) {
             if (!copy.includes(marker)) {
                 throw new Error(`Pinned copy task contract changed: ${marker}.`);
             }
@@ -54,17 +63,73 @@ export class GeometryOutputLowerer {
             modulePath: geometryModule,
             symbolName:
                 "createGeometryRendererTask,createRenderTarget,createRenderTargetTexture,createRenderTask,createCopyToTextureTask,addTask,addTaskAtStart,RenderTask.addMesh",
-            header: "",
+            header: `#pragma once
+
+#include <bblite/runtime.hpp>
+
+#include <cstdint>
+
+namespace bbl::upstream {
+
+struct PixelViewport {
+    std::int32_t x = 0;
+    std::int32_t y = 0;
+    std::int32_t width = 0;
+    std::int32_t height = 0;
+};
+
+PixelViewport resolve_copy_viewport(
+    const NormalizedViewport& viewport,
+    std::uint32_t target_width,
+    std::uint32_t target_height);
+
+} // namespace bbl::upstream
+`,
             source: `// ${this.context.provenance(
                 geometryModule,
                 "createGeometryRendererTask",
                 `${renderModule}#createRenderTask,RenderTask.addMesh, ${rttModule}#createRenderTargetTexture, ${copyModule}#createCopyToTextureTask, and ${actionsModule}#addTask,addTaskAtStart`,
             )}
-#include <bblite/runtime.hpp>
+#include <bblite/upstream/frame_graph_geometry.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <utility>
+
+namespace bbl::upstream {
+
+PixelViewport resolve_copy_viewport(
+    const NormalizedViewport& viewport,
+    std::uint32_t target_width,
+    std::uint32_t target_height) {
+    const auto pixel = [](
+                           double coordinate,
+                           std::uint32_t extent) -> std::int32_t {
+        return static_cast<std::int32_t>(
+            std::floor(
+                coordinate *
+                static_cast<double>(extent)));
+    };
+    const std::int32_t x = pixel(viewport.x, target_width);
+    const std::int32_t right =
+        pixel(viewport.x + viewport.width, target_width);
+    const std::int32_t y_top =
+        pixel(viewport.y, target_height);
+    const std::int32_t bottom =
+        pixel(viewport.y + viewport.height, target_height);
+    const std::int32_t viewport_height = bottom - y_top;
+    return PixelViewport{
+        x,
+        static_cast<std::int32_t>(target_height) -
+            y_top -
+            viewport_height,
+        right - x,
+        viewport_height,
+    };
+}
+
+} // namespace bbl::upstream
 
 namespace bbl {
 

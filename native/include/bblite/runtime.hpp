@@ -150,10 +150,10 @@ struct GeometryTextureDescription {
 };
 
 struct NormalizedViewport {
-    float x = 0.0f;
-    float y = 0.0f;
-    float width = 1.0f;
-    float height = 1.0f;
+    double x = 0.0;
+    double y = 0.0;
+    double width = 1.0;
+    double height = 1.0;
 };
 
 struct RenderTargetOptions {

@@ -584,6 +584,10 @@ test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
     assert.match(result.cpp, /bbl::geometry_task_texture/);
     assert.match(result.cpp, /bbl::create_copy_to_texture_task/);
     assert.match(result.cpp, /bbl::add_task_at_start/);
+    assert.match(
+        result.cpp,
+        /NormalizedViewport\{\(1\.0 \/ 6\.0\), 0\.0, \(1\.0 \/ 6\.0\), 0\.15\}/,
+    );
     assert.ok(
         result.manifest.generatedSources.includes(
             "upstream/src/frame_graph_geometry.cpp",

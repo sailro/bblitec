@@ -167,6 +167,9 @@ Important contracts:
 - alpha mode, cutoff, blending, culling, and coverage are material-driven
 - PAL executes generated draw-command indices and pipeline keys rather than
   rescanning every mesh once per pipeline
+- frame-graph viewport copies preserve Babylon Lite's double-precision
+  normalized coordinates, floor them to integer target bounds, and apply the
+  same scissor rectangle before drawing
 - screenshot capture uses a readable target, then blits to the swapchain
 - capture is deferred one frame when scene topology changes so D3D12 upload
   and readback commands do not share an invalid command list

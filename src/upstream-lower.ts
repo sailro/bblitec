@@ -287,6 +287,7 @@ class GeneratedSourceWriter {
                 "upstream/src/frame_graph_geometry.cpp",
                 new GeometryOutputLowerer(context).lowerTaskRecords(),
                 generated,
+                "upstream/include/bblite/upstream/frame_graph_geometry.hpp",
             );
             generated.push(
                 {

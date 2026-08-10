@@ -480,6 +480,16 @@ test("generates typed geometry task records and PBR MRT shaders", () => {
     assert.match(tasks.source, /create_render_target_texture/);
     assert.match(tasks.source, /add_render_task_mesh/);
     assert.match(tasks.source, /scene\.tasks\.insert/);
+    assert.match(tasks.header, /struct PixelViewport/);
+    assert.match(tasks.source, /std::floor/);
+    assert.match(
+        tasks.source,
+        /pixel\(viewport\.x \+ viewport\.width, target_width\)/,
+    );
+    assert.match(
+        tasks.source,
+        /static_cast<std::int32_t>\(target_height\) -\s*y_top -\s*viewport_height/,
+    );
     const geometry = shaders.find((shader) =>
         shader.output.endsWith("pbr-geometry-0.frag.native.wgsl"),
     );

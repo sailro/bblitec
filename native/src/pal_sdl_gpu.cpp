@@ -7,6 +7,9 @@
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/camera_controls.hpp>
 #include <bblite/upstream/camera_math.hpp>
+#if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
+#include <bblite/upstream/frame_graph_geometry.hpp>
+#endif
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/render_capabilities.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
@@ -4423,6 +4426,8 @@ bool run_gpu_engine(Engine& engine) {
 
                     const RenderTargetRecord& target_record =
                         engine.render_targets[copy.target.value];
+                    const GpuRenderTarget& target =
+                        state.render_targets[copy.target.value];
                     SDL_GPUColorTargetInfo blit_target{};
                     blit_target.texture =
                         target_texture(copy.target, false);
@@ -4442,29 +4447,39 @@ bool run_gpu_engine(Engine& engine) {
                         target_record.samples == 4
                             ? state.blit_msaa_pipeline
                             : state.blit_pipeline);
-                    if (force_full_viewport) {
-                        const SDL_GPUViewport viewport{
-                            0.0f,
-                            0.0f,
-                            static_cast<float>(width),
-                            static_cast<float>(height),
-                            0.0f,
-                            1.0f,
-                        };
-                        SDL_SetGPUViewport(blit_pass, &viewport);
-                    } else if (copy.has_viewport) {
-                        SDL_GPUViewport viewport{
-                            copy.viewport.x * width,
-                            (1.0f -
-                             copy.viewport.y -
-                             copy.viewport.height) *
-                                height,
-                            copy.viewport.width * width,
-                            copy.viewport.height * height,
+                    if (force_full_viewport || copy.has_viewport) {
+#if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
+                        const NormalizedViewport normalized_viewport =
+                            force_full_viewport
+                                ? NormalizedViewport{}
+                                : copy.viewport;
+                        const upstream::PixelViewport pixel_viewport =
+                            upstream::resolve_copy_viewport(
+                                normalized_viewport,
+                                target.width,
+                                target.height);
+                        const SDL_GPUViewport gpu_viewport{
+                            static_cast<float>(pixel_viewport.x),
+                            static_cast<float>(pixel_viewport.y),
+                            static_cast<float>(pixel_viewport.width),
+                            static_cast<float>(pixel_viewport.height),
                             0.0f,
                             1.0f,
                         };
-                        SDL_SetGPUViewport(blit_pass, &viewport);
+                        SDL_SetGPUViewport(
+                            blit_pass,
+                            &gpu_viewport);
+                        const SDL_Rect scissor{
+                            pixel_viewport.x,
+                            pixel_viewport.y,
+                            pixel_viewport.width,
+                            pixel_viewport.height,
+                        };
+                        SDL_SetGPUScissor(blit_pass, &scissor);
+#else
+                        throw std::runtime_error(
+                            "Viewport copy requires geometry-output support.");
+#endif
                     }
                     const SDL_GPUTextureSamplerBinding texture_binding{
                         source_texture(copy.source),

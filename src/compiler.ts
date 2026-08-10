@@ -1803,7 +1803,7 @@ class Compiler {
         let viewport = "bbl::NormalizedViewport{}";
         if (viewportExpression) {
             const viewportObject = this.expectObjectLiteral(viewportExpression);
-            viewport = `bbl::NormalizedViewport{${this.requiredObjectNumber(viewportObject, "x")}, ${this.requiredObjectNumber(viewportObject, "y")}, ${this.requiredObjectNumber(viewportObject, "width")}, ${this.requiredObjectNumber(viewportObject, "height")}}`;
+            viewport = `bbl::NormalizedViewport{${this.requiredObjectNumber(viewportObject, "x", "double")}, ${this.requiredObjectNumber(viewportObject, "y", "double")}, ${this.requiredObjectNumber(viewportObject, "width", "double")}, ${this.requiredObjectNumber(viewportObject, "height", "double")}}`;
         }
         return `bbl::CopyTaskOptions{${this.cppString(
             nameExpression ? this.compileStringLiteral(nameExpression) : "copy-task",
@@ -2751,21 +2751,26 @@ class Compiler {
         this.fail(unwrapped, "Expected a Color4 array [r, g, b, a] or object { r, g, b, a }.");
     }
 
-    private compileNumber(expression: ts.Expression): string {
+    private compileNumber(
+        expression: ts.Expression,
+        precision: "float" | "double" = "float",
+    ): string {
         const unwrapped = this.resolveStaticExpression(expression);
         if (ts.isNumericLiteral(unwrapped)) {
             const value = Number(unwrapped.text);
             if (!Number.isFinite(value)) {
                 this.fail(unwrapped, `Invalid numeric literal '${unwrapped.text}'.`);
             }
-            return this.floatLiteral(value);
+            return precision === "float"
+                ? this.floatLiteral(value)
+                : this.doubleLiteral(value);
         }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
             if (unwrapped.operator !== ts.SyntaxKind.MinusToken && unwrapped.operator !== ts.SyntaxKind.PlusToken) {
                 this.fail(unwrapped, "Only unary plus and minus are supported in numeric expressions.");
             }
             const operator = unwrapped.operator === ts.SyntaxKind.MinusToken ? "-" : "+";
-            return `(${operator}${this.compileNumber(unwrapped.operand)})`;
+            return `(${operator}${this.compileNumber(unwrapped.operand, precision)})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
             const operator = new Map<ts.SyntaxKind, string>([
@@ -2777,7 +2782,7 @@ class Compiler {
             if (!operator) {
                 this.fail(unwrapped.operatorToken, "Only +, -, *, and / are supported in numeric expressions.");
             }
-            return `(${this.compileNumber(unwrapped.left)} ${operator} ${this.compileNumber(unwrapped.right)})`;
+            return `(${this.compileNumber(unwrapped.left, precision)} ${operator} ${this.compileNumber(unwrapped.right, precision)})`;
         }
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
@@ -2785,7 +2790,9 @@ class Compiler {
             unwrapped.expression.text === "Math" &&
             unwrapped.name.text === "PI"
         ) {
-            return "bbl::pi";
+            return precision === "float"
+                ? "bbl::pi"
+                : this.doubleLiteral(Math.PI);
         }
         if (
             ts.isCallExpression(unwrapped) &&
@@ -2795,7 +2802,7 @@ class Compiler {
             unwrapped.expression.name.text === "sqrt" &&
             unwrapped.arguments.length === 1
         ) {
-            return `std::sqrt(${this.compileNumber(unwrapped.arguments[0]!)})`;
+            return `std::sqrt(${this.compileNumber(unwrapped.arguments[0]!, precision)})`;
         }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookup(unwrapped);
@@ -2844,12 +2851,16 @@ class Compiler {
         return undefined;
     }
 
-    private requiredObjectNumber(object: ts.ObjectLiteralExpression, name: string): string {
+    private requiredObjectNumber(
+        object: ts.ObjectLiteralExpression,
+        name: string,
+        precision: "float" | "double" = "float",
+    ): string {
         const value = this.objectProperty(object, name);
         if (!value) {
             this.fail(object, `Object literal is missing numeric property '${name}'.`);
         }
-        return this.compileNumber(value);
+        return this.compileNumber(value, precision);
     }
 
     private propertyName(name: ts.PropertyName): string | undefined {
@@ -3107,7 +3118,7 @@ class Compiler {
                 id: "sdl-gpu-frame-graph",
                 category: "rendering",
                 sourceSemantics: `Babylon Lite frame-graph tasks execute with ${this.geometryOutputTasks.length} typed geometry renderer task(s), explicit render lists, render-target textures, and ordered copy/resolve tasks.`,
-                nativeSemantics: "Generated task records preserve cameras, material overrides, geometry attachment order, depth-only targets, and shader semantics while PAL executes SDL_GPU passes, reverse-depth views, MSAA resolve, and viewport blits.",
+                nativeSemantics: "Generated task records preserve cameras, material overrides, geometry attachment order, depth-only targets, shader semantics, and source-derived integer viewport/scissor bounds while PAL executes SDL_GPU passes, reverse-depth views, MSAA resolve, and viewport blits.",
                 risk: "high",
                 validation: [
                     "geometry task compiler tests",
@@ -3228,6 +3239,13 @@ class Compiler {
             return `${value}.0f`;
         }
         return `${value}f`;
+    }
+
+    private doubleLiteral(value: number): string {
+        if (Number.isInteger(value)) {
+            return `${value}.0`;
+        }
+        return `${value}`;
     }
 
     private emit(line: string): void {
