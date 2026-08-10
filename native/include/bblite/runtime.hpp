@@ -592,6 +592,14 @@ struct Scene {
 struct GroundOptions {
     float width = 1.0f;
     float height = 1.0f;
+    std::uint32_t subdivisions = 1;
+    Vec2 uv_scale{1.0f, 1.0f};
+};
+
+struct BoxOptions {
+    float width = 1.0f;
+    float height = 1.0f;
+    float depth = 1.0f;
 };
 
 struct PlaneOptions {
@@ -601,7 +609,9 @@ struct PlaneOptions {
 
 struct SphereOptions {
     std::uint32_t segments = 32;
-    float diameter = 1.0f;
+    float diameter_x = 1.0f;
+    float diameter_y = 1.0f;
+    float diameter_z = 1.0f;
 };
 
 struct TorusOptions {
@@ -630,7 +640,7 @@ Engine create_engine(EngineOptions options = {});
 Scene create_scene_context(Engine& engine);
 std::string asset_path(const std::string& relative_path);
 
-MeshHandle create_box(Engine& engine, float size = 1.0f);
+MeshHandle create_box(Engine& engine, BoxOptions options = {});
 MeshHandle create_ground(Engine& engine, GroundOptions options = {});
 MeshHandle create_plane(Engine& engine, PlaneOptions options = {});
 MeshHandle create_sphere(Engine& engine, SphereOptions options = {});

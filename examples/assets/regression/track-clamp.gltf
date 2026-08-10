@@ -1,0 +1,258 @@
+{
+  "asset": {
+    "version": "2.0"
+  },
+  "extensionsUsed": [
+    "KHR_materials_unlit"
+  ],
+  "buffers": [
+    {
+      "uri": "data:application/octet-stream;base64,mpkZvwAAAL8AAAAAmpkZPwAAAL8AAAAAAAAAAJqZGT8AAAAAAAABAAIAAAAAAIA/AAAAQAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAABAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAA8wQ1P/MENT8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwAAAAAAAIA/AAAAQAAAAAAAAIA/AAAAAAAAgEAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPw==",
+      "byteLength": 208
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 36
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 36,
+      "byteLength": 6
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 44,
+      "byteLength": 8
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 52,
+      "byteLength": 24
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 76,
+      "byteLength": 8
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 84,
+      "byteLength": 32
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 116,
+      "byteLength": 36
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 152,
+      "byteLength": 8
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 160,
+      "byteLength": 8
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 168,
+      "byteLength": 8
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 176,
+      "byteLength": 32
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "min": [
+        -0.6,
+        -0.5,
+        0
+      ],
+      "max": [
+        0.6,
+        0.6,
+        0
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 2,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5126,
+      "count": 2,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 4,
+      "componentType": 5126,
+      "count": 2,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 5,
+      "componentType": 5126,
+      "count": 2,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 6,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 7,
+      "componentType": 5126,
+      "count": 2,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 8,
+      "componentType": 5126,
+      "count": 2,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 9,
+      "componentType": 5126,
+      "count": 2,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 10,
+      "componentType": 5126,
+      "count": 2,
+      "type": "VEC4"
+    }
+  ],
+  "materials": [
+    {
+      "doubleSided": true,
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.1,
+          0.7,
+          1,
+          1
+        ]
+      },
+      "extensions": {
+        "KHR_materials_unlit": {}
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0
+          },
+          "targets": [
+            {
+              "POSITION": 6
+            }
+          ],
+          "indices": 1,
+          "material": 0
+        }
+      ],
+      "weights": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0
+    },
+    {
+    }
+  ],
+  "animations": [
+    {
+      "samplers": [
+        {
+          "input": 2,
+          "output": 3,
+          "interpolation": "LINEAR"
+        },
+        {
+          "input": 4,
+          "output": 5,
+          "interpolation": "LINEAR"
+        },
+        {
+          "input": 7,
+          "output": 8,
+          "interpolation": "LINEAR"
+        },
+        {
+          "input": 9,
+          "output": 10,
+          "interpolation": "LINEAR"
+        }
+      ],
+      "channels": [
+        {
+          "sampler": 0,
+          "target": {
+            "node": 0,
+            "path": "translation"
+          }
+        },
+        {
+          "sampler": 1,
+          "target": {
+            "node": 0,
+            "path": "rotation"
+          }
+        },
+        {
+          "sampler": 2,
+          "target": {
+            "node": 0,
+            "path": "weights"
+          }
+        },
+        {
+          "sampler": 3,
+          "target": {
+            "node": 1,
+            "path": "rotation"
+          }
+        }
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "nodes": [
+        0,
+        1
+      ]
+    }
+  ],
+  "scene": 0
+}

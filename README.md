@@ -17,7 +17,8 @@ Unsupported syntax and APIs fail at compile time with source locations.
 
 - Pinned upstream: `@babylonjs/lite@1.18.0`,
   commit `7184feda683072980735f9a180e6f567ee5717ba`.
-- 26 curated Babylon Lite parity scenes plus BoomBox and primitives.
+- 26 curated Babylon Lite parity scenes plus BoomBox, primitives, and
+  project-owned differential regression gates.
 - External glTF/GLB and a reached `.babylon` slice.
 - Generated Standard/PBR/Grid rendering, ordered draw lists, custom alpha
   variants, frame-graph MRT/depth passes, negative transforms, runtime scene

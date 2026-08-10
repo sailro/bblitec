@@ -59,7 +59,43 @@ $env:PATH = "$(Split-Path -Parent $Dxc);$env:PATH"
 
 $cacheRoot = Join-Path $root "artifacts\shader-cache"
 New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null
-$compilerHash = (Get-FileHash $Dxc -Algorithm SHA256).Hash
+$dxilFlags = @("-O3")
+$spirvFlags = @(
+    "-spirv",
+    "-fspv-target-env=vulkan1.0",
+    "-O3"
+)
+
+function Get-StringSha256 {
+    param([string]$Value)
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return [Convert]::ToHexString(
+            $hasher.ComputeHash($bytes)
+        ).ToLowerInvariant()
+    } finally {
+        $hasher.Dispose()
+    }
+}
+
+$compilerFiles = @(
+    $Dxc,
+    (Join-Path (Split-Path -Parent $Dxc) "dxcompiler.dll"),
+    (Join-Path (Split-Path -Parent $Dxc) "dxil.dll")
+) |
+    Where-Object { Test-Path $_ } |
+    Sort-Object -Unique
+$compilerIdentity = @(
+    $compilerFiles |
+        ForEach-Object {
+            "$([System.IO.Path]::GetFileName($_)):$((Get-FileHash $_ -Algorithm SHA256).Hash)"
+        }
+) -join "|"
+$compilerHash = Get-StringSha256 $compilerIdentity
+$cacheFlagIdentity =
+    "dxil:$($dxilFlags -join ',')|spirv:$($spirvFlags -join ',')"
 
 function Get-ShaderCacheKey {
     param(
@@ -69,13 +105,47 @@ function Get-ShaderCacheKey {
     )
 
     $sourceHash = (Get-FileHash $Source.FullName -Algorithm SHA256).Hash
-    $payload = "$compilerHash|$Profile|$EntryPoint|-O3|vulkan1.0|$sourceHash"
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
-    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    $payload =
+        "$compilerHash|$Profile|$EntryPoint|$cacheFlagIdentity|$sourceHash"
+    return Get-StringSha256 $payload
+}
+
+function Test-ShaderCacheBinary {
+    param(
+        [string]$Path,
+        [ValidateSet("dxil", "spirv")]
+        [string]$Kind
+    )
+
+    if (-not (Test-Path $Path)) {
+        return $false
+    }
+    $file = Get-Item $Path
+    if ($file.Length -lt 4) {
+        return $false
+    }
+    $stream = [System.IO.File]::OpenRead($Path)
     try {
-        return [Convert]::ToHexString($hasher.ComputeHash($bytes)).ToLowerInvariant()
+        $magic = [byte[]]::new(4)
+        if ($stream.Read($magic, 0, 4) -ne 4) {
+            return $false
+        }
+        if ($Kind -eq "dxil") {
+            return (
+                $magic[0] -eq 0x44 -and
+                $magic[1] -eq 0x58 -and
+                $magic[2] -eq 0x42 -and
+                $magic[3] -eq 0x43
+            )
+        }
+        return (
+            $magic[0] -eq 0x03 -and
+            $magic[1] -eq 0x02 -and
+            $magic[2] -eq 0x23 -and
+            $magic[3] -eq 0x07
+        )
     } finally {
-        $hasher.Dispose()
+        $stream.Dispose()
     }
 }
 
@@ -255,21 +325,41 @@ foreach ($shaderDirectory in $shaderDirectories) {
         $cachedDxil = Join-Path $cacheRoot "$cacheKey.dxil"
         $cachedSpirv = Join-Path $cacheRoot "$cacheKey.spv"
         if (
-            (Test-Path $cachedDxil) -and
-            (Test-Path $cachedSpirv)
+            (Test-ShaderCacheBinary $cachedDxil "dxil") -and
+            (Test-ShaderCacheBinary $cachedSpirv "spirv")
         ) {
             Copy-Item $cachedDxil "$outputBase.dxil" -Force
             Copy-Item $cachedSpirv "$outputBase.spv" -Force
             $reused += 1
             continue
         }
-        & $Dxc -T $profile -E $entryPoint -O3 -Fo $cachedDxil $source.FullName
-        if ($LASTEXITCODE -ne 0) {
-            throw "DXIL compilation failed for $($source.FullName)."
-        }
-        & $Dxc "-spirv" "-fspv-target-env=vulkan1.0" -T $profile -E $entryPoint -O3 -Fo $cachedSpirv $source.FullName
-        if ($LASTEXITCODE -ne 0) {
-            throw "SPIR-V compilation failed for $($source.FullName)."
+        $temporarySuffix = "$PID-$([Guid]::NewGuid().ToString('N'))"
+        $temporaryDxil = "$cachedDxil.$temporarySuffix.tmp"
+        $temporarySpirv = "$cachedSpirv.$temporarySuffix.tmp"
+        try {
+            & $Dxc -T $profile -E $entryPoint @dxilFlags -Fo $temporaryDxil $source.FullName
+            if ($LASTEXITCODE -ne 0) {
+                throw "DXIL compilation failed for $($source.FullName)."
+            }
+            & $Dxc @spirvFlags -T $profile -E $entryPoint -Fo $temporarySpirv $source.FullName
+            if ($LASTEXITCODE -ne 0) {
+                throw "SPIR-V compilation failed for $($source.FullName)."
+            }
+            if (-not (Test-ShaderCacheBinary $temporaryDxil "dxil")) {
+                throw "DXIL compiler produced an invalid binary for $($source.FullName)."
+            }
+            if (-not (Test-ShaderCacheBinary $temporarySpirv "spirv")) {
+                throw "SPIR-V compiler produced an invalid binary for $($source.FullName)."
+            }
+            Move-Item $temporaryDxil $cachedDxil -Force
+            Move-Item $temporarySpirv $cachedSpirv -Force
+        } finally {
+            if (Test-Path $temporaryDxil) {
+                Remove-Item -LiteralPath $temporaryDxil
+            }
+            if (Test-Path $temporarySpirv) {
+                Remove-Item -LiteralPath $temporarySpirv
+            }
         }
         Copy-Item $cachedDxil "$outputBase.dxil" -Force
         Copy-Item $cachedSpirv "$outputBase.spv" -Force

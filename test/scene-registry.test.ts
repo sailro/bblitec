@@ -1,16 +1,34 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 import { getScene, resolveScene, scenes } from "../src/scene-registry.js";
+import { validateReferenceCapture } from "../src/parity-scene.js";
 
 test("registers unique generated scene targets", () => {
     assert.deepEqual(
         scenes.map(({ id }) => id),
-        ["primitives", "boombox", "scene8", "scene5", "scene10", "scene13", "scene32", "scene163", "scene168", "transmission-skybox", "transmission-scene-color", "transmission-ior", "transmission-volume", "scene176", "scene213", "scene151", "scene154", "scene240", "scene116", "scene145", "scene146", "scene248", "scene245", "scene249", "scene257", "scene266", "scene273", "scene274"],
+        ["primitives", "boombox", "scene8", "scene5", "scene10", "scene13", "scene32", "scene163", "audit-shader-frame-graph", "regression-compiler-state", "scene168", "transmission-skybox", "transmission-scene-color", "transmission-ior", "transmission-volume", "scene176", "scene213", "scene151", "scene154", "scene240", "regression-track-clamp", "scene116", "scene145", "scene146", "scene248", "scene245", "scene249", "scene257", "scene266", "scene273", "scene274"],
     );
     assert.equal(new Set(scenes.map(({ output }) => output)).size, scenes.length);
     assert.equal(getScene("scene10").parity?.reference.kind, "source");
     assert.equal(getScene("scene163").parity?.maxFullMad, 0.001);
+    assert.equal(
+        getScene("audit-shader-frame-graph").parity?.maxFullMad,
+        0.001,
+    );
+    assert.equal(
+        getScene("audit-shader-frame-graph").sourceOrigin,
+        "bblitec-regression",
+    );
+    assert.equal(
+        getScene("regression-track-clamp").sourceOrigin,
+        "bblitec-regression",
+    );
+    assert.equal(
+        getScene("regression-compiler-state").sourceOrigin,
+        "bblitec-regression",
+    );
     assert.equal(getScene("scene8").parity?.maxFullMad, 0.2);
     assert.equal(getScene("scene176").parity?.reference.kind, "source");
     assert.equal(getScene("scene213").parity?.reference.kind, "source");
@@ -44,6 +62,47 @@ test("derives defaults for an unregistered scene source", () => {
 
 test("resolves a registered scene by source path", () => {
     assert.equal(resolveScene("examples/scene10-pbr-rough.ts").id, "scene10");
+});
+
+test("rejects ad-hoc sources that collide with registered scene ids", () => {
+    const source = ".cache/scene10.ts";
+    mkdirSync(".cache", { recursive: true });
+    writeFileSync(source, "export {};\n");
+    try {
+        assert.throws(
+            () => resolveScene(source),
+            /derives registered scene id 'scene10'/,
+        );
+    } finally {
+        rmSync(source, { force: true });
+    }
+});
+
+test("requires explicit recapture for missing curated references", () => {
+    const scene = getScene("scene10");
+    const missing = resolve(
+        ".cache",
+        "missing-curated-reference.png",
+    );
+    assert.throws(
+        () => validateReferenceCapture(scene, missing, false),
+        /Curated reference is missing/,
+    );
+    assert.doesNotThrow(
+        () => validateReferenceCapture(scene, missing, true),
+    );
+
+    const source = ".cache/reference-policy-adhoc.ts";
+    mkdirSync(".cache", { recursive: true });
+    writeFileSync(source, "export {};\n");
+    try {
+        const adHoc = resolveScene(source);
+        assert.doesNotThrow(
+            () => validateReferenceCapture(adHoc, missing, false),
+        );
+    } finally {
+        rmSync(source, { force: true });
+    }
 });
 
 test("keeps package scene commands registry-driven", () => {

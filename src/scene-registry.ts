@@ -23,6 +23,7 @@ export interface SceneDefinition {
     id: string;
     name: string;
     source: string;
+    sourceOrigin?: "bblitec-regression";
     output: string;
     title: string;
     buildDirectory: string;
@@ -205,6 +206,56 @@ export const scenes: readonly SceneDefinition[] = [
                 triangleClusters: false,
                 diagnostics: false,
             },
+        },
+    },
+    {
+        id: "audit-shader-frame-graph",
+        name: "Audit - Shader Frame Graph",
+        source: "examples/audit-shader-frame-graph.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/audit-shader-frame-graph",
+        title: "Babylon Lite Native - Shader Frame Graph",
+        buildDirectory:
+            "native/build-audit-shader-frame-graph-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/audit-shader-frame-graph/babylon-lite-golden.png",
+            },
+            actual:
+                "artifacts/parity/audit-shader-frame-graph-native.png",
+            outputDirectory:
+                "artifacts/parity/audit-shader-frame-graph",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [9, 11, 18],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-compiler-state",
+        name: "Regression - Compiler State",
+        source: "examples/regression-compiler-state.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/regression-compiler-state",
+        title: "Babylon Lite Native - Compiler State",
+        buildDirectory:
+            "native/build-regression-compiler-state-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-compiler-state/babylon-lite-golden.png",
+            },
+            actual:
+                "artifacts/parity/regression-compiler-state-native.png",
+            outputDirectory:
+                "artifacts/parity/regression-compiler-state",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [9, 11, 18],
+            backgroundThreshold: 30,
         },
     },
     {
@@ -435,6 +486,35 @@ export const scenes: readonly SceneDefinition[] = [
             backgroundThreshold: 30,
             nativeEnvironment: {
                 BBLITE_ANIMATION_SEEK_SECONDS: "0.5",
+            },
+        },
+    },
+    {
+        id: "regression-track-clamp",
+        name: "Regression - glTF Track Clamp",
+        source: "examples/regression-track-clamp.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/regression-track-clamp",
+        title: "Babylon Lite Native - glTF Track Clamp",
+        buildDirectory:
+            "native/build-regression-track-clamp-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-track-clamp/babylon-lite-golden.png",
+            },
+            referenceTimeSeconds: 3,
+            actual:
+                "artifacts/parity/regression-track-clamp-native.png",
+            outputDirectory:
+                "artifacts/parity/regression-track-clamp",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [9, 11, 18],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "3",
             },
         },
     },
@@ -687,6 +767,16 @@ export function getScene(id: string): SceneDefinition {
     return scene;
 }
 
+export function isRegisteredScene(
+    scene: SceneDefinition,
+): boolean {
+    return scenes.some(
+        (candidate) =>
+            candidate.id === scene.id &&
+            resolve(candidate.source) === resolve(scene.source),
+    );
+}
+
 function defaultSceneName(id: string): string {
     return id
         .split("-")
@@ -714,15 +804,25 @@ export function resolveScene(idOrSource: string): SceneDefinition {
                 scenes.map(({ id }) => id).join(", "),
         );
     }
-    const source = relative(resolve("."), absoluteSource).replace(/\\/g, "/");
-    if (source.startsWith("../")) {
+    const relativeSource = relative(resolve("."), absoluteSource);
+    if (
+        isAbsolute(relativeSource) ||
+        relativeSource === ".." ||
+        relativeSource.startsWith(`..${sep}`)
+    ) {
         throw new Error("Ad-hoc scene sources must be inside the repository.");
     }
+    const source = relativeSource.replace(/\\/g, "/");
     const id = basename(absoluteSource, extname(absoluteSource))
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-|-$/g, "");
     if (!id) throw new Error(`Unable to derive a scene id from '${idOrSource}'.`);
+    if (scenes.some((candidate) => candidate.id === id)) {
+        throw new Error(
+            `Ad-hoc source '${source}' derives registered scene id '${id}'. Rename the source file.`,
+        );
+    }
     const name = defaultSceneName(id);
     return {
         id,
@@ -744,4 +844,11 @@ export function resolveScene(idOrSource: string): SceneDefinition {
     };
 }
 import { existsSync, statSync } from "node:fs";
-import { basename, extname, relative, resolve } from "node:path";
+import {
+    basename,
+    extname,
+    isAbsolute,
+    relative,
+    resolve,
+    sep,
+} from "node:path";

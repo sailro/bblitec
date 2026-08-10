@@ -10,7 +10,7 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 | Engine/scene | creation, registration, fixed delta, reached before-render callbacks, runtime material-family append |
 | Cameras | ArcRotate, FreeCamera, default framing, native controls |
 | Lights | directional, hemispheric, and point; two reached Standard lights |
-| Geometry | box, ground, plane, sphere, torus, indexed triangle glTF/GLB, generated/flat normals, negative transforms, reached `.babylon` geometry |
+| Geometry | axis-sized box/sphere, subdivided ground with UV scale, plane, torus, indexed triangle glTF/GLB, generated/flat normals, negative transforms, reached `.babylon` geometry |
 | Assets | external glTF packaging, embedded PNG/JPEG, `.env`, exact compile-time RGBE HDR/GGX cubemaps, DDS, reached `.babylon` textures |
 | Materials | Standard, PBR, GridMaterial, unlit, vertex colors, no-color views, typed custom shader variants |
 | Material state | alpha mask/blend/coverage, reflectance, lighting intensities, double-sided, normal scale, transmission, IOR, volume |
@@ -75,6 +75,18 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 | transmission-scene-color | <img src="images/scenes/transmission-scene-color.png" alt="Scene-color transmission" width="120"> | $\color{#1a7f37}{\textsf{0.044}}$ | $\color{#1a7f37}{\textsf{0.208}}$ | linear RGBA16F scene-color transmission |
 | transmission-skybox | <img src="images/scenes/transmission-skybox.png" alt="PBR skybox rendering" width="120"> | $\color{#1a7f37}{\textsf{0.091}}$ | $\color{#1a7f37}{\textsf{0.091}}$ | independent PBR skybox-mode gate |
 | transmission-volume | <img src="images/scenes/transmission-volume.png" alt="Transmission volume" width="120"> | $\color{#1a7f37}{\textsf{0.170}}$ | $\color{#1a7f37}{\textsf{0.454}}$ | Beer-Lambert volume and independent thickness-as-depth |
+
+## Project-owned differential gates
+
+These scenes are authored in `bblitec`, but their browser reference still runs
+the same TypeScript against the pinned Babylon Lite package. Their MAD measures
+native differential fidelity; it does not represent upstream corpus coverage.
+
+| Scene | Preview | Full MAD | Foreground MAD | Primary coverage |
+| --- | :---: | ---: | ---: | --- |
+| shader-frame-graph | <img src="images/scenes/audit-shader-frame-graph.png" alt="Shader frame graph rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | alpha-card and circular-cutout shader materials mirrored through a frame-graph render task |
+| compiler-state | <img src="images/scenes/regression-compiler-state.png" alt="Compiler state rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | flat-entry mutable state and pre-registration mesh compound assignment |
+| glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | translation, rotation, and morph-weight endpoint clamping while another channel extends the global duration |
 
 ## Diagnostics
 

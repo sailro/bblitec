@@ -125,6 +125,7 @@ struct AnimatedNode {
     int parent = -1;
     Matrix world{};
     bool computed = false;
+    bool computing = false;
     std::vector<float> weights;
 };
 
@@ -193,14 +194,49 @@ float read_component(
     std::size_t element,
     std::size_t component) {
     const BufferViewInfo& view = views.at(accessor.buffer_view);
-    const std::size_t packed_stride = component_size(accessor.component_type) * component_count(accessor.type);
-    const std::size_t stride = view.stride != 0 ? view.stride : packed_stride;
-    const std::size_t offset =
-        container.bin_offset + view.offset + accessor.offset + element * stride +
-        component * component_size(accessor.component_type);
-    if (offset + component_size(accessor.component_type) > buffer.byte_length()) {
-        throw std::runtime_error("glTF accessor exceeds BIN chunk.");
+    const std::size_t component_bytes =
+        component_size(accessor.component_type);
+    const std::size_t components =
+        component_count(accessor.type);
+    if (element >= accessor.count || component >= components) {
+        throw std::runtime_error(
+            "glTF accessor element or component is out of range.");
     }
+    const std::size_t packed_stride =
+        component_bytes * components;
+    const std::size_t stride = view.stride != 0 ? view.stride : packed_stride;
+    if (stride < packed_stride) {
+        throw std::runtime_error(
+            "glTF accessor stride is smaller than its element size.");
+    }
+    if (accessor.offset > view.length) {
+        throw std::runtime_error(
+            "glTF accessor offset exceeds its bufferView.");
+    }
+    const std::size_t available =
+        view.length - accessor.offset;
+    if (
+        element >
+        std::numeric_limits<std::size_t>::max() / stride) {
+        throw std::runtime_error("glTF accessor offset overflows.");
+    }
+    const std::size_t element_offset = element * stride;
+    const std::size_t component_offset =
+        component * component_bytes;
+    if (
+        element_offset > available ||
+        component_offset > available - element_offset ||
+        component_bytes >
+            available - element_offset - component_offset) {
+        throw std::runtime_error(
+            "glTF accessor exceeds its bufferView.");
+    }
+    const std::size_t offset =
+        container.bin_offset +
+        view.offset +
+        accessor.offset +
+        element_offset +
+        component_offset;
     const std::uint8_t* data = buffer.data() + offset;
     switch (accessor.component_type) {
         case 5120: {
@@ -681,9 +717,19 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     views.reserve(view_json.size());
     for (const ts::JsonValue& value : view_json) {
         const JsonObject& object = value.as_object();
+        const std::size_t offset =
+            unsigned_or(object, "byteOffset", 0);
+        const std::size_t length =
+            unsigned_value(required(object, "byteLength"));
+        if (
+            offset > container.bin_length ||
+            length > container.bin_length - offset) {
+            throw std::runtime_error(
+                "glTF bufferView exceeds the BIN chunk.");
+        }
         views.push_back(BufferViewInfo{
-            unsigned_or(object, "byteOffset", 0),
-            unsigned_value(required(object, "byteLength")),
+            offset,
+            length,
             unsigned_or(object, "byteStride", 0),
         });
     }
@@ -691,8 +737,18 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     accessors.reserve(accessor_json.size());
     for (const ts::JsonValue& value : accessor_json) {
         const JsonObject& object = value.as_object();
+        if (optional(object, "sparse")) {
+            throw std::runtime_error(
+                "Sparse glTF accessors are not supported.");
+        }
+        const std::size_t buffer_view =
+            unsigned_value(required(object, "bufferView"));
+        if (buffer_view >= views.size()) {
+            throw std::runtime_error(
+                "glTF accessor references an invalid bufferView.");
+        }
         accessors.push_back(AccessorInfo{
-            unsigned_value(required(object, "bufferView")),
+            buffer_view,
             unsigned_or(object, "byteOffset", 0),
             unsigned_value(required(object, "count")),
             static_cast<std::uint32_t>(unsigned_value(required(object, "componentType"))),
@@ -711,17 +767,32 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     for (std::size_t index = 0; index < node_json.size(); ++index) {
         for (const ts::JsonValue& child : array_or_empty(node_json[index].as_object(), "children")) {
             const std::size_t child_index = unsigned_value(child);
-            if (child_index < parents.size()) parents[child_index] = static_cast<int>(index);
+            if (child_index >= parents.size()) {
+                throw std::runtime_error(
+                    "glTF node references an invalid child.");
+            }
+            if (parents[child_index] >= 0) {
+                throw std::runtime_error(
+                    "glTF node has multiple parents.");
+            }
+            parents[child_index] = static_cast<int>(index);
         }
     }
     std::vector<Matrix> world(node_json.size());
     std::vector<bool> computed(node_json.size(), false);
+    std::vector<bool> computing(node_json.size(), false);
     std::function<const Matrix&(std::size_t)> compute_world = [&](std::size_t index) -> const Matrix& {
         if (computed[index]) return world[index];
+        if (computing[index]) {
+            throw std::runtime_error(
+                "glTF node hierarchy contains a cycle.");
+        }
+        computing[index] = true;
         const Matrix local = local_matrix(node_json[index].as_object());
         world[index] = parents[index] >= 0
             ? multiply_matrix(compute_world(static_cast<std::size_t>(parents[index])), local)
             : local;
+        computing[index] = false;
         computed[index] = true;
         return world[index];
     };
@@ -1096,6 +1167,12 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             if (geometry.indices.size() % 3 != 0) {
                 throw std::runtime_error("Triangle-list glTF indices must be divisible by three.");
             }
+            for (const std::uint32_t index : geometry.indices) {
+                if (index >= geometry.vertices.size()) {
+                    throw std::runtime_error(
+                        "glTF primitive index exceeds its vertex count.");
+                }
+            }
             if (determinant < 0.0f) {
                 for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
                     std::swap(geometry.indices[index + 1], geometry.indices[index + 2]);
@@ -1405,11 +1482,12 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
         }
         const auto apply_animation_time =
             [animation_runtime, &engine](float time) {
-            if (animation_runtime->duration <= 0.0f) return;
             animation_runtime->time =
-                std::fmod(
-                    std::max(time, 0.0f),
-                    animation_runtime->duration);
+                animation_runtime->duration > 0.0f
+                    ? std::fmod(
+                          std::max(time, 0.0f),
+                          animation_runtime->duration)
+                    : 0.0f;
             for (const RotationTrack& track :
                  animation_runtime->rotation_tracks) {
                 if (
@@ -1434,9 +1512,12 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     track.times[right] - track.times[left];
                 const float amount =
                     span > 0.0f
-                        ? (animation_runtime->time -
-                           track.times[left]) /
-                            span
+                        ? std::clamp(
+                              (animation_runtime->time -
+                               track.times[left]) /
+                                  span,
+                              0.0f,
+                              1.0f)
                         : 0.0f;
                 animation_runtime->nodes[track.node].rotation =
                     track.cubic
@@ -1475,9 +1556,12 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     track.times[right] - track.times[left];
                 const float amount =
                     span > 0.0f
-                        ? (animation_runtime->time -
-                           track.times[left]) /
-                            span
+                        ? std::clamp(
+                              (animation_runtime->time -
+                               track.times[left]) /
+                                  span,
+                              0.0f,
+                              1.0f)
                         : 0.0f;
                 const Vec3 left_value = track.values[left];
                 const Vec3 right_value = track.values[right];
@@ -1525,9 +1609,12 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     track.times[right] - track.times[left];
                 const float amount =
                     span > 0.0f
-                        ? (animation_runtime->time -
-                           track.times[left]) /
-                            span
+                        ? std::clamp(
+                              (animation_runtime->time -
+                               track.times[left]) /
+                                  span,
+                              0.0f,
+                              1.0f)
                         : 0.0f;
                 AnimatedNode& node =
                     animation_runtime->nodes[track.node];
@@ -1544,12 +1631,18 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             }
             for (AnimatedNode& node : animation_runtime->nodes) {
                 node.computed = false;
+                node.computing = false;
             }
             std::function<const Matrix&(std::size_t)> compute_animated_world =
                 [&](std::size_t node_index) -> const Matrix& {
                 AnimatedNode& node =
                     animation_runtime->nodes.at(node_index);
                 if (node.computed) return node.world;
+                if (node.computing) {
+                    throw std::runtime_error(
+                        "glTF animated node hierarchy contains a cycle.");
+                }
+                node.computing = true;
                 const Matrix local = trs_matrix(
                     node.translation,
                     node.rotation,
@@ -1561,6 +1654,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                                   node.parent)),
                           local)
                     : local;
+                node.computing = false;
                 node.computed = true;
                 return node.world;
             };
@@ -1782,6 +1876,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 ++mesh_record.transform_version;
             }
         };
+        apply_animation_time(0.0f);
         asset.animation_seek =
             [animation_runtime, apply_animation_time](float time) {
             animation_runtime->paused = true;

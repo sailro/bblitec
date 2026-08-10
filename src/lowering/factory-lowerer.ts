@@ -10,31 +10,6 @@ export class FactoryLowerer {
         const planeSource = this.context.store.getSource("src/mesh/create-plane.ts");
         const sphereSource = this.context.store.getSource("src/mesh/create-sphere.ts");
         const torusSource = this.context.store.getSource("src/mesh/create-torus.ts");
-        const boxDefault = this.context.extractNumber(
-            boxSource,
-            /createBoxData\(options:[^=]+=\s*([0-9.]+)/,
-            "box default size",
-        );
-        const groundWidth = this.context.extractNumber(
-            groundSource,
-            /const width = opts\.width \?\? ([0-9.]+)/,
-            "ground default width",
-        );
-        const groundHeight = this.context.extractNumber(
-            groundSource,
-            /const height = opts\.height \?\? ([0-9.]+)/,
-            "ground default height",
-        );
-        const sphereSegments = this.context.extractNumber(
-            sphereSource,
-            /options\.segments \?\? ([0-9]+)/,
-            "sphere default segments",
-        );
-        const sphereDiameter = this.context.extractNumber(
-            sphereSource,
-            /options\.diameter \?\? ([0-9]+)/,
-            "sphere default diameter",
-        );
         const torusDiameter = this.context.extractNumber(
             torusSource,
             /opts\.diameter \?\? ([0-9.]+)/,
@@ -53,6 +28,8 @@ export class FactoryLowerer {
         for (const marker of [
             "const BOX_POSITION_SIGNS = [0x4b213fa5, 0xded6426f, 0x80]",
             "Face order matches Babylon exactly: +Z, -Z, +X, -X, +Y, -Y",
+            "const { size = 1, width = size, height = size, depth = size } = options",
+            "dimensions[index % 3]",
             "0,  1,  2,   0,  2,  3",
         ]) {
             if (!boxSource.includes(marker)) {
@@ -60,7 +37,11 @@ export class FactoryLowerer {
             }
         }
         for (const marker of [
+            "const width = opts.width ?? 1",
+            "const height = opts.height ?? 1",
             "const subdivisions = opts.subdivisions ?? 1",
+            "const uScale = opts.uvScale?.[0] ?? 1",
+            "const vScale = opts.uvScale?.[1] ?? 1",
             "indices[ii++] = bottomRight",
             "indices[ii++] = topRight",
             "indices[ii++] = topLeft",
@@ -79,6 +60,20 @@ export class FactoryLowerer {
         ]) {
             if (!planeSource.includes(marker)) {
                 throw new Error(`Pinned plane generation changed: ${marker}.`);
+            }
+        }
+        for (const marker of [
+            "const segments = Math.max(3, options.segments ?? 32)",
+            "const baseDiameter = options.diameter ?? 1",
+            "const rx = (options.diameterX ?? baseDiameter) / 2",
+            "const ry = (options.diameterY ?? baseDiameter) / 2",
+            "const rz = (options.diameterZ ?? baseDiameter) / 2",
+            "positions[vIdx * 3] = rx * nx",
+            "positions[vIdx * 3 + 1] = ry * ny",
+            "positions[vIdx * 3 + 2] = rz * nz",
+        ]) {
+            if (!sphereSource.includes(marker)) {
+                throw new Error(`Pinned sphere generation changed: ${marker}.`);
             }
         }
         for (const marker of [
@@ -109,9 +104,13 @@ export class FactoryLowerer {
 
 namespace bbl {
 
-MeshHandle create_box(Engine& engine, float size) {
-    const float resolved_size = size > 0.0f ? size : ${value(boxDefault)};
-    const float half = resolved_size * 0.5f;
+MeshHandle create_box(Engine& engine, BoxOptions options) {
+    const float width = options.width;
+    const float height = options.height;
+    const float depth = options.depth;
+    const float half_width = width * 0.5f;
+    const float half_height = height * 0.5f;
+    const float half_depth = depth * 0.5f;
     ModelGeometry geometry;
     const auto add_face = [&](
                               Vec3 a,
@@ -134,50 +133,52 @@ MeshHandle create_box(Engine& engine, float size) {
             {start, start + 1, start + 2, start, start + 2, start + 3});
     };
     add_face(
-        Vec3{half, -half, half},
-        Vec3{-half, -half, half},
-        Vec3{-half, half, half},
-        Vec3{half, half, half},
+        Vec3{half_width, -half_height, half_depth},
+        Vec3{-half_width, -half_height, half_depth},
+        Vec3{-half_width, half_height, half_depth},
+        Vec3{half_width, half_height, half_depth},
         Vec3{0.0f, 0.0f, 1.0f});
     add_face(
-        Vec3{half, half, -half},
-        Vec3{-half, half, -half},
-        Vec3{-half, -half, -half},
-        Vec3{half, -half, -half},
+        Vec3{half_width, half_height, -half_depth},
+        Vec3{-half_width, half_height, -half_depth},
+        Vec3{-half_width, -half_height, -half_depth},
+        Vec3{half_width, -half_height, -half_depth},
         Vec3{0.0f, 0.0f, -1.0f});
     add_face(
-        Vec3{half, half, -half},
-        Vec3{half, -half, -half},
-        Vec3{half, -half, half},
-        Vec3{half, half, half},
+        Vec3{half_width, half_height, -half_depth},
+        Vec3{half_width, -half_height, -half_depth},
+        Vec3{half_width, -half_height, half_depth},
+        Vec3{half_width, half_height, half_depth},
         Vec3{1.0f, 0.0f, 0.0f});
     add_face(
-        Vec3{-half, half, half},
-        Vec3{-half, -half, half},
-        Vec3{-half, -half, -half},
-        Vec3{-half, half, -half},
+        Vec3{-half_width, half_height, half_depth},
+        Vec3{-half_width, -half_height, half_depth},
+        Vec3{-half_width, -half_height, -half_depth},
+        Vec3{-half_width, half_height, -half_depth},
         Vec3{-1.0f, 0.0f, 0.0f});
     add_face(
-        Vec3{-half, half, half},
-        Vec3{-half, half, -half},
-        Vec3{half, half, -half},
-        Vec3{half, half, half},
+        Vec3{-half_width, half_height, half_depth},
+        Vec3{-half_width, half_height, -half_depth},
+        Vec3{half_width, half_height, -half_depth},
+        Vec3{half_width, half_height, half_depth},
         Vec3{0.0f, 1.0f, 0.0f});
     add_face(
-        Vec3{half, -half, half},
-        Vec3{half, -half, -half},
-        Vec3{-half, -half, -half},
-        Vec3{-half, -half, half},
+        Vec3{half_width, -half_height, half_depth},
+        Vec3{half_width, -half_height, -half_depth},
+        Vec3{-half_width, -half_height, -half_depth},
+        Vec3{-half_width, -half_height, half_depth},
         Vec3{0.0f, -1.0f, 0.0f});
-    geometry.bounds_min = Vec3{-half, -half, -half};
-    geometry.bounds_max = Vec3{half, half, half};
+    geometry.bounds_min =
+        Vec3{-half_width, -half_height, -half_depth};
+    geometry.bounds_max =
+        Vec3{half_width, half_height, half_depth};
     for (ModelVertex& vertex : geometry.vertices) {
         vertex.local_position = vertex.position;
     }
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::box;
-    mesh.dimensions = Vec3{resolved_size, resolved_size, resolved_size};
+    mesh.dimensions = Vec3{width, height, depth};
     mesh.geometry =
         static_cast<std::uint32_t>(engine.geometries.size() - 1);
     engine.meshes.push_back(mesh);
@@ -185,34 +186,72 @@ MeshHandle create_box(Engine& engine, float size) {
 }
 
 MeshHandle create_ground(Engine& engine, GroundOptions options) {
-    const float width = options.width > 0.0f ? options.width : ${value(groundWidth)};
-    const float height = options.height > 0.0f ? options.height : ${value(groundHeight)};
+    const float width = options.width;
+    const float height = options.height;
+    const std::uint32_t subdivisions =
+        std::max<std::uint32_t>(1, options.subdivisions);
+    const std::uint32_t columns = subdivisions + 1;
     const float half_width = width * 0.5f;
     const float half_height = height * 0.5f;
     ModelGeometry geometry;
-    geometry.vertices = {
-        ModelVertex{
-            Vec3{-half_width, 0.0f, half_height},
-            Vec3{0.0f, 1.0f, 0.0f},
-            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
-            Vec2{0.0f, 1.0f}},
-        ModelVertex{
-            Vec3{half_width, 0.0f, half_height},
-            Vec3{0.0f, 1.0f, 0.0f},
-            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
-            Vec2{1.0f, 1.0f}},
-        ModelVertex{
-            Vec3{-half_width, 0.0f, -half_height},
-            Vec3{0.0f, 1.0f, 0.0f},
-            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
-            Vec2{0.0f, 0.0f}},
-        ModelVertex{
-            Vec3{half_width, 0.0f, -half_height},
-            Vec3{0.0f, 1.0f, 0.0f},
-            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
-            Vec2{1.0f, 0.0f}},
-    };
-    geometry.indices = {3, 1, 0, 2, 3, 0};
+    geometry.vertices.reserve(
+        static_cast<std::size_t>(columns) * columns);
+    geometry.indices.reserve(
+        static_cast<std::size_t>(subdivisions) *
+        subdivisions *
+        6);
+    for (std::uint32_t row = 0; row <= subdivisions; ++row) {
+        const float normalized_row =
+            static_cast<float>(row) /
+            static_cast<float>(subdivisions);
+        for (
+            std::uint32_t column = 0;
+            column <= subdivisions;
+            ++column) {
+            const float normalized_column =
+                static_cast<float>(column) /
+                static_cast<float>(subdivisions);
+            geometry.vertices.push_back(ModelVertex{
+                Vec3{
+                    -half_width + normalized_column * width,
+                    0.0f,
+                    -half_height +
+                        (1.0f - normalized_row) * height,
+                },
+                Vec3{0.0f, 1.0f, 0.0f},
+                Vec4{1.0f, 0.0f, 0.0f, 1.0f},
+                Vec2{
+                    normalized_column * options.uv_scale.x,
+                    (1.0f - normalized_row) *
+                        options.uv_scale.y,
+                },
+            });
+        }
+    }
+    for (std::uint32_t row = 0; row < subdivisions; ++row) {
+        for (
+            std::uint32_t column = 0;
+            column < subdivisions;
+            ++column) {
+            const std::uint32_t top_left =
+                row * columns + column;
+            const std::uint32_t top_right = top_left + 1;
+            const std::uint32_t bottom_left =
+                (row + 1) * columns + column;
+            const std::uint32_t bottom_right =
+                bottom_left + 1;
+            geometry.indices.insert(
+                geometry.indices.end(),
+                {
+                    bottom_right,
+                    top_right,
+                    top_left,
+                    bottom_left,
+                    bottom_right,
+                    top_left,
+                });
+        }
+    }
     geometry.bounds_min = Vec3{-half_width, 0.0f, -half_height};
     geometry.bounds_max = Vec3{half_width, 0.0f, half_height};
     for (ModelVertex& vertex : geometry.vertices) {
@@ -270,9 +309,12 @@ MeshHandle create_plane(Engine& engine, PlaneOptions options) {
 
 MeshHandle create_sphere(Engine& engine, SphereOptions options) {
     const std::uint32_t segments =
-        std::max<std::uint32_t>(3, options.segments > 0 ? options.segments : ${sphereSegments}u);
-    const float diameter = options.diameter > 0.0f ? options.diameter : ${value(sphereDiameter)};
-    const float radius = diameter * 0.5f;
+        std::max<std::uint32_t>(3, options.segments);
+    const Vec3 radius{
+        options.diameter_x * 0.5f,
+        options.diameter_y * 0.5f,
+        options.diameter_z * 0.5f,
+    };
     const std::uint32_t z_steps = 2 + segments;
     const std::uint32_t y_steps = 2 * z_steps;
     ModelGeometry geometry;
@@ -294,7 +336,11 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
                 -std::sin(angle_z) * std::sin(angle_y),
             };
             geometry.vertices.push_back(ModelVertex{
-                Vec3{radius * normal.x, radius * normal.y, radius * normal.z},
+                Vec3{
+                    radius.x * normal.x,
+                    radius.y * normal.y,
+                    radius.z * normal.z,
+                },
                 normal,
                 Vec4{1.0f, 0.0f, 0.0f, 1.0f},
                 Vec2{normalized_y, normalized_z},
@@ -311,14 +357,21 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
                 {a, a + 1, b, b, a + 1, b + 1});
         }
     }
-    geometry.bounds_min = Vec3{-radius, -radius, -radius};
-    geometry.bounds_max = Vec3{radius, radius, radius};
+    geometry.bounds_min =
+        Vec3{-radius.x, -radius.y, -radius.z};
+    geometry.bounds_max =
+        Vec3{radius.x, radius.y, radius.z};
     for (ModelVertex& vertex : geometry.vertices) {
         vertex.local_position = vertex.position;
     }
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::sphere;
+    mesh.dimensions = Vec3{
+        options.diameter_x,
+        options.diameter_y,
+        options.diameter_z,
+    };
     mesh.geometry = static_cast<std::uint32_t>(engine.geometries.size() - 1);
     engine.meshes.push_back(mesh);
     return MeshHandle{static_cast<std::uint32_t>(engine.meshes.size() - 1)};

@@ -55,6 +55,14 @@ function decodeScanline(
     outputOffset: number,
     scanline: Uint8Array,
 ): number {
+    const requireBytes = (
+        count: number,
+        context: string,
+    ): void => {
+        if (position + count > bytes.length) {
+            throw new Error(`HDR ${context} is truncated.`);
+        }
+    };
     if (
         width >= 8 &&
         width <= 0x7fff &&
@@ -63,14 +71,22 @@ function decodeScanline(
         bytes[position + 2] === ((width >> 8) & 0xff) &&
         bytes[position + 3] === (width & 0xff)
     ) {
+        requireBytes(4, "scanline header");
         position += 4;
         for (let channel = 0; channel < 4; channel += 1) {
             let pointer = channel;
             let count = 0;
             while (count < width) {
+                requireBytes(1, "scanline run marker");
                 const marker = bytes[position++]!;
                 if (marker > 128) {
                     const runLength = marker - 128;
+                    if (count + runLength > width) {
+                        throw new Error(
+                            "Invalid HDR scanline run length.",
+                        );
+                    }
+                    requireBytes(1, "scanline run value");
                     const value = bytes[position++]!;
                     for (let index = 0; index < runLength; index += 1) {
                         scanline[pointer] = value;
@@ -79,6 +95,12 @@ function decodeScanline(
                     count += runLength;
                 } else {
                     if (marker === 0) throw new Error("Invalid HDR scanline run.");
+                    if (count + marker > width) {
+                        throw new Error(
+                            "Invalid HDR scanline literal length.",
+                        );
+                    }
+                    requireBytes(marker, "scanline literal");
                     for (let index = 0; index < marker; index += 1) {
                         scanline[pointer] = bytes[position++]!;
                         pointer += 4;
@@ -102,7 +124,17 @@ function decodeScanline(
     }
 
     for (let x = 0; x < width; x += 1) {
-        if (position + 4 > bytes.length) throw new Error("HDR pixel data is truncated.");
+        requireBytes(4, "pixel data");
+        if (
+            x > 0 &&
+            bytes[position] === 1 &&
+            bytes[position + 1] === 1 &&
+            bytes[position + 2] === 1
+        ) {
+            throw new Error(
+                "Legacy HDR scanline repeat encoding is unsupported.",
+            );
+        }
         rgbeToFloat(
             bytes[position]!,
             bytes[position + 1]!,

@@ -1322,9 +1322,26 @@ SDL_GPUTexture* upload_dds_skybox(SDL_GPUDevice* device, const EnvironmentState&
     return texture;
 }
 
+void release_sized_texture(
+    GpuState& state,
+    SDL_GPUTexture*& texture,
+    std::uint32_t& width,
+    std::uint32_t& height) {
+    if (texture) {
+        SDL_ReleaseGPUTexture(state.device, texture);
+        texture = nullptr;
+    }
+    width = 0;
+    height = 0;
+}
+
 void create_depth(GpuState& state, std::uint32_t width, std::uint32_t height) {
     if (state.depth && state.depth_width == width && state.depth_height == height) return;
-    if (state.depth) SDL_ReleaseGPUTexture(state.device, state.depth);
+    release_sized_texture(
+        state,
+        state.depth,
+        state.depth_width,
+        state.depth_height);
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
     info.format = state.depth_format;
@@ -1352,7 +1369,11 @@ void create_msaa_color(
         state.msaa_color_height == height) {
         return;
     }
-    if (state.msaa_color) SDL_ReleaseGPUTexture(state.device, state.msaa_color);
+    release_sized_texture(
+        state,
+        state.msaa_color,
+        state.msaa_color_width,
+        state.msaa_color_height);
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
     info.format = format;
@@ -1374,11 +1395,11 @@ void create_color(
     std::uint32_t width,
     std::uint32_t height) {
     if (state.color && state.color_width == width && state.color_height == height) return;
-    if (state.color) SDL_ReleaseGPUTexture(state.device, state.color);
-    if (state.processed_color) {
-        SDL_ReleaseGPUTexture(state.device, state.processed_color);
-    }
-    if (state.msaa_color) SDL_ReleaseGPUTexture(state.device, state.msaa_color);
+    release_sized_texture(
+        state,
+        state.color,
+        state.color_width,
+        state.color_height);
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
     info.format = format;
@@ -1405,9 +1426,11 @@ void create_processed_color(
         state.processed_color_height == height) {
         return;
     }
-    if (state.processed_color) {
-        SDL_ReleaseGPUTexture(state.device, state.processed_color);
-    }
+    release_sized_texture(
+        state,
+        state.processed_color,
+        state.processed_color_width,
+        state.processed_color_height);
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
     info.format = format;
@@ -1481,9 +1504,11 @@ void create_transmission_color(
         state.transmission_height == height) {
         return;
     }
-    if (state.transmission_color) {
-        SDL_ReleaseGPUTexture(state.device, state.transmission_color);
-    }
+    release_sized_texture(
+        state,
+        state.transmission_color,
+        state.transmission_width,
+        state.transmission_height);
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
     info.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
@@ -2150,11 +2175,31 @@ void release(GpuState& state) {
     for (SDL_GPUTexture* texture : state.reflection_cubes) {
         SDL_ReleaseGPUTexture(state.device, texture);
     }
-    if (state.color) SDL_ReleaseGPUTexture(state.device, state.color);
-    if (state.transmission_color) {
-        SDL_ReleaseGPUTexture(state.device, state.transmission_color);
-    }
-    if (state.depth) SDL_ReleaseGPUTexture(state.device, state.depth);
+    release_sized_texture(
+        state,
+        state.color,
+        state.color_width,
+        state.color_height);
+    release_sized_texture(
+        state,
+        state.processed_color,
+        state.processed_color_width,
+        state.processed_color_height);
+    release_sized_texture(
+        state,
+        state.transmission_color,
+        state.transmission_width,
+        state.transmission_height);
+    release_sized_texture(
+        state,
+        state.msaa_color,
+        state.msaa_color_width,
+        state.msaa_color_height);
+    release_sized_texture(
+        state,
+        state.depth,
+        state.depth_width,
+        state.depth_height);
     if (state.background_sampler) SDL_ReleaseGPUSampler(state.device, state.background_sampler);
     if (state.depth_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.depth_sampler);
@@ -3853,8 +3898,13 @@ bool run_gpu_engine(Engine& engine) {
                                           SDL_GPUGraphicsPipeline* grid_double_sided,
                                           SDL_GPUGraphicsPipeline* grid_transparent,
                                           SDL_GPUGraphicsPipeline* grid_transparent_double_sided,
+                                          SDL_GPUGraphicsPipeline* shader_alpha_card,
+                                          SDL_GPUGraphicsPipeline* shader_alpha_card_a2c,
+                                          SDL_GPUGraphicsPipeline* shader_circular_cutout,
+                                          const std::array<float, 16>& draw_matrix,
                                           const CameraRecord& draw_camera,
                                           const upstream::RenderDrawLists& draw_lists) {
+                    bool scene_matrix_bound = true;
                     const auto pipeline_for =
                         [&](upstream::RenderPipelineKind kind) {
                         switch (kind) {
@@ -3882,10 +3932,15 @@ bool run_gpu_engine(Engine& engine) {
                                 return grid_transparent;
                             case upstream::RenderPipelineKind::grid_transparent_none:
                                 return grid_transparent_double_sided;
-                            default:
-                                return static_cast<
-                                    SDL_GPUGraphicsPipeline*>(nullptr);
+                            case upstream::RenderPipelineKind::shader_alpha_card:
+                                return shader_alpha_card;
+                            case upstream::RenderPipelineKind::shader_alpha_card_a2c:
+                                return shader_alpha_card_a2c;
+                            case upstream::RenderPipelineKind::shader_circular_cutout:
+                                return shader_circular_cutout;
                         }
+                        return static_cast<
+                            SDL_GPUGraphicsPipeline*>(nullptr);
                     };
                     const auto draw_list =
                         [&](const upstream::RenderDrawList& list) {
@@ -3902,7 +3957,8 @@ bool run_gpu_engine(Engine& engine) {
                             SDL_GPUGraphicsPipeline* pipeline =
                                 pipeline_for(draw.pipeline);
                             if (!pipeline) {
-                                continue;
+                                throw std::runtime_error(
+                                    "Reached secondary render pipeline was not created.");
                             }
                             if (pipeline != bound_pipeline) {
                                 SDL_BindGPUGraphicsPipeline(
@@ -3926,6 +3982,58 @@ bool run_gpu_engine(Engine& engine) {
                             const bool grid_bucket =
                                 draw_item.material_kind ==
                                 upstream::RenderMaterialKind::grid;
+                            const bool shader_bucket =
+                                draw_item.material_kind ==
+                                upstream::RenderMaterialKind::shader;
+                            if (shader_bucket) {
+                                if (!material) {
+                                    throw std::runtime_error(
+                                        "Shader draw has an invalid material.");
+                                }
+                                if (
+                                    draw_item.shader_variant ==
+                                    ShaderMaterialVariant::alpha_card) {
+                                    const CardVertexUniforms vertex_uniforms{{
+                                        material->shader_center.x,
+                                        material->shader_center.y,
+                                        material->shader_angle,
+                                        material->shader_depth,
+                                    }};
+                                    const CardFragmentUniforms
+                                        fragment_uniforms{{
+                                            material->shader_color.r,
+                                            material->shader_color.g,
+                                            material->shader_color.b,
+                                            material->shader_opacity,
+                                        }};
+                                    SDL_PushGPUVertexUniformData(
+                                        command,
+                                        0,
+                                        &vertex_uniforms,
+                                        sizeof(vertex_uniforms));
+                                    SDL_PushGPUFragmentUniformData(
+                                        command,
+                                        0,
+                                        &fragment_uniforms,
+                                        sizeof(fragment_uniforms));
+                                    scene_matrix_bound = false;
+                                } else if (!scene_matrix_bound) {
+                                    SDL_PushGPUVertexUniformData(
+                                        command,
+                                        0,
+                                        draw_matrix.data(),
+                                        sizeof(draw_matrix));
+                                    scene_matrix_bound = true;
+                                }
+                            } else {
+                                if (!scene_matrix_bound) {
+                                    SDL_PushGPUVertexUniformData(
+                                        command,
+                                        0,
+                                        draw_matrix.data(),
+                                        sizeof(draw_matrix));
+                                    scene_matrix_bound = true;
+                                }
 #if BBLITE_GPU_DEFORMATION
                             if (!grid_bucket) {
                                 const DeformationUniforms deformation =
@@ -3976,6 +4084,7 @@ bool run_gpu_engine(Engine& engine) {
                                     &fragment,
                                     sizeof(fragment));
                             }
+                            }
                             const SDL_GPUBufferBinding vertex_binding{
                                 mesh.vertices,
                                 0,
@@ -3984,7 +4093,10 @@ bool run_gpu_engine(Engine& engine) {
                                 mesh.indices,
                                 0,
                             };
-                            if (!grid_bucket) {
+                            if (
+                                draw_item.material_kind ==
+                                    upstream::RenderMaterialKind::pbr ||
+                                standard_bucket) {
                                 SDL_GPUTextureSamplerBinding
                                     texture_bindings[9]{
                                     SDL_GPUTextureSamplerBinding{
@@ -4273,6 +4385,10 @@ bool run_gpu_engine(Engine& engine) {
                             state.grid_transparent_pipeline,
                             state
                                 .grid_transparent_double_sided_pipeline,
+                            state.shader_pipeline,
+                            state.shader_alpha_to_coverage_pipeline,
+                            state.shader_circular_cutout_pipeline,
+                            task_matrix,
                             task_camera,
                             task_draw_lists[handle.value]);
                         SDL_EndGPURenderPass(task_pass);
@@ -4378,6 +4494,10 @@ bool run_gpu_engine(Engine& engine) {
                             nullptr,
                             nullptr,
                             nullptr,
+                            nullptr,
+                            nullptr,
+                            nullptr,
+                            matrix,
                             camera,
                             task_draw_lists[handle.value]);
                         SDL_EndGPURenderPass(task_pass);
@@ -4426,8 +4546,6 @@ bool run_gpu_engine(Engine& engine) {
 
                     const RenderTargetRecord& target_record =
                         engine.render_targets[copy.target.value];
-                    const GpuRenderTarget& target =
-                        state.render_targets[copy.target.value];
                     SDL_GPUColorTargetInfo blit_target{};
                     blit_target.texture =
                         target_texture(copy.target, false);
@@ -4449,6 +4567,8 @@ bool run_gpu_engine(Engine& engine) {
                             : state.blit_pipeline);
                     if (force_full_viewport || copy.has_viewport) {
 #if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
+                        const GpuRenderTarget& target =
+                            state.render_targets[copy.target.value];
                         const NormalizedViewport normalized_viewport =
                             force_full_viewport
                                 ? NormalizedViewport{}

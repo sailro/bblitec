@@ -677,6 +677,28 @@ RenderDrawLists build_render_task_draw_lists(
     const std::vector<RenderItem>& items,
     const Engine& engine,
     const FrameTaskRecord& task) {
+    if (task.kind == FrameTaskKind::geometry) {
+        RenderDrawLists result;
+        result.opaque.commands.reserve(items.size());
+        result.transparent.commands.reserve(items.size());
+        for (std::size_t index = 0; index < items.size(); ++index) {
+            const RenderItem item = bind_render_item(
+                items[index],
+                engine,
+                items[index].material);
+            if (
+                item.material_kind != RenderMaterialKind::pbr &&
+                item.material_kind != RenderMaterialKind::standard) {
+                continue;
+            }
+            append_draw(
+                result,
+                static_cast<std::uint32_t>(index),
+                item);
+        }
+        order_draw_lists(result);
+        return result;
+    }
     if (task.kind != FrameTaskKind::render) {
         return build_render_draw_lists(items, engine);
     }

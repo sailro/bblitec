@@ -53,6 +53,96 @@ test("compiles the Babylon Lite primitives example", () => {
     assert.match(result.cmake, /mesh_factories\.cpp/);
 });
 
+test("preserves reached box, ground, and sphere options", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+            createGround,
+            createSphere,
+        } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const box = createBox(engine, {
+                size: 2,
+                width: 3,
+            });
+            const ground = createGround(engine, {
+                width: 6,
+                height: 7,
+                subdivisions: 4,
+                uvScale: [2, 3],
+            });
+            const sphere = createSphere(engine, {
+                segments: 8,
+                diameter: 2,
+                diameterY: 4,
+                diameterZ: 5,
+            });
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /BoxOptions\{3\.0f, 2\.0f, 2\.0f\}/,
+    );
+    assert.match(
+        result.cpp,
+        /GroundOptions\{6\.0f, 7\.0f, 4u, bbl::Vec2\{2\.0f, 3\.0f\}\}/,
+    );
+    assert.match(
+        result.cpp,
+        /SphereOptions\{8u, 2\.0f, 4\.0f, 5\.0f\}/,
+    );
+});
+
+test("rejects unknown or unsupported mesh factory options", () => {
+    for (const [call, message] of [
+        [
+            "createBox(engine, { diamater: 2 });",
+            "Box options support size, width, height, and depth.",
+        ],
+        [
+            "createBox(engine, { ...{ size: 2 } });",
+            "Box options support size, width, height, and depth.",
+        ],
+        [
+            "createGround(engine, { minHeight: 0 });",
+            "Ground options support width, height, subdivisions, and uvScale.",
+        ],
+        [
+            "createSphere(engine, { subdivisions: 8 });",
+            "Sphere options support segments, diameter, diameterX, diameterY, and diameterZ.",
+        ],
+    ] as const) {
+        assert.throws(
+            () =>
+                compileSource(`
+                    import {
+                        createBox,
+                        createEngine,
+                        createGround,
+                        createSphere,
+                    } from "@babylonjs/lite";
+                    async function main(): Promise<void> {
+                        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+                        const engine = await createEngine(canvas);
+                        ${call}
+                    }
+                `),
+            (error: unknown) => {
+                assert.ok(error instanceof CompileError);
+                assert.match(error.message, new RegExp(message.replace(
+                    /[.*+?^${}()|[\]\\]/g,
+                    "\\$&",
+                )));
+                return true;
+            },
+        );
+    }
+});
+
 test("emits only reached native feature modules", () => {
     const result = compileSource(`
         import { addToScene, createBox, createEngine, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
@@ -89,6 +179,264 @@ test("supports aliased Babylon Lite imports", () => {
 
     assert.match(result.cpp, /create_engine/);
     assert.match(result.cpp, /\.clear_color =/);
+});
+
+test("reads mutated flat-entry variables from live generated state", () => {
+    const body = `
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        const engine = await createEngine(canvas);
+        const scene = createSceneContext(engine);
+        const box = createBox(engine, 1);
+        let counter = 0;
+        counter++;
+        counter++;
+        box.position.x = counter;
+    `;
+    const imports = `
+        import {
+            createBox,
+            createEngine,
+            createSceneContext,
+        } from "@babylonjs/lite";
+    `;
+    const flat = compileSource(`${imports}${body}`);
+    const main = compileSource(`
+        ${imports}
+        async function main(): Promise<void> {
+            ${body}
+        }
+    `);
+
+    for (const result of [flat, main]) {
+        assert.match(
+            result.cpp,
+            /auto v_counter = 0\.0f;\s+v_counter\+\+;\s+v_counter\+\+;/s,
+        );
+        assert.match(result.cpp, /\.position\.x = v_counter;/);
+        assert.doesNotMatch(result.cpp, /\.position\.x = 0\.0f;/);
+    }
+});
+
+test("compiles the flat-entry compiler state regression scene", () => {
+    const sourcePath = "examples/regression-compiler-state.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+
+    assert.match(result.cpp, /auto v_offset = 0\.0f/);
+    assert.match(result.cpp, /v_offset\+\+/);
+    assert.match(result.cpp, /\.position\.x = v_offset/);
+    assert.match(result.cpp, /\.rotation\.y \+= 0\.3f/);
+    assert.ok(
+        !result.manifest.adaptations.some(
+            ({ id }) => id === "entry-main-wrapper-erasure",
+        ),
+    );
+});
+
+test("retains module-level let constants for main entries", () => {
+    const result = compileSource(`
+        import {
+            createArcRotateCamera,
+            createEngine,
+            createSceneContext,
+        } from "@babylonjs/lite";
+        let radius = 3;
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            const camera = createArcRotateCamera(
+                0,
+                1,
+                radius,
+                { x: 0, y: 0, z: 0 },
+            );
+            scene.camera = camera;
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /create_arc_rotate_camera\(v_engine, 0\.0f, 1\.0f, 3\.0f/,
+    );
+});
+
+test("binds inline engine creation exactly once", () => {
+    const result = compileSource(`
+        import {
+            createDefaultCamera,
+            createEngine,
+            createSceneContext,
+        } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const scene = createSceneContext(await createEngine(canvas));
+            const camera = createDefaultCamera(scene);
+            scene.camera = camera;
+            camera.alpha = 1;
+        }
+    `);
+
+    assert.equal(
+        result.cpp.match(/bbl::create_engine/g)?.length,
+        1,
+    );
+    assert.match(
+        result.cpp,
+        /auto (v_bblite_inline_engine_\d+) = bbl::create_engine/,
+    );
+    const engine = result.cpp.match(
+        /auto (v_bblite_inline_engine_\d+) = bbl::create_engine/,
+    )?.[1];
+    assert.ok(engine);
+    assert.match(
+        result.cpp,
+        new RegExp(`create_scene_context\\(${engine}\\)`),
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`create_default_camera\\(${engine}, v_scene\\)`),
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`${engine}\\.cameras\\[v_camera\\.value\\]\\.alpha = 1\\.0f`),
+    );
+});
+
+test("rejects every second named or inline engine", () => {
+    for (const declarations of [
+        `
+            const first = await createEngine(canvas);
+            const second = await createEngine(canvas);
+        `,
+        `
+            const scene = createSceneContext(await createEngine(canvas));
+            const second = await createEngine(canvas);
+        `,
+        `
+            const first = await createEngine(canvas);
+            const scene = createSceneContext(await createEngine(canvas));
+        `,
+    ]) {
+        assert.throws(
+            () =>
+                compileSource(`
+                    import {
+                        createEngine,
+                        createSceneContext,
+                    } from "@babylonjs/lite";
+                    async function main(): Promise<void> {
+                        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+                        ${declarations}
+                    }
+                `),
+            (error: unknown) => {
+                assert.ok(error instanceof CompileError);
+                assert.match(
+                    error.message,
+                    /supports one engine per entry point/,
+                );
+                return true;
+            },
+        );
+    }
+});
+
+test("preserves compound assignments for numeric properties", () => {
+    const result = compileSource(`
+        import {
+            createArcRotateCamera,
+            createBox,
+            createEngine,
+            createSceneContext,
+            createStandardMaterial,
+            onBeforeRender,
+        } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            const camera = createArcRotateCamera(0, 1, 2, { x: 0, y: 0, z: 0 });
+            scene.camera = camera;
+            const box = createBox(engine, 1);
+            const material = createStandardMaterial();
+            box.material = material;
+            scene.fixedDeltaMs += 1;
+            scene.imageProcessing.exposure -= 0.1;
+            scene.imageProcessing.contrast += 0.2;
+            scene.camera.alpha += 0.3;
+            camera.beta -= 0.4;
+            material.alpha += 0.1;
+            material.specularPower -= 1;
+            onBeforeRender(scene, () => {
+                box.position.x -= 0.02;
+                box.rotation.y += 0.01;
+                box.scaling.z += 0.03;
+            });
+        }
+    `);
+
+    assert.match(result.cpp, /\.fixed_delta_ms \+= 1\.0f/);
+    assert.match(result.cpp, /\.environment\.exposure -= 0\.1f/);
+    assert.match(result.cpp, /\.environment\.contrast \+= 0\.2f/);
+    assert.match(result.cpp, /\.camera\.value\]\.alpha \+= 0\.3f/);
+    assert.match(result.cpp, /\.cameras\[v_camera\.value\]\.beta -= 0\.4f/);
+    assert.match(result.cpp, /\.base_color_factor\.a \+= 0\.1f/);
+    assert.match(result.cpp, /\.specular_power -= 1\.0f/);
+    assert.match(result.cpp, /\.position\.x -= 0\.02f/);
+    assert.match(result.cpp, /\.rotation\.y \+= 0\.01f/);
+    assert.match(result.cpp, /\.scaling\.z \+= 0\.03f/);
+});
+
+test("rejects compound assignments for nonnumeric properties", () => {
+    const source = (assignment: string): string => `
+        import {
+            createArcRotateCamera,
+            createBox,
+            createEngine,
+            createSceneContext,
+            createStandardMaterial,
+        } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            const camera = createArcRotateCamera(0, 1, 2, { x: 0, y: 0, z: 0 });
+            const box = createBox(engine, 1);
+            const material = createStandardMaterial();
+            ${assignment}
+        }
+    `;
+    for (const [assignment, target] of [
+        ["scene.clearColor += [0, 0, 0, 1];", "scene clearColor"],
+        ["scene.camera -= camera;", "scene camera"],
+        ["box.material += material;", "mesh material"],
+        ["material.diffuseColor -= [1, 1, 1];", "material diffuseColor"],
+        ["material.disableLighting += true;", "material disableLighting"],
+        [
+            "scene.imageProcessing.toneMappingEnabled -= true;",
+            "image-processing property 'toneMappingEnabled'",
+        ],
+    ] as const) {
+        assert.throws(
+            () => compileSource(source(assignment)),
+            (error: unknown) => {
+                assert.ok(error instanceof CompileError);
+                assert.match(
+                    error.message,
+                    new RegExp(
+                        `Compound assignment is not supported for ${target.replace(
+                            /[.*+?^${}()|[\]\\]/g,
+                            "\\$&",
+                        )}`,
+                    ),
+                );
+                return true;
+            },
+        );
+    }
 });
 
 test("compiles pinned scene 213 GridMaterial options", () => {
@@ -545,6 +893,27 @@ test("compiles Babylon Lite scene 163 shader alpha cutout", () => {
     );
 });
 
+test("compiles shader materials inside a frame-graph render task", () => {
+    const source = readFileSync(
+        resolve("examples/audit-shader-frame-graph.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "examples/audit-shader-frame-graph.ts",
+    });
+
+    assert.ok(result.manifest.features.includes("material:shader"));
+    assert.ok(
+        result.manifest.features.includes("renderer:geometry-output"),
+    );
+    assert.deepEqual(
+        result.manifest.shaderVariants,
+        ["alpha-card", "circular-cutout"],
+    );
+    assert.match(result.cpp, /create_render_task/);
+    assert.match(result.cpp, /add_task/);
+});
+
 test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
     const source = readFileSync(
         resolve("examples/scene146-geometry-output.ts"),
@@ -689,6 +1058,7 @@ test("compiles animated and skinned glTF scenes", () => {
         "examples/scene5-alien.ts",
         "examples/scene240-animated-triangle.ts",
         "examples/scene245-recursive-skeletons.ts",
+        "examples/regression-track-clamp.ts",
     ]) {
         const result = compileSource(
             readFileSync(resolve(sourcePath), "utf8"),

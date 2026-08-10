@@ -54,6 +54,10 @@ attributes, varyings, stages, and entry points; PAL shader creation consumes
 the reflected uniform-buffer counts. Pinned Tint emits native HLSL/MSL from
 the specialized WGSL; register normalization and DXC produce SDL-compatible
 DXIL/SPIR-V.
+The project-owned `audit-shader-frame-graph` differential gate is pixel-exact
+against pinned Babylon Lite and verifies that alpha-card and circular-cutout
+materials retain their pipelines and uniforms when a frame-graph render task
+mirrors the scene. It is regression coverage, not upstream corpus coverage.
 GridMaterial now uses generated WGSL and Tint, with scene 213 gating its
 dynamic native specialization.
 Ground and skybox fragments also use generated WGSL, gated by scene 8 and
@@ -97,6 +101,13 @@ deindexed and use a narrow CPU fallback to recompute post-deformation face
 normals, while their positions are still GPU-skinned. See
 [Architecture](architecture.md#animation-and-deformation) for layout,
 specialization, and fallback limits.
+The project-owned `regression-track-clamp` gate is pixel-exact at 3 seconds
+and verifies that shorter translation, rotation, and morph-weight channels
+hold their final values while a separate channel determines the animation
+duration.
+An audited static-skin experiment was not retained: applying skin deformation
+without an animation array diverged from the pinned Babylon Lite output, so it
+would require an explicit fidelity adaptation rather than an ordinary fix.
 
 Pinned property animations compile static clips and groups into typed native
 records. LINEAR scalar/vector interpolation, quaternion slerp, STEP holds,

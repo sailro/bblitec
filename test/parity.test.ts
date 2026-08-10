@@ -13,6 +13,8 @@ import {
     generateHotspotMap,
     generateIdVisualization,
 } from "../src/parity.js";
+import { resolveParityThresholds } from "../src/parity-scene.js";
+import { getScene } from "../src/scene-registry.js";
 
 function writePng(path: string, pixels: Array<[number, number, number, number]>): void {
     const png = new PNG({ width: pixels.length, height: 1 });
@@ -21,6 +23,53 @@ function writePng(path: string, pixels: Array<[number, number, number, number]>)
     });
     writeFileSync(path, PNG.sync.write(png));
 }
+
+test("requires configured thresholds for CPU parity gates", () => {
+    assert.deepEqual(
+        resolveParityThresholds(getScene("boombox").parity!, false),
+        {
+            maxMad: 2.2,
+            maxRegionMad: 21.5,
+            gate: "enforced",
+        },
+    );
+    assert.throws(
+        () =>
+            resolveParityThresholds(
+                getScene("scene10").parity!,
+                false,
+            ),
+        /CPU parity thresholds are not configured/,
+    );
+    assert.deepEqual(
+        resolveParityThresholds(getScene("scene10").parity!, true),
+        {
+            maxMad: 0.03,
+            maxRegionMad: 0.25,
+            gate: "enforced",
+        },
+    );
+    assert.deepEqual(
+        resolveParityThresholds(
+            {
+                reference: {
+                    kind: "source",
+                    path: "reference.png",
+                },
+                actual: "actual.png",
+                outputDirectory: "output",
+                backgroundColor: [0, 0, 0],
+                backgroundThreshold: 0,
+            },
+            true,
+        ),
+        {
+            maxMad: undefined,
+            maxRegionMad: undefined,
+            gate: "diagnostic-only",
+        },
+    );
+});
 
 test("matches Babylon MAD and foreground-region semantics", () => {
     const directory = mkdtempSync(join(tmpdir(), "bblitec-parity-"));

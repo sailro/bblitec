@@ -28,8 +28,14 @@ add_executable(
 )
 
 if(BBLITE_GENERATED_SHADER_FILES)
+    set(
+        BBLITE_SHADER_LINK_SOURCE
+        "${CMAKE_CURRENT_BINARY_DIR}/bblite-shader-link.cpp"
+    )
     add_custom_command(
-        OUTPUT "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
+        OUTPUT
+            "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
+            "${BBLITE_SHADER_LINK_SOURCE}"
         COMMAND "${CMAKE_COMMAND}" -E remove_directory "${BBLITE_BUILD_SHADER_DIR}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${BBLITE_BUILD_SHADER_DIR}"
         COMMAND
@@ -39,12 +45,25 @@ if(BBLITE_GENERATED_SHADER_FILES)
         COMMAND
             "${CMAKE_COMMAND}" -E touch
             "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
+        COMMAND
+            "${CMAKE_COMMAND}" -E touch
+            "${BBLITE_SHADER_LINK_SOURCE}"
         DEPENDS ${BBLITE_GENERATED_SHADER_FILES}
         VERBATIM
     )
+    set_source_files_properties(
+        "${BBLITE_SHADER_LINK_SOURCE}"
+        PROPERTIES GENERATED TRUE
+    )
+    target_sources(
+        bblite_native
+        PRIVATE "${BBLITE_SHADER_LINK_SOURCE}"
+    )
     add_custom_target(
         bblite_shader_snapshot
-        DEPENDS "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
+        DEPENDS
+            "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
+            "${BBLITE_SHADER_LINK_SOURCE}"
     )
     add_dependencies(bblite_native bblite_shader_snapshot)
 endif()

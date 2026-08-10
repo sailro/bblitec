@@ -85,6 +85,26 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(lowered.source, /0x4e4942/);
     assert.match(adapter.source, /ts::await\(pal::fetch_array_buffer/);
     assert.match(adapter.source, /read_component/);
+    assert.match(
+        adapter.source,
+        /glTF accessor exceeds its bufferView/,
+    );
+    assert.match(
+        adapter.source,
+        /Sparse glTF accessors are not supported/,
+    );
+    assert.match(
+        adapter.source,
+        /glTF node hierarchy contains a cycle/,
+    );
+    assert.match(
+        adapter.source,
+        /glTF animated node hierarchy contains a cycle/,
+    );
+    assert.match(
+        adapter.source,
+        /glTF primitive index exceeds its vertex count/,
+    );
     assert.match(adapter.source, /linear_determinant/);
     assert.match(adapter.source, /std::swap\(geometry\.indices\[index \+ 1\]/);
     assert.match(adapter.source, /geometry\.flat_normals = true/);
@@ -110,6 +130,19 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /inverseBindMatrices/);
     assert.match(adapter.source, /RotationTrack/);
     assert.match(adapter.source, /animation_tick/);
+    assert.match(adapter.source, /apply_animation_time\(0\.0f\)/);
+    assert.match(
+        adapter.source,
+        /for \(const RotationTrack& track[\s\S]*?std::clamp\(/,
+    );
+    assert.match(
+        adapter.source,
+        /for \(const TranslationTrack& track[\s\S]*?std::clamp\(/,
+    );
+    assert.match(
+        adapter.source,
+        /for \(const WeightTrack& track[\s\S]*?std::clamp\(/,
+    );
     assert.match(adapter.source, /geometry\.morph_positions\.size\(\) <= 2/);
     assert.match(adapter.source, /\.joints\.size\(\) <= 64/);
     assert.match(adapter.source, /mesh_record\.gpu_deformation/);
@@ -144,10 +177,15 @@ test("generates mesh and standard-material factories from upstream defaults", ()
     const material = lowerer.lowerStandardMaterialFactory();
     const grid = lowerer.lowerGridMaterialFactory();
     const shader = lowerer.lowerShaderMaterialFactory();
-    assert.match(mesh.source, /mesh\.dimensions = Vec3\{resolved_size, resolved_size, resolved_size\}/);
+    assert.match(mesh.source, /create_box\(Engine& engine, BoxOptions options\)/);
+    assert.match(mesh.source, /mesh\.dimensions = Vec3\{width, height, depth\}/);
     assert.match(mesh.source, /geometry\.vertices\.insert/);
     assert.match(mesh.source, /vertex\.local_position = vertex\.position/);
-    assert.match(mesh.source, /geometry\.indices = \{3, 1, 0, 2, 3, 0\}/);
+    assert.match(mesh.source, /const std::uint32_t subdivisions/);
+    assert.match(mesh.source, /normalized_column \* options\.uv_scale\.x/);
+    assert.match(mesh.source, /bottom_right,\s*top_right,\s*top_left/s);
+    assert.match(mesh.source, /radius\.x \* normal\.x/);
+    assert.match(mesh.source, /options\.diameter_y/);
     assert.match(mesh.source, /mesh\.geometry =/);
     assert.match(mesh.source, /create_plane\(Engine& engine, PlaneOptions options\)/);
     assert.match(mesh.source, /create_torus\(Engine& engine, TorusOptions options\)/);
@@ -262,6 +300,14 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /build_render_plan/);
     assert.match(lowered.source, /build_render_draw_lists/);
     assert.match(lowered.source, /build_render_task_draw_lists/);
+    assert.match(
+        lowered.source,
+        /task\.kind == FrameTaskKind::geometry/,
+    );
+    assert.match(
+        lowered.source,
+        /item\.material_kind != RenderMaterialKind::pbr &&\s*item\.material_kind != RenderMaterialKind::standard/,
+    );
     assert.match(lowered.source, /build_render_features/);
     assert.match(lowered.source, /shader_uniform_buffer_count/);
     assert.match(

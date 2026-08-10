@@ -66,6 +66,11 @@ Derived paths:
 Add a registry entry only for stable thresholds, custom references, native
 environment flags, or attribution capabilities.
 
+For project-owned local glTF fixtures used by both the browser oracle and the
+compiler, keep binary payloads embedded and reference the `.gltf` from an
+`examples` scene with a repository-root-safe path such as
+`../examples/assets/<fixture>.gltf`.
+
 ## Generation and assets
 
 Generation:
@@ -96,7 +101,10 @@ Set `DXC_PATH` when DXC is not discoverable. The Windows SDK DXC may lack
 SPIR-V support; the vcpkg `directx-dxc` build is preferred.
 
 Native CMake builds snapshot the reached shader directory. Rebuild a scene
-after regenerating or recompiling its shaders.
+after regenerating or recompiling its shaders. The snapshot updates a generated
+link source owned by the executable, so shader-only changes redeploy beside the
+executable on single- and multi-config generators while unchanged builds
+remain no-op.
 
 ## Native builds
 
@@ -160,8 +168,10 @@ executable. `BBLITE_ASSET_DIR` and `BBLITE_GPU_SHADER_DIR` remain explicit
 overrides for diagnostics and unusual layouts.
 
 Shader compilation uses `artifacts\shader-cache`, keyed by source, profile,
-compiler binary, and flags. Identical variants are reused across scenes; the
-cache is disposable.
+DXC executable/codegen DLLs, and the exact invocation flags. DXIL and SPIR-V
+are validated and atomically published, so interrupted or malformed entries
+are rebuilt instead of reused. Identical variants are reused across scenes;
+the cache is disposable.
 
 Build the pinned Tint CLI with:
 
@@ -215,6 +225,11 @@ Refresh a source-based reference only intentionally:
 npm run scene -- parity scene273 --recapture-reference
 ```
 
+Registered scenes require their curated reference to exist. Ordinary parity
+fails instead of recreating a missing golden; only
+`--recapture-reference` authorizes an intentional replacement. Ad-hoc scenes
+retain the bootstrap behavior shown above.
+
 BoomBox CPU and GPU runs use the same generic command:
 
 ```powershell
@@ -222,6 +237,12 @@ npm run scene -- parity boombox --cpu
 npm run scene -- parity boombox
 npm run parity:diagnostics
 ```
+
+`--cpu` is a gate only when the scene registry defines `cpuThresholds`.
+Requesting CPU parity for any other scene fails explicitly instead of
+reporting an unthresholded pass. Ad-hoc GPU scenes without configured
+thresholds remain available, but reports and console output label them
+`diagnostic-only`.
 
 Outputs under `artifacts\parity` include the actual image, diff map, hotspots,
 JSON report, and optional draw/cluster/diagnostic buffers. Committed goldens

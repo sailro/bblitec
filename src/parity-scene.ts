@@ -10,7 +10,12 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { captureSuiteReference } from "./capture-suite-reference.js";
-import { resolveScene } from "./scene-registry.js";
+import {
+    isRegisteredScene,
+    resolveScene,
+    type SceneDefinition,
+    type SceneParityDefinition,
+} from "./scene-registry.js";
 import {
     analyzeDifference,
     analyzeIdBuffer,
@@ -152,6 +157,52 @@ export function runNative(
     }
 }
 
+export function validateReferenceCapture(
+    scene: SceneDefinition,
+    reference: string,
+    recaptureReference: boolean,
+): void {
+    if (
+        isRegisteredScene(scene) &&
+        !existsSync(reference) &&
+        !recaptureReference
+    ) {
+        throw new Error(
+            `Curated reference is missing: ${reference}. Use --recapture-reference only for an intentional reference update.`,
+        );
+    }
+}
+
+export function resolveParityThresholds(
+    config: SceneParityDefinition,
+    gpu: boolean,
+): {
+    maxMad: number | undefined;
+    maxRegionMad: number | undefined;
+    gate: "enforced" | "diagnostic-only";
+} {
+    if (gpu) {
+        const enforced =
+            config.maxFullMad !== undefined &&
+            config.maxForegroundMad !== undefined;
+        return {
+            maxMad: config.maxFullMad,
+            maxRegionMad: config.maxForegroundMad,
+            gate: enforced ? "enforced" : "diagnostic-only",
+        };
+    }
+    if (!config.cpuThresholds) {
+        throw new Error(
+            "CPU parity thresholds are not configured for this scene.",
+        );
+    }
+    return {
+        maxMad: config.cpuThresholds.maxFullMad,
+        maxRegionMad: config.cpuThresholds.maxForegroundMad,
+        gate: "enforced",
+    };
+}
+
 function percentage(count: number, total: number): number {
     return total > 0 ? count / total : 0;
 }
@@ -172,15 +223,10 @@ export async function runSceneParity(
                 ? config.actual
                 : `${config.outputDirectory}/${scene.id}-cpu.png`),
     );
-    const thresholds = arguments_.gpu
-        ? {
-              maxMad: config.maxFullMad,
-              maxRegionMad: config.maxForegroundMad,
-          }
-        : {
-              maxMad: config.cpuThresholds?.maxFullMad,
-              maxRegionMad: config.cpuThresholds?.maxForegroundMad,
-          };
+    const thresholds = resolveParityThresholds(
+        config,
+        arguments_.gpu,
+    );
     const renderer = arguments_.gpu
         ? {
               mode: "gpu",
@@ -207,6 +253,11 @@ export async function runSceneParity(
         ? resolve(outputDirectory, "triangle-clusters-visual-gpu.png")
         : undefined;
 
+    validateReferenceCapture(
+        scene,
+        reference,
+        arguments_.recaptureReference,
+    );
     await captureSuiteReference(
         scene.source,
         reference,
@@ -362,6 +413,8 @@ export async function runSceneParity(
 
     const report = {
         scene: scene.name,
+        sourceOrigin:
+            scene.sourceOrigin ?? "babylon-lite",
         renderer,
         dimensions: actualDimensions,
         full,
@@ -405,6 +458,11 @@ export async function runSceneParity(
     writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 
     console.log(`Renderer: ${renderer.implementation} (${renderer.mode}, ${renderer.driverSelection})`);
+    if (thresholds.gate === "diagnostic-only") {
+        console.warn(
+            "Parity result is diagnostic-only because no thresholds are configured.",
+        );
+    }
     console.log(`${scene.name} full image (${full.totalPixels} px): MAD=${full.mad.toFixed(3)}, max=${full.maxDiff}`);
     console.log(
         `${scene.name} region (${region.regionPixels} px): MAD=${region.mad.toFixed(3)}, ` +

@@ -23,6 +23,36 @@ function smallHdr(): Uint8Array {
     return result;
 }
 
+function hdrBytes(
+    width: number,
+    height: number,
+    pixels: readonly number[],
+): Uint8Array {
+    const header = new TextEncoder().encode(
+        `#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y ${height} +X ${width}\n`,
+    );
+    const result = new Uint8Array(
+        header.length + pixels.length,
+    );
+    result.set(header);
+    result.set(pixels, header.length);
+    return result;
+}
+
+function rleHdr(): Uint8Array {
+    return hdrBytes(
+        8,
+        1,
+        [
+            2, 2, 0, 8,
+            136, 64,
+            136, 32,
+            136, 16,
+            136, 136,
+        ],
+    );
+}
+
 test("packages a deterministic HDR cubemap representation", async () => {
     const image = parseRgbe(smallHdr());
     assert.equal(image.width, 2);
@@ -45,6 +75,54 @@ test("packages a deterministic HDR cubemap representation", async () => {
     assert.equal(
         createHash("sha256").update(packaged).digest("hex"),
         "e600de7cca4608446b5e9b5d1ac7d5780efdbfa333f177daddaaee54378146fe",
+    );
+});
+
+test("decodes valid HDR scanline RLE", () => {
+    const image = parseRgbe(rleHdr());
+    assert.equal(image.width, 8);
+    assert.equal(image.height, 1);
+    for (let pixel = 0; pixel < 8; pixel += 1) {
+        assert.deepEqual(
+            [...image.data.slice(pixel * 3, pixel * 3 + 3)],
+            [64, 32, 16],
+        );
+    }
+});
+
+test("rejects truncated and overflowing HDR scanline RLE", () => {
+    const truncated = rleHdr().slice(0, -1);
+    assert.throws(
+        () => parseRgbe(truncated),
+        /scanline run value is truncated/,
+    );
+
+    const overflow = hdrBytes(
+        8,
+        1,
+        [
+            2, 2, 0, 8,
+            137, 64,
+        ],
+    );
+    assert.throws(
+        () => parseRgbe(overflow),
+        /Invalid HDR scanline run length/,
+    );
+});
+
+test("rejects unsupported legacy HDR repeat encoding", () => {
+    const legacy = hdrBytes(
+        2,
+        1,
+        [
+            64, 32, 16, 136,
+            1, 1, 1, 1,
+        ],
+    );
+    assert.throws(
+        () => parseRgbe(legacy),
+        /Legacy HDR scanline repeat encoding is unsupported/,
     );
 });
 
