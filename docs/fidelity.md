@@ -36,6 +36,13 @@ the pinned source commit. Never edit, flatten, normalize, or replace them.
 Thresholds and goldens are equally immutable during ordinary fixes. Add a
 scene or recapture a reference only as an explicit pinned-scene operation.
 
+The original Babylon Lite parity history is supporting evidence for numbered
+scenes because those scenes were built as Lite-versus-Babylon Legacy
+differential tests. Review the scene pair, introduction PR, review discussion,
+and pre-pin follow-up fixes during integration. Historical MAD floors and root
+cause notes help classify native residuals, but generated behavior must still
+be derived from the pinned source rather than copied from an old workaround.
+
 ## Shader contract
 
 Generated shaders preserve upstream markers for:
@@ -72,6 +79,9 @@ provenance improvement.
 HDR environments preserve mip zero and use the pinned WebGPU 1024-sample GGX
 prefilter for higher mips. The generated package records the pinned module,
 shader, source commit, and sample count.
+`EXT_lights_image_based` likewise materializes Babylon Lite's 256-square,
+1024-sample BRDF integration directly as RGBA16F and uploads decoded RGBD
+cubemap faces with the same half-float quantization as WebGPU.
 
 Transmission uses an opaque scene-color copy, dielectric Fresnel
 `((ior-1)/(ior+1))²`, and Beer-Lambert volume attenuation
@@ -105,11 +115,21 @@ the glTF dielectric adaptations.
 The scene-color source is RGBA16F and remains linear through opaque and
 transmissive draws; exposure, tone mapping, gamma, and contrast run once in a
 final full-screen pass.
+Punctual glTF point lights use inverse-square falloff for the primary and
+additional generated light paths. Their diffuse and specular sums remain
+separate through transmission and transparent-alpha composition, and
+transmissive materials retain their authored alpha/depth state while moving
+after the scene-color grab.
 
 Generated ground remains opt-in while its source-perfect composition is
-tracked against Scenes 1, 6, 13, and 14. Requested DDS and explicit HDR
-cubemap skyboxes render by default and can be disabled with
+tracked against Scenes 1, 6, 13, and 14. Requested DDS skyboxes use Babylon's
+finite root-positioned cube and normal scene view-projection; requested DDS
+and explicit HDR cubemap skyboxes render by default and can be disabled with
 `BBLITE_BACKGROUND=0`.
+
+Embedded image-based lights evaluate SH without the transcription's former
+`[0,4]` clamp. Environment rotation affects SH and cubemap lookup directions,
+while horizon occlusion intentionally uses the unrotated reflection vector.
 
 glTF animation uses pinned LINEAR quaternion interpolation and deterministic
 time seeking, plus CUBICSPLINE quaternion/translation interpolation where

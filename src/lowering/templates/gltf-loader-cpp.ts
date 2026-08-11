@@ -845,7 +845,9 @@ bool load_image_based_environment(
     environment.brdf_lut.bytes =
         pal::read_binary_file(
             asset_path(
-                "gltf-ibl-brdf-lut.png"));
+                "gltf-ibl-brdf-lut.rgba16f"));
+    environment.brdf_lut_width = 256;
+    environment.brdf_lut_rgba16f = true;
     environment.exposure = 0.8f;
     environment.contrast = 1.2f;
     environment.tone_mapping_enabled = true;
@@ -1087,11 +1089,6 @@ MaterialHandle load_material(
                 textures,
                 samplers,
                 optional(transmission, "transmissionTexture"));
-            if (
-                material.transmission_factor > 0.0f ||
-                !material.transmission_texture.bytes.empty()) {
-                material.alpha_mode = MaterialAlphaMode::blend;
-            }
         }
         if (const ts::JsonValue* dispersion_value =
                 optional(

@@ -222,7 +222,7 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
       let v_85 = v_28.y;
       let v_86 = v_28.z;
       let v_87 = v_28.x;
-      v_82 = clamp(((((((((FragmentUniforms.sphericalHarmonics[0i].xyz + (FragmentUniforms.sphericalHarmonics[1i].xyz * v_85)) + (FragmentUniforms.sphericalHarmonics[2i].xyz * v_86)) + (FragmentUniforms.sphericalHarmonics[3i].xyz * v_87)) + ((FragmentUniforms.sphericalHarmonics[4i].xyz * v_85) * v_87)) + ((FragmentUniforms.sphericalHarmonics[5i].xyz * v_85) * v_86)) + (FragmentUniforms.sphericalHarmonics[6i].xyz * (((3.0f * v_86) * v_86) - 1.0f))) + ((FragmentUniforms.sphericalHarmonics[7i].xyz * v_86) * v_87)) + (FragmentUniforms.sphericalHarmonics[8i].xyz * ((v_87 * v_87) - (v_85 * v_85)))), vec3<f32>(), vec3<f32>(4.0f));
+      v_82 = ((((((((FragmentUniforms.sphericalHarmonics[0i].xyz + (FragmentUniforms.sphericalHarmonics[1i].xyz * v_85)) + (FragmentUniforms.sphericalHarmonics[2i].xyz * v_86)) + (FragmentUniforms.sphericalHarmonics[3i].xyz * v_87)) + ((FragmentUniforms.sphericalHarmonics[4i].xyz * v_85) * v_87)) + ((FragmentUniforms.sphericalHarmonics[5i].xyz * v_85) * v_86)) + (FragmentUniforms.sphericalHarmonics[6i].xyz * (((3.0f * v_86) * v_86) - 1.0f))) + ((FragmentUniforms.sphericalHarmonics[7i].xyz * v_86) * v_87)) + (FragmentUniforms.sphericalHarmonics[8i].xyz * ((v_87 * v_87) - (v_85 * v_85))));
       v_83 = v_84;
     }
   }

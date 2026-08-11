@@ -76,8 +76,7 @@ baselines belong in [status](docs/status.md) and Git history.
 - [ ] Sparse accessors and additional primitive modes.
 - [ ] Complete glTF animation coverage: scale and STEP channels, multiple
   clips, and richer animation-group controls.
-- [ ] glTF cameras and spot lights; close the remaining multi-point-light PBR
-  parity gap in Scene 33.
+- [ ] glTF cameras and spot lights.
 - [ ] KTX2/Basis and compression investigations.
 
 ### Property animation
@@ -118,14 +117,14 @@ baselines belong in [status](docs/status.md) and Git history.
 - [ ] Add headless renderer tests.
 - [ ] Add differential tests for camera, environment, material, and transform
   functions.
-- [ ] Match the deferred environment-ground composition for Scenes 1, 13, and
-  14 before enabling requested grounds by default.
+- [ ] Match the deferred environment-ground composition for Scenes 1, 6, 13,
+  and 14 before enabling requested grounds by default. The finite translated
+  DDS skybox is now source-perfect and Scene 14 reaches 0.290 with ground
+  enabled, but the same ground path still regresses the other three views.
 - [ ] Close the remaining transmission resolve and silhouette-coverage gap in
   Scene 212 after the source-derived dispersion equations.
 - [ ] Close the residual morph and instancing raster-edge gaps in Scenes 243
   and 247 without expanding geometry or adding scene-specific tolerances.
-- [ ] Match embedded `EXT_lights_image_based` interior and edge fidelity in
-  Scene 265 after the source-derived cubemap, SH, BRDF LUT, and rotation path.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 

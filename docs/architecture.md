@@ -152,10 +152,16 @@ The current generated slice includes:
 - Standard/PBR/Grid material records, no-color views, and typed custom shaders
 - metadata-driven `KHR_materials_clearcoat`, `KHR_materials_sheen`,
   `KHR_materials_iridescence`, and `KHR_materials_dispersion` layers
+- authored transmission alpha/depth state with separate post-grab draw
+  ordering and full multi-light refraction composition
 - negative-transform winding, generated normals, and cotangent normal mapping
 - `.env`/DDS parsing plus compile-time RGBE HDR/SH/cubemap materialization and
   pinned 1024-sample GGX prefiltering
-- generated infinite-distance solid, DDS, and HDR skybox behavior
+- `EXT_lights_image_based` RGBD cubemaps plus an offline-generated,
+  half-float 1024-sample BRDF LUT
+- generated infinite-distance solid and HDR skybox behavior
+- finite root-positioned DDS background cubes matching Babylon Lite's scene
+  view-projection contract
 - ordered opaque/transparent draw lists, camera matrices, uniforms, and
   frame-graph tasks
 - Standard/PBR geometry MRTs, depth-only passes, blits, and MSAA resolve

@@ -8,6 +8,7 @@ import { emitAssetSpecializations } from "./asset-specializer.js";
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
 import { packageHdrEnvironment } from "./hdr-packager.js";
+import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
 import { readUpstreamPin } from "./upstream-source.js";
 
 interface CliOptions {
@@ -186,19 +187,14 @@ async function main(): Promise<void> {
     const specializationFeatures =
         emitAssetSpecializations(outputPath, result.manifest.assets);
     if (specializationFeatures.imageBasedLighting) {
-        const pin = readUpstreamPin();
         const brdfAsset: CompileAsset = {
-            source:
-                "https://raw.githubusercontent.com/" +
-                `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
-                "/packages/babylon-lite/assets/brdf-lut.png",
-            output: "gltf-ibl-brdf-lut.png",
+            source: "generated:pinned-ibl-brdf-lut",
+            output: "gltf-ibl-brdf-lut.rgba16f",
             kind: "texture",
         };
-        await materializeAsset(
-            brdfAsset,
-            inputPath,
-            outputPath,
+        writeFileSync(
+            resolve(outputPath, "assets", brdfAsset.output),
+            generateIblBrdfLutRgba16f(),
         );
         result.manifest.assets.push(brdfAsset);
     }

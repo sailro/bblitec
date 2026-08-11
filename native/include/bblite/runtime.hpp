@@ -579,6 +579,8 @@ struct EnvironmentState {
     std::vector<TextureData> specular_faces;
     bool specular_rgba16f = false;
     TextureData brdf_lut;
+    std::uint32_t brdf_lut_width = 0;
+    bool brdf_lut_rgba16f = false;
     TextureData ground_texture;
     TextureData skybox_texture;
     bool has_ground = false;

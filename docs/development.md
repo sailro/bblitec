@@ -49,6 +49,31 @@ Registered Babylon Lite inputs live under `corpus\babylon-lite` and must match
 `upstream\babylon-lite-scenes.json` byte-for-byte. They are read-only evidence;
 compiler gaps are fixed in the compiler rather than by adapting a scene.
 
+## Integrating a curated parity scene
+
+Numbered scenes are Babylon Lite-versus-Babylon Legacy differential tests, not
+just feature samples. Investigate their Babylon Lite history as soon as a
+scene is considered for integration, before implementing native fixes:
+
+1. Trace both `lab/lite/src/lite/scene<N>.ts` and
+   `lab/lite/src/bjs/scene<N>.ts` through renames with `git log --follow`.
+2. Read the original parity pull request, inline reviews, and discussion.
+   Record the measured MAD, accepted backend floor, known residual regions,
+   rejected approaches, and any reference-page corrections.
+3. Trace the reached loader, material, shader, animation, and frame-graph
+   modules from that introduction through the pinned source commit. Later
+   pre-pin fixes often document the exact Babylon Legacy semantic mismatch.
+4. Verify every historical claim against the pinned source. History explains
+   intent and failed approaches; it does not override the current source
+   contract.
+5. Carry useful evidence into the scene dashboard note, focused tests, or
+   `TODO.md` before setting a curated threshold.
+
+Do not wait for a high MAD investigation to perform this review. Early history
+inspection prevents repeating Babylon Lite's own parity debugging and helps
+separate a known WebGPU/raster floor from a missing compiler or PAL contract.
+Post-pin commits are relevant only to an explicit upstream-version evaluation.
+
 ## Updating Babylon Lite
 
 The repository supports one pinned upstream version. To evaluate an update:

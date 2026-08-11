@@ -694,9 +694,6 @@ RenderItem bind_render_item(
     item.transmissive = material.transmission_factor > 0.0f ||
         !material.transmission_texture.bytes.empty();
     item.skybox_mode = material.skybox_mode;
-    if (item.transmissive) {
-        item.bucket = RenderBucket::alpha_blend;
-    }
     return item;
 }
 
@@ -757,7 +754,8 @@ void append_draw(
     command.item = item;
     command.pipeline = render_pipeline_kind(item);
     RenderDrawList& list =
-        item.bucket == RenderBucket::alpha_blend
+        item.bucket == RenderBucket::alpha_blend ||
+        item.transmissive
             ? result.transparent
             : result.opaque;
     list.commands.push_back(command);
@@ -1506,9 +1504,16 @@ BackgroundUniforms build_background_uniforms(
 
 SkyboxPlan build_skybox_plan(const EnvironmentState& environment) {
     const float half = environment.skybox_size * 0.5f;
-    const auto vertex = [](float x, float y, float z) {
+    const Vec3 center = environment.skybox_uses_environment
+        ? Vec3{}
+        : environment.skybox_position;
+    const auto vertex = [&](float x, float y, float z) {
         return ModelVertex{
-            Vec3{x, y, z},
+            Vec3{
+                center.x + x,
+                center.y + y,
+                center.z + z,
+            },
             Vec3{0.0f, 1.0f, 0.0f},
             Vec4{1.0f, 0.0f, 0.0f, 1.0f},
             Vec2{},
@@ -1539,6 +1544,9 @@ SkyboxPlan build_skybox_plan(const EnvironmentState& environment) {
 SkyboxUniforms build_skybox_uniforms(
     const EnvironmentState& environment,
     bool linear_image_processing) {
+    const Vec3 center = environment.skybox_uses_environment
+        ? Vec3{}
+        : environment.skybox_position;
     SkyboxUniforms result;
     result.primary_color_exposure = {
         environment.primary_color.r,
@@ -1547,9 +1555,9 @@ SkyboxUniforms build_skybox_uniforms(
         environment.exposure,
     };
     result.background_center = {
-        0.0f,
-        0.0f,
-        0.0f,
+        center.x,
+        center.y,
+        center.z,
         0.0f,
     };
     result.image_parameters = {
@@ -1921,6 +1929,17 @@ SkyboxUniforms build_skybox_uniforms(
             );
         }
         if (options.multiLight) {
+            const primaryPointAttenuation =
+                /    let v_62 = max\(0\.0f, \(1\.0f - \(sqrt\(v_59\) \/ max\(FragmentUniforms\.groundColor\.w, 0\.00009999999747378752f\)\)\)\);/;
+            if (!primaryPointAttenuation.test(convertedPbr)) {
+                throw new Error(
+                    "PBR primary point-light attenuation marker changed.",
+                );
+            }
+            convertedPbr = convertedPbr.replace(
+                primaryPointAttenuation,
+                "    let v_62 = 1.0f / max(v_59, 0.0000001f);",
+            );
             convertedPbr = convertedPbr.replace(
                     /  groundColor : vec4<f32>,/,
                     "  groundColor : vec4<f32>,\n" +
@@ -1975,7 +1994,8 @@ SkyboxUniforms build_skybox_uniforms(
         v_52 *
         (extraNdotL * 0.31830987334251403809f) *
         extraScale;
-      bblExtraDirect += extraSpecular + extraDiffuse;
+      bblExtraSpecular += extraSpecular;
+      bblExtraDiffuse += extraDiffuse;
     }
   }`,
             ).join("\n");
@@ -1988,13 +2008,60 @@ SkyboxUniforms build_skybox_uniforms(
             }
             convertedPbr = convertedPbr.replace(
                     directMarker,
-                    `  var bblExtraDirect = vec3<f32>(0.0f);
+                    `  var bblExtraDiffuse = vec3<f32>(0.0f);
+  var bblExtraSpecular = vec3<f32>(0.0f);
 ${extraLights}
 ${directMarker}`,
             );
+            const baseComposition =
+                "(((((v_89 * v_52) * v_34) + v_101) + v_102) + " +
+                "((((v_70 * v_52) * v_71) * v_81) * v_69)) + v_40";
+            if (!convertedPbr.includes(baseComposition)) {
+                throw new Error(
+                    "PBR base lighting composition marker changed.",
+                );
+            }
             convertedPbr = convertedPbr.replace(
-                    /  var shadedColor = (\([\s\S]*?\) \+ v_40);/,
-                    "  var shadedColor = $1 + bblExtraDirect;",
+                baseComposition,
+                `(${baseComposition} + ` +
+                    "bblExtraDiffuse + bblExtraSpecular)",
+            );
+            if (options.transmission) {
+                const refractionComposition =
+                    /    shadedColor = \(\(v_89 \* v_52\) \* v_34\) \* opaqueRatio \+ v_101 \+ v_102 \+\r?\n      \(\(\(\(v_70 \* v_52\) \* v_71\) \* v_81\) \* v_69\) \* opaqueRatio \+\r?\n      transmitted \+ v_40;/;
+                if (!refractionComposition.test(convertedPbr)) {
+                    throw new Error(
+                        "PBR refraction lighting composition marker changed.",
+                    );
+                }
+                convertedPbr = convertedPbr.replace(
+                    refractionComposition,
+                    "    shadedColor = ((v_89 * v_52) * v_34) * " +
+                        "opaqueRatio + v_101 + v_102 + " +
+                        "bblExtraSpecular +\n" +
+                        "      ((((v_70 * v_52) * v_71) * v_81) * " +
+                        "v_69) * opaqueRatio + " +
+                        "bblExtraDiffuse * opaqueRatio +\n" +
+                        "      transmitted + v_40;",
+                );
+            }
+            const alphaLuminance =
+                "    let v_113 = dot((v_101 + v_102), " +
+                "vec3<f32>(0.21259999275207519531f, " +
+                "0.71520000696182250977f, " +
+                "0.07220000028610229492f));";
+            if (!convertedPbr.includes(alphaLuminance)) {
+                throw new Error(
+                    "PBR transparent alpha luminance marker changed.",
+                );
+            }
+            convertedPbr = convertedPbr.replace(
+                alphaLuminance,
+                "    let v_113 = dot((v_101 + v_102 + " +
+                    "bblExtraSpecular), " +
+                    "vec3<f32>(0.21259999275207519531f, " +
+                    "0.71520000696182250977f, " +
+                    "0.07220000028610229492f));",
             );
         }
         if (options.environmentRotation) {
@@ -2029,6 +2096,22 @@ ${directMarker}`,
                     "  let environment_cos = cos(environment_rotation);\n" +
                     "  let environment_sin = sin(environment_rotation);\n" +
                     "  let v_90 = vec3<f32>(environment_reflection_raw.x * environment_cos + environment_reflection_raw.z * environment_sin, environment_reflection_raw.y, -environment_reflection_raw.x * environment_sin + environment_reflection_raw.z * environment_cos);",
+            );
+            const horizonOcclusion =
+                "  let v_99 = clamp((1.0f + " +
+                "(1.10000002384185791016f * dot(v_90, v_29))), " +
+                "0.0f, 1.0f);";
+            if (!convertedPbr.includes(horizonOcclusion)) {
+                throw new Error(
+                    "PBR environment horizon-occlusion marker changed.",
+                );
+            }
+            convertedPbr = convertedPbr.replace(
+                horizonOcclusion,
+                "  let v_99 = clamp((1.0f + " +
+                    "(1.10000002384185791016f * " +
+                    "dot(environment_reflection_raw, v_29))), " +
+                    "0.0f, 1.0f);",
             );
         }
         if (

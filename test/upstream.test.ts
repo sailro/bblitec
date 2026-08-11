@@ -135,8 +135,9 @@ test("generates GLB framing validation from upstream constants", () => {
     );
     assert.match(
         adapter.source,
-        /gltf-ibl-brdf-lut\.png/,
+        /gltf-ibl-brdf-lut\.rgba16f/,
     );
+    assert.match(adapter.source, /brdf_lut_rgba16f = true/);
     assert.match(
         adapter.source,
         /EXT_mesh_gpu_instancing/,
@@ -157,6 +158,10 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /KHR_materials_ior/);
     assert.match(adapter.source, /KHR_materials_volume/);
     assert.match(adapter.source, /material\.transmission_texture/);
+    assert.doesNotMatch(
+        adapter.source,
+        /material\.transmission_factor > 0\.0f[\s\S]*?material\.alpha_mode = MaterialAlphaMode::blend/,
+    );
     assert.match(adapter.source, /material\.thickness_texture/);
     assert.match(adapter.source, /material\.use_thickness_as_depth = true/);
     assert.match(adapter.source, /KHR_materials_clearcoat/);
@@ -391,6 +396,10 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         /extra_light_positions/,
     );
     assert.match(lowered.source, /build_render_plan/);
+    assert.match(
+        lowered.source,
+        /item\.bucket == RenderBucket::alpha_blend \|\|\s*item\.transmissive/,
+    );
     assert.match(lowered.source, /build_render_draw_lists/);
     assert.match(lowered.source, /build_render_task_draw_lists/);
     assert.match(
@@ -444,6 +453,14 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /result\.normal_options\[1\]/);
     assert.match(lowered.source, /build_background_plan/);
     assert.match(lowered.source, /build_skybox_plan/);
+    assert.match(
+        lowered.source,
+        /const Vec3 center = environment\.skybox_uses_environment/,
+    );
+    assert.match(
+        lowered.source,
+        /: environment\.skybox_position;/,
+    );
     assert.match(lowered.source, /build_skybox_view_projection/);
     assert.match(lowered.source, /preferred_sample_count\(\).*return 4u/s);
     assert.match(lowered.header, /struct PbrUniforms/);
@@ -583,6 +600,42 @@ test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", ()
                 shader.output.endsWith("pbr.frag.native.wgsl"),
             )?.data,
         );
+    const multiLight = fragmentOf(
+        new RendererLowerer(new LoweringContext()).lowerShaders({
+            ...options,
+            transmission: true,
+            multiLight: true,
+        }),
+    );
+    assert.match(
+        multiLight,
+        /let v_62 = 1\.0f \/ max\(v_59, 0\.0000001f\)/,
+    );
+    assert.match(multiLight, /bblExtraDiffuse \+= extraDiffuse/);
+    assert.match(multiLight, /bblExtraSpecular \+= extraSpecular/);
+    assert.match(
+        multiLight,
+        /bblExtraDiffuse \* opaqueRatio/,
+    );
+    assert.match(
+        multiLight,
+        /v_101 \+ v_102 \+ bblExtraSpecular/,
+    );
+    const rotatedEnvironment = fragmentOf(
+        new RendererLowerer(new LoweringContext()).lowerShaders({
+            ...options,
+            transmission: false,
+            environmentRotation: true,
+        }),
+    );
+    assert.match(
+        rotatedEnvironment,
+        /dot\(environment_reflection_raw, v_29\)/,
+    );
+    assert.doesNotMatch(
+        rotatedEnvironment,
+        /v_82 = clamp\(/,
+    );
     const clearcoat = fragmentOf(
         new RendererLowerer(new LoweringContext()).lowerShaders({
             ...options,

@@ -1228,13 +1228,63 @@ std::vector<float> decode_rgbd(const TextureData& texture_data, int& width, int&
     return result;
 }
 
-SDL_GPUTexture* upload_rgbd_texture(SDL_GPUDevice* device, const TextureData& texture_data) {
-    int width = 0;
-    int height = 0;
-    const std::vector<float> pixels = decode_rgbd(texture_data, width, height);
+std::uint16_t float_to_half(float value) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    const std::uint16_t sign =
+        static_cast<std::uint16_t>((bits >> 16) & 0x8000u);
+    const std::uint32_t exponent = (bits >> 23) & 0xffu;
+    const std::uint32_t mantissa = bits & 0x7fffffu;
+    if (exponent == 0xffu) {
+        return static_cast<std::uint16_t>(
+            sign | (mantissa == 0 ? 0x7c00u : 0x7e00u));
+    }
+    const int half_exponent =
+        static_cast<int>(exponent) - 127 + 15;
+    if (half_exponent >= 0x1f) {
+        return static_cast<std::uint16_t>(sign | 0x7c00u);
+    }
+    if (half_exponent <= 0) {
+        if (half_exponent < -10) return sign;
+        const std::uint32_t normalized = mantissa | 0x800000u;
+        const int shift = 14 - half_exponent;
+        const std::uint32_t rounded =
+            (
+                normalized +
+                (1u << (shift - 1)) -
+                1u +
+                ((normalized >> shift) & 1u)) >>
+            shift;
+        return static_cast<std::uint16_t>(sign | rounded);
+    }
+    const std::uint32_t rounded =
+        mantissa + 0xfffu + ((mantissa >> 13) & 1u);
+    if ((rounded & 0x800000u) != 0) {
+        const int next_exponent = half_exponent + 1;
+        return static_cast<std::uint16_t>(
+            next_exponent >= 0x1f
+                ? sign | 0x7c00u
+                : sign |
+                    static_cast<std::uint16_t>(
+                        next_exponent << 10));
+    }
+    return static_cast<std::uint16_t>(
+        sign |
+        static_cast<std::uint16_t>(half_exponent << 10) |
+        static_cast<std::uint16_t>(rounded >> 13));
+}
+
+SDL_GPUTexture* upload_2d_texture(
+    SDL_GPUDevice* device,
+    const void* bytes,
+    std::size_t byte_size,
+    std::uint32_t width,
+    std::uint32_t height,
+    SDL_GPUTextureFormat format,
+    const char* label) {
     SDL_GPUTextureCreateInfo texture_info{};
     texture_info.type = SDL_GPU_TEXTURETYPE_2D;
-    texture_info.format = SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+    texture_info.format = format;
     texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
     texture_info.width = width;
     texture_info.height = height;
@@ -1242,32 +1292,71 @@ SDL_GPUTexture* upload_rgbd_texture(SDL_GPUDevice* device, const TextureData& te
     texture_info.num_levels = 1;
     texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
-    if (!texture) gpu_error("SDL_CreateGPUTexture RGBD");
+    if (!texture) gpu_error(label);
 
-    const std::size_t byte_size = pixels.size() * sizeof(float);
     SDL_GPUTransferBufferCreateInfo transfer_info{};
     transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
     transfer_info.size = static_cast<Uint32>(byte_size);
     SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(device, &transfer_info);
-    if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer RGBD");
+    if (!transfer) gpu_error(label);
     void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
-    if (!mapped) gpu_error("SDL_MapGPUTransferBuffer RGBD");
-    std::memcpy(mapped, pixels.data(), byte_size);
+    if (!mapped) gpu_error(label);
+    std::memcpy(mapped, bytes, byte_size);
     SDL_UnmapGPUTransferBuffer(device, transfer);
 
     SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(device);
-    if (!command) gpu_error("SDL_AcquireGPUCommandBuffer RGBD");
+    if (!command) gpu_error(label);
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
     const SDL_GPUTextureTransferInfo source{
-        transfer, 0, static_cast<Uint32>(width), static_cast<Uint32>(height)};
+        transfer, 0, width, height};
     const SDL_GPUTextureRegion destination{
         texture, 0, 0, 0, 0, 0,
-        static_cast<Uint32>(width), static_cast<Uint32>(height), 1};
+        width, height, 1};
     SDL_UploadToGPUTexture(copy, &source, &destination, false);
     SDL_EndGPUCopyPass(copy);
-    if (!SDL_SubmitGPUCommandBuffer(command)) gpu_error("SDL_SubmitGPUCommandBuffer RGBD");
+    if (!SDL_SubmitGPUCommandBuffer(command)) gpu_error(label);
     SDL_ReleaseGPUTransferBuffer(device, transfer);
     return texture;
+}
+
+SDL_GPUTexture* upload_rgbd_texture(SDL_GPUDevice* device, const TextureData& texture_data) {
+    int width = 0;
+    int height = 0;
+    const std::vector<float> pixels = decode_rgbd(texture_data, width, height);
+    return upload_2d_texture(
+        device,
+        pixels.data(),
+        pixels.size() * sizeof(float),
+        static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(height),
+        SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT,
+        "upload RGBD texture");
+}
+
+SDL_GPUTexture* upload_brdf_lut(
+    SDL_GPUDevice* device,
+    const EnvironmentState& environment) {
+    if (!environment.brdf_lut_rgba16f) {
+        return upload_rgbd_texture(device, environment.brdf_lut);
+    }
+    const std::size_t expected_size =
+        static_cast<std::size_t>(environment.brdf_lut_width) *
+        environment.brdf_lut_width *
+        8;
+    if (
+        environment.brdf_lut_width == 0 ||
+        environment.brdf_lut.bytes.size() != expected_size) {
+        throw std::runtime_error(
+            "Compiled BRDF LUT has invalid RGBA16F dimensions.");
+    }
+    return upload_2d_texture(
+        device,
+        environment.brdf_lut.bytes.data(),
+        environment.brdf_lut.bytes.size(),
+        environment.brdf_lut_width,
+        environment.brdf_lut_width,
+        SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+        "upload BRDF LUT");
 }
 
 SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState& environment) {
@@ -1281,9 +1370,7 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
     SDL_GPUTextureCreateInfo texture_info{};
     texture_info.type = SDL_GPU_TEXTURETYPE_CUBE;
     texture_info.format =
-        environment.specular_rgba16f
-            ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
-            : SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+        SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
     texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
     texture_info.width = width;
     texture_info.height = width;
@@ -1309,6 +1396,7 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
                           static_cast<std::size_t>(mip) * 6 + face]
                     : nullptr;
             std::vector<float> decoded_pixels;
+            std::vector<std::uint16_t> decoded_half_pixels;
             const std::uint8_t* source_bytes = nullptr;
             std::size_t byte_size = 0;
             std::size_t row_size = 0;
@@ -1335,15 +1423,22 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
                           0.16f,
                           0.2f,
                           1.0f};
+                decoded_half_pixels.reserve(
+                    decoded_pixels.size());
+                for (const float value : decoded_pixels) {
+                    decoded_half_pixels.push_back(
+                        float_to_half(value));
+                }
                 source_bytes =
                     reinterpret_cast<const std::uint8_t*>(
-                        decoded_pixels.data());
+                        decoded_half_pixels.data());
                 byte_size =
-                    decoded_pixels.size() * sizeof(float);
+                    decoded_half_pixels.size() *
+                    sizeof(std::uint16_t);
                 row_size =
                     static_cast<std::size_t>(image_width) *
                     4 *
-                    sizeof(float);
+                    sizeof(std::uint16_t);
             }
             SDL_GPUTransferBufferCreateInfo transfer_info{};
             transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
@@ -3464,7 +3559,7 @@ bool run_gpu_engine(Engine& engine) {
             pipeline_info.fragment_shader = background_fragment_shader;
             color_target.blend_state.enable_blend = true;
             color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
-            pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+            pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             state.background_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
         }
         SDL_ReleaseGPUShader(state.device, vertex_shader);
@@ -3549,15 +3644,21 @@ bool run_gpu_engine(Engine& engine) {
         sampler_info.min_filter = SDL_GPU_FILTER_LINEAR;
         sampler_info.mag_filter = SDL_GPU_FILTER_LINEAR;
         sampler_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
-        sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-        sampler_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-        sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+        sampler_info.address_mode_u =
+            SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+        sampler_info.address_mode_v =
+            SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+        sampler_info.address_mode_w =
+            SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
         sampler_info.max_lod = 1000.0f;
         state.sampler = SDL_CreateGPUSampler(state.device, &sampler_info);
         if (!state.sampler) gpu_error("SDL_CreateGPUSampler");
-        sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        sampler_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        sampler_info.address_mode_u =
+            SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        sampler_info.address_mode_v =
+            SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        sampler_info.address_mode_w =
+            SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         state.background_sampler = SDL_CreateGPUSampler(state.device, &sampler_info);
         if (!state.background_sampler) gpu_error("SDL_CreateGPUSampler background");
         sampler_info.max_lod = 0.0f;
@@ -3578,7 +3679,7 @@ bool run_gpu_engine(Engine& engine) {
             gpu_error("SDL_CreateGPUSampler depth");
         }
         state.environment = upload_environment(state.device, scene.environment);
-        state.brdf_lut = upload_rgbd_texture(state.device, scene.environment.brdf_lut);
+        state.brdf_lut = upload_brdf_lut(state.device, scene.environment);
         if (use_standard_material) {
             state.reflection_fallback =
                 upload_cube_texture(state.device, nullptr);
@@ -5088,8 +5189,10 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_PushGPUVertexUniformData(
                     command,
                     0,
-                    skybox_matrix.data(),
-                    sizeof(skybox_matrix));
+                    scene.environment.skybox_uses_environment
+                        ? skybox_matrix.data()
+                        : matrix.data(),
+                    sizeof(matrix));
                 SDL_BindGPUGraphicsPipeline(pass, state.skybox_pipeline);
                 SDL_PushGPUFragmentUniformData(command, 0, &skybox, sizeof(skybox));
                 const SDL_GPUBufferBinding vertex_binding{state.skybox.vertices, 0};
