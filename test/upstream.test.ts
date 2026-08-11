@@ -112,7 +112,14 @@ test("generates GLB framing validation from upstream constants", () => {
         /glTF primitive index exceeds its vertex count/,
     );
     assert.match(adapter.source, /linear_determinant/);
-    assert.match(adapter.source, /std::swap\(geometry\.indices\[index \+ 1\]/);
+    assert.match(
+        adapter.source,
+        /record\.clockwise_front_face/,
+    );
+    assert.match(
+        adapter.source,
+        /determinant < 0\.0f &&\s*!clockwise_front_face/,
+    );
     assert.match(adapter.source, /geometry\.flat_normals = true/);
     assert.match(adapter.source, /vertex\.local_position = local_position/);
     assert.match(adapter.source, /geometry\.has_tangents = tangents != nullptr/);
@@ -145,6 +152,10 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(
         adapter.source,
         /record\.instance_matrices/,
+    );
+    assert.match(
+        adapter.source,
+        /record\.instance_parent_matrix/,
     );
     assert.match(adapter.source, /vertex\.color = Vec4/);
     assert.match(adapter.source, /result\.sampler\.max_anisotropy/);
@@ -440,6 +451,10 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         lowered.source,
         /RenderPipelineKind::grid_transparent_none/,
     );
+    assert.match(
+        lowered.source,
+        /RenderPipelineKind::pbr_opaque_none_clockwise/,
+    );
     assert.match(lowered.source, /build_pbr_uniforms/);
     assert.doesNotMatch(
         lowered.source,
@@ -452,6 +467,10 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /result\.normal_options\[0\] = 1\.0f/);
     assert.match(lowered.source, /result\.normal_options\[1\]/);
     assert.match(lowered.source, /build_background_plan/);
+    assert.match(
+        lowered.source,
+        /result\.background_center = \{\s*0\.0f,\s*0\.0f,\s*0\.0f,/,
+    );
     assert.match(lowered.source, /build_skybox_plan/);
     assert.match(
         lowered.source,

@@ -168,6 +168,8 @@ test("generates Tint background WGSL for 2D and cube textures", () => {
 test("generates the shared Tint material vertex interface", () => {
     const staticVertex = materialVertexWgsl();
     const vertex = materialVertexWgsl(true);
+    const instancedVertex = materialVertexWgsl(false, true);
+    const deformedInstancedVertex = materialVertexWgsl(true, true);
     assert.doesNotMatch(staticVertex, /DeformationUniforms/);
     assert.doesNotMatch(staticVertex, /@location\(8\) joints/);
     assert.match(vertex, /@location\(6\) color: vec4<f32>/);
@@ -178,6 +180,15 @@ test("generates the shared Tint material vertex interface", () => {
     assert.match(vertex, /input\.morphPosition0/);
     assert.match(vertex, /@location\(15\) morphTangent1: vec3<f32>/);
     assert.match(vertex, /deformation\.options\.y < 0\.5/);
+    assert.match(instancedVertex, /@binding\(1\).*instanceUniforms/);
+    assert.match(
+        instancedVertex,
+        /instanceUniforms\.parentWorld \* localInstanceMatrix/,
+    );
+    assert.match(
+        deformedInstancedVertex,
+        /@binding\(2\).*instanceUniforms/,
+    );
 });
 
 test("generates Tint Standard material and geometry WGSL", () => {

@@ -3206,22 +3206,6 @@ class Compiler
                 ],
             });
         }
-        if (features.includes("background:ground")) {
-            adaptations.push({
-                id: "background-ground-opt-in",
-                category: "rendering",
-                sourceSemantics:
-                    "Babylon Lite creates the requested transparent environment ground.",
-                nativeSemantics:
-                    "The generated ground is available behind BBLITE_GROUND=1 while background composition parity is validated against the pinned Babylon Lite output.",
-                risk: "high",
-                validation: [
-                    "explicit runtime flag",
-                    "separate background render pass",
-                    "documented parity reference",
-                ],
-            });
-        }
         if (
             features.includes("background:skybox") ||
             features.includes("background:ground")

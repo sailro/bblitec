@@ -240,7 +240,7 @@ records the selected backend in `shader-compiler.json`.
 | `BBLITE_GPU_DEBUG=1` | enable the backend GPU validation layer |
 | `BBLITE_MSAA=1` | force single-sample rendering for diagnostics |
 | `BBLITE_BACKGROUND=0` | disable a requested DDS/HDR skybox |
-| `BBLITE_GROUND=1` | enable generated transparent environment ground |
+| `BBLITE_GROUND=0` | disable a requested transparent environment ground |
 | `BBLITE_MAX_FRAMES=<n>` | automated frame limit |
 | `BBLITE_SCREENSHOT=<path>` | capture PNG |
 | `BBLITE_SCREENSHOT_FRAME=<n>` | delay callback-driven capture |

@@ -383,8 +383,10 @@ enum class RenderCullMode {
 enum class RenderPipelineKind {
     pbr_opaque_back,
     pbr_opaque_none,
+    pbr_opaque_none_clockwise,
     pbr_transparent_back,
     pbr_transparent_none,
+    pbr_transparent_none_clockwise,
     standard_opaque_back,
     standard_opaque_none,
     standard_transparent_back,
@@ -413,6 +415,7 @@ struct RenderItem {
     RenderBucket bucket = RenderBucket::opaque;
     RenderCullMode cull_mode = RenderCullMode::back;
     ShaderMaterialVariant shader_variant = ShaderMaterialVariant::alpha_card;
+    bool clockwise_front_face = false;
     bool alpha_to_coverage = false;
     bool transmissive = false;
     bool skybox_mode = false;
@@ -707,13 +710,19 @@ RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
     switch (item.material_kind) {
         case RenderMaterialKind::pbr:
             if (transparent) {
-                return double_sided
-                    ? RenderPipelineKind::pbr_transparent_none
-                    : RenderPipelineKind::pbr_transparent_back;
+                if (!double_sided) {
+                    return RenderPipelineKind::pbr_transparent_back;
+                }
+                return item.clockwise_front_face
+                    ? RenderPipelineKind::pbr_transparent_none_clockwise
+                    : RenderPipelineKind::pbr_transparent_none;
             }
-            return double_sided
-                ? RenderPipelineKind::pbr_opaque_none
-                : RenderPipelineKind::pbr_opaque_back;
+            if (!double_sided) {
+                return RenderPipelineKind::pbr_opaque_back;
+            }
+            return item.clockwise_front_face
+                ? RenderPipelineKind::pbr_opaque_none_clockwise
+                : RenderPipelineKind::pbr_opaque_none;
         case RenderMaterialKind::standard:
             if (transparent) {
                 return double_sided
@@ -991,6 +1000,8 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         RenderItem item;
         item.mesh = handle;
         item.geometry = mesh.geometry;
+        item.clockwise_front_face =
+            mesh.clockwise_front_face;
         item.order = static_cast<std::uint32_t>(result.items.size());
         result.items.push_back(
             bind_render_item(item, engine, mesh.material));
@@ -1487,9 +1498,9 @@ BackgroundUniforms build_background_uniforms(
         0.9f,
     };
     result.background_center = {
-        environment.ground_position.x,
-        environment.ground_position.y,
-        environment.ground_position.z,
+        0.0f,
+        0.0f,
+        0.0f,
         0.0f,
     };
     result.camera_exposure = {

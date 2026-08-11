@@ -155,3 +155,19 @@ test("keeps statement lowering in its feature module", () => {
         /Reached RenderTask\.addMesh requires/,
     );
 });
+
+test("preserves multisampling across the transmission scene-color copy", () => {
+    const pal = source("native/src/pal_sdl_gpu.cpp");
+    assert.match(
+        pal,
+        /const bool multisampled =\s*state\.sample_count != SDL_GPU_SAMPLECOUNT_1;/,
+    );
+    assert.match(
+        pal,
+        /transmission_enabled\s*\?\s*SDL_GPU_STOREOP_RESOLVE_AND_STORE/,
+    );
+    assert.match(
+        pal,
+        /capture_frame \|\| transmission_enabled\s*\?\s*state\.color/,
+    );
+});

@@ -1034,7 +1034,6 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
             "compile-time-asset-materialization",
             "sdl-platform-boundary",
             "sdl-gpu-shader-backends",
-            "background-ground-opt-in",
             "background-dither-disabled",
         ],
     );

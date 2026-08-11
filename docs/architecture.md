@@ -154,7 +154,9 @@ The current generated slice includes:
   `KHR_materials_iridescence`, and `KHR_materials_dispersion` layers
 - authored transmission alpha/depth state with separate post-grab draw
   ordering and full multi-light refraction composition
-- negative-transform winding, generated normals, and cotangent normal mapping
+- negative-transform winding, including clockwise front-face pipelines for
+  mirrored double-sided PBR meshes, plus generated normals and cotangent
+  normal mapping
 - `.env`/DDS parsing plus compile-time RGBE HDR/SH/cubemap materialization and
   pinned 1024-sample GGX prefiltering
 - `EXT_lights_image_based` RGBD cubemaps plus an offline-generated,
@@ -212,6 +214,8 @@ but have separate generated runtimes:
   `position.x`, `scaling`, and `rotationQuaternion`
 - glTF loading evaluates node hierarchies, animation channels, skins, inverse
   bind matrices, and morph weights from materialized asset metadata
+- `EXT_mesh_gpu_instancing` keeps extension T/R/S matrices local and composes
+  the node world matrix in the generated vertex stage
 - morph deltas are applied before skinning
 - authored normals/tangents deform in the vertex shader
 - primitives without source normals are deindexed; CPU recomputes their face
@@ -247,6 +251,8 @@ Important contracts:
 - compiled HDR cubemaps are linear RGBA16F with mip-major, face-major layout
 - DDS skyboxes are RGBA16F with face-major, mip-minor layout
 - alpha mode, cutoff, blending, culling, and coverage are material-driven
+- requested environment grounds render by default; their translated geometry
+  retains Babylon Lite's world-origin fade center
 - PBR material-extension textures and uniforms are appended after the base
   and transmission bindings, selected only by the generated
   `render_capabilities.hpp` defines for the reached glTF extensions
@@ -255,6 +261,9 @@ Important contracts:
 - frame-graph viewport copies preserve Babylon Lite's double-precision
   normalized coordinates, floor them to integer target bounds, and apply the
   same scissor rectangle before drawing
+- transmission resolves and stores the multisample opaque color attachment,
+  copies the resolved RGBA16F scene color, then reloads the preserved
+  multisample color and depth attachments for transmissive draws
 - screenshot capture uses a readable target, then blits to the swapchain
 - capture is deferred one frame when scene topology changes so D3D12 upload
   and readback commands do not share an invalid command list

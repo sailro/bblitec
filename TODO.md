@@ -117,12 +117,6 @@ baselines belong in [status](docs/status.md) and Git history.
 - [ ] Add headless renderer tests.
 - [ ] Add differential tests for camera, environment, material, and transform
   functions.
-- [ ] Match the deferred environment-ground composition for Scenes 1, 6, 13,
-  and 14 before enabling requested grounds by default. The finite translated
-  DDS skybox is now source-perfect and Scene 14 reaches 0.290 with ground
-  enabled, but the same ground path still regresses the other three views.
-- [ ] Close the remaining transmission resolve and silhouette-coverage gap in
-  Scene 212 after the source-derived dispersion equations.
 - [ ] Close the residual morph and instancing raster-edge gaps in Scenes 243
   and 247 without expanding geometry or adding scene-specific tolerances.
 - [ ] Add malformed asset and backend-layout tests.

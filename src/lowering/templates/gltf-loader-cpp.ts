@@ -1709,6 +1709,8 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                                   *optional(target, "TANGENT")))
                         : nullptr);
             }
+            Matrix instance_parent_matrix =
+                identity_matrix();
             std::vector<Matrix> instance_matrices;
             if (const ts::JsonValue* extensions_value =
                     optional(node, "extensions")) {
@@ -1758,6 +1760,8 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     }
                     const Matrix& node_world =
                         compute_world(node_index);
+                    instance_parent_matrix =
+                        native_matrix(node_world);
                     for (
                         std::size_t instance = 0;
                         instance < instance_count;
@@ -1806,12 +1810,10 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                             : Vec3{1.0f, 1.0f, 1.0f};
                         instance_matrices.push_back(
                             native_matrix(
-                                multiply_matrix(
-                                    node_world,
-                                    trs_matrix(
-                                        translation,
-                                        rotation,
-                                        scale))));
+                                trs_matrix(
+                                    translation,
+                                    rotation,
+                                    scale)));
                     }
                 }
             }
@@ -1833,6 +1835,16 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 ? identity_matrix()
                 : compute_world(node_index);
             const float determinant = linear_determinant(matrix);
+            const std::size_t material_index =
+                unsigned_or(primitive, "material", 0);
+            const bool clockwise_front_face =
+                determinant < 0.0f &&
+                material_index < materials.size() &&
+                materials[material_index].value <
+                    engine.materials.size() &&
+                engine.materials[
+                    materials[material_index].value]
+                    .double_sided;
             for (std::size_t index = 0; index < positions.count; ++index) {
                 ModelVertex vertex;
                 const Vec3 local_position{
@@ -2041,7 +2053,9 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         "glTF primitive index exceeds its vertex count.");
                 }
             }
-            if (determinant < 0.0f) {
+            if (
+                determinant < 0.0f &&
+                !clockwise_front_face) {
                 for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
                     std::swap(geometry.indices[index + 1], geometry.indices[index + 2]);
                 }
@@ -2128,11 +2142,15 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 };
                 for (const Matrix& instance :
                      instance_matrices) {
+                    const Matrix world_instance =
+                        multiply_matrix(
+                            instance_parent_matrix,
+                            instance);
                     for (const ModelVertex& vertex :
                          geometry.vertices) {
                         const Vec3 position =
                             transform_point_raw(
-                                instance,
+                                world_instance,
                                 vertex.position);
                         geometry.bounds_min.x = std::min(
                             geometry.bounds_min.x,
@@ -2173,8 +2191,11 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     matrix[9] * matrix[9] +
                     matrix[10] * matrix[10]),
             });
-            const std::size_t material_index = unsigned_or(primitive, "material", 0);
             if (material_index < materials.size()) record.material = materials[material_index];
+            record.clockwise_front_face =
+                clockwise_front_face;
+            record.instance_parent_matrix =
+                instance_parent_matrix;
             record.instance_matrices =
                 std::move(instance_matrices);
             engine.meshes.push_back(std::move(record));

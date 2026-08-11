@@ -52,6 +52,14 @@ struct DeformationUniforms {
     }
 `
         : "";
+    const instanceUniforms = gpuInstancing
+        ? `
+struct InstanceUniforms {
+    parentWorld: mat4x4<f32>,
+}
+@group(1) @binding(${gpuDeformation ? 2 : 1}) var<uniform> instanceUniforms: InstanceUniforms;
+`
+        : "";
     const instanceInputs = gpuInstancing
         ? `    @location(16) instanceColumn0: vec4<f32>,
     @location(17) instanceColumn1: vec4<f32>,
@@ -60,12 +68,14 @@ struct DeformationUniforms {
 `
         : "";
     const instanceBody = gpuInstancing
-        ? `    let instanceMatrix = mat4x4<f32>(
+        ? `    let localInstanceMatrix = mat4x4<f32>(
         input.instanceColumn0,
         input.instanceColumn1,
         input.instanceColumn2,
         input.instanceColumn3,
     );
+    let instanceMatrix =
+        instanceUniforms.parentWorld * localInstanceMatrix;
     worldPosition =
         (instanceMatrix * vec4<f32>(worldPosition, 1.0)).xyz;
     let instanceNormal = mat3x3<f32>(
@@ -82,6 +92,7 @@ struct DeformationUniforms {
 }
 @group(1) @binding(0) var<uniform> uniforms: VertexUniforms;
 ${deformationUniforms}
+${instanceUniforms}
 
 struct VertexInput {
     @location(0) position: vec3<f32>,

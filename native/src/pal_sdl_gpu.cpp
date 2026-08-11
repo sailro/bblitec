@@ -261,8 +261,12 @@ struct GpuGeometryTask {
     SDL_GPUTexture* depth = nullptr;
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
     SDL_GPUGraphicsPipeline* double_sided_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline*
+        clockwise_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* transparent_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* transparent_double_sided_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline*
+        transparent_clockwise_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_transparent_pipeline = nullptr;
@@ -275,8 +279,12 @@ struct GpuState {
     SDL_GPUDevice* device = nullptr;
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
     SDL_GPUGraphicsPipeline* double_sided_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline*
+        clockwise_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* transparent_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* transparent_double_sided_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline*
+        transparent_clockwise_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_transparent_pipeline = nullptr;
@@ -354,6 +362,14 @@ struct DeformationUniforms {
     float morph_weights[4]{};
     float options[4]{};
 };
+#endif
+
+#if BBLITE_GPU_INSTANCING
+#if BBLITE_GPU_DEFORMATION
+constexpr Uint32 instance_uniform_slot = 2;
+#else
+constexpr Uint32 instance_uniform_slot = 1;
+#endif
 #endif
 
 [[noreturn]] void gpu_error(const char* operation) {
@@ -2334,6 +2350,11 @@ void release(GpuState& state) {
                 state.device,
                 task.double_sided_pipeline);
         }
+        if (task.clockwise_double_sided_pipeline) {
+            SDL_ReleaseGPUGraphicsPipeline(
+                state.device,
+                task.clockwise_double_sided_pipeline);
+        }
         if (task.transparent_pipeline) {
             SDL_ReleaseGPUGraphicsPipeline(
                 state.device,
@@ -2343,6 +2364,11 @@ void release(GpuState& state) {
             SDL_ReleaseGPUGraphicsPipeline(
                 state.device,
                 task.transparent_double_sided_pipeline);
+        }
+        if (task.transparent_clockwise_double_sided_pipeline) {
+            SDL_ReleaseGPUGraphicsPipeline(
+                state.device,
+                task.transparent_clockwise_double_sided_pipeline);
         }
         if (task.standard_pipeline) {
             SDL_ReleaseGPUGraphicsPipeline(
@@ -2507,11 +2533,21 @@ void release(GpuState& state) {
         if (pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
     }
     if (state.double_sided_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.double_sided_pipeline);
+    if (state.clockwise_double_sided_pipeline) {
+        SDL_ReleaseGPUGraphicsPipeline(
+            state.device,
+            state.clockwise_double_sided_pipeline);
+    }
     if (state.transparent_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.transparent_pipeline);
     if (state.transparent_double_sided_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(
             state.device,
             state.transparent_double_sided_pipeline);
+    }
+    if (state.transparent_clockwise_double_sided_pipeline) {
+        SDL_ReleaseGPUGraphicsPipeline(
+            state.device,
+            state.transparent_clockwise_double_sided_pipeline);
     }
     if (state.standard_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(state.device, state.standard_pipeline);
@@ -2599,7 +2635,8 @@ bool run_gpu_engine(Engine& engine) {
     const std::string ground_flag = environment_variable("BBLITE_GROUND");
     const bool use_ground =
         scene.environment.has_ground &&
-        (ground_flag == "1" || ground_flag == "true");
+        ground_flag != "0" &&
+        ground_flag != "false";
     const std::string id_buffer_path = environment_variable("BBLITE_ID_BUFFER");
     const std::string cluster_buffer_path =
         environment_variable("BBLITE_CLUSTER_BUFFER");
@@ -2649,6 +2686,13 @@ bool run_gpu_engine(Engine& engine) {
         const SDL_GPUTextureFormat swapchain_format =
             SDL_GetGPUSwapchainTextureFormat(state.device, state.window);
         const bool transmission_enabled = scene.transmission_enabled;
+        const bool use_clockwise_front_face =
+            std::any_of(
+                engine.meshes.begin(),
+                engine.meshes.end(),
+                [](const MeshRecord& mesh) {
+                    return mesh.clockwise_front_face;
+                });
         if (
             environment_variable("BBLITE_MSAA") != "1" &&
             upstream::preferred_sample_count() >= 4 &&
@@ -2697,7 +2741,9 @@ bool run_gpu_engine(Engine& engine) {
                 "pbr.vert",
                 SDL_GPU_SHADERSTAGE_VERTEX,
                 0,
-#if BBLITE_GPU_DEFORMATION
+#if BBLITE_GPU_DEFORMATION && BBLITE_GPU_INSTANCING
+                3,
+#elif BBLITE_GPU_DEFORMATION || BBLITE_GPU_INSTANCING
                 2,
 #else
                 1,
@@ -2997,6 +3043,20 @@ bool run_gpu_engine(Engine& engine) {
         if (!state.double_sided_pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline double-sided");
         }
+        if (use_clockwise_front_face) {
+            pipeline_info.rasterizer_state.front_face =
+                SDL_GPU_FRONTFACE_CLOCKWISE;
+            state.clockwise_double_sided_pipeline =
+                SDL_CreateGPUGraphicsPipeline(
+                    state.device,
+                    &pipeline_info);
+            if (!state.clockwise_double_sided_pipeline) {
+                gpu_error(
+                    "SDL_CreateGPUGraphicsPipeline clockwise double-sided");
+            }
+            pipeline_info.rasterizer_state.front_face =
+                SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+        }
         if (
             image_processing_vertex_shader &&
             image_processing_fragment_shader) {
@@ -3253,6 +3313,20 @@ bool run_gpu_engine(Engine& engine) {
             if (!gpu_task.double_sided_pipeline) {
                 gpu_error("SDL_CreateGPUGraphicsPipeline geometry double-sided");
             }
+            if (use_clockwise_front_face) {
+                geometry_pipeline_info.rasterizer_state.front_face =
+                    SDL_GPU_FRONTFACE_CLOCKWISE;
+                gpu_task.clockwise_double_sided_pipeline =
+                    SDL_CreateGPUGraphicsPipeline(
+                        state.device,
+                        &geometry_pipeline_info);
+                if (!gpu_task.clockwise_double_sided_pipeline) {
+                    gpu_error(
+                        "SDL_CreateGPUGraphicsPipeline geometry clockwise double-sided");
+                }
+                geometry_pipeline_info.rasterizer_state.front_face =
+                    SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+            }
             if (standard_geometry_fragment_shader) {
                 geometry_pipeline_info.fragment_shader =
                     standard_geometry_fragment_shader;
@@ -3312,6 +3386,20 @@ bool run_gpu_engine(Engine& engine) {
             if (!gpu_task.transparent_double_sided_pipeline) {
                 gpu_error(
                     "SDL_CreateGPUGraphicsPipeline geometry transparent double-sided");
+            }
+            if (use_clockwise_front_face) {
+                geometry_pipeline_info.rasterizer_state.front_face =
+                    SDL_GPU_FRONTFACE_CLOCKWISE;
+                gpu_task.transparent_clockwise_double_sided_pipeline =
+                    SDL_CreateGPUGraphicsPipeline(
+                        state.device,
+                        &geometry_pipeline_info);
+                if (!gpu_task.transparent_clockwise_double_sided_pipeline) {
+                    gpu_error(
+                        "SDL_CreateGPUGraphicsPipeline geometry transparent clockwise double-sided");
+                }
+                geometry_pipeline_info.rasterizer_state.front_face =
+                    SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
             }
             if (standard_geometry_fragment_shader) {
                 geometry_pipeline_info.fragment_shader =
@@ -3499,6 +3587,20 @@ bool run_gpu_engine(Engine& engine) {
         if (!state.transparent_double_sided_pipeline) {
             gpu_error(
                 "SDL_CreateGPUGraphicsPipeline transparent double-sided");
+        }
+        if (use_clockwise_front_face) {
+            pipeline_info.rasterizer_state.front_face =
+                SDL_GPU_FRONTFACE_CLOCKWISE;
+            state.transparent_clockwise_double_sided_pipeline =
+                SDL_CreateGPUGraphicsPipeline(
+                    state.device,
+                    &pipeline_info);
+            if (!state.transparent_clockwise_double_sided_pipeline) {
+                gpu_error(
+                    "SDL_CreateGPUGraphicsPipeline transparent clockwise double-sided");
+            }
+            pipeline_info.rasterizer_state.front_face =
+                SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
         }
         if (standard_fragment_shader) {
             pipeline_info.fragment_shader = standard_fragment_shader;
@@ -4360,8 +4462,10 @@ bool run_gpu_engine(Engine& engine) {
                                           SDL_GPURenderPass* task_pass,
                                           SDL_GPUGraphicsPipeline* opaque,
                                           SDL_GPUGraphicsPipeline* double_sided,
+                                          SDL_GPUGraphicsPipeline* clockwise_double_sided,
                                           SDL_GPUGraphicsPipeline* transparent,
                                           SDL_GPUGraphicsPipeline* transparent_double_sided,
+                                          SDL_GPUGraphicsPipeline* transparent_clockwise_double_sided,
                                           SDL_GPUGraphicsPipeline* standard_opaque,
                                           SDL_GPUGraphicsPipeline* standard_double_sided,
                                           SDL_GPUGraphicsPipeline* standard_transparent,
@@ -4384,10 +4488,14 @@ bool run_gpu_engine(Engine& engine) {
                                 return opaque;
                             case upstream::RenderPipelineKind::pbr_opaque_none:
                                 return double_sided;
+                            case upstream::RenderPipelineKind::pbr_opaque_none_clockwise:
+                                return clockwise_double_sided;
                             case upstream::RenderPipelineKind::pbr_transparent_back:
                                 return transparent;
                             case upstream::RenderPipelineKind::pbr_transparent_none:
                                 return transparent_double_sided;
+                            case upstream::RenderPipelineKind::pbr_transparent_none_clockwise:
+                                return transparent_clockwise_double_sided;
                             case upstream::RenderPipelineKind::standard_opaque_back:
                                 return standard_opaque;
                             case upstream::RenderPipelineKind::standard_opaque_none:
@@ -4519,6 +4627,19 @@ bool run_gpu_engine(Engine& engine) {
                                     1,
                                     &deformation,
                                     sizeof(deformation));
+                            }
+#endif
+#if BBLITE_GPU_INSTANCING
+                            if (!grid_bucket) {
+                                const std::array<float, 16>& parent_world =
+                                    engine.meshes[
+                                        draw_item.mesh.value]
+                                        .instance_parent_matrix;
+                                SDL_PushGPUVertexUniformData(
+                                    command,
+                                    instance_uniform_slot,
+                                    parent_world.data(),
+                                    sizeof(parent_world));
                             }
 #endif
                             if (standard_bucket) {
@@ -4839,8 +4960,11 @@ bool run_gpu_engine(Engine& engine) {
                             task_pass,
                             state.pipeline,
                             state.double_sided_pipeline,
+                            state.clockwise_double_sided_pipeline,
                             state.transparent_pipeline,
                             state.transparent_double_sided_pipeline,
+                            state
+                                .transparent_clockwise_double_sided_pipeline,
                             state.standard_pipeline,
                             state.standard_double_sided_pipeline,
                             state.standard_transparent_pipeline,
@@ -4949,8 +5073,11 @@ bool run_gpu_engine(Engine& engine) {
                             task_pass,
                             geometry.pipeline,
                             geometry.double_sided_pipeline,
+                            geometry.clockwise_double_sided_pipeline,
                             geometry.transparent_pipeline,
                             geometry.transparent_double_sided_pipeline,
+                            geometry
+                                .transparent_clockwise_double_sided_pipeline,
                             geometry.standard_pipeline,
                             geometry.standard_double_sided_pipeline,
                             geometry.standard_transparent_pipeline,
@@ -5120,14 +5247,19 @@ bool run_gpu_engine(Engine& engine) {
                     width,
                     height);
             }
-            create_msaa_color(state, swapchain_format, width, height);
+            create_msaa_color(
+                state,
+                transmission_enabled
+                    ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
+                    : swapchain_format,
+                width,
+                height);
             create_depth(state, width, height);
             SDL_PushGPUVertexUniformData(command, 0, matrix.data(), sizeof(matrix));
 
             SDL_GPUColorTargetInfo color_info{};
             const bool multisampled =
-                state.sample_count != SDL_GPU_SAMPLECOUNT_1 &&
-                !transmission_enabled;
+                state.sample_count != SDL_GPU_SAMPLECOUNT_1;
             color_info.texture =
                 multisampled
                     ? state.msaa_color
@@ -5158,11 +5290,17 @@ bool run_gpu_engine(Engine& engine) {
                       scene.clear_color.b,
                       scene.clear_color.a};
             color_info.load_op = SDL_GPU_LOADOP_CLEAR;
+            // Resolve opaque color for transmission sampling while preserving
+            // the multisample attachment so transmissive draws can resume it.
             color_info.store_op =
-                multisampled ? SDL_GPU_STOREOP_RESOLVE : SDL_GPU_STOREOP_STORE;
+                multisampled
+                    ? transmission_enabled
+                        ? SDL_GPU_STOREOP_RESOLVE_AND_STORE
+                        : SDL_GPU_STOREOP_RESOLVE
+                    : SDL_GPU_STOREOP_STORE;
             color_info.resolve_texture =
                 multisampled
-                    ? capture_frame
+                    ? capture_frame || transmission_enabled
                         ? state.color
                         : swapchain
                     : nullptr;
@@ -5217,10 +5355,15 @@ bool run_gpu_engine(Engine& engine) {
                         return state.pipeline;
                     case upstream::RenderPipelineKind::pbr_opaque_none:
                         return state.double_sided_pipeline;
+                    case upstream::RenderPipelineKind::pbr_opaque_none_clockwise:
+                        return state.clockwise_double_sided_pipeline;
                     case upstream::RenderPipelineKind::pbr_transparent_back:
                         return state.transparent_pipeline;
                     case upstream::RenderPipelineKind::pbr_transparent_none:
                         return state.transparent_double_sided_pipeline;
+                    case upstream::RenderPipelineKind::pbr_transparent_none_clockwise:
+                        return state
+                            .transparent_clockwise_double_sided_pipeline;
                     case upstream::RenderPipelineKind::standard_opaque_back:
                         return state.standard_pipeline;
                     case upstream::RenderPipelineKind::standard_opaque_none:
@@ -5316,7 +5459,10 @@ bool run_gpu_engine(Engine& engine) {
                             command,
                             state.transmission_color);
                         color_info.load_op = SDL_GPU_LOADOP_LOAD;
-                        color_info.store_op = SDL_GPU_STOREOP_STORE;
+                        color_info.store_op =
+                            multisampled
+                                ? SDL_GPU_STOREOP_RESOLVE
+                                : SDL_GPU_STOREOP_STORE;
                         depth_info.load_op = SDL_GPU_LOADOP_LOAD;
                         pass = SDL_BeginGPURenderPass(
                             command,
@@ -5392,6 +5538,21 @@ bool run_gpu_engine(Engine& engine) {
                                 1,
                                 &deformation,
                                 sizeof(deformation));
+                        }
+#endif
+#if BBLITE_GPU_INSTANCING
+                        if (
+                            item.material_kind !=
+                            upstream::RenderMaterialKind::grid) {
+                            const std::array<float, 16>& parent_world =
+                                engine.meshes[
+                                    item.mesh.value]
+                                    .instance_parent_matrix;
+                            SDL_PushGPUVertexUniformData(
+                                command,
+                                instance_uniform_slot,
+                                parent_world.data(),
+                                sizeof(parent_world));
                         }
 #endif
                         if (

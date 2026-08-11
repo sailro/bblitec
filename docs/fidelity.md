@@ -86,7 +86,10 @@ cubemap faces with the same half-float quantization as WebGPU.
 Transmission uses an opaque scene-color copy, dielectric Fresnel
 `((ior-1)/(ior+1))²`, and Beer-Lambert volume attenuation
 `exp(log(color)/distance*thickness)`. Independent skybox, scene-color, IOR,
-volume, and scene 176 gates keep the dependency chain observable.
+volume, and scene 176 gates keep the dependency chain observable. With 4x
+MSAA, PAL resolves and stores the opaque color attachment for the copy, then
+reloads the preserved multisample color and depth attachments before
+transmissive draws resume.
 `KHR_materials_dispersion` reuses that path and splits the refracted ray into
 per-RGB indices with Babylon's `spread = 0.04 * (20/dispersion) * (ior-1)`;
 Scene 212 gates it.
@@ -121,11 +124,12 @@ separate through transmission and transparent-alpha composition, and
 transmissive materials retain their authored alpha/depth state while moving
 after the scene-color grab.
 
-Generated ground remains opt-in while its source-perfect composition is
-tracked against Scenes 1, 6, 13, and 14. Requested DDS skyboxes use Babylon's
-finite root-positioned cube and normal scene view-projection; requested DDS
-and explicit HDR cubemap skyboxes render by default and can be disabled with
-`BBLITE_BACKGROUND=0`.
+Requested generated grounds render by default. Their mesh is translated to the
+computed scene root while Babylon Lite's fade calculation deliberately keeps
+`backgroundCenter` at the world origin; Scenes 1, 6, 13, and 14 gate that
+distinction. Requested DDS skyboxes use Babylon's finite root-positioned cube
+and normal scene view-projection. Grounds and DDS/HDR skyboxes can be disabled
+independently with `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0`.
 
 Embedded image-based lights evaluate SH without the transcription's former
 `[0,4]` clamp. Environment rotation affects SH and cubemap lookup directions,
@@ -140,6 +144,9 @@ deindexed and use a narrow CPU fallback to recompute post-deformation face
 normals, while their positions are still GPU-skinned. See
 [Architecture](architecture.md#animation-and-deformation) for layout,
 specialization, and fallback limits.
+Static `EXT_mesh_gpu_instancing` preserves Babylon Lite's split transform
+contract: extension matrices remain local T/R/S data and the node world matrix
+is applied separately in the vertex shader.
 The project-owned `regression-track-clamp` gate is pixel-exact at 3 seconds
 and verifies that shorter translation, rotation, and morph-weight channels
 hold their final values while a separate channel determines the animation
@@ -223,6 +230,9 @@ JSON report under `artifacts/parity/<scene>/geometry`.
 Standard double-sided materials disable culling but do not flip fragment
 normals. Matching that pinned distinction reduced scene 145 full-resolution
 view/world-normal MAD from `1.459`/`1.446` to `0.002`/`0.003`.
+Mirrored double-sided PBR meshes retain their authored index order and select
+a clockwise front-face pipeline, preserving Babylon Lite's
+`front_facing`-driven normal flip in Scenes 168 and 266.
 
 Scenes 145 and 146 resolve each geometry attachment at full resolution, then
 bilinearly downscale it into one of twelve preview regions on a 4x-MSAA target

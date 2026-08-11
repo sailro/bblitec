@@ -352,7 +352,14 @@ struct MeshRecord {
     std::uint64_t transform_version = 0;
     bool has_rotation_quaternion = false;
     bool gpu_deformation = false;
+    bool clockwise_front_face = false;
     std::vector<std::array<float, 16>> bone_matrices;
+    std::array<float, 16> instance_parent_matrix{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
     std::vector<std::array<float, 16>> instance_matrices;
     std::array<float, 4> morph_weights{};
 };
