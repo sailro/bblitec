@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import ts from "typescript";
 import { RendererFidelityManifest } from "../fidelity.js";
 import type {
     GeometryOutputTaskManifest,
@@ -64,28 +65,90 @@ export class RendererLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
     public lowerRenderPlan(options: { transmission?: boolean } = {}): LoweredSource {
-        const source = this.context.store.getSource(renderTaskModule);
-        const surface = this.context.store.getSource(surfaceModule);
         for (const symbol of ["buildBindings", "sortTransparentBindings", "drawList"]) {
-            if (!source.includes(`function ${symbol}`)) {
-                throw new Error(`${renderTaskModule} is missing ${symbol}.`);
-            }
+            this.context.functionDeclaration(
+                renderTaskModule,
+                symbol,
+            );
         }
-        for (const marker of [
-            "b._sortDistance = wc ?",
-            "b._sortDistance! - a._sortDistance!",
-            "a.renderable.order - b.renderable.order",
-        ]) {
-            if (!source.includes(marker)) {
-                throw new Error(
-                    `${renderTaskModule} transparent sorting changed: ${marker}.`,
-                );
-            }
+        const { declaration: sortTransparentBindings } =
+            this.context.functionDeclaration(
+                renderTaskModule,
+                "sortTransparentBindings",
+            );
+        const sortDistance = this.context.findNodes(
+            sortTransparentBindings,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                this.context
+                    .propertyPath(node.left)
+                    ?.join(".") === "b._sortDistance",
+        )[0];
+        if (!sortDistance) {
+            this.context.contractError(
+                sortTransparentBindings,
+                "Expected transparent depth assignment.",
+            );
         }
-        const sampleCount = this.context.extractNumber(
-            surface,
-            /const msaaSamples: 1 \| 4 = options\?\.msaaSamples === 1 \? 1 : ([0-9]+)/,
-            "default MSAA sample count",
+        this.context.assertExpressionShape(
+            sortDistance.right,
+            "wc ? wc[0] * v[2] + wc[1] * v[6] + wc[2] * v[10] + v[14] : 0",
+            "Transparent view-space depth",
+        );
+        const sortCall = this.context.findNodes(
+            sortTransparentBindings,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                ts.isPropertyAccessExpression(
+                    node.expression,
+                ) &&
+                node.expression.name.text === "sort",
+        )[0];
+        const comparator = sortCall?.arguments[0];
+        if (
+            !comparator ||
+            (!ts.isArrowFunction(comparator) &&
+                !ts.isFunctionExpression(comparator)) ||
+            ts.isBlock(comparator.body)
+        ) {
+            this.context.contractError(
+                sortCall ?? sortTransparentBindings,
+                "Expected transparent sort comparator.",
+            );
+        }
+        this.context.assertExpressionShape(
+            comparator.body,
+            "b._sortDistance - a._sortDistance || a.renderable.order - b.renderable.order",
+            "Transparent draw ordering",
+        );
+        const { file: surfaceFile, declaration: buildSurface } =
+            this.context.functionDeclaration(
+                surfaceModule,
+                "_buildSurface",
+            );
+        const msaaExpression =
+            this.context.unwrapExpression(
+                this.context.variableInitializer(
+                    buildSurface,
+                    "msaaSamples",
+                ),
+            );
+        this.context.assertExpressionShape(
+            msaaExpression,
+            "options?.msaaSamples === 1 ? 1 : 4",
+            "Default MSAA selection",
+        );
+        if (!ts.isConditionalExpression(msaaExpression)) {
+            this.context.contractError(
+                msaaExpression,
+                "Expected conditional MSAA selection.",
+            );
+        }
+        const sampleCount = this.context.numericValue(
+            msaaExpression.whenFalse,
+            surfaceFile,
         );
         const shaderBindingCases = shaderMaterialPrograms.map((source) => {
             const reflection = lowerWgslShaderProgram(source).reflection;
@@ -1770,24 +1833,34 @@ SkyboxUniforms build_skybox_uniforms(
     }
 
     private compiledSceneUniformsWgsl(): string {
-        const compiled = readFileSync(
-            resolve(
-                this.context.store.packageRoot,
-                "lib/shader/scene-uniforms.js",
-            ),
-            "utf8",
+        const path = resolve(
+            this.context.store.packageRoot,
+            "lib/shader/scene-uniforms.js",
         );
-        const match = compiled.match(
-            /const sceneUniformsWgsl = ("(?:[^"\\]|\\.)*");/,
+        const file = ts.createSourceFile(
+            path,
+            readFileSync(path, "utf8"),
+            ts.ScriptTarget.Latest,
+            true,
+            ts.ScriptKind.JS,
         );
-        if (!match?.[1]) {
-            throw new Error("Pinned compiled scene uniform WGSL was not found.");
+        const initializer =
+            this.context.unwrapExpression(
+                this.context.variableInitializer(
+                    file,
+                    "sceneUniformsWgsl",
+                ),
+            );
+        if (
+            !ts.isStringLiteral(initializer) &&
+            !ts.isNoSubstitutionTemplateLiteral(initializer)
+        ) {
+            this.context.contractError(
+                initializer,
+                "Expected compiled scene-uniform WGSL text.",
+            );
         }
-        const parsed: unknown = JSON.parse(match[1]);
-        if (typeof parsed !== "string") {
-            throw new Error("Pinned compiled scene uniform WGSL is not text.");
-        }
-        return parsed;
+        return initializer.text;
     }
 
     public shaderMaterialReflections(

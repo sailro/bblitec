@@ -1,3 +1,4 @@
+import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 export class AnimationLowerer {
@@ -8,26 +9,54 @@ export class AnimationLowerer {
         const managerModule = "src/animation/animation-manager.ts";
         const groupModule = "src/animation/animation-group.ts";
         const evaluateModule = "src/animation/evaluate.ts";
-        const sources = [
-            this.context.store.getSource(propertyModule),
-            this.context.store.getSource(managerModule),
-            this.context.store.getSource(groupModule),
-            this.context.store.getSource(evaluateModule),
-        ];
-        for (const marker of [
+        this.context.functionDeclaration(
+            propertyModule,
             "createPropertyAnimationClip",
+        );
+        this.context.functionDeclaration(
+            propertyModule,
             "createPropertyAnimationGroup",
+        );
+        this.context.functionDeclaration(
+            managerModule,
             "createAnimationManager",
+        );
+        this.context.functionDeclaration(
+            managerModule,
             "startAnimationManager",
+        );
+        this.context.functionDeclaration(
+            groupModule,
             "goToFrame",
-            "INTERP_STEP",
-            "quatSlerp",
-        ]) {
-            if (!sources.some((source) => source.includes(marker))) {
-                throw new Error(
-                    `Pinned property-animation contract changed: ${marker}.`,
-                );
-            }
+        );
+        const { declaration: evaluateSampler } =
+            this.context.functionDeclaration(
+                evaluateModule,
+                "evaluateSampler",
+            );
+        if (
+            !this.context.hasNode(
+                evaluateSampler,
+                (node) =>
+                    ts.isIdentifier(node) &&
+                    node.text === "INTERP_STEP",
+            )
+        ) {
+            this.context.contractError(
+                evaluateSampler,
+                "Expected STEP interpolation handling.",
+            );
+        }
+        if (
+            !this.context.hasCall(
+                evaluateSampler,
+                "quatSlerp",
+            )
+        ) {
+            this.context.contractError(
+                evaluateSampler,
+                "Expected quaternion slerp interpolation.",
+            );
         }
 
         return {

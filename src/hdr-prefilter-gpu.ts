@@ -1,15 +1,29 @@
 import { createServer } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+    dirname,
+    resolve,
+} from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+import {
+    findRepositoryRoot,
+    readUpstreamPin,
+} from "./upstream-source.js";
 
-export const hdrGgxPrefilterProvenance = {
-    package: "@babylonjs/lite@1.18.0",
-    sourceCommit: "7184feda683072980735f9a180e6f567ee5717ba",
-    module: "src/loader-hdr/hdr-ibl-pipeline.ts",
-    shader: "shaders/hdr-prefilter-cube.compute.wgsl",
-    sampleCount: 1024,
-} as const;
+export function getHdrGgxPrefilterProvenance() {
+    const repositoryRoot = findRepositoryRoot(
+        dirname(fileURLToPath(import.meta.url)),
+    );
+    const pin = readUpstreamPin(repositoryRoot);
+    return {
+        package: `${pin.package}@${pin.version}`,
+        sourceCommit: pin.sourceVersion,
+        module: "src/loader-hdr/hdr-ibl-pipeline.ts",
+        shader: "shaders/hdr-prefilter-cube.compute.wgsl",
+        sampleCount: 1024,
+    } as const;
+}
 
 export interface HdrPrefilterSource {
     width: number;

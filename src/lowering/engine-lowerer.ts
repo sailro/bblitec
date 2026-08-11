@@ -1,3 +1,4 @@
+import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 export class EngineLowerer {
@@ -5,13 +6,30 @@ export class EngineLowerer {
 
     public lowerCore(): LoweredSource {
         const modulePath = "src/engine/engine.ts";
-        const source = this.context.store.getSource(modulePath);
-        for (const marker of [
-            "export async function createEngine",
-            "export function startEngine",
-            "requestAnimationFrame",
-        ]) {
-            if (!source.includes(marker)) throw new Error(`Upstream engine contract changed: ${marker}.`);
+        const create =
+            this.context.functionDeclaration(
+                modulePath,
+                "createEngine",
+            ).declaration;
+        const start =
+            this.context.functionDeclaration(
+                modulePath,
+                "startEngine",
+            ).declaration;
+        if (
+            !create.modifiers?.some(
+                (modifier) =>
+                    modifier.kind === ts.SyntaxKind.AsyncKeyword,
+            )
+        ) {
+            throw new Error(
+                "Upstream createEngine is no longer async.",
+            );
+        }
+        if (!this.context.hasCall(start, "requestAnimationFrame")) {
+            throw new Error(
+                "Upstream startEngine no longer schedules requestAnimationFrame.",
+            );
         }
         return {
             modulePath,

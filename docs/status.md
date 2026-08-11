@@ -9,7 +9,7 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 | --- | --- |
 | Engine/scene | creation, registration, fixed delta, reached before-render callbacks, runtime material-family append |
 | Cameras | ArcRotate, FreeCamera, default framing, native controls |
-| Lights | directional, hemispheric, and point; two reached Standard lights |
+| Lights | directional, hemispheric, and point with reached diffuse/specular colors; two reached Standard lights |
 | Geometry | axis-sized box/sphere, subdivided ground with UV scale, plane, torus, indexed triangle glTF/GLB, generated/flat normals, negative transforms, reached `.babylon` geometry |
 | Assets | external glTF packaging, embedded PNG/JPEG, `.env`, exact compile-time RGBE HDR/GGX cubemaps, DDS, reached `.babylon` textures |
 | Materials | Standard, PBR, GridMaterial, unlit, vertex colors, no-color views, typed custom shader variants |
@@ -49,6 +49,7 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 
 | Scene | Preview | Full MAD | Foreground MAD | Primary coverage |
 | ---: | :---: | ---: | ---: | --- |
+| 2 | <img src="images/scenes/scene2.png" alt="Scene 2 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | Directional-light diffuse/specular colors on a generated Standard sphere |
 | 5 | <img src="images/scenes/scene5.png" alt="Scene 5 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.020}}$ | GPU morph targets plus recursive GPU skeleton skinning |
 | 8 | <img src="images/scenes/scene8.png" alt="Scene 8 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.129}}$ | $\color{#1a7f37}{\textsf{0.134}}$ | exact 1024-sample HDR GGX, cubemap skybox, glass alpha/reflectance<br><em>Skybox outside the glass sphere is effectively exact (0.00023 MAD); remaining error is concentrated on transparent sphere edges.</em> |
 | 10 | <img src="images/scenes/scene10.png" alt="Scene 10 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | generated sphere, no-IBL PBR, geometric normals |

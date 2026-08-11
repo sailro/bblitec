@@ -16,6 +16,11 @@ scene TypeScript
 `bblitec` is a compiler, not an interpreter. Unsupported syntax or Babylon APIs
 produce source-located errors.
 
+The entry frontend is built as a TypeScript `Program` with a `TypeChecker`.
+Babylon intrinsics are identified by resolved import symbols, then dispatched
+through focused intrinsic modules. Generated behavior must never depend on
+scene names or regular-expression matching of entry-source text.
+
 The repository pins `@babylonjs/lite@1.18.0` and source commit
 `7184feda683072980735f9a180e6f567ee5717ba`. Original TypeScript is recovered
 from published source maps. Lowerers assert expected upstream symbols,
@@ -38,9 +43,16 @@ Primary source ownership:
 | Source | Responsibility |
 | --- | --- |
 | `src/compiler.ts` | entry-scene AST lowering, features, assets, generated main/CMake |
+| `src/compiler/program.ts` | in-memory TypeScript `Program`/`TypeChecker` frontend |
+| `src/compiler/symbols.ts` | resolved Babylon import symbols and aliases |
+| `src/compiler/static-evaluator.ts` | typed static scalar/vector/color expression evaluation |
+| `src/compiler/assignments.ts` | typed property-assignment validation and lowering |
+| `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, and material intrinsic lowerers |
+| `src/compiler/types.ts` | compiler public result types and internal typed values/features |
 | `src/upstream-source.ts` | pinned source-map reconstruction |
 | `src/upstream-graph.ts` | conservative reachable-module analysis |
 | `src/upstream-lower.ts` | lowerer orchestration, provenance, generated capabilities |
+| `src/lowering/context.ts` | source-located AST declarations, expression contracts, and diagnostics |
 | `src/lowering/*-lowerer.ts` | focused Babylon API and formula lowering |
 | `src/lowering/templates/` | generated C++ and portable shader templates |
 | `native/include/bblite/` | typed runtime records, handles, PAL contracts |
@@ -49,6 +61,56 @@ Primary source ownership:
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
 
 `generated\` is disposable and never the source of a fix.
+
+## Compiler architecture
+
+The entry compiler separates semantic analysis from Babylon-specific lowering
+and native emission:
+
+```text
+ts.Program + TypeChecker
+    -> entry AST and static expression evaluation
+    -> resolved Babylon intrinsic registry
+    -> typed property-assignment contracts
+    -> feature/asset/provenance collection
+    -> C++20 and shader emission
+```
+
+Intrinsic identity comes from resolved TypeScript import symbols, not local
+identifier spelling. Static values, assignments, and intrinsic families are
+lowered by focused modules while `compiler.ts` owns compilation state and
+output orchestration.
+
+Upstream semantic contracts use parsed declarations and expressions from the
+pinned reconstructed source. Entry behavior must not depend on scene names or
+source-text matching. Mechanical refactors preserve compiler-owned generated
+artifacts byte-for-byte; unfinished compiler and shader-IR coverage belongs in
+`TODO.md`.
+
+Static custom WGSL is tokenized and lowered to `ShaderIrProgram` before a
+supported native variant is selected. Formatting and comments are not shader
+identity; generating arbitrary scene-local variants from the supported IR
+remains separate compiler coverage.
+
+## Upstream upgrades
+
+The compiler supports one reviewed Babylon Lite pin at a time. It does not
+carry version branches or a plugin layer for hypothetical releases.
+`upstream/babylon-lite.json` is the provenance source of truth; the package
+manifest and lock file must select the same published version.
+
+An upstream change is expected to fail at semantic seams:
+
+- missing or moved public exports fail symbol resolution
+- changed defaults and formulas fail co-located AST contracts
+- changed entry APIs fail typed intrinsic or assignment lowering
+- changed generated behavior fails compiler-output and parity gates
+
+This keeps a 1.18-to-2.0 migration explicit without spreading version checks
+through the compiler. Module paths and symbol contracts stay local to the
+lowerer that owns the behavior. Curated source URLs, documentation, formulas,
+and references remain intentionally reviewable evidence rather than being
+silently rewritten from the pin.
 
 ## Scene orchestration
 

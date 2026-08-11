@@ -1,3 +1,4 @@
+import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 export class CameraLowerer {
@@ -7,11 +8,29 @@ export class CameraLowerer {
         const modulePath = "src/camera/arc-rotate.ts";
         const symbolName = "createArcRotateCamera";
         const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
-        const source = this.context.store.getSource(modulePath);
-        const poleEpsilon = this.context.extractNumber(
-            source,
-            /sinB = ([0-9.]+);/,
-            "ArcRotate pole epsilon",
+        const poleAssignments = this.context
+            .findNodes(
+                declaration,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node),
+            )
+            .filter(
+                (expression) =>
+                    expression.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken &&
+                    ts.isIdentifier(expression.left) &&
+                    expression.left.text === "sinB" &&
+                    ts.isNumericLiteral(expression.right),
+            );
+        if (poleAssignments.length !== 1) {
+            this.context.contractError(
+                declaration,
+                "Expected one ArcRotate pole fallback.",
+            );
+        }
+        const poleEpsilon = this.context.numericValue(
+            poleAssignments[0]!.right,
+            file,
         );
         const camera = this.context.objectInitializer(declaration, "cam");
         const number = (name: string): string =>
@@ -88,13 +107,23 @@ CameraHandle create_arc_rotate_camera(
     public lowerFreeFactory(): LoweredSource {
         const modulePath = "src/camera/free-camera.ts";
         const symbolName = "createFreeCamera";
-        const source = this.context.store.getSource(modulePath);
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        const camera = this.context.objectInitializer(
+            declaration,
+            "cam",
+        );
         const number = (name: string): string =>
             this.context.floatLiteral(
-                this.context.extractNumber(
-                    source,
-                    new RegExp(`${name}: ([0-9.]+)`),
-                    `FreeCamera ${name}`,
+                this.context.numericValue(
+                    this.context.propertyInitializer(
+                        camera,
+                        name,
+                    ),
+                    file,
                 ),
             );
         return {
@@ -142,18 +171,121 @@ CameraHandle create_free_camera(
     public lowerDefaultFactory(): LoweredSource {
         const modulePath = "src/scene/scene-camera.ts";
         const symbolName = "createDefaultCamera";
-        const source = this.context.store.getSource(modulePath);
-        if (!source.includes("createArcRotateCamera(-(Math.PI / 2), Math.PI / 2, radius, center)")) {
-            throw new Error("Upstream default ArcRotate camera angles changed.");
-        }
-        const radiusScale = this.context.extractNumber(source, /radius = diag \* ([0-9.]+)/, "camera radius scale");
-        const fallbackRadius = this.context.extractNumber(
-            source,
-            /radius = ([0-9.]+);\s*\n\s*center = vec3\(0, 0, 0\)/,
-            "camera fallback radius",
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        const radiusExpression =
+            this.context.variableInitializer(
+                declaration,
+                "radius",
+            );
+        this.context.assertExpressionShape(
+            radiusExpression,
+            "diag * 1.5",
+            "Default camera radius",
         );
-        const nearScale = this.context.extractNumber(source, /nearPlane = radius \* ([0-9.]+)/, "camera near scale");
-        const farScale = this.context.extractNumber(source, /farPlane = radius \* ([0-9.]+)/, "camera far scale");
+        const radiusBinary =
+            this.context.unwrapExpression(radiusExpression);
+        if (!ts.isBinaryExpression(radiusBinary)) {
+            this.context.contractError(
+                radiusExpression,
+                "Expected computed default camera radius.",
+            );
+        }
+        const radiusScale = this.context.numericValue(
+            radiusBinary.right,
+            file,
+        );
+        const assignments = this.context.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken,
+        );
+        const assignment = (
+            path: string,
+        ): ts.BinaryExpression => {
+            const result = assignments.find(
+                (candidate) =>
+                    this.context
+                        .propertyPath(candidate.left)
+                        ?.join(".") === path,
+            );
+            if (!result) {
+                this.context.contractError(
+                    declaration,
+                    `Expected assignment to '${path}'.`,
+                );
+            }
+            return result;
+        };
+        const fallbackRadiusExpression =
+            assignment("radius").right;
+        const fallbackRadius =
+            this.context.numericValue(
+                fallbackRadiusExpression,
+                file,
+            );
+        const createCamera = this.context.callExpression(
+            declaration,
+            "createArcRotateCamera",
+        );
+        const expectedArguments = [
+            "-(Math.PI / 2)",
+            "Math.PI / 2",
+            "radius",
+            "center",
+        ];
+        if (
+            createCamera.arguments.length !==
+            expectedArguments.length
+        ) {
+            this.context.contractError(
+                createCamera,
+                "Unexpected default camera arguments.",
+            );
+        }
+        createCamera.arguments.forEach((argument, index) =>
+            this.context.assertExpressionShape(
+                argument,
+                expectedArguments[index]!,
+                `Default camera argument ${index}`,
+            ),
+        );
+        const nearExpression =
+            assignment("cam.nearPlane").right;
+        const farExpression =
+            assignment("cam.farPlane").right;
+        this.context.assertExpressionShape(
+            nearExpression,
+            "radius * 0.01",
+            "Default camera near plane",
+        );
+        this.context.assertExpressionShape(
+            farExpression,
+            "radius * 1000",
+            "Default camera far plane",
+        );
+        if (
+            !ts.isBinaryExpression(nearExpression) ||
+            !ts.isBinaryExpression(farExpression)
+        ) {
+            this.context.contractError(
+                declaration,
+                "Expected scaled default camera planes.",
+            );
+        }
+        const nearScale = this.context.numericValue(
+            nearExpression.right,
+            file,
+        );
+        const farScale = this.context.numericValue(
+            farExpression.right,
+            file,
+        );
         const value = (input: number): string => this.context.floatLiteral(input);
         return {
             modulePath,
@@ -291,24 +423,106 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
     public lowerControls(): LoweredSource {
         const modulePath = "src/camera/arc-rotate-controls.ts";
         const symbolName = "attachControl";
-        const source = this.context.store.getSource(modulePath);
         const freeModule = "src/camera/free-camera-controls.ts";
-        const freeSource = this.context.store.getSource(freeModule);
-        const rotationEpsilon = this.context.extractNumber(source, /ROTATION_EPSILON = ([0-9.]+)/, "rotation epsilon");
-        const radiusEpsilon = this.context.extractNumber(source, /RADIUS_EPSILON = ([0-9.]+)/, "radius epsilon");
-        const panningEpsilon = this.context.extractNumber(source, /PANNING_EPSILON = ([0-9.]+)/, "panning epsilon");
-        if (!source.includes("camera.inertialAlphaOffset *= camera.inertia")) {
-            throw new Error("Upstream ArcRotate inertia semantics changed.");
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        const numericConstant = (name: string): number =>
+            this.context.numericValue(
+                this.context.variableInitializer(
+                    declaration,
+                    name,
+                ),
+                file,
+            );
+        const rotationEpsilon = numericConstant(
+            "ROTATION_EPSILON",
+        );
+        const radiusEpsilon = numericConstant(
+            "RADIUS_EPSILON",
+        );
+        const panningEpsilon = numericConstant(
+            "PANNING_EPSILON",
+        );
+        const assignments = this.context.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node),
+        );
+        if (
+            !assignments.some(
+                (expression) =>
+                    expression.operatorToken.kind ===
+                        ts.SyntaxKind.AsteriskEqualsToken &&
+                    this.context
+                        .propertyPath(expression.left)
+                        ?.join(".") ===
+                        "camera.inertialAlphaOffset" &&
+                    this.context
+                        .propertyPath(expression.right)
+                        ?.join(".") === "camera.inertia",
+            )
+        ) {
+            this.context.contractError(
+                declaration,
+                "Expected ArcRotate inertia decay.",
+            );
         }
-        for (const marker of [
-            "camera._pitch = Math.max(-maxPitch, Math.min(maxPitch, camera._pitch))",
-            "camera.position.x += sinY * cosP * cdZ + cosY * cdX",
-            "cdX *= inertia",
-        ]) {
-            if (!freeSource.includes(marker)) {
-                throw new Error(`Upstream FreeCamera controls changed: ${marker}.`);
+        const { declaration: attachFreeControl } =
+            this.context.functionDeclaration(
+                freeModule,
+                "attachFreeControl",
+            );
+        const freeAssignments = this.context.findNodes(
+            attachFreeControl,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node),
+        );
+        const requireAssignment = (
+            path: string,
+            operator: ts.SyntaxKind,
+            expectedRight: string,
+            label: string,
+        ): void => {
+            const expression = freeAssignments.find(
+                (candidate) =>
+                    candidate.operatorToken.kind === operator &&
+                    this.context
+                        .propertyPath(candidate.left)
+                        ?.join(".") === path,
+            );
+            if (!expression) {
+                this.context.contractError(
+                    attachFreeControl,
+                    `Expected ${label}.`,
+                );
             }
-        }
+            this.context.assertExpressionShape(
+                expression.right,
+                expectedRight,
+                label,
+            );
+        };
+        requireAssignment(
+            "camera._pitch",
+            ts.SyntaxKind.EqualsToken,
+            "Math.max(-maxPitch, Math.min(maxPitch, camera._pitch))",
+            "FreeCamera pitch clamp",
+        );
+        requireAssignment(
+            "camera.position.x",
+            ts.SyntaxKind.PlusEqualsToken,
+            "sinY * cosP * cdZ + cosY * cdX",
+            "FreeCamera X movement",
+        );
+        requireAssignment(
+            "cdX",
+            ts.SyntaxKind.AsteriskEqualsToken,
+            "inertia",
+            "FreeCamera movement inertia",
+        );
         const value = (input: number): string => this.context.floatLiteral(input);
         return {
             modulePath,

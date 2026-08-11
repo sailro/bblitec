@@ -8,10 +8,11 @@ import { validateReferenceCapture } from "../src/parity-scene.js";
 test("registers unique generated scene targets", () => {
     assert.deepEqual(
         scenes.map(({ id }) => id),
-        ["primitives", "boombox", "scene8", "scene5", "scene10", "scene13", "scene32", "scene163", "audit-shader-frame-graph", "regression-compiler-state", "scene168", "transmission-skybox", "transmission-scene-color", "transmission-ior", "transmission-volume", "scene176", "scene213", "scene151", "scene154", "scene240", "regression-track-clamp", "scene116", "scene145", "scene146", "scene248", "scene245", "scene249", "scene257", "scene266", "scene273", "scene274"],
+        ["primitives", "boombox", "scene2", "scene8", "scene5", "scene10", "scene13", "scene32", "scene163", "audit-shader-frame-graph", "regression-compiler-state", "scene168", "transmission-skybox", "transmission-scene-color", "transmission-ior", "transmission-volume", "scene176", "scene213", "scene151", "scene154", "scene240", "regression-track-clamp", "scene116", "scene145", "scene146", "scene248", "scene245", "scene249", "scene257", "scene266", "scene273", "scene274"],
     );
     assert.equal(new Set(scenes.map(({ output }) => output)).size, scenes.length);
     assert.equal(getScene("scene10").parity?.reference.kind, "source");
+    assert.equal(getScene("scene2").parity?.maxFullMad, 0.01);
     assert.equal(getScene("scene163").parity?.maxFullMad, 0.001);
     assert.equal(
         getScene("audit-shader-frame-graph").parity?.maxFullMad,

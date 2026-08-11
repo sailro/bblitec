@@ -1,3 +1,4 @@
+import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 export class GeometryOutputLowerer {
@@ -9,54 +10,274 @@ export class GeometryOutputLowerer {
         const actionsModule = "src/frame-graph/frame-graph-actions.ts";
         const renderModule = "src/frame-graph/render-task.ts";
         const rttModule = "src/texture/rtt.ts";
-        const geometry = this.context.store.getSource(geometryModule);
-        const copy = this.context.store.getSource(copyModule);
-        const actions = this.context.store.getSource(actionsModule);
-        const render = this.context.store.getSource(renderModule);
-        const rtt = this.context.store.getSource(rttModule);
-        for (const marker of [
-            "textureDescriptions.length > 8",
+        const geometryFile =
+            this.context.sourceFile(geometryModule);
+        const { declaration: createGeometryTask } =
+            this.context.functionDeclaration(
+                geometryModule,
+                "createGeometryRendererTask",
+            );
+        if (
+            !this.context.hasNode(
+                createGeometryTask,
+                (node) =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.GreaterThanToken &&
+                    ts.isNumericLiteral(node.right) &&
+                    Number(node.right.text) === 8 &&
+                    ts.isPropertyAccessExpression(node.left) &&
+                    node.left.name.text === "length" &&
+                    ts.isPropertyAccessExpression(
+                        node.left.expression,
+                    ) &&
+                    node.left.expression.name.text ===
+                        "textureDescriptions",
+            )
+        ) {
+            this.context.contractError(
+                createGeometryTask,
+                "Expected the eight-attachment geometry limit.",
+            );
+        }
+        const hasNamedProperty = (
+            root: ts.Node,
+            name: string,
+        ): boolean =>
+            this.context.hasNode(
+                root,
+                (node) =>
+                    (ts.isPropertySignature(node) ||
+                        ts.isPropertyAssignment(node)) &&
+                    this.context.propertyName(node.name) ===
+                        name,
+            );
+        for (const property of [
             "targetTextureClearColor",
             "geometryLinearVelocityTexture",
         ]) {
-            if (!geometry.includes(marker)) {
-                throw new Error(`Pinned geometry renderer contract changed: ${marker}.`);
+            if (!hasNamedProperty(geometryFile, property)) {
+                this.context.contractError(
+                    geometryFile,
+                    `Expected geometry task property '${property}'.`,
+                );
             }
         }
-        for (const marker of [
+
+        const copyFile = this.context.sourceFile(copyModule);
+        for (const property of [
             "resolveTexture",
             "viewport",
             "sourceTexture",
-            "const x = Math.floor(v.x * w);",
-            "const vw = Math.floor((v.x + v.width) * w) - x;",
-            "const yTop = Math.floor(v.y * h);",
-            "const vh = Math.floor((v.y + v.height) * h) - yTop;",
-            "pass.setScissorRect(v.x, v.y, v.w, v.h);",
         ]) {
-            if (!copy.includes(marker)) {
-                throw new Error(`Pinned copy task contract changed: ${marker}.`);
+            if (!hasNamedProperty(copyFile, property)) {
+                this.context.contractError(
+                    copyFile,
+                    `Expected copy task property '${property}'.`,
+                );
             }
         }
-        if (!actions.includes("fg._tasks.splice(firstUserTask, 0, task)")) {
-            throw new Error("Pinned addTaskAtStart ordering changed.");
+        const { declaration: buildBlitPath } =
+            this.context.functionDeclaration(
+                copyModule,
+                "buildBlitPath",
+            );
+        for (const [name, expected] of [
+            ["x", "Math.floor(v.x * w)"],
+            [
+                "vw",
+                "Math.floor((v.x + v.width) * w) - x",
+            ],
+            ["yTop", "Math.floor(v.y * h)"],
+            [
+                "vh",
+                "Math.floor((v.y + v.height) * h) - yTop",
+            ],
+        ] as const) {
+            this.context.assertExpressionShape(
+                this.context.variableInitializer(
+                    buildBlitPath,
+                    name,
+                ),
+                expected,
+                `Copy viewport '${name}'`,
+            );
         }
-        for (const marker of [
-            "const material = opts?.material ?? mesh.material",
-            "const camera = task._config.cam ?? sc.camera",
-            "task._config.cs ? eng.canvas.width / eng.canvas.height",
-        ]) {
-            if (!render.includes(marker)) {
-                throw new Error(`Pinned render task contract changed: ${marker}.`);
+        const { declaration: createCopyTask } =
+            this.context.functionDeclaration(
+                copyModule,
+                "createCopyToTextureTask",
+            );
+        if (
+            !this.context.hasNode(
+                createCopyTask,
+                (node) =>
+                    ts.isCallExpression(node) &&
+                    ts.isPropertyAccessExpression(
+                        node.expression,
+                    ) &&
+                    node.expression.name.text ===
+                        "setScissorRect",
+            )
+        ) {
+            this.context.contractError(
+                createCopyTask,
+                "Expected the copy viewport scissor.",
+            );
+        }
+
+        const { declaration: addTaskAtStart } =
+            this.context.functionDeclaration(
+                actionsModule,
+                "addTaskAtStart",
+            );
+        if (
+            !this.context.hasNode(
+                addTaskAtStart,
+                (node) =>
+                    ts.isCallExpression(node) &&
+                    ts.isPropertyAccessExpression(
+                        node.expression,
+                    ) &&
+                    node.expression.name.text === "splice" &&
+                    node.arguments.length === 3 &&
+                    ts.isIdentifier(node.arguments[0]!) &&
+                    node.arguments[0].text ===
+                        "firstUserTask" &&
+                    ts.isNumericLiteral(node.arguments[1]!) &&
+                    Number(node.arguments[1].text) === 0 &&
+                    ts.isIdentifier(node.arguments[2]!) &&
+                    node.arguments[2].text === "task",
+            )
+        ) {
+            this.context.contractError(
+                addTaskAtStart,
+                "Expected insertion before the first user task.",
+            );
+        }
+
+        const path = (
+            expression: ts.Expression,
+        ): string[] | undefined => {
+            if (ts.isIdentifier(expression)) {
+                return [expression.text];
+            }
+            if (ts.isPropertyAccessExpression(expression)) {
+                const owner = path(expression.expression);
+                return owner
+                    ? [...owner, expression.name.text]
+                    : undefined;
+            }
+            return undefined;
+        };
+        const hasNullishFallback = (
+            declaration: ts.FunctionDeclaration,
+            left: string,
+            right: string,
+        ): boolean =>
+            this.context.hasNode(
+                declaration,
+                (node) =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.QuestionQuestionToken &&
+                    path(node.left)?.join(".") === left &&
+                    path(node.right)?.join(".") === right,
+            );
+        const { declaration: createRenderTask } =
+            this.context.functionDeclaration(
+                renderModule,
+                "createRenderTask",
+            );
+        if (
+            !hasNullishFallback(
+                createRenderTask,
+                "opts.material",
+                "mesh.material",
+            )
+        ) {
+            this.context.contractError(
+                createRenderTask,
+                "Expected task material override fallback.",
+            );
+        }
+        const { declaration: prepareRenderTaskPass } =
+            this.context.functionDeclaration(
+                renderModule,
+                "prepareRenderTaskPass",
+            );
+        if (
+            !hasNullishFallback(
+                prepareRenderTaskPass,
+                "task._config.cam",
+                "sc.camera",
+            )
+        ) {
+            this.context.contractError(
+                prepareRenderTaskPass,
+                "Expected task camera fallback.",
+            );
+        }
+        const { declaration: writePassSceneUbo } =
+            this.context.functionDeclaration(
+                renderModule,
+                "_writePassSceneUBO",
+            );
+        if (
+            !this.context.hasNode(
+                writePassSceneUbo,
+                (node) =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.SlashToken &&
+                    path(node.left)?.join(".") ===
+                        "eng.canvas.width" &&
+                    path(node.right)?.join(".") ===
+                        "eng.canvas.height",
+            )
+        ) {
+            this.context.contractError(
+                writePassSceneUbo,
+                "Expected canvas aspect selection.",
+            );
+        }
+
+        const { declaration: createRenderTargetTexture } =
+            this.context.functionDeclaration(
+                rttModule,
+                "createRenderTargetTexture",
+            );
+        for (const [property, value] of [
+            ["aspect", "depth-only"],
+            ["_sampleType", "depth"],
+        ] as const) {
+            if (
+                !this.context.hasNode(
+                    createRenderTargetTexture,
+                    (node) =>
+                        ts.isPropertyAssignment(node) &&
+                        this.context.propertyName(node.name) ===
+                            property &&
+                        ts.isStringLiteral(node.initializer) &&
+                        node.initializer.text === value,
+                )
+            ) {
+                this.context.contractError(
+                    createRenderTargetTexture,
+                    `Expected ${property}: '${value}'.`,
+                );
             }
         }
-        for (const marker of [
-            'aspect: "depth-only"',
-            '_sampleType: "depth"',
-            "getNearestSampler(engine)",
-        ]) {
-            if (!rtt.includes(marker)) {
-                throw new Error(`Pinned render-target texture contract changed: ${marker}.`);
-            }
+        if (
+            !this.context.hasCall(
+                createRenderTargetTexture,
+                "getNearestSampler",
+            )
+        ) {
+            this.context.contractError(
+                createRenderTargetTexture,
+                "Expected nearest sampling for depth views.",
+            );
         }
 
         return {

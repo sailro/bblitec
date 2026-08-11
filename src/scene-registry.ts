@@ -67,6 +67,26 @@ export const scenes: readonly SceneDefinition[] = [
         },
     },
     {
+        id: "scene2",
+        name: "Scene 2 - Directional Light Sphere",
+        source: "examples/scene2-directional-sphere.ts",
+        output: "generated/scene2",
+        title: "Babylon Lite Native - Directional Light Sphere",
+        buildDirectory: "native/build-scene2-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/scene2/babylon-lite-golden.png",
+            },
+            actual: "artifacts/parity/scene2-native.png",
+            outputDirectory: "artifacts/parity/scene2",
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.01,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene8",
         name: "Scene 8 - HDR Glass Sphere",
         source: "examples/scene8-hdr-glass.ts",

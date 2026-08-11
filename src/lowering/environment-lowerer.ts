@@ -1,3 +1,4 @@
+import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 interface EnvironmentConstants {
@@ -244,16 +245,20 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
     public lowerLoaderAdapter(): LoweredSource {
         const modulePath = "src/loader-env/load-env.ts";
         const symbolName = "loadEnvironment";
-        const source = this.context.store.getSource(modulePath);
-        const exposure = this.context.extractNumber(
-            source,
-            /imageProcessing\.exposure = ([0-9.]+)/,
-            "environment exposure",
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        const exposure = this.numericAssignment(
+            declaration,
+            "scene.imageProcessing.exposure",
+            file,
         );
-        const contrast = this.context.extractNumber(
-            source,
-            /imageProcessing\.contrast = ([0-9.]+)/,
-            "environment contrast",
+        const contrast = this.numericAssignment(
+            declaration,
+            "scene.imageProcessing.contrast",
+            file,
         );
         return {
             modulePath,
@@ -371,32 +376,65 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
     public lowerHdrLoaderAdapter(): LoweredSource {
         const modulePath = "src/loader-hdr/load-hdr.ts";
         const symbolName = "loadHdrEnvironment";
-        const source = this.context.store.getSource(modulePath);
-        const exposure = this.context.extractNumber(
-            source,
-            /imageProcessing\.exposure = ([0-9.]+)/,
-            "HDR environment exposure",
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        const exposure = this.numericAssignment(
+            declaration,
+            "scene.imageProcessing.exposure",
+            file,
         );
-        const contrast = this.context.extractNumber(
-            source,
-            /imageProcessing\.contrast = ([0-9.]+)/,
-            "HDR environment contrast",
+        const contrast = this.numericAssignment(
+            declaration,
+            "scene.imageProcessing.contrast",
+            file,
         );
-        const lodGenerationScale = this.context.extractNumber(
-            source,
-            /assembleEnvironmentTextures\([\s\S]*?,\s*([0-9.]+),\s*engine\)/,
-            "HDR environment LOD generation scale",
+        const assemble = this.context.callExpression(
+            declaration,
+            "assembleEnvironmentTextures",
         );
-        for (const marker of [
+        const lodExpression = assemble.arguments[3];
+        if (!lodExpression) {
+            this.context.contractError(
+                assemble,
+                "Expected HDR LOD generation scale.",
+            );
+        }
+        const lodGenerationScale =
+            this.context.numericValue(
+                lodExpression,
+                file,
+            );
+        for (const call of [
             "parseRGBE(buffer)",
             "computeSHFromEquirect",
             "equirectToCubemapGPU",
             "prefilterCubemapGPU",
-            "scene.imageProcessing.toneMappingEnabled = false",
         ]) {
-            if (!source.includes(marker)) {
-                throw new Error(`Pinned HDR environment loader changed: ${marker}.`);
+            const callName = call.endsWith("(buffer)")
+                ? call.slice(0, -"(buffer)".length)
+                : call;
+            if (!this.context.hasCall(declaration, callName)) {
+                this.context.contractError(
+                    declaration,
+                    `Expected HDR call '${callName}'.`,
+                );
             }
+        }
+        const toneMapping = this.assignmentExpression(
+            declaration,
+            "scene.imageProcessing.toneMappingEnabled",
+        );
+        if (
+            toneMapping.right.kind !==
+            ts.SyntaxKind.FalseKeyword
+        ) {
+            this.context.contractError(
+                toneMapping.right,
+                "Expected HDR tone mapping to be disabled.",
+            );
         }
         return {
             modulePath,
@@ -525,24 +563,86 @@ void load_hdr_environment(
     }
 
     private extractConstants(): EnvironmentConstants {
-        const parser = this.context.store.getSource("src/loader-env/env-parse.ts");
-        const loader = this.context.store.getSource("src/loader-env/load-env.ts");
-        const magicMatch = parser.match(/ENV_MAGIC\s*=\s*new U8\(\[([^\]]+)\]\)/);
-        const keysMatch = parser.match(/shKeys\s*=\s*\[([^\]]+)\]/);
-        const imageTypeMatch = parser.match(/manifest\.imageType\s*\|\|\s*"([^"]+)"/);
-        if (!magicMatch?.[1] || !keysMatch?.[1] || !imageTypeMatch?.[1]) {
-            throw new Error("Unable to extract upstream environment parser constants.");
+        const parserModule = "src/loader-env/env-parse.ts";
+        const loaderModule = "src/loader-env/load-env.ts";
+        const parser = this.context.sourceFile(parserModule);
+        const loader = this.context.sourceFile(loaderModule);
+        const magicExpression =
+            this.context.unwrapExpression(
+                this.context.variableInitializer(
+                    parser,
+                    "ENV_MAGIC",
+                ),
+            );
+        if (
+            !ts.isNewExpression(magicExpression) ||
+            !ts.isIdentifier(magicExpression.expression) ||
+            magicExpression.expression.text !== "U8" ||
+            magicExpression.arguments?.length !== 1 ||
+            !ts.isArrayLiteralExpression(
+                magicExpression.arguments[0]!,
+            )
+        ) {
+            this.context.contractError(
+                magicExpression,
+                "Expected ENV_MAGIC byte array.",
+            );
+        }
+        const magic =
+            magicExpression.arguments[0].elements.map(
+                (element) =>
+                    this.context.numericValue(
+                        element,
+                        parser,
+                    ),
+            );
+        const keysExpression =
+            this.context.unwrapExpression(
+                this.context.variableInitializer(
+                    parser,
+                    "shKeys",
+                ),
+            );
+        if (!ts.isArrayLiteralExpression(keysExpression)) {
+            this.context.contractError(
+                keysExpression,
+                "Expected spherical-harmonic key array.",
+            );
+        }
+        const coefficientNames =
+            keysExpression.elements.map((element) =>
+                this.context.stringValue(element, parser),
+            );
+        const imageType = this.context.findNodes(
+            parser,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.BarBarToken &&
+                this.context
+                    .propertyPath(node.left)
+                    ?.join(".") ===
+                    "manifest.imageType" &&
+                ts.isStringLiteral(node.right),
+        )[0];
+        if (!imageType || !ts.isStringLiteral(imageType.right)) {
+            this.context.contractError(
+                parser,
+                "Expected environment image-type fallback.",
+            );
         }
         const constant = (name: string): number =>
-            this.context.extractNumber(
+            this.context.numericValue(
+                this.context.variableInitializer(
+                    loader,
+                    name,
+                ),
                 loader,
-                new RegExp(`const ${name} = ([0-9.]+)`),
-                `harmonic ${name}`,
             );
         return {
-            magic: magicMatch[1].split(",").map((value) => Number(value.trim())),
-            coefficientNames: [...keysMatch[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]!),
-            imageType: imageTypeMatch[1],
+            magic,
+            coefficientNames,
+            imageType: imageType.right.text,
             harmonicConstants: [
                 constant("C00xy"),
                 constant("C00z"),
@@ -553,5 +653,39 @@ void load_hdr_environment(
                 constant("C22"),
             ],
         };
+    }
+
+    private assignmentExpression(
+        declaration: ts.FunctionDeclaration,
+        path: string,
+    ): ts.BinaryExpression {
+        const expression = this.context.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                this.context
+                    .propertyPath(node.left)
+                    ?.join(".") === path,
+        )[0];
+        if (!expression) {
+            this.context.contractError(
+                declaration,
+                `Expected assignment to '${path}'.`,
+            );
+        }
+        return expression;
+    }
+
+    private numericAssignment(
+        declaration: ts.FunctionDeclaration,
+        path: string,
+        file: ts.SourceFile,
+    ): number {
+        return this.context.numericValue(
+            this.assignmentExpression(declaration, path).right,
+            file,
+        );
     }
 }

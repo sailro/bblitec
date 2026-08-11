@@ -3,9 +3,10 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { packageHdrEnvironment, parseRgbe } from "../src/hdr-packager.js";
 import {
-    hdrGgxPrefilterProvenance,
+    getHdrGgxPrefilterProvenance,
     prefilterCubemapGgx,
 } from "../src/hdr-prefilter-gpu.js";
+import { readUpstreamPin } from "../src/upstream-source.js";
 
 function smallHdr(): Uint8Array {
     const header = new TextEncoder().encode(
@@ -159,9 +160,10 @@ test("preserves mip zero and deterministically applies pinned GGX semantics", as
         digest.digest("hex"),
         "1c33fe95c972aea59fb51fd9bfacae79ed084b9523cbc3270b4f468fd22c4755",
     );
-    assert.deepEqual(hdrGgxPrefilterProvenance, {
-        package: "@babylonjs/lite@1.18.0",
-        sourceCommit: "7184feda683072980735f9a180e6f567ee5717ba",
+    const pin = readUpstreamPin();
+    assert.deepEqual(getHdrGgxPrefilterProvenance(), {
+        package: `${pin.package}@${pin.version}`,
+        sourceCommit: pin.sourceVersion,
         module: "src/loader-hdr/hdr-ibl-pipeline.ts",
         shader: "shaders/hdr-prefilter-cube.compute.wgsl",
         sampleCount: 1024,

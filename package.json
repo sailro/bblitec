@@ -29,6 +29,7 @@
     "clean:dist": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean:dist && tsc -p tsconfig.json",
     "test": "npm run build && node --test \"dist/test/*.test.js\"",
+    "test:upstream": "npm run build && node --test \"dist/test/upstream.test.js\" \"dist/test/compiler-architecture.test.js\" \"dist/test/compiler.test.js\"",
     "scene": "npm run build && node dist/src/scene-command.js",
     "scenes:compile": "npm run scene -- compile all",
     "scenes:build": "npm run scene -- build all",

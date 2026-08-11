@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import {
+    join,
+    resolve,
+} from "node:path";
 import test from "node:test";
 import { CompileError, compileSource } from "../src/compiler.js";
 
@@ -51,6 +59,61 @@ test("compiles the Babylon Lite primitives example", () => {
     assert.match(result.cpp, /bbl::start_engine/);
     assert.doesNotMatch(result.cpp, /document|getElementById|Promise/);
     assert.match(result.cmake, /mesh_factories\.cpp/);
+});
+
+test("compiles pinned scene 2 directional light colors", () => {
+    const sourcePath = "examples/scene2-directional-sphere.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+
+    assert.ok(result.manifest.features.includes("light:directional"));
+    assert.ok(result.manifest.features.includes("material:standard"));
+    assert.match(
+        result.cpp,
+        /\.lights\[v_light\.value\]\.diffuse_color = bbl::Color3\{1\.0f, 0\.0f, 0\.0f\}/,
+    );
+    assert.match(
+        result.cpp,
+        /\.lights\[v_light\.value\]\.specular_color = bbl::Color3\{0\.0f, 1\.0f, 0\.0f\}/,
+    );
+});
+
+test("enforces light subtype property contracts", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createHemisphericLight,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const light = createHemisphericLight();
+            light.diffuseColor = [0.25, 0.5, 0.75];
+            light.specularColor = [0.75, 0.5, 0.25];
+        }
+    `);
+    assert.match(
+        result.cpp,
+        /\.diffuse_color = bbl::Color3\{0\.25f, 0\.5f, 0\.75f\}/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createDirectionalLight,
+                    createEngine,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const light = createDirectionalLight([0, -1, 0]);
+                    light.range = 10;
+                }
+            `),
+        /Unsupported property assignment 'light\.range'/,
+    );
 });
 
 test("preserves reached box, ground, and sphere options", () => {
@@ -179,6 +242,41 @@ test("supports aliased Babylon Lite imports", () => {
 
     assert.match(result.cpp, /create_engine/);
     assert.match(result.cpp, /\.clear_color =/);
+});
+
+test("resolves pinned Babylon types independently of cwd", () => {
+    const previous = process.cwd();
+    const temporary = mkdtempSync(
+        join(tmpdir(), "bblitec-compiler-"),
+    );
+    try {
+        process.chdir(temporary);
+        const result = compileSource(
+            `
+                import {
+                    createEngine as makeEngine,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await makeEngine({});
+                }
+            `,
+            {
+                fileName: resolve(
+                    previous,
+                    "examples",
+                    "cwd-probe.ts",
+                ),
+            },
+        );
+        assert.match(result.cpp, /bbl::create_engine/);
+    } finally {
+        process.chdir(previous);
+        rmSync(temporary, {
+            recursive: true,
+            force: true,
+        });
+    }
 });
 
 test("reads mutated flat-entry variables from live generated state", () => {
@@ -388,6 +486,31 @@ test("preserves compound assignments for numeric properties", () => {
     assert.match(result.cpp, /\.position\.x -= 0\.02f/);
     assert.match(result.cpp, /\.rotation\.y \+= 0\.01f/);
     assert.match(result.cpp, /\.scaling\.z \+= 0\.03f/);
+});
+
+test("records awaits lowered by static expression evaluation", () => {
+    const result = compileSource(`
+        import {
+            addToScene,
+            createEngine,
+            createPointLight,
+            createSceneContext,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const light = createPointLight([0, 1, 0]);
+            light.intensity = await 2;
+            addToScene(scene, light);
+        }
+    `);
+
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "synchronous-aot-await",
+        ),
+    );
 });
 
 test("rejects compound assignments for nonnumeric properties", () => {
@@ -890,6 +1013,43 @@ test("compiles Babylon Lite scene 163 shader alpha cutout", () => {
         result.manifest.adaptations.some(
             ({ id }) => id === "typed-reached-shader-variants",
         ),
+    );
+});
+
+test("matches shader variants through parsed WGSL IR", () => {
+    const source = readFileSync(
+        resolve("examples/scene163-shader-alpha-cutout.ts"),
+        "utf8",
+    ).replace(
+        "struct VertexOutput {",
+        "// Semantically irrelevant shader comment.\nstruct VertexOutput\n{",
+    );
+    const result = compileSource(source, {
+        fileName: "examples/scene163-shader-alpha-cutout.ts",
+    });
+
+    assert.deepEqual(
+        result.manifest.shaderVariants,
+        ["circular-cutout"],
+    );
+});
+
+test("reports invalid reached WGSL at the shader options", () => {
+    const source = readFileSync(
+        resolve("examples/scene163-shader-alpha-cutout.ts"),
+        "utf8",
+    ).replace(
+        "if(distance(input.uv,vec2<f32>(0.5,0.5))<0.18)",
+        "if()",
+    );
+
+    assert.throws(
+        () =>
+            compileSource(source, {
+                fileName:
+                    "examples/scene163-shader-alpha-cutout.ts",
+            }),
+        /examples\/scene163-shader-alpha-cutout\.ts:\d+:\d+: Invalid reached shader material WGSL:/,
     );
 });
 

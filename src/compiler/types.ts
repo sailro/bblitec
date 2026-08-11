@@ -1,0 +1,134 @@
+import type { CompileAdaptation } from "../fidelity.js";
+
+export interface CompileOptions {
+    fileName?: string;
+    title?: string;
+    width?: number;
+    height?: number;
+}
+
+export interface CompileManifest {
+    source: string;
+    features: string[];
+    runtimeSources: string[];
+    generatedSources: string[];
+    assets: CompileAsset[];
+    shaderVariants: ShaderMaterialVariantName[];
+    geometryOutputTasks: GeometryOutputTaskManifest[];
+    adaptations: CompileAdaptation[];
+}
+
+export interface CompileAsset {
+    source: string;
+    output: string;
+    kind:
+        | "babylon"
+        | "environment"
+        | "gltf"
+        | "hdr-environment"
+        | "texture";
+    faceSize?: number;
+}
+
+export type GeometryTextureTypeName =
+    | "IRRADIANCE"
+    | "WORLD_POSITION"
+    | "LOCAL_POSITION"
+    | "REFLECTIVITY"
+    | "VIEW_DEPTH"
+    | "NORMALIZED_VIEW_DEPTH"
+    | "SCREENSPACE_DEPTH"
+    | "VIEW_NORMAL"
+    | "WORLD_NORMAL"
+    | "ALBEDO"
+    | "LINEAR_VELOCITY";
+
+export type ShaderMaterialVariantName =
+    | "alpha-card"
+    | "circular-cutout";
+
+export type LightKind =
+    | "directional"
+    | "hemispheric"
+    | "point";
+
+export interface GeometryOutputTaskManifest {
+    shaderIndex: number;
+    attachments: GeometryTextureTypeName[];
+    emitColor: boolean;
+}
+
+export interface CompileResult {
+    cpp: string;
+    cmake: string;
+    manifest: CompileManifest;
+}
+
+export type ValueKind =
+    | "animation-clip"
+    | "animation-group"
+    | "animation-manager"
+    | "asset"
+    | "browser"
+    | "camera"
+    | "engine"
+    | "light"
+    | "material"
+    | "mesh"
+    | "number"
+    | "render-target"
+    | "render-target-texture"
+    | "render-texture"
+    | "scene"
+    | "task"
+    | "texture"
+    | "void";
+
+export interface Value {
+    kind: ValueKind;
+    cpp: string;
+    engineCpp?: string;
+    geometryTask?: GeometryOutputTaskManifest;
+    lightKind?: LightKind;
+    shaderVariant?: ShaderMaterialVariantName;
+    animationFrameRate?: string;
+    animationDuration?: string;
+}
+
+export type Feature =
+    | "animation:property"
+    | "background:ground"
+    | "background:skybox"
+    | "core"
+    | "backend:sdl"
+    | "camera:arc-rotate"
+    | "camera:default"
+    | "camera:free"
+    | "environment:ibl"
+    | "environment:env"
+    | "environment:hdr"
+    | "light:hemispheric"
+    | "light:directional"
+    | "light:point"
+    | "loader:babylon"
+    | "loader:gltf"
+    | "material:pbr"
+    | "material:no-color-view"
+    | "material:grid"
+    | "material:shader"
+    | "material:standard"
+    | "mesh:box"
+    | "mesh:ground"
+    | "mesh:plane"
+    | "mesh:sphere"
+    | "mesh:torus"
+    | "renderer:pbr"
+    | "renderer:transmission"
+    | "renderer:geometry-output";
+
+export interface ResolvedCompileOptions {
+    fileName: string;
+    title: string;
+    width: number;
+    height: number;
+}

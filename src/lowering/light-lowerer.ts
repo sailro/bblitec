@@ -7,6 +7,12 @@ interface HemisphericDefaults {
     groundColor: [number, number, number];
 }
 
+interface PositionalLightDefaults {
+    diffuseColor: [number, number, number];
+    specularColor: [number, number, number];
+    rangeIsUnbounded: boolean;
+}
+
 export class LightLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
@@ -109,16 +115,16 @@ LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float inten
     public lowerPointFactory(): LoweredSource {
         const modulePath = "src/light/point-light.ts";
         const symbolName = "createPointLight";
-        const source = this.context.store.getSource(modulePath);
-        for (const marker of [
-            'lightType: "point" as const',
-            "diffuse: [1, 1, 1]",
-            "specular: [1, 1, 1]",
-            "range: Number.MAX_VALUE",
-        ]) {
-            if (!source.includes(marker)) {
-                throw new Error(`Pinned point-light factory changed: ${marker}.`);
-            }
+        const defaults = this.extractPositionalLightDefaults(
+            modulePath,
+            symbolName,
+            "point",
+            true,
+        );
+        if (!defaults.rangeIsUnbounded) {
+            throw new Error(
+                "Pinned point-light default range is no longer Number.MAX_VALUE.",
+            );
         }
         return {
             modulePath,
@@ -137,8 +143,8 @@ LightHandle create_point_light(
     light.kind = LightKind::point;
     light.position = position;
     light.intensity = intensity;
-    light.diffuse_color = Color3{1.0f, 1.0f, 1.0f};
-    light.specular_color = Color3{1.0f, 1.0f, 1.0f};
+    light.diffuse_color = ${this.context.cppColor3(defaults.diffuseColor)};
+    light.specular_color = ${this.context.cppColor3(defaults.specularColor)};
     light.range = std::numeric_limits<float>::max();
     light.local_matrix[0] = 1.0f;
     light.local_matrix[5] = 1.0f;
@@ -160,18 +166,26 @@ LightHandle create_point_light(
     public lowerDirectionalFactory(): LoweredSource {
         const modulePath = "src/light/directional-light.ts";
         const symbolName = "createDirectionalLight";
-        const source = this.context.store.getSource(modulePath);
-        for (const marker of [
-            'lightType: "directional" as const',
-            "diffuse: [1, 1, 1]",
-            "specular: [1, 1, 1]",
-            "localMatrixFromDirection",
-        ]) {
-            if (!source.includes(marker)) {
-                throw new Error(
-                    `Pinned directional-light factory changed: ${marker}.`,
-                );
-            }
+        const { declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        const defaults = this.extractPositionalLightDefaults(
+            modulePath,
+            symbolName,
+            "directional",
+            false,
+        );
+        if (
+            !this.context.hasCall(
+                declaration,
+                "localMatrixFromDirection",
+            )
+        ) {
+            throw new Error(
+                "Pinned directional-light factory no longer uses localMatrixFromDirection.",
+            );
         }
         return {
             modulePath,
@@ -191,8 +205,8 @@ LightHandle create_directional_light(
     light.kind = LightKind::directional;
     light.direction = direction;
     light.intensity = intensity;
-    light.diffuse_color = Color3{1.0f, 1.0f, 1.0f};
-    light.specular_color = Color3{1.0f, 1.0f, 1.0f};
+    light.diffuse_color = ${this.context.cppColor3(defaults.diffuseColor)};
+    light.specular_color = ${this.context.cppColor3(defaults.specularColor)};
     light.range = std::numeric_limits<float>::max();
     upstream::local_matrix_from_direction(
         direction.x,
@@ -214,22 +228,11 @@ LightHandle create_directional_light(
 
     private extractHemisphericDefaults(modulePath: string, symbolName: string): HemisphericDefaults {
         const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
-        let lightObject: ts.ObjectLiteralExpression | undefined;
-        const visit = (node: ts.Node): void => {
-            if (
-                ts.isVariableDeclaration(node) &&
-                ts.isIdentifier(node.name) &&
-                node.name.text === "light" &&
-                node.initializer &&
-                ts.isCallExpression(node.initializer)
-            ) {
-                const firstArgument = node.initializer.arguments[0];
-                if (firstArgument && ts.isObjectLiteralExpression(firstArgument)) lightObject = firstArgument;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration);
-        if (!lightObject) throw new Error("Upstream hemispheric light object literal was not found.");
+        const lightObject =
+            this.context.callObjectArgument(
+                declaration,
+                "applyWorldMatrixAccessors",
+            );
         return {
             diffuseColor: this.context.numericTuple(
                 this.context.propertyInitializer(lightObject, "diffuseColor"),
@@ -243,6 +246,67 @@ LightHandle create_directional_light(
                 this.context.propertyInitializer(lightObject, "groundColor"),
                 file,
             ),
+        };
+    }
+
+    private extractPositionalLightDefaults(
+        modulePath: string,
+        symbolName: string,
+        expectedType: "directional" | "point",
+        requireRange: boolean,
+    ): PositionalLightDefaults {
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        const lightObject =
+            this.context.callObjectArgument(
+                declaration,
+                "applyWorldMatrixAccessors",
+            );
+        const lightType = this.context.stringValue(
+            this.context.propertyInitializer(
+                lightObject,
+                "lightType",
+            ),
+            file,
+        );
+        if (lightType !== expectedType) {
+            throw new Error(
+                `Pinned ${expectedType} light type changed to '${lightType}'.`,
+            );
+        }
+        const range = lightObject.properties.some(
+            (property) =>
+                ts.isPropertyAssignment(property) &&
+                ts.isIdentifier(property.name) &&
+                property.name.text === "range" &&
+                this.context.isNumberMaxValue(
+                    property.initializer,
+                ),
+        );
+        if (requireRange && !range) {
+            throw new Error(
+                `Pinned ${expectedType} light range is missing.`,
+            );
+        }
+        return {
+            diffuseColor: this.context.numericTuple(
+                this.context.propertyInitializer(
+                    lightObject,
+                    "diffuse",
+                ),
+                file,
+            ),
+            specularColor: this.context.numericTuple(
+                this.context.propertyInitializer(
+                    lightObject,
+                    "specular",
+                ),
+                file,
+            ),
+            rangeIsUnbounded: range,
         };
     }
 

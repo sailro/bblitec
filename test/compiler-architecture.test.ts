@@ -1,0 +1,126 @@
+import assert from "node:assert/strict";
+import {
+    readFileSync,
+    readdirSync,
+} from "node:fs";
+import test from "node:test";
+
+function source(path: string): string {
+    return readFileSync(path, "utf8");
+}
+
+test("uses TypeScript semantic symbols instead of import-name text matching", () => {
+    const compiler = source("src/compiler.ts");
+    assert.match(compiler, /createCompilerProgram/);
+    assert.match(compiler, /CompilerSymbols/);
+    assert.doesNotMatch(compiler, /collectImports/);
+    assert.doesNotMatch(
+        compiler,
+        /this\.imports/,
+    );
+    assert.doesNotMatch(
+        source("src/compiler/symbols.ts"),
+        /getAliasedSymbol/,
+    );
+});
+
+test("keeps migrated upstream contracts AST-driven", () => {
+    const lowerers = readdirSync("src/lowering")
+        .filter(
+            (name) =>
+                name.endsWith("-lowerer.ts") &&
+                name !== "renderer-lowerer.ts",
+        )
+        .map((name) => `src/lowering/${name}`);
+    for (const path of [
+        ...lowerers,
+        "src/upstream-source.ts",
+    ]) {
+        const content = source(path);
+        assert.doesNotMatch(content, /store\.getSource/);
+        assert.doesNotMatch(content, /extractNumber\(/);
+        assert.doesNotMatch(content, /\.match\(/);
+        assert.doesNotMatch(content, /new RegExp/);
+    }
+});
+
+test("isolates remaining source-text contracts to the renderer", () => {
+    const renderer = source(
+        "src/lowering/renderer-lowerer.ts",
+    );
+    assert.match(renderer, /store\.getSource/);
+});
+
+test("routes extracted intrinsic families through the registry", () => {
+    const registry = source(
+        "src/compiler/intrinsics/registry.ts",
+    );
+    const compiler = source("src/compiler.ts");
+    for (const family of [
+        "Animation",
+        "Asset",
+        "Camera",
+        "Engine",
+        "Light",
+        "Material",
+        "Mesh",
+        "Scene",
+    ]) {
+        assert.match(
+            registry,
+            new RegExp(`compile${family}Intrinsic`),
+        );
+    }
+    assert.match(compiler, /compileRegisteredIntrinsic/);
+    assert.doesNotMatch(compiler, /case "/);
+});
+
+test("isolates static expression lowering from entry orchestration", () => {
+    const compiler = source("src/compiler.ts");
+    const evaluator = source(
+        "src/compiler/static-evaluator.ts",
+    );
+    assert.match(compiler, /StaticEvaluator/);
+    assert.match(evaluator, /resolveStaticExpression/);
+    assert.match(evaluator, /compileNumber/);
+    assert.match(evaluator, /compileColor3/);
+    assert.doesNotMatch(
+        compiler,
+        /Only \+, -, \*, and \/ are supported/,
+    );
+    assert.doesNotMatch(
+        compiler,
+        /Expected a Color3 array/,
+    );
+});
+
+test("lowers property assignments outside the entry orchestrator", () => {
+    const compiler = source("src/compiler.ts");
+    const assignments = source(
+        "src/compiler/assignments.ts",
+    );
+    assert.match(compiler, /emitPropertyAssignment/);
+    assert.match(assignments, /AssignmentContext/);
+    assert.match(assignments, /directPropertyAssignment/);
+    assert.doesNotMatch(
+        compiler,
+        /Unsupported property assignment/,
+    );
+});
+
+test("matches custom shaders through typed WGSL IR", () => {
+    const compiler = source("src/compiler.ts");
+    assert.match(compiler, /lowerWgslShaderProgram/);
+    assert.doesNotMatch(
+        compiler,
+        /normalizeShaderSource/,
+    );
+    assert.doesNotMatch(
+        compiler,
+        /vertexSource ===/,
+    );
+    assert.doesNotMatch(
+        compiler,
+        /fragmentSource ===/,
+    );
+});

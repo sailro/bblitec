@@ -1,5 +1,11 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, posix, resolve } from "node:path";
+import {
+    dirname,
+    join,
+    posix,
+    resolve,
+} from "node:path";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 interface SourceMapFile {
@@ -19,6 +25,71 @@ export interface UpstreamPin {
     package: string;
     version: string;
     sourceVersion: string;
+}
+
+export function findRepositoryRoot(
+    start = process.cwd(),
+): string {
+    let current = resolve(start);
+    while (true) {
+        if (
+            existsSync(
+                join(
+                    current,
+                    "upstream",
+                    "babylon-lite.json",
+                ),
+            ) &&
+            existsSync(join(current, "package.json"))
+        ) {
+            return current;
+        }
+        const parent = dirname(current);
+        if (parent === current) {
+            throw new Error(
+                `Unable to locate the bblitec repository from '${start}'.`,
+            );
+        }
+        current = parent;
+    }
+}
+
+export function readUpstreamPin(
+    repositoryRoot = findRepositoryRoot(
+        dirname(fileURLToPath(import.meta.url)),
+    ),
+    pinPath = "upstream/babylon-lite.json",
+): UpstreamPin {
+    const value: unknown = JSON.parse(
+        readFileSync(
+            resolve(repositoryRoot, pinPath),
+            "utf8",
+        ),
+    );
+    if (
+        typeof value !== "object" ||
+        value === null ||
+        Array.isArray(value)
+    ) {
+        throw new Error(
+            `Invalid Babylon Lite pin file: ${pinPath}.`,
+        );
+    }
+    const record = value as Record<string, unknown>;
+    if (
+        typeof record.package !== "string" ||
+        typeof record.version !== "string" ||
+        typeof record.sourceVersion !== "string"
+    ) {
+        throw new Error(
+            `Babylon Lite pin requires package, version, and sourceVersion strings: ${pinPath}.`,
+        );
+    }
+    return {
+        package: record.package,
+        version: record.version,
+        sourceVersion: record.sourceVersion,
+    };
 }
 
 export interface PublicExport {
@@ -50,10 +121,19 @@ export class UpstreamSourceStore {
     public readonly packageRoot: string;
     public readonly pin: UpstreamPin;
     private readonly sources = new Map<string, string>();
+    private readonly sourceFiles = new Map<string, ts.SourceFile>();
     private readonly publicExports = new Map<string, PublicExport>();
 
-    public constructor(repositoryRoot = process.cwd(), pinPath = "upstream/babylon-lite.json") {
-        const pin = JSON.parse(readFileSync(resolve(repositoryRoot, pinPath), "utf8")) as UpstreamPin;
+    public constructor(
+        repositoryRoot = findRepositoryRoot(
+            dirname(fileURLToPath(import.meta.url)),
+        ),
+        pinPath = "upstream/babylon-lite.json",
+    ) {
+        const pin = readUpstreamPin(
+            repositoryRoot,
+            pinPath,
+        );
         this.pin = pin;
         this.packageRoot = resolve(repositoryRoot, "node_modules", ...pin.package.split("/"));
         const packageJsonPath = join(this.packageRoot, "package.json");
@@ -89,6 +169,25 @@ export class UpstreamSourceStore {
         return this.sources.has(modulePath.replace(/\\/g, "/"));
     }
 
+    public getSourceFile(modulePath: string): ts.SourceFile {
+        const normalized = modulePath.replace(/\\/g, "/");
+        const cached = this.sourceFiles.get(normalized);
+        if (cached) {
+            return cached;
+        }
+        const sourceFile = ts.createSourceFile(
+            normalized,
+            this.getSource(normalized),
+            ts.ScriptTarget.Latest,
+            true,
+            normalized.endsWith(".js")
+                ? ts.ScriptKind.JS
+                : ts.ScriptKind.TS,
+        );
+        this.sourceFiles.set(normalized, sourceFile);
+        return sourceFile;
+    }
+
     public listSources(): string[] {
         return [...this.sources.keys()].sort();
     }
@@ -120,8 +219,7 @@ export class UpstreamSourceStore {
     }
 
     private loadPublicExports(): void {
-        const source = this.getSource("src/index.ts");
-        const file = ts.createSourceFile("src/index.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+        const file = this.getSourceFile("src/index.ts");
         for (const statement of file.statements) {
             if (
                 !ts.isExportDeclaration(statement) ||
@@ -148,12 +246,46 @@ export class UpstreamSourceStore {
     }
 
     private findSourceExport(name: string): string | undefined {
-        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const pattern = new RegExp(
-            `\\bexport\\s+(?:(?:async\\s+)?function|class|const|let|var|interface|type)\\s+${escaped}\\b`,
-        );
-        for (const [path, source] of this.sources) {
-            if (path !== "src/index.ts" && pattern.test(source)) return path;
+        for (const path of this.listSources()) {
+            if (path === "src/index.ts") {
+                continue;
+            }
+            const file = this.getSourceFile(path);
+            for (const statement of file.statements) {
+                if (
+                    !(
+                        ts.canHaveModifiers(statement) &&
+                        ts.getModifiers(statement)?.some(
+                        (modifier) =>
+                            modifier.kind ===
+                            ts.SyntaxKind.ExportKeyword,
+                        )
+                    )
+                ) {
+                    continue;
+                }
+                if (
+                    (ts.isFunctionDeclaration(statement) ||
+                        ts.isClassDeclaration(statement) ||
+                        ts.isInterfaceDeclaration(statement) ||
+                        ts.isTypeAliasDeclaration(statement) ||
+                        ts.isEnumDeclaration(statement)) &&
+                    statement.name?.text === name
+                ) {
+                    return path;
+                }
+                if (ts.isVariableStatement(statement)) {
+                    for (const declaration of
+                        statement.declarationList.declarations) {
+                        if (
+                            ts.isIdentifier(declaration.name) &&
+                            declaration.name.text === name
+                        ) {
+                            return path;
+                        }
+                    }
+                }
+            }
         }
         return undefined;
     }

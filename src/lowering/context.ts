@@ -19,12 +19,100 @@ export class LoweringContext {
     }
 
     public sourceFile(modulePath: string): ts.SourceFile {
-        return ts.createSourceFile(
-            modulePath,
-            this.store.getSource(modulePath),
-            ts.ScriptTarget.Latest,
-            true,
-            ts.ScriptKind.TS,
+        return this.store.getSourceFile(modulePath);
+    }
+
+    public contractError(
+        node: ts.Node,
+        message: string,
+    ): never {
+        const file = node.getSourceFile();
+        const position = file.getLineAndCharacterOfPosition(
+            node.getStart(file, false),
+        );
+        throw new Error(
+            `${file.fileName}:${position.line + 1}:${position.character + 1}: ${message}`,
+        );
+    }
+
+    public hasNode(
+        root: ts.Node,
+        predicate: (node: ts.Node) => boolean,
+    ): boolean {
+        let found = false;
+        const visit = (node: ts.Node): void => {
+            if (found) {
+                return;
+            }
+            if (predicate(node)) {
+                found = true;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(root);
+        return found;
+    }
+
+    public countNodes(
+        root: ts.Node,
+        predicate: (node: ts.Node) => boolean,
+    ): number {
+        let count = 0;
+        const visit = (node: ts.Node): void => {
+            if (predicate(node)) {
+                count += 1;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(root);
+        return count;
+    }
+
+    public findNodes<T extends ts.Node>(
+        root: ts.Node,
+        predicate: (node: ts.Node) => node is T,
+    ): T[] {
+        const result: T[] = [];
+        const visit = (node: ts.Node): void => {
+            if (predicate(node)) {
+                result.push(node);
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(root);
+        return result;
+    }
+
+    public propertyName(
+        name: ts.PropertyName,
+    ): string | undefined {
+        if (
+            ts.isIdentifier(name) ||
+            ts.isStringLiteral(name) ||
+            ts.isNumericLiteral(name)
+        ) {
+            return name.text;
+        }
+        return undefined;
+    }
+
+    public hasNamedImport(
+        modulePath: string,
+        importedName: string,
+    ): boolean {
+        return this.sourceFile(modulePath).statements.some(
+            (statement) =>
+                ts.isImportDeclaration(statement) &&
+                statement.importClause?.namedBindings &&
+                ts.isNamedImports(
+                    statement.importClause.namedBindings,
+                ) &&
+                statement.importClause.namedBindings.elements.some(
+                    (element) =>
+                        (element.propertyName?.text ??
+                            element.name.text) === importedName,
+                ),
         );
     }
 
@@ -39,7 +127,12 @@ export class LoweringContext {
                 statement.name?.text === symbolName &&
                 statement.body !== undefined,
         );
-        if (!declaration?.body) throw new Error(`${modulePath} does not export ${symbolName}.`);
+        if (!declaration?.body) {
+            this.contractError(
+                file,
+                `Expected function '${symbolName}' with a body.`,
+            );
+        }
         return { file, declaration };
     }
 
@@ -53,16 +146,224 @@ export class LoweringContext {
                 ts.isVariableDeclaration(node) &&
                 ts.isIdentifier(node.name) &&
                 node.name.text === variableName &&
-                node.initializer &&
-                ts.isObjectLiteralExpression(node.initializer)
+                node.initializer
             ) {
-                object = node.initializer;
+                const initializer = this.unwrapExpression(
+                    node.initializer,
+                );
+                if (ts.isObjectLiteralExpression(initializer)) {
+                    object = initializer;
+                }
             }
             ts.forEachChild(node, visit);
         };
         visit(declaration);
-        if (!object) throw new Error(`Upstream variable '${variableName}' object literal was not found.`);
+        if (!object) {
+            this.contractError(
+                declaration,
+                `Expected variable '${variableName}' with an object-literal initializer.`,
+            );
+        }
         return object;
+    }
+
+    public variableInitializer(
+        declaration: ts.Node,
+        variableName: string,
+    ): ts.Expression {
+        let initializer: ts.Expression | undefined;
+        const visit = (node: ts.Node): void => {
+            if (
+                !initializer &&
+                ts.isVariableDeclaration(node) &&
+                ts.isIdentifier(node.name) &&
+                node.name.text === variableName &&
+                node.initializer
+            ) {
+                initializer = node.initializer;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(declaration);
+        if (!initializer) {
+            this.contractError(
+                declaration,
+                `Expected variable '${variableName}' with an initializer.`,
+            );
+        }
+        return initializer;
+    }
+
+    public returnObject(
+        declaration: ts.FunctionDeclaration,
+    ): ts.ObjectLiteralExpression {
+        let object: ts.ObjectLiteralExpression | undefined;
+        const visit = (node: ts.Node): void => {
+            if (
+                !object &&
+                ts.isReturnStatement(node) &&
+                node.expression
+            ) {
+                const expression = this.unwrapExpression(
+                    node.expression,
+                );
+                if (ts.isObjectLiteralExpression(expression)) {
+                    object = expression;
+                    return;
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(declaration);
+        if (!object) {
+            this.contractError(
+                declaration,
+                "Expected an object-literal return value.",
+            );
+        }
+        return object;
+    }
+
+    public propertyPath(
+        expression: ts.Expression,
+    ): string[] | undefined {
+        const unwrapped = this.unwrapExpression(expression);
+        if (ts.isIdentifier(unwrapped)) {
+            return [unwrapped.text];
+        }
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            const owner = this.propertyPath(
+                unwrapped.expression,
+            );
+            return owner
+                ? [...owner, unwrapped.name.text]
+                : undefined;
+        }
+        return undefined;
+    }
+
+    public assertExpressionShape(
+        actual: ts.Expression,
+        expectedSource: string,
+        label: string,
+    ): void {
+        const expectedFile = ts.createSourceFile(
+            "expected-expression.ts",
+            `const expected = ${expectedSource};`,
+            ts.ScriptTarget.Latest,
+            true,
+            ts.ScriptKind.TS,
+        );
+        const statement = expectedFile.statements[0];
+        const declaration =
+            statement &&
+            ts.isVariableStatement(statement)
+                ? statement.declarationList.declarations[0]
+                : undefined;
+        if (!declaration?.initializer) {
+            throw new Error(
+                `Invalid expected expression for ${label}.`,
+            );
+        }
+        const actualFingerprint =
+            this.nodeFingerprint(actual);
+        const expectedFingerprint =
+            this.nodeFingerprint(declaration.initializer);
+        if (actualFingerprint !== expectedFingerprint) {
+            this.contractError(
+                actual,
+                `${label} changed; expected '${expectedSource}', found '${actual.getText(actual.getSourceFile())}'.`,
+            );
+        }
+    }
+
+    public callExpression(
+        declaration: ts.FunctionDeclaration,
+        calleeName: string,
+    ): ts.CallExpression {
+        let result: ts.CallExpression | undefined;
+        const visit = (node: ts.Node): void => {
+            if (
+                !result &&
+                ts.isCallExpression(node) &&
+                ts.isIdentifier(node.expression) &&
+                node.expression.text === calleeName
+            ) {
+                result = node;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(declaration);
+        if (!result) {
+            this.contractError(
+                declaration,
+                `Expected call '${calleeName}'.`,
+            );
+        }
+        return result;
+    }
+
+    public callObjectArgument(
+        declaration: ts.FunctionDeclaration,
+        calleeName: string,
+        argumentIndex = 0,
+    ): ts.ObjectLiteralExpression {
+        const argument =
+            this.callExpression(declaration, calleeName)
+                .arguments[argumentIndex];
+        if (!argument || !ts.isObjectLiteralExpression(argument)) {
+            this.contractError(
+                argument ?? declaration,
+                `Expected call '${calleeName}' argument ${argumentIndex} to be an object literal.`,
+            );
+        }
+        return argument;
+    }
+
+    public hasCall(
+        declaration: ts.FunctionDeclaration,
+        calleeName: string,
+    ): boolean {
+        return this.hasNode(
+            declaration,
+            (node) =>
+                ts.isCallExpression(node) &&
+                ((ts.isIdentifier(node.expression) &&
+                    node.expression.text === calleeName) ||
+                    (ts.isPropertyAccessExpression(
+                        node.expression,
+                    ) &&
+                        node.expression.name.text ===
+                            calleeName)),
+        );
+    }
+
+    public stringValue(
+        expression: ts.Expression,
+        file: ts.SourceFile,
+    ): string {
+        const unwrapped = this.unwrapExpression(expression);
+        if (
+            ts.isStringLiteral(unwrapped) ||
+            ts.isNoSubstitutionTemplateLiteral(unwrapped)
+        ) {
+            return unwrapped.text;
+        }
+        return this.contractError(
+            unwrapped,
+            `Expected string constant, found ${unwrapped.getText(file)}.`,
+        );
+    }
+
+    public isNumberMaxValue(expression: ts.Expression): boolean {
+        const unwrapped = this.unwrapExpression(expression);
+        return (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            ts.isIdentifier(unwrapped.expression) &&
+            unwrapped.expression.text === "Number" &&
+            unwrapped.name.text === "MAX_VALUE"
+        );
     }
 
     public propertyInitializer(object: ts.ObjectLiteralExpression, name: string): ts.Expression {
@@ -72,10 +373,18 @@ export class LoweringContext {
                 ts.isIdentifier(candidate.name) &&
                 candidate.name.text === name,
         );
-        if (!property) throw new Error(`Upstream object is missing '${name}'.`);
+        if (!property) {
+            this.contractError(
+                object,
+                `Expected object property '${name}'.`,
+            );
+        }
         if (ts.isPropertyAssignment(property)) return property.initializer;
         if (ts.isShorthandPropertyAssignment(property)) return property.name;
-        throw new Error(`Upstream object is missing '${name}'.`);
+        return this.contractError(
+            property,
+            `Expected object property '${name}'.`,
+        );
     }
 
     public numericValue(expression: ts.Expression, file: ts.SourceFile): number {
@@ -84,7 +393,10 @@ export class LoweringContext {
         if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.MinusToken) {
             return -this.numericValue(unwrapped.operand, file);
         }
-        throw new Error(`Expected numeric upstream constant, found ${unwrapped.getText(file)}.`);
+        return this.contractError(
+            unwrapped,
+            `Expected numeric constant, found ${unwrapped.getText(file)}.`,
+        );
     }
 
     public numericTuple(
@@ -93,19 +405,16 @@ export class LoweringContext {
     ): [number, number, number] {
         const unwrapped = this.unwrapExpression(expression);
         if (!ts.isArrayLiteralExpression(unwrapped) || unwrapped.elements.length !== 3) {
-            throw new Error(`Expected three-element upstream tuple, found ${unwrapped.getText(file)}.`);
+            return this.contractError(
+                unwrapped,
+                `Expected three-element tuple, found ${unwrapped.getText(file)}.`,
+            );
         }
         return [
             this.numericValue(unwrapped.elements[0]!, file),
             this.numericValue(unwrapped.elements[1]!, file),
             this.numericValue(unwrapped.elements[2]!, file),
         ];
-    }
-
-    public extractNumber(source: string, pattern: RegExp, label: string): number {
-        const match = source.match(pattern);
-        if (!match?.[1]) throw new Error(`Unable to extract upstream ${label}.`);
-        return Number(match[1]);
     }
 
     public floatLiteral(value: number): string {
@@ -117,7 +426,7 @@ export class LoweringContext {
         return `Color3{${values.map((value) => this.floatLiteral(value)).join(", ")}}`;
     }
 
-    private unwrapExpression(expression: ts.Expression): ts.Expression {
+    public unwrapExpression(expression: ts.Expression): ts.Expression {
         let current = expression;
         while (
             ts.isAsExpression(current) ||
@@ -128,5 +437,41 @@ export class LoweringContext {
             current = current.expression;
         }
         return current;
+    }
+
+    private nodeFingerprint(node: ts.Node): string {
+        if (
+            ts.isAsExpression(node) ||
+            ts.isTypeAssertionExpression(node) ||
+            ts.isParenthesizedExpression(node) ||
+            ts.isNonNullExpression(node)
+        ) {
+            return this.nodeFingerprint(node.expression);
+        }
+        if (ts.isIdentifier(node)) {
+            return `identifier:${node.text}`;
+        }
+        if (ts.isNumericLiteral(node)) {
+            return `number:${Number(node.text)}`;
+        }
+        if (
+            ts.isStringLiteral(node) ||
+            ts.isNoSubstitutionTemplateLiteral(node)
+        ) {
+            return `string:${node.text}`;
+        }
+        const children = node.getChildren(
+            node.getSourceFile(),
+        ).filter(
+            (child) =>
+                child.kind !== ts.SyntaxKind.CommaToken &&
+                child.kind !== ts.SyntaxKind.SemicolonToken,
+        );
+        if (children.length === 0) {
+            return ts.SyntaxKind[node.kind];
+        }
+        return `${ts.SyntaxKind[node.kind]}(${children
+            .map((child) => this.nodeFingerprint(child))
+            .join(",")})`;
     }
 }

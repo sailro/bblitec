@@ -18,15 +18,80 @@ export class SceneLowerer {
         }
         const clear = (name: string): number =>
             this.context.numericValue(this.context.propertyInitializer(clearExpression, name), file);
-        const source = this.context.store.getSource(modulePath);
-        for (const marker of [
-            '"entities" in entity',
-            '"_gpu" in entity && "material" in entity',
-            '"lightType" in entity',
-            "(scene as SceneContext)._beforeRender.unshift(cb)",
-            "isRenderingContextRegistered(surface, ctx)",
+        const { declaration: addToScene } =
+            this.context.functionDeclaration(
+                modulePath,
+                addName,
+            );
+        for (const property of [
+            "entities",
+            "_gpu",
+            "material",
+            "lightType",
         ]) {
-            if (!source.includes(marker)) throw new Error(`Upstream scene routing changed: ${marker}.`);
+            if (
+                !this.context.hasNode(
+                    addToScene,
+                    (node) =>
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind ===
+                            ts.SyntaxKind.InKeyword &&
+                        ts.isStringLiteral(node.left) &&
+                        node.left.text === property &&
+                        ts.isIdentifier(node.right) &&
+                        node.right.text === "entity",
+                )
+            ) {
+                this.context.contractError(
+                    addToScene,
+                    `Expected '${property}' entity routing.`,
+                );
+            }
+        }
+        const { declaration: onBeforeRender } =
+            this.context.functionDeclaration(
+                modulePath,
+                beforeName,
+            );
+        if (
+            !this.context.hasNode(
+                onBeforeRender,
+                (node) =>
+                    ts.isCallExpression(node) &&
+                    ts.isPropertyAccessExpression(
+                        node.expression,
+                    ) &&
+                    node.expression.name.text === "unshift" &&
+                    ts.isPropertyAccessExpression(
+                        node.expression.expression,
+                    ) &&
+                    node.expression.expression.name.text ===
+                        "_beforeRender" &&
+                    node.arguments.length === 1 &&
+                    ts.isIdentifier(node.arguments[0]!) &&
+                    node.arguments[0].text === "cb",
+            )
+        ) {
+            this.context.contractError(
+                onBeforeRender,
+                "Expected before-render callbacks to be prepended.",
+            );
+        }
+        const { declaration: registerScene } =
+            this.context.functionDeclaration(
+                modulePath,
+                registerName,
+            );
+        if (
+            !this.context.hasCall(
+                registerScene,
+                "isRenderingContextRegistered",
+            )
+        ) {
+            this.context.contractError(
+                registerScene,
+                "Expected idempotent rendering-context registration.",
+            );
         }
         const value = (input: number): string => this.context.floatLiteral(input);
         return {

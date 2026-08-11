@@ -1,3 +1,4 @@
+import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { gltfLoaderCpp } from "./templates/gltf-loader-cpp.js";
 
@@ -7,26 +8,44 @@ export class GltfLowerer {
     public lowerGlbParser(): LoweredSource {
         const modulePath = "src/loader-gltf/gltf-glb-parser.ts";
         const symbolName = "parseGlbContainer";
-        const source = this.context.store.getSource(modulePath);
-        const magic = this.context.extractNumber(
-            source,
-            /magic !== (0x[0-9a-fA-F]+)/,
-            "GLB magic",
-        );
-        const jsonType = this.context.extractNumber(
-            source,
-            /jsonType !== (0x[0-9a-fA-F]+)/,
-            "GLB JSON chunk type",
-        );
-        const binType = this.context.extractNumber(
-            source,
-            /binType !== (0x[0-9a-fA-F]+)/,
-            "GLB BIN chunk type",
-        );
-        const headerSize = this.context.extractNumber(
-            source,
-            /let offset = ([0-9]+)/,
-            "GLB header size",
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        const inequalityConstant = (
+            identifier: string,
+        ): number => {
+            const expression = this.context.findNodes(
+                declaration,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.ExclamationEqualsEqualsToken &&
+                    ts.isIdentifier(node.left) &&
+                    node.left.text === identifier &&
+                    ts.isNumericLiteral(node.right),
+            )[0];
+            if (!expression) {
+                this.context.contractError(
+                    declaration,
+                    `Expected GLB '${identifier}' validation.`,
+                );
+            }
+            return this.context.numericValue(
+                expression.right,
+                file,
+            );
+        };
+        const magic = inequalityConstant("magic");
+        const jsonType = inequalityConstant("jsonType");
+        const binType = inequalityConstant("binType");
+        const headerSize = this.context.numericValue(
+            this.context.variableInitializer(
+                declaration,
+                "offset",
+            ),
+            file,
         );
         const hex = (value: number): string => `0x${value.toString(16)}`;
         return {
@@ -97,79 +116,211 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
     public lowerLoaderAdapter(): LoweredSource {
         const modulePath = "src/loader-gltf/load-gltf.ts";
         const symbolName = "loadGltf";
-        const source = this.context.store.getSource(modulePath);
-        const samplerSource = this.context.store.getSource(
-            "src/loader-gltf/gltf-sampler-desc.ts",
-        );
-        for (const marker of [
-            "export async function loadGltf",
-            "fetchGltfAsset(source)",
-            "loadGltfFeatures(json)",
+        const { declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        for (const call of [
+            "fetchGltfAsset",
+            "loadGltfFeatures",
         ]) {
-            if (!source.includes(marker)) throw new Error(`Upstream glTF loader contract changed: ${marker}.`);
+            if (!this.context.hasCall(declaration, call)) {
+                this.context.contractError(
+                    declaration,
+                    `Expected glTF loader call '${call}'.`,
+                );
+            }
         }
-        const dielectricSource = this.context.store.getSource(
-            "src/loader-gltf/gltf-ext-dielectric.ts",
-        );
-        const animationSource = this.context.store.getSource(
-            "src/loader-gltf/gltf-animation.ts",
-        );
-        const skeletonSource = this.context.store.getSource(
-            "src/loader-gltf/gltf-feature-skeleton.ts",
-        );
-        for (const marker of [
-            "INTERP_CUBIC",
+        const animationModule =
+            "src/loader-gltf/gltf-animation.ts";
+        for (const importedName of [
+            "INTERP_CUBICSPLINE",
             "PATH_TRANSLATION",
             "PATH_ROTATION",
             "PATH_WEIGHTS",
-            "inverseBindMatrices",
         ]) {
-            if (!animationSource.includes(marker)) {
-                throw new Error(
-                    `Upstream glTF animation contract changed: ${marker}.`,
+            if (
+                !this.context.hasNamedImport(
+                    animationModule,
+                    importedName,
+                )
+            ) {
+                this.context.contractError(
+                    this.context.sourceFile(animationModule),
+                    `Expected glTF animation import '${importedName}'.`,
                 );
             }
         }
-        for (const marker of [
+        const { declaration: extractSkin } =
+            this.context.functionDeclaration(
+                animationModule,
+                "extractSkin",
+            );
+        if (
+            !this.context.hasNode(
+                extractSkin,
+                (node) =>
+                    ts.isIdentifier(node) &&
+                    node.text === "inverseBindMatrices",
+            )
+        ) {
+            this.context.contractError(
+                extractSkin,
+                "Expected inverse-bind-matrix extraction.",
+            );
+        }
+        this.context.functionDeclaration(
+            animationModule,
+            "computeBoneTextureData",
+        );
+
+        const skeletonModule =
+            "src/loader-gltf/gltf-feature-skeleton.ts";
+        const skeletonFile =
+            this.context.sourceFile(skeletonModule);
+        for (const call of [
             "computeBoneTextureData",
             "createSkeleton",
         ]) {
-            if (!skeletonSource.includes(marker)) {
-                throw new Error(
-                    `Upstream glTF skeleton contract changed: ${marker}.`,
+            if (
+                !this.context.hasNode(
+                    skeletonFile,
+                    (node) =>
+                        ts.isCallExpression(node) &&
+                        ((ts.isIdentifier(node.expression) &&
+                            node.expression.text === call) ||
+                            (ts.isPropertyAccessExpression(
+                                node.expression,
+                            ) &&
+                                node.expression.name.text ===
+                                    call)),
+                )
+            ) {
+                this.context.contractError(
+                    skeletonFile,
+                    `Expected glTF skeleton call '${call}'.`,
                 );
             }
         }
-        for (const marker of [
+        const dielectricModule =
+            "src/loader-gltf/gltf-ext-dielectric.ts";
+        const dielectric =
+            this.context.sourceFile(dielectricModule);
+        for (const property of [
             "KHR_materials_transmission",
             "KHR_materials_ior",
             "KHR_materials_volume",
-            "((ior - 1) / (ior + 1)) ** 2 / 0.04",
             "attenuationDistance",
         ]) {
-            if (!dielectricSource.includes(marker)) {
-                throw new Error(
-                    `Upstream glTF dielectric contract changed: ${marker}.`,
+            if (
+                !this.context.hasNode(
+                    dielectric,
+                    (node) =>
+                        (ts.isIdentifier(node) ||
+                            ts.isPropertyAccessExpression(node)) &&
+                        (ts.isIdentifier(node)
+                            ? node.text
+                            : node.name.text) === property,
+                )
+            ) {
+                this.context.contractError(
+                    dielectric,
+                    `Expected glTF dielectric property '${property}'.`,
                 );
             }
         }
-        for (const marker of [
-            "const minNearest = !!minF && minF % 2 === 0",
-            "const mipNearest = minF === 9984 || minF === 9985",
-            "const noMip = minF === 9728 || minF === 9729",
-            "maxAnisotropy: magLinear && !minNearest && !mipNearest && !noMip ? 4 : 1",
-        ]) {
-            if (!samplerSource.includes(marker)) {
-                throw new Error(
-                    `Upstream glTF sampler contract changed: ${marker}.`,
-                );
-            }
+        const reflectance = this.context.findNodes(
+            dielectric,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                this.context
+                    .propertyPath(node.left)
+                    ?.join(".") ===
+                    "out.metallicF0Factor",
+        )[0];
+        if (!reflectance) {
+            this.context.contractError(
+                dielectric,
+                "Expected dielectric reflectance assignment.",
+            );
+        }
+        this.context.assertExpressionShape(
+            reflectance.right,
+            "((ior - 1) / (ior + 1)) ** 2 / 0.04",
+            "glTF dielectric reflectance",
+        );
+
+        const samplerModule =
+            "src/loader-gltf/gltf-sampler-desc.ts";
+        const { declaration: sampler } =
+            this.context.functionDeclaration(
+                samplerModule,
+                "gltfTexSamplerDesc",
+            );
+        for (const [name, expected] of [
+            [
+                "minNearest",
+                "!!minF && minF % 2 === 0",
+            ],
+            [
+                "mipNearest",
+                "minF === 9984 || minF === 9985",
+            ],
+            [
+                "noMip",
+                "minF === 9728 || minF === 9729",
+            ],
+        ] as const) {
+            this.context.assertExpressionShape(
+                this.context.variableInitializer(
+                    sampler,
+                    name,
+                ),
+                expected,
+                `glTF sampler '${name}'`,
+            );
+        }
+        const samplerResult =
+            this.context.returnObject(sampler);
+        const maxAnisotropy =
+            this.context.propertyInitializer(
+                samplerResult,
+                "maxAnisotropy",
+            );
+        this.context.assertExpressionShape(
+            maxAnisotropy,
+            "magLinear && !minNearest && !mipNearest && !noMip ? 4 : 1",
+            "glTF sampler anisotropy",
+        );
+        if (
+            !this.context.hasNode(
+                sampler,
+                (node) =>
+                    ts.isPropertyAssignment(node) &&
+                    this.context.propertyName(node.name) ===
+                        "lodMaxClamp" &&
+                    ts.isNumericLiteral(node.initializer) &&
+                    Number(node.initializer.text) === 0,
+            )
+        ) {
+            this.context.contractError(
+                sampler,
+                "Expected non-mipmap LOD clamping.",
+            );
         }
         return {
             modulePath,
             symbolName,
             header: "",
-            source: gltfLoaderCpp(this.context.provenance(modulePath, symbolName)),
+            source: gltfLoaderCpp(
+                this.context.provenance(
+                    modulePath,
+                    symbolName,
+                ),
+            ),
         };
     }
 }

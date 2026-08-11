@@ -5,6 +5,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+$upstreamPin = Get-Content (
+    Join-Path $root "upstream\babylon-lite.json"
+) -Raw | ConvertFrom-Json
 $outputRootPath = Join-Path $root $OutputRoot
 $packageName = "bblitec-boombox-windows-x64"
 $packageDirectory = Join-Path $outputRootPath $packageName
@@ -130,8 +133,8 @@ Current D3D12 fidelity baseline:
 
 Compiler source:
   https://github.com/sailro/bblitec
-  @babylonjs/lite 1.18.0
-  Pinned upstream commit: 7184feda683072980735f9a180e6f567ee5717ba
+  $($upstreamPin.package) $($upstreamPin.version)
+  Pinned upstream commit: $($upstreamPin.sourceVersion)
 
 Third-party notices are included in the licenses directory.
 "@ | Set-Content (Join-Path $packageDirectory "README.txt") -Encoding UTF8

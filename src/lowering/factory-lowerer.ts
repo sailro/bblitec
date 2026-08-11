@@ -5,86 +5,452 @@ export class FactoryLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
     public lowerMeshFactories(): LoweredSource {
-        const boxSource = this.context.store.getSource("src/mesh/create-box.ts");
-        const groundSource = this.context.store.getSource("src/mesh/create-ground.ts");
-        const planeSource = this.context.store.getSource("src/mesh/create-plane.ts");
-        const sphereSource = this.context.store.getSource("src/mesh/create-sphere.ts");
-        const torusSource = this.context.store.getSource("src/mesh/create-torus.ts");
-        const torusDiameter = this.context.extractNumber(
-            torusSource,
-            /opts\.diameter \?\? ([0-9.]+)/,
-            "torus default diameter",
+        const boxModule = "src/mesh/create-box.ts";
+        const groundModule = "src/mesh/create-ground.ts";
+        const planeModule = "src/mesh/create-plane.ts";
+        const sphereModule = "src/mesh/create-sphere.ts";
+        const torusModule = "src/mesh/create-torus.ts";
+        const boxFile = this.context.sourceFile(boxModule);
+        const { declaration: box } =
+            this.context.functionDeclaration(
+                boxModule,
+                "createBoxData",
+            );
+        const { declaration: ground } =
+            this.context.functionDeclaration(
+                groundModule,
+                "createFlatGroundData",
+            );
+        const { declaration: plane } =
+            this.context.functionDeclaration(
+                planeModule,
+                "createPlaneData",
+            );
+        const { declaration: sphere } =
+            this.context.functionDeclaration(
+                sphereModule,
+                "createSphereData",
+            );
+        const { file: torusFile, declaration: torus } =
+            this.context.functionDeclaration(
+                torusModule,
+                "createTorusData",
+            );
+        const assertVariable = (
+            root: ts.Node,
+            name: string,
+            expected: string,
+            label: string,
+        ): ts.Expression => {
+            const expression =
+                this.context.variableInitializer(root, name);
+            this.context.assertExpressionShape(
+                expression,
+                expected,
+                label,
+            );
+            return expression;
+        };
+        const indexedAssignments = (
+            declaration: ts.FunctionDeclaration,
+            arrayName: string,
+        ): ts.BinaryExpression[] =>
+            this.context
+                .findNodes(
+                    declaration,
+                    (node): node is ts.BinaryExpression =>
+                        ts.isBinaryExpression(node),
+                )
+                .filter(
+                    (expression) =>
+                        expression.operatorToken.kind ===
+                            ts.SyntaxKind.EqualsToken &&
+                        ts.isElementAccessExpression(
+                            expression.left,
+                        ) &&
+                        ts.isIdentifier(
+                            expression.left.expression,
+                        ) &&
+                        expression.left.expression.text ===
+                            arrayName,
+                );
+        const numericConstructorArray = (
+            file: ts.SourceFile,
+            variableName: string,
+            constructorName: string,
+        ): {
+            expression: ts.Expression;
+            values: number[];
+        } => {
+            const expression =
+                this.context.variableInitializer(
+                    file,
+                    variableName,
+                );
+            const unwrapped =
+                this.context.unwrapExpression(expression);
+            if (
+                !ts.isNewExpression(unwrapped) ||
+                !ts.isIdentifier(unwrapped.expression) ||
+                unwrapped.expression.text !== constructorName ||
+                unwrapped.arguments?.length !== 1 ||
+                !ts.isArrayLiteralExpression(
+                    unwrapped.arguments[0]!,
+                )
+            ) {
+                this.context.contractError(
+                    expression,
+                    `Expected ${variableName} to be a ${constructorName} array.`,
+                );
+            }
+            return {
+                expression,
+                values: unwrapped.arguments[0].elements.map(
+                    (element) =>
+                        this.context.numericValue(element, file),
+                ),
+            };
+        };
+        const assertNumbers = (
+            expression: ts.Expression,
+            actual: number[],
+            expected: number[],
+            label: string,
+        ): void => {
+            if (
+                actual.length !== expected.length ||
+                actual.some(
+                    (value, index) =>
+                        value !== expected[index],
+                )
+            ) {
+                this.context.contractError(
+                    expression,
+                    `${label} changed.`,
+                );
+            }
+        };
+
+        assertVariable(
+            boxFile,
+            "BOX_POSITION_SIGNS",
+            "[0x4b213fa5, 0xded6426f, 0x80]",
+            "Box position signs",
         );
-        const torusThickness = this.context.extractNumber(
-            torusSource,
-            /opts\.thickness \?\? ([0-9.]+)/,
-            "torus default thickness",
+        const boxNormals = numericConstructorArray(
+            boxFile,
+            "BOX_NORMALS",
+            "F32",
         );
-        const torusTessellation = this.context.extractNumber(
-            torusSource,
-            /opts\.tessellation \?\? ([0-9]+)/,
-            "torus default tessellation",
+        const expectedNormals = [
+            [0, 0, 1],
+            [0, 0, -1],
+            [1, 0, 0],
+            [-1, 0, 0],
+            [0, 1, 0],
+            [0, -1, 0],
+        ].flatMap((normal) =>
+            Array.from({ length: 4 }, () => normal).flat(),
         );
-        for (const marker of [
-            "const BOX_POSITION_SIGNS = [0x4b213fa5, 0xded6426f, 0x80]",
-            "Face order matches Babylon exactly: +Z, -Z, +X, -X, +Y, -Y",
-            "const { size = 1, width = size, height = size, depth = size } = options",
+        assertNumbers(
+            boxNormals.expression,
+            boxNormals.values,
+            expectedNormals,
+            "Box face normals",
+        );
+        const boxUvs = numericConstructorArray(
+            boxFile,
+            "BOX_UVS",
+            "F32",
+        );
+        assertNumbers(
+            boxUvs.expression,
+            boxUvs.values,
+            Array.from(
+                { length: 6 },
+                () => [1, 1, 0, 1, 0, 0, 1, 0],
+            ).flat(),
+            "Box UVs",
+        );
+        const boxIndices = numericConstructorArray(
+            boxFile,
+            "BOX_INDICES",
+            "U32",
+        );
+        assertNumbers(
+            boxIndices.expression,
+            boxIndices.values,
+            Array.from({ length: 6 }, (_, face) => {
+                const base = face * 4;
+                return [
+                    base,
+                    base + 1,
+                    base + 2,
+                    base,
+                    base + 2,
+                    base + 3,
+                ];
+            }).flat(),
+            "Box indices",
+        );
+        const boxBindings = this.context.findNodes(
+            box,
+            (node): node is ts.BindingElement =>
+                ts.isBindingElement(node),
+        );
+        for (const [name, expected] of [
+            ["size", "1"],
+            ["width", "size"],
+            ["height", "size"],
+            ["depth", "size"],
+        ] as const) {
+            const binding = boxBindings.find(
+                (candidate) =>
+                    ts.isIdentifier(candidate.name) &&
+                    candidate.name.text === name,
+            );
+            if (!binding?.initializer) {
+                this.context.contractError(
+                    box,
+                    `Expected box binding '${name}'.`,
+                );
+            }
+            this.context.assertExpressionShape(
+                binding.initializer,
+                expected,
+                `Box '${name}' default`,
+            );
+        }
+        const dimensions = this.context.findNodes(
+            box,
+            (node): node is ts.ElementAccessExpression =>
+                ts.isElementAccessExpression(node) &&
+                ts.isIdentifier(node.expression) &&
+                node.expression.text === "dimensions",
+        );
+        if (dimensions.length !== 1) {
+            this.context.contractError(
+                box,
+                "Expected one indexed box dimension lookup.",
+            );
+        }
+        this.context.assertExpressionShape(
+            dimensions[0]!,
             "dimensions[index % 3]",
-            "0,  1,  2,   0,  2,  3",
-        ]) {
-            if (!boxSource.includes(marker)) {
-                throw new Error(`Pinned box generation changed: ${marker}.`);
-            }
+            "Box dimension selection",
+        );
+
+        for (const [name, expected] of [
+            ["width", "opts.width ?? 1"],
+            ["height", "opts.height ?? 1"],
+            ["subdivisions", "opts.subdivisions ?? 1"],
+            ["uScale", "opts.uvScale?.[0] ?? 1"],
+            ["vScale", "opts.uvScale?.[1] ?? 1"],
+        ] as const) {
+            assertVariable(
+                ground,
+                name,
+                expected,
+                `Ground '${name}'`,
+            );
         }
-        for (const marker of [
-            "const width = opts.width ?? 1",
-            "const height = opts.height ?? 1",
-            "const subdivisions = opts.subdivisions ?? 1",
-            "const uScale = opts.uvScale?.[0] ?? 1",
-            "const vScale = opts.uvScale?.[1] ?? 1",
-            "indices[ii++] = bottomRight",
-            "indices[ii++] = topRight",
-            "indices[ii++] = topLeft",
-        ]) {
-            if (!groundSource.includes(marker)) {
-                throw new Error(`Pinned ground generation changed: ${marker}.`);
-            }
+        const groundIndices = indexedAssignments(
+            ground,
+            "indices",
+        );
+        const expectedGroundIndices = [
+            "bottomRight",
+            "topRight",
+            "topLeft",
+            "bottomLeft",
+            "bottomRight",
+            "topLeft",
+        ];
+        if (
+            groundIndices.length !==
+            expectedGroundIndices.length
+        ) {
+            this.context.contractError(
+                ground,
+                "Unexpected ground index count.",
+            );
         }
-        for (const marker of [
-            "const width = options.width ?? size",
-            "const height = options.height ?? size",
-            "-hw, -hh, 0",
-            "0, 0, -1",
-            "0, 0,\n        1, 0,\n        1, 1,\n        0, 1",
-            "new U32([0, 1, 2, 0, 2, 3])",
-        ]) {
-            if (!planeSource.includes(marker)) {
-                throw new Error(`Pinned plane generation changed: ${marker}.`);
-            }
+        groundIndices.forEach((assignment, index) =>
+            this.context.assertExpressionShape(
+                assignment.right,
+                expectedGroundIndices[index]!,
+                `Ground index ${index}`,
+            ),
+        );
+
+        for (const [name, expected] of [
+            ["size", "options.size ?? 1"],
+            ["width", "options.width ?? size"],
+            ["height", "options.height ?? size"],
+            [
+                "positions",
+                "new F32([-hw, -hh, 0, hw, -hh, 0, hw, hh, 0, -hw, hh, 0])",
+            ],
+            [
+                "normals",
+                "new F32([0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1])",
+            ],
+            [
+                "uvs",
+                "new F32([0, 0, 1, 0, 1, 1, 0, 1])",
+            ],
+            [
+                "indices",
+                "new U32([0, 1, 2, 0, 2, 3])",
+            ],
+        ] as const) {
+            assertVariable(
+                plane,
+                name,
+                expected,
+                `Plane '${name}'`,
+            );
         }
-        for (const marker of [
-            "const segments = Math.max(3, options.segments ?? 32)",
-            "const baseDiameter = options.diameter ?? 1",
-            "const rx = (options.diameterX ?? baseDiameter) / 2",
-            "const ry = (options.diameterY ?? baseDiameter) / 2",
-            "const rz = (options.diameterZ ?? baseDiameter) / 2",
-            "positions[vIdx * 3] = rx * nx",
-            "positions[vIdx * 3 + 1] = ry * ny",
-            "positions[vIdx * 3 + 2] = rz * nz",
-        ]) {
-            if (!sphereSource.includes(marker)) {
-                throw new Error(`Pinned sphere generation changed: ${marker}.`);
-            }
+
+        for (const [name, expected] of [
+            [
+                "segments",
+                "Math.max(3, options.segments ?? 32)",
+            ],
+            [
+                "baseDiameter",
+                "options.diameter ?? 1",
+            ],
+            [
+                "rx",
+                "(options.diameterX ?? baseDiameter) / 2",
+            ],
+            [
+                "ry",
+                "(options.diameterY ?? baseDiameter) / 2",
+            ],
+            [
+                "rz",
+                "(options.diameterZ ?? baseDiameter) / 2",
+            ],
+        ] as const) {
+            assertVariable(
+                sphere,
+                name,
+                expected,
+                `Sphere '${name}'`,
+            );
         }
-        for (const marker of [
-            "const outerAngle = (i * TWO_PI) / tessellation - Math.PI / 2",
-            "const innerAngle = (j * TWO_PI) / tessellation + Math.PI",
-            "indices[ii++] = nextI * stride + j",
-        ]) {
-            if (!torusSource.includes(marker)) {
-                throw new Error(`Pinned torus generation changed: ${marker}.`);
+        const spherePositions = indexedAssignments(
+            sphere,
+            "positions",
+        );
+        for (const [index, expected] of [
+            [0, "rx * nx"],
+            [1, "ry * ny"],
+            [2, "rz * nz"],
+        ] as const) {
+            const assignment = spherePositions[index];
+            if (!assignment) {
+                this.context.contractError(
+                    sphere,
+                    `Missing sphere position component ${index}.`,
+                );
             }
+            this.context.assertExpressionShape(
+                assignment.right,
+                expected,
+                `Sphere position component ${index}`,
+            );
         }
+
+        const torusDiameterExpression = assertVariable(
+            torus,
+            "diameter",
+            "opts.diameter ?? 1",
+            "Torus diameter",
+        );
+        const torusThicknessExpression = assertVariable(
+            torus,
+            "thickness",
+            "opts.thickness ?? 0.5",
+            "Torus thickness",
+        );
+        const torusTessellationExpression = assertVariable(
+            torus,
+            "tessellation",
+            "opts.tessellation ?? 16",
+            "Torus tessellation",
+        );
+        assertVariable(
+            torus,
+            "outerAngle",
+            "(i * TWO_PI) / tessellation - Math.PI / 2",
+            "Torus outer angle",
+        );
+        assertVariable(
+            torus,
+            "innerAngle",
+            "(j * TWO_PI) / tessellation + Math.PI",
+            "Torus inner angle",
+        );
+        const torusIndices = indexedAssignments(
+            torus,
+            "indices",
+        );
+        const expectedTorusIndices = [
+            "i * stride + j",
+            "i * stride + nextJ",
+            "nextI * stride + j",
+            "i * stride + nextJ",
+            "nextI * stride + nextJ",
+            "nextI * stride + j",
+        ];
+        if (
+            torusIndices.length !==
+            expectedTorusIndices.length
+        ) {
+            this.context.contractError(
+                torus,
+                "Unexpected torus index count.",
+            );
+        }
+        torusIndices.forEach((assignment, index) =>
+            this.context.assertExpressionShape(
+                assignment.right,
+                expectedTorusIndices[index]!,
+                `Torus index ${index}`,
+            ),
+        );
+        const numericNullishFallback = (
+            expression: ts.Expression,
+        ): number => {
+            const unwrapped =
+                this.context.unwrapExpression(expression);
+            if (
+                !ts.isBinaryExpression(unwrapped) ||
+                unwrapped.operatorToken.kind !==
+                    ts.SyntaxKind.QuestionQuestionToken
+            ) {
+                this.context.contractError(
+                    expression,
+                    "Expected a numeric nullish default.",
+                );
+            }
+            return this.context.numericValue(
+                unwrapped.right,
+                torusFile,
+            );
+        };
+        const torusDiameter = numericNullishFallback(
+            torusDiameterExpression,
+        );
+        const torusThickness = numericNullishFallback(
+            torusThicknessExpression,
+        );
+        const torusTessellation = numericNullishFallback(
+            torusTessellationExpression,
+        );
         const modulePath = "src/mesh/mesh-factories.ts";
         const value = (input: number): string => this.context.floatLiteral(input);
         return {
@@ -471,15 +837,101 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
 
     public lowerShaderMaterialFactory(): LoweredSource {
         const modulePath = "src/material/shader/shader-material.ts";
-        const source = this.context.store.getSource(modulePath);
-        for (const marker of [
-            "const needAlphaBlending = options.needAlphaBlending ?? !!options.blend",
-            "needAlphaTesting: options.needAlphaTesting ?? false",
-            "backFaceCulling: options.backFaceCulling ?? true",
-            "depthWrite: options.depthWrite ?? !needAlphaBlending",
+        const { declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                "createShaderMaterial",
+            );
+        const isNullishDefault = (
+            expression: ts.Expression,
+            leftPath: string,
+            fallback: (value: ts.Expression) => boolean,
+        ): boolean => {
+            const unwrapped =
+                this.context.unwrapExpression(expression);
+            return (
+                ts.isBinaryExpression(unwrapped) &&
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken &&
+                this.context
+                    .propertyPath(unwrapped.left)
+                    ?.join(".") === leftPath &&
+                fallback(unwrapped.right)
+            );
+        };
+        const needAlphaBlending =
+            this.context.variableInitializer(
+                declaration,
+                "needAlphaBlending",
+            );
+        if (
+            !isNullishDefault(
+                needAlphaBlending,
+                "options.needAlphaBlending",
+                (fallback) =>
+                    ts.isPrefixUnaryExpression(fallback) &&
+                    fallback.operator ===
+                        ts.SyntaxKind.ExclamationToken &&
+                    ts.isPrefixUnaryExpression(
+                        fallback.operand,
+                    ) &&
+                    fallback.operand.operator ===
+                        ts.SyntaxKind.ExclamationToken &&
+                    this.context
+                        .propertyPath(
+                            fallback.operand.operand,
+                        )
+                        ?.join(".") === "options.blend",
+            )
+        ) {
+            this.context.contractError(
+                needAlphaBlending,
+                "Expected alpha blending to fall back to the blend state.",
+            );
+        }
+        const returned = this.context.returnObject(declaration);
+        for (const contract of [
+            {
+                property: "needAlphaTesting",
+                path: "options.needAlphaTesting",
+                fallback: (value: ts.Expression): boolean =>
+                    value.kind ===
+                    ts.SyntaxKind.FalseKeyword,
+            },
+            {
+                property: "backFaceCulling",
+                path: "options.backFaceCulling",
+                fallback: (value: ts.Expression): boolean =>
+                    value.kind === ts.SyntaxKind.TrueKeyword,
+            },
+            {
+                property: "depthWrite",
+                path: "options.depthWrite",
+                fallback: (value: ts.Expression): boolean =>
+                    ts.isPrefixUnaryExpression(value) &&
+                    value.operator ===
+                        ts.SyntaxKind.ExclamationToken &&
+                    ts.isIdentifier(value.operand) &&
+                    value.operand.text ===
+                        "needAlphaBlending",
+            },
         ]) {
-            if (!source.includes(marker)) {
-                throw new Error(`Pinned shader material state changed: ${marker}.`);
+            const expression =
+                this.context.propertyInitializer(
+                    returned,
+                    contract.property,
+                );
+            if (
+                !isNullishDefault(
+                    expression,
+                    contract.path,
+                    contract.fallback,
+                )
+            ) {
+                this.context.contractError(
+                    expression,
+                    `Unexpected '${contract.property}' default.`,
+                );
             }
         }
         return {
@@ -573,13 +1025,86 @@ void set_alpha_to_coverage(
     public lowerPbrMaterialFactory(): LoweredSource {
         const solidModule = "src/texture/solid-texture.ts";
         const pbrModule = "src/material/pbr/pbr-material.ts";
-        const solid = this.context.store.getSource(solidModule);
-        const pbr = this.context.store.getSource(pbrModule);
-        if (!solid.includes("Math.round(r * 255)") || !solid.includes('format: "rgba8unorm"')) {
-            throw new Error("Upstream solid texture quantization changed.");
+        const { declaration: createSolidTexture } =
+            this.context.functionDeclaration(
+                solidModule,
+                "createSolidTexture2D",
+            );
+        const quantizedChannels = this.context.countNodes(
+            createSolidTexture,
+            (node) =>
+                ts.isCallExpression(node) &&
+                ts.isPropertyAccessExpression(
+                    node.expression,
+                ) &&
+                ts.isIdentifier(
+                    node.expression.expression,
+                ) &&
+                node.expression.expression.text === "Math" &&
+                node.expression.name.text === "round" &&
+                node.arguments.length === 1 &&
+                ts.isBinaryExpression(node.arguments[0]!) &&
+                node.arguments[0].operatorToken.kind ===
+                    ts.SyntaxKind.AsteriskToken &&
+                ts.isNumericLiteral(
+                    node.arguments[0].right,
+                ) &&
+                Number(node.arguments[0].right.text) === 255,
+        );
+        if (quantizedChannels !== 4) {
+            this.context.contractError(
+                createSolidTexture,
+                `Expected four 8-bit quantized channels, found ${quantizedChannels}.`,
+            );
         }
-        if (!/return\s*\{\s*\.\.\.props,[\s\S]*_uboVersion:\s*0/.test(pbr)) {
-            throw new Error("Upstream PBR material factory changed.");
+        if (
+            !this.context.hasNode(
+                createSolidTexture,
+                (node) =>
+                    ts.isPropertyAssignment(node) &&
+                    this.context.propertyName(node.name) ===
+                        "format" &&
+                    ts.isStringLiteral(node.initializer) &&
+                    node.initializer.text === "rgba8unorm",
+            )
+        ) {
+            this.context.contractError(
+                createSolidTexture,
+                "Expected rgba8unorm solid textures.",
+            );
+        }
+        const { declaration: createPbrMaterial } =
+            this.context.functionDeclaration(
+                pbrModule,
+                "createPbrMaterial",
+            );
+        const returned =
+            this.context.returnObject(createPbrMaterial);
+        if (
+            !returned.properties.some(
+                (property) =>
+                    ts.isSpreadAssignment(property) &&
+                    ts.isIdentifier(property.expression) &&
+                    property.expression.text === "props",
+            )
+        ) {
+            this.context.contractError(
+                returned,
+                "Expected PBR props to be preserved.",
+            );
+        }
+        const uboVersion = this.context.propertyInitializer(
+            returned,
+            "_uboVersion",
+        );
+        if (
+            !ts.isNumericLiteral(uboVersion) ||
+            Number(uboVersion.text) !== 0
+        ) {
+            this.context.contractError(
+                uboVersion,
+                "Expected initial PBR UBO version 0.",
+            );
         }
         return {
             modulePath: pbrModule,
@@ -658,20 +1183,124 @@ MaterialHandle create_pbr_material(
 
     public lowerGridMaterialFactory(): LoweredSource {
         const modulePath = "src/material/grid/grid-material.ts";
-        const source = this.context.store.getSource(modulePath);
-        for (const marker of [
-            "const mainColor = options.mainColor ?? [0, 0, 0]",
-            "const lineColor = options.lineColor ?? [0, 0.5, 0.5]",
-            "Math.round(majorUnitFrequency)",
-            "const transparent = opacity < 1",
-            "needAlphaBlending: transparent || hasOpacity",
-            "backFaceCulling",
-        ]) {
-            if (!source.includes(marker)) {
-                throw new Error(
-                    `Pinned GridMaterial semantics changed: ${marker}.`,
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                "createGridMaterial",
+            );
+        for (const [name, path, expected] of [
+            [
+                "mainColor",
+                "options.mainColor",
+                [0, 0, 0],
+            ],
+            [
+                "lineColor",
+                "options.lineColor",
+                [0, 0.5, 0.5],
+            ],
+        ] as const) {
+            const initializer =
+                this.context.unwrapExpression(
+                    this.context.variableInitializer(
+                        declaration,
+                        name,
+                    ),
+                );
+            if (
+                !ts.isBinaryExpression(initializer) ||
+                initializer.operatorToken.kind !==
+                    ts.SyntaxKind.QuestionQuestionToken ||
+                this.context
+                    .propertyPath(initializer.left)
+                    ?.join(".") !== path
+            ) {
+                this.context.contractError(
+                    initializer,
+                    `Unexpected '${name}' default expression.`,
                 );
             }
+            const values = this.context.numericTuple(
+                initializer.right,
+                file,
+            );
+            if (
+                values.some(
+                    (value, index) =>
+                        value !== expected[index],
+                )
+            ) {
+                this.context.contractError(
+                    initializer.right,
+                    `Unexpected '${name}' default value.`,
+                );
+            }
+        }
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                declaration,
+                "gridControl",
+            ),
+            "[gridRatio, Math.round(majorUnitFrequency), minorUnitVisibility, opacity]",
+            "GridMaterial control vector",
+        );
+        const transparent = this.context.unwrapExpression(
+            this.context.variableInitializer(
+                declaration,
+                "transparent",
+            ),
+        );
+        if (
+            !ts.isBinaryExpression(transparent) ||
+            transparent.operatorToken.kind !==
+                ts.SyntaxKind.LessThanToken ||
+            !ts.isIdentifier(transparent.left) ||
+            transparent.left.text !== "opacity" ||
+            !ts.isNumericLiteral(transparent.right) ||
+            Number(transparent.right.text) !== 1
+        ) {
+            this.context.contractError(
+                transparent,
+                "Expected opacity below one to select transparency.",
+            );
+        }
+        const shaderOptions =
+            this.context.callObjectArgument(
+                declaration,
+                "createShaderMaterial",
+            );
+        const alphaBlending =
+            this.context.propertyInitializer(
+                shaderOptions,
+                "needAlphaBlending",
+            );
+        if (
+            !ts.isBinaryExpression(alphaBlending) ||
+            alphaBlending.operatorToken.kind !==
+                ts.SyntaxKind.BarBarToken ||
+            !ts.isIdentifier(alphaBlending.left) ||
+            alphaBlending.left.text !== "transparent" ||
+            !ts.isIdentifier(alphaBlending.right) ||
+            alphaBlending.right.text !== "hasOpacity"
+        ) {
+            this.context.contractError(
+                alphaBlending,
+                "Expected opacity state to control alpha blending.",
+            );
+        }
+        const backFaceCulling =
+            this.context.propertyInitializer(
+                shaderOptions,
+                "backFaceCulling",
+            );
+        if (
+            !ts.isIdentifier(backFaceCulling) ||
+            backFaceCulling.text !== "backFaceCulling"
+        ) {
+            this.context.contractError(
+                backFaceCulling,
+                "Expected GridMaterial culling passthrough.",
+            );
         }
         return {
             modulePath,
@@ -776,19 +1405,92 @@ MaterialHandle create_standard_material(Engine& engine) {
         const pbrModule = "src/material/pbr/no-color-view.ts";
         const viewModule = "src/material/material-view.ts";
         const dirtyModule = "src/material/material-dirty.ts";
-        const standard = this.context.store.getSource(standardModule);
-        const pbr = this.context.store.getSource(pbrModule);
-        const view = this.context.store.getSource(viewModule);
-        const dirty = this.context.store.getSource(dirtyModule);
-        for (const [source, marker] of [
-            [standard, "features.features | NO_COLOR_OUTPUT"],
-            [pbr, "features2: (features.features2 ?? 0) | PBR2_NO_COLOR_OUTPUT"],
-            [view, "Object.create(src"],
-            [dirty, "source._uboVersion++"],
+        for (const [modulePath, functionName, flag] of [
+            [
+                standardModule,
+                "createStandardNoColorMaterialView",
+                "NO_COLOR_OUTPUT",
+            ],
+            [
+                pbrModule,
+                "createPbrNoColorMaterialView",
+                "PBR2_NO_COLOR_OUTPUT",
+            ],
         ] as const) {
-            if (!source.includes(marker)) {
-                throw new Error(`Pinned material-view contract changed: ${marker}.`);
+            const { declaration } =
+                this.context.functionDeclaration(
+                    modulePath,
+                    functionName,
+                );
+            if (
+                !this.context.hasNode(
+                    declaration,
+                    (node) =>
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind ===
+                            ts.SyntaxKind.BarToken &&
+                        ts.isIdentifier(node.right) &&
+                        node.right.text === flag,
+                )
+            ) {
+                this.context.contractError(
+                    declaration,
+                    `Expected no-color feature flag '${flag}'.`,
+                );
             }
+        }
+        const { declaration: createMaterialView } =
+            this.context.functionDeclaration(
+                viewModule,
+                "createMaterialView",
+            );
+        if (
+            !this.context.hasNode(
+                createMaterialView,
+                (node) =>
+                    ts.isCallExpression(node) &&
+                    ts.isPropertyAccessExpression(
+                        node.expression,
+                    ) &&
+                    ts.isIdentifier(
+                        node.expression.expression,
+                    ) &&
+                    node.expression.expression.text === "Object" &&
+                    node.expression.name.text === "create" &&
+                    node.arguments.length >= 1 &&
+                    ts.isIdentifier(node.arguments[0]!) &&
+                    node.arguments[0].text === "src",
+            )
+        ) {
+            this.context.contractError(
+                createMaterialView,
+                "Expected material views to inherit from their source.",
+            );
+        }
+        const { declaration: markMaterialUboDirty } =
+            this.context.functionDeclaration(
+                dirtyModule,
+                "markMaterialUboDirty",
+            );
+        if (
+            !this.context.hasNode(
+                markMaterialUboDirty,
+                (node) =>
+                    ts.isPostfixUnaryExpression(node) &&
+                    node.operator ===
+                        ts.SyntaxKind.PlusPlusToken &&
+                    ts.isPropertyAccessExpression(node.operand) &&
+                    ts.isIdentifier(
+                        node.operand.expression,
+                    ) &&
+                    node.operand.expression.text === "source" &&
+                    node.operand.name.text === "_uboVersion",
+            )
+        ) {
+            this.context.contractError(
+                markMaterialUboDirty,
+                "Expected source UBO version invalidation.",
+            );
         }
         return {
             modulePath: viewModule,

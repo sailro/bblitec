@@ -34,6 +34,13 @@ baselines belong in [status](docs/status.md) and Git history.
 ### Modules and functions
 
 - [ ] Resolve local multi-file imports and exports.
+- [ ] Build a typed user-code IR from `ts.Program`/`TypeChecker` symbols.
+- [ ] Move statement, expression, intrinsic, and property lowering into
+  focused compiler modules instead of extending the entry compiler monolith.
+- [ ] Generate scene-local custom shader variants from supported WGSL IR
+  instead of limiting native emission to predeclared variant names.
+- [ ] Extend shader IR to composed PBR/Grid/background fragments, then replace
+  the remaining renderer-lowerer source-text contracts with parsed shader IR.
 - [ ] Lower typed user functions and return values.
 - [ ] Support lexical scopes and safe variable shadowing.
 - [ ] Lower `if`, `switch`, `for`, `for...of`, and `while`.

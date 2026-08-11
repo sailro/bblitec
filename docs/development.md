@@ -45,6 +45,23 @@ standard location.
 Aggregate registered-scene workflows are registry-driven through
 `scenes:compile`, `scenes:build`, `scenes:process`, and `scenes:parity`.
 
+## Updating Babylon Lite
+
+The repository supports one pinned upstream version. To evaluate an update:
+
+1. Update `upstream\babylon-lite.json`, the package dependency, and lock file
+   together.
+2. Run `npm ci`, then `npm run test:upstream` to expose moved symbols and
+   changed AST contracts across all lowerers.
+3. Review changed formulas, defaults, module paths, curated source URLs, and
+   generated provenance; do not add version branches to preserve the old pin.
+4. Regenerate all scenes and complete the relevant compiler, native, shader,
+   and parity matrix before accepting the new pin.
+
+Source-located semantic contract failures are the compatibility report. The
+project intentionally does not maintain simultaneous support for multiple
+Babylon Lite versions.
+
 ## Ad-hoc scenes
 
 A repository-local TypeScript file does not need a registry entry:

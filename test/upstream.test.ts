@@ -14,12 +14,14 @@ import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
-import { UpstreamSourceStore } from "../src/upstream-source.js";
+import {
+    readUpstreamPin,
+    UpstreamSourceStore,
+} from "../src/upstream-source.js";
 
 test("loads pinned Babylon Lite TypeScript from published source maps", () => {
     const store = new UpstreamSourceStore();
-    assert.equal(store.pin.version, "1.18.0");
-    assert.equal(store.pin.sourceVersion, "7184feda683072980735f9a180e6f567ee5717ba");
+    assert.deepEqual(store.pin, readUpstreamPin());
     assert.match(store.getSource("src/light/light-matrix.ts"), /function localMatrixFromDirection/);
     assert.equal(store.resolvePublicExport("createHemisphericLight").modulePath, "src/light/hemispheric.ts");
 });
@@ -248,6 +250,20 @@ test("generates the public hemispheric light factory from upstream defaults", ()
     assert.match(
         directional.source,
         /local_matrix_from_direction/,
+    );
+});
+
+test("keeps generated light colors available to typed entry assignments", () => {
+    const directional = new LightLowerer(
+        new LoweringContext(),
+    ).lowerDirectionalFactory();
+    assert.match(
+        directional.source,
+        /light\.diffuse_color = Color3\{1\.0f, 1\.0f, 1\.0f\}/,
+    );
+    assert.match(
+        directional.source,
+        /light\.specular_color = Color3\{1\.0f, 1\.0f, 1\.0f\}/,
     );
 });
 
