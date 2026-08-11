@@ -1156,7 +1156,7 @@ test("compiles Babylon Lite scene 8 HDR glass sphere", () => {
                 faceSize: 512,
             },
             {
-                source: "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/7184feda683072980735f9a180e6f567ee5717ba/packages/babylon-lite/assets/brdf-lut.png",
+                source: "generated:pinned-ibl-brdf-lut",
                 kind: "texture",
             },
         ],

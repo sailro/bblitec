@@ -314,6 +314,7 @@ struct GpuState {
     std::array<SDL_GPUGraphicsPipeline*, 3> diagnostics_double_sided_pipelines{};
     SDL_GPUSampler* sampler = nullptr;
     SDL_GPUSampler* background_sampler = nullptr;
+    SDL_GPUSampler* transmission_sampler = nullptr;
     SDL_GPUSampler* ground_sampler = nullptr;
     SDL_GPUSampler* depth_sampler = nullptr;
     SDL_GPUTexture* environment = nullptr;
@@ -2486,6 +2487,11 @@ void release(GpuState& state) {
         state.depth_width,
         state.depth_height);
     if (state.background_sampler) SDL_ReleaseGPUSampler(state.device, state.background_sampler);
+    if (state.transmission_sampler) {
+        SDL_ReleaseGPUSampler(
+            state.device,
+            state.transmission_sampler);
+    }
     if (state.ground_sampler) {
         SDL_ReleaseGPUSampler(
             state.device,
@@ -3755,6 +3761,19 @@ bool run_gpu_engine(Engine& engine) {
         sampler_info.max_lod = 1000.0f;
         state.sampler = SDL_CreateGPUSampler(state.device, &sampler_info);
         if (!state.sampler) gpu_error("SDL_CreateGPUSampler");
+        // Scene-color grab sampler mirrors Babylon Lite's
+        // trilinear-anisotropic sampler: linear filters, repeat
+        // addressing, maxAnisotropy 4 (inert under explicit-LOD
+        // sampling but kept for descriptor parity).
+        sampler_info.enable_anisotropy = true;
+        sampler_info.max_anisotropy = 4.0f;
+        state.transmission_sampler =
+            SDL_CreateGPUSampler(state.device, &sampler_info);
+        if (!state.transmission_sampler) {
+            gpu_error("SDL_CreateGPUSampler transmission");
+        }
+        sampler_info.enable_anisotropy = false;
+        sampler_info.max_anisotropy = 0.0f;
         sampler_info.address_mode_u =
             SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         sampler_info.address_mode_v =
@@ -4204,7 +4223,23 @@ bool run_gpu_engine(Engine& engine) {
         bool running = true;
         long frame = 0;
         double previous_frame_time = 0.0;
-        while (running && (limit <= 0 || frame < limit)) {
+        // Topology updates defer captures by one frame, and null
+        // swapchain acquisitions advance scene callbacks without
+        // consuming a frame, so a requested capture may still be
+        // pending at the configured frame limit. Extend the loop by a
+        // bounded grace period until every requested capture lands.
+        const auto pending_capture = [&] {
+            return (!screenshot_path.empty() && !screenshot_saved) ||
+                (!id_buffer_path.empty() && !id_buffer_saved) ||
+                (!cluster_buffer_path.empty() &&
+                 !cluster_buffer_saved) ||
+                (!diagnostic_directory.empty() && !diagnostics_saved);
+        };
+        constexpr long capture_grace_frames = 8;
+        while (running &&
+               (limit <= 0 || frame < limit ||
+                (pending_capture() &&
+                 frame < limit + capture_grace_frames))) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
@@ -5652,7 +5687,7 @@ bool run_gpu_engine(Engine& engine) {
                                         ? state.transmission_color
                                         : mesh.base_color,
                                     transmission_enabled
-                                        ? state.background_sampler
+                                        ? state.transmission_sampler
                                         : mesh.base_color_sampler,
                                 },
                                 SDL_GPUTextureSamplerBinding{

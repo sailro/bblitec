@@ -240,7 +240,7 @@ export class RendererLowerer {
 `
                 : "";
         const transmissionMaterialUniforms = options.transmission
-            ? `        const float ior = std::max(material.index_of_refraction, 1.0001f);
+            ? `        const float ior = material.index_of_refraction;
         const float thickness_scale =
             item.mesh.value < engine.meshes.size()
                 ? engine.meshes[item.mesh.value].baked_world_scale
@@ -1709,6 +1709,7 @@ SkyboxUniforms build_skybox_uniforms(
             [ibl, "vec2<f32>(NdotV, roughness)", "BRDF LUT coordinates"],
             [ibl, "let R = rotateY(R_raw", "environment cubemap rotation"],
             [iblSkybox, "let R = input.worldPos - scene.vEyePosition.xyz", "PBR skybox view ray"],
+            [iblSkybox, "let skyboxAlphaG = max(roughness * roughness, 0.000001)", "PBR skybox LOD alphaG"],
             [refraction, "let rd=refract(-V,N,material.refractionParams.y)", "scene-color refraction ray"],
             [refraction, "let ab=exp(material.volumeParams.rgb*th)", "Beer-Lambert attenuation"],
             [refraction, "colorSpecularEnvReflectance.rgb", "transmission Fresnel complement"],
@@ -2411,6 +2412,11 @@ ${directMarker}`,
                 "PBR skybox mode",
             ],
             [
+                iblSkybox,
+                "let skyboxAlphaG = max(roughness * roughness, 0.000001)",
+                "PBR skybox LOD alphaG",
+            ],
+            [
                 refraction,
                 "let ab=exp(material.volumeParams.rgb*th)",
                 "volume attenuation",
@@ -2481,7 +2487,7 @@ ${directMarker}`,
                     upstreamMarker:
                         "let R = input.worldPos - scene.vEyePosition.xyz",
                     nativeBehavior:
-                        "Skybox-mode PBR materials sample the environment along the camera-to-fragment ray and omit diffuse irradiance.",
+                        "Skybox-mode PBR materials sample the environment along the camera-to-fragment ray with a dedicated unbiased skyboxAlphaG LOD and omit diffuse irradiance.",
                     validation: ["source marker assertion", "skybox gate parity"],
                 },
                 {

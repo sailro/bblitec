@@ -532,9 +532,12 @@ Vec3 transform_point(const Matrix& matrix, Vec3 value) {
     return Vec3{-transformed.x, transformed.y, transformed.z};
 }
 
+// Babylon Lite normalizes the object-space direction and interpolates
+// the transformed vector unnormalized; only the fragment renormalizes.
 Vec3 transform_direction(const Matrix& matrix, Vec3 value) {
-    const Vec3 transformed = transform_direction_raw(matrix, value);
-    return normalize(Vec3{-transformed.x, transformed.y, transformed.z});
+    const Vec3 transformed =
+        transform_direction_raw(matrix, normalize(value));
+    return Vec3{-transformed.x, transformed.y, transformed.z};
 }
 
 float linear_determinant(const Matrix& matrix) {

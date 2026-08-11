@@ -42,13 +42,11 @@ struct DeformationUniforms {
         worldPosition =
             (skin * vec4<f32>(worldPosition, 1.0)).xyz;
         if (deformation.options.y < 0.5) {
-            worldNormal = normalize(
-                (skin * vec4<f32>(worldNormal, 0.0)).xyz,
-            );
+            worldNormal =
+                (skin * vec4<f32>(normalize(worldNormal), 0.0)).xyz;
         }
-        worldTangent = normalize(
-            (skin * vec4<f32>(worldTangent, 0.0)).xyz,
-        );
+        worldTangent =
+            (skin * vec4<f32>(normalize(worldTangent), 0.0)).xyz;
     }
 `
         : "";
@@ -83,8 +81,8 @@ struct InstanceUniforms {
         instanceMatrix[1].xyz,
         instanceMatrix[2].xyz,
     );
-    worldNormal = normalize(instanceNormal * worldNormal);
-    worldTangent = normalize(instanceNormal * worldTangent);
+    worldNormal = instanceNormal * worldNormal;
+    worldTangent = instanceNormal * worldTangent;
 `
         : "";
     return `struct VertexUniforms {

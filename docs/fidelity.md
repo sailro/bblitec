@@ -117,7 +117,19 @@ mapping; direct `createPbrMaterial` refraction options do not implicitly enable
 the glTF dielectric adaptations.
 The scene-color source is RGBA16F and remains linear through opaque and
 transmissive draws; exposure, tone mapping, gamma, and contrast run once in a
-final full-screen pass.
+final full-screen pass. The scene-color grab is sampled through the pinned
+repeat-addressing trilinear sampler, so refracted UVs outside the screen wrap
+exactly as upstream's `getTrilinearAnisotropicSampler` does.
+This final pass is a recorded adaptation: pinned Babylon Lite keeps the
+transmission target multisampled to the end and applies image processing per
+MSAA sample before averaging (`image-processing-task.ts` samples
+`texture_multisampled_2d` and divides after the `ip()` loop), while SDL_GPU
+cannot bind a multisampled texture for sampling, so the native pass processes
+the hardware-resolved pixel once. Because tone mapping and gamma are concave,
+the native result is brighter than the pinned per-sample average exactly on
+raster edges; this bounds the residual edge bias on transmission scenes 33,
+176, and 212 and cannot close without per-sample access to the resolved
+attachment.
 Punctual glTF point lights use inverse-square falloff for the primary and
 additional generated light paths. Their diffuse and specular sums remain
 separate through transmission and transparent-alpha composition, and
