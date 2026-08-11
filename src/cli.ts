@@ -103,6 +103,11 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
     const destination = resolve(outputPath, "assets", asset.output);
     mkdirSync(dirname(destination), { recursive: true });
 
+    if (asset.source === "generated:pinned-ibl-brdf-lut") {
+        writeFileSync(destination, generateIblBrdfLutRgba16f());
+        return;
+    }
+
     if (asset.kind === "babylon") {
         await packageBabylon(source, dirname(inputPath), destination);
         return;

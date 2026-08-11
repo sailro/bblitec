@@ -266,7 +266,9 @@ Important contracts:
   multisample color and depth attachments for transmissive draws
 - screenshot capture uses a readable target, then blits to the swapchain
 - capture is deferred one frame when scene topology changes so D3D12 upload
-  and readback commands do not share an invalid command list
+  and readback commands do not share an invalid command list; the frame loop
+  extends past `BBLITE_MAX_FRAMES` by a bounded grace period until every
+  requested capture lands, so deferral cannot silently skip a screenshot
 - native builds place reached assets and snapshotted shaders beside the
   executable to avoid absolute paths and cross-scene drift
 

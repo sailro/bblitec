@@ -568,6 +568,8 @@ void load_hdr_environment(
     if (!options.brdf_url.empty()) {
         scene.environment.brdf_lut.bytes =
             pal::read_binary_file(options.brdf_url);
+        scene.environment.brdf_lut_width = 256;
+        scene.environment.brdf_lut_rgba16f = true;
     }
     scene.environment.has_ground = false;
     scene.environment.has_skybox = options.use_cubemap_skybox;

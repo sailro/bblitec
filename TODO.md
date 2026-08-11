@@ -110,6 +110,25 @@ baselines belong in [status](docs/status.md) and Git history.
 
 ## P1 — Runtime and validation
 
+- [ ] Match pinned per-sample image processing on the multisampled
+  transmission target: upstream's `image-processing-task.ts` applies
+  exposure/tonemap/gamma per MSAA sample and then averages, while SDL_GPU
+  cannot bind a multisampled texture for sampling, so the native pass
+  processes the resolved pixel once. Requires SDL_GPU multisampled-texture
+  sampling (vendored patch) or an equivalent custom per-sample resolve; this
+  bounds the remaining edge bias on Scenes 33, 176, and 212.
+- [ ] Compose environment/camera sizing from object-local bounds through the
+  pinned abs-matrix OBB-to-AABB world transform and add the
+  `upperRadiusLimit` ground/skybox override (upstream `scene-size.ts`,
+  `mesh-world-bounds.ts`, PR #532). Latent today: every gated scene's baked
+  bounds coincide with the pinned result and no corpus scene sets
+  `upperRadiusLimit`, so the port must keep all sized scenes bit-identical.
+- [ ] Stop advancing scene before-render callbacks on null-swapchain
+  iterations (the loop `continue`s without counting the frame, so the scene
+  frame counter can drift ahead of the native frame counter and shift
+  frame-indexed events such as Scene 273's runtime add). The bounded capture
+  grace makes captures immune, but deterministic frame accounting is the
+  real contract.
 - [ ] Add generation-checked handles and resource lifetime/leak checks.
 - [ ] Add dirty flags and incremental GPU updates.
 - [ ] Add device-loss and resize-safe resource recreation.
@@ -119,6 +138,9 @@ baselines belong in [status](docs/status.md) and Git history.
   functions.
 - [ ] Close the residual morph and instancing raster-edge gaps in Scenes 243
   and 247 without expanding geometry or adding scene-specific tolerances.
+  Upstream history review classifies both residuals as achromatic
+  Dawn-versus-SDL_GPU 4x-MSAA coverage stepping on deformed or instanced
+  silhouettes; interiors are within 2 LSB.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 
@@ -219,6 +241,11 @@ blocker; later compiler or runtime gaps may remain hidden behind it.
 
 ### Native runtime and loader gaps
 
+- [ ] Port the pinned two-pass `.babylon` parent wiring and geometry-less
+  `TransformNode` containers (`load-babylon.ts` second pass); the native
+  loader currently skips parented and geometry-less nodes silently. Zero
+  effect on gated Scenes 24/145 (HillValley has neither); reached by ungated
+  Scenes 9 and 143 (Sponza `.babylon`).
 - [ ] Scene 9: support nullable glTF fields currently read as strings.
 - [ ] Scene 30: support the reached glTF data without a `bufferView`.
 - [ ] Scenes 34, 242, 244, 253: extend native glTF animation channel coverage.

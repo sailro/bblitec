@@ -227,8 +227,10 @@ export function compileAssetIntrinsic(
                     "hdr-environment",
                     options.faceSize,
                 );
+            // Pinned load-hdr generates its 256x256 rgba16f BRDF LUT
+            // with a compute pass instead of loading the bundled PNG.
             const brdfAsset = context.registerAsset(
-                context.resolveBundledAsset("/brdf-lut.png"),
+                "generated:pinned-ibl-brdf-lut",
                 "texture",
             );
             context.reachFeature("environment:ibl");

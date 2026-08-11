@@ -184,6 +184,7 @@ MaterialHandle load_material(
     Engine& engine,
     const Json& source,
     const std::string& base_path,
+    const Color3& scene_ambient,
     std::unordered_map<std::string, std::uint32_t>& reflection_cubes) {
     MaterialRecord material;
     material.standard_material = true;
@@ -193,8 +194,14 @@ MaterialHandle load_material(
         color3_or(source, "specular", Color3{1.0f, 1.0f, 1.0f});
     material.emissive_factor =
         color3_or(source, "emissive", Color3{0.0f, 0.0f, 0.0f});
-    material.ambient_color =
+    // BJS multiplies material.ambient by scene.ambientColor.
+    const Color3 raw_ambient =
         color3_or(source, "ambient", Color3{0.0f, 0.0f, 0.0f});
+    material.ambient_color = Color3{
+        raw_ambient.r * scene_ambient.r,
+        raw_ambient.g * scene_ambient.g,
+        raw_ambient.b * scene_ambient.b,
+    };
     material.specular_power = source.value("specularPower", 64.0f);
     const float alpha = source.value("alpha", 1.0f);
     material.base_color_factor = Color4{
@@ -312,6 +319,8 @@ AssetHandle load_babylon(Engine& engine, const std::string& path) {
 
     std::unordered_map<std::string, MaterialHandle> materials;
     std::unordered_map<std::string, std::uint32_t> reflection_cubes;
+    const Color3 scene_ambient =
+        color3_or(document, "ambientColor", Color3{0.0f, 0.0f, 0.0f});
     if (const auto values = document.find("materials");
         values != document.end() && values->is_array()) {
         for (const Json& value : *values) {
@@ -324,6 +333,7 @@ AssetHandle load_babylon(Engine& engine, const std::string& path) {
                         engine,
                         value,
                         base_path,
+                        scene_ambient,
                         reflection_cubes));
             }
         }

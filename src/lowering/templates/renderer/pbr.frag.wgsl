@@ -245,8 +245,9 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
   var shadedColor = (((((v_89 * v_52) * v_34) + v_101) + v_102) + ((((v_70 * v_52) * v_71) * v_81) * v_69)) + v_40;
   if (FragmentUniforms.transmissionOptions.x > 0.5f) {
     let skyDirection = normalize(v_1 - FragmentUniforms.cameraPosition.xyz);
+    let skyboxAlphaG = max((v_35 * v_35), 0.00000099999999747524f);
     let skyLod = clamp(
-      log2(max(f32(textureDimensions(environmentTexture).x) * v_48, 1.0f)) *
+      log2(f32(textureDimensions(environmentTexture).x) * skyboxAlphaG) *
         FragmentUniforms.environmentFactors.z,
       0.0f,
       f32(textureNumLevels(environmentTexture) - 1u),
