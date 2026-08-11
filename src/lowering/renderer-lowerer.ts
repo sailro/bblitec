@@ -1598,6 +1598,7 @@ SkyboxUniforms build_skybox_uniforms(
         geometryOutputTasks: GeometryOutputTaskManifest[];
         frameGraph?: boolean;
         gpuDeformation?: boolean;
+        morphStorage?: boolean;
         textureTransform?: boolean;
         environmentRotation?: boolean;
         gpuInstancing?: boolean;
@@ -1618,6 +1619,7 @@ SkyboxUniforms build_skybox_uniforms(
         pbrDiagnostics: true,
         geometryOutputTasks: [],
         gpuDeformation: false,
+        morphStorage: false,
         textureTransform: false,
         environmentRotation: false,
         gpuInstancing: false,
@@ -1727,6 +1729,36 @@ SkyboxUniforms build_skybox_uniforms(
             [pbrGeometry, "colorF0, 1.0 - roughness", "geometry reflectivity"],
             [pbrGeometry, "input.clipPos.z", "geometry screen depth"],
         ];
+        if (options.morphStorage) {
+            const morphCoreModule =
+                "src/shader/fragments/morph-fragment-core.ts";
+            const morphCore = this.context.store.getSource(morphCoreModule);
+            const morphTargetsModule = "src/morph/create-morph-targets.ts";
+            const morphTargets =
+                this.context.store.getSource(morphTargetsModule);
+            requiredUpstreamFormulas.push(
+                [
+                    morphCore,
+                    "for (var i = 0u; i < morph.count; i = i + 1u)",
+                    "storage morph accumulation loop",
+                ],
+                [
+                    morphCore,
+                    "let b = (i * morph.vertexCount + vertexIndex) * 6u;",
+                    "storage morph delta indexing",
+                ],
+                [
+                    morphCore,
+                    "var<storage, read>",
+                    "storage morph binding rewrite",
+                ],
+                [
+                    morphTargets,
+                    "MORPH_WEIGHTS_HEADER_BYTES = 16",
+                    "morph weights header ABI",
+                ],
+            );
+        }
         if (options.standardMaterial) {
             requiredUpstreamFormulas.push(
                 [
@@ -1891,6 +1923,7 @@ SkyboxUniforms build_skybox_uniforms(
             data: materialVertexWgsl(
                 options.gpuDeformation,
                 options.gpuInstancing,
+                options.morphStorage,
             ),
         });
         let convertedPbr = readFileSync(

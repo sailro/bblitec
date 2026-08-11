@@ -16,7 +16,7 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 | Materials | Standard, PBR, GridMaterial, unlit, vertex colors, no-color views, typed custom shader variants |
 | Material state | alpha mask/blend/coverage, reflectance, emissive strength, lighting intensities, double-sided, normal scale, shared texture scaling, transmission, IOR, volume, dispersion, clearcoat, sheen, iridescence |
 | Animation | deterministic seeking; property-animation groups for reached mesh position/scaling/quaternion paths with LINEAR/STEP tracks; glTF LINEAR/CUBICSPLINE rotation/translation and LINEAR morph weights |
-| Deformation | recursive skeleton hierarchies, inverse bind matrices, four-weight GPU skinning, GPU position/normal/tangent morph targets, static GPU instancing, post-deformation flat normals |
+| Deformation | recursive skeleton hierarchies, inverse bind matrices, four-weight GPU skinning, GPU position/normal/tangent morph targets, uncapped storage-buffer morphing beyond two targets, static GPU instancing, post-deformation flat normals |
 | Frame graph | render targets/tasks, material overrides, depth-only passes, 7+4 geometry MRTs, blits, MSAA resolve |
 | Runtime | typed handles/records, immediate AOT promises, typed JSON/binary views, tree-shaken GPU deformation and cyclic flat-normal uploads |
 | Shaders | generated WGSL through pinned Tint; DXIL/SPIR-V via normalized Tint HLSL and DXC; MSL via Tint |
@@ -76,7 +76,7 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 | 212 | <img src="images/scenes/scene212.png" alt="Scene 212 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.182}}$ | $\color{#1a7f37}{\textsf{0.193}}$ | `KHR_materials_dispersion` per-RGB refraction over transmission, IOR, and volume<br><em>Unclamped IOR-1.0 refraction, the repeat-addressing scene-color sampler, and the pinned `skyboxAlphaG` environment LOD cut the former 0.303/0.329 residual to well below Babylon Lite's original 0.437 accepted floor; the remainder concentrates on refracted checkerboard edges.</em> |
 | 213 | <img src="images/scenes/scene213.png" alt="Scene 213 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.001}}$ | GridMaterial opaque/transparent families and ordered draw lists |
 | 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | deterministic glTF node rotation animation |
-| 243 | <img src="images/scenes/scene243.png" alt="Scene 243 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.046}}$ | $\color{#cf222e}{\textsf{1.043}}$ | deterministic MorphStressTest glTF animation with Babylon-compatible overlapping clip precedence<br><em>Upstream history classifies the residual as achromatic Dawn-versus-SDL_GPU 4x-MSAA coverage stepping on morphed silhouettes; the interior is within 2 LSB.</em> |
+| 243 | <img src="images/scenes/scene243.png" alt="Scene 243 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.046}}$ | $\color{#cf222e}{\textsf{1.043}}$ | deterministic MorphStressTest glTF animation with Babylon-compatible overlapping clip precedence and pinned uncapped storage-buffer morphing<br><em>The storage-buffer GPU morph path renders bit-identically to the former CPU fallback, ruling out evaluation-place divergence; the residual is browser-versus-native shader codegen and raster stepping on morphed silhouettes, with the interior within 2 LSB.</em> |
 | 245 | <img src="images/scenes/scene245.png" alt="Scene 245 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.001}}$ | recursive skeleton hierarchy, inverse bind matrices, GPU skinning |
 | 246 | <img src="images/scenes/scene246.png" alt="Scene 246 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | deterministic SimpleSkin glTF animation<br><em>Pixel-exact since deformation normals follow Babylon's pinned normalization order.</em> |
 | 247 | <img src="images/scenes/scene247.png" alt="Scene 247 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.035}}$ | $\color{#1a7f37}{\textsf{0.405}}$ | `EXT_mesh_gpu_instancing` with local extension T/R/S, separate node-world composition, and one native instanced draw<br><em>Normals follow Babylon's pinned order — object-space normalize, unnormalized varying, fragment renormalize — which cut silhouette error by a third; the remainder is MSAA coverage stepping.</em> |
@@ -152,9 +152,11 @@ deferred until its resource bindings are remapped to SDL_GPU conventions.
   slerp, group ranges/looping/speed, and deterministic seeking for reached
   mesh `position`, `position.x`, `scaling`, and `rotationQuaternion` paths
 - glTF animation covers LINEAR/CUBICSPLINE rotation and translation plus
-  LINEAR morph weights; morphing and skinning are vertex-shader evaluated,
-  with CPU fallback beyond 64 joints/two morph targets and CPU face-normal
-  recomputation for primitives without source normals
+  LINEAR morph weights; morphing and skinning are vertex-shader evaluated.
+  Meshes above two morph targets use Babylon's pinned uncapped
+  storage-buffer morph path; CPU fallback remains for skins beyond 64
+  joints and CPU face-normal recomputation for primitives without source
+  normals
 - glTF scale/STEP channels, multiple-clip controls, broader property targets,
   and Standard scenes beyond two simultaneous lights remain unsupported
 - PBR material extensions cover clearcoat, sheen, iridescence, and dispersion

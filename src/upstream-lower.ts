@@ -33,6 +33,7 @@ class GeneratedSourceWriter {
             shaderVariants: ShaderMaterialVariantName[];
             geometryOutputTasks: GeometryOutputTaskManifest[];
             gpuDeformation: boolean;
+            morphStorage: boolean;
             textureTransform: boolean;
             imageBasedLighting: boolean;
             gpuInstancing: boolean;
@@ -55,6 +56,7 @@ class GeneratedSourceWriter {
             `#pragma once
 
 #define BBLITE_GPU_DEFORMATION ${options.gpuDeformation ? 1 : 0}
+#define BBLITE_GPU_MORPH_STORAGE ${options.morphStorage ? 1 : 0}
 #define BBLITE_GPU_INSTANCING ${options.gpuInstancing ? 1 : 0}
 #define BBLITE_MATERIAL_CLEARCOAT ${options.clearcoat ? 1 : 0}
 #define BBLITE_MATERIAL_SHEEN ${options.sheen ? 1 : 0}
@@ -235,6 +237,7 @@ class GeneratedSourceWriter {
                 geometryOutputTasks: options.geometryOutputTasks,
                 frameGraph: features.includes("renderer:geometry-output"),
                 gpuDeformation: options.gpuDeformation,
+                morphStorage: options.morphStorage,
                 textureTransform:
                     options.textureTransform,
                 environmentRotation:
@@ -422,6 +425,7 @@ export function emitUpstreamGenerated(
         shaderVariants: ShaderMaterialVariantName[];
         geometryOutputTasks: GeometryOutputTaskManifest[];
         gpuDeformation: boolean;
+        morphStorage: boolean;
         textureTransform: boolean;
         imageBasedLighting: boolean;
         gpuInstancing: boolean;
@@ -436,6 +440,7 @@ export function emitUpstreamGenerated(
         shaderVariants: [],
         geometryOutputTasks: [],
         gpuDeformation: false,
+        morphStorage: false,
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,

@@ -151,7 +151,13 @@ glTF animation uses pinned LINEAR quaternion interpolation and deterministic
 time seeking, plus CUBICSPLINE quaternion/translation interpolation where
 reached. Morph position/normal deltas are applied before recursive skinning;
 generated joint palettes and morph weights drive vertex-shader
-positions/normals/tangents. Primitives without source normals remain
+positions/normals/tangents. Meshes above the two-slot vertex-attribute
+morph slice use Babylon's pinned uncapped storage-buffer path
+(`morph-fragment-core.ts`): a flat 6-float delta buffer and a weights
+buffer with the 16-byte `{count, vertexCount}` header, accumulated in
+ascending target order before skinning, with source-marker assertions
+pinning the loop, indexing, and header ABI. Scene 243 gates it and renders
+bit-identically to the former CPU fallback. Primitives without source normals remain
 deindexed and use a narrow CPU fallback to recompute post-deformation face
 normals, while their positions are still GPU-skinned. See
 [Architecture](architecture.md#animation-and-deformation) for layout,

@@ -4,6 +4,7 @@ export function gltfLoaderCpp(provenance: string): string {
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/gltf_glb_parser.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
 
 #include <algorithm>
 #include <array>
@@ -2210,8 +2211,14 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         ? unsigned_value(*optional(node, "skin"))
                         : std::numeric_limits<std::size_t>::max();
                 const bool gpu_deformation =
+#if BBLITE_GPU_MORPH_STORAGE
+                    // Storage-buffer morphing lifts the two-slot
+                    // vertex-attribute morph-target cap.
+                    (
+#else
                     geometry.morph_positions.size() <= 2 &&
                     (
+#endif
                         skin_index ==
                             std::numeric_limits<std::size_t>::max() ||
                         animation_runtime
@@ -2653,6 +2660,15 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     mesh_record.morph_weights[target] =
                         node_weights[target];
                 }
+#if BBLITE_GPU_MORPH_STORAGE
+                if (
+                    mesh_record.morph_storage_weights !=
+                    node_weights) {
+                    mesh_record.morph_storage_weights =
+                        node_weights;
+                    ++mesh_record.morph_weights_version;
+                }
+#endif
                 if (
                     mesh_record.gpu_deformation &&
                     !geometry.flat_normals) {

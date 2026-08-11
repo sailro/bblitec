@@ -140,7 +140,11 @@ baselines belong in [status](docs/status.md) and Git history.
   and 247 without expanding geometry or adding scene-specific tolerances.
   Upstream history review classifies both residuals as achromatic
   Dawn-versus-SDL_GPU 4x-MSAA coverage stepping on deformed or instanced
-  silhouettes; interiors are within 2 LSB.
+  silhouettes; interiors are within 2 LSB. Porting the pinned
+  storage-buffer morph path produced frames bit-identical to the former
+  CPU fallback, ruling out evaluation-place divergence and attributing the
+  Scene 243 residual to browser-versus-native shader codegen or raster
+  behavior.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 

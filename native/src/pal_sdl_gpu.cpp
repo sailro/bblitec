@@ -99,6 +99,12 @@ struct GpuMesh {
     SDL_GPUBuffer* vertices = nullptr;
     SDL_GPUBuffer* indices = nullptr;
     SDL_GPUBuffer* instances = nullptr;
+#if BBLITE_GPU_MORPH_STORAGE
+    SDL_GPUBuffer* morph_deltas = nullptr;
+    SDL_GPUBuffer* morph_weights = nullptr;
+    std::uint64_t morph_weights_version = 0;
+    bool owns_morph_buffers = false;
+#endif
     SDL_GPUTexture* base_color = nullptr;
     SDL_GPUTexture* metallic_roughness = nullptr;
     SDL_GPUTexture* normal = nullptr;
@@ -212,6 +218,17 @@ void bind_mesh_vertex_buffers(
         &binding,
         1);
 #endif
+#if BBLITE_GPU_MORPH_STORAGE
+    const std::array<SDL_GPUBuffer*, 2> storage{
+        mesh.morph_deltas,
+        mesh.morph_weights,
+    };
+    SDL_BindGPUVertexStorageBuffers(
+        pass,
+        0,
+        storage.data(),
+        static_cast<Uint32>(storage.size()));
+#endif
 }
 
 struct GpuBackground {
@@ -316,6 +333,12 @@ struct GpuState {
     SDL_GPUSampler* background_sampler = nullptr;
     SDL_GPUSampler* transmission_sampler = nullptr;
     SDL_GPUSampler* ground_sampler = nullptr;
+#if BBLITE_GPU_MORPH_STORAGE
+    // Shared zero-count pair bound for draws whose mesh has no morph
+    // targets; the shader's storage loop then runs zero iterations.
+    SDL_GPUBuffer* empty_morph_deltas = nullptr;
+    SDL_GPUBuffer* empty_morph_weights = nullptr;
+#endif
     SDL_GPUSampler* depth_sampler = nullptr;
     SDL_GPUTexture* environment = nullptr;
     SDL_GPUTexture* brdf_lut = nullptr;
@@ -891,7 +914,8 @@ SDL_GPUShader* load_shader(
     SDL_GPUShaderStage stage,
     std::uint32_t samplers,
     std::uint32_t uniform_buffers,
-    const char* entrypoint_override = nullptr) {
+    const char* entrypoint_override = nullptr,
+    std::uint32_t storage_buffers = 0) {
     const SDL_GPUShaderFormat supported = SDL_GetGPUShaderFormats(device);
     SDL_GPUShaderFormat format = SDL_GPU_SHADERFORMAT_INVALID;
     const char* extension = nullptr;
@@ -931,6 +955,7 @@ SDL_GPUShader* load_shader(
     info.stage = stage;
     info.num_samplers = samplers;
     info.num_uniform_buffers = uniform_buffers;
+    info.num_storage_buffers = storage_buffers;
     SDL_GPUShader* shader = SDL_CreateGPUShader(device, &info);
     if (!shader) gpu_error("SDL_CreateGPUShader");
     return shader;
@@ -2396,6 +2421,12 @@ void release(GpuState& state) {
         SDL_ReleaseGPUBuffer(state.device, mesh.vertices);
         SDL_ReleaseGPUBuffer(state.device, mesh.indices);
         SDL_ReleaseGPUBuffer(state.device, mesh.instances);
+#if BBLITE_GPU_MORPH_STORAGE
+        if (mesh.owns_morph_buffers) {
+            SDL_ReleaseGPUBuffer(state.device, mesh.morph_deltas);
+            SDL_ReleaseGPUBuffer(state.device, mesh.morph_weights);
+        }
+#endif
         SDL_ReleaseGPUTexture(state.device, mesh.base_color);
         SDL_ReleaseGPUTexture(state.device, mesh.metallic_roughness);
         SDL_ReleaseGPUTexture(state.device, mesh.normal);
@@ -2443,6 +2474,14 @@ void release(GpuState& state) {
             state.device,
             mesh.standard_emissive_sampler);
     }
+#if BBLITE_GPU_MORPH_STORAGE
+    if (state.empty_morph_deltas) {
+        SDL_ReleaseGPUBuffer(state.device, state.empty_morph_deltas);
+    }
+    if (state.empty_morph_weights) {
+        SDL_ReleaseGPUBuffer(state.device, state.empty_morph_weights);
+    }
+#endif
     if (state.background.vertices) SDL_ReleaseGPUBuffer(state.device, state.background.vertices);
     if (state.background.indices) SDL_ReleaseGPUBuffer(state.device, state.background.indices);
     if (state.background.texture) SDL_ReleaseGPUTexture(state.device, state.background.texture);
@@ -2754,7 +2793,12 @@ bool run_gpu_engine(Engine& engine) {
 #else
                 1,
 #endif
-                "mainVertex");
+                "mainVertex",
+#if BBLITE_GPU_MORPH_STORAGE
+                2);
+#else
+                0);
+#endif
         SDL_GPUShader* fragment_shader =
             load_shader(
                 state.device,
@@ -3774,6 +3818,22 @@ bool run_gpu_engine(Engine& engine) {
         }
         sampler_info.enable_anisotropy = false;
         sampler_info.max_anisotropy = 0.0f;
+#if BBLITE_GPU_MORPH_STORAGE
+        {
+            const std::array<float, 1> zero_delta{0.0f};
+            state.empty_morph_deltas = upload_buffer(
+                state.device,
+                SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+                zero_delta.data(),
+                sizeof(zero_delta));
+            const std::array<std::uint32_t, 4> zero_header{};
+            state.empty_morph_weights = upload_buffer(
+                state.device,
+                SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+                zero_header.data(),
+                sizeof(zero_header));
+        }
+#endif
         sampler_info.address_mode_u =
             SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         sampler_info.address_mode_v =
@@ -3905,6 +3965,94 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_GPU_BUFFERUSAGE_INDEX,
                 geometry.indices.data(),
                 geometry.indices.size() * sizeof(std::uint32_t));
+#if BBLITE_GPU_MORPH_STORAGE
+            gpu_mesh.morph_deltas = state.empty_morph_deltas;
+            gpu_mesh.morph_weights = state.empty_morph_weights;
+            if (
+                mesh_record.gpu_deformation &&
+                !geometry.morph_positions.empty()) {
+                // Flat 6-float deltas indexed
+                // (target * vertexCount + vertex) * 6, packed with the
+                // same x negation as the vertex attributes.
+                const std::size_t target_count =
+                    geometry.morph_positions.size();
+                const std::size_t vertex_count =
+                    geometry.vertices.size();
+                std::vector<float> deltas(
+                    target_count * vertex_count * 6,
+                    0.0f);
+                for (
+                    std::size_t target = 0;
+                    target < target_count;
+                    ++target) {
+                    const std::vector<Vec3>& positions =
+                        geometry.morph_positions[target];
+                    for (
+                        std::size_t vertex = 0;
+                        vertex < vertex_count;
+                        ++vertex) {
+                        const std::size_t offset =
+                            (target * vertex_count + vertex) * 6;
+                        const Vec3 position =
+                            vertex < positions.size()
+                                ? positions[vertex]
+                                : Vec3{};
+                        const Vec3 normal =
+                            target < geometry.morph_normals.size() &&
+                            vertex <
+                                geometry.morph_normals[target].size()
+                                ? geometry.morph_normals[target][vertex]
+                                : Vec3{};
+                        deltas[offset] = -position.x;
+                        deltas[offset + 1] = position.y;
+                        deltas[offset + 2] = position.z;
+                        deltas[offset + 3] = -normal.x;
+                        deltas[offset + 4] = normal.y;
+                        deltas[offset + 5] = normal.z;
+                    }
+                }
+                gpu_mesh.morph_deltas = upload_buffer(
+                    state.device,
+                    SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+                    deltas.data(),
+                    deltas.size() * sizeof(float));
+                std::vector<std::uint8_t> weights_blob(
+                    16 + target_count * sizeof(float),
+                    0);
+                const std::uint32_t header[2] = {
+                    static_cast<std::uint32_t>(target_count),
+                    static_cast<std::uint32_t>(vertex_count),
+                };
+                std::memcpy(
+                    weights_blob.data(),
+                    header,
+                    sizeof(header));
+                for (
+                    std::size_t target = 0;
+                    target < target_count;
+                    ++target) {
+                    const float weight =
+                        target <
+                        mesh_record.morph_storage_weights.size()
+                            ? mesh_record
+                                  .morph_storage_weights[target]
+                            : 0.0f;
+                    std::memcpy(
+                        weights_blob.data() + 16 +
+                            target * sizeof(float),
+                        &weight,
+                        sizeof(float));
+                }
+                gpu_mesh.morph_weights = upload_buffer(
+                    state.device,
+                    SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+                    weights_blob.data(),
+                    weights_blob.size());
+                gpu_mesh.morph_weights_version =
+                    mesh_record.morph_weights_version;
+                gpu_mesh.owns_morph_buffers = true;
+            }
+#endif
 #if BBLITE_GPU_INSTANCING
             std::vector<std::array<float, 16>>
                 instance_matrices =
@@ -4277,6 +4425,52 @@ bool run_gpu_engine(Engine& engine) {
                 if (
                     mesh.gpu_deformation &&
                     !engine.geometries[item.geometry].flat_normals) {
+#if BBLITE_GPU_MORPH_STORAGE
+                    if (
+                        gpu_mesh.owns_morph_buffers &&
+                        gpu_mesh.morph_weights_version !=
+                            mesh.morph_weights_version) {
+                        const ModelGeometry& morph_geometry =
+                            engine.geometries[item.geometry];
+                        const std::size_t target_count =
+                            morph_geometry.morph_positions.size();
+                        std::vector<std::uint8_t> weights_blob(
+                            16 + target_count * sizeof(float),
+                            0);
+                        const std::uint32_t header[2] = {
+                            static_cast<std::uint32_t>(target_count),
+                            static_cast<std::uint32_t>(
+                                morph_geometry.vertices.size()),
+                        };
+                        std::memcpy(
+                            weights_blob.data(),
+                            header,
+                            sizeof(header));
+                        for (
+                            std::size_t target = 0;
+                            target < target_count;
+                            ++target) {
+                            const float weight =
+                                target <
+                                mesh.morph_storage_weights.size()
+                                    ? mesh.morph_storage_weights
+                                          [target]
+                                    : 0.0f;
+                            std::memcpy(
+                                weights_blob.data() + 16 +
+                                    target * sizeof(float),
+                                &weight,
+                                sizeof(float));
+                        }
+                        update_buffer(
+                            state.device,
+                            gpu_mesh.morph_weights,
+                            weights_blob.data(),
+                            weights_blob.size());
+                        gpu_mesh.morph_weights_version =
+                            mesh.morph_weights_version;
+                    }
+#endif
                     gpu_mesh.transform_version =
                         mesh.transform_version;
                     continue;
@@ -5375,6 +5569,17 @@ bool run_gpu_engine(Engine& engine) {
                     state.background_sampler,
                 };
                 SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+#if BBLITE_GPU_MORPH_STORAGE
+                const std::array<SDL_GPUBuffer*, 2> morph_storage{
+                    state.empty_morph_deltas,
+                    state.empty_morph_weights,
+                };
+                SDL_BindGPUVertexStorageBuffers(
+                    pass,
+                    0,
+                    morph_storage.data(),
+                    static_cast<Uint32>(morph_storage.size()));
+#endif
                 SDL_BindGPUIndexBuffer(
                     pass,
                     &index_binding,
@@ -5744,6 +5949,17 @@ bool run_gpu_engine(Engine& engine) {
                     state.ground_sampler,
                 };
                 SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+#if BBLITE_GPU_MORPH_STORAGE
+                const std::array<SDL_GPUBuffer*, 2> morph_storage{
+                    state.empty_morph_deltas,
+                    state.empty_morph_weights,
+                };
+                SDL_BindGPUVertexStorageBuffers(
+                    pass,
+                    0,
+                    morph_storage.data(),
+                    static_cast<Uint32>(morph_storage.size()));
+#endif
                 SDL_BindGPUIndexBuffer(
                     pass,
                     &index_binding,

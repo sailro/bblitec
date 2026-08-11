@@ -362,6 +362,10 @@ struct MeshRecord {
     };
     std::vector<std::array<float, 16>> instance_matrices;
     std::array<float, 4> morph_weights{};
+    // Uncapped weights for the storage-buffer morph path; versioned so
+    // PAL re-uploads only when the animation evaluator writes them.
+    std::vector<float> morph_storage_weights;
+    std::uint64_t morph_weights_version = 0;
 };
 
 struct PropertyAnimationKey {
