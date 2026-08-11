@@ -270,11 +270,12 @@ Outputs under `artifacts\parity` include the actual image, diff map, hotspots,
 JSON report, and optional draw/cluster/diagnostic buffers. Committed goldens
 live under `reference\<scene>`.
 
-There is no hosted CI. Run the smallest relevant local gates and the affected
-native builds before committing.
+There is no hosted CI. During iteration, run only the smallest relevant tests,
+generation steps, affected native builds, and scene parity gates. Do not repeat
+the complete corpus matrix after every local change.
 
-For compiler, renderer, shader-interface, loader, animation, or PAL changes,
-the complete local milestone is the canonical full validation sequence:
+Before pushing compiler, renderer, shader-interface, loader, animation, or PAL
+changes, run the canonical full validation sequence once:
 
 ```powershell
 npm test

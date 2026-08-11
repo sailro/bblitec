@@ -212,6 +212,14 @@ async function main(): Promise<void> {
             specializationFeatures.textureTransform,
         imageBasedLighting:
             specializationFeatures.imageBasedLighting,
+        gpuInstancing:
+            specializationFeatures.gpuInstancing,
+        multiLight:
+            specializationFeatures.multiLight,
+        clearcoat: specializationFeatures.clearcoat,
+        sheen: specializationFeatures.sheen,
+        iridescence: specializationFeatures.iridescence,
+        dispersion: specializationFeatures.dispersion,
     });
     writeFileSync(resolve(outputPath, "main.cpp"), result.cpp);
     writeFileSync(resolve(outputPath, "features.cmake"), result.cmake);

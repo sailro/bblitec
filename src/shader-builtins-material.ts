@@ -1,4 +1,7 @@
-export function materialVertexWgsl(gpuDeformation = false): string {
+export function materialVertexWgsl(
+    gpuDeformation = false,
+    gpuInstancing = false,
+): string {
     const deformationUniforms = gpuDeformation
         ? `
 struct DeformationUniforms {
@@ -49,6 +52,31 @@ struct DeformationUniforms {
     }
 `
         : "";
+    const instanceInputs = gpuInstancing
+        ? `    @location(16) instanceColumn0: vec4<f32>,
+    @location(17) instanceColumn1: vec4<f32>,
+    @location(18) instanceColumn2: vec4<f32>,
+    @location(19) instanceColumn3: vec4<f32>,
+`
+        : "";
+    const instanceBody = gpuInstancing
+        ? `    let instanceMatrix = mat4x4<f32>(
+        input.instanceColumn0,
+        input.instanceColumn1,
+        input.instanceColumn2,
+        input.instanceColumn3,
+    );
+    worldPosition =
+        (instanceMatrix * vec4<f32>(worldPosition, 1.0)).xyz;
+    let instanceNormal = mat3x3<f32>(
+        instanceMatrix[0].xyz,
+        instanceMatrix[1].xyz,
+        instanceMatrix[2].xyz,
+    );
+    worldNormal = normalize(instanceNormal * worldNormal);
+    worldTangent = normalize(instanceNormal * worldTangent);
+`
+        : "";
     return `struct VertexUniforms {
     viewProjection: mat4x4<f32>,
 }
@@ -64,6 +92,7 @@ struct VertexInput {
     @location(5) uv2: vec2<f32>,
     @location(6) color: vec4<f32>,
 ${deformationInputs}
+${instanceInputs}
 };
 
 struct VertexOutput {
@@ -83,6 +112,7 @@ fn mainVertex(input: VertexInput) -> VertexOutput {
     var worldNormal = input.normal;
     var worldTangent = input.tangent.xyz;
 ${deformationBody}
+${instanceBody}
     var output: VertexOutput;
     output.position =
         uniforms.viewProjection * vec4<f32>(worldPosition, 1.0);

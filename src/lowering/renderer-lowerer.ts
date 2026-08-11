@@ -32,6 +32,7 @@ import {
     backgroundSkyboxFragmentWgsl,
 } from "../shader-builtins-background.js";
 import { materialVertexWgsl } from "../shader-builtins-material.js";
+import { applyMaterialExtensionWgsl } from "../shader-builtins-material-extensions.js";
 import { standardFragmentWgsl } from "../shader-builtins-standard.js";
 import { pbrFragmentWgsl } from "../shader-builtins-pbr.js";
 import { LoweredSource, LoweringContext } from "./context.js";
@@ -44,6 +45,17 @@ const iblFragmentModule = "src/material/pbr/fragments/ibl-fragment.ts";
 const iblSkyboxModule = "src/material/pbr/fragments/ibl-skybox-wgsl.ts";
 const refractionModule =
     "src/material/pbr/fragments/refraction-rtt-fragment.ts";
+const dispersionWgslModule =
+    "src/material/pbr/fragments/refraction-dispersion-wgsl.ts";
+const clearcoatFragmentModule =
+    "src/material/pbr/fragments/clearcoat-fragment.ts";
+const sheenFragmentModule =
+    "src/material/pbr/fragments/sheen-fragment.ts";
+const iridescenceFragmentModule =
+    "src/material/pbr/fragments/iridescence-fragment.ts";
+const clearcoatLoaderModule = "src/loader-gltf/gltf-ext-clearcoat.ts";
+const sheenLoaderModule = "src/loader-gltf/gltf-ext-sheen.ts";
+const iridescenceLoaderModule = "src/loader-gltf/gltf-ext-iridescence.ts";
 const dielectricLoaderModule = "src/loader-gltf/gltf-ext-dielectric.ts";
 const transmissionFrameGraphModule = "src/frame-graph/transmission.ts";
 const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
@@ -68,6 +80,12 @@ export class RendererLowerer {
         transmission?: boolean;
         textureTransform?: boolean;
         environmentRotation?: boolean;
+        gpuInstancing?: boolean;
+        multiLight?: boolean;
+        clearcoat?: boolean;
+        sheen?: boolean;
+        iridescence?: boolean;
+        dispersion?: boolean;
     } = {}): LoweredSource {
         for (const symbol of ["buildBindings", "sortTransparentBindings", "drawList"]) {
             this.context.functionDeclaration(
@@ -186,6 +204,41 @@ export class RendererLowerer {
         };
 `
                 : "";
+        const multiLightUniformFields =
+            options.multiLight
+                ? `    std::array<std::array<float, 4>, 7> extra_light_positions{};
+    std::array<std::array<float, 4>, 7> extra_light_colors{};
+`
+                : "";
+        const multiLightMaterialUniforms =
+            options.multiLight
+                ? `        for (
+            std::size_t light_index = 1;
+            light_index < scene.lights.size() &&
+            light_index <= result.extra_light_positions.size();
+            ++light_index) {
+            const LightHandle handle =
+                scene.lights[light_index];
+            if (handle.value >= engine.lights.size()) continue;
+            const LightRecord& extra =
+                engine.lights[handle.value];
+            if (extra.kind != LightKind::point) continue;
+            const std::size_t output = light_index - 1;
+            result.extra_light_positions[output] = {
+                extra.position.x,
+                extra.position.y,
+                extra.position.z,
+                extra.range,
+            };
+            result.extra_light_colors[output] = {
+                extra.diffuse_color.r,
+                extra.diffuse_color.g,
+                extra.diffuse_color.b,
+                extra.intensity * material.direct_intensity,
+            };
+        }
+`
+                : "";
         const transmissionMaterialUniforms = options.transmission
             ? `        const float ior = std::max(material.index_of_refraction, 1.0001f);
         const float thickness_scale =
@@ -211,7 +264,7 @@ export class RendererLowerer {
                 attenuation_distance,
             std::log(std::max(material.attenuation_color.b, 0.000001f)) /
                 attenuation_distance,
-            0.0f,
+            ${options.dispersion ? "material.dispersion" : "0.0f"},
         };
         result.transmission_options = {
             material.skybox_mode ? 1.0f : 0.0f,
@@ -235,6 +288,67 @@ export class RendererLowerer {
     }
 `
             : "";
+        const materialExtensionUniformFields =
+            `${options.clearcoat
+                ? `    std::array<float, 4> clearcoat_params{};
+    std::array<float, 4> clearcoat_refraction_params{};
+`
+                : ""}${options.sheen
+                ? `    std::array<float, 4> sheen_params{};
+    std::array<float, 4> sheen_params2{};
+`
+                : ""}${options.iridescence
+                ? "    std::array<float, 4> iridescence_params{};\n"
+                : ""}`;
+        const materialExtensionUniforms =
+            `${options.clearcoat
+                ? `        result.clearcoat_params = {
+            material.clearcoat_intensity,
+            material.clearcoat_roughness,
+            material.clearcoat_normal_scale,
+            material.clearcoat_normal_texture.bytes.empty()
+                ? 0.0f
+                : 1.0f,
+        };
+        const float clearcoat_a =
+            1.0f - material.clearcoat_index_of_refraction;
+        const float clearcoat_b =
+            1.0f + material.clearcoat_index_of_refraction;
+        const float clearcoat_f0 =
+            (-clearcoat_a / clearcoat_b) *
+            (-clearcoat_a / clearcoat_b);
+        result.clearcoat_refraction_params = {
+            clearcoat_f0,
+            1.0f / material.clearcoat_index_of_refraction,
+            clearcoat_a,
+            clearcoat_b,
+        };
+`
+                : ""}${options.sheen
+                ? `        result.sheen_params = {
+            material.sheen_color.r,
+            material.sheen_color.g,
+            material.sheen_color.b,
+            material.sheen_intensity,
+        };
+        result.sheen_params2 = {
+            material.sheen_roughness,
+            material.sheen_color_texture.bytes.empty()
+                ? 0.0f
+                : 1.0f,
+            0.0f,
+            0.0f,
+        };
+`
+                : ""}${options.iridescence
+                ? `        result.iridescence_params = {
+            material.iridescence_intensity,
+            material.iridescence_index_of_refraction,
+            material.iridescence_minimum_thickness,
+            material.iridescence_maximum_thickness,
+        };
+`
+                : ""}`;
 
         return {
             modulePath: renderTaskModule,
@@ -345,6 +459,7 @@ struct PbrUniforms {
     std::array<float, 4> light_direction{};
     std::array<float, 4> light_color{};
     std::array<float, 4> ground_color{};
+${multiLightUniformFields}\
     std::array<float, 4> camera_position{};
     std::array<float, 4> camera_forward_near{};
     std::array<float, 4> view_right{};
@@ -359,6 +474,7 @@ struct PbrUniforms {
     std::array<float, 4> image_processing_options{};
 ${textureTransformUniformField}\
 ${transmissionUniformFields}\
+${materialExtensionUniformFields}\
     std::array<std::array<float, 4>, 9> spherical_harmonics{};
 };
 
@@ -1085,6 +1201,7 @@ ${options.environmentRotation
                 ? material.environment_intensity
                 : 0.0f;
         result.light_color[3] *= material.direct_intensity;
+${multiLightMaterialUniforms}\
         result.material_options[2] = material.unlit ? 1.0f : 0.0f;
         result.material_options[3] = material.double_sided ? 1.0f : 0.0f;
         result.normal_options[1] =
@@ -1112,6 +1229,7 @@ ${textureTransformMaterialUniform}\
                     : 0.0f;
         result.material_options[1] = material.alpha_cutoff;
 ${transmissionMaterialUniforms}\
+${materialExtensionUniforms}\
     }
 ${transmissionViewProjection}\
     for (std::size_t index = 0; index < scene.environment.spherical_harmonics.size(); ++index) {
@@ -1463,6 +1581,12 @@ SkyboxUniforms build_skybox_uniforms(
         gpuDeformation?: boolean;
         textureTransform?: boolean;
         environmentRotation?: boolean;
+        gpuInstancing?: boolean;
+        multiLight?: boolean;
+        clearcoat?: boolean;
+        sheen?: boolean;
+        iridescence?: boolean;
+        dispersion?: boolean;
     } = {
         ground: true,
         skybox: true,
@@ -1477,6 +1601,12 @@ SkyboxUniforms build_skybox_uniforms(
         gpuDeformation: false,
         textureTransform: false,
         environmentRotation: false,
+        gpuInstancing: false,
+        multiLight: false,
+        clearcoat: false,
+        sheen: false,
+        iridescence: false,
+        dispersion: false,
     }): LoweredShader[] {
         const pbr = this.context.store.getSource(pbrTemplateModule);
         const pbrExt = this.context.store.getSource(pbrTemplateExtModule);
@@ -1517,6 +1647,27 @@ SkyboxUniforms build_skybox_uniforms(
         }
         const gridModule = "src/material/grid/grid-material.ts";
         const gridMaterial = this.context.store.getSource(gridModule);
+        const clearcoatFragment = this.context.store.getSource(
+            clearcoatFragmentModule,
+        );
+        const sheenFragment = this.context.store.getSource(
+            sheenFragmentModule,
+        );
+        const iridescenceFragment = this.context.store.getSource(
+            iridescenceFragmentModule,
+        );
+        const dispersionWgsl = this.context.store.getSource(
+            dispersionWgslModule,
+        );
+        const clearcoatLoader = this.context.store.getSource(
+            clearcoatLoaderModule,
+        );
+        const sheenLoader = this.context.store.getSource(
+            sheenLoaderModule,
+        );
+        const iridescenceLoader = this.context.store.getSource(
+            iridescenceLoaderModule,
+        );
         const shaderPipeline = this.context.store.getSource(shaderPipelineModule);
         const sceneUniformsSource = this.context.store.getSource(
             sceneUniformsSourceModule,
@@ -1599,6 +1750,92 @@ SkyboxUniforms build_skybox_uniforms(
                 ],
             );
         }
+        if (options.clearcoat) {
+            requiredUpstreamFormulas.push(
+                [
+                    clearcoatFragment,
+                    "return 0.25 / (VdotH_kl * VdotH_kl + 0.0000001);",
+                    "clearcoat Kelemen visibility",
+                ],
+                [
+                    clearcoatFragment,
+                    "return f0 + (1.0 - f0) * (t2 * t2 * t);",
+                    "clearcoat Schlick Fresnel",
+                ],
+                [
+                    clearcoatFragment,
+                    "ccDirectAttenuation = 1.0 - ccFresnel_dl * ccInt_dl;",
+                    "clearcoat direct conservation",
+                ],
+                [
+                    clearcoatFragment,
+                    "let ccConservation_ibl = 1.0 - ccFresnelIBL * ccInt_ibl;",
+                    "clearcoat IBL conservation",
+                ],
+                [
+                    clearcoatLoader,
+                    "useF0Remap: false",
+                    "glTF clearcoat F0 remap opt-out",
+                ],
+            );
+        }
+        if (options.sheen) {
+            requiredUpstreamFormulas.push(
+                [
+                    sheenFragment,
+                    "return (2.0 + invR) * pow(sin2h, invR * 0.5) / (2.0 * 3.141592653589793);",
+                    "sheen Charlie distribution",
+                ],
+                [
+                    sheenFragment,
+                    "return 1.0 / (4.0 * (NdotL_sh + NdotV_sh - NdotL_sh * NdotV_sh));",
+                    "sheen Ashikhmin visibility",
+                ],
+                [
+                    sheenFragment,
+                    "sheenAlbedoScaling = 1.0 - shMax * shBrdf.b;",
+                    "sheen albedo scaling",
+                ],
+                [
+                    sheenLoader,
+                    "albedoScaling: true",
+                    "glTF sheen albedo scaling",
+                ],
+            );
+        }
+        if (options.iridescence) {
+            requiredUpstreamFormulas.push(
+                [
+                    iridescenceFragment,
+                    "let opd=2.0*iridescenceIor*thickness*cosTheta2;",
+                    "iridescence optical path difference",
+                ],
+                [
+                    iridescenceFragment,
+                    "colorF0=mix(colorF0,iriF0,iriIntensity);",
+                    "iridescence base reflectance blend",
+                ],
+                [
+                    iridescenceLoader,
+                    "iridescenceThicknessMaximum ?? 400",
+                    "glTF iridescence thickness range",
+                ],
+            );
+        }
+        if (options.dispersion) {
+            requiredUpstreamFormulas.push(
+                [
+                    dispersionWgsl,
+                    "let spread=0.04*material.volumeParams.w*(realIOR-1.0);",
+                    "dispersion chromatic spread",
+                ],
+                [
+                    dielectric,
+                    "dispersion: 20.0 / eDisp.dispersion",
+                    "glTF dispersion Abbe mapping",
+                ],
+            );
+        }
         for (const [source, formula, label] of requiredUpstreamFormulas) {
             if (!source.includes(formula)) {
                 throw new Error(`Pinned Babylon Lite source is missing ${label}: ${formula}.`);
@@ -1631,7 +1868,10 @@ SkyboxUniforms build_skybox_uniforms(
         }));
         result.push({
             output: "upstream/shaders/pbr.vert.native.wgsl",
-            data: materialVertexWgsl(options.gpuDeformation),
+            data: materialVertexWgsl(
+                options.gpuDeformation,
+                options.gpuInstancing,
+            ),
         });
         let convertedPbr = readFileSync(
             resolve(templateRoot, "pbr.frag.wgsl"),
@@ -1680,6 +1920,83 @@ SkyboxUniforms build_skybox_uniforms(
                     "  let v_4 = v_4_raw * FragmentUniforms.uvTransform.xy + FragmentUniforms.uvTransform.zw;",
             );
         }
+        if (options.multiLight) {
+            convertedPbr = convertedPbr.replace(
+                    /  groundColor : vec4<f32>,/,
+                    "  groundColor : vec4<f32>,\n" +
+                        "  extraLightPositions : array<vec4<f32>, 7>,\n" +
+                        "  extraLightColors : array<vec4<f32>, 7>,",
+            );
+            const extraLights = Array.from(
+                    { length: 7 },
+                    (_, index) => `  {
+    let extraColorIntensity = FragmentUniforms.extraLightColors[${index}u];
+    if (extraColorIntensity.w > 0.0f) {
+      let extraDelta = FragmentUniforms.extraLightPositions[${index}u].xyz - v_1;
+      let extraDistanceSquared = dot(extraDelta, extraDelta);
+      let extraDirection = normalize(extraDelta);
+      let extraNdotL = max(dot(v_28, extraDirection), 0.0f);
+      let extraAttenuation =
+        1.0f / max(extraDistanceSquared, 0.0000001f);
+      let extraHalf = normalize(v_41 + extraDirection);
+      let extraNdotH = clamp(dot(v_28, extraHalf), 0.0000001f, 1.0f);
+      let extraVdotH = clamp(dot(v_41, extraHalf), 0.0f, 1.0f);
+      let extraFresnel = v_75 + v_76 * pow(1.0f - extraVdotH, 5.0f);
+      let extraDistributionDenominator =
+        extraNdotH * extraNdotH * (v_78 - 1.0f) + 1.0f;
+      let extraDistribution =
+        v_78 /
+        (3.14159274101257324219f *
+          extraDistributionDenominator *
+          extraDistributionDenominator);
+      let extraVisibility = 0.5f / (
+        extraNdotL * sqrt(
+          v_43 * (v_43 - v_78 * v_43) + v_78,
+        ) +
+        v_43 * sqrt(
+          extraNdotL *
+            (extraNdotL - v_78 * extraNdotL) +
+            v_78,
+        )
+      );
+      let extraScale =
+        extraColorIntensity.w *
+        extraAttenuation;
+      let extraSpecular =
+        extraFresnel *
+        extraDistribution *
+        extraVisibility *
+        extraNdotL *
+        extraColorIntensity.rgb *
+        extraScale *
+        mix(vec3<f32>(1.0f), v_100, vec3<f32>(v_88));
+      let extraDiffuse =
+        extraColorIntensity.rgb *
+        v_52 *
+        (extraNdotL * 0.31830987334251403809f) *
+        extraScale;
+      bblExtraDirect += extraSpecular + extraDiffuse;
+    }
+  }`,
+            ).join("\n");
+            const directMarker =
+                    "  let v_103 = (FragmentUniforms.materialOptions.z > 0.5f);";
+            if (!convertedPbr.includes(directMarker)) {
+                    throw new Error(
+                        "PBR direct-light output marker changed.",
+                    );
+            }
+            convertedPbr = convertedPbr.replace(
+                    directMarker,
+                    `  var bblExtraDirect = vec3<f32>(0.0f);
+${extraLights}
+${directMarker}`,
+            );
+            convertedPbr = convertedPbr.replace(
+                    /  var shadedColor = (\([\s\S]*?\) \+ v_40);/,
+                    "  var shadedColor = $1 + bblExtraDirect;",
+            );
+        }
         if (options.environmentRotation) {
             const irradianceDirection =
                 /      let v_85 = v_28\.y;\r?\n      let v_86 = v_28\.z;\r?\n      let v_87 = v_28\.x;/;
@@ -1714,6 +2031,22 @@ SkyboxUniforms build_skybox_uniforms(
                     "  let v_90 = vec3<f32>(environment_reflection_raw.x * environment_cos + environment_reflection_raw.z * environment_sin, environment_reflection_raw.y, -environment_reflection_raw.x * environment_sin + environment_reflection_raw.z * environment_cos);",
             );
         }
+        if (
+            (options.clearcoat || options.sheen) &&
+            options.multiLight
+        ) {
+            throw new Error(
+                "Combined punctual multi-light and clearcoat/sheen PBR layer composition is not lowered.",
+            );
+        }
+        convertedPbr = applyMaterialExtensionWgsl(convertedPbr, {
+            transmission: options.transmission === true,
+            environmentRotation: options.environmentRotation === true,
+            clearcoat: options.clearcoat === true,
+            sheen: options.sheen === true,
+            iridescence: options.iridescence === true,
+            dispersion: options.dispersion === true,
+        });
         const pbrProvenance = this.context.provenance(
             pbrTemplateModule,
             "createPbrTemplate",
@@ -1956,6 +2289,18 @@ SkyboxUniforms build_skybox_uniforms(
         const dielectric = this.context.store.getSource(
             dielectricLoaderModule,
         );
+        const clearcoatFragment = this.context.store.getSource(
+            clearcoatFragmentModule,
+        );
+        const sheenFragment = this.context.store.getSource(
+            sheenFragmentModule,
+        );
+        const iridescenceFragment = this.context.store.getSource(
+            iridescenceFragmentModule,
+        );
+        const dispersionWgsl = this.context.store.getSource(
+            dispersionWgslModule,
+        );
         const transmissionFrameGraph = this.context.store.getSource(
             transmissionFrameGraphModule,
         );
@@ -1985,6 +2330,26 @@ SkyboxUniforms build_skybox_uniforms(
                 transmissionFrameGraph,
                 "updateTransmissionTexture(state, engine)",
                 "scene-color copy",
+            ],
+            [
+                clearcoatFragment,
+                "let ccConservation_ibl = 1.0 - ccFresnelIBL * ccInt_ibl;",
+                "clearcoat energy conservation",
+            ],
+            [
+                sheenFragment,
+                "sheenAlbedoScaling = 1.0 - shMax * shBrdf.b;",
+                "sheen albedo scaling",
+            ],
+            [
+                iridescenceFragment,
+                "let opd=2.0*iridescenceIor*thickness*cosTheta2;",
+                "iridescence optical path difference",
+            ],
+            [
+                dispersionWgsl,
+                "let spread=0.04*material.volumeParams.w*(realIOR-1.0);",
+                "dispersion chromatic spread",
             ],
         ] as const) {
             if (!source.includes(marker)) {
@@ -2056,6 +2421,54 @@ SkyboxUniforms build_skybox_uniforms(
                     validation: [
                         "source marker assertion",
                         "volume gate parity",
+                    ],
+                },
+                {
+                    id: "clearcoat-layer",
+                    upstreamModule: clearcoatFragmentModule,
+                    upstreamMarker:
+                        "let ccConservation_ibl = 1.0 - ccFresnelIBL * ccInt_ibl;",
+                    nativeBehavior:
+                        "KHR_materials_clearcoat adds a GGX/Kelemen direct lobe and a Jones analytical IBL lobe, attenuates the base layer by 1-F(ccF0)*intensity, and keeps the glTF loader's disabled F0 remap.",
+                    validation: [
+                        "source marker assertion",
+                        "scene 28 GPU parity",
+                    ],
+                },
+                {
+                    id: "sheen-layer",
+                    upstreamModule: sheenFragmentModule,
+                    upstreamMarker:
+                        "sheenAlbedoScaling = 1.0 - shMax * shBrdf.b;",
+                    nativeBehavior:
+                        "KHR_materials_sheen uses the Charlie distribution with Ashikhmin visibility, samples the BRDF LUT blue channel at sheen roughness, and scales the base layer by 1-maxSheenColor*brdf.b.",
+                    validation: [
+                        "source marker assertion",
+                        "scene 29 GPU parity",
+                    ],
+                },
+                {
+                    id: "iridescence-thin-film",
+                    upstreamModule: iridescenceFragmentModule,
+                    upstreamMarker:
+                        "let opd=2.0*iridescenceIor*thickness*cosTheta2;",
+                    nativeBehavior:
+                        "KHR_materials_iridescence evaluates Babylon's thin-film airy summation in XYZ and blends the result into base F0 by the iridescence intensity.",
+                    validation: [
+                        "source marker assertion",
+                        "scene 178 GPU parity",
+                    ],
+                },
+                {
+                    id: "dispersion-chromatic-refraction",
+                    upstreamModule: dispersionWgslModule,
+                    upstreamMarker:
+                        "let spread=0.04*material.volumeParams.w*(realIOR-1.0);",
+                    nativeBehavior:
+                        "KHR_materials_dispersion splits the refracted scene-color ray into per-RGB etas using Babylon's 20/dispersion Abbe strength.",
+                    validation: [
+                        "source marker assertion",
+                        "scene 212 GPU parity",
                     ],
                 },
                 {

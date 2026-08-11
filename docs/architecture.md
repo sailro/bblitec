@@ -150,6 +150,8 @@ The current generated slice includes:
   outside the reached 64-matrix/two-morph-target GPU slice
 - the HillValley-required `.babylon` loader slice
 - Standard/PBR/Grid material records, no-color views, and typed custom shaders
+- metadata-driven `KHR_materials_clearcoat`, `KHR_materials_sheen`,
+  `KHR_materials_iridescence`, and `KHR_materials_dispersion` layers
 - negative-transform winding, generated normals, and cotangent normal mapping
 - `.env`/DDS parsing plus compile-time RGBE HDR/SH/cubemap materialization and
   pinned 1024-sample GGX prefiltering
@@ -239,6 +241,9 @@ Important contracts:
 - compiled HDR cubemaps are linear RGBA16F with mip-major, face-major layout
 - DDS skyboxes are RGBA16F with face-major, mip-minor layout
 - alpha mode, cutoff, blending, culling, and coverage are material-driven
+- PBR material-extension textures and uniforms are appended after the base
+  and transmission bindings, selected only by the generated
+  `render_capabilities.hpp` defines for the reached glTF extensions
 - PAL executes generated draw-command indices and pipeline keys rather than
   rescanning every mesh once per pipeline
 - frame-graph viewport copies preserve Babylon Lite's double-precision

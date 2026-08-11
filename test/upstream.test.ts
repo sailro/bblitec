@@ -18,6 +18,10 @@ import {
     readUpstreamPin,
     UpstreamSourceStore,
 } from "../src/upstream-source.js";
+import type {
+    GeometryOutputTaskManifest,
+    ShaderMaterialVariantName,
+} from "../src/compiler.js";
 
 test("loads pinned Babylon Lite TypeScript from published source maps", () => {
     const store = new UpstreamSourceStore();
@@ -133,6 +137,14 @@ test("generates GLB framing validation from upstream constants", () => {
         adapter.source,
         /gltf-ibl-brdf-lut\.png/,
     );
+    assert.match(
+        adapter.source,
+        /EXT_mesh_gpu_instancing/,
+    );
+    assert.match(
+        adapter.source,
+        /record\.instance_matrices/,
+    );
     assert.match(adapter.source, /vertex\.color = Vec4/);
     assert.match(adapter.source, /result\.sampler\.max_anisotropy/);
     assert.match(adapter.source, /result\.sampler\.max_lod = no_mip/);
@@ -147,6 +159,32 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /material\.transmission_texture/);
     assert.match(adapter.source, /material\.thickness_texture/);
     assert.match(adapter.source, /material\.use_thickness_as_depth = true/);
+    assert.match(adapter.source, /KHR_materials_clearcoat/);
+    assert.match(adapter.source, /KHR_materials_sheen/);
+    assert.match(adapter.source, /KHR_materials_iridescence/);
+    assert.match(adapter.source, /KHR_materials_dispersion/);
+    assert.match(
+        adapter.source,
+        /material\.dispersion = 20\.0f \/ dispersion;/,
+    );
+    assert.match(
+        adapter.source,
+        /clearcoat_texture \? 1\.0f : 0\.0f/,
+    );
+    assert.match(
+        adapter.source,
+        /clearcoat_roughness_texture \? 1\.0f : 0\.0f/,
+    );
+    assert.match(
+        adapter.source,
+        /material\.clearcoat_normal_scale/,
+    );
+    assert.match(adapter.source, /const bool same_as_color =/);
+    assert.match(adapter.source, /texture_transform_value\(/);
+    assert.match(
+        adapter.source,
+        /"iridescenceThicknessMaximum",\s*\r?\n\s*400\.0f\);/,
+    );
     assert.match(adapter.source, /JOINTS_0/);
     assert.match(adapter.source, /WEIGHTS_0/);
     assert.match(adapter.source, /inverseBindMatrices/);
@@ -163,7 +201,13 @@ test("generates GLB framing validation from upstream constants", () => {
     );
     assert.match(
         adapter.source,
-        /for \(const WeightTrack& track[\s\S]*?std::clamp\(/,
+        /weight_tracks\.rbegin\(\)[\s\S]*?const WeightTrack& track[\s\S]*?std::clamp\(/,
+    );
+    assert.match(adapter.source, /if \(dot > 0\.9995f\)/);
+    assert.match(adapter.source, /const float theta = std::acos\(dot\)/);
+    assert.match(
+        adapter.source,
+        /std::sin\(\(1\.0f - amount\) \* theta\)/,
     );
     assert.match(adapter.source, /geometry\.morph_positions\.size\(\) <= 2/);
     assert.match(adapter.source, /\.joints\.size\(\) <= 64/);
@@ -321,6 +365,11 @@ test("lowers the reachable upstream light matrix implementation", () => {
 test("generates the render plan from upstream frame-graph binding semantics", () => {
     const lowerer = new RendererLowerer(new LoweringContext());
     const lowered = lowerer.lowerRenderPlan({ transmission: true });
+    const specialized = lowerer.lowerRenderPlan({
+        transmission: true,
+        gpuInstancing: true,
+        multiLight: true,
+    });
     const shaders = lowerer.lowerShaders();
     const fidelity = lowerer.fidelityManifest();
     assert.equal(lowered.modulePath, "src/frame-graph/render-task.ts");
@@ -337,6 +386,10 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.header, /struct RenderDrawCommand/);
     assert.match(lowered.header, /struct RenderDrawLists/);
     assert.match(lowered.header, /struct RenderFeatures/);
+    assert.match(
+        specialized.header,
+        /extra_light_positions/,
+    );
     assert.match(lowered.source, /build_render_plan/);
     assert.match(lowered.source, /build_render_draw_lists/);
     assert.match(lowered.source, /build_render_task_draw_lists/);
@@ -465,6 +518,199 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         fidelity.invariants.some(
             ({ id }) => id === "environment-cubemap-orientation",
         ),
+    );
+});
+
+test("lowers glTF material extensions into typed uniforms and shader layers", () => {
+    const lowerer = new RendererLowerer(new LoweringContext());
+    const plan = lowerer.lowerRenderPlan({
+        transmission: true,
+        clearcoat: true,
+        sheen: true,
+        iridescence: true,
+        dispersion: true,
+    });
+    assert.match(plan.header, /std::array<float, 4> clearcoat_params\{\};/);
+    assert.match(
+        plan.header,
+        /std::array<float, 4> clearcoat_refraction_params\{\};/,
+    );
+    assert.match(plan.header, /std::array<float, 4> sheen_params2\{\};/);
+    assert.match(plan.header, /std::array<float, 4> iridescence_params\{\};/);
+    assert.match(
+        plan.header,
+        /iridescence_params\{\};\s*\r?\n\s*std::array<std::array<float, 4>, 9> spherical_harmonics/,
+    );
+    assert.match(
+        plan.source,
+        /material\.clearcoat_normal_texture\.bytes\.empty\(\)/,
+    );
+    assert.match(
+        plan.source,
+        /const float clearcoat_a =\s*\r?\n?\s*1\.0f - material\.clearcoat_index_of_refraction;/,
+    );
+    assert.match(plan.source, /material\.sheen_color\.r/);
+    assert.match(
+        plan.source,
+        /material\.iridescence_minimum_thickness/,
+    );
+    assert.match(plan.source, /material\.dispersion,/);
+
+    const baseline = new RendererLowerer(
+        new LoweringContext(),
+    ).lowerRenderPlan({ transmission: true });
+    assert.doesNotMatch(baseline.header, /clearcoat_params/);
+    assert.doesNotMatch(baseline.header, /sheen_params/);
+    assert.doesNotMatch(baseline.header, /iridescence_params/);
+    assert.doesNotMatch(baseline.source, /material\.dispersion/);
+});
+
+test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", () => {
+    const options = {
+        ground: false,
+        skybox: false,
+        shaderVariants: [] as ShaderMaterialVariantName[],
+        standardMaterial: false,
+        idDiagnostics: false,
+        pbrDiagnostics: false,
+        geometryOutputTasks: [] as GeometryOutputTaskManifest[],
+    };
+    const fragmentOf = (shaders: ReturnType<
+        RendererLowerer["lowerShaders"]
+    >): string =>
+        String(
+            shaders.find((shader) =>
+                shader.output.endsWith("pbr.frag.native.wgsl"),
+            )?.data,
+        );
+    const clearcoat = fragmentOf(
+        new RendererLowerer(new LoweringContext()).lowerShaders({
+            ...options,
+            transmission: false,
+            clearcoat: true,
+        }),
+    );
+    assert.match(
+        clearcoat,
+        /@group\(2u\) @binding\(12u\) var clearcoatTexture : texture_2d<f32>;/,
+    );
+    assert.match(
+        clearcoat,
+        /@group\(2u\) @binding\(17u\) var clearcoatNormalSampler : sampler;/,
+    );
+    assert.match(clearcoat, /  clearcoatParams : vec4<f32>,/);
+    assert.match(clearcoat, /fn bblVisibilityKelemen/);
+    assert.match(clearcoat, /return 0\.25f \/ \(VdotH_kl \* VdotH_kl \+ 0\.0000001f\);/);
+    assert.match(
+        clearcoat,
+        /let ccDirectAttenuation = 1\.0f - ccFresnel_dl \* ccIntensity;/,
+    );
+    assert.match(
+        clearcoat,
+        /let ccConservation_ibl = 1\.0f - ccFresnelIBL \* ccIntensity;/,
+    );
+    assert.match(clearcoat, /bblBaseIrradiance \* ccConservation_ibl/);
+    assert.match(clearcoat, /v_102 \* ccDirectAttenuation/);
+    assert.match(clearcoat, /select\(\(bblLayeredColor\), v_31/);
+
+    const sheen = fragmentOf(
+        new RendererLowerer(new LoweringContext()).lowerShaders({
+            ...options,
+            transmission: false,
+            sheen: true,
+        }),
+    );
+    assert.match(sheen, /fn bblCharlieSheenDistribution/);
+    assert.match(sheen, /fn bblVisibilityAshikhmin/);
+    assert.match(
+        sheen,
+        /let sheenAlbedoScaling = 1\.0f - shMax \* shBrdf\.b;/,
+    );
+    assert.match(sheen, /\)\ \* sheenAlbedoScaling \+/);
+    assert.match(
+        sheen,
+        /@group\(2u\) @binding\(12u\) var sheenColorTexture : texture_2d<f32>;/,
+    );
+
+    const iridescence = fragmentOf(
+        new RendererLowerer(new LoweringContext()).lowerShaders({
+            ...options,
+            transmission: true,
+            iridescence: true,
+        }),
+    );
+    assert.match(iridescence, /fn bblIridescenceEval\(/);
+    assert.match(
+        iridescence,
+        /let opd = 2\.0f \* iridescenceIor \* thickness \* cosTheta2;/,
+    );
+    assert.match(
+        iridescence,
+        /let v_75 = mix\(bblBaseColorF0, iriF0, vec3<f32>\(iriIntensity\)\);/,
+    );
+    assert.match(
+        iridescence,
+        /@group\(2u\) @binding\(18u\) var iridescenceTexture : texture_2d<f32>;/,
+    );
+
+    const dispersion = fragmentOf(
+        new RendererLowerer(new LoweringContext()).lowerShaders({
+            ...options,
+            transmission: true,
+            dispersion: true,
+        }),
+    );
+    assert.match(
+        dispersion,
+        /let spread = 0\.04f \* FragmentUniforms\.volumeParams\.w \* \(realIOR - 1\.0f\);/,
+    );
+    assert.match(dispersion, /let etaR = 1\.0f \/ \(realIOR - spread\);/);
+    assert.match(dispersion, /let etaB = 1\.0f \/ \(realIOR \+ spread\);/);
+    assert.doesNotMatch(dispersion, /let refractedDirection = refract\(/);
+
+    const baseline = fragmentOf(
+        new RendererLowerer(new LoweringContext()).lowerShaders({
+            ...options,
+            transmission: true,
+        }),
+    );
+    assert.doesNotMatch(baseline, /clearcoat|sheen|iridescence|bblLayeredColor/);
+    assert.match(baseline, /let refractedDirection = refract\(/);
+
+    const fidelity = new RendererLowerer(
+        new LoweringContext(),
+    ).fidelityManifest();
+    for (const id of [
+        "clearcoat-layer",
+        "sheen-layer",
+        "iridescence-thin-film",
+        "dispersion-chromatic-refraction",
+    ]) {
+        assert.ok(
+            fidelity.invariants.some(
+                (invariant) => invariant.id === id,
+            ),
+            `missing renderer fidelity invariant ${id}`,
+        );
+    }
+});
+
+test("rejects unlowered punctual multi-light and layered material composition", () => {
+    assert.throws(
+        () =>
+            new RendererLowerer(new LoweringContext()).lowerShaders({
+                ground: false,
+                skybox: false,
+                transmission: false,
+                shaderVariants: [],
+                standardMaterial: false,
+                idDiagnostics: false,
+                pbrDiagnostics: false,
+                geometryOutputTasks: [],
+                multiLight: true,
+                clearcoat: true,
+            }),
+        /multi-light and clearcoat\/sheen/,
     );
 });
 

@@ -12,11 +12,11 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 | Cameras | ArcRotate, FreeCamera, default framing, native controls |
 | Lights | directional, hemispheric, and point with reached diffuse/specular colors; two reached Standard lights |
 | Geometry | axis-sized box/sphere, subdivided ground with UV scale, plane, torus, indexed triangle glTF/GLB, generated/flat normals, negative transforms, reached `.babylon` geometry |
-| Assets | external glTF packaging, embedded PNG/JPEG, `.env`, exact compile-time RGBE HDR/GGX cubemaps, DDS, reached `.babylon` textures |
+| Assets | external glTF packaging, embedded PNG/JPEG, `.env`, exact compile-time RGBE HDR/GGX cubemaps, glTF image-based lights, DDS, reached `.babylon` textures |
 | Materials | Standard, PBR, GridMaterial, unlit, vertex colors, no-color views, typed custom shader variants |
-| Material state | alpha mask/blend/coverage, reflectance, lighting intensities, double-sided, normal scale, transmission, IOR, volume |
+| Material state | alpha mask/blend/coverage, reflectance, emissive strength, lighting intensities, double-sided, normal scale, shared texture scaling, transmission, IOR, volume, dispersion, clearcoat, sheen, iridescence |
 | Animation | deterministic seeking; property-animation groups for reached mesh position/scaling/quaternion paths with LINEAR/STEP tracks; glTF LINEAR/CUBICSPLINE rotation/translation and LINEAR morph weights |
-| Deformation | recursive skeleton hierarchies, inverse bind matrices, four-weight GPU skinning, GPU position/normal/tangent morph targets, post-deformation flat normals |
+| Deformation | recursive skeleton hierarchies, inverse bind matrices, four-weight GPU skinning, GPU position/normal/tangent morph targets, static GPU instancing, post-deformation flat normals |
 | Frame graph | render targets/tasks, material overrides, depth-only passes, 7+4 geometry MRTs, blits, MSAA resolve |
 | Runtime | typed handles/records, immediate AOT promises, typed JSON/binary views, tree-shaken GPU deformation and cyclic flat-normal uploads |
 | Shaders | generated WGSL through pinned Tint; DXIL/SPIR-V via normalized Tint HLSL and DXC; MSL via Tint |
@@ -57,11 +57,11 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 | 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.010}}$ | $\color{#1a7f37}{\textsf{0.081}}$ | material grid, explicit occlusion semantics<br><em>Full-image MAD includes the known generated-ground composition difference.</em> |
 | 14 | <img src="images/scenes/scene14.png" alt="Scene 14 rendering" width="120"> | $\color{#cf222e}{\textsf{3.202}}$ | $\color{#1a7f37}{\textsf{0.093}}$ | Flight Helmet glTF with default framing, IBL, and DDS skybox |
 | 24 | <img src="images/scenes/scene24.png" alt="Scene 24 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.114}}$ | $\color{#1a7f37}{\textsf{0.120}}$ | Hill Valley `.babylon` geometry, camera, textures, and baked lighting |
-| 28 | <img src="images/scenes/scene28.png" alt="Scene 28 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.371}}$ | $\color{#cf222e}{\textsf{3.914}}$ | clearcoat glTF differential coverage |
-| 29 | <img src="images/scenes/scene29.png" alt="Scene 29 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.132}}$ | $\color{#cf222e}{\textsf{4.095}}$ | shared `KHR_texture_transform` scaling on the sheen-cloth asset |
+| 28 | <img src="images/scenes/scene28.png" alt="Scene 28 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.004}}$ | $\color{#1a7f37}{\textsf{0.049}}$ | `KHR_materials_clearcoat` intensity, roughness, and coat-normal textures |
+| 29 | <img src="images/scenes/scene29.png" alt="Scene 29 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.009}}$ | `KHR_materials_sheen` cloth with shared `KHR_texture_transform` scaling |
 | 31 | <img src="images/scenes/scene31.png" alt="Scene 31 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.003}}$ | $\color{#1a7f37}{\textsf{0.018}}$ | `KHR_materials_emissive_strength` and factor-only emissive materials |
 | 32 | <img src="images/scenes/scene32.png" alt="Scene 32 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | `KHR_materials_unlit` |
-| 33 | <img src="images/scenes/scene33.png" alt="Scene 33 rendering" width="120"> | $\color{#cf222e}{\textsf{2.217}}$ | $\color{#cf222e}{\textsf{53.451}}$ | `KHR_lights_punctual` entities with single-light PBR shading |
+| 33 | <img src="images/scenes/scene33.png" alt="Scene 33 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.466}}$ | $\color{#cf222e}{\textsf{11.153}}$ | `KHR_lights_punctual` entities with generated physical-falloff multi-point-light PBR |
 | 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | no-color material views, depth targets |
 | 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.063}}$ | $\color{#1a7f37}{\textsf{0.063}}$ | `.babylon`, Standard geometry outputs, default anisotropy<br><em>The frame-graph copy path now matches Babylon Lite's integer viewport and scissor contract. Full-resolution attachment MAD is at most 0.067; view/world normals are 0.002/0.003. Run `npm run scene -- geometry scene145`.</em> |
 | 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.021}}$ | $\color{#1a7f37}{\textsf{0.019}}$ | Exact pinned FreeCamera Sponza view, PBR geometry outputs, 7+4 MRT composition<br><em>Typed static-loop lowering preserves Babylon Lite's double-precision viewport arithmetic before source-derived integer viewport/scissor conversion.</em> |
@@ -71,18 +71,18 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 | 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | custom shader blend, alpha test, discard |
 | 168 | <img src="images/scenes/scene168.png" alt="Scene 168 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.068}}$ | $\color{#1a7f37}{\textsf{0.389}}$ | mirrored double-sided winding; 100% within one byte |
 | 176 | <img src="images/scenes/scene176.png" alt="Mosquito in Amber" width="120"> | $\color{#1a7f37}{\textsf{0.418}}$ | $\color{#1a7f37}{\textsf{0.418}}$ | integrated linear transmission, IOR, volume, and scene-color copy |
-| 178 | <img src="images/scenes/scene178.png" alt="Scene 178 rendering" width="120"> | $\color{#9a6700}{\textsf{0.556}}$ | $\color{#9a6700}{\textsf{0.721}}$ | `KHR_materials_iridescence` Abalone and camera-following skybox |
+| 178 | <img src="images/scenes/scene178.png" alt="Scene 178 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.210}}$ | $\color{#1a7f37}{\textsf{0.260}}$ | `KHR_materials_iridescence` Abalone and camera-following skybox<br><em>Every pixel is within one byte of the pinned output.</em> |
 | 210 | <img src="images/scenes/scene210.png" alt="Scene 210 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.037}}$ | $\color{#1a7f37}{\textsf{0.210}}$ | `KHR_xmp_json_ld` metadata on a rounded cube |
-| 212 | <img src="images/scenes/scene212.png" alt="Scene 212 rendering" width="120"> | $\color{#cf222e}{\textsf{3.301}}$ | $\color{#cf222e}{\textsf{3.715}}$ | dispersion asset with transmission, IOR, and volume |
+| 212 | <img src="images/scenes/scene212.png" alt="Scene 212 rendering" width="120"> | $\color{#9a6700}{\textsf{0.604}}$ | $\color{#9a6700}{\textsf{0.669}}$ | `KHR_materials_dispersion` per-RGB refraction over transmission, IOR, and volume<br><em>Residual error is refracted checkerboard and silhouette coverage; the per-channel bias is gone.</em> |
 | 213 | <img src="images/scenes/scene213.png" alt="Scene 213 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.001}}$ | GridMaterial opaque/transparent families and ordered draw lists |
 | 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | deterministic glTF node rotation animation |
-| 243 | <img src="images/scenes/scene243.png" alt="Scene 243 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.104}}$ | $\color{#cf222e}{\textsf{1.274}}$ | deterministic MorphStressTest glTF animation |
+| 243 | <img src="images/scenes/scene243.png" alt="Scene 243 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.046}}$ | $\color{#cf222e}{\textsf{1.043}}$ | deterministic MorphStressTest glTF animation with Babylon-compatible overlapping clip precedence |
 | 245 | <img src="images/scenes/scene245.png" alt="Scene 245 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.001}}$ | recursive skeleton hierarchy, inverse bind matrices, GPU skinning |
 | 246 | <img src="images/scenes/scene246.png" alt="Scene 246 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.006}}$ | $\color{#1a7f37}{\textsf{0.042}}$ | deterministic SimpleSkin glTF animation |
-| 247 | <img src="images/scenes/scene247.png" alt="Scene 247 rendering" width="120"> | $\color{#cf222e}{\textsf{1.690}}$ | $\color{#cf222e}{\textsf{19.655}}$ | TeapotsGalore material and texture families |
+| 247 | <img src="images/scenes/scene247.png" alt="Scene 247 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.055}}$ | $\color{#9a6700}{\textsf{0.643}}$ | `EXT_mesh_gpu_instancing` with one native instanced draw |
 | 248 | <img src="images/scenes/scene248.png" alt="Scene 248 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.005}}$ | external glTF and sampler modes |
 | 249 | <img src="images/scenes/scene249.png" alt="Scene 249 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.024}}$ | vertex-color alpha and mask cutoff |
-| 254 | <img src="images/scenes/scene254.png" alt="Scene 254 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.322}}$ | $\color{#cf222e}{\textsf{1.646}}$ | normalized signed animation sampler accessors |
+| 254 | <img src="images/scenes/scene254.png" alt="Scene 254 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.004}}$ | normalized signed animation sampler accessors with pinned quaternion slerp |
 | 255 | <img src="images/scenes/scene255.png" alt="Scene 255 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.011}}$ | $\color{#1a7f37}{\textsf{0.101}}$ | normalized integer skin-weight accessors |
 | 257 | <img src="images/scenes/scene257.png" alt="Scene 257 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.006}}$ | negative-scale hierarchy, generated normals |
 | 258 | <img src="images/scenes/scene258.png" alt="Scene 258 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.002}}$ | $\color{#1a7f37}{\textsf{0.005}}$ | interleaved glTF vertex buffers |
@@ -157,6 +157,10 @@ deferred until its resource bindings are remapped to SDL_GPU conventions.
   recomputation for primitives without source normals
 - glTF scale/STEP channels, multiple-clip controls, broader property targets,
   and Standard scenes beyond two simultaneous lights remain unsupported
+- PBR material extensions cover clearcoat, sheen, iridescence, and dispersion
+  with one shared UV transform; specular and anisotropy, per-slot texture
+  transforms, and layered composition combined with punctual multi-light
+  remain unsupported
 - no general user WGSL; reached custom variants use typed WGSL reflection and
   required pinned Tint HLSL/MSL emission plus DXC DXIL/SPIR-V compilation
 - GridMaterial, frame-graph blit/depth, and attribution utilities use

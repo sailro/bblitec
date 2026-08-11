@@ -43,10 +43,31 @@ namespace bbl::pal {
 namespace {
 
 #if defined(BBLITE_RENDERER_TRANSMISSION)
-constexpr std::uint32_t pbr_texture_binding_count = 9;
+constexpr std::uint32_t pbr_base_texture_binding_count = 9;
 #else
-constexpr std::uint32_t pbr_texture_binding_count = 6;
+constexpr std::uint32_t pbr_base_texture_binding_count = 6;
 #endif
+
+constexpr std::uint32_t pbr_material_extension_binding_count =
+#if BBLITE_MATERIAL_CLEARCOAT
+    3u +
+#endif
+#if BBLITE_MATERIAL_SHEEN
+    2u +
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+    2u +
+#endif
+    0u;
+
+constexpr std::uint32_t pbr_texture_binding_count =
+    pbr_base_texture_binding_count +
+    pbr_material_extension_binding_count;
+
+constexpr std::size_t pbr_texture_binding_capacity =
+    pbr_texture_binding_count > 9u
+        ? static_cast<std::size_t>(pbr_texture_binding_count)
+        : 9u;
 
 struct GpuVertex {
     float position[3];
@@ -77,12 +98,26 @@ static_assert(sizeof(GpuVertex) == 96);
 struct GpuMesh {
     SDL_GPUBuffer* vertices = nullptr;
     SDL_GPUBuffer* indices = nullptr;
+    SDL_GPUBuffer* instances = nullptr;
     SDL_GPUTexture* base_color = nullptr;
     SDL_GPUTexture* metallic_roughness = nullptr;
     SDL_GPUTexture* normal = nullptr;
     SDL_GPUTexture* emissive = nullptr;
     SDL_GPUTexture* transmission = nullptr;
     SDL_GPUTexture* thickness = nullptr;
+#if BBLITE_MATERIAL_CLEARCOAT
+    SDL_GPUTexture* clearcoat = nullptr;
+    SDL_GPUTexture* clearcoat_roughness = nullptr;
+    SDL_GPUTexture* clearcoat_normal = nullptr;
+#endif
+#if BBLITE_MATERIAL_SHEEN
+    SDL_GPUTexture* sheen_color = nullptr;
+    SDL_GPUTexture* sheen_roughness = nullptr;
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+    SDL_GPUTexture* iridescence = nullptr;
+    SDL_GPUTexture* iridescence_thickness = nullptr;
+#endif
     SDL_GPUTexture* standard_emissive = nullptr;
     SDL_GPUTexture* reflection = nullptr;
     SDL_GPUSampler* base_color_sampler = nullptr;
@@ -91,10 +126,93 @@ struct GpuMesh {
     SDL_GPUSampler* emissive_sampler = nullptr;
     SDL_GPUSampler* transmission_sampler = nullptr;
     SDL_GPUSampler* thickness_sampler = nullptr;
+#if BBLITE_MATERIAL_CLEARCOAT
+    SDL_GPUSampler* clearcoat_sampler = nullptr;
+    SDL_GPUSampler* clearcoat_roughness_sampler = nullptr;
+    SDL_GPUSampler* clearcoat_normal_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_SHEEN
+    SDL_GPUSampler* sheen_color_sampler = nullptr;
+    SDL_GPUSampler* sheen_roughness_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+    SDL_GPUSampler* iridescence_sampler = nullptr;
+    SDL_GPUSampler* iridescence_thickness_sampler = nullptr;
+#endif
     SDL_GPUSampler* standard_emissive_sampler = nullptr;
     std::uint32_t index_count = 0;
+    std::uint32_t instance_count = 1;
     std::uint64_t transform_version = 0;
 };
+
+void append_material_extension_bindings(
+    SDL_GPUTextureSamplerBinding* bindings,
+    const GpuMesh& mesh) {
+    std::size_t index = 0;
+#if BBLITE_MATERIAL_CLEARCOAT
+    bindings[index++] = SDL_GPUTextureSamplerBinding{
+        mesh.clearcoat,
+        mesh.clearcoat_sampler,
+    };
+    bindings[index++] = SDL_GPUTextureSamplerBinding{
+        mesh.clearcoat_roughness,
+        mesh.clearcoat_roughness_sampler,
+    };
+    bindings[index++] = SDL_GPUTextureSamplerBinding{
+        mesh.clearcoat_normal,
+        mesh.clearcoat_normal_sampler,
+    };
+#endif
+#if BBLITE_MATERIAL_SHEEN
+    bindings[index++] = SDL_GPUTextureSamplerBinding{
+        mesh.sheen_color,
+        mesh.sheen_color_sampler,
+    };
+    bindings[index++] = SDL_GPUTextureSamplerBinding{
+        mesh.sheen_roughness,
+        mesh.sheen_roughness_sampler,
+    };
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+    bindings[index++] = SDL_GPUTextureSamplerBinding{
+        mesh.iridescence,
+        mesh.iridescence_sampler,
+    };
+    bindings[index++] = SDL_GPUTextureSamplerBinding{
+        mesh.iridescence_thickness,
+        mesh.iridescence_thickness_sampler,
+    };
+#endif
+    (void)bindings;
+    (void)mesh;
+    (void)index;
+}
+
+void bind_mesh_vertex_buffers(
+    SDL_GPURenderPass* pass,
+    const GpuMesh& mesh) {
+#if BBLITE_GPU_INSTANCING
+    const std::array<SDL_GPUBufferBinding, 2> bindings{
+        SDL_GPUBufferBinding{mesh.vertices, 0},
+        SDL_GPUBufferBinding{mesh.instances, 0},
+    };
+    SDL_BindGPUVertexBuffers(
+        pass,
+        0,
+        bindings.data(),
+        static_cast<Uint32>(bindings.size()));
+#else
+    const SDL_GPUBufferBinding binding{
+        mesh.vertices,
+        0,
+    };
+    SDL_BindGPUVertexBuffers(
+        pass,
+        0,
+        &binding,
+        1);
+#endif
+}
 
 struct GpuBackground {
     SDL_GPUBuffer* vertices = nullptr;
@@ -188,6 +306,7 @@ struct GpuState {
     std::array<SDL_GPUGraphicsPipeline*, 3> diagnostics_double_sided_pipelines{};
     SDL_GPUSampler* sampler = nullptr;
     SDL_GPUSampler* background_sampler = nullptr;
+    SDL_GPUSampler* ground_sampler = nullptr;
     SDL_GPUSampler* depth_sampler = nullptr;
     SDL_GPUTexture* environment = nullptr;
     SDL_GPUTexture* brdf_lut = nullptr;
@@ -1867,19 +1986,24 @@ void save_geometry_id_buffer_png(
                     sizeof(uniforms));
             }
 
-            const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
             const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
             const SDL_GPUTextureSamplerBinding texture_binding{
                 mesh.base_color,
                 state.sampler,
             };
-            SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+            bind_mesh_vertex_buffers(pass, mesh);
             SDL_BindGPUIndexBuffer(
                 pass,
                 &index_binding,
                 SDL_GPU_INDEXELEMENTSIZE_32BIT);
             SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
-            SDL_DrawGPUIndexedPrimitives(pass, mesh.index_count, 1, 0, 0, 0);
+            SDL_DrawGPUIndexedPrimitives(
+                pass,
+                mesh.index_count,
+                mesh.instance_count,
+                0,
+                0,
+                0);
         }
     }
     SDL_EndGPURenderPass(pass);
@@ -2028,9 +2152,9 @@ void save_pbr_diagnostic_buffers(
                     upstream::build_pbr_uniforms(scene, engine, camera, item);
                 SDL_PushGPUFragmentUniformData(command, 0, &fragment, sizeof(fragment));
                 const GpuMesh& mesh = state.meshes[mesh_index];
-                const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
                 const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
-                const SDL_GPUTextureSamplerBinding texture_bindings[9]{
+                SDL_GPUTextureSamplerBinding
+                    texture_bindings[pbr_texture_binding_capacity]{
                     SDL_GPUTextureSamplerBinding{mesh.base_color, mesh.base_color_sampler},
                     SDL_GPUTextureSamplerBinding{mesh.metallic_roughness, mesh.metallic_roughness_sampler},
                     SDL_GPUTextureSamplerBinding{mesh.normal, mesh.normal_sampler},
@@ -2041,7 +2165,10 @@ void save_pbr_diagnostic_buffers(
                     SDL_GPUTextureSamplerBinding{mesh.transmission, mesh.transmission_sampler},
                     SDL_GPUTextureSamplerBinding{mesh.thickness, mesh.thickness_sampler},
                 };
-                SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+                append_material_extension_bindings(
+                    &texture_bindings[pbr_base_texture_binding_count],
+                    mesh);
+                bind_mesh_vertex_buffers(pass, mesh);
                 SDL_BindGPUIndexBuffer(
                     pass,
                     &index_binding,
@@ -2051,7 +2178,13 @@ void save_pbr_diagnostic_buffers(
                     0,
                     texture_bindings,
                     pbr_texture_binding_count);
-                SDL_DrawGPUIndexedPrimitives(pass, mesh.index_count, 1, 0, 0, 0);
+                SDL_DrawGPUIndexedPrimitives(
+                    pass,
+                    mesh.index_count,
+                    mesh.instance_count,
+                    0,
+                    0,
+                    0);
             }
         }
         SDL_EndGPURenderPass(pass);
@@ -2140,12 +2273,26 @@ void release(GpuState& state) {
     for (GpuMesh& mesh : state.meshes) {
         SDL_ReleaseGPUBuffer(state.device, mesh.vertices);
         SDL_ReleaseGPUBuffer(state.device, mesh.indices);
+        SDL_ReleaseGPUBuffer(state.device, mesh.instances);
         SDL_ReleaseGPUTexture(state.device, mesh.base_color);
         SDL_ReleaseGPUTexture(state.device, mesh.metallic_roughness);
         SDL_ReleaseGPUTexture(state.device, mesh.normal);
         SDL_ReleaseGPUTexture(state.device, mesh.emissive);
         SDL_ReleaseGPUTexture(state.device, mesh.transmission);
         SDL_ReleaseGPUTexture(state.device, mesh.thickness);
+#if BBLITE_MATERIAL_CLEARCOAT
+        SDL_ReleaseGPUTexture(state.device, mesh.clearcoat);
+        SDL_ReleaseGPUTexture(state.device, mesh.clearcoat_roughness);
+        SDL_ReleaseGPUTexture(state.device, mesh.clearcoat_normal);
+#endif
+#if BBLITE_MATERIAL_SHEEN
+        SDL_ReleaseGPUTexture(state.device, mesh.sheen_color);
+        SDL_ReleaseGPUTexture(state.device, mesh.sheen_roughness);
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+        SDL_ReleaseGPUTexture(state.device, mesh.iridescence);
+        SDL_ReleaseGPUTexture(state.device, mesh.iridescence_thickness);
+#endif
         SDL_ReleaseGPUTexture(state.device, mesh.standard_emissive);
         SDL_ReleaseGPUSampler(state.device, mesh.base_color_sampler);
         SDL_ReleaseGPUSampler(state.device, mesh.metallic_roughness_sampler);
@@ -2153,6 +2300,23 @@ void release(GpuState& state) {
         SDL_ReleaseGPUSampler(state.device, mesh.emissive_sampler);
         SDL_ReleaseGPUSampler(state.device, mesh.transmission_sampler);
         SDL_ReleaseGPUSampler(state.device, mesh.thickness_sampler);
+#if BBLITE_MATERIAL_CLEARCOAT
+        SDL_ReleaseGPUSampler(state.device, mesh.clearcoat_sampler);
+        SDL_ReleaseGPUSampler(
+            state.device,
+            mesh.clearcoat_roughness_sampler);
+        SDL_ReleaseGPUSampler(state.device, mesh.clearcoat_normal_sampler);
+#endif
+#if BBLITE_MATERIAL_SHEEN
+        SDL_ReleaseGPUSampler(state.device, mesh.sheen_color_sampler);
+        SDL_ReleaseGPUSampler(state.device, mesh.sheen_roughness_sampler);
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+        SDL_ReleaseGPUSampler(state.device, mesh.iridescence_sampler);
+        SDL_ReleaseGPUSampler(
+            state.device,
+            mesh.iridescence_thickness_sampler);
+#endif
         SDL_ReleaseGPUSampler(
             state.device,
             mesh.standard_emissive_sampler);
@@ -2201,6 +2365,11 @@ void release(GpuState& state) {
         state.depth_width,
         state.depth_height);
     if (state.background_sampler) SDL_ReleaseGPUSampler(state.device, state.background_sampler);
+    if (state.ground_sampler) {
+        SDL_ReleaseGPUSampler(
+            state.device,
+            state.ground_sampler);
+    }
     if (state.depth_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.depth_sampler);
     }
@@ -2621,17 +2790,33 @@ bool run_gpu_engine(Engine& engine) {
                   "mainFragment")
             : nullptr;
 
-        SDL_GPUVertexBufferDescription vertex_buffer{};
-        vertex_buffer.slot = 0;
-        vertex_buffer.pitch = sizeof(GpuVertex);
-        vertex_buffer.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-#if BBLITE_GPU_DEFORMATION
-        SDL_GPUVertexAttribute attributes[16]{};
-        constexpr Uint32 attribute_count = 16;
+        std::array<
+            SDL_GPUVertexBufferDescription,
+#if BBLITE_GPU_INSTANCING
+            2
 #else
-        SDL_GPUVertexAttribute attributes[8]{};
-        constexpr Uint32 attribute_count = 8;
+            1
 #endif
+        > vertex_buffers{};
+        vertex_buffers[0].slot = 0;
+        vertex_buffers[0].pitch = sizeof(GpuVertex);
+        vertex_buffers[0].input_rate =
+            SDL_GPU_VERTEXINPUTRATE_VERTEX;
+#if BBLITE_GPU_DEFORMATION
+        constexpr Uint32 base_attribute_count = 16;
+#else
+        constexpr Uint32 base_attribute_count = 8;
+#endif
+        std::array<
+            SDL_GPUVertexAttribute,
+#if BBLITE_GPU_INSTANCING
+            base_attribute_count + 4
+#else
+            base_attribute_count
+#endif
+        > attributes{};
+        constexpr Uint32 attribute_count =
+            static_cast<Uint32>(attributes.size());
         attributes[0] = SDL_GPUVertexAttribute{0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0};
         attributes[1] = SDL_GPUVertexAttribute{1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 12};
         attributes[2] = SDL_GPUVertexAttribute{2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 24};
@@ -2650,6 +2835,37 @@ bool run_gpu_engine(Engine& engine) {
         attributes[14] = SDL_GPUVertexAttribute{14, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 176};
         attributes[15] = SDL_GPUVertexAttribute{15, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 188};
 #endif
+#if BBLITE_GPU_INSTANCING
+        vertex_buffers[1].slot = 1;
+        vertex_buffers[1].pitch =
+            sizeof(std::array<float, 16>);
+        vertex_buffers[1].input_rate =
+            SDL_GPU_VERTEXINPUTRATE_INSTANCE;
+        attributes[base_attribute_count] =
+            SDL_GPUVertexAttribute{
+                16,
+                1,
+                SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
+                0};
+        attributes[base_attribute_count + 1] =
+            SDL_GPUVertexAttribute{
+                17,
+                1,
+                SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
+                16};
+        attributes[base_attribute_count + 2] =
+            SDL_GPUVertexAttribute{
+                18,
+                1,
+                SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
+                32};
+        attributes[base_attribute_count + 3] =
+            SDL_GPUVertexAttribute{
+                19,
+                1,
+                SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
+                48};
+#endif
         SDL_GPUColorTargetDescription color_target{};
         color_target.format = transmission_enabled
             ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
@@ -2659,9 +2875,10 @@ bool run_gpu_engine(Engine& engine) {
         pipeline_info.fragment_shader = fragment_shader;
         pipeline_info.vertex_input_state =
             SDL_GPUVertexInputState{
-                &vertex_buffer,
-                1,
-                attributes,
+                vertex_buffers.data(),
+                static_cast<Uint32>(
+                    vertex_buffers.size()),
+                attributes.data(),
                 attribute_count,
             };
         pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
@@ -3343,6 +3560,15 @@ bool run_gpu_engine(Engine& engine) {
         sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         state.background_sampler = SDL_CreateGPUSampler(state.device, &sampler_info);
         if (!state.background_sampler) gpu_error("SDL_CreateGPUSampler background");
+        sampler_info.max_lod = 0.0f;
+        state.ground_sampler =
+            SDL_CreateGPUSampler(
+                state.device,
+                &sampler_info);
+        if (!state.ground_sampler) {
+            gpu_error("SDL_CreateGPUSampler ground");
+        }
+        sampler_info.max_lod = 1000.0f;
         sampler_info.min_filter = SDL_GPU_FILTER_NEAREST;
         sampler_info.mag_filter = SDL_GPU_FILTER_NEAREST;
         sampler_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
@@ -3457,6 +3683,28 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_GPU_BUFFERUSAGE_INDEX,
                 geometry.indices.data(),
                 geometry.indices.size() * sizeof(std::uint32_t));
+#if BBLITE_GPU_INSTANCING
+            std::vector<std::array<float, 16>>
+                instance_matrices =
+                    mesh_record.instance_matrices;
+            if (instance_matrices.empty()) {
+                std::array<float, 16> identity{};
+                identity[0] = 1.0f;
+                identity[5] = 1.0f;
+                identity[10] = 1.0f;
+                identity[15] = 1.0f;
+                instance_matrices.push_back(identity);
+            }
+            gpu_mesh.instances = upload_buffer(
+                state.device,
+                SDL_GPU_BUFFERUSAGE_VERTEX,
+                instance_matrices.data(),
+                instance_matrices.size() *
+                    sizeof(instance_matrices.front()));
+            gpu_mesh.instance_count =
+                static_cast<std::uint32_t>(
+                    instance_matrices.size());
+#endif
             gpu_mesh.index_count =             static_cast<std::uint32_t>(geometry.indices.size());
             gpu_mesh.transform_version =
             mesh_record.transform_version;
@@ -3466,6 +3714,19 @@ bool run_gpu_engine(Engine& engine) {
             const TextureData* emissive = nullptr;
             const TextureData* transmission = nullptr;
             const TextureData* thickness = nullptr;
+#if BBLITE_MATERIAL_CLEARCOAT
+            const TextureData* clearcoat = nullptr;
+            const TextureData* clearcoat_roughness = nullptr;
+            const TextureData* clearcoat_normal = nullptr;
+#endif
+#if BBLITE_MATERIAL_SHEEN
+            const TextureData* sheen_color = nullptr;
+            const TextureData* sheen_roughness = nullptr;
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+            const TextureData* iridescence = nullptr;
+            const TextureData* iridescence_thickness = nullptr;
+#endif
             const TextureData* standard_emissive = nullptr;
             bool has_pbr_emissive_factor = false;
             const bool standard_material =
@@ -3496,6 +3757,33 @@ bool run_gpu_engine(Engine& engine) {
                 standard_emissive = standard_material
                     ? &material.emissive_texture
                     : nullptr;
+#if BBLITE_MATERIAL_CLEARCOAT
+                clearcoat = standard_material
+                    ? nullptr
+                    : &material.clearcoat_texture;
+                clearcoat_roughness = standard_material
+                    ? nullptr
+                    : &material.clearcoat_roughness_texture;
+                clearcoat_normal = standard_material
+                    ? nullptr
+                    : &material.clearcoat_normal_texture;
+#endif
+#if BBLITE_MATERIAL_SHEEN
+                sheen_color = standard_material
+                    ? nullptr
+                    : &material.sheen_color_texture;
+                sheen_roughness = standard_material
+                    ? nullptr
+                    : &material.sheen_roughness_texture;
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+                iridescence = standard_material
+                    ? nullptr
+                    : &material.iridescence_texture;
+                iridescence_thickness = standard_material
+                    ? nullptr
+                    : &material.iridescence_thickness_texture;
+#endif
                 if (
                     standard_material &&
                     material.reflection_cube <
@@ -3567,6 +3855,82 @@ bool run_gpu_engine(Engine& engine) {
             gpu_mesh.thickness_sampler = create_texture_sampler(
                 state.device,
                 thickness ? thickness->sampler : TextureSamplerState{});
+#if BBLITE_MATERIAL_CLEARCOAT
+            gpu_mesh.clearcoat = upload_texture(
+                state.device,
+                clearcoat ? *clearcoat : TextureData{},
+                false,
+                {255, 255, 255, 255});
+            gpu_mesh.clearcoat_sampler = create_texture_sampler(
+                state.device,
+                clearcoat ? clearcoat->sampler : TextureSamplerState{});
+            gpu_mesh.clearcoat_roughness = upload_texture(
+                state.device,
+                clearcoat_roughness
+                    ? *clearcoat_roughness
+                    : TextureData{},
+                false,
+                {255, 255, 255, 255});
+            gpu_mesh.clearcoat_roughness_sampler =
+                create_texture_sampler(
+                    state.device,
+                    clearcoat_roughness
+                        ? clearcoat_roughness->sampler
+                        : TextureSamplerState{});
+            gpu_mesh.clearcoat_normal = upload_texture(
+                state.device,
+                clearcoat_normal ? *clearcoat_normal : TextureData{},
+                false,
+                {128, 128, 255, 255});
+            gpu_mesh.clearcoat_normal_sampler = create_texture_sampler(
+                state.device,
+                clearcoat_normal
+                    ? clearcoat_normal->sampler
+                    : TextureSamplerState{});
+#endif
+#if BBLITE_MATERIAL_SHEEN
+            gpu_mesh.sheen_color = upload_texture(
+                state.device,
+                sheen_color ? *sheen_color : TextureData{},
+                true,
+                {255, 255, 255, 255});
+            gpu_mesh.sheen_color_sampler = create_texture_sampler(
+                state.device,
+                sheen_color ? sheen_color->sampler : TextureSamplerState{});
+            gpu_mesh.sheen_roughness = upload_texture(
+                state.device,
+                sheen_roughness ? *sheen_roughness : TextureData{},
+                false,
+                {255, 255, 255, 255});
+            gpu_mesh.sheen_roughness_sampler = create_texture_sampler(
+                state.device,
+                sheen_roughness
+                    ? sheen_roughness->sampler
+                    : TextureSamplerState{});
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+            gpu_mesh.iridescence = upload_texture(
+                state.device,
+                iridescence ? *iridescence : TextureData{},
+                true,
+                {255, 255, 255, 255});
+            gpu_mesh.iridescence_sampler = create_texture_sampler(
+                state.device,
+                iridescence ? iridescence->sampler : TextureSamplerState{});
+            gpu_mesh.iridescence_thickness = upload_texture(
+                state.device,
+                iridescence_thickness
+                    ? *iridescence_thickness
+                    : TextureData{},
+                true,
+                {255, 255, 255, 255});
+            gpu_mesh.iridescence_thickness_sampler =
+                create_texture_sampler(
+                    state.device,
+                    iridescence_thickness
+                        ? iridescence_thickness->sampler
+                        : TextureSamplerState{});
+#endif
             gpu_mesh.standard_emissive = upload_texture(
                 state.device,
                 standard_emissive
@@ -4092,10 +4456,6 @@ bool run_gpu_engine(Engine& engine) {
                                     sizeof(fragment));
                             }
                             }
-                            const SDL_GPUBufferBinding vertex_binding{
-                                mesh.vertices,
-                                0,
-                            };
                             const SDL_GPUBufferBinding index_binding{
                                 mesh.indices,
                                 0,
@@ -4105,7 +4465,8 @@ bool run_gpu_engine(Engine& engine) {
                                     upstream::RenderMaterialKind::pbr ||
                                 standard_bucket) {
                                 SDL_GPUTextureSamplerBinding
-                                    texture_bindings[9]{
+                                    texture_bindings[
+                                        pbr_texture_binding_capacity]{
                                     SDL_GPUTextureSamplerBinding{
                                         mesh.base_color,
                                         mesh.base_color_sampler,
@@ -4161,6 +4522,11 @@ bool run_gpu_engine(Engine& engine) {
                                                   mesh
                                                       .standard_emissive_sampler,
                                               };
+                                } else {
+                                    append_material_extension_bindings(
+                                        &texture_bindings[
+                                            pbr_base_texture_binding_count],
+                                        mesh);
                                 }
                                 SDL_BindGPUFragmentSamplers(
                                     task_pass,
@@ -4170,11 +4536,9 @@ bool run_gpu_engine(Engine& engine) {
                                         ? 6
                                         : pbr_texture_binding_count);
                             }
-                            SDL_BindGPUVertexBuffers(
+                            bind_mesh_vertex_buffers(
                                 task_pass,
-                                0,
-                                &vertex_binding,
-                                1);
+                                mesh);
                             SDL_BindGPUIndexBuffer(
                                 task_pass,
                                 &index_binding,
@@ -4182,7 +4546,7 @@ bool run_gpu_engine(Engine& engine) {
                             SDL_DrawGPUIndexedPrimitives(
                                 task_pass,
                                 mesh.index_count,
-                                1,
+                                mesh.instance_count,
                                 0,
                                 0,
                                 0);
@@ -4304,19 +4668,13 @@ bool run_gpu_engine(Engine& engine) {
                                     }
                                     const GpuMesh& mesh =
                                         state.meshes[mesh_index];
-                                    const SDL_GPUBufferBinding vertex_binding{
-                                        mesh.vertices,
-                                        0,
-                                    };
                                     const SDL_GPUBufferBinding index_binding{
                                         mesh.indices,
                                         0,
                                     };
-                                    SDL_BindGPUVertexBuffers(
+                                    bind_mesh_vertex_buffers(
                                         task_pass,
-                                        0,
-                                        &vertex_binding,
-                                        1);
+                                        mesh);
                                     SDL_BindGPUIndexBuffer(
                                         task_pass,
                                         &index_binding,
@@ -4324,7 +4682,7 @@ bool run_gpu_engine(Engine& engine) {
                                     SDL_DrawGPUIndexedPrimitives(
                                         task_pass,
                                         mesh.index_count,
-                                        1,
+                                        mesh.instance_count,
                                         0,
                                         0,
                                         0);
@@ -4973,19 +5331,13 @@ bool run_gpu_engine(Engine& engine) {
                                 sizeof(fragment));
                         }
                     }
-                    const SDL_GPUBufferBinding vertex_binding{
-                        mesh.vertices,
-                        0,
-                    };
                     const SDL_GPUBufferBinding index_binding{
                         mesh.indices,
                         0,
                     };
-                    SDL_BindGPUVertexBuffers(
+                    bind_mesh_vertex_buffers(
                         pass,
-                        0,
-                        &vertex_binding,
-                        1);
+                        mesh);
                     SDL_BindGPUIndexBuffer(
                         pass,
                         &index_binding,
@@ -4999,7 +5351,7 @@ bool run_gpu_engine(Engine& engine) {
                             item.material_kind ==
                             upstream::RenderMaterialKind::standard;
                         SDL_GPUTextureSamplerBinding
-                            texture_bindings[9]{
+                            texture_bindings[pbr_texture_binding_capacity]{
                                 SDL_GPUTextureSamplerBinding{
                                     mesh.base_color,
                                     mesh.base_color_sampler,
@@ -5048,6 +5400,12 @@ bool run_gpu_engine(Engine& engine) {
                                     mesh.thickness_sampler,
                                 },
                             };
+                        if (!standard) {
+                            append_material_extension_bindings(
+                                &texture_bindings[
+                                    pbr_base_texture_binding_count],
+                                mesh);
+                        }
                         SDL_BindGPUFragmentSamplers(
                             pass,
                             0,
@@ -5057,7 +5415,7 @@ bool run_gpu_engine(Engine& engine) {
                     SDL_DrawGPUIndexedPrimitives(
                         pass,
                         mesh.index_count,
-                        1,
+                        mesh.instance_count,
                         0,
                         0,
                         0);
@@ -5084,7 +5442,7 @@ bool run_gpu_engine(Engine& engine) {
                 const SDL_GPUBufferBinding index_binding{state.background.indices, 0};
                 const SDL_GPUTextureSamplerBinding texture_binding{
                     state.background.texture,
-                    state.background_sampler,
+                    state.ground_sampler,
                 };
                 SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
                 SDL_BindGPUIndexBuffer(

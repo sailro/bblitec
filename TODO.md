@@ -74,12 +74,10 @@ baselines belong in [status](docs/status.md) and Git history.
   offsets, rotations, and independent transforms.
 - [ ] Vertex colors beyond the reached alpha/mask slice.
 - [ ] Sparse accessors and additional primitive modes.
-- [ ] Add a GPU instance-buffer and instanced draw path for
-  `EXT_mesh_gpu_instancing` without geometry expansion.
 - [ ] Complete glTF animation coverage: scale and STEP channels, multiple
   clips, and richer animation-group controls.
-- [ ] glTF cameras, spot lights, and multi-light PBR shading for punctual
-  light assets.
+- [ ] glTF cameras and spot lights; close the remaining multi-point-light PBR
+  parity gap in Scene 33.
 - [ ] KTX2/Basis and compression investigations.
 
 ### Property animation
@@ -91,7 +89,10 @@ baselines belong in [status](docs/status.md) and Git history.
 
 ### Material extensions
 
-- [ ] Specular, clearcoat, sheen, iridescence, dispersion, and anisotropy.
+- [x] Clearcoat, sheen, iridescence, and dispersion.
+- [ ] Specular and anisotropy.
+- [ ] Compose clearcoat/sheen layers with punctual multi-light PBR; the
+  combination currently fails explicitly in the renderer lowerer.
 - [ ] Require typed metadata specialization, focused tests, and an independent
   parity scene for each extension.
 - [ ] Generalize Standard lighting beyond the reached two-light uniform slice.
@@ -119,6 +120,12 @@ baselines belong in [status](docs/status.md) and Git history.
   functions.
 - [ ] Match the deferred environment-ground composition for Scenes 1, 13, and
   14 before enabling requested grounds by default.
+- [ ] Close the remaining transmission resolve and silhouette-coverage gap in
+  Scene 212 after the source-derived dispersion equations.
+- [ ] Close the residual morph and instancing raster-edge gaps in Scenes 243
+  and 247 without expanding geometry or adding scene-specific tolerances.
+- [ ] Match embedded `EXT_lights_image_based` interior and edge fidelity in
+  Scene 265 after the source-derived cubemap, SH, BRDF LUT, and rotation path.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 

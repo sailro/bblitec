@@ -304,13 +304,34 @@ Vec4 interpolate_quaternion(Vec4 left, Vec4 right, float amount) {
         left.w * right.w;
     if (dot < 0.0f) {
         right = Vec4{-right.x, -right.y, -right.z, -right.w};
+        dot = -dot;
     }
-    return normalize_quaternion(Vec4{
-        left.x + (right.x - left.x) * amount,
-        left.y + (right.y - left.y) * amount,
-        left.z + (right.z - left.z) * amount,
-        left.w + (right.w - left.w) * amount,
-    });
+    if (dot > 0.9995f) {
+        return normalize_quaternion(Vec4{
+            left.x + (right.x - left.x) * amount,
+            left.y + (right.y - left.y) * amount,
+            left.z + (right.z - left.z) * amount,
+            left.w + (right.w - left.w) * amount,
+        });
+    }
+    const float theta = std::acos(dot);
+    const float sin_theta = std::sin(theta);
+    const float left_weight =
+        std::sin((1.0f - amount) * theta) /
+        sin_theta;
+    const float right_weight =
+        std::sin(amount * theta) /
+        sin_theta;
+    return Vec4{
+        left_weight * left.x +
+            right_weight * right.x,
+        left_weight * left.y +
+            right_weight * right.y,
+        left_weight * left.z +
+            right_weight * right.z,
+        left_weight * left.w +
+            right_weight * right.w,
+    };
 }
 
 Vec4 cubic_quaternion(
@@ -888,6 +909,19 @@ TextureData texture_data(
     return result;
 }
 
+const ts::JsonValue* texture_transform_value(
+    const ts::JsonValue* texture_info) {
+    if (!texture_info) return nullptr;
+    const ts::JsonValue* extensions_value =
+        optional(
+            texture_info->as_object(),
+            "extensions");
+    if (!extensions_value) return nullptr;
+    return optional(
+        extensions_value->as_object(),
+        "KHR_texture_transform");
+}
+
 void apply_texture_transform(
     MaterialRecord& material,
     const ts::JsonValue* texture_info) {
@@ -1058,6 +1092,215 @@ MaterialHandle load_material(
                 !material.transmission_texture.bytes.empty()) {
                 material.alpha_mode = MaterialAlphaMode::blend;
             }
+        }
+        if (const ts::JsonValue* dispersion_value =
+                optional(
+                    extensions,
+                    "KHR_materials_dispersion")) {
+            const float dispersion = float_or(
+                dispersion_value->as_object(),
+                "dispersion",
+                0.0f);
+            const bool has_refraction =
+                material.has_ior ||
+                material.transmission_factor > 0.0f ||
+                !material.transmission_texture.bytes.empty();
+            const bool has_thickness =
+                material.thickness > 0.0f ||
+                !material.thickness_texture.bytes.empty();
+            if (
+                dispersion > 0.0f &&
+                has_refraction &&
+                has_thickness) {
+                material.dispersion = 20.0f / dispersion;
+            }
+        }
+        if (const ts::JsonValue* clearcoat_value =
+                optional(
+                    extensions,
+                    "KHR_materials_clearcoat")) {
+            const JsonObject& clearcoat =
+                clearcoat_value->as_object();
+            const ts::JsonValue* clearcoat_texture =
+                optional(clearcoat, "clearcoatTexture");
+            const ts::JsonValue*
+                clearcoat_roughness_texture = optional(
+                    clearcoat,
+                    "clearcoatRoughnessTexture");
+            const ts::JsonValue* clearcoat_normal_texture =
+                optional(
+                    clearcoat,
+                    "clearcoatNormalTexture");
+            material.clearcoat_intensity = float_or(
+                clearcoat,
+                "clearcoatFactor",
+                clearcoat_texture ? 1.0f : 0.0f);
+            material.clearcoat_roughness = float_or(
+                clearcoat,
+                "clearcoatRoughnessFactor",
+                clearcoat_roughness_texture ? 1.0f : 0.0f);
+            material.clearcoat_texture = texture_data(
+                buffer,
+                container,
+                views,
+                images,
+                textures,
+                samplers,
+                clearcoat_texture);
+            material.clearcoat_roughness_texture =
+                texture_data(
+                    buffer,
+                    container,
+                    views,
+                    images,
+                    textures,
+                    samplers,
+                    clearcoat_roughness_texture);
+            material.clearcoat_normal_texture = texture_data(
+                buffer,
+                container,
+                views,
+                images,
+                textures,
+                samplers,
+                clearcoat_normal_texture);
+            material.clearcoat_normal_scale =
+                clearcoat_normal_texture
+                    ? float_or(
+                          clearcoat_normal_texture
+                              ->as_object(),
+                          "scale",
+                          1.0f)
+                    : 1.0f;
+            require_matching_texture_transform(
+                material,
+                clearcoat_texture);
+            require_matching_texture_transform(
+                material,
+                clearcoat_roughness_texture);
+            require_matching_texture_transform(
+                material,
+                clearcoat_normal_texture);
+        }
+        if (const ts::JsonValue* sheen_value =
+                optional(extensions, "KHR_materials_sheen")) {
+            const JsonObject& sheen =
+                sheen_value->as_object();
+            const ts::JsonValue* sheen_color_texture =
+                optional(sheen, "sheenColorTexture");
+            const ts::JsonValue* sheen_roughness_texture =
+                optional(sheen, "sheenRoughnessTexture");
+            const std::vector<float> sheen_color =
+                float_array(
+                    optional(sheen, "sheenColorFactor"));
+            material.sheen_color = sheen_color.size() == 3
+                ? Color3{
+                      sheen_color[0],
+                      sheen_color[1],
+                      sheen_color[2],
+                  }
+                : Color3{0.0f, 0.0f, 0.0f};
+            material.sheen_roughness = float_or(
+                sheen,
+                "sheenRoughnessFactor",
+                0.0f);
+            material.sheen_intensity = 1.0f;
+            material.sheen_color_texture = texture_data(
+                buffer,
+                container,
+                views,
+                images,
+                textures,
+                samplers,
+                sheen_color_texture);
+            const bool same_as_color =
+                sheen_roughness_texture &&
+                sheen_color_texture &&
+                unsigned_value(
+                    required(
+                        sheen_roughness_texture->as_object(),
+                        "index")) ==
+                    unsigned_value(
+                        required(
+                            sheen_color_texture->as_object(),
+                            "index")) &&
+                texture_transform_value(
+                    sheen_roughness_texture) ==
+                    texture_transform_value(
+                        sheen_color_texture);
+            if (sheen_roughness_texture && !same_as_color) {
+                material.sheen_roughness_texture =
+                    texture_data(
+                        buffer,
+                        container,
+                        views,
+                        images,
+                        textures,
+                        samplers,
+                        sheen_roughness_texture);
+            } else if (
+                !material.sheen_color_texture.bytes.empty()) {
+                material.sheen_roughness_texture =
+                    material.sheen_color_texture;
+            }
+            require_matching_texture_transform(
+                material,
+                sheen_color_texture);
+            require_matching_texture_transform(
+                material,
+                sheen_roughness_texture);
+        }
+        if (const ts::JsonValue* iridescence_value =
+                optional(
+                    extensions,
+                    "KHR_materials_iridescence")) {
+            const JsonObject& iridescence =
+                iridescence_value->as_object();
+            const ts::JsonValue* iridescence_texture =
+                optional(
+                    iridescence,
+                    "iridescenceTexture");
+            const ts::JsonValue*
+                iridescence_thickness_texture = optional(
+                    iridescence,
+                    "iridescenceThicknessTexture");
+            material.iridescence_intensity = float_or(
+                iridescence,
+                "iridescenceFactor",
+                0.0f);
+            material.iridescence_index_of_refraction =
+                float_or(iridescence, "iridescenceIor", 1.3f);
+            material.iridescence_minimum_thickness = float_or(
+                iridescence,
+                "iridescenceThicknessMinimum",
+                100.0f);
+            material.iridescence_maximum_thickness = float_or(
+                iridescence,
+                "iridescenceThicknessMaximum",
+                400.0f);
+            material.iridescence_texture = texture_data(
+                buffer,
+                container,
+                views,
+                images,
+                textures,
+                samplers,
+                iridescence_texture);
+            material.iridescence_thickness_texture =
+                texture_data(
+                    buffer,
+                    container,
+                    views,
+                    images,
+                    textures,
+                    samplers,
+                    iridescence_thickness_texture);
+            require_matching_texture_transform(
+                material,
+                iridescence_texture);
+            require_matching_texture_transform(
+                material,
+                iridescence_thickness_texture);
         }
     }
     material.emissive_texture = texture_data(
@@ -1469,6 +1712,112 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                                   *optional(target, "TANGENT")))
                         : nullptr);
             }
+            std::vector<Matrix> instance_matrices;
+            if (const ts::JsonValue* extensions_value =
+                    optional(node, "extensions")) {
+                const ts::JsonValue* instancing_value =
+                    optional(
+                        extensions_value->as_object(),
+                        "EXT_mesh_gpu_instancing");
+                if (instancing_value) {
+                    if (animated || !morph_positions.empty()) {
+                        throw std::runtime_error(
+                            "Animated or morphed GPU instances are not supported.");
+                    }
+                    const JsonObject& instance_attributes =
+                        required(
+                            instancing_value->as_object(),
+                            "attributes")
+                            .as_object();
+                    const auto accessor =
+                        [&](const char* name)
+                        -> const AccessorInfo* {
+                        const ts::JsonValue* value =
+                            optional(
+                                instance_attributes,
+                                name);
+                        return value
+                            ? &accessors.at(
+                                  unsigned_value(*value))
+                            : nullptr;
+                    };
+                    const AccessorInfo* translations =
+                        accessor("TRANSLATION");
+                    const AccessorInfo* rotations =
+                        accessor("ROTATION");
+                    const AccessorInfo* scales =
+                        accessor("SCALE");
+                    std::size_t instance_count = 0;
+                    for (const AccessorInfo* value :
+                         {translations, rotations, scales}) {
+                        if (!value) continue;
+                        if (
+                            instance_count != 0 &&
+                            value->count != instance_count) {
+                            throw std::runtime_error(
+                                "GPU instance accessor counts differ.");
+                        }
+                        instance_count = value->count;
+                    }
+                    const Matrix& node_world =
+                        compute_world(node_index);
+                    for (
+                        std::size_t instance = 0;
+                        instance < instance_count;
+                        ++instance) {
+                        const Vec3 translation = translations
+                            ? Vec3{
+                                  read_component(
+                                      buffer, container, views,
+                                      *translations, instance, 0),
+                                  read_component(
+                                      buffer, container, views,
+                                      *translations, instance, 1),
+                                  read_component(
+                                      buffer, container, views,
+                                      *translations, instance, 2),
+                              }
+                            : Vec3{};
+                        const Vec4 rotation = rotations
+                            ? Vec4{
+                                  read_component(
+                                      buffer, container, views,
+                                      *rotations, instance, 0),
+                                  read_component(
+                                      buffer, container, views,
+                                      *rotations, instance, 1),
+                                  read_component(
+                                      buffer, container, views,
+                                      *rotations, instance, 2),
+                                  read_component(
+                                      buffer, container, views,
+                                      *rotations, instance, 3),
+                              }
+                            : Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+                        const Vec3 scale = scales
+                            ? Vec3{
+                                  read_component(
+                                      buffer, container, views,
+                                      *scales, instance, 0),
+                                  read_component(
+                                      buffer, container, views,
+                                      *scales, instance, 1),
+                                  read_component(
+                                      buffer, container, views,
+                                      *scales, instance, 2),
+                              }
+                            : Vec3{1.0f, 1.0f, 1.0f};
+                        instance_matrices.push_back(
+                            native_matrix(
+                                multiply_matrix(
+                                    node_world,
+                                    trs_matrix(
+                                        translation,
+                                        rotation,
+                                        scale))));
+                    }
+                }
+            }
             ModelGeometry geometry;
             geometry.vertices.resize(positions.count);
             geometry.bounds_min = Vec3{
@@ -1481,7 +1830,11 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 std::numeric_limits<float>::lowest(),
                 std::numeric_limits<float>::lowest(),
             };
-            const Matrix& matrix = compute_world(node_index);
+            const bool instanced =
+                !instance_matrices.empty();
+            const Matrix matrix = instanced
+                ? identity_matrix()
+                : compute_world(node_index);
             const float determinant = linear_determinant(matrix);
             for (std::size_t index = 0; index < positions.count; ++index) {
                 ModelVertex vertex;
@@ -1491,7 +1844,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     read_component(buffer, container, views, positions, index, 2),
                 };
                 vertex.local_position = local_position;
-                vertex.position = animated
+                vertex.position = animated || instanced
                     ? Vec3{
                           -local_position.x,
                           local_position.y,
@@ -1504,7 +1857,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         read_component(buffer, container, views, *normals, index, 1),
                         read_component(buffer, container, views, *normals, index, 2),
                     };
-                    vertex.normal = animated
+                    vertex.normal = animated || instanced
                         ? normalize(Vec3{
                               -local_normal.x,
                               local_normal.y,
@@ -1518,7 +1871,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         read_component(buffer, container, views, *tangents, index, 1),
                         read_component(buffer, container, views, *tangents, index, 2),
                     };
-                    const Vec3 tangent = animated
+                    const Vec3 tangent = animated || instanced
                         ? normalize(Vec3{
                               -local_tangent.x,
                               local_tangent.y,
@@ -1765,6 +2118,46 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             if (animated) {
                 geometry.bind_vertices = geometry.vertices;
             }
+            if (instanced) {
+                geometry.bounds_min = Vec3{
+                    std::numeric_limits<float>::max(),
+                    std::numeric_limits<float>::max(),
+                    std::numeric_limits<float>::max(),
+                };
+                geometry.bounds_max = Vec3{
+                    std::numeric_limits<float>::lowest(),
+                    std::numeric_limits<float>::lowest(),
+                    std::numeric_limits<float>::lowest(),
+                };
+                for (const Matrix& instance :
+                     instance_matrices) {
+                    for (const ModelVertex& vertex :
+                         geometry.vertices) {
+                        const Vec3 position =
+                            transform_point_raw(
+                                instance,
+                                vertex.position);
+                        geometry.bounds_min.x = std::min(
+                            geometry.bounds_min.x,
+                            position.x);
+                        geometry.bounds_min.y = std::min(
+                            geometry.bounds_min.y,
+                            position.y);
+                        geometry.bounds_min.z = std::min(
+                            geometry.bounds_min.z,
+                            position.z);
+                        geometry.bounds_max.x = std::max(
+                            geometry.bounds_max.x,
+                            position.x);
+                        geometry.bounds_max.y = std::max(
+                            geometry.bounds_max.y,
+                            position.y);
+                        geometry.bounds_max.z = std::max(
+                            geometry.bounds_max.z,
+                            position.z);
+                    }
+                }
+            }
             engine.geometries.push_back(std::move(geometry));
             MeshRecord record;
             record.primitive = PrimitiveKind::gltf;
@@ -1785,7 +2178,9 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             });
             const std::size_t material_index = unsigned_or(primitive, "material", 0);
             if (material_index < materials.size()) record.material = materials[material_index];
-            engine.meshes.push_back(record);
+            record.instance_matrices =
+                std::move(instance_matrices);
+            engine.meshes.push_back(std::move(record));
             const std::uint32_t mesh_record_index =
                 static_cast<std::uint32_t>(engine.meshes.size() - 1);
             if (animated) {
@@ -2104,8 +2499,16 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                                       amount,
                           };
             }
-            for (const WeightTrack& track :
-                 animation_runtime->weight_tracks) {
+            for (
+                auto track_iterator =
+                    animation_runtime
+                        ->weight_tracks.rbegin();
+                track_iterator !=
+                    animation_runtime
+                        ->weight_tracks.rend();
+                ++track_iterator) {
+                const WeightTrack& track =
+                    *track_iterator;
                 if (
                     track.times.empty() ||
                     track.node >= animation_runtime->nodes.size()) {

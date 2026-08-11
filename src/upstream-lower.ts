@@ -35,6 +35,12 @@ class GeneratedSourceWriter {
             gpuDeformation: boolean;
             textureTransform: boolean;
             imageBasedLighting: boolean;
+            gpuInstancing: boolean;
+            multiLight: boolean;
+            clearcoat: boolean;
+            sheen: boolean;
+            iridescence: boolean;
+            dispersion: boolean;
         },
     ): void {
         const context = new LoweringContext(this.store);
@@ -49,6 +55,11 @@ class GeneratedSourceWriter {
             `#pragma once
 
 #define BBLITE_GPU_DEFORMATION ${options.gpuDeformation ? 1 : 0}
+#define BBLITE_GPU_INSTANCING ${options.gpuInstancing ? 1 : 0}
+#define BBLITE_MATERIAL_CLEARCOAT ${options.clearcoat ? 1 : 0}
+#define BBLITE_MATERIAL_SHEEN ${options.sheen ? 1 : 0}
+#define BBLITE_MATERIAL_IRIDESCENCE ${options.iridescence ? 1 : 0}
+#define BBLITE_MATERIAL_DISPERSION ${options.dispersion ? 1 : 0}
 `,
         );
 
@@ -197,6 +208,14 @@ class GeneratedSourceWriter {
                         options.textureTransform,
                     environmentRotation:
                         options.imageBasedLighting,
+                    gpuInstancing:
+                        options.gpuInstancing,
+                    multiLight:
+                        options.multiLight,
+                    clearcoat: options.clearcoat,
+                    sheen: options.sheen,
+                    iridescence: options.iridescence,
+                    dispersion: options.dispersion,
                 }),
                 generated,
                 "upstream/include/bblite/upstream/renderer_plan.hpp",
@@ -220,6 +239,14 @@ class GeneratedSourceWriter {
                     options.textureTransform,
                 environmentRotation:
                     options.imageBasedLighting,
+                gpuInstancing:
+                    options.gpuInstancing,
+                multiLight:
+                    options.multiLight,
+                clearcoat: options.clearcoat,
+                sheen: options.sheen,
+                iridescence: options.iridescence,
+                dispersion: options.dispersion,
             });
             for (const shader of shaders) {
                 const shaderPath = resolve(this.outputRoot, shader.output);
@@ -397,6 +424,12 @@ export function emitUpstreamGenerated(
         gpuDeformation: boolean;
         textureTransform: boolean;
         imageBasedLighting: boolean;
+        gpuInstancing: boolean;
+        multiLight: boolean;
+        clearcoat: boolean;
+        sheen: boolean;
+        iridescence: boolean;
+        dispersion: boolean;
     } = {
         idDiagnostics: false,
         pbrDiagnostics: false,
@@ -405,6 +438,12 @@ export function emitUpstreamGenerated(
         gpuDeformation: false,
         textureTransform: false,
         imageBasedLighting: false,
+        gpuInstancing: false,
+        multiLight: false,
+        clearcoat: false,
+        sheen: false,
+        iridescence: false,
+        dispersion: false,
     },
 ): void {
     new GeneratedSourceWriter(outputRoot, new UpstreamSourceStore()).emit(

@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import { specializeGltf } from "../src/asset-specializer.js";
+import {
+    emitAssetSpecializations,
+    specializeGltf,
+} from "../src/asset-specializer.js";
 
 function writeGlb(path: string, document: Record<string, unknown>): void {
     const json = Buffer.from(JSON.stringify(document));
@@ -88,5 +91,56 @@ test("specializes glTF dynamic feature imports without any-typed JSON", () => {
         ]);
     } finally {
         rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test("selects PBR material-extension specializations from glTF metadata", () => {
+    const scratch = resolve("artifacts", "test", "asset-specializer");
+    rmSync(scratch, { recursive: true, force: true });
+    mkdirSync(join(scratch, "assets"), { recursive: true });
+    try {
+        writeGlb(join(scratch, "assets", "extensions.glb"), {
+            extensionsUsed: [
+                "KHR_materials_clearcoat",
+                "KHR_materials_sheen",
+                "KHR_materials_iridescence",
+                "KHR_materials_dispersion",
+            ],
+            materials: [{ name: "Layered" }],
+            meshes: [],
+            nodes: [],
+        });
+        const features = emitAssetSpecializations(scratch, [
+            {
+                source: "https://example.invalid/extensions.glb",
+                output: "extensions.glb",
+                kind: "gltf",
+            },
+        ]);
+        assert.equal(features.clearcoat, true);
+        assert.equal(features.sheen, true);
+        assert.equal(features.iridescence, true);
+        assert.equal(features.dispersion, true);
+        assert.equal(features.textureTransform, false);
+        assert.equal(features.multiLight, false);
+
+        writeGlb(join(scratch, "assets", "plain.glb"), {
+            materials: [{ name: "Plain" }],
+            meshes: [],
+            nodes: [],
+        });
+        const plain = emitAssetSpecializations(scratch, [
+            {
+                source: "https://example.invalid/plain.glb",
+                output: "plain.glb",
+                kind: "gltf",
+            },
+        ]);
+        assert.equal(plain.clearcoat, false);
+        assert.equal(plain.sheen, false);
+        assert.equal(plain.iridescence, false);
+        assert.equal(plain.dispersion, false);
+    } finally {
+        rmSync(scratch, { recursive: true, force: true });
     }
 });

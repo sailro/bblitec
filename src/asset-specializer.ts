@@ -213,6 +213,12 @@ export interface AssetSpecializationFeatures {
     gpuDeformation: boolean;
     imageBasedLighting: boolean;
     textureTransform: boolean;
+    gpuInstancing: boolean;
+    multiLight: boolean;
+    clearcoat: boolean;
+    sheen: boolean;
+    iridescence: boolean;
+    dispersion: boolean;
 }
 
 export function emitAssetSpecializations(
@@ -225,6 +231,12 @@ export function emitAssetSpecializations(
             gpuDeformation: false,
             imageBasedLighting: false,
             textureTransform: false,
+            gpuInstancing: false,
+            multiLight: false,
+            clearcoat: false,
+            sheen: false,
+            iridescence: false,
+            dispersion: false,
         };
     }
     let nextDrawId = 1;
@@ -248,21 +260,21 @@ export function emitAssetSpecializations(
     const output = resolve(outputRoot, "upstream/gltf-specialization.json");
     mkdirSync(dirname(output), { recursive: true });
     writeFileSync(output, `${JSON.stringify(specializations, null, 2)}\n`);
+    const usesExtension = (extension: string): boolean =>
+        specializations.some((specialization) =>
+            specialization.extensionsUsed.includes(extension),
+        );
     return {
         gpuDeformation: specializations.some(
             (specialization) => specialization.features.animations,
         ),
-        imageBasedLighting: specializations.some(
-            (specialization) =>
-                specialization.extensionsUsed.includes(
-                    "EXT_lights_image_based",
-                ),
-        ),
-        textureTransform: specializations.some(
-            (specialization) =>
-                specialization.extensionsUsed.includes(
-                    "KHR_texture_transform",
-                ),
-        ),
+        imageBasedLighting: usesExtension("EXT_lights_image_based"),
+        textureTransform: usesExtension("KHR_texture_transform"),
+        gpuInstancing: usesExtension("EXT_mesh_gpu_instancing"),
+        multiLight: usesExtension("KHR_lights_punctual"),
+        clearcoat: usesExtension("KHR_materials_clearcoat"),
+        sheen: usesExtension("KHR_materials_sheen"),
+        iridescence: usesExtension("KHR_materials_iridescence"),
+        dispersion: usesExtension("KHR_materials_dispersion"),
     };
 }

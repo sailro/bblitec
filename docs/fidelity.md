@@ -77,6 +77,27 @@ Transmission uses an opaque scene-color copy, dielectric Fresnel
 `((ior-1)/(ior+1))²`, and Beer-Lambert volume attenuation
 `exp(log(color)/distance*thickness)`. Independent skybox, scene-color, IOR,
 volume, and scene 176 gates keep the dependency chain observable.
+`KHR_materials_dispersion` reuses that path and splits the refracted ray into
+per-RGB indices with Babylon's `spread = 0.04 * (20/dispersion) * (ior-1)`;
+Scene 212 gates it.
+
+Clearcoat, sheen, and iridescence are metadata-driven PBR layers selected by
+`extensionsUsed` and lowered into the shared PBR fragment:
+
+- clearcoat adds a GGX/Kelemen direct lobe plus a Jones analytical IBL lobe and
+  attenuates the base layer by `1 - F(ccF0) * intensity`; the glTF loader
+  disables Babylon's base-F0 remap, so intensity zero degenerates exactly to
+  the base composition (Scene 28)
+- sheen uses the Charlie distribution with Ashikhmin visibility, samples the
+  BRDF LUT blue channel at sheen roughness, and scales the base layer by
+  `1 - maxSheenColor * brdf.b` (Scene 29)
+- iridescence evaluates Babylon's thin-film airy summation in XYZ and blends
+  the result into base F0 by the iridescence intensity (Scene 178)
+
+Neutral white intensity/roughness textures and a flat coat-normal flag keep a
+single generated variant numerically identical to Babylon Lite's per-material
+shader variants. Combining a clearcoat or sheen layer with punctual
+multi-light PBR is not lowered and fails explicitly.
 The generated material records preserve Babylon's distinction between volume
 attenuation, thickness-based refraction depth, and glTF-only IOR-to-F0
 mapping; direct `createPbrMaterial` refraction options do not implicitly enable

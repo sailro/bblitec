@@ -353,6 +353,7 @@ struct MeshRecord {
     bool has_rotation_quaternion = false;
     bool gpu_deformation = false;
     std::vector<std::array<float, 16>> bone_matrices;
+    std::vector<std::array<float, 16>> instance_matrices;
     std::array<float, 4> morph_weights{};
 };
 
@@ -430,6 +431,18 @@ struct MaterialRecord {
     bool use_thickness_as_depth = false;
     Color3 attenuation_color{1.0f, 1.0f, 1.0f};
     float attenuation_distance = 1.0f;
+    float dispersion = 0.0f;
+    float clearcoat_intensity = 0.0f;
+    float clearcoat_roughness = 0.0f;
+    float clearcoat_index_of_refraction = 1.5f;
+    float clearcoat_normal_scale = 1.0f;
+    Color3 sheen_color{0.0f, 0.0f, 0.0f};
+    float sheen_roughness = 0.0f;
+    float sheen_intensity = 1.0f;
+    float iridescence_intensity = 0.0f;
+    float iridescence_index_of_refraction = 1.3f;
+    float iridescence_minimum_thickness = 100.0f;
+    float iridescence_maximum_thickness = 400.0f;
     bool has_ior = false;
     bool has_volume = false;
     bool skybox_mode = false;
@@ -467,6 +480,13 @@ struct MaterialRecord {
     TextureData normal_texture;
     TextureData transmission_texture;
     TextureData thickness_texture;
+    TextureData clearcoat_texture;
+    TextureData clearcoat_roughness_texture;
+    TextureData clearcoat_normal_texture;
+    TextureData sheen_color_texture;
+    TextureData sheen_roughness_texture;
+    TextureData iridescence_texture;
+    TextureData iridescence_thickness_texture;
     TextureData emissive_texture;
     TextureData opacity_texture;
     TextureData specular_texture;
