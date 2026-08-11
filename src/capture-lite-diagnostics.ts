@@ -69,7 +69,7 @@ function mimeType(path: string): string {
 function assetBySuffix(manifest: CompileManifest, suffix: string): string {
     const asset = manifest.assets.find(({ source }) => source.toLowerCase().endsWith(suffix));
     if (!asset) throw new Error(`Generated manifest is missing ${suffix}.`);
-    return `/generated/boombox/assets/${asset.output}`;
+    return `/generated/scene1/assets/${asset.output}`;
 }
 
 function diagnosticModule(manifest: CompileManifest): string {
@@ -177,7 +177,7 @@ async function main(): Promise<void> {
     const root = resolve(".");
     const outputDirectory = resolve("artifacts/parity/lite-diagnostics");
     const manifest = JSON.parse(
-        readFileSync(resolve("generated/boombox/manifest.json"), "utf8"),
+        readFileSync(resolve("generated/scene1/manifest.json"), "utf8"),
     ) as CompileManifest;
     const moduleSource = diagnosticModule(manifest);
     const html = `<!doctype html>

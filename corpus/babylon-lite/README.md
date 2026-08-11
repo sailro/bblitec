@@ -7,7 +7,8 @@ These files are byte-identical scene inputs from:
 - source commit: `7184feda683072980735f9a180e6f567ee5717ba`
 - upstream path: `lab/lite/src/lite`
 
-Registered files and SHA-256 hashes are recorded in
+The snapshot contains all 231 numbered scenes. The 43 registered curated
+scenes and their SHA-256 hashes are recorded in
 `upstream/babylon-lite-scenes.json`. The corpus is immutable evidence; update
 it only as part of an explicit upstream-pin migration.
 

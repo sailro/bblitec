@@ -35,10 +35,10 @@
     "scenes:build": "npm run scene -- build all",
     "scenes:process": "npm run scene -- process all",
     "scenes:parity": "npm run scene -- parity all",
-    "analyze:boombox": "npm run build && node dist/src/analyze-upstream.js",
+    "analyze:scene1": "npm run build && node dist/src/analyze-upstream.js",
     "parity:lite-diagnostics": "npm run build && node dist/src/capture-lite-diagnostics.js",
     "parity:diagnostics:compare": "npm run build && node dist/src/compare-lite-diagnostics.js",
-    "parity:diagnostics": "npm run parity:lite-diagnostics && npm run scene -- parity boombox && npm run parity:diagnostics:compare",
+    "parity:diagnostics": "npm run parity:lite-diagnostics && npm run scene -- parity scene1 && npm run parity:diagnostics:compare",
     "package:boombox": "pwsh -File tools/package-boombox-demo.ps1",
     "shaders:build": "pwsh -File tools/compile-shaders.ps1"
   },

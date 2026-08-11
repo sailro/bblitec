@@ -25,11 +25,11 @@ npm run scene -- list
 Use the generic scene command rather than adding scripts for ordinary work:
 
 ```powershell
-npm run scene -- show boombox
-npm run scene -- compile boombox
-npm run scene -- build boombox
-npm run scene -- process boombox
-npm run scene -- parity boombox
+npm run scene -- show scene1
+npm run scene -- compile scene1
+npm run scene -- build scene1
+npm run scene -- process scene1
+npm run scene -- parity scene1
 npm run scene -- geometry scene145 --recapture-reference
 ```
 
@@ -140,11 +140,11 @@ $env:CMAKE_COMMAND = "C:\path\to\cmake.exe" # only when cmake is not on PATH
 Manual equivalent:
 
 ```powershell
-cmake -S native -B native\build-boombox-release `
+cmake -S native -B native\build-scene1-release `
   -G Ninja `
   -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
-  -DBBLITE_GENERATED_DIR="$PWD\generated\boombox"
-cmake --build native\build-boombox-release --config Release
+  -DBBLITE_GENERATED_DIR="$PWD\generated\scene1"
+cmake --build native\build-scene1-release --config Release
 ```
 
 Ninja is the default on every platform. On Windows, the scene command locates
@@ -161,7 +161,7 @@ first configured without the toolchain, delete that specific
 `native\build-<scene>-release` directory and configure it again; adding the
 toolchain to an existing cache is not reliable.
 
-The default follows this Release BoomBox benchmark on the development Windows
+The default follows this Release Scene 1 benchmark on the development Windows
 machine using the same MSVC toolchain:
 
 | Workload | Visual Studio 18 | Ninja |
@@ -170,14 +170,14 @@ machine using the same MSVC toolchain:
 | no-op build | 1.16 s | 0.08 s |
 | one-file rebuild | 2.53 s | 2.21 s |
 
-The resulting 1280x720 BoomBox captures were byte-identical (`MAD 0.000`);
+The resulting 1280x720 Scene 1 captures were byte-identical (`MAD 0.000`);
 both measure `0.001` full MAD against the pinned Babylon Lite golden.
 
 Override the generator only when needed:
 
 ```powershell
 $env:BBLITE_CMAKE_GENERATOR = "Visual Studio 18 2026"
-npm run scene -- process boombox
+npm run scene -- process scene1
 ```
 
 Ninja places `bblite_native.exe` directly in the build directory; multi-config
@@ -251,11 +251,11 @@ fails instead of recreating a missing golden; only
 `--recapture-reference` authorizes an intentional replacement. Ad-hoc scenes
 retain the bootstrap behavior shown above.
 
-BoomBox CPU and GPU runs use the same generic command:
+Scene 1 CPU and GPU runs use the same generic command:
 
 ```powershell
-npm run scene -- parity boombox --cpu
-npm run scene -- parity boombox
+npm run scene -- parity scene1 --cpu
+npm run scene -- parity scene1
 npm run parity:diagnostics
 ```
 

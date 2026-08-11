@@ -3198,7 +3198,7 @@ class Compiler
                 risk: "medium",
                 validation: [
                     "pinned dither formula experiment",
-                    "BoomBox background attribution",
+                    "Scene 1 background attribution",
                     "documented no-dither regression floor",
                 ],
             });

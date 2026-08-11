@@ -999,9 +999,13 @@ async function main() {
     );
 });
 
-test("compiles the authoritative GitHub BoomBox parity scene", () => {
-    const source = readFileSync(resolve("examples/boombox.ts"), "utf8");
-    const result = compileSource(source, { fileName: "examples/boombox.ts" });
+test("compiles pinned Scene 1 BoomBox parity", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene1.ts";
+    const source = readFileSync(resolve(sourcePath), "utf8");
+    const result = compileSource(source, {
+        fileName: sourcePath,
+    });
 
     assert.deepEqual(result.manifest.features, [
         "core",

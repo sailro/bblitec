@@ -59,7 +59,7 @@ interface Arguments {
 }
 
 function parseArguments(arguments_: string[]): Arguments {
-    let sceneId = "boombox";
+    let sceneId = "scene1";
     let executable: string | undefined;
     let actual: string | undefined;
     let recaptureReference = false;
@@ -108,7 +108,9 @@ export function runNative(
     diagnosticDirectory?: string,
 ): void {
     if (!existsSync(executable)) {
-        throw new Error(`Native executable not found: ${executable}. Build the BoomBox Release target first.`);
+        throw new Error(
+            `Native executable not found: ${executable}. Build the scene Release target first.`,
+        );
     }
     mkdirSync(resolve(screenshot, ".."), { recursive: true });
     const screenshotFrame = Number.parseInt(

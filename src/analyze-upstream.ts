@@ -26,8 +26,14 @@ function entryImports(path: string): string[] {
     return result;
 }
 
-const entry = resolve(process.argv[2] ?? "examples/boombox.ts");
-const output = resolve(process.argv[3] ?? "generated/boombox/upstream-graph.json");
+const entry = resolve(
+    process.argv[2] ??
+        "corpus/babylon-lite/lab/lite/src/lite/scene1.ts",
+);
+const output = resolve(
+    process.argv[3] ??
+        "generated/scene1/upstream-graph.json",
+);
 const store = new UpstreamSourceStore();
 const graph = analyzeUpstreamGraph(store, entryImports(entry));
 mkdirSync(dirname(output), { recursive: true });

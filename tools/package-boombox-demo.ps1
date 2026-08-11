@@ -1,6 +1,6 @@
 param(
     [string]$OutputRoot = "artifacts\releases",
-    [string]$BuildDirectory = "native\build-boombox-release"
+    [string]$BuildDirectory = "native\build-scene1-release"
 )
 
 $ErrorActionPreference = "Stop"
@@ -128,8 +128,8 @@ Troubleshooting:
   - Keep the assets and shaders directories beside the executable.
 
 Current D3D12 fidelity baseline:
-  Full-image MAD: 0.447
-  Foreground MAD: 2.003
+  Full-image MAD: 0.001
+  Foreground MAD: 0.015
 
 Compiler source:
   https://github.com/sailro/bblitec

@@ -25,7 +25,7 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 Generated behavior is tied to `@babylonjs/lite@1.18.0` at commit
 `7184feda683072980735f9a180e6f567ee5717ba`.
 
-## BoomBox baseline
+## Scene 1 (BoomBox) baseline
 
 Development Windows machine, D3D12, 1280x720:
 
@@ -33,7 +33,7 @@ Development Windows machine, D3D12, 1280x720:
 | --- | ---: | ---: | ---: |
 | SDL_GPU, 4x MSAA | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.015}}$ | 0.176 ms average, 0.141 ms median |
 
-Against the pinned Babylon Lite output, BoomBox rendering is effectively exact.
+Against the pinned Babylon Lite output, Scene 1 rendering is effectively exact.
 Regression ceilings are `0.01` full and `0.03` foreground MAD.
 
 ## Curated parity scenes
@@ -48,26 +48,46 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 
 | Scene | Preview | Full MAD | Foreground MAD | Primary coverage |
 | ---: | :---: | ---: | ---: | --- |
+| 1 | <img src="images/scenes/scene1.png" alt="Scene 1 BoomBox rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.015}}$ | BoomBox glTF, IBL environment, generated PBR diagnostics |
 | 2 | <img src="images/scenes/scene2.png" alt="Scene 2 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | Directional-light diffuse/specular colors on a generated Standard sphere |
 | 5 | <img src="images/scenes/scene5.png" alt="Scene 5 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.020}}$ | GPU morph targets plus recursive GPU skeleton skinning |
+| 6 | <img src="images/scenes/scene6.png" alt="Scene 6 rendering" width="120"> | $\color{#cf222e}{\textsf{2.124}}$ | $\color{#1a7f37}{\textsf{0.030}}$ | specular-glossiness gold sphere and solid texture inputs |
 | 8 | <img src="images/scenes/scene8.png" alt="Scene 8 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.129}}$ | $\color{#1a7f37}{\textsf{0.134}}$ | exact 1024-sample HDR GGX, cubemap skybox, glass alpha/reflectance<br><em>Skybox outside the glass sphere is effectively exact (0.00023 MAD); remaining error is concentrated on transparent sphere edges.</em> |
 | 10 | <img src="images/scenes/scene10.png" alt="Scene 10 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | generated sphere, no-IBL PBR, geometric normals |
 | 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.010}}$ | $\color{#1a7f37}{\textsf{0.081}}$ | material grid, explicit occlusion semantics<br><em>Full-image MAD includes the known generated-ground composition difference.</em> |
+| 14 | <img src="images/scenes/scene14.png" alt="Scene 14 rendering" width="120"> | $\color{#cf222e}{\textsf{5.322}}$ | $\color{#1a7f37}{\textsf{0.103}}$ | Flight Helmet glTF with generated default framing and IBL |
+| 24 | <img src="images/scenes/scene24.png" alt="Scene 24 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.114}}$ | $\color{#1a7f37}{\textsf{0.120}}$ | Hill Valley `.babylon` geometry, camera, textures, and baked lighting |
+| 28 | <img src="images/scenes/scene28.png" alt="Scene 28 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.371}}$ | $\color{#cf222e}{\textsf{3.914}}$ | clearcoat glTF differential coverage |
+| 29 | <img src="images/scenes/scene29.png" alt="Scene 29 rendering" width="120"> | $\color{#cf222e}{\textsf{1.175}}$ | $\color{#cf222e}{\textsf{30.682}}$ | sheen-cloth glTF differential coverage |
+| 31 | <img src="images/scenes/scene31.png" alt="Scene 31 rendering" width="120"> | $\color{#9a6700}{\textsf{0.952}}$ | $\color{#cf222e}{\textsf{6.326}}$ | `KHR_materials_emissive_strength` |
 | 32 | <img src="images/scenes/scene32.png" alt="Scene 32 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | `KHR_materials_unlit` |
+| 33 | <img src="images/scenes/scene33.png" alt="Scene 33 rendering" width="120"> | $\color{#cf222e}{\textsf{2.574}}$ | $\color{#cf222e}{\textsf{62.065}}$ | `KHR_lights_punctual` asset with scene-color transmission |
 | 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | no-color material views, depth targets |
 | 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.063}}$ | $\color{#1a7f37}{\textsf{0.063}}$ | `.babylon`, Standard geometry outputs, default anisotropy<br><em>The frame-graph copy path now matches Babylon Lite's integer viewport and scissor contract. Full-resolution attachment MAD is at most 0.067; view/world normals are 0.002/0.003. Run `npm run scene -- geometry scene145`.</em> |
 | 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.021}}$ | $\color{#1a7f37}{\textsf{0.019}}$ | Exact pinned FreeCamera Sponza view, PBR geometry outputs, 7+4 MRT composition<br><em>Typed static-loop lowering preserves Babylon Lite's double-precision viewport arithmetic before source-derived integer viewport/scissor conversion.</em> |
+| 150 | <img src="images/scenes/scene150.png" alt="Scene 150 rendering" width="120"> | $\color{#cf222e}{\textsf{3.891}}$ | $\color{#cf222e}{\textsf{164.359}}$ | deterministic property `position.x` animation |
 | 151 | <img src="images/scenes/scene151.png" alt="Scene 151 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | grouped position, scaling, and quaternion property animation |
 | 154 | <img src="images/scenes/scene154.png" alt="Scene 154 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | LINEAR versus STEP property interpolation |
 | 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | custom shader blend, alpha test, discard |
 | 168 | <img src="images/scenes/scene168.png" alt="Scene 168 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.068}}$ | $\color{#1a7f37}{\textsf{0.389}}$ | mirrored double-sided winding; 100% within one byte |
 | 176 | <img src="images/scenes/scene176.png" alt="Mosquito in Amber" width="120"> | $\color{#1a7f37}{\textsf{0.418}}$ | $\color{#1a7f37}{\textsf{0.418}}$ | integrated linear transmission, IOR, volume, and scene-color copy |
+| 178 | <img src="images/scenes/scene178.png" alt="Scene 178 rendering" width="120"> | $\color{#9a6700}{\textsf{0.556}}$ | $\color{#9a6700}{\textsf{0.721}}$ | `KHR_materials_iridescence` Abalone and camera-following skybox |
+| 210 | <img src="images/scenes/scene210.png" alt="Scene 210 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.037}}$ | $\color{#1a7f37}{\textsf{0.210}}$ | `KHR_xmp_json_ld` metadata on a rounded cube |
+| 212 | <img src="images/scenes/scene212.png" alt="Scene 212 rendering" width="120"> | $\color{#cf222e}{\textsf{3.301}}$ | $\color{#cf222e}{\textsf{3.715}}$ | dispersion asset with transmission, IOR, and volume |
 | 213 | <img src="images/scenes/scene213.png" alt="Scene 213 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.001}}$ | GridMaterial opaque/transparent families and ordered draw lists |
 | 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | deterministic glTF node rotation animation |
+| 243 | <img src="images/scenes/scene243.png" alt="Scene 243 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.104}}$ | $\color{#cf222e}{\textsf{1.274}}$ | deterministic MorphStressTest glTF animation |
 | 245 | <img src="images/scenes/scene245.png" alt="Scene 245 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.001}}$ | recursive skeleton hierarchy, inverse bind matrices, GPU skinning |
+| 246 | <img src="images/scenes/scene246.png" alt="Scene 246 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.006}}$ | $\color{#1a7f37}{\textsf{0.042}}$ | deterministic SimpleSkin glTF animation |
+| 247 | <img src="images/scenes/scene247.png" alt="Scene 247 rendering" width="120"> | $\color{#cf222e}{\textsf{1.690}}$ | $\color{#cf222e}{\textsf{19.655}}$ | TeapotsGalore material and texture families |
 | 248 | <img src="images/scenes/scene248.png" alt="Scene 248 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.005}}$ | external glTF and sampler modes |
 | 249 | <img src="images/scenes/scene249.png" alt="Scene 249 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.024}}$ | vertex-color alpha and mask cutoff |
+| 254 | <img src="images/scenes/scene254.png" alt="Scene 254 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.322}}$ | $\color{#cf222e}{\textsf{1.646}}$ | normalized signed animation sampler accessors |
+| 255 | <img src="images/scenes/scene255.png" alt="Scene 255 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.011}}$ | $\color{#1a7f37}{\textsf{0.101}}$ | normalized integer skin-weight accessors |
 | 257 | <img src="images/scenes/scene257.png" alt="Scene 257 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.006}}$ | negative-scale hierarchy, generated normals |
+| 258 | <img src="images/scenes/scene258.png" alt="Scene 258 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.002}}$ | $\color{#1a7f37}{\textsf{0.005}}$ | interleaved glTF vertex buffers |
+| 259 | <img src="images/scenes/scene259.png" alt="Scene 259 rendering" width="120"> | $\color{#cf222e}{\textsf{57.725}}$ | $\color{#cf222e}{\textsf{123.622}}$ | base-color and emissive texture material differential |
+| 265 | <img src="images/scenes/scene265.png" alt="Scene 265 rendering" width="120"> | $\color{#cf222e}{\textsf{2.914}}$ | $\color{#cf222e}{\textsf{90.935}}$ | environment metadata and default-camera framing |
 | 266 | <img src="images/scenes/scene266.png" alt="Scene 266 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.130}}$ | $\color{#1a7f37}{\textsf{0.247}}$ | mirrored spheres; 99.46% within one byte |
 | 273 | <img src="images/scenes/scene273.png" alt="Scene 273 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | post-registration material-family addition |
 | 274 | <img src="images/scenes/scene274.png" alt="Scene 274 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | 4x-MSAA alpha-to-coverage |
@@ -89,7 +109,7 @@ native differential fidelity; it does not represent upstream corpus coverage.
 
 ## Diagnostics
 
-BoomBox parity can emit:
+Scene 1 parity can emit:
 
 - draw and triangle-cluster IDs
 - world normal, reflectivity, irradiance, IBL
@@ -100,7 +120,7 @@ BoomBox parity can emit:
 Normalized depth is bit-exact against the Babylon Lite WebGPU oracle. See
 [fidelity.md](fidelity.md) for artifact semantics.
 
-Current BoomBox foreground diagnostic MAD: world normal `0.011`, albedo
+Current Scene 1 foreground diagnostic MAD: world normal `0.011`, albedo
 `0.000`, reflectivity `0.000`, irradiance `0.040`, normalized depth `0.000`.
 
 Legacy `.env` DDS backgrounds are opt-in so the default native composition

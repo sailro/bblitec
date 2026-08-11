@@ -61,8 +61,7 @@ materials retain their pipelines and uniforms when a frame-graph render task
 mirrors the scene. It is regression coverage, not upstream corpus coverage.
 GridMaterial now uses generated WGSL and Tint, with scene 213 gating its
 dynamic native specialization.
-Ground and skybox fragments also use generated WGSL, gated by scene 8 and
-BoomBox.
+Ground and skybox fragments also use generated WGSL, gated by Scenes 1 and 8.
 The shared material vertex stage and Standard fragment variants use generated
 WGSL as well, gated by scenes 145 and 273.
 PBR color, diagnostic, and geometry-output variants now use WGSL through Tint.
@@ -90,7 +89,7 @@ Generated ground remains opt-in. Enabling it against the committed scene 13
 golden raises full MAD from `0.010` to `8.354`, confirming that the reference
 does not compose that background pass equivalently.
 Legacy `.env` DDS backgrounds are likewise opt-in with
-`BBLITE_BACKGROUND=1`; pinned Babylon Lite BoomBox output keeps the clear
+`BBLITE_BACKGROUND=1`; pinned Babylon Lite Scene 1 output keeps the clear
 background. Explicit HDR cubemap skyboxes remain enabled by default.
 
 glTF animation uses pinned LINEAR quaternion interpolation and deterministic
@@ -159,7 +158,7 @@ Registry-enabled scenes can emit draw IDs and triangle-cluster IDs. Reports
 join those IDs to glTF nodes, meshes, materials, alpha mode, and double-sided
 state.
 
-BoomBox also emits focused PBR buffers from the production shader:
+Scene 1 also emits focused PBR buffers from the production shader:
 
 - world normal
 - reflectivity

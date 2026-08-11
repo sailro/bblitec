@@ -17,8 +17,8 @@ Unsupported syntax and APIs fail at compile time with source locations.
 
 - Pinned upstream: `@babylonjs/lite@1.18.0`,
   commit `7184feda683072980735f9a180e6f567ee5717ba`.
-- 27 curated Babylon Lite parity scenes plus BoomBox, primitives, and
-  project-owned differential regression gates.
+- 43 curated Babylon Lite parity scenes, including Scene 1 (BoomBox), plus
+  primitives and project-owned differential regression gates.
 - External glTF/GLB and a reached `.babylon` slice.
 - Named local TypeScript modules plus typed non-recursive helper functions.
 - Generated Standard/PBR/Grid rendering, ordered draw lists, custom alpha
@@ -26,7 +26,7 @@ Unsupported syntax and APIs fail at compile time with source locations.
   mutation, property animation, and tree-shaken GPU deformation.
 - Exact HDR GGX preprocessing and transmission/IOR/volume scene-color rendering.
 - WGSL shaders compiled by pinned Tint for D3D12, Vulkan, and Metal.
-- BoomBox D3D12 parity is effectively exact; measured quality and performance
+- Scene 1 (BoomBox) D3D12 parity is effectively exact; measured quality and performance
   baselines live only in [Status](docs/status.md).
 
 See [current status](docs/status.md) for the supported subset and all measured
@@ -56,8 +56,8 @@ npm ci
 npm test
 
 $env:VCPKG_ROOT = "C:\path\to\vcpkg"
-npm run scene -- process boombox
-npm run scene -- parity boombox
+npm run scene -- process scene1
+npm run scene -- parity scene1
 ```
 
 Process an unregistered repository-local scene with derived defaults:

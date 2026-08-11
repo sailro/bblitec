@@ -26,7 +26,7 @@ function writePng(path: string, pixels: Array<[number, number, number, number]>)
 
 test("requires configured thresholds for CPU parity gates", () => {
     assert.deepEqual(
-        resolveParityThresholds(getScene("boombox").parity!, false),
+        resolveParityThresholds(getScene("scene1").parity!, false),
         {
             maxMad: 2.2,
             maxRegionMad: 21.5,
