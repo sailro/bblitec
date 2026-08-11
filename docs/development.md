@@ -45,6 +45,10 @@ standard location.
 Aggregate registered-scene workflows are registry-driven through
 `scenes:compile`, `scenes:build`, `scenes:process`, and `scenes:parity`.
 
+Registered Babylon Lite inputs live under `corpus\babylon-lite` and must match
+`upstream\babylon-lite-scenes.json` byte-for-byte. They are read-only evidence;
+compiler gaps are fixed in the compiler rather than by adapting a scene.
+
 ## Updating Babylon Lite
 
 The repository supports one pinned upstream version. To evaluate an update:

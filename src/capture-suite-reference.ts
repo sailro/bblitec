@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import ts from "typescript";
 import { chromium } from "playwright-core";
+import { readUpstreamPin } from "./upstream-source.js";
 
 function browserCandidates(): string[] {
     if (process.platform === "win32") {
@@ -39,7 +40,7 @@ function mimeType(path: string): string {
 
 export type SuiteSourceTransform = (source: string) => string;
 
-function browserModule(
+export function suiteBrowserModule(
     sourcePath: string,
     transform?: SuiteSourceTransform,
     captureTimeSeconds?: number,
@@ -49,10 +50,17 @@ function browserModule(
     const input = readFileSync(resolve(sourcePath), "utf8");
     const transformed = transform ? transform(input) : input;
     const framed = captureTimeSeconds !== undefined
-        ? transformed.replace(
+        ? (
+              `import { ` +
+              `onBeforeRender as __captureOnBeforeRender, ` +
+              `goToFrame as __captureGoToFrame, ` +
+              `pauseAnimation as __capturePauseAnimation ` +
+              `} from "babylon-lite";\n` +
+              transformed
+          ).replace(
               "await registerScene(scene);",
               `let __animationSeekFrame = 0;
-    onBeforeRender(scene, () => {
+    __captureOnBeforeRender(scene, () => {
         __animationSeekFrame += 1;
         if (__animationSeekFrame === 10) {
             for (const animationGroup of ${
@@ -60,8 +68,8 @@ function browserModule(
                     ? `[${captureAnimationGroups.join(", ")}]`
                     : "scene.animationGroups"
             }) {
-                goToFrame(animationGroup, ${captureTimeSeconds} * ${captureFrameRate});
-                pauseAnimation(animationGroup);
+                __captureGoToFrame(animationGroup, ${captureTimeSeconds} * ${captureFrameRate});
+                __capturePauseAnimation(animationGroup);
             }
             canvas.dataset.animationFrozen = "true";
         }
@@ -74,7 +82,7 @@ function browserModule(
         .replaceAll('"babylon-lite"', '"/node_modules/@babylonjs/lite/lib/index.js"')
         .replaceAll(
             '"/brdf-lut.png"',
-            '"https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/master/packages/babylon-lite/assets/brdf-lut.png"',
+            `"https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${readUpstreamPin().sourceVersion}/packages/babylon-lite/assets/brdf-lut.png"`,
         );
     const readySource = source.includes("dataset.ready")
         ? source
@@ -102,7 +110,7 @@ export async function captureSuiteReference(
 ): Promise<void> {
     if (existsSync(referencePath) && !force) return;
     const root = resolve(".");
-    const moduleSource = browserModule(
+    const moduleSource = suiteBrowserModule(
         sourcePath,
         transform,
         captureTimeSeconds,
@@ -113,7 +121,11 @@ export async function captureSuiteReference(
 html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:block}
 </style></head><body><canvas id="renderCanvas" width="1280" height="720"></canvas>
 <script type="module" src="/scene.js"></script></body></html>`;
-    const server = createServer((request, response) => {
+    const pinnedAssets = new Map<
+        string,
+        { bytes: Uint8Array; contentType: string }
+    >();
+    const server = createServer(async (request, response) => {
         const url = new URL(request.url ?? "/", "http://127.0.0.1");
         if (url.pathname === "/scene.html") {
             response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -128,6 +140,65 @@ html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:bloc
         const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
         const path = resolve(root, relative);
         if (!path.startsWith(`${root}${sep}`) || !existsSync(path) || !statSync(path).isFile()) {
+            if (
+                sourcePath
+                    .replace(/\\/g, "/")
+                    .includes(
+                        "corpus/babylon-lite/lab/lite/src/lite/",
+                    )
+            ) {
+                const cached = pinnedAssets.get(
+                    url.pathname,
+                );
+                if (cached) {
+                    response.writeHead(200, {
+                        "Content-Type":
+                            cached.contentType,
+                    });
+                    response.end(cached.bytes);
+                    return;
+                }
+                const pin = readUpstreamPin();
+                const assetUrl =
+                    "https://raw.githubusercontent.com/" +
+                    `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
+                    `/lab/public/${relative}`;
+                let fetched: Response;
+                try {
+                    fetched = await fetch(assetUrl, {
+                        signal: AbortSignal.timeout(30_000),
+                    });
+                } catch (error: unknown) {
+                    response.writeHead(502);
+                    response.end(
+                        error instanceof Error
+                            ? error.message
+                            : String(error),
+                    );
+                    return;
+                }
+                if (fetched.ok) {
+                    const asset = {
+                        bytes: new Uint8Array(
+                            await fetched.arrayBuffer(),
+                        ),
+                        contentType:
+                            fetched.headers.get(
+                                "content-type",
+                            ) ?? mimeType(url.pathname),
+                    };
+                    pinnedAssets.set(
+                        url.pathname,
+                        asset,
+                    );
+                    response.writeHead(200, {
+                        "Content-Type":
+                            asset.contentType,
+                    });
+                    response.end(asset.bytes);
+                    return;
+                }
+            }
             response.writeHead(404);
             response.end("Not found");
             return;

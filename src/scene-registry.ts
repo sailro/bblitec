@@ -69,7 +69,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene2",
         name: "Scene 2 - Directional Light Sphere",
-        source: "examples/scene2-directional-sphere.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene2.ts",
         output: "generated/scene2",
         title: "Babylon Lite Native - Directional Light Sphere",
         buildDirectory: "native/build-scene2-release",
@@ -89,7 +89,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene8",
         name: "Scene 8 - HDR Glass Sphere",
-        source: "examples/scene8-hdr-glass.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene8.ts",
         output: "generated/scene8",
         title: "Babylon Lite Native - HDR Glass Sphere",
         buildDirectory: "native/build-scene8-release",
@@ -109,7 +109,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene5",
         name: "Scene 5 - Alien Morph and Skeleton",
-        source: "examples/scene5-alien.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene5.ts",
         output: "generated/scene5",
         title: "Babylon Lite Native - Alien",
         buildDirectory: "native/build-scene5-release",
@@ -133,7 +133,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene10",
         name: "Scene 10 - PBR Rough Sphere",
-        source: "examples/scene10-pbr-rough.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene10.ts",
         output: "generated/scene10",
         title: "Babylon Lite Native - PBR Rough Sphere",
         buildDirectory: "native/build-scene10-release",
@@ -153,7 +153,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene13",
         name: "Scene 13 - PBR Spheres Grid",
-        source: "examples/scene13-pbr-spheres.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene13.ts",
         output: "generated/scene13",
         title: "Babylon Lite Native - PBR Spheres Grid",
         buildDirectory: "native/build-scene13-release",
@@ -179,7 +179,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene32",
         name: "Scene 32 - Unlit glTF",
-        source: "examples/scene32-unlit.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene32.ts",
         output: "generated/scene32",
         title: "Babylon Lite Native - Unlit glTF",
         buildDirectory: "native/build-scene32-release",
@@ -205,7 +205,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene163",
         name: "Scene 163 - Shader Alpha Cutout",
-        source: "examples/scene163-shader-alpha-cutout.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene163.ts",
         output: "generated/scene163",
         title: "Babylon Lite Native - Shader Alpha Cutout",
         buildDirectory: "native/build-scene163-release",
@@ -281,7 +281,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene168",
         name: "Scene 168 - Mirrored Double-Sided Winding",
-        source: "examples/scene168-mirrored-winding.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene168.ts",
         output: "generated/scene168",
         title: "Babylon Lite Native - Mirrored Double-Sided Winding",
         buildDirectory: "native/build-scene168-release",
@@ -387,7 +387,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene176",
         name: "Scene 176 - Mosquito In Amber",
-        source: "examples/scene176-mosquito-in-amber.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene176.ts",
         output: "generated/scene176",
         title: "Babylon Lite Native - Mosquito In Amber",
         buildDirectory: "native/build-scene176-release",
@@ -413,7 +413,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene213",
         name: "Scene 213 - Grid Material Ordering",
-        source: "examples/scene213-grid-material.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene213.ts",
         output: "generated/scene213",
         title: "Babylon Lite Native - Grid Material Ordering",
         buildDirectory: "native/build-scene213-release",
@@ -433,7 +433,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene151",
         name: "Scene 151 - Property Transform Animation",
-        source: "examples/scene151-property-transform-animation.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene151.ts",
         output: "generated/scene151",
         title: "Babylon Lite Native - Property Transform Animation",
         buildDirectory: "native/build-scene151-release",
@@ -459,7 +459,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene154",
         name: "Scene 154 - STEP Time Animation",
-        source: "examples/scene154-step-time-animation.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene154.ts",
         output: "generated/scene154",
         title: "Babylon Lite Native - STEP Time Animation",
         buildDirectory: "native/build-scene154-release",
@@ -488,7 +488,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene240",
         name: "Scene 240 - Animated Triangle",
-        source: "examples/scene240-animated-triangle.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene240.ts",
         output: "generated/scene240",
         title: "Babylon Lite Native - Animated Triangle",
         buildDirectory: "native/build-scene240-release",
@@ -541,7 +541,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene116",
         name: "Scene 116 - No-Color Depth Views",
-        source: "examples/scene116-no-color-depth.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene116.ts",
         output: "generated/scene116",
         title: "Babylon Lite Native - No-Color Depth Views",
         buildDirectory: "native/build-scene116-release",
@@ -561,7 +561,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene145",
         name: "Scene 145 - Standard Geometry Outputs",
-        source: "examples/scene145-standard-geometry-output.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene145.ts",
         output: "generated/scene145",
         title: "Babylon Lite Native - Standard Geometry Outputs",
         buildDirectory: "native/build-scene145-release",
@@ -581,7 +581,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene146",
         name: "Scene 146 - PBR Geometry Outputs",
-        source: "examples/scene146-geometry-output.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene146.ts",
         output: "generated/scene146",
         title: "Babylon Lite Native - PBR Geometry Outputs",
         buildDirectory: "native/build-scene146-release",
@@ -601,7 +601,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene248",
         name: "Scene 248 - Texture Settings",
-        source: "examples/scene248-texture-settings.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene248.ts",
         output: "generated/scene248",
         title: "Babylon Lite Native - Texture Settings",
         buildDirectory: "native/build-scene248-release",
@@ -627,7 +627,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene245",
         name: "Scene 245 - Recursive Skeletons",
-        source: "examples/scene245-recursive-skeletons.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene245.ts",
         output: "generated/scene245",
         title: "Babylon Lite Native - Recursive Skeletons",
         buildDirectory: "native/build-scene245-release",
@@ -651,7 +651,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene249",
         name: "Scene 249 - Vertex Alpha Clip",
-        source: "examples/scene249-vertex-alpha-clip.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene249.ts",
         output: "generated/scene249",
         title: "Babylon Lite Native - Vertex Alpha Clip",
         buildDirectory: "native/build-scene249-release",
@@ -677,7 +677,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene257",
         name: "Scene 257 - Node Negative Scale",
-        source: "examples/scene257-negative-scale.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene257.ts",
         output: "generated/scene257",
         title: "Babylon Lite Native - Node Negative Scale",
         buildDirectory: "native/build-scene257-release",
@@ -703,7 +703,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene266",
         name: "Scene 266 - Negative Scale Spheres",
-        source: "examples/scene266-negative-scale-spheres.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene266.ts",
         output: "generated/scene266",
         title: "Babylon Lite Native - Negative Scale Spheres",
         buildDirectory: "native/build-scene266-release",
@@ -729,7 +729,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene273",
         name: "Scene 273 - Runtime Material Family",
-        source: "examples/scene273-runtime-material-family.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene273.ts",
         output: "generated/scene273",
         title: "Babylon Lite Native - Runtime Material Family",
         buildDirectory: "native/build-scene273-release",
@@ -752,7 +752,7 @@ export const scenes: readonly SceneDefinition[] = [
     {
         id: "scene274",
         name: "Scene 274 - Alpha to Coverage",
-        source: "examples/scene274-alpha-to-coverage.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene274.ts",
         output: "generated/scene274",
         title: "Babylon Lite Native - Alpha to Coverage",
         buildDirectory: "native/build-scene274-release",

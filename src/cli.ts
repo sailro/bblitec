@@ -8,6 +8,7 @@ import { emitAssetSpecializations } from "./asset-specializer.js";
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
 import { packageHdrEnvironment } from "./hdr-packager.js";
+import { readUpstreamPin } from "./upstream-source.js";
 
 interface CliOptions {
     input: string;
@@ -94,33 +95,37 @@ function parseArguments(arguments_: string[]): CliOptions {
 }
 
 async function materializeAsset(asset: CompileAsset, inputPath: string, outputPath: string): Promise<void> {
+    const source = materializedAssetSource(
+        asset.source,
+        inputPath,
+    );
     const destination = resolve(outputPath, "assets", asset.output);
     mkdirSync(dirname(destination), { recursive: true });
 
     if (asset.kind === "babylon") {
-        await packageBabylon(asset.source, dirname(inputPath), destination);
+        await packageBabylon(source, dirname(inputPath), destination);
         return;
     }
 
-    if (asset.kind === "gltf" && /\.gltf(?:[?#]|$)/i.test(asset.source)) {
+    if (asset.kind === "gltf" && /\.gltf(?:[?#]|$)/i.test(source)) {
         writeFileSync(
             destination,
-            await packageGltf(asset.source, dirname(inputPath)),
+            await packageGltf(source, dirname(inputPath)),
         );
         return;
     }
 
     if (asset.kind === "hdr-environment") {
-        const bytes = /^https?:\/\//i.test(asset.source)
-            ? await fetch(asset.source).then(async (response) => {
+        const bytes = /^https?:\/\//i.test(source)
+            ? await fetch(source).then(async (response) => {
                   if (!response.ok) {
                       throw new Error(
-                          `Failed to download ${asset.source}: HTTP ${response.status}.`,
+                          `Failed to download ${source}: HTTP ${response.status}.`,
                       );
                   }
                   return new Uint8Array(await response.arrayBuffer());
               })
-            : new Uint8Array(readFileSync(resolve(dirname(inputPath), asset.source)));
+            : new Uint8Array(readFileSync(resolve(dirname(inputPath), source)));
         writeFileSync(
             destination,
             await packageHdrEnvironment(bytes, asset.faceSize ?? 256),
@@ -128,16 +133,38 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
         return;
     }
 
-    if (/^https?:\/\//i.test(asset.source)) {
-        const response = await fetch(asset.source);
+    if (/^https?:\/\//i.test(source)) {
+        const response = await fetch(source);
         if (!response.ok) {
-            throw new Error(`Failed to download ${asset.source}: HTTP ${response.status}.`);
+            throw new Error(`Failed to download ${source}: HTTP ${response.status}.`);
         }
         writeFileSync(destination, new Uint8Array(await response.arrayBuffer()));
         return;
     }
 
-    copyFileSync(resolve(dirname(inputPath), asset.source), destination);
+    copyFileSync(resolve(dirname(inputPath), source), destination);
+}
+
+function materializedAssetSource(
+    source: string,
+    inputPath: string,
+): string {
+    if (
+        !source.startsWith("/") ||
+        !inputPath
+            .replace(/\\/g, "/")
+            .includes(
+                "/corpus/babylon-lite/lab/lite/src/lite/",
+            )
+    ) {
+        return source;
+    }
+    const pin = readUpstreamPin();
+    return (
+        "https://raw.githubusercontent.com/" +
+        `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
+        `/lab/public${source}`
+    );
 }
 
 async function main(): Promise<void> {

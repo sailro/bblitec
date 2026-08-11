@@ -1,42 +1,42 @@
+// Scene 116 - Standard + PBR no-color material generation.
+//
+// The main pass renders a Standard torus and a PBR sphere normally. Two
+// frame-graph depth-only passes render those same meshes through material views
+// whose render-feature override removes fragment color output; the depth textures
+// are displayed on unlit planes in the main pass.
+
 import {
-    addTask,
     addTaskAtStart,
     addToScene,
     attachControl,
+    createPbrNoColorMaterialView,
+    createStandardNoColorMaterialView,
     createArcRotateCamera,
-    createCopyToTextureTask,
     createEngine,
     createFreeCamera,
     createHemisphericLight,
     createPbrMaterial,
-    createPbrNoColorMaterialView,
     createPlane,
-    createRenderTarget,
-    createRenderTargetTexture,
     createRenderTask,
+    createRenderTargetTexture,
     createSceneContext,
     createSolidTexture2D,
     createSphere,
     createStandardMaterial,
-    createStandardNoColorMaterialView,
     createTorus,
     markMaterialUboDirty,
     registerScene,
     startEngine,
-} from "@babylonjs/lite";
+} from "babylon-lite";
 
 async function main(): Promise<void> {
     const initStart = performance.now();
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
     const engine = await createEngine(canvas);
-    const scene = createSceneContext(engine, { defaultRenderTask: false });
+    const scene = createSceneContext(engine);
+    scene.fixedDeltaMs = 16.0;
 
-    const mainCamera = createArcRotateCamera(
-        -Math.PI / 2,
-        Math.PI / 2.35,
-        8.5,
-        { x: 0, y: -0.25, z: 0 },
-    );
+    const mainCamera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2.35, 8.5, { x: 0, y: -0.25, z: 0 });
     mainCamera.nearPlane = 0.1;
     mainCamera.farPlane = 100;
     scene.camera = mainCamera;
@@ -44,28 +44,20 @@ async function main(): Promise<void> {
 
     addToScene(scene, createHemisphericLight([0, 1, 0], 1.0));
 
-    const standardDepthTarget = createRenderTargetTexture(engine, {
+    const { rt: standardDepthRT, texture: standardDepthTexture } = createRenderTargetTexture(engine, {
         lbl: "standard-shadow-depth",
         dFormat: "depth24plus-stencil8",
         samples: 1,
         size: { width: 512, height: 512 },
     });
-    const standardDepthRT = standardDepthTarget.rt;
-    const standardDepthTexture = standardDepthTarget.texture;
-    const pbrDepthTarget = createRenderTargetTexture(engine, {
+    const { rt: pbrDepthRT, texture: pbrDepthTexture } = createRenderTargetTexture(engine, {
         lbl: "pbr-shadow-depth",
         dFormat: "depth24plus-stencil8",
         samples: 1,
         size: { width: 512, height: 512 },
     });
-    const pbrDepthRT = pbrDepthTarget.rt;
-    const pbrDepthTexture = pbrDepthTarget.texture;
 
-    const standardMesh = createTorus(engine, {
-        diameter: 1.6,
-        thickness: 0.45,
-        tessellation: 48,
-    });
+    const standardMesh = createTorus(engine, { diameter: 1.6, thickness: 0.45, tessellation: 48 });
     standardMesh.position.x = -2.25;
     standardMesh.position.y = 1.0;
     const standardMaterial = createStandardMaterial();
@@ -75,8 +67,7 @@ async function main(): Promise<void> {
     standardMaterial.specularPower = 96;
     standardMesh.material = standardMaterial;
     addToScene(scene, standardMesh);
-    const standardDepthView =
-        createStandardNoColorMaterialView(standardMaterial);
+    const standardDepthView = createStandardNoColorMaterialView(standardMaterial);
     markMaterialUboDirty(standardMaterial);
 
     const baseColorTexture = createSolidTexture2D(engine, 1.0, 0.72, 0.22);
@@ -98,10 +89,7 @@ async function main(): Promise<void> {
     const pbrDepthView = createPbrNoColorMaterialView(pbrMaterial);
     markMaterialUboDirty(pbrMaterial);
 
-    const standardDepthDisplay = createPlane(engine, {
-        width: 2.2,
-        height: 2.2,
-    });
+    const standardDepthDisplay = createPlane(engine, { width: 2.2, height: 2.2 });
     standardDepthDisplay.position.x = -2.25;
     standardDepthDisplay.position.y = -1.6;
     const standardDepthDisplayMaterial = createStandardMaterial();
@@ -112,10 +100,7 @@ async function main(): Promise<void> {
     standardDepthDisplay.material = standardDepthDisplayMaterial;
     addToScene(scene, standardDepthDisplay);
 
-    const pbrDepthDisplay = createPlane(engine, {
-        width: 2.2,
-        height: 2.2,
-    });
+    const pbrDepthDisplay = createPlane(engine, { width: 2.2, height: 2.2 });
     pbrDepthDisplay.position.x = 2.25;
     pbrDepthDisplay.position.y = -1.6;
     const pbrDepthDisplayMaterial = createStandardMaterial();
@@ -126,94 +111,27 @@ async function main(): Promise<void> {
     pbrDepthDisplay.material = pbrDepthDisplayMaterial;
     addToScene(scene, pbrDepthDisplay);
 
-    const standardDepthCamera = createFreeCamera(
-        { x: -2.25, y: 1.0, z: -4.0 },
-        { x: -2.25, y: 1.0, z: 0 },
-    );
+    const standardDepthCamera = createFreeCamera({ x: -2.25, y: 1.0, z: -4.0 }, { x: -2.25, y: 1.0, z: 0 });
     standardDepthCamera.nearPlane = 2;
     standardDepthCamera.farPlane = 8;
     const standardDepthTask = createRenderTask(
-        {
-            name: "standard-shadow-depth",
-            rt: standardDepthRT,
-            clrColor: { r: 0.02, g: 0.02, b: 0.02, a: 1 },
-            cam: standardDepthCamera,
-            cs: true,
-        },
+        { name: "standard-shadow-depth", rt: standardDepthRT, clrColor: { r: 0.02, g: 0.02, b: 0.02, a: 1 }, cam: standardDepthCamera, cs: true },
         engine,
-        scene,
+        scene
     );
     standardDepthTask.addMesh(standardMesh, { material: standardDepthView });
     addTaskAtStart(scene, standardDepthTask);
 
-    const pbrDepthCamera = createFreeCamera(
-        { x: 2.25, y: 1.0, z: -4.0 },
-        { x: 2.25, y: 1.0, z: 0 },
-    );
+    const pbrDepthCamera = createFreeCamera({ x: 2.25, y: 1.0, z: -4.0 }, { x: 2.25, y: 1.0, z: 0 });
     pbrDepthCamera.nearPlane = 2;
     pbrDepthCamera.farPlane = 8;
     const pbrDepthTask = createRenderTask(
-        {
-            name: "pbr-shadow-depth",
-            rt: pbrDepthRT,
-            clrColor: { r: 0.02, g: 0.02, b: 0.02, a: 1 },
-            cam: pbrDepthCamera,
-            cs: true,
-        },
+        { name: "pbr-shadow-depth", rt: pbrDepthRT, clrColor: { r: 0.02, g: 0.02, b: 0.02, a: 1 }, cam: pbrDepthCamera, cs: true },
         engine,
-        scene,
+        scene
     );
     pbrDepthTask.addMesh(pbrMesh, { material: pbrDepthView });
     addTaskAtStart(scene, pbrDepthTask);
-
-    const mainTarget = createRenderTarget({
-        lbl: "scene116-main",
-        format: engine.format,
-        dFormat: "depth24plus-stencil8",
-        samples: 4,
-        size: engine,
-    });
-    const mainResolve = createRenderTarget({
-        lbl: "scene116-main-resolve",
-        format: engine.format,
-        samples: 1,
-        size: engine,
-    });
-    const mainTask = createRenderTask(
-        {
-            name: "scene116-main",
-            rt: mainTarget,
-            clrColor: { r: 0.2, g: 0.2, b: 0.3, a: 1 },
-            clr: true,
-        },
-        engine,
-        scene,
-    );
-    addTask(scene, mainTask);
-    addTask(
-        scene,
-        createCopyToTextureTask(
-            {
-                name: "scene116-resolve",
-                sourceTexture: mainTarget,
-                resolveTexture: mainResolve,
-            },
-            engine,
-            scene,
-        ),
-    );
-    addTask(
-        scene,
-        createCopyToTextureTask(
-            {
-                name: "scene116-present",
-                sourceTexture: mainResolve,
-                targetTexture: engine.scRT,
-            },
-            engine,
-            scene,
-        ),
-    );
 
     await registerScene(scene);
     await startEngine(engine);
@@ -222,4 +140,10 @@ async function main(): Promise<void> {
     canvas.dataset.ready = "true";
 }
 
-main().catch(console.error);
+main().catch((err) => {
+    console.error(err);
+    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement | null;
+    if (canvas) {
+        canvas.dataset.error = String(err);
+    }
+});

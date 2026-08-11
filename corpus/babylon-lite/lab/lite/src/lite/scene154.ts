@@ -12,41 +12,29 @@ import {
     createSceneContext,
     createStandardMaterial,
     goToFrame,
-    onBeforeRender,
-    pauseAnimation,
     registerScene,
     startAnimationManager,
     startEngine,
-} from "@babylonjs/lite";
+} from "babylon-lite";
+import type { ArcRotateCamera } from "babylon-lite";
 
 const FRAME_RATE = 10;
 const END_TIME = 2;
 
 async function main(): Promise<void> {
-    const canvas =
-        document.getElementById("renderCanvas") as HTMLCanvasElement;
+    const __initStart = performance.now();
+    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
     const engine = await createEngine(canvas);
     const scene = createSceneContext(engine);
-    scene.clearColor = { r: 0.2, g: 0.2, b: 0.3, a: 1 };
+    scene.clearColor = { r: 0.2, g: 0.2, b: 0.3, a: 1.0 };
 
-    scene.camera = createArcRotateCamera(
-        -Math.PI / 2,
-        Math.PI / 4,
-        10,
-        { x: 0, y: 0, z: 0 },
-    );
+    scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 4, 10, { x: 0, y: 0, z: 0 });
     scene.camera.nearPlane = 1;
     scene.camera.farPlane = 10000;
-    attachControl(scene.camera, canvas, scene);
+    attachControl(scene.camera as ArcRotateCamera, canvas, scene);
 
-    addToScene(
-        scene,
-        createDirectionalLight([0, -1, 1], 0.75),
-    );
-    addToScene(
-        scene,
-        createHemisphericLight([0, 1, 0], 0.5),
-    );
+    addToScene(scene, createDirectionalLight([0, -1, 1], 0.75));
+    addToScene(scene, createHemisphericLight([0, 1, 0], 0.5));
 
     const linearBox = createBox(engine);
     linearBox.material = createStandardMaterial();
@@ -73,7 +61,7 @@ async function main(): Promise<void> {
                 ],
             },
         ],
-        { frameRate: FRAME_RATE },
+        { frameRate: FRAME_RATE }
     );
     const stepClip = createPropertyAnimationClip(
         "stepTimeSlide",
@@ -88,32 +76,24 @@ async function main(): Promise<void> {
                 ],
             },
         ],
-        { frameRate: FRAME_RATE },
+        { frameRate: FRAME_RATE }
     );
-    const linearGroup = createPropertyAnimationGroup(
-        manager,
-        linearBox,
-        linearClip,
-        {
-            fromTime: 0,
-            toTime: END_TIME,
-            loop: true,
-        },
-    );
-    const stepGroup = createPropertyAnimationGroup(
-        manager,
-        stepBox,
-        stepClip,
-        {
-            fromTime: 0,
-            toTime: END_TIME,
-            loop: true,
-        },
-    );
-    startAnimationManager(manager);
+    const linearGroup = createPropertyAnimationGroup(manager, linearBox, linearClip, { fromTime: 0, toTime: END_TIME, loop: true });
+    const stepGroup = createPropertyAnimationGroup(manager, stepBox, stepClip, { fromTime: 0, toTime: END_TIME, loop: true });
+
+    const seekTime = parseFloat(new URLSearchParams(window.location.search).get("seekTime") || "");
+    if (Number.isFinite(seekTime)) {
+        goToFrame(linearGroup, seekTime * FRAME_RATE);
+        goToFrame(stepGroup, seekTime * FRAME_RATE);
+        canvas.dataset.animationFrozen = "true";
+    } else {
+        startAnimationManager(manager);
+    }
 
     await registerScene(scene);
     await startEngine(engine);
+    canvas.dataset.drawCalls = String(engine.drawCallCount);
+    canvas.dataset.initMs = String(performance.now() - __initStart);
     canvas.dataset.ready = "true";
 }
 

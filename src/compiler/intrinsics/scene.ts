@@ -25,6 +25,10 @@ export interface SceneIntrinsicContext {
     compileFrameCallback(expression: ts.Expression): string;
     requireEngine(value: Value, node: ts.Node): string;
     reachFeature(feature: Feature): void;
+    ensureDefaultRenderTask(
+        scene: Value,
+        node: ts.Node,
+    ): string | undefined;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -99,12 +103,20 @@ export function compileSceneIntrinsic(
                 call.arguments[1]!,
             );
             context.expectSameEngine(scene, task, call);
+            const defaultTask =
+                context.ensureDefaultRenderTask(
+                    scene,
+                    call,
+                );
+            const taskCall =
+                importedName === "addTaskAtStart"
+                    ? `bbl::add_task_at_start(${scene.cpp}, ${task.cpp})`
+                    : `bbl::add_task(${scene.cpp}, ${task.cpp})`;
             return {
                 kind: "void",
-                cpp:
-                    importedName === "addTaskAtStart"
-                        ? `bbl::add_task_at_start(${scene.cpp}, ${task.cpp})`
-                        : `bbl::add_task(${scene.cpp}, ${task.cpp})`,
+                cpp: defaultTask
+                    ? `${defaultTask};\n        ${taskCall}`
+                    : taskCall,
             };
         }
 

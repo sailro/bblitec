@@ -2,6 +2,10 @@ import ts from "typescript";
 import type { Value } from "./types.js";
 
 type Fail = (node: ts.Node, message: string) => never;
+type SupportedFunction =
+    | ts.FunctionDeclaration
+    | ts.FunctionExpression
+    | ts.ArrowFunction;
 
 export interface UserFunctionParameterIr {
     declaration: ts.ParameterDeclaration;
@@ -10,7 +14,7 @@ export interface UserFunctionParameterIr {
 }
 
 export interface UserFunctionIr {
-    declaration: ts.FunctionDeclaration;
+    declaration: SupportedFunction;
     name: string;
     parameters: UserFunctionParameterIr[];
     statements: readonly ts.Statement[];
@@ -32,11 +36,11 @@ export interface UserFunctionContext {
 
 export class UserFunctionLowerer {
     private readonly cache = new Map<
-        ts.FunctionDeclaration,
+        SupportedFunction,
         UserFunctionIr
     >();
     private readonly active =
-        new Set<ts.FunctionDeclaration>();
+        new Set<SupportedFunction>();
 
     public constructor(
         private readonly checker: ts.TypeChecker,
@@ -61,15 +65,59 @@ export class UserFunctionLowerer {
             (node, message) =>
                 context.fail(node, message),
         );
+        return this.lower(
+            context,
+            ir,
+            call.arguments.map((argument) =>
+                context.compileValue(argument),
+            ),
+            call,
+        );
+    }
+
+    public compileReference(
+        context: UserFunctionContext,
+        identifier: ts.Identifier,
+    ): Value | undefined {
+        const ir = this.resolve(
+            identifier,
+            (node, message) =>
+                context.fail(node, message),
+        );
+        if (!ir) {
+            return undefined;
+        }
+        if (
+            ir.parameters.some(
+                ({ declaration }) =>
+                    !declaration.initializer,
+            )
+        ) {
+            context.fail(
+                identifier,
+                `Callback '${ir.name}' requires arguments.`,
+            );
+        }
+        return this.lower(
+            context,
+            ir,
+            [],
+            identifier,
+        );
+    }
+
+    private lower(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+    ): Value {
         if (this.active.has(ir.declaration)) {
             context.fail(
-                call,
+                callNode,
                 `Recursive call to '${ir.name}' is not supported.`,
             );
         }
-        const arguments_ = call.arguments.map((argument) =>
-            context.compileValue(argument),
-        );
         this.active.add(ir.declaration);
         context.pushScope(
             context.allocateUserFunctionPrefix(),
@@ -118,19 +166,41 @@ export class UserFunctionLowerer {
             (symbol.flags & ts.SymbolFlags.Alias) !== 0
                 ? this.checker.getAliasedSymbol(symbol)
                 : symbol;
-        const declaration = target.declarations?.find(
-            (candidate): candidate is ts.FunctionDeclaration =>
+        let declaration: SupportedFunction | undefined;
+        for (const candidate of target.declarations ?? []) {
+            if (
                 ts.isFunctionDeclaration(candidate) &&
-                candidate.body !== undefined,
-        );
-        if (!declaration?.body) {
+                candidate.body
+            ) {
+                declaration = candidate;
+                break;
+            }
+            if (
+                ts.isVariableDeclaration(candidate) &&
+                candidate.initializer &&
+                (ts.isArrowFunction(
+                    candidate.initializer,
+                ) ||
+                    ts.isFunctionExpression(
+                        candidate.initializer,
+                    ))
+            ) {
+                declaration = candidate.initializer;
+                break;
+            }
+        }
+        if (!declaration) {
             return undefined;
         }
         const cached = this.cache.get(declaration);
         if (cached) {
             return cached;
         }
-        if (declaration.asteriskToken) {
+        if (
+            (ts.isFunctionExpression(declaration) ||
+                ts.isFunctionDeclaration(declaration)) &&
+            declaration.asteriskToken
+        ) {
             fail(
                 declaration.asteriskToken,
                 "Generator functions are not supported.",
@@ -162,7 +232,14 @@ export class UserFunctionLowerer {
                 };
             },
         );
-        const returns = declaration.body.statements.filter(
+        const body = declaration.body;
+        if (!body || !ts.isBlock(body)) {
+            fail(
+                body ?? declaration,
+                "User arrow functions require a block body.",
+            );
+        }
+        const returns = body.statements.filter(
             (
                 statement,
             ): statement is ts.ReturnStatement =>
@@ -177,7 +254,7 @@ export class UserFunctionLowerer {
         const returned = returns[0];
         if (
             returned &&
-            declaration.body.statements.at(-1) !== returned
+            body.statements.at(-1) !== returned
         ) {
             fail(
                 returned,
@@ -187,12 +264,14 @@ export class UserFunctionLowerer {
         const ir: UserFunctionIr = {
             declaration,
             name:
-                declaration.name?.text ??
-                target.getName(),
+                (ts.isFunctionDeclaration(declaration) ||
+                ts.isFunctionExpression(declaration)
+                    ? declaration.name?.text
+                    : undefined) ?? target.getName(),
             parameters,
             statements: returned
-                ? declaration.body.statements.slice(0, -1)
-                : declaration.body.statements,
+                ? body.statements.slice(0, -1)
+                : body.statements,
             ...(returned?.expression
                 ? {
                       returnExpression:

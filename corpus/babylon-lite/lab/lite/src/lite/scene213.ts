@@ -1,18 +1,5 @@
-import {
-    addToScene,
-    attachControl,
-    createArcRotateCamera,
-    createBox,
-    createEngine,
-    createGridMaterial,
-    createGround,
-    createSceneContext,
-    createSphere,
-    registerScene,
-    startEngine,
-} from "@babylonjs/lite";
+import { addToScene, attachControl, createArcRotateCamera, createBox, createEngine, createGround, createGridMaterial, createSceneContext, createSphere, registerScene, startEngine } from "babylon-lite";
 
-// Pinned Babylon Lite lab/lite/src/lite/scene213.ts.
 async function main(): Promise<void> {
     const initStart = performance.now();
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
@@ -20,17 +7,13 @@ async function main(): Promise<void> {
     const scene = createSceneContext(engine);
     scene.clearColor = { r: 0.08, g: 0.08, b: 0.11, a: 1 };
 
-    const camera = createArcRotateCamera(
-        -Math.PI / 2.3,
-        Math.PI / 3.0,
-        16,
-        { x: 0, y: 1.2, z: 0 },
-    );
+    const camera = createArcRotateCamera(-Math.PI / 2.3, Math.PI / 3.0, 16, { x: 0, y: 1.2, z: 0 });
     camera.nearPlane = 0.1;
     camera.farPlane = 200;
     attachControl(camera, canvas, scene);
     scene.camera = camera;
 
+    // Large opaque ground grid: dark main color, teal lines.
     const ground = createGround(engine, { width: 14, height: 14 });
     ground.material = createGridMaterial({
         name: "groundGrid",
@@ -43,6 +26,7 @@ async function main(): Promise<void> {
     });
     addToScene(scene, ground);
 
+    // Sphere using useMaxLine to show 3-axis object-space grid on a curved surface.
     const sphere = createSphere(engine, { segments: 48, diameter: 3 });
     sphere.position.set(-3.6, 1.6, 0);
     sphere.material = createGridMaterial({
@@ -57,6 +41,7 @@ async function main(): Promise<void> {
     });
     addToScene(scene, sphere);
 
+    // Transparent box exercising the TRANSPARENT + alpha blend path.
     const box = createBox(engine, 2.4);
     box.position.set(3.6, 1.2, 0);
     box.material = createGridMaterial({
@@ -71,6 +56,7 @@ async function main(): Promise<void> {
     });
     addToScene(scene, box);
 
+    // Small box with antialias=false to cover the hard-cutoff line path.
     const hardBox = createBox(engine, 1.6);
     hardBox.position.set(0, 0.8, 3.4);
     hardBox.material = createGridMaterial({
@@ -91,4 +77,10 @@ async function main(): Promise<void> {
     canvas.dataset.ready = "true";
 }
 
-main().catch(console.error);
+main().catch((err) => {
+    console.error(err);
+    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement | null;
+    if (canvas) {
+        canvas.dataset.error = String(err);
+    }
+});

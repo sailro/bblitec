@@ -49,6 +49,9 @@ export interface EngineIntrinsicContext {
     recordGeometryOutputTask(
         manifest: GeometryOutputTaskManifest,
     ): void;
+    compileSceneDefaultRenderTask(
+        expression: ts.Expression | undefined,
+    ): boolean;
     reachFeature(feature: Feature): void;
 }
 
@@ -87,6 +90,16 @@ export function compileEngineIntrinsic(
                 cpp: `bbl::create_scene_context(${engine.cpp})`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+                ...(engine.msaaSamples
+                    ? {
+                          msaaSamples:
+                              engine.msaaSamples,
+                      }
+                    : {}),
+                defaultRenderTask:
+                    context.compileSceneDefaultRenderTask(
+                        call.arguments[1],
+                    ),
             };
         }
 

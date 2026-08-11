@@ -11,7 +11,10 @@ export interface StatementLoweringContext {
     emitAssignment(expression: ts.BinaryExpression): void;
     compileValue(expression: ts.Expression): Value;
     compileCondition(expression: ts.Expression): string;
-    compileNumber(expression: ts.Expression): string;
+    compileNumber(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
     expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression;
@@ -47,6 +50,12 @@ export interface StatementLoweringContext {
     isBrowserInstrumentationCall(
         call: ts.CallExpression,
     ): boolean;
+    isBrowserOnlyExpression(
+        expression: ts.Expression,
+    ): boolean;
+    evaluateBrowserCondition(
+        expression: ts.Expression,
+    ): boolean | undefined;
     eraseBrowserInstrumentation(position: number): void;
     emit(line: string): void;
     increaseIndent(): void;
@@ -124,6 +133,37 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.IfStatement,
     ): void {
+        if (
+            context.isBrowserOnlyExpression(
+                statement.expression,
+            )
+        ) {
+            const condition =
+                context.evaluateBrowserCondition(
+                    statement.expression,
+                );
+            if (condition === undefined) {
+                context.fail(
+                    statement.expression,
+                    "Browser-dependent condition cannot be determined for native AOT lowering.",
+                );
+            }
+            context.eraseBrowserInstrumentation(
+                statement.pos,
+            );
+            if (condition) {
+                this.emitScopedBody(
+                    context,
+                    statement.thenStatement,
+                );
+            } else if (statement.elseStatement) {
+                this.emitScopedBody(
+                    context,
+                    statement.elseStatement,
+                );
+            }
+            return;
+        }
         context.emit(
             `if (${context.compileCondition(statement.expression)}) {`,
         );
@@ -154,6 +194,9 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.ForStatement,
     ): void {
+        if (this.emitStaticIndexFor(context, statement)) {
+            return;
+        }
         context.emit("{");
         context.increaseIndent();
         context.pushScope(
@@ -214,6 +257,133 @@ export class StatementLowerer {
             context.decreaseIndent();
         }
         context.emit("}");
+    }
+
+    private emitStaticIndexFor(
+        context: StatementLoweringContext,
+        statement: ts.ForStatement,
+    ): boolean {
+        if (
+            !statement.initializer ||
+            !ts.isVariableDeclarationList(
+                statement.initializer,
+            ) ||
+            statement.initializer.declarations.length !== 1 ||
+            !statement.condition ||
+            !statement.incrementor
+        ) {
+            return false;
+        }
+        const declaration =
+            statement.initializer.declarations[0]!;
+        if (
+            !ts.isIdentifier(declaration.name) ||
+            !declaration.initializer ||
+            !ts.isNumericLiteral(
+                declaration.initializer,
+            ) ||
+            Number(declaration.initializer.text) !== 0 ||
+            !ts.isBinaryExpression(statement.condition) ||
+            statement.condition.operatorToken.kind !==
+                ts.SyntaxKind.LessThanToken ||
+            !ts.isIdentifier(statement.condition.left) ||
+            statement.condition.left.text !==
+                declaration.name.text ||
+            !ts.isPostfixUnaryExpression(
+                statement.incrementor,
+            ) ||
+            statement.incrementor.operator !==
+                ts.SyntaxKind.PlusPlusToken ||
+            !ts.isIdentifier(
+                statement.incrementor.operand,
+            ) ||
+            statement.incrementor.operand.text !==
+                declaration.name.text
+        ) {
+            return false;
+        }
+        const indexName = declaration.name.text;
+        const length = context.compileValue(
+            statement.condition.right,
+        );
+        if (
+            length.kind !== "number" ||
+            length.staticNumber === undefined ||
+            !Number.isInteger(length.staticNumber) ||
+            length.staticNumber < 0
+        ) {
+            return false;
+        }
+        let indexMutation: ts.Node | undefined;
+        const findIndexMutation = (node: ts.Node): void => {
+            if (indexMutation) {
+                return;
+            }
+            if (
+                ts.isBinaryExpression(node) &&
+                ts.isIdentifier(node.left) &&
+                node.left.text === indexName &&
+                [
+                    ts.SyntaxKind.EqualsToken,
+                    ts.SyntaxKind.PlusEqualsToken,
+                    ts.SyntaxKind.MinusEqualsToken,
+                ].includes(node.operatorToken.kind)
+            ) {
+                indexMutation = node;
+                return;
+            }
+            if (
+                (ts.isPostfixUnaryExpression(node) ||
+                    ts.isPrefixUnaryExpression(node)) &&
+                ts.isIdentifier(node.operand) &&
+                node.operand.text === indexName
+            ) {
+                indexMutation = node;
+                return;
+            }
+            ts.forEachChild(node, findIndexMutation);
+        };
+        findIndexMutation(statement.statement);
+        if (indexMutation) {
+            context.fail(
+                indexMutation,
+                "Static index-loop bodies cannot mutate the loop index.",
+            );
+        }
+        for (
+            let index = 0;
+            index < length.staticNumber;
+            index += 1
+        ) {
+            context.emit("{");
+            context.increaseIndent();
+            context.pushScope(
+                context.allocateBlockPrefix(),
+            );
+            try {
+                context.bindLocalValue(
+                    declaration.name,
+                    {
+                        kind: "number",
+                        cpp: `${index}.0`,
+                        staticNumber: index,
+                    },
+                );
+                const statements = ts.isBlock(
+                    statement.statement,
+                )
+                    ? statement.statement.statements
+                    : [statement.statement];
+                for (const nested of statements) {
+                    this.emit(context, nested);
+                }
+            } finally {
+                context.popScope();
+                context.decreaseIndent();
+            }
+            context.emit("}");
+        }
+        return true;
     }
 
     private emitWhile(
@@ -330,11 +500,6 @@ export class StatementLowerer {
                 const target = context.lookup(
                     unwrapped.left,
                 );
-                context.expectKind(
-                    target,
-                    "number",
-                    unwrapped.left,
-                );
                 const operator = new Map<
                     ts.SyntaxKind,
                     string
@@ -343,9 +508,23 @@ export class StatementLowerer {
                     [ts.SyntaxKind.PlusEqualsToken, "+="],
                     [ts.SyntaxKind.MinusEqualsToken, "-="],
                 ]).get(unwrapped.operatorToken.kind)!;
-                context.emit(
-                    `${target.cpp} ${operator} ${context.compileNumber(unwrapped.right)};`,
-                );
+                if (target.kind === "number") {
+                    context.emit(
+                        `${target.cpp} ${operator} ${context.compileNumber(unwrapped.right, "double")};`,
+                    );
+                } else if (
+                    target.kind === "boolean" &&
+                    operator === "="
+                ) {
+                    context.emit(
+                        `${target.cpp} = ${context.compileValue(unwrapped.right).cpp};`,
+                    );
+                } else {
+                    context.fail(
+                        unwrapped.left,
+                        `Assignment operator '${operator}' is not supported for ${target.kind}.`,
+                    );
+                }
             } else {
                 context.emitAssignment(unwrapped);
             }
@@ -425,6 +604,28 @@ export class StatementLowerer {
             return false;
         }
         const target = context.lookup(owner.expression);
+        if (
+            target.kind === "camera" &&
+            ["position", "target"].includes(
+                owner.name.text,
+            )
+        ) {
+            if (call.arguments.length !== 3) {
+                context.fail(
+                    call,
+                    `${owner.name.text}.set expects exactly three numeric arguments.`,
+                );
+            }
+            const vector = `bbl::Vec3{${call.arguments
+                .map((argument) =>
+                    context.compileNumber(argument),
+                )
+                .join(", ")}}`;
+            context.emit(
+                `${context.requireEngine(target, call)}.cameras[${target.cpp}.value].${owner.name.text} = ${vector};`,
+            );
+            return true;
+        }
         if (target.kind !== "mesh") {
             return false;
         }

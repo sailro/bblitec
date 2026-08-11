@@ -62,7 +62,7 @@ test("compiles the Babylon Lite primitives example", () => {
 });
 
 test("compiles pinned scene 2 directional light colors", () => {
-    const sourcePath = "examples/scene2-directional-sphere.ts";
+    const sourcePath = "corpus/babylon-lite/lab/lite/src/lite/scene2.ts";
     const result = compileSource(
         readFileSync(resolve(sourcePath), "utf8"),
         { fileName: sourcePath },
@@ -318,7 +318,7 @@ test("lowers imported typed user functions and constants", () => {
     );
     assert.match(
         result.cpp,
-        /v_fn1_scene\.environment\.exposure = v_fn1_exposure/,
+        /v_fn1_scene\.environment\.exposure = static_cast<float>\(v_fn1_exposure\)/,
     );
     assert.ok(
         result.manifest.features.includes(
@@ -365,11 +365,11 @@ test("gives repeated user-function calls isolated native locals", () => {
 
     assert.match(
         result.cpp,
-        /auto v_fn0_result = \(v_fn0_value \* 2\.0f\)/,
+        /double v_fn0_result = \(v_fn0_value \* 2\.0\)/,
     );
     assert.match(
         result.cpp,
-        /auto v_fn1_result = \(v_fn1_value \* 2\.0f\)/,
+        /double v_fn1_result = \(v_fn1_value \* 2\.0\)/,
     );
 });
 
@@ -387,16 +387,16 @@ test("supports lexical block shadowing and if/else", () => {
 
     assert.match(
         result.cpp,
-        /auto v_fn0_exposure = v_fn0_requestedExposure/,
+        /double v_fn0_exposure = v_fn0_requestedExposure/,
     );
     assert.match(
         result.cpp,
-        /auto v_fn0_block\d+_exposure = 1\.0f/,
+        /double v_fn0_block\d+_exposure = 1\.0/,
     );
     assert.match(result.cpp, /\} else \{/);
     assert.match(
         result.cpp,
-        /\.contrast = v_fn0_exposure/,
+        /\.contrast = static_cast<float>\(v_fn0_exposure\)/,
     );
 });
 
@@ -412,15 +412,15 @@ test("restores outer symbols after explicit blocks", () => {
 
     assert.match(
         result.cpp,
-        /auto v_value = 1\.0f/,
+        /double v_value = 1\.0/,
     );
     assert.match(
         result.cpp,
-        /auto v_block\d+_value = 2\.0f/,
+        /double v_block\d+_value = 2\.0/,
     );
     assert.match(
         result.cpp,
-        /auto v_outside = \(1\.0f \* 4\.0f\)/,
+        /double v_outside = \(1\.0 \* 4\.0\)/,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -440,21 +440,15 @@ test("lowers numeric for and while loops", () => {
         },
     );
 
-    assert.match(
-        result.cpp,
-        /while \(\(v_fn0_block\d+_index < 3\.0f\)\)/,
+    assert.equal(
+        result.cpp.match(
+            /v_fn0_samples \+= v_fn0_block\d+_index/g,
+        )?.length,
+        3,
     );
     assert.match(
         result.cpp,
-        /v_fn0_samples \+= v_fn0_block\d+_index/,
-    );
-    assert.match(
-        result.cpp,
-        /v_fn0_block\d+_index\+\+/,
-    );
-    assert.match(
-        result.cpp,
-        /while \(\(v_fn0_remaining > 0\.0f\)\)/,
+        /while \(\(v_fn0_remaining > 0\.0\)\)/,
     );
     assert.match(result.cpp, /v_fn0_remaining--/);
 });
@@ -493,11 +487,11 @@ test("unrolls for-of over static arrays", () => {
     );
     assert.match(
         result.cpp,
-        /auto v_fn0_block\d+_bonus = 1\.0f/,
+        /double v_fn0_block\d+_bonus = 1\.0/,
     );
     assert.match(
         result.cpp,
-        /auto v_fn0_block\d+_bonus = 3\.0f/,
+        /double v_fn0_block\d+_bonus = 3\.0/,
     );
 });
 
@@ -584,9 +578,12 @@ test("reads mutated flat-entry variables from live generated state", () => {
     for (const result of [flat, main]) {
         assert.match(
             result.cpp,
-            /auto v_counter = 0\.0f;\s+v_counter\+\+;\s+v_counter\+\+;/s,
+            /double v_counter = 0\.0;\s+v_counter\+\+;\s+v_counter\+\+;/s,
         );
-        assert.match(result.cpp, /\.position\.x = v_counter;/);
+        assert.match(
+            result.cpp,
+            /\.position\.x = static_cast<float>\(v_counter\);/,
+        );
         assert.doesNotMatch(result.cpp, /\.position\.x = 0\.0f;/);
     }
 });
@@ -598,9 +595,12 @@ test("compiles the flat-entry compiler state regression scene", () => {
         { fileName: sourcePath },
     );
 
-    assert.match(result.cpp, /auto v_offset = 0\.0f/);
+    assert.match(result.cpp, /double v_offset = 0\.0/);
     assert.match(result.cpp, /v_offset\+\+/);
-    assert.match(result.cpp, /\.position\.x = v_offset/);
+    assert.match(
+        result.cpp,
+        /\.position\.x = static_cast<float>\(v_offset\)/,
+    );
     assert.match(result.cpp, /\.rotation\.y \+= 0\.3f/);
     assert.ok(
         !result.manifest.adaptations.some(
@@ -789,6 +789,116 @@ test("records awaits lowered by static expression evaluation", () => {
     );
 });
 
+test("captures function-local const values once", () => {
+    const result = compileSource(`
+        import {
+            createArcRotateCamera,
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const camera = createArcRotateCamera(
+                0,
+                1,
+                5,
+                [0, 0, 0],
+            );
+            camera.radius = 5;
+            const captured = camera.radius;
+            camera.radius = 9;
+            const box = createBox(engine, captured);
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /double v_captured = v_engine\.cameras\[v_camera\.value\]\.radius/,
+    );
+    assert.match(
+        result.cpp,
+        /BoxOptions\{static_cast<float>\(v_captured\), static_cast<float>\(v_captured\), static_cast<float>\(v_captured\)\}/,
+    );
+});
+
+test("does not collapse conditional values to the true branch", () => {
+    const result = compileSource(`
+        function choose(flag: boolean): number {
+            const value = flag ? 0.6 : 0.4;
+            return value;
+        }
+        const selected = choose(false);
+    `);
+
+    assert.match(
+        result.cpp,
+        /double v_fn0_value = \(v_fn0_flag \? 0\.6f : 0\.4f\);/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /double v_fn0_value = 0\.6;/,
+    );
+});
+
+test("folds browser query conditions for the native default environment", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const params = new URLSearchParams(window.location.search);
+            const seek = parseFloat(params.get("seekTime") || "");
+            if (isNaN(seek)) {
+                box.position.x = 3;
+            }
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /\.position\.x = 3\.0f/,
+    );
+});
+
+test("rejects unsupported dynamic engine and scene options", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                } from "@babylonjs/lite";
+                async function main() {
+                    const engine = await createEngine({}, {
+                        msaaSamples: 1,
+                    });
+                }
+            `),
+        /supports explicit msaaSamples: 4 only/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createSceneContext,
+                } from "@babylonjs/lite";
+                async function main() {
+                    const engine = await createEngine({});
+                    const enabled = true;
+                    const scene = createSceneContext(engine, {
+                        defaultRenderTask: enabled,
+                    });
+                }
+            `),
+        /defaultRenderTask must be a static boolean/,
+    );
+});
+
 test("rejects compound assignments for nonnumeric properties", () => {
     const source = (assignment: string): string => `
         import {
@@ -840,11 +950,11 @@ test("rejects compound assignments for nonnumeric properties", () => {
 
 test("compiles pinned scene 213 GridMaterial options", () => {
     const source = readFileSync(
-        resolve("examples/scene213-grid-material.ts"),
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene213.ts"),
         "utf8",
     );
     const result = compileSource(source, {
-        fileName: "examples/scene213-grid-material.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene213.ts",
     });
 
     assert.ok(result.manifest.features.includes("material:grid"));
@@ -944,7 +1054,7 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
                 kind: "texture",
             },
             {
-                source: "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/master/packages/babylon-lite/assets/brdf-lut.png",
+                source: "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/7184feda683072980735f9a180e6f567ee5717ba/packages/babylon-lite/assets/brdf-lut.png",
                 kind: "texture",
             },
         ],
@@ -972,9 +1082,9 @@ test("compiles the authoritative GitHub BoomBox parity scene", () => {
 });
 
 test("compiles Babylon Lite scene 10 PBR rough sphere", () => {
-    const source = readFileSync(resolve("examples/scene10-pbr-rough.ts"), "utf8");
+    const source = readFileSync(resolve("corpus/babylon-lite/lab/lite/src/lite/scene10.ts"), "utf8");
     const result = compileSource(source, {
-        fileName: "examples/scene10-pbr-rough.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene10.ts",
     });
 
     assert.deepEqual(result.manifest.features, [
@@ -1011,11 +1121,11 @@ test("compiles Babylon Lite scene 10 PBR rough sphere", () => {
 
 test("compiles Babylon Lite scene 8 HDR glass sphere", () => {
     const source = readFileSync(
-        resolve("examples/scene8-hdr-glass.ts"),
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene8.ts"),
         "utf8",
     );
     const result = compileSource(source, {
-        fileName: "examples/scene8-hdr-glass.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene8.ts",
     });
 
     assert.deepEqual(result.manifest.features, [
@@ -1043,7 +1153,7 @@ test("compiles Babylon Lite scene 8 HDR glass sphere", () => {
                 faceSize: 512,
             },
             {
-                source: "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/master/packages/babylon-lite/assets/brdf-lut.png",
+                source: "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/7184feda683072980735f9a180e6f567ee5717ba/packages/babylon-lite/assets/brdf-lut.png",
                 kind: "texture",
             },
         ],
@@ -1107,11 +1217,11 @@ test("compiles independent transmission material gates", () => {
 
 test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     const source = readFileSync(
-        resolve("examples/scene273-runtime-material-family.ts"),
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene273.ts"),
         "utf8",
     );
     const result = compileSource(source, {
-        fileName: "examples/scene273-runtime-material-family.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene273.ts",
     });
 
     assert.deepEqual(result.manifest.features, [
@@ -1128,14 +1238,17 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     assert.match(result.cpp, /\.fixed_delta_ms = 16\.0f/);
     assert.match(result.cpp, /bbl::on_before_render/);
     assert.match(result.cpp, /v_frame\+\+/);
-    assert.match(result.cpp, /if \(\(v_frame == 20\.0f\)\)/);
+    assert.match(
+        result.cpp,
+        /if \(\(!\(v_added\) && \(v_frame >= 20\.0\)\)\)/,
+    );
     assert.match(
         result.cpp,
         /PbrMaterialOptions\{[^}]*0\.1f, 0\.4f, 1\.0f, 0\.0f, 1\.0f, 0\.04f, false, false, false, 0\.0f, 1\.5f/,
     );
     assert.match(
         result.cpp,
-        /if \(\(v_frame == \(20\.0f \+ 150\.0f\)\)\)/,
+        /if \(\(v_added && \(v_frame >= \(20\.0 \+ 150\.0\)\)\)\)/,
     );
     assert.doesNotMatch(result.cpp, /dataset|drawCallCount/);
     assert.deepEqual(result.manifest.generatedSources, [
@@ -1153,9 +1266,9 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
 });
 
 test("compiles Babylon Lite scene 13 PBR spheres grid", () => {
-    const source = readFileSync(resolve("examples/scene13-pbr-spheres.ts"), "utf8");
+    const source = readFileSync(resolve("corpus/babylon-lite/lab/lite/src/lite/scene13.ts"), "utf8");
     const result = compileSource(source, {
-        fileName: "examples/scene13-pbr-spheres.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene13.ts",
     });
 
     assert.deepEqual(result.manifest.features, [
@@ -1186,7 +1299,7 @@ test("compiles Babylon Lite scene 13 PBR spheres grid", () => {
                 kind: "texture",
             },
             {
-                source: "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/master/packages/babylon-lite/assets/brdf-lut.png",
+                source: "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/7184feda683072980735f9a180e6f567ee5717ba/packages/babylon-lite/assets/brdf-lut.png",
                 kind: "texture",
             },
         ],
@@ -1196,9 +1309,9 @@ test("compiles Babylon Lite scene 13 PBR spheres grid", () => {
 });
 
 test("compiles Babylon Lite scene 32 unlit glTF", () => {
-    const source = readFileSync(resolve("examples/scene32-unlit.ts"), "utf8");
+    const source = readFileSync(resolve("corpus/babylon-lite/lab/lite/src/lite/scene32.ts"), "utf8");
     const result = compileSource(source, {
-        fileName: "examples/scene32-unlit.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene32.ts",
     });
 
     assert.ok(result.manifest.features.includes("loader:gltf"));
@@ -1208,9 +1321,9 @@ test("compiles Babylon Lite scene 32 unlit glTF", () => {
 });
 
 test("compiles Babylon Lite scene 168 mirrored winding", () => {
-    const source = readFileSync(resolve("examples/scene168-mirrored-winding.ts"), "utf8");
+    const source = readFileSync(resolve("corpus/babylon-lite/lab/lite/src/lite/scene168.ts"), "utf8");
     const result = compileSource(source, {
-        fileName: "examples/scene168-mirrored-winding.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene168.ts",
     });
 
     assert.ok(result.manifest.features.includes("loader:gltf"));
@@ -1220,33 +1333,39 @@ test("compiles Babylon Lite scene 168 mirrored winding", () => {
 });
 
 test("compiles Babylon Lite scene 257 negative scale", () => {
-    const source = readFileSync(resolve("examples/scene257-negative-scale.ts"), "utf8");
+    const source = readFileSync(resolve("corpus/babylon-lite/lab/lite/src/lite/scene257.ts"), "utf8");
     const result = compileSource(source, {
-        fileName: "examples/scene257-negative-scale.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene257.ts",
     });
 
     assert.ok(result.manifest.features.includes("loader:gltf"));
     assert.ok(result.manifest.features.includes("renderer:pbr"));
-    assert.match(result.cpp, /std::sqrt\(800\.0f\)/);
+    assert.match(
+        result.cpp,
+        /static_cast<float>\(std::sqrt\(800\.0\)\)/,
+    );
     assert.match(result.cpp, /Node_NegativeScale_01\.glb/);
 });
 
 test("compiles Babylon Lite scene 266 negative scale spheres", () => {
-    const source = readFileSync(resolve("examples/scene266-negative-scale-spheres.ts"), "utf8");
+    const source = readFileSync(resolve("corpus/babylon-lite/lab/lite/src/lite/scene266.ts"), "utf8");
     const result = compileSource(source, {
-        fileName: "examples/scene266-negative-scale-spheres.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene266.ts",
     });
 
     assert.ok(result.manifest.features.includes("loader:gltf"));
     assert.ok(result.manifest.features.includes("renderer:pbr"));
     assert.match(result.cpp, /NegativeScaleTest\.glb/);
-    assert.match(result.cpp, /bbl::pi \/ 2\.15f/);
+    assert.match(
+        result.cpp,
+        /static_cast<float>\(\(3\.141592653589793 \/ 2\.15\)\)/,
+    );
 });
 
 test("compiles Babylon Lite scene 274 alpha to coverage", () => {
-    const source = readFileSync(resolve("examples/scene274-alpha-to-coverage.ts"), "utf8");
+    const source = readFileSync(resolve("corpus/babylon-lite/lab/lite/src/lite/scene274.ts"), "utf8");
     const result = compileSource(source, {
-        fileName: "examples/scene274-alpha-to-coverage.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene274.ts",
     });
 
     assert.ok(result.manifest.features.includes("material:shader"));
@@ -1265,11 +1384,11 @@ test("compiles Babylon Lite scene 274 alpha to coverage", () => {
 
 test("compiles Babylon Lite scene 163 shader alpha cutout", () => {
     const source = readFileSync(
-        resolve("examples/scene163-shader-alpha-cutout.ts"),
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene163.ts"),
         "utf8",
     );
     const result = compileSource(source, {
-        fileName: "examples/scene163-shader-alpha-cutout.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene163.ts",
     });
 
     assert.ok(result.manifest.features.includes("camera:arc-rotate"));
@@ -1294,14 +1413,14 @@ test("compiles Babylon Lite scene 163 shader alpha cutout", () => {
 
 test("matches shader variants through parsed WGSL IR", () => {
     const source = readFileSync(
-        resolve("examples/scene163-shader-alpha-cutout.ts"),
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene163.ts"),
         "utf8",
     ).replace(
         "struct VertexOutput {",
         "// Semantically irrelevant shader comment.\nstruct VertexOutput\n{",
     );
     const result = compileSource(source, {
-        fileName: "examples/scene163-shader-alpha-cutout.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene163.ts",
     });
 
     assert.deepEqual(
@@ -1312,7 +1431,7 @@ test("matches shader variants through parsed WGSL IR", () => {
 
 test("reports invalid reached WGSL at the shader options", () => {
     const source = readFileSync(
-        resolve("examples/scene163-shader-alpha-cutout.ts"),
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene163.ts"),
         "utf8",
     ).replace(
         "if(distance(input.uv,vec2<f32>(0.5,0.5))<0.18)",
@@ -1323,9 +1442,9 @@ test("reports invalid reached WGSL at the shader options", () => {
         () =>
             compileSource(source, {
                 fileName:
-                    "examples/scene163-shader-alpha-cutout.ts",
+                    "corpus/babylon-lite/lab/lite/src/lite/scene163.ts",
             }),
-        /examples\/scene163-shader-alpha-cutout\.ts:\d+:\d+: Invalid reached shader material WGSL:/,
+        /corpus\/babylon-lite\/lab\/lite\/src\/lite\/scene163\.ts:\d+:\d+: Invalid reached shader material WGSL:/,
     );
 });
 
@@ -1352,11 +1471,11 @@ test("compiles shader materials inside a frame-graph render task", () => {
 
 test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
     const source = readFileSync(
-        resolve("examples/scene146-geometry-output.ts"),
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene146.ts"),
         "utf8",
     );
     const result = compileSource(source, {
-        fileName: "examples/scene146-geometry-output.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene146.ts",
     });
 
     assert.ok(result.manifest.features.includes("renderer:geometry-output"));
@@ -1391,7 +1510,15 @@ test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
     assert.match(result.cpp, /bbl::add_task_at_start/);
     assert.match(
         result.cpp,
-        /NormalizedViewport\{\(1\.0 \/ 6\.0\), 0\.0, \(1\.0 \/ 6\.0\), 0\.15\}/,
+        /scene146-impostor-worldPosition/,
+    );
+    assert.match(
+        result.cpp,
+        /double v_fn0_tileW = \(1\.0 \/ 6\.0\)/,
+    );
+    assert.match(
+        result.cpp,
+        /double v_fn0_block\d+_i = 3\.0;[\s\S]*scene146-impostor-worldPosition[\s\S]*NormalizedViewport\{\(v_fn0_block\d+_i \* v_fn0_tileW\), v_fn0_y, v_fn0_tileW, 0\.15\}/,
     );
     assert.ok(
         result.manifest.generatedSources.includes(
@@ -1407,11 +1534,11 @@ test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
 
 test("compiles Babylon Lite scene 116 no-color depth views", () => {
     const source = readFileSync(
-        resolve("examples/scene116-no-color-depth.ts"),
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene116.ts"),
         "utf8",
     );
     const result = compileSource(source, {
-        fileName: "examples/scene116-no-color-depth.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene116.ts",
     });
 
     assert.ok(result.manifest.features.includes("material:no-color-view"));
@@ -1437,15 +1564,21 @@ test("compiles Babylon Lite scene 116 no-color depth views", () => {
             "upstream/src/frame_graph_geometry.cpp",
         ),
     );
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) =>
+                id === "readable-default-render-task",
+        ),
+    );
 });
 
 test("compiles Babylon Lite scene 145 standard geometry outputs", () => {
     const source = readFileSync(
-        resolve("examples/scene145-standard-geometry-output.ts"),
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene145.ts"),
         "utf8",
     );
     const result = compileSource(source, {
-        fileName: "examples/scene145-standard-geometry-output.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene145.ts",
     });
 
     assert.deepEqual(result.manifest.features, [
@@ -1460,8 +1593,15 @@ test("compiles Babylon Lite scene 145 standard geometry outputs", () => {
     assert.equal(result.manifest.assets[0]?.kind, "babylon");
     assert.match(result.manifest.assets[0]?.output ?? "", /HillValley\/HillValley\.babylon$/);
     assert.match(result.cpp, /bbl::load_babylon/);
-    assert.match(result.cpp, /bbl::create_free_camera/);
-    assert.match(result.cpp, /\.fov = 0\.8985202f/);
+    assert.match(result.cpp, /auto v_camera = v_scene\.camera/);
+    assert.match(
+        result.cpp,
+        /\.position = bbl::Vec3\{\(-26\.695675321687403f\)/,
+    );
+    assert.match(
+        result.cpp,
+        /double v_fn\d+_y = 0\.85;/,
+    );
     assert.ok(
         result.manifest.generatedSources.includes(
             "upstream/src/babylon_loader.cpp",
@@ -1476,9 +1616,9 @@ test("compiles Babylon Lite scene 145 standard geometry outputs", () => {
 });
 
 test("compiles Babylon Lite scene 248 external glTF", () => {
-    const source = readFileSync(resolve("examples/scene248-texture-settings.ts"), "utf8");
+    const source = readFileSync(resolve("corpus/babylon-lite/lab/lite/src/lite/scene248.ts"), "utf8");
     const result = compileSource(source, {
-        fileName: "examples/scene248-texture-settings.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene248.ts",
     });
 
     const asset = result.manifest.assets.find(({ kind }) => kind === "gltf");
@@ -1491,9 +1631,9 @@ test("compiles Babylon Lite scene 248 external glTF", () => {
 
 test("compiles animated and skinned glTF scenes", () => {
     for (const sourcePath of [
-        "examples/scene5-alien.ts",
-        "examples/scene240-animated-triangle.ts",
-        "examples/scene245-recursive-skeletons.ts",
+        "corpus/babylon-lite/lab/lite/src/lite/scene5.ts",
+        "corpus/babylon-lite/lab/lite/src/lite/scene240.ts",
+        "corpus/babylon-lite/lab/lite/src/lite/scene245.ts",
         "examples/regression-track-clamp.ts",
     ]) {
         const result = compileSource(
@@ -1508,8 +1648,8 @@ test("compiles animated and skinned glTF scenes", () => {
 
 test("compiles property animation scenes", () => {
     for (const sourcePath of [
-        "examples/scene151-property-transform-animation.ts",
-        "examples/scene154-step-time-animation.ts",
+        "corpus/babylon-lite/lab/lite/src/lite/scene151.ts",
+        "corpus/babylon-lite/lab/lite/src/lite/scene154.ts",
     ]) {
         const result = compileSource(
             readFileSync(resolve(sourcePath), "utf8"),
@@ -1538,11 +1678,11 @@ test("compiles property animation scenes", () => {
 
 test("compiles Babylon Lite scene 249 vertex alpha clip", () => {
     const source = readFileSync(
-        resolve("examples/scene249-vertex-alpha-clip.ts"),
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene249.ts"),
         "utf8",
     );
     const result = compileSource(source, {
-        fileName: "examples/scene249-vertex-alpha-clip.ts",
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene249.ts",
     });
     const asset = result.manifest.assets.find(({ kind }) => kind === "gltf");
     assert.match(asset?.source ?? "", /VertexColorAlphaClipTest\.gltf$/);

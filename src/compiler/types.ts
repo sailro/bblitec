@@ -69,8 +69,11 @@ export type ValueKind =
     | "animation-group"
     | "animation-manager"
     | "asset"
+    | "boolean"
     | "browser"
     | "camera"
+    | "camera-world-matrix"
+    | "color4"
     | "engine"
     | "light"
     | "material"
@@ -79,9 +82,12 @@ export type ValueKind =
     | "render-target"
     | "render-target-texture"
     | "render-texture"
+    | "record"
     | "scene"
+    | "string"
     | "task"
     | "texture"
+    | "tuple"
     | "void";
 
 export interface Value {
@@ -93,6 +99,20 @@ export interface Value {
     shaderVariant?: ShaderMaterialVariantName;
     animationFrameRate?: string;
     animationDuration?: string;
+    staticNumber?: number;
+    staticString?: string;
+    tupleElements?: Value[];
+    recordProperties?: Record<string, Value>;
+    defaultRenderTask?: boolean;
+    defaultRenderTaskEmitted?: boolean;
+    browserValue?:
+        | { kind: "boolean"; value: boolean }
+        | { kind: "number"; value: number }
+        | { kind: "null" }
+        | { kind: "search-params" }
+        | { kind: "string"; value: string };
+    cameraKind?: "arc-rotate" | "free";
+    msaaSamples?: 1 | 4;
 }
 
 export type Feature =

@@ -20,12 +20,7 @@ async function main(): Promise<void> {
     const engine = await createEngine(canvas);
     const scene = createSceneContext(engine);
 
-    scene.camera = createArcRotateCamera(
-        -Math.PI / 2,
-        Math.PI / 2,
-        5,
-        { x: 0, y: 0, z: 0 },
-    );
+    scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2, 5, { x: 0, y: 0, z: 0 });
     scene.camera.nearPlane = 1;
     scene.camera.farPlane = 10000;
     attachControl(scene.camera as ArcRotateCamera, canvas, scene);

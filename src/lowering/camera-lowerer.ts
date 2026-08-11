@@ -606,29 +606,42 @@ void apply_arc_rotate_inertia(CameraRecord& camera) {
 }
 
 void apply_free_camera_inertia(CameraRecord& camera) {
-    camera.free_yaw += camera.inertial_yaw_offset;
-    camera.free_pitch += camera.inertial_pitch_offset;
-    constexpr float max_pitch = pi / 2.0f - 0.01f;
-    camera.free_pitch =
-        std::max(-max_pitch, std::min(max_pitch, camera.free_pitch));
+    const bool has_rotation =
+        camera.inertial_yaw_offset != 0.0f ||
+        camera.inertial_pitch_offset != 0.0f;
+    const bool has_movement =
+        camera.inertial_direction.x != 0.0f ||
+        camera.inertial_direction.y != 0.0f ||
+        camera.inertial_direction.z != 0.0f;
+    if (has_rotation) {
+        camera.free_yaw += camera.inertial_yaw_offset;
+        camera.free_pitch += camera.inertial_pitch_offset;
+        constexpr float max_pitch = pi / 2.0f - 0.01f;
+        camera.free_pitch =
+            std::max(-max_pitch, std::min(max_pitch, camera.free_pitch));
+    }
     const float cosine_yaw = std::cos(camera.free_yaw);
     const float sine_yaw = std::sin(camera.free_yaw);
     const float cosine_pitch = std::cos(camera.free_pitch);
     const float sine_pitch = std::sin(camera.free_pitch);
-    camera.position.x +=
-        sine_yaw * cosine_pitch * camera.inertial_direction.z +
-        cosine_yaw * camera.inertial_direction.x;
-    camera.position.y +=
-        sine_pitch * camera.inertial_direction.z +
-        camera.inertial_direction.y;
-    camera.position.z +=
-        cosine_yaw * cosine_pitch * camera.inertial_direction.z -
-        sine_yaw * camera.inertial_direction.x;
-    camera.target = Vec3{
-        camera.position.x + sine_yaw * cosine_pitch,
-        camera.position.y + sine_pitch,
-        camera.position.z + cosine_yaw * cosine_pitch,
-    };
+    if (has_movement) {
+        camera.position.x +=
+            sine_yaw * cosine_pitch * camera.inertial_direction.z +
+            cosine_yaw * camera.inertial_direction.x;
+        camera.position.y +=
+            sine_pitch * camera.inertial_direction.z +
+            camera.inertial_direction.y;
+        camera.position.z +=
+            cosine_yaw * cosine_pitch * camera.inertial_direction.z -
+            sine_yaw * camera.inertial_direction.x;
+    }
+    if (has_movement || has_rotation) {
+        camera.target = Vec3{
+            camera.position.x + sine_yaw * cosine_pitch,
+            camera.position.y + sine_pitch,
+            camera.position.z + cosine_yaw * cosine_pitch,
+        };
+    }
     camera.inertial_direction.x *= camera.inertia;
     camera.inertial_direction.y *= camera.inertia;
     camera.inertial_direction.z *= camera.inertia;

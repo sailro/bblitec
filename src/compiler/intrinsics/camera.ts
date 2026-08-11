@@ -44,6 +44,7 @@ export function compileCameraIntrinsic(
                     `${context.compileNumber(call.arguments[2]!)}, ` +
                     `${context.compileVec3(call.arguments[3]!)})`,
                 engineCpp: engine,
+                cameraKind: "arc-rotate",
             };
         }
 
@@ -65,6 +66,7 @@ export function compileCameraIntrinsic(
                     `bbl::create_default_camera(` +
                     `${engine}, ${scene.cpp})`,
                 engineCpp: engine,
+                cameraKind: "arc-rotate",
             };
         }
 
@@ -80,6 +82,7 @@ export function compileCameraIntrinsic(
                     `${context.compileVec3(call.arguments[0]!)}, ` +
                     `${context.compileVec3(call.arguments[1]!)})`,
                 engineCpp: engine,
+                cameraKind: "free",
             };
         }
 

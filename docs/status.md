@@ -29,14 +29,12 @@ Generated behavior is tied to `@babylonjs/lite@1.18.0` at commit
 
 Development Windows machine, D3D12, 1280x720:
 
-| Renderer | Full MAD | Foreground MAD | CPU submission |
+| Renderer | Full MAD | Foreground MAD | Frame time |
 | --- | ---: | ---: | ---: |
-| CPU fallback | $\color{#cf222e}{\textsf{2.075}}$ | $\color{#cf222e}{\textsf{21.204}}$ | 5.516 ms/frame |
 | SDL_GPU, 4x MSAA | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.015}}$ | 0.176 ms average, 0.141 ms median |
 
-The GPU path is approximately 31 times faster CPU-side. Against the pinned
-Babylon Lite output, BoomBox rendering is effectively exact. Regression
-ceilings are `0.01` full and `0.03` foreground MAD.
+Against the pinned Babylon Lite output, BoomBox rendering is effectively exact.
+Regression ceilings are `0.01` full and `0.03` foreground MAD.
 
 ## Curated parity scenes
 
@@ -58,7 +56,7 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 | 32 | <img src="images/scenes/scene32.png" alt="Scene 32 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | `KHR_materials_unlit` |
 | 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | no-color material views, depth targets |
 | 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.063}}$ | $\color{#1a7f37}{\textsf{0.063}}$ | `.babylon`, Standard geometry outputs, default anisotropy<br><em>The frame-graph copy path now matches Babylon Lite's integer viewport and scissor contract. Full-resolution attachment MAD is at most 0.067; view/world normals are 0.002/0.003. Run `npm run scene -- geometry scene145`.</em> |
-| 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.021}}$ | $\color{#1a7f37}{\textsf{0.019}}$ | PBR geometry outputs, 7+4 MRT composition<br><em>The frame-graph copy path now matches Babylon Lite's integer viewport and scissor contract. Full-resolution attachment MAD is at most 0.057; view/world normals are 0.029/0.034. Run `npm run scene -- geometry scene146`.</em> |
+| 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.021}}$ | $\color{#1a7f37}{\textsf{0.019}}$ | Exact pinned FreeCamera Sponza view, PBR geometry outputs, 7+4 MRT composition<br><em>Typed static-loop lowering preserves Babylon Lite's double-precision viewport arithmetic before source-derived integer viewport/scissor conversion.</em> |
 | 151 | <img src="images/scenes/scene151.png" alt="Scene 151 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | grouped position, scaling, and quaternion property animation |
 | 154 | <img src="images/scenes/scene154.png" alt="Scene 154 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | LINEAR versus STEP property interpolation |
 | 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | custom shader blend, alpha test, discard |
@@ -73,11 +71,6 @@ $\color{#cf222e}{\textsf{red above 1.000}}$.
 | 266 | <img src="images/scenes/scene266.png" alt="Scene 266 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.130}}$ | $\color{#1a7f37}{\textsf{0.247}}$ | mirrored spheres; 99.46% within one byte |
 | 273 | <img src="images/scenes/scene273.png" alt="Scene 273 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | post-registration material-family addition |
 | 274 | <img src="images/scenes/scene274.png" alt="Scene 274 rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | 4x-MSAA alpha-to-coverage |
-| transmission-ior | <img src="images/scenes/transmission-ior.png" alt="Transmission IOR" width="120"> | $\color{#1a7f37}{\textsf{0.115}}$ | $\color{#1a7f37}{\textsf{0.302}}$ | refraction IOR without glTF-only dielectric F0 |
-| transmission-scene-color | <img src="images/scenes/transmission-scene-color.png" alt="Scene-color transmission" width="120"> | $\color{#1a7f37}{\textsf{0.044}}$ | $\color{#1a7f37}{\textsf{0.208}}$ | linear RGBA16F scene-color transmission |
-| transmission-skybox | <img src="images/scenes/transmission-skybox.png" alt="PBR skybox rendering" width="120"> | $\color{#1a7f37}{\textsf{0.091}}$ | $\color{#1a7f37}{\textsf{0.091}}$ | independent PBR skybox-mode gate |
-| transmission-volume | <img src="images/scenes/transmission-volume.png" alt="Transmission volume" width="120"> | $\color{#1a7f37}{\textsf{0.170}}$ | $\color{#1a7f37}{\textsf{0.454}}$ | Beer-Lambert volume and independent thickness-as-depth |
-
 ## Project-owned differential gates
 
 These scenes are authored in `bblitec`, but their browser reference still runs
@@ -86,9 +79,13 @@ native differential fidelity; it does not represent upstream corpus coverage.
 
 | Scene | Preview | Full MAD | Foreground MAD | Primary coverage |
 | --- | :---: | ---: | ---: | --- |
-| shader-frame-graph | <img src="images/scenes/audit-shader-frame-graph.png" alt="Shader frame graph rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | alpha-card and circular-cutout shader materials mirrored through a frame-graph render task |
 | compiler-state | <img src="images/scenes/regression-compiler-state.png" alt="Compiler state rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | flat-entry mutable state and pre-registration mesh compound assignment |
 | glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | translation, rotation, and morph-weight endpoint clamping while another channel extends the global duration |
+| shader-frame-graph | <img src="images/scenes/audit-shader-frame-graph.png" alt="Shader frame graph rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ | alpha-card and circular-cutout shader materials mirrored through a frame-graph render task |
+| transmission-ior | <img src="images/scenes/transmission-ior.png" alt="Transmission IOR" width="120"> | $\color{#1a7f37}{\textsf{0.115}}$ | $\color{#1a7f37}{\textsf{0.302}}$ | refraction IOR without glTF-only dielectric F0 |
+| transmission-scene-color | <img src="images/scenes/transmission-scene-color.png" alt="Scene-color transmission" width="120"> | $\color{#1a7f37}{\textsf{0.044}}$ | $\color{#1a7f37}{\textsf{0.208}}$ | linear RGBA16F scene-color transmission |
+| transmission-skybox | <img src="images/scenes/transmission-skybox.png" alt="PBR skybox rendering" width="120"> | $\color{#1a7f37}{\textsf{0.091}}$ | $\color{#1a7f37}{\textsf{0.091}}$ | independent PBR skybox-mode gate |
+| transmission-volume | <img src="images/scenes/transmission-volume.png" alt="Transmission volume" width="120"> | $\color{#1a7f37}{\textsf{0.170}}$ | $\color{#1a7f37}{\textsf{0.454}}$ | Beer-Lambert volume and independent thickness-as-depth |
 
 ## Diagnostics
 

@@ -62,7 +62,7 @@ test("derives defaults for an unregistered scene source", () => {
 });
 
 test("resolves a registered scene by source path", () => {
-    assert.equal(resolveScene("examples/scene10-pbr-rough.ts").id, "scene10");
+    assert.equal(resolveScene("corpus/babylon-lite/lab/lite/src/lite/scene10.ts").id, "scene10");
 });
 
 test("rejects ad-hoc sources that collide with registered scene ids", () => {

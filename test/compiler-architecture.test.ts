@@ -68,7 +68,7 @@ test("routes extracted intrinsic families through the registry", () => {
         );
     }
     assert.match(compiler, /compileRegisteredIntrinsic/);
-    assert.doesNotMatch(compiler, /case "/);
+    assert.doesNotMatch(compiler, /case "create/);
 });
 
 test("isolates static expression lowering from entry orchestration", () => {

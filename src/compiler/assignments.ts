@@ -9,6 +9,76 @@ export interface DirectPropertyAssignment {
     supportsCompound: boolean;
 }
 
+function emitFrameGraphTransmission(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+    left: ts.PropertyAccessExpression,
+): boolean {
+    if (
+        left.name.text !== "transmission" ||
+        !ts.isPropertyAccessExpression(left.expression) ||
+        left.expression.name.text !== "_config"
+    ) {
+        return false;
+    }
+    const task = context.unwrap(
+        left.expression.expression,
+    );
+    if (
+        !ts.isElementAccessExpression(task) ||
+        !ts.isPropertyAccessExpression(task.expression) ||
+        task.expression.name.text !== "_tasks"
+    ) {
+        return false;
+    }
+    const frameGraph = context.unwrap(
+        task.expression.expression,
+    );
+    if (
+        !ts.isCallExpression(frameGraph) ||
+        !ts.isIdentifier(frameGraph.expression) ||
+        context.importedName(frameGraph.expression) !==
+            "getFrameGraph" ||
+        frameGraph.arguments.length !== 1
+    ) {
+        return false;
+    }
+    const options = context.unwrap(expression.right);
+    if (!ts.isObjectLiteralExpression(options)) {
+        context.fail(
+            expression.right,
+            "Frame-graph transmission requires an options object.",
+        );
+    }
+    const copyCount = context.objectProperty(
+        options,
+        "copyCount",
+    );
+    if (
+        !copyCount ||
+        context.compileNumber(copyCount) !== "1.0f"
+    ) {
+        context.fail(
+            options,
+            "Reached frame-graph transmission requires copyCount: 1.",
+        );
+    }
+    const scene = context.compileValue(
+        frameGraph.arguments[0]!,
+    );
+    context.expectKind(
+        scene,
+        "scene",
+        frameGraph.arguments[0]!,
+    );
+    context.reachFeature("renderer:pbr");
+    context.reachFeature("renderer:transmission");
+    context.emit(
+        `bbl::enable_scene_transmission(${scene.cpp});`,
+    );
+    return true;
+}
+
 const commonLightProperties: Readonly<
     Record<string, DirectPropertyAssignment>
 > = {
@@ -96,6 +166,14 @@ export interface AssignmentContext {
     compileBoolean(expression: ts.Expression): string;
     compileColor3(expression: ts.Expression): string;
     compileColor4(expression: ts.Expression): string;
+    objectProperty(
+        object: ts.ObjectLiteralExpression,
+        name: string,
+    ): ts.Expression | undefined;
+    unwrap(expression: ts.Expression): ts.Expression;
+    importedName(
+        identifier: ts.Identifier,
+    ): string | undefined;
     expectKind(
         value: Value,
         kind: ValueKind,
@@ -108,7 +186,11 @@ export interface AssignmentContext {
     ): void;
     requireEngine(value: Value, node: ts.Node): string;
     eraseBrowserInstrumentation(position: number): void;
+    isBrowserOnlyExpression(
+        expression: ts.Expression,
+    ): boolean;
     emit(line: string): void;
+    reachFeature(feature: Feature): void;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -128,6 +210,21 @@ export function emitPropertyAssignment(
         expression,
     );
     const left = expression.left;
+    if (context.isBrowserOnlyExpression(left)) {
+        context.eraseBrowserInstrumentation(
+            expression.pos,
+        );
+        return;
+    }
+    if (
+        emitFrameGraphTransmission(
+            context,
+            expression,
+            left,
+        )
+    ) {
+        return;
+    }
     if (
         ts.isPropertyAccessExpression(left.expression) &&
         left.expression.name.text === "dataset" &&
@@ -424,11 +521,13 @@ export function emitPropertyAssignment(
             target.kind === "camera" &&
             [
                 "alpha",
+                "angularSensitivity",
                 "beta",
                 "radius",
                 "fov",
                 "nearPlane",
                 "farPlane",
+                "speed",
             ].includes(property)
         ) {
             const nativeProperty =
@@ -436,6 +535,8 @@ export function emitPropertyAssignment(
                     ? "near_plane"
                     : property === "farPlane"
                       ? "far_plane"
+                      : property === "angularSensitivity"
+                        ? "angular_sensibility"
                       : property;
             context.emit(
                 `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right)};`,
@@ -543,6 +644,7 @@ function requireSimpleAssignment(
 }
 import ts from "typescript";
 import type {
+    Feature,
     LightKind,
     Value,
     ValueKind,

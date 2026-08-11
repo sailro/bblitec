@@ -11,6 +11,10 @@ import {
     createCompilerProgram,
 } from "./compiler/program.js";
 import {
+    compileImmediatePromise,
+    type PromiseLoweringContext,
+} from "./compiler/promises.js";
+import {
     CompilerSymbols,
 } from "./compiler/symbols.js";
 import {
@@ -53,6 +57,7 @@ import {
 import {
     shaderMaterialPrograms,
 } from "./shader-material-programs.js";
+import { readUpstreamPin } from "./upstream-source.js";
 
 const featureSources: Record<Feature, string[]> = {
     "animation:property": [],
@@ -128,6 +133,7 @@ class Compiler
     implements
         IntrinsicContext,
         AssignmentContext,
+        PromiseLoweringContext,
         StatementLoweringContext,
         UserFunctionContext {
     private readonly symbols: CompilerSymbols;
@@ -158,6 +164,7 @@ class Compiler
     private defaultEngineCpp: string | undefined;
     private indentLevel = 2;
     private temporaryIndex = 0;
+    private defaultRenderTaskAdapted = false;
 
     public constructor(
         private readonly program: ts.Program,
@@ -172,6 +179,9 @@ class Compiler
             this.staticConstants,
             (identifier) =>
                 this.symbols.valueSymbol(identifier),
+            (expression) =>
+                this.lookupRecordProperty(expression),
+            (expression) => this.compileValue(expression),
             (identifier) => this.lookup(identifier),
             (node, message) => this.fail(node, message),
             (expression) =>
@@ -277,7 +287,7 @@ class Compiler
             generatedSources.push("upstream/src/mesh_factories.cpp");
         }
         return {
-            cpp: this.renderCpp(),
+            cpp: this.renderCpp(features),
             cmake: this.renderCmake(features, runtimeSources, generatedSources),
             manifest: {
                 source: this.options.fileName,
@@ -376,6 +386,10 @@ class Compiler
     }
 
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
+        if (ts.isObjectBindingPattern(declaration.name)) {
+            this.emitObjectBindingDeclaration(declaration);
+            return;
+        }
         if (!ts.isIdentifier(declaration.name)) {
             this.fail(declaration.name, "Only identifier variable declarations are supported.");
         }
@@ -400,12 +414,27 @@ class Compiler
             }
         }
         const cppName = this.cppIdentifier(sourceName);
+        if (
+            ts.isArrowFunction(declaration.initializer) ||
+            ts.isFunctionExpression(
+                declaration.initializer,
+            )
+        ) {
+            return;
+        }
 
         if (this.isBrowserOnlyExpression(declaration.initializer)) {
+            const browserValue =
+                this.evaluateBrowserValue(
+                    declaration.initializer,
+                );
             this.erasedBrowserExpressions.add(declaration.initializer.pos);
             this.defineVariable(declaration.name, {
                 kind: "browser",
                 cpp: "",
+                ...(browserValue
+                    ? { browserValue }
+                    : {}),
             });
             return;
         }
@@ -427,8 +456,40 @@ class Compiler
         if (value.kind === "void" || value.kind === "browser") {
             this.fail(declaration.initializer, `Expression assigned to '${sourceName}' does not produce a native value.`);
         }
+        if (
+            value.kind === "tuple" ||
+            value.kind === "record"
+        ) {
+            this.defineVariable(declaration.name, value);
+            return;
+        }
 
-        this.emit(`auto ${cppName} = ${value.cpp};`);
+        const nativeType =
+            value.kind === "number"
+                ? "double"
+                : value.kind === "boolean"
+                  ? "bool"
+                  : "auto";
+        const initializerCpp =
+            value.kind === "number" &&
+            !ts.isCallExpression(
+                this.unwrap(declaration.initializer),
+            ) &&
+            !ts.isConditionalExpression(
+                this.unwrap(declaration.initializer),
+            )
+                ? this.compileNumber(
+                      declaration.initializer,
+                      "double",
+                  )
+                : value.cpp;
+        const maybeUnused =
+            value.kind === "boolean"
+                ? "[[maybe_unused]] "
+                : "";
+        this.emit(
+            `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`,
+        );
         const stored = { ...value, cpp: cppName };
         if (value.kind === "animation-clip") {
             stored.animationFrameRate = `${cppName}.frame_rate`;
@@ -443,6 +504,90 @@ class Compiler
         }
     }
 
+    private emitObjectBindingDeclaration(
+        declaration: ts.VariableDeclaration,
+    ): void {
+        if (
+            !ts.isObjectBindingPattern(declaration.name) ||
+            !declaration.initializer
+        ) {
+            this.fail(
+                declaration,
+                "Object destructuring requires an initializer.",
+            );
+        }
+        const value = this.compileValue(
+            declaration.initializer,
+        );
+        if (
+            value.kind !== "render-target-texture"
+        ) {
+            this.fail(
+                declaration.initializer,
+                `Object destructuring is not supported for ${value.kind}.`,
+            );
+        }
+        const temporary =
+            this.allocateTemporaryCppName(
+                "destructure",
+            );
+        this.emit(`auto ${temporary} = ${value.cpp};`);
+        for (const element of declaration.name.elements) {
+            if (
+                element.dotDotDotToken ||
+                !ts.isIdentifier(element.name)
+            ) {
+                this.fail(
+                    element,
+                    "Object destructuring supports identifier properties only.",
+                );
+            }
+            const property =
+                element.propertyName &&
+                (ts.isIdentifier(element.propertyName) ||
+                    ts.isStringLiteral(element.propertyName))
+                    ? element.propertyName.text
+                    : element.name.text;
+            const cppName = this.cppIdentifier(
+                element.name.text,
+            );
+            const propertyValue: Value =
+                property === "rt"
+                    ? {
+                          kind: "render-target",
+                          cpp: `${temporary}.rt`,
+                          ...(value.engineCpp
+                              ? {
+                                    engineCpp:
+                                        value.engineCpp,
+                                }
+                              : {}),
+                      }
+                    : property === "texture"
+                      ? {
+                            kind: "render-texture",
+                            cpp: `${temporary}.texture`,
+                            ...(value.engineCpp
+                                ? {
+                                      engineCpp:
+                                          value.engineCpp,
+                                  }
+                                : {}),
+                        }
+                      : this.fail(
+                            element,
+                            `Unsupported render-target texture property '${property}'.`,
+                        );
+            this.emit(
+                `auto ${cppName} = ${propertyValue.cpp};`,
+            );
+            this.defineVariable(element.name, {
+                ...propertyValue,
+                cpp: cppName,
+            });
+        }
+    }
+
     public emitAssignment(expression: ts.BinaryExpression): void {
         emitPropertyAssignment(this, expression);
     }
@@ -451,19 +596,211 @@ class Compiler
         const unwrapped = this.unwrap(expression);
 
         if (ts.isIdentifier(unwrapped)) {
+            const value = this.lookupOptional(unwrapped);
+            if (value) {
+                return value;
+            }
+            const resolved =
+                this.resolveStaticExpression(unwrapped);
+            if (resolved !== unwrapped) {
+                return this.compileValue(resolved);
+            }
             return this.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             return this.compilePropertyAccess(unwrapped);
         }
+        if (ts.isElementAccessExpression(unwrapped)) {
+            const owner = this.compileValue(
+                unwrapped.expression,
+            );
+            if (owner.kind === "camera-world-matrix") {
+                const index = this.compileValue(
+                    unwrapped.argumentExpression,
+                );
+                if (
+                    index.kind !== "number" ||
+                    index.staticNumber === undefined ||
+                    ![12, 13, 14].includes(
+                        index.staticNumber,
+                    )
+                ) {
+                    this.fail(
+                        unwrapped.argumentExpression,
+                        "Reached camera world-matrix access supports translation indices 12-14.",
+                    );
+                }
+                const component =
+                    ({ 12: "x", 13: "y", 14: "z" } as const)[
+                        index.staticNumber as 12 | 13 | 14
+                    ];
+                return {
+                    kind: "number",
+                    cpp: `bbl::upstream::arc_rotate_eye_position(${this.requireEngine(owner, unwrapped)}.cameras[${owner.cpp}.value]).${component}`,
+                    ...(owner.engineCpp
+                        ? { engineCpp: owner.engineCpp }
+                        : {}),
+                };
+            }
+            if (owner.kind !== "tuple") {
+                this.fail(
+                    unwrapped.expression,
+                    `Element access is not supported for ${owner.kind}.`,
+                );
+            }
+            const index = this.compileValue(
+                unwrapped.argumentExpression,
+            );
+            if (
+                index.kind !== "number" ||
+                index.staticNumber === undefined ||
+                !Number.isInteger(index.staticNumber)
+            ) {
+                this.fail(
+                    unwrapped.argumentExpression,
+                    "Static tuple access requires an integer index.",
+                );
+            }
+            const value =
+                owner.tupleElements?.[index.staticNumber];
+            if (!value) {
+                this.fail(
+                    unwrapped,
+                    `Tuple index ${index.staticNumber} is out of range.`,
+                );
+            }
+            return value;
+        }
         if (ts.isCallExpression(unwrapped)) {
             return this.compileCall(unwrapped);
         }
+        if (ts.isConditionalExpression(unwrapped)) {
+            const whenTrue = this.compileValue(
+                unwrapped.whenTrue,
+            );
+            const whenFalse = this.compileValue(
+                unwrapped.whenFalse,
+            );
+            if (
+                whenTrue.kind !== whenFalse.kind ||
+                whenTrue.cpp.length === 0 ||
+                whenFalse.cpp.length === 0 ||
+                (whenTrue.engineCpp &&
+                    whenFalse.engineCpp &&
+                    whenTrue.engineCpp !==
+                        whenFalse.engineCpp)
+            ) {
+                this.fail(
+                    unwrapped,
+                    "Conditional expressions require matching native value branches.",
+                );
+            }
+            const conditional: Value = {
+                ...whenTrue,
+                cpp: `(${this.compileCondition(unwrapped.condition)} ? ${whenTrue.cpp} : ${whenFalse.cpp})`,
+            };
+            if (
+                whenTrue.staticNumber !==
+                whenFalse.staticNumber
+            ) {
+                delete conditional.staticNumber;
+            }
+            if (
+                whenTrue.staticString !==
+                whenFalse.staticString
+            ) {
+                delete conditional.staticString;
+            }
+            return conditional;
+        }
+        if (ts.isArrayLiteralExpression(unwrapped)) {
+            return {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: unwrapped.elements.map(
+                    (element) =>
+                        this.compileValue(element),
+                ),
+            };
+        }
+        if (ts.isObjectLiteralExpression(unwrapped)) {
+            const properties: Record<string, Value> = {};
+            for (const property of unwrapped.properties) {
+                if (ts.isPropertyAssignment(property)) {
+                    const name = this.propertyName(
+                        property.name,
+                    );
+                    if (!name) {
+                        this.fail(
+                            property.name,
+                            "Static record properties require literal names.",
+                        );
+                    }
+                    properties[name] = this.compileValue(
+                        property.initializer,
+                    );
+                } else if (
+                    ts.isShorthandPropertyAssignment(
+                        property,
+                    )
+                ) {
+                    properties[property.name.text] =
+                        this.compileValue(property.name);
+                } else {
+                    this.fail(
+                        property,
+                        "Static records support property assignments only.",
+                    );
+                }
+            }
+            return {
+                kind: "record",
+                cpp: "",
+                recordProperties: properties,
+            };
+        }
+        if (
+            ts.isStringLiteral(unwrapped) ||
+            ts.isNoSubstitutionTemplateLiteral(unwrapped) ||
+            ts.isTemplateExpression(unwrapped)
+        ) {
+            const value =
+                this.compileStringLiteral(unwrapped);
+            return {
+                kind: "string",
+                cpp: this.cppString(value),
+                staticString: value,
+            };
+        }
         if (this.isNumberExpression(unwrapped)) {
-            return { kind: "number", cpp: this.compileNumber(unwrapped) };
+            const staticNumber =
+                ts.isNumericLiteral(unwrapped)
+                    ? Number(unwrapped.text)
+                    : undefined;
+            return {
+                kind: "number",
+                cpp: this.compileNumber(unwrapped),
+                ...(staticNumber === undefined
+                    ? {}
+                    : { staticNumber }),
+            };
+        }
+        if (this.evaluator.isBooleanExpression(unwrapped)) {
+            return {
+                kind: "boolean",
+                cpp: this.compileBoolean(unwrapped),
+            };
         }
         if (this.isBrowserOnlyExpression(unwrapped)) {
-            return { kind: "browser", cpp: "" };
+            const browserValue =
+                this.evaluateBrowserValue(unwrapped);
+            return {
+                kind: "browser",
+                cpp: "",
+                ...(browserValue
+                    ? { browserValue }
+                    : {}),
+            };
         }
 
         this.fail(unwrapped, `Unsupported value expression: ${ts.SyntaxKind[unwrapped.kind]}.`);
@@ -478,6 +815,86 @@ class Compiler
         }
         const owner = this.lookup(expression.expression);
         const property = expression.name.text;
+        if (
+            owner.kind === "engine" &&
+            property === "msaaSamples"
+        ) {
+            return {
+                kind: "number",
+                cpp: `${owner.msaaSamples ?? 4}.0f`,
+                staticNumber: owner.msaaSamples ?? 4,
+            };
+        }
+        if (owner.kind === "camera") {
+            const nativeProperty = new Map([
+                ["alpha", "alpha"],
+                ["beta", "beta"],
+                ["radius", "radius"],
+                ["fov", "fov"],
+                ["nearPlane", "near_plane"],
+                ["farPlane", "far_plane"],
+                ["speed", "speed"],
+            ]).get(property);
+            if (nativeProperty) {
+                return {
+                    kind: "number",
+                    cpp: `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value].${nativeProperty}`,
+                    ...(owner.engineCpp
+                        ? { engineCpp: owner.engineCpp }
+                        : {}),
+                };
+            }
+            if (property === "worldMatrix") {
+                if (owner.cameraKind !== "arc-rotate") {
+                    this.fail(
+                        expression,
+                        "Reached camera worldMatrix access currently requires an ArcRotateCamera.",
+                    );
+                }
+                return {
+                    kind: "camera-world-matrix",
+                    cpp: owner.cpp,
+                    ...(owner.engineCpp
+                        ? { engineCpp: owner.engineCpp }
+                        : {}),
+                };
+            }
+        }
+        if (owner.kind === "record") {
+            const value =
+                owner.recordProperties?.[property];
+            if (!value) {
+                this.fail(
+                    expression,
+                    `Static record has no property '${property}'.`,
+                );
+            }
+            return value;
+        }
+        if (
+            owner.kind === "scene" &&
+            property === "clearColor"
+        ) {
+            return {
+                kind: "color4",
+                cpp: `${owner.cpp}.clear_color`,
+                ...(owner.engineCpp
+                    ? { engineCpp: owner.engineCpp }
+                    : {}),
+            };
+        }
+        if (
+            owner.kind === "tuple" &&
+            property === "length"
+        ) {
+            const length =
+                owner.tupleElements?.length ?? 0;
+            return {
+                kind: "number",
+                cpp: `${length}.0f`,
+                staticNumber: length,
+            };
+        }
         if (owner.kind === "engine" && property === "scRT") {
             return {
                 kind: "render-target",
@@ -554,6 +971,13 @@ class Compiler
     }
 
     private compileCall(call: ts.CallExpression): Value {
+        const promise = compileImmediatePromise(
+            this,
+            call,
+        );
+        if (promise) {
+            return promise;
+        }
         const callee = this.unwrap(call.expression);
         if (!ts.isIdentifier(callee)) {
             this.fail(callee, `Unsupported call target '${callee.getText()}'.`);
@@ -1626,7 +2050,32 @@ class Compiler
     }
 
     private compilePositiveInteger(expression: ts.Expression): string {
-        const unwrapped = this.unwrap(expression);
+        const unwrapped = this.resolveStaticExpression(
+            expression,
+        );
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            ts.isIdentifier(unwrapped.expression) &&
+            unwrapped.name.text === "msaaSamples" &&
+            this.lookup(unwrapped.expression).kind ===
+                "engine"
+        ) {
+            const engine = this.lookup(
+                unwrapped.expression,
+            );
+            return `${engine.msaaSamples ?? 4}u`;
+        }
+        if (ts.isIdentifier(unwrapped)) {
+            const value = this.lookup(unwrapped);
+            if (
+                value.kind === "number" &&
+                value.staticNumber !== undefined &&
+                Number.isInteger(value.staticNumber) &&
+                value.staticNumber > 0
+            ) {
+                return `${value.staticNumber}u`;
+            }
+        }
         if (!ts.isNumericLiteral(unwrapped)) {
             this.fail(unwrapped, "Expected a positive integer literal.");
         }
@@ -1649,6 +2098,30 @@ class Compiler
             skyboxSize ? this.compileNumber(skyboxSize) : "1000.0f",
             brdfUrl ? this.compileStringLiteral(brdfUrl) : "",
         ];
+    }
+
+    public compileSceneDefaultRenderTask(
+        expression: ts.Expression | undefined,
+    ): boolean {
+        if (!expression) {
+            return true;
+        }
+        const options = this.expectObjectLiteral(expression);
+        const value = this.objectProperty(
+            options,
+            "defaultRenderTask",
+        );
+        if (!value) {
+            return true;
+        }
+        const compiled = this.compileBoolean(value);
+        if (compiled !== "true" && compiled !== "false") {
+            this.fail(
+                value,
+                "defaultRenderTask must be a static boolean.",
+            );
+        }
+        return compiled === "true";
     }
 
     public compileHdrEnvironmentOptions(expression: ts.Expression): {
@@ -1756,13 +2229,23 @@ class Compiler
             ) {
                 return `(${this.compileCondition(unwrapped.left)} ${operator} ${this.compileCondition(unwrapped.right)})`;
             }
-            return `(${this.compileNumber(unwrapped.left)} ${operator} ${this.compileNumber(unwrapped.right)})`;
+            return `(${this.compileNumber(unwrapped.left, "double")} ${operator} ${this.compileNumber(unwrapped.right, "double")})`;
+        }
+        if (
+            unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
+            unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
+            ts.isIdentifier(unwrapped)
+        ) {
+            return this.compileBoolean(unwrapped);
         }
         this.fail(unwrapped, "Expected a reached callback condition.");
     }
 
     public compileFrameCallback(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
+        if (ts.isIdentifier(unwrapped)) {
+            return this.compileNamedFrameCallback(unwrapped);
+        }
         if (!ts.isArrowFunction(unwrapped) && !ts.isFunctionExpression(unwrapped)) {
             this.fail(unwrapped, "onBeforeRender requires an inline callback.");
         }
@@ -1812,6 +2295,36 @@ class Compiler
             ? `float ${this.cppIdentifier(parameterName)}`
             : "float";
         return `[&](${cppParameter}) {\n${callbackBody.map((line) => `            ${line}`).join("\n")}\n        }`;
+    }
+
+    private compileNamedFrameCallback(
+        identifier: ts.Identifier,
+    ): string {
+        const start = this.body.length;
+        const previousIndent = this.indentLevel;
+        this.indentLevel = 0;
+        try {
+            const value =
+                this.userFunctions.compileReference(
+                    this,
+                    identifier,
+                );
+            if (!value) {
+                this.fail(
+                    identifier,
+                    `Callback '${identifier.text}' does not resolve to a local function.`,
+                );
+            }
+            if (value.cpp.length > 0) {
+                this.emit(`${value.cpp};`);
+            }
+        } finally {
+            this.indentLevel = previousIndent;
+        }
+        const callbackBody = this.body.splice(start);
+        return `[&](float) {\n${callbackBody
+            .map((line) => `            ${line}`)
+            .join("\n")}\n        }`;
     }
 
     public compileColor3(expression: ts.Expression): string {
@@ -1899,6 +2412,43 @@ class Compiler
         call: ts.CallExpression,
         cppName: string,
     ): Value {
+        this.expectArgumentCount(call, 1, 2);
+        let msaaSamples: 1 | 4 = 4;
+        if (call.arguments[1]) {
+            const options = this.expectObjectLiteral(
+                call.arguments[1],
+            );
+            this.validateObjectProperties(
+                options,
+                ["msaaSamples", "requiredLimits"],
+                "Reached engine options support msaaSamples and requiredLimits.",
+            );
+            const samples = this.objectProperty(
+                options,
+                "msaaSamples",
+            );
+            if (samples) {
+                const value =
+                    this.resolveStaticExpression(samples);
+                if (
+                    !ts.isNumericLiteral(value) ||
+                    Number(value.text) !== 4
+                ) {
+                    this.fail(
+                        samples,
+                        "Native engine lowering currently supports explicit msaaSamples: 4 only.",
+                    );
+                }
+                msaaSamples = 4;
+            }
+            const limits = this.objectProperty(
+                options,
+                "requiredLimits",
+            );
+            if (limits) {
+                this.expectObjectLiteral(limits);
+            }
+        }
         if (this.defaultEngineCpp) {
             this.fail(
                 call,
@@ -1913,6 +2463,7 @@ class Compiler
             kind: "engine",
             cpp: cppName,
             engineCpp: cppName,
+            msaaSamples,
         };
     }
 
@@ -1954,6 +2505,7 @@ class Compiler
         kind: CompileAsset["kind"],
         faceSize?: number,
     ): CompileAsset {
+        source = this.resolveBundledAsset(source);
         const key = `${kind}:${source}:${faceSize ?? ""}`;
         const existing = this.assets.get(key);
         if (existing) {
@@ -1985,7 +2537,23 @@ class Compiler
 
     public resolveBundledAsset(source: string): string {
         if (source === "/brdf-lut.png") {
-            return "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/master/packages/babylon-lite/assets/brdf-lut.png";
+            const pin = readUpstreamPin();
+            return `https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${pin.sourceVersion}/packages/babylon-lite/assets/brdf-lut.png`;
+        }
+        if (
+            source.startsWith("/") &&
+            this.options.fileName
+                .replace(/\\/g, "/")
+                .includes(
+                    "corpus/babylon-lite/lab/lite/src/lite/",
+                )
+        ) {
+            const pin = readUpstreamPin();
+            return (
+                "https://raw.githubusercontent.com/" +
+                `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
+                `/lab/public${source}`
+            );
         }
         return source;
     }
@@ -1999,8 +2567,89 @@ class Compiler
         return (hash >>> 0).toString(16).padStart(8, "0");
     }
 
-    private isBrowserOnlyExpression(expression: ts.Expression): boolean {
+    public isBrowserOnlyExpression(expression: ts.Expression): boolean {
         const unwrapped = this.unwrap(expression);
+        if (ts.isIdentifier(unwrapped)) {
+            if (
+                [
+                    "console",
+                    "document",
+                    "performance",
+                    "window",
+                ].includes(unwrapped.text)
+            ) {
+                return true;
+            }
+            return (
+                this.lookupOptional(unwrapped)?.kind ===
+                "browser"
+            );
+        }
+        if (
+            ts.isNewExpression(unwrapped) &&
+            ts.isIdentifier(unwrapped.expression) &&
+            unwrapped.expression.text === "URLSearchParams"
+        ) {
+            return true;
+        }
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            return this.isBrowserOnlyExpression(
+                unwrapped.expression,
+            );
+        }
+        if (ts.isBinaryExpression(unwrapped)) {
+            return (
+                this.isBrowserOnlyExpression(
+                    unwrapped.left,
+                ) ||
+                this.isBrowserOnlyExpression(
+                    unwrapped.right,
+                )
+            );
+        }
+        if (ts.isPrefixUnaryExpression(unwrapped)) {
+            return this.isBrowserOnlyExpression(
+                unwrapped.operand,
+            );
+        }
+        if (ts.isCallExpression(unwrapped)) {
+            if (
+                ts.isPropertyAccessExpression(
+                    unwrapped.expression,
+                ) &&
+                this.isBrowserOnlyExpression(
+                    unwrapped.expression.expression,
+                )
+            ) {
+                return true;
+            }
+            const browserArgument =
+                unwrapped.arguments.some((argument) =>
+                    this.isBrowserOnlyExpression(argument),
+                );
+            if (
+                ts.isIdentifier(unwrapped.expression) &&
+                ["isNaN", "parseFloat"].includes(
+                    unwrapped.expression.text,
+                )
+            ) {
+                return browserArgument;
+            }
+            if (
+                ts.isPropertyAccessExpression(
+                    unwrapped.expression,
+                ) &&
+                ts.isIdentifier(
+                    unwrapped.expression.expression,
+                ) &&
+                unwrapped.expression.expression.text ===
+                    "Number" &&
+                unwrapped.expression.name.text === "isFinite"
+            ) {
+                return browserArgument;
+            }
+            return false;
+        }
         const isCanvasLookup =
             ts.isCallExpression(unwrapped) &&
             ts.isPropertyAccessExpression(unwrapped.expression) &&
@@ -2016,13 +2665,348 @@ class Compiler
         return isCanvasLookup || isPerformanceNow;
     }
 
+    public evaluateBrowserCondition(
+        expression: ts.Expression,
+    ): boolean | undefined {
+        const value =
+            this.evaluateBrowserValue(expression);
+        return value?.kind === "boolean"
+            ? value.value
+            : undefined;
+    }
+
+    private evaluateBrowserValue(
+        expression: ts.Expression,
+    ): Value["browserValue"] | undefined {
+        const unwrapped = this.unwrap(expression);
+        if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) {
+            return { kind: "boolean", value: true };
+        }
+        if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) {
+            return { kind: "boolean", value: false };
+        }
+        if (unwrapped.kind === ts.SyntaxKind.NullKeyword) {
+            return { kind: "null" };
+        }
+        if (ts.isStringLiteral(unwrapped)) {
+            return {
+                kind: "string",
+                value: unwrapped.text,
+            };
+        }
+        if (ts.isNumericLiteral(unwrapped)) {
+            return {
+                kind: "number",
+                value: Number(unwrapped.text),
+            };
+        }
+        if (ts.isIdentifier(unwrapped)) {
+            return this.lookupOptional(unwrapped)
+                ?.browserValue;
+        }
+        if (
+            ts.isNewExpression(unwrapped) &&
+            ts.isIdentifier(unwrapped.expression) &&
+            unwrapped.expression.text === "URLSearchParams"
+        ) {
+            return { kind: "search-params" };
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.name.text === "search" &&
+            ts.isPropertyAccessExpression(
+                unwrapped.expression,
+            ) &&
+            unwrapped.expression.name.text === "location" &&
+            ts.isIdentifier(
+                unwrapped.expression.expression,
+            ) &&
+            unwrapped.expression.expression.text === "window"
+        ) {
+            return { kind: "string", value: "" };
+        }
+        if (
+            ts.isPrefixUnaryExpression(unwrapped) &&
+            unwrapped.operator ===
+                ts.SyntaxKind.ExclamationToken
+        ) {
+            const operand = this.evaluateBrowserValue(
+                unwrapped.operand,
+            );
+            const truthy = this.browserTruthy(operand);
+            return truthy === undefined
+                ? undefined
+                : { kind: "boolean", value: !truthy };
+        }
+        if (ts.isBinaryExpression(unwrapped)) {
+            const left = this.evaluateBrowserValue(
+                unwrapped.left,
+            );
+            if (
+                unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.AmpersandAmpersandToken
+            ) {
+                const truthy = this.browserTruthy(left);
+                if (truthy === false) {
+                    return {
+                        kind: "boolean",
+                        value: false,
+                    };
+                }
+                return truthy
+                    ? this.evaluateBrowserValue(
+                          unwrapped.right,
+                      )
+                    : undefined;
+            }
+            if (
+                unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.BarBarToken
+            ) {
+                const truthy = this.browserTruthy(left);
+                if (truthy === true) {
+                    return left;
+                }
+                return truthy === false
+                    ? this.evaluateBrowserValue(
+                          unwrapped.right,
+                      )
+                    : undefined;
+            }
+            return undefined;
+        }
+        if (ts.isCallExpression(unwrapped)) {
+            if (
+                ts.isPropertyAccessExpression(
+                    unwrapped.expression,
+                ) &&
+                ts.isIdentifier(
+                    unwrapped.expression.expression,
+                )
+            ) {
+                const owner = this.lookupOptional(
+                    unwrapped.expression.expression,
+                )?.browserValue;
+                if (owner?.kind === "search-params") {
+                    if (
+                        unwrapped.expression.name.text ===
+                        "has"
+                    ) {
+                        return {
+                            kind: "boolean",
+                            value: false,
+                        };
+                    }
+                    if (
+                        unwrapped.expression.name.text ===
+                        "get"
+                    ) {
+                        return { kind: "null" };
+                    }
+                }
+            }
+            if (
+                ts.isIdentifier(unwrapped.expression) &&
+                unwrapped.expression.text === "parseFloat"
+            ) {
+                const argument =
+                    this.evaluateBrowserValue(
+                        unwrapped.arguments[0]!,
+                    );
+                const text =
+                    argument?.kind === "string"
+                        ? argument.value
+                        : "";
+                return {
+                    kind: "number",
+                    value: Number.parseFloat(text),
+                };
+            }
+            if (
+                ts.isIdentifier(unwrapped.expression) &&
+                unwrapped.expression.text === "isNaN"
+            ) {
+                const argument =
+                    this.evaluateBrowserValue(
+                        unwrapped.arguments[0]!,
+                    );
+                return argument?.kind === "number"
+                    ? {
+                          kind: "boolean",
+                          value: Number.isNaN(
+                              argument.value,
+                          ),
+                      }
+                    : undefined;
+            }
+            if (
+                ts.isPropertyAccessExpression(
+                    unwrapped.expression,
+                ) &&
+                ts.isIdentifier(
+                    unwrapped.expression.expression,
+                ) &&
+                unwrapped.expression.expression.text ===
+                    "Number" &&
+                unwrapped.expression.name.text === "isFinite"
+            ) {
+                const argument =
+                    this.evaluateBrowserValue(
+                        unwrapped.arguments[0]!,
+                    );
+                return argument?.kind === "number"
+                    ? {
+                          kind: "boolean",
+                          value: Number.isFinite(
+                              argument.value,
+                          ),
+                      }
+                    : undefined;
+            }
+        }
+        return undefined;
+    }
+
+    private browserTruthy(
+        value: Value["browserValue"] | undefined,
+    ): boolean | undefined {
+        if (!value) {
+            return undefined;
+        }
+        switch (value.kind) {
+            case "boolean":
+                return value.value;
+            case "null":
+                return false;
+            case "number":
+                return (
+                    value.value !== 0 &&
+                    !Number.isNaN(value.value)
+                );
+            case "search-params":
+                return true;
+            case "string":
+                return value.value.length > 0;
+        }
+    }
+
     public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
-        return (
+        const objectAssign =
             ts.isPropertyAccessExpression(call.expression) &&
             ts.isIdentifier(call.expression.expression) &&
             call.expression.expression.text === "Object" &&
-            call.expression.name.text === "assign"
-        );
+            call.expression.name.text === "assign";
+        const deviceEvent =
+            ts.isPropertyAccessExpression(call.expression) &&
+            call.expression.name.text ===
+                "addEventListener" &&
+            ts.isPropertyAccessExpression(
+                call.expression.expression,
+            ) &&
+            call.expression.expression.name.text ===
+                "_device";
+        return objectAssign || deviceEvent;
+    }
+
+    private lookupOptional(
+        identifier: ts.Identifier,
+    ): Value | undefined {
+        const symbol =
+            this.symbols.valueSymbol(identifier);
+        if (!symbol) {
+            return undefined;
+        }
+        for (
+            let index = this.variableScopes.length - 1;
+            index >= 0;
+            index -= 1
+        ) {
+            const binding =
+                this.variableScopes[index]!.get(symbol);
+            if (binding) {
+                return binding.value;
+            }
+        }
+        return undefined;
+    }
+
+    private lookupRecordProperty(
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        if (!ts.isIdentifier(expression.expression)) {
+            return undefined;
+        }
+        const owner = this.lookupOptional(
+            expression.expression,
+        ) ?? (() => {
+            const resolved =
+                this.resolveStaticExpression(
+                    expression.expression,
+                );
+            return resolved !== expression.expression
+                ? this.compileValue(resolved)
+                : undefined;
+        })();
+        if (owner?.kind === "record") {
+            return owner.recordProperties?.[
+                expression.name.text
+            ];
+        }
+        if (
+            owner?.kind === "scene" &&
+            expression.name.text === "clearColor"
+        ) {
+            return {
+                kind: "color4",
+                cpp: `${owner.cpp}.clear_color`,
+                ...(owner.engineCpp
+                    ? { engineCpp: owner.engineCpp }
+                    : {}),
+            };
+        }
+        if (
+            owner?.kind === "tuple" &&
+            expression.name.text === "length"
+        ) {
+            const length =
+                owner.tupleElements?.length ?? 0;
+            return {
+                kind: "number",
+                cpp: `${length}.0f`,
+                staticNumber: length,
+            };
+        }
+        if (
+            owner?.kind === "engine" &&
+            expression.name.text === "msaaSamples"
+        ) {
+            return {
+                kind: "number",
+                cpp: `${owner.msaaSamples ?? 4}.0f`,
+                staticNumber: owner.msaaSamples ?? 4,
+            };
+        }
+        if (owner?.kind === "camera") {
+            const nativeProperty = new Map([
+                ["alpha", "alpha"],
+                ["beta", "beta"],
+                ["radius", "radius"],
+                ["fov", "fov"],
+                ["nearPlane", "near_plane"],
+                ["farPlane", "far_plane"],
+                ["speed", "speed"],
+            ]).get(expression.name.text);
+            if (nativeProperty) {
+                return {
+                    kind: "number",
+                    cpp: `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value].${nativeProperty}`,
+                    ...(owner.engineCpp
+                        ? { engineCpp: owner.engineCpp }
+                        : {}),
+                };
+            }
+        }
+        return undefined;
     }
 
     public unwrap(expression: ts.Expression): ts.Expression {
@@ -2177,6 +3161,21 @@ class Compiler
                 ],
             });
         }
+        if (this.defaultRenderTaskAdapted) {
+            adaptations.push({
+                id: "readable-default-render-task",
+                category: "rendering",
+                sourceSemantics:
+                    "Babylon Lite creates a default scene render task that resolves directly to the swapchain.",
+                nativeSemantics:
+                    "The compiler creates an equivalent readable MSAA target, resolves it to a single-sample target, then presents it so SDL_GPU screenshot capture never reads the swapchain.",
+                risk: "medium",
+                validation: [
+                    "default render-task compiler test",
+                    "scene 116 exact-source parity",
+                ],
+            });
+        }
         if (features.includes("background:ground")) {
             adaptations.push({
                 id: "background-ground-opt-in",
@@ -2272,14 +3271,40 @@ class Compiler
             this.defineVariable(identifier, value);
             return;
         }
+        if (
+            value.kind === "tuple" ||
+            value.kind === "record" ||
+            value.kind === "string"
+        ) {
+            this.defineVariable(identifier, value);
+            return;
+        }
         const cppName = this.cppIdentifier(
             identifier.text,
         );
         const reference =
             value.kind === "engine" ||
             value.kind === "scene";
+        const nativeType = reference
+            ? "auto&"
+            : value.kind === "number"
+              ? "double"
+              : value.kind === "boolean"
+                ? "bool"
+                : "auto";
+        const initializerCpp =
+            value.kind === "number" &&
+            value.staticNumber !== undefined
+                ? Number.isInteger(value.staticNumber)
+                    ? `${value.staticNumber}.0`
+                    : `${value.staticNumber}`
+                : value.cpp;
+        const maybeUnused =
+            value.kind === "boolean"
+                ? "[[maybe_unused]] "
+                : "";
         this.emit(
-            `${reference ? "auto&" : "auto"} ${cppName} = ${value.cpp};`,
+            `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`,
         );
         const stored: Value = {
             ...value,
@@ -2372,6 +3397,74 @@ class Compiler
         this.features.add(feature);
     }
 
+    public ensureDefaultRenderTask(
+        scene: Value,
+        node: ts.Node,
+    ): string | undefined {
+        if (
+            !scene.defaultRenderTask ||
+            scene.defaultRenderTaskEmitted
+        ) {
+            return undefined;
+        }
+        scene.defaultRenderTaskEmitted = true;
+        this.defaultRenderTaskAdapted = true;
+        const engine = this.requireEngine(scene, node);
+        this.reachFeature("renderer:pbr");
+        this.reachFeature("renderer:geometry-output");
+        const target =
+            this.allocateTemporaryCppName(
+                "default_target",
+            );
+        const resolveTarget =
+            this.allocateTemporaryCppName(
+                "default_resolve",
+            );
+        const renderTask =
+            this.allocateTemporaryCppName(
+                "default_render_task",
+            );
+        const resolveTask =
+            this.allocateTemporaryCppName(
+                "default_resolve_task",
+            );
+        const presentTask =
+            this.allocateTemporaryCppName(
+                "default_present_task",
+            );
+        return (
+            `auto ${target} = bbl::create_render_target(${engine}, ` +
+            `bbl::RenderTargetOptions{${scene.msaaSamples ?? 4}u, true, true, false, 0u, 0u});\n` +
+            `        auto ${resolveTarget} = bbl::create_render_target(${engine}, ` +
+            `bbl::RenderTargetOptions{1u, true, false, false, 0u, 0u});\n` +
+            `        auto ${renderTask} = bbl::create_render_task(${engine}, ${scene.cpp}, ` +
+            `bbl::RenderTaskOptions{"default-render-task", ` +
+            `${target}, ` +
+            `${scene.cpp}.clear_color, true, ` +
+            `bbl::CameraHandle{}, false, true, true});\n` +
+            `        bbl::add_task(${scene.cpp}, ${renderTask});\n` +
+            `        auto ${resolveTask} = bbl::create_copy_to_texture_task(${engine}, ${scene.cpp}, ` +
+            `bbl::CopyTaskOptions{"default-resolve", ` +
+            `bbl::render_target_texture(${target}), ` +
+            `bbl::RenderTargetHandle{}, ${resolveTarget}, false, ` +
+            `bbl::NormalizedViewport{}});\n` +
+            `        bbl::add_task(${scene.cpp}, ${resolveTask});\n` +
+            `        auto ${presentTask} = bbl::create_copy_to_texture_task(${engine}, ${scene.cpp}, ` +
+            `bbl::CopyTaskOptions{"default-present", ` +
+            `bbl::render_target_texture(${resolveTarget}), ` +
+            `bbl::swapchain_render_target(${engine}), ` +
+            `bbl::RenderTargetHandle{}, false, ` +
+            `bbl::NormalizedViewport{}});\n` +
+            `        bbl::add_task(${scene.cpp}, ${presentTask})`
+        );
+    }
+
+    public importedName(
+        identifier: ts.Identifier,
+    ): string | undefined {
+        return this.symbols.importedName(identifier);
+    }
+
     public reachShaderVariant(
         variant: ShaderMaterialVariantName,
     ): void {
@@ -2433,9 +3526,16 @@ class Compiler
         this.indentLevel -= 1;
     }
 
-    private renderCpp(): string {
+    private renderCpp(features: Feature[]): string {
+        const cameraMathInclude =
+            features.some((feature) =>
+                feature.startsWith("camera:"),
+            )
+                ? "#include <bblite/upstream/camera_math.hpp>\n"
+                : "";
         return `// Generated by bblitec. Do not edit.
 #include <bblite/runtime.hpp>
+${cameraMathInclude}
 
 #include <cmath>
 #include <exception>

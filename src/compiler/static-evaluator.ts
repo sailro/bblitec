@@ -7,6 +7,12 @@ type OnAwait = (expression: ts.AwaitExpression) => void;
 type ResolveSymbol = (
     identifier: ts.Identifier,
 ) => ts.Symbol | undefined;
+type ResolveProperty = (
+    expression: ts.PropertyAccessExpression,
+) => Value | undefined;
+type ResolveElement = (
+    expression: ts.ElementAccessExpression,
+) => Value | undefined;
 
 export class StaticEvaluator {
     public constructor(
@@ -15,6 +21,8 @@ export class StaticEvaluator {
             ts.Expression
         >,
         private readonly resolveSymbol: ResolveSymbol,
+        private readonly resolveProperty: ResolveProperty,
+        private readonly resolveElement: ResolveElement,
         private readonly lookup: Lookup,
         private readonly fail: Fail,
         private readonly onAwait: OnAwait,
@@ -22,6 +30,31 @@ export class StaticEvaluator {
 
     public compileVec3(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            const value = this.resolveProperty(unwrapped);
+            if (value?.kind === "record") {
+                return `bbl::Vec3{${["x", "y", "z"]
+                    .map((name) =>
+                        this.numberValue(
+                            value.recordProperties?.[name] ??
+                                this.fail(
+                                    unwrapped,
+                                    `Vec3 record is missing '${name}'.`,
+                                ),
+                            unwrapped,
+                        ),
+                    )
+                    .join(", ")}}`;
+            }
+        }
+        const tuple = this.tupleElements(unwrapped, 3);
+        if (tuple) {
+            return `bbl::Vec3{${tuple
+                .map((value) =>
+                    this.numberValue(value, unwrapped),
+                )
+                .join(", ")}}`;
+        }
         if (
             ts.isArrayLiteralExpression(unwrapped) &&
             unwrapped.elements.length === 3
@@ -50,6 +83,14 @@ export class StaticEvaluator {
 
     public compileVec2(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
+        const tuple = this.tupleElements(unwrapped, 2);
+        if (tuple) {
+            return `bbl::Vec2{${tuple
+                .map((value) =>
+                    this.numberValue(value, unwrapped),
+                )
+                .join(", ")}}`;
+        }
         if (
             ts.isArrayLiteralExpression(unwrapped) &&
             unwrapped.elements.length === 2
@@ -63,6 +104,14 @@ export class StaticEvaluator {
 
     public compileColor3(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
+        const tuple = this.tupleElements(unwrapped, 3);
+        if (tuple) {
+            return `bbl::Color3{${tuple
+                .map((value) =>
+                    this.numberValue(value, unwrapped),
+                )
+                .join(", ")}}`;
+        }
         if (
             ts.isArrayLiteralExpression(unwrapped) &&
             unwrapped.elements.length === 3
@@ -91,6 +140,20 @@ export class StaticEvaluator {
 
     public compileColor4(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            const value = this.resolveProperty(unwrapped);
+            if (value?.kind === "color4") {
+                return value.cpp;
+            }
+        }
+        const tuple = this.tupleElements(unwrapped, 4);
+        if (tuple) {
+            return `bbl::Color4{${tuple
+                .map((value) =>
+                    this.numberValue(value, unwrapped),
+                )
+                .join(", ")}}`;
+        }
         if (
             ts.isArrayLiteralExpression(unwrapped) &&
             unwrapped.elements.length === 4
@@ -121,12 +184,36 @@ export class StaticEvaluator {
     }
 
     public compileBoolean(expression: ts.Expression): string {
-        const unwrapped = this.unwrap(expression);
+        const unwrapped =
+            this.resolveStaticExpression(expression);
         if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) {
             return "true";
         }
         if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) {
             return "false";
+        }
+        if (
+            ts.isPrefixUnaryExpression(unwrapped) &&
+            unwrapped.operator ===
+                ts.SyntaxKind.ExclamationToken
+        ) {
+            return `!(${this.compileBoolean(unwrapped.operand)})`;
+        }
+        if (ts.isIdentifier(unwrapped)) {
+            const value = this.lookup(unwrapped);
+            if (value.kind !== "boolean") {
+                this.fail(
+                    unwrapped,
+                    `Expected boolean, received ${value.kind}.`,
+                );
+            }
+            return value.cpp;
+        }
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            const value = this.resolveProperty(unwrapped);
+            if (value?.kind === "boolean") {
+                return value.cpp;
+            }
         }
         this.fail(unwrapped, "Expected a boolean literal.");
     }
@@ -182,13 +269,16 @@ export class StaticEvaluator {
                     "Only +, -, *, and / are supported in numeric expressions.",
                 );
             }
-            return `(${this.compileNumber(
+            const compiled = `(${this.compileNumber(
                 unwrapped.left,
-                precision,
+                "double",
             )} ${operator} ${this.compileNumber(
                 unwrapped.right,
-                precision,
+                "double",
             )})`;
+            return precision === "float"
+                ? `static_cast<float>(${compiled})`
+                : compiled;
         }
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
@@ -199,6 +289,16 @@ export class StaticEvaluator {
             return precision === "float"
                 ? "bbl::pi"
                 : this.doubleLiteral(Math.PI);
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            ts.isIdentifier(unwrapped.expression) &&
+            unwrapped.expression.text === "Math" &&
+            unwrapped.name.text === "SQRT1_2"
+        ) {
+            return precision === "float"
+                ? "std::sqrt(0.5f)"
+                : this.doubleLiteral(Math.SQRT1_2);
         }
         if (
             ts.isCallExpression(unwrapped) &&
@@ -212,10 +312,33 @@ export class StaticEvaluator {
             unwrapped.expression.name.text === "sqrt" &&
             unwrapped.arguments.length === 1
         ) {
-            return `std::sqrt(${this.compileNumber(
+            const compiled = `std::sqrt(${this.compileNumber(
                 unwrapped.arguments[0]!,
-                precision,
+                "double",
             )})`;
+            return precision === "float"
+                ? `static_cast<float>(${compiled})`
+                : compiled;
+        }
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            const value = this.resolveProperty(unwrapped);
+            if (value?.kind === "number") {
+                if (
+                    precision === "double" &&
+                    value.staticNumber !== undefined
+                ) {
+                    return this.doubleLiteral(
+                        value.staticNumber,
+                    );
+                }
+                return value.cpp;
+            }
+        }
+        if (ts.isElementAccessExpression(unwrapped)) {
+            const value = this.resolveElement(unwrapped);
+            if (value?.kind === "number") {
+                return value.cpp;
+            }
         }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookup(unwrapped);
@@ -225,7 +348,9 @@ export class StaticEvaluator {
                     `Expected number, received ${value.kind}.`,
                 );
             }
-            return value.cpp;
+            return precision === "float"
+                ? `static_cast<float>(${value.cpp})`
+                : value.cpp;
         }
         this.fail(
             unwrapped,
@@ -244,7 +369,8 @@ export class StaticEvaluator {
             (ts.isPropertyAccessExpression(unwrapped) &&
                 ts.isIdentifier(unwrapped.expression) &&
                 unwrapped.expression.text === "Math" &&
-                unwrapped.name.text === "PI") ||
+                (unwrapped.name.text === "PI" ||
+                    unwrapped.name.text === "SQRT1_2")) ||
             (ts.isCallExpression(unwrapped) &&
                 ts.isPropertyAccessExpression(
                     unwrapped.expression,
@@ -255,6 +381,19 @@ export class StaticEvaluator {
                 unwrapped.expression.expression.text === "Math" &&
                 unwrapped.expression.name.text === "sqrt" &&
                 unwrapped.arguments.length === 1)
+        );
+    }
+
+    public isBooleanExpression(
+        expression: ts.Expression,
+    ): boolean {
+        const unwrapped = this.unwrap(expression);
+        return (
+            unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
+            unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
+            (ts.isPrefixUnaryExpression(unwrapped) &&
+                unwrapped.operator ===
+                    ts.SyntaxKind.ExclamationToken)
         );
     }
 
@@ -282,6 +421,35 @@ export class StaticEvaluator {
             ts.isNoSubstitutionTemplateLiteral(unwrapped)
         ) {
             return unwrapped.text;
+        }
+        if (ts.isIdentifier(unwrapped)) {
+            const value = this.lookup(unwrapped);
+            if (
+                value.kind === "string" &&
+                value.staticString !== undefined
+            ) {
+                return value.staticString;
+            }
+        }
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            const value = this.resolveProperty(unwrapped);
+            if (
+                value?.kind === "string" &&
+                value.staticString !== undefined
+            ) {
+                return value.staticString;
+            }
+        }
+        if (ts.isTemplateExpression(unwrapped)) {
+            let result = unwrapped.head.text;
+            for (const span of unwrapped.templateSpans) {
+                const value = this.staticText(
+                    span.expression,
+                );
+                result += value;
+                result += span.literal.text;
+            }
+            return result;
         }
         this.fail(unwrapped, "Expected a string literal.");
     }
@@ -334,6 +502,79 @@ export class StaticEvaluator {
             }
         }
         return undefined;
+    }
+
+    private tupleElements(
+        expression: ts.Expression,
+        length: number,
+    ): Value[] | undefined {
+        if (!ts.isIdentifier(expression)) {
+            return undefined;
+        }
+        const value = this.lookup(expression);
+        if (value.kind !== "tuple") {
+            return undefined;
+        }
+        if (value.tupleElements?.length !== length) {
+            this.fail(
+                expression,
+                `Expected a ${length}-element tuple.`,
+            );
+        }
+        return value.tupleElements;
+    }
+
+    private numberValue(
+        value: Value,
+        node: ts.Node,
+    ): string {
+        if (value.kind !== "number") {
+            this.fail(
+                node,
+                `Expected numeric tuple element, received ${value.kind}.`,
+            );
+        }
+        return value.cpp;
+    }
+
+    private staticText(
+        expression: ts.Expression,
+    ): string {
+        const unwrapped =
+            this.resolveStaticExpression(expression);
+        if (
+            ts.isStringLiteral(unwrapped) ||
+            ts.isNoSubstitutionTemplateLiteral(unwrapped)
+        ) {
+            return unwrapped.text;
+        }
+        if (ts.isNumericLiteral(unwrapped)) {
+            return String(Number(unwrapped.text));
+        }
+        if (
+            ts.isIdentifier(unwrapped) ||
+            ts.isPropertyAccessExpression(unwrapped)
+        ) {
+            const value = ts.isIdentifier(unwrapped)
+                ? this.lookup(unwrapped)
+                : this.resolveProperty(unwrapped);
+            if (
+                value?.kind === "string" &&
+                value.staticString !== undefined
+            ) {
+                return value.staticString;
+            }
+            if (
+                value?.kind === "number" &&
+                value.staticNumber !== undefined
+            ) {
+                return String(value.staticNumber);
+            }
+        }
+        this.fail(
+            unwrapped,
+            "Template substitutions must be static strings or numbers.",
+        );
     }
 
     private requiredObjectNumber(

@@ -284,6 +284,10 @@ test("generates ArcRotate and default camera factories from upstream constants",
     assert.match(free.source, /camera\.angular_sensibility = 2000\.0f/);
     assert.match(controls.source, /rotation_epsilon = 0\.001f/);
     assert.match(controls.source, /camera\.inertial_alpha_offset \*= camera\.inertia/);
+    assert.match(
+        controls.source,
+        /if \(has_movement \|\| has_rotation\) \{\s*camera\.target = Vec3/,
+    );
 });
 
 test("lowers the reachable upstream light matrix implementation", () => {

@@ -31,9 +31,10 @@ opt-in ground composition.
 
 New high-risk adaptations require an explicit record and a focused test.
 
-Curated references are immutable evidence during ordinary fixes. Do not alter
-scene inputs, thresholds, or goldens to improve a score. Add or recapture a
-reference only as an intentional pinned-scene operation.
+Curated Babylon Lite inputs are byte-identical, SHA-256-checked snapshots from
+the pinned source commit. Never edit, flatten, normalize, or replace them.
+Thresholds and goldens are equally immutable during ordinary fixes. Add a
+scene or recapture a reference only as an explicit pinned-scene operation.
 
 ## Shader contract
 

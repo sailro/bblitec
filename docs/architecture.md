@@ -57,6 +57,8 @@ Primary source ownership:
 | `src/lowering/context.ts` | source-located AST declarations, expression contracts, and diagnostics |
 | `src/lowering/*-lowerer.ts` | focused Babylon API and formula lowering |
 | `src/lowering/templates/` | generated C++ and portable shader templates |
+| `corpus/babylon-lite/` | byte-identical registered scene inputs from the pinned source commit |
+| `upstream/babylon-lite-scenes.json` | immutable corpus paths and SHA-256 evidence |
 | `native/include/bblite/` | typed runtime records, handles, PAL contracts |
 | `native/src/pal.cpp` | filesystem, paths, environment, timing, host engine |
 | `native/src/pal_sdl.cpp` | deterministic SDL_Renderer fallback |
@@ -253,9 +255,9 @@ same reached quaternion mesh transforms.
 
 ## Repository invariants
 
-- Curated scene sources and committed references are evidence, not tuning
-  knobs. Change them only when intentionally adding a new pinned scene or
-  recapturing an explicitly approved reference.
+- Curated Babylon Lite scene sources are byte-identical, hash-checked evidence
+  under `corpus/babylon-lite/`; never edit, flatten, normalize, or replace
+  them. Committed references are likewise evidence, not tuning knobs.
 - MAD is diagnostic. A lower score does not justify scene-name, geometry,
   position, or reference-image heuristics.
 - glTF material behavior is metadata-driven (`OPAQUE`, `MASK`, `BLEND`,
