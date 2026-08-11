@@ -64,7 +64,11 @@ interface LoweredShader {
 export class RendererLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerRenderPlan(options: { transmission?: boolean } = {}): LoweredSource {
+    public lowerRenderPlan(options: {
+        transmission?: boolean;
+        textureTransform?: boolean;
+        environmentRotation?: boolean;
+    } = {}): LoweredSource {
         for (const symbol of ["buildBindings", "sortTransparentBindings", "drawList"]) {
             this.context.functionDeclaration(
                 renderTaskModule,
@@ -168,6 +172,20 @@ export class RendererLowerer {
     std::array<std::array<float, 4>, 4> view_projection{};
 `
             : "";
+        const textureTransformUniformField =
+            options.textureTransform
+                ? "    std::array<float, 4> uv_transform{};\n"
+                : "";
+        const textureTransformMaterialUniform =
+            options.textureTransform
+                ? `        result.uv_transform = {
+            material.diffuse_u_scale,
+            material.diffuse_v_scale,
+            0.0f,
+            0.0f,
+        };
+`
+                : "";
         const transmissionMaterialUniforms = options.transmission
             ? `        const float ior = std::max(material.index_of_refraction, 1.0001f);
         const float thickness_scale =
@@ -339,6 +357,7 @@ struct PbrUniforms {
     std::array<float, 4> material_options{};
     std::array<float, 4> normal_options{};
     std::array<float, 4> image_processing_options{};
+${textureTransformUniformField}\
 ${transmissionUniformFields}\
     std::array<std::array<float, 4>, 9> spherical_harmonics{};
 };
@@ -1039,6 +1058,11 @@ PbrUniforms build_pbr_uniforms(
     };
     result.image_processing_options[0] =
         scene.transmission_enabled ? 1.0f : 0.0f;
+${options.environmentRotation
+    ? `    result.image_processing_options[1] =
+        scene.environment.rotation_y;
+`
+    : ""}\
     if (item.material.value < engine.materials.size()) {
         const MaterialRecord& material = engine.materials[item.material.value];
         result.base_color_factor = {
@@ -1073,6 +1097,7 @@ PbrUniforms build_pbr_uniforms(
                 ? dielectric_ratio * dielectric_ratio
                 : material.reflectance;
         result.normal_options[3] = material.normal_texture_scale;
+${textureTransformMaterialUniform}\
         if (
             item.geometry < engine.geometries.size() &&
             !engine.geometries[item.geometry].has_tangents &&
@@ -1325,10 +1350,10 @@ BackgroundPlan build_background_plan(const EnvironmentState& environment) {
     const Vec3 center = environment.ground_position;
     BackgroundPlan result;
     result.vertices = {
-        ModelVertex{Vec3{center.x - half, center.y, center.z - half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{0.0f, 0.0f}},
-        ModelVertex{Vec3{center.x + half, center.y, center.z - half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{1.0f, 0.0f}},
-        ModelVertex{Vec3{center.x + half, center.y, center.z + half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{1.0f, 1.0f}},
-        ModelVertex{Vec3{center.x - half, center.y, center.z + half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{0.0f, 1.0f}},
+        ModelVertex{Vec3{center.x - half, center.y, center.z + half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{0.0f, 0.0f}},
+        ModelVertex{Vec3{center.x + half, center.y, center.z + half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{1.0f, 0.0f}},
+        ModelVertex{Vec3{center.x + half, center.y, center.z - half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{1.0f, 1.0f}},
+        ModelVertex{Vec3{center.x - half, center.y, center.z - half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{0.0f, 1.0f}},
     };
     result.indices = {0, 2, 1, 0, 3, 2};
     return result;
@@ -1436,6 +1461,8 @@ SkyboxUniforms build_skybox_uniforms(
         geometryOutputTasks: GeometryOutputTaskManifest[];
         frameGraph?: boolean;
         gpuDeformation?: boolean;
+        textureTransform?: boolean;
+        environmentRotation?: boolean;
     } = {
         ground: true,
         skybox: true,
@@ -1448,6 +1475,8 @@ SkyboxUniforms build_skybox_uniforms(
         pbrDiagnostics: true,
         geometryOutputTasks: [],
         gpuDeformation: false,
+        textureTransform: false,
+        environmentRotation: false,
     }): LoweredShader[] {
         const pbr = this.context.store.getSource(pbrTemplateModule);
         const pbrExt = this.context.store.getSource(pbrTemplateExtModule);
@@ -1638,6 +1667,52 @@ SkyboxUniforms build_skybox_uniforms(
                 "  let linearColor = select(((((((v_89 * v_52) * v_34) + v_101) + v_102) + ((((v_70 * v_52) * v_71) * v_81) * v_69)) + v_40), v_31, vec3<bool>(v_103, v_103, v_103));\n" +
                 "  let v_104 = linearColor * FragmentUniforms.environmentFactors.x;\n" +
                 convertedPbr.slice(transmissionEnd);
+        }
+        if (options.textureTransform) {
+            convertedPbr = convertedPbr.replace(
+                /  imageProcessingOptions : vec4<f32>,/,
+                "  imageProcessingOptions : vec4<f32>,\n" +
+                    "  uvTransform : vec4<f32>,",
+            );
+            convertedPbr = convertedPbr.replace(
+                /fn main_inner\(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>, v_5 : vec4<f32>, v_6 : bool\) \{/,
+                "fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4_raw : vec2<f32>, v_5 : vec4<f32>, v_6 : bool) {\n" +
+                    "  let v_4 = v_4_raw * FragmentUniforms.uvTransform.xy + FragmentUniforms.uvTransform.zw;",
+            );
+        }
+        if (options.environmentRotation) {
+            const irradianceDirection =
+                /      let v_85 = v_28\.y;\r?\n      let v_86 = v_28\.z;\r?\n      let v_87 = v_28\.x;/;
+            if (!irradianceDirection.test(convertedPbr)) {
+                throw new Error(
+                    "PBR environment normal markers changed.",
+                );
+            }
+            convertedPbr = convertedPbr.replace(
+                irradianceDirection,
+                "      let env_rotation = FragmentUniforms.imageProcessingOptions.y;\n" +
+                    "      let env_cos = cos(env_rotation);\n" +
+                    "      let env_sin = sin(env_rotation);\n" +
+                    "      let env_normal = vec3<f32>(v_28.x * env_cos + v_28.z * env_sin, v_28.y, -v_28.x * env_sin + v_28.z * env_cos);\n" +
+                    "      let v_85 = env_normal.y;\n" +
+                    "      let v_86 = env_normal.z;\n" +
+                    "      let v_87 = env_normal.x;",
+            );
+            const reflectionDirection =
+                /  let v_90 = reflect\(-\(v_41\), v_28\);/;
+            if (!reflectionDirection.test(convertedPbr)) {
+                throw new Error(
+                    "PBR environment reflection marker changed.",
+                );
+            }
+            convertedPbr = convertedPbr.replace(
+                reflectionDirection,
+                "  let environment_reflection_raw = reflect(-(v_41), v_28);\n" +
+                    "  let environment_rotation = FragmentUniforms.imageProcessingOptions.y;\n" +
+                    "  let environment_cos = cos(environment_rotation);\n" +
+                    "  let environment_sin = sin(environment_rotation);\n" +
+                    "  let v_90 = vec3<f32>(environment_reflection_raw.x * environment_cos + environment_reflection_raw.z * environment_sin, environment_reflection_raw.y, -environment_reflection_raw.x * environment_sin + environment_reflection_raw.z * environment_cos);",
+            );
         }
         const pbrProvenance = this.context.provenance(
             pbrTemplateModule,

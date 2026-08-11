@@ -3467,6 +3467,7 @@ bool run_gpu_engine(Engine& engine) {
             const TextureData* transmission = nullptr;
             const TextureData* thickness = nullptr;
             const TextureData* standard_emissive = nullptr;
+            bool has_pbr_emissive_factor = false;
             const bool standard_material =
                 item.material_kind == upstream::RenderMaterialKind::standard;
             if (item.material.value < engine.materials.size()) {
@@ -3482,6 +3483,10 @@ bool run_gpu_engine(Engine& engine) {
                 emissive = standard_material
                     ? &material.ambient_texture
                     : &material.emissive_texture;
+                has_pbr_emissive_factor =
+                    material.emissive_factor.r != 0.0f ||
+                    material.emissive_factor.g != 0.0f ||
+                    material.emissive_factor.b != 0.0f;
                 transmission = standard_material
                     ? nullptr
                     : &material.transmission_texture;
@@ -3538,7 +3543,9 @@ bool run_gpu_engine(Engine& engine) {
                 !standard_material,
                 standard_material
                     ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
-                    : std::array<std::uint8_t, 4>{0, 0, 0, 255});
+                    : has_pbr_emissive_factor
+                        ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
+                        : std::array<std::uint8_t, 4>{0, 0, 0, 255});
             gpu_mesh.emissive_sampler = create_texture_sampler(
                 state.device,
                 emissive ? emissive->sampler : TextureSamplerState{});

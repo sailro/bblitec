@@ -70,11 +70,16 @@ baselines belong in [status](docs/status.md) and Git history.
 ### glTF
 
 - [ ] Multiple UV sets and texture-coordinate selection.
-- [ ] Texture transforms and vertex colors.
+- [ ] Generalize texture transforms beyond one shared scale to per-slot
+  offsets, rotations, and independent transforms.
+- [ ] Vertex colors beyond the reached alpha/mask slice.
 - [ ] Sparse accessors and additional primitive modes.
+- [ ] Add a GPU instance-buffer and instanced draw path for
+  `EXT_mesh_gpu_instancing` without geometry expansion.
 - [ ] Complete glTF animation coverage: scale and STEP channels, multiple
   clips, and richer animation-group controls.
-- [ ] Cameras and punctual lights.
+- [ ] glTF cameras, spot lights, and multi-light PBR shading for punctual
+  light assets.
 - [ ] KTX2/Basis and compression investigations.
 
 ### Property animation
@@ -86,8 +91,7 @@ baselines belong in [status](docs/status.md) and Git history.
 
 ### Material extensions
 
-- [ ] Emissive strength, IOR/specular, clearcoat, sheen.
-- [ ] Transmission/volume, iridescence, anisotropy.
+- [ ] Specular, clearcoat, sheen, iridescence, dispersion, and anisotropy.
 - [ ] Require typed metadata specialization, focused tests, and an independent
   parity scene for each extension.
 - [ ] Generalize Standard lighting beyond the reached two-light uniform slice.
@@ -113,6 +117,8 @@ baselines belong in [status](docs/status.md) and Git history.
 - [ ] Add headless renderer tests.
 - [ ] Add differential tests for camera, environment, material, and transform
   functions.
+- [ ] Match the deferred environment-ground composition for Scenes 1, 13, and
+  14 before enabling requested grounds by default.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 

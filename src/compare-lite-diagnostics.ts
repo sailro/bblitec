@@ -32,27 +32,27 @@ interface ParityReport {
 const pairs: DiagnosticPair[] = [
     {
         name: "world-normal",
-        native: "artifacts/parity/normal-gpu.png",
+        native: "artifacts/parity/scene1/normal-gpu.png",
         babylon: "artifacts/parity/lite-diagnostics/babylon-lite-world-normal.png",
     },
     {
         name: "albedo",
-        native: "artifacts/parity/albedo-gpu.png",
+        native: "artifacts/parity/scene1/albedo-gpu.png",
         babylon: "artifacts/parity/lite-diagnostics/babylon-lite-albedo.png",
     },
     {
         name: "reflectivity",
-        native: "artifacts/parity/reflectivity-gpu.png",
+        native: "artifacts/parity/scene1/reflectivity-gpu.png",
         babylon: "artifacts/parity/lite-diagnostics/babylon-lite-reflectivity.png",
     },
     {
         name: "irradiance",
-        native: "artifacts/parity/irradiance-gpu.png",
+        native: "artifacts/parity/scene1/irradiance-gpu.png",
         babylon: "artifacts/parity/lite-diagnostics/babylon-lite-irradiance.png",
     },
     {
         name: "normalized-depth",
-        native: "artifacts/parity/normalized-depth-gpu.png",
+        native: "artifacts/parity/scene1/normalized-depth-gpu.png",
         babylon: "artifacts/parity/lite-diagnostics/babylon-lite-normalized-depth.png",
     },
 ];
@@ -120,7 +120,9 @@ function main(): void {
         };
     });
     const output = resolve(outputDirectory, "comparison.json");
-    const parityReportPath = resolve("artifacts/parity/report-gpu.json");
+    const parityReportPath = resolve(
+        "artifacts/parity/scene1/report-gpu.json",
+    );
     const parityReport = existsSync(parityReportPath)
         ? JSON.parse(readFileSync(parityReportPath, "utf8")) as ParityReport
         : undefined;

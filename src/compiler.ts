@@ -1816,15 +1816,45 @@ class Compiler
         frameRate: string;
         duration: string;
     } {
-        const frameRate = optionsExpression
-            ? this.compilePropertyAnimationFrameRate(optionsExpression)
-            : "60.0f";
         const tracks = this.expectStaticArrayLiteral(tracksExpression);
         if (tracks.elements.length === 0) {
             this.fail(
                 tracks,
                 "createPropertyAnimationClip requires at least one track.",
             );
+        }
+        let frameRate = optionsExpression
+            ? this.compilePropertyAnimationFrameRate(
+                  optionsExpression,
+              )
+            : undefined;
+        if (!frameRate) {
+            const trackFrameRates = tracks.elements
+                .map((element) =>
+                    this.objectProperty(
+                        this.expectObjectLiteral(element),
+                        "frameRate",
+                    ),
+                )
+                .filter(
+                    (
+                        value,
+                    ): value is ts.Expression =>
+                        value !== undefined,
+                )
+                .map((value) =>
+                    this.compileNumber(value),
+                );
+            const distinct = [
+                ...new Set(trackFrameRates),
+            ];
+            if (distinct.length > 1) {
+                this.fail(
+                    tracks,
+                    "Property animation tracks require one shared frame rate when clip options omit frameRate.",
+                );
+            }
+            frameRate = distinct[0] ?? "60.0f";
         }
         const compiledTracks = tracks.elements.map((element) => {
             const track = this.expectObjectLiteral(
@@ -3180,10 +3210,16 @@ class Compiler
             adaptations.push({
                 id: "background-ground-opt-in",
                 category: "rendering",
-                sourceSemantics: "Babylon Lite creates the requested transparent environment ground.",
-                nativeSemantics: "The generated ground is available behind BBLITE_GROUND=1 while background composition parity is validated against the pinned Babylon Lite output.",
+                sourceSemantics:
+                    "Babylon Lite creates the requested transparent environment ground.",
+                nativeSemantics:
+                    "The generated ground is available behind BBLITE_GROUND=1 while background composition parity is validated against the pinned Babylon Lite output.",
                 risk: "high",
-                validation: ["explicit runtime flag", "separate background render pass", "documented parity reference"],
+                validation: [
+                    "explicit runtime flag",
+                    "separate background render pass",
+                    "documented parity reference",
+                ],
             });
         }
         if (

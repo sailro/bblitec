@@ -211,6 +211,8 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
 
 export interface AssetSpecializationFeatures {
     gpuDeformation: boolean;
+    imageBasedLighting: boolean;
+    textureTransform: boolean;
 }
 
 export function emitAssetSpecializations(
@@ -219,7 +221,11 @@ export function emitAssetSpecializations(
 ): AssetSpecializationFeatures {
     const gltfAssets = assets.filter((asset) => asset.kind === "gltf");
     if (gltfAssets.length === 0) {
-        return { gpuDeformation: false };
+        return {
+            gpuDeformation: false,
+            imageBasedLighting: false,
+            textureTransform: false,
+        };
     }
     let nextDrawId = 1;
     let nextClusterId = 1;
@@ -245,6 +251,18 @@ export function emitAssetSpecializations(
     return {
         gpuDeformation: specializations.some(
             (specialization) => specialization.features.animations,
+        ),
+        imageBasedLighting: specializations.some(
+            (specialization) =>
+                specialization.extensionsUsed.includes(
+                    "EXT_lights_image_based",
+                ),
+        ),
+        textureTransform: specializations.some(
+            (specialization) =>
+                specialization.extensionsUsed.includes(
+                    "KHR_texture_transform",
+                ),
         ),
     };
 }

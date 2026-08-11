@@ -33,6 +33,8 @@ class GeneratedSourceWriter {
             shaderVariants: ShaderMaterialVariantName[];
             geometryOutputTasks: GeometryOutputTaskManifest[];
             gpuDeformation: boolean;
+            textureTransform: boolean;
+            imageBasedLighting: boolean;
         },
     ): void {
         const context = new LoweringContext(this.store);
@@ -191,6 +193,10 @@ class GeneratedSourceWriter {
                 "upstream/src/renderer_plan.cpp",
                 renderer.lowerRenderPlan({
                     transmission: features.includes("renderer:transmission"),
+                    textureTransform:
+                        options.textureTransform,
+                    environmentRotation:
+                        options.imageBasedLighting,
                 }),
                 generated,
                 "upstream/include/bblite/upstream/renderer_plan.hpp",
@@ -210,6 +216,10 @@ class GeneratedSourceWriter {
                 geometryOutputTasks: options.geometryOutputTasks,
                 frameGraph: features.includes("renderer:geometry-output"),
                 gpuDeformation: options.gpuDeformation,
+                textureTransform:
+                    options.textureTransform,
+                environmentRotation:
+                    options.imageBasedLighting,
             });
             for (const shader of shaders) {
                 const shaderPath = resolve(this.outputRoot, shader.output);
@@ -385,12 +395,16 @@ export function emitUpstreamGenerated(
         shaderVariants: ShaderMaterialVariantName[];
         geometryOutputTasks: GeometryOutputTaskManifest[];
         gpuDeformation: boolean;
+        textureTransform: boolean;
+        imageBasedLighting: boolean;
     } = {
         idDiagnostics: false,
         pbrDiagnostics: false,
         shaderVariants: [],
         geometryOutputTasks: [],
         gpuDeformation: false,
+        textureTransform: false,
+        imageBasedLighting: false,
     },
 ): void {
     new GeneratedSourceWriter(outputRoot, new UpstreamSourceStore()).emit(

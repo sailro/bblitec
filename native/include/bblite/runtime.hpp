@@ -407,7 +407,7 @@ struct PropertyAnimationGroupOptions {
 struct MaterialRecord {
     Color3 diffuse_color{};
     Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
-    Color3 emissive_factor{};
+    Color3 emissive_factor{0.0f, 0.0f, 0.0f};
     Color3 specular_color{1.0f, 1.0f, 1.0f};
     Color3 ambient_color{};
     float specular_power = 64.0f;
@@ -528,6 +528,7 @@ struct AssetRecord {
     bool has_clear_color = false;
     std::function<void(float)> animation_tick;
     std::function<void(float)> animation_seek;
+    std::function<void(Scene&)> scene_setup;
 };
 
 struct Engine {
@@ -550,6 +551,7 @@ struct EnvironmentState {
     float exposure = 1.0f;
     float contrast = 1.0f;
     float lod_generation_scale = 0.8f;
+    float rotation_y = 0.0f;
     bool tone_mapping_enabled = false;
     std::array<Color3, 9> spherical_harmonics{};
     std::uint32_t specular_width = 0;
@@ -582,6 +584,7 @@ struct Scene {
     std::vector<TaskHandle> tasks;
     std::vector<std::function<void(float)>> before_render;
     std::vector<std::function<void(float)>> animation_seekers;
+    std::vector<std::function<void()>> deferred_builders;
     EnvironmentState environment;
     float fixed_delta_ms = 0.0f;
     std::uint64_t mesh_membership_version = 0;

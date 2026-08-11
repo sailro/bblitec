@@ -322,47 +322,74 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
         scene.environment.skybox_data_offset =
             read_u32(dds, 84) == 808540228u ? 148u : 128u;
         scene.environment.has_skybox = true;
+        scene.environment.background_enabled_by_default =
+            true;
         scene.environment.skybox_uses_environment = false;
     }
-    Vec3 bounds_min{
-        std::numeric_limits<float>::infinity(),
-        std::numeric_limits<float>::infinity(),
-        std::numeric_limits<float>::infinity(),
-    };
-    Vec3 bounds_max{
-        -std::numeric_limits<float>::infinity(),
-        -std::numeric_limits<float>::infinity(),
-        -std::numeric_limits<float>::infinity(),
-    };
-    for (const MeshHandle handle : scene.meshes) {
-        if (handle.value >= scene.engine->meshes.size()) continue;
-        const MeshRecord& mesh = scene.engine->meshes[handle.value];
-        if (mesh.geometry >= scene.engine->geometries.size()) continue;
-        const ModelGeometry& geometry = scene.engine->geometries[mesh.geometry];
-        bounds_min.x = std::min(bounds_min.x, geometry.bounds_min.x);
-        bounds_min.y = std::min(bounds_min.y, geometry.bounds_min.y);
-        bounds_min.z = std::min(bounds_min.z, geometry.bounds_min.z);
-        bounds_max.x = std::max(bounds_max.x, geometry.bounds_max.x);
-        bounds_max.y = std::max(bounds_max.y, geometry.bounds_max.y);
-        bounds_max.z = std::max(bounds_max.z, geometry.bounds_max.z);
-    }
-    if (std::isfinite(bounds_min.x)) {
-        const float dx = bounds_max.x - bounds_min.x;
-        const float dy = bounds_max.y - bounds_min.y;
-        const float dz = bounds_max.z - bounds_min.z;
-        const float diagonal = std::sqrt(dx * dx + dy * dy + dz * dz);
-        scene.environment.ground_size = std::max(15.0f, diagonal * 2.0f) * 1.1f;
-        scene.environment.ground_position = Vec3{
-            bounds_min.x + dx * 0.5f,
-            bounds_min.y - 0.00001f,
-            bounds_min.z + dz * 0.5f,
-        };
-        scene.environment.skybox_position =
-            scene.environment.ground_position;
-        scene.environment.skybox_size = std::min(
-            (options.skybox_size > 0.0f ? options.skybox_size : 20.0f) * 1.5f,
-            scene.environment.ground_size * 1.5f);
-    }
+    const float requested_skybox_size =
+        options.skybox_size > 0.0f ? options.skybox_size : 20.0f;
+    scene.deferred_builders.push_back(
+        [&scene, requested_skybox_size]() {
+            Vec3 bounds_min{
+                std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::infinity(),
+            };
+            Vec3 bounds_max{
+                -std::numeric_limits<float>::infinity(),
+                -std::numeric_limits<float>::infinity(),
+                -std::numeric_limits<float>::infinity(),
+            };
+            for (const MeshHandle handle : scene.meshes) {
+                if (handle.value >= scene.engine->meshes.size()) continue;
+                const MeshRecord& mesh =
+                    scene.engine->meshes[handle.value];
+                if (mesh.geometry >=
+                    scene.engine->geometries.size()) {
+                    continue;
+                }
+                const ModelGeometry& geometry =
+                    scene.engine->geometries[mesh.geometry];
+                bounds_min.x =
+                    std::min(bounds_min.x, geometry.bounds_min.x);
+                bounds_min.y =
+                    std::min(bounds_min.y, geometry.bounds_min.y);
+                bounds_min.z =
+                    std::min(bounds_min.z, geometry.bounds_min.z);
+                bounds_max.x =
+                    std::max(bounds_max.x, geometry.bounds_max.x);
+                bounds_max.y =
+                    std::max(bounds_max.y, geometry.bounds_max.y);
+                bounds_max.z =
+                    std::max(bounds_max.z, geometry.bounds_max.z);
+            }
+            scene.environment.ground_size = 15.0f;
+            scene.environment.skybox_size =
+                requested_skybox_size;
+            scene.environment.ground_position = Vec3{};
+            scene.environment.skybox_position = Vec3{};
+            if (!std::isfinite(bounds_min.x)) return;
+            const float dx = bounds_max.x - bounds_min.x;
+            const float dy = bounds_max.y - bounds_min.y;
+            const float dz = bounds_max.z - bounds_min.z;
+            const float diagonal =
+                std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (diagonal > scene.environment.ground_size) {
+                scene.environment.ground_size =
+                    diagonal * 2.0f;
+                scene.environment.skybox_size =
+                    scene.environment.ground_size;
+            }
+            scene.environment.ground_size *= 1.1f;
+            scene.environment.skybox_size *= 1.5f;
+            scene.environment.ground_position = Vec3{
+                bounds_min.x + dx * 0.5f,
+                bounds_min.y - 0.00001f,
+                bounds_min.z + dz * 0.5f,
+            };
+            scene.environment.skybox_position =
+                scene.environment.ground_position;
+        });
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};
     scene.environment.contrast = ${this.context.floatLiteral(contrast)};
     scene.environment.tone_mapping_enabled = true;

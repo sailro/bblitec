@@ -113,6 +113,26 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /vertex\.local_position = local_position/);
     assert.match(adapter.source, /geometry\.has_tangents = tangents != nullptr/);
     assert.match(adapter.source, /optional\(attributes, "COLOR_0"\)/);
+    assert.match(
+        adapter.source,
+        /KHR_materials_emissive_strength/,
+    );
+    assert.match(
+        adapter.source,
+        /KHR_texture_transform/,
+    );
+    assert.match(
+        adapter.source,
+        /EXT_lights_image_based/,
+    );
+    assert.match(
+        adapter.source,
+        /KHR_lights_punctual/,
+    );
+    assert.match(
+        adapter.source,
+        /gltf-ibl-brdf-lut\.png/,
+    );
     assert.match(adapter.source, /vertex\.color = Vec4/);
     assert.match(adapter.source, /result\.sampler\.max_anisotropy/);
     assert.match(adapter.source, /result\.sampler\.max_lod = no_mip/);

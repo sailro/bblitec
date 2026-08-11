@@ -523,6 +523,314 @@ float linear_determinant(const Matrix& matrix) {
         matrix[8] * (matrix[1] * matrix[6] - matrix[5] * matrix[2]);
 }
 
+TextureData image_data(
+    const ts::ArrayBuffer& buffer,
+    const upstream::ParsedGlbContainer& container,
+    const std::vector<BufferViewInfo>& views,
+    const JsonArray& images,
+    std::size_t image_index) {
+    TextureData result;
+    const JsonObject& image =
+        images.at(image_index).as_object();
+    const BufferViewInfo& view = views.at(
+        unsigned_value(required(image, "bufferView")));
+    const std::size_t start =
+        container.bin_offset + view.offset;
+    const std::size_t end = start + view.length;
+    if (end > buffer.byte_length()) {
+        throw std::runtime_error(
+            "glTF image exceeds BIN chunk.");
+    }
+    const std::string mime_type =
+        string_or(image, "mimeType");
+    if (
+        mime_type != "image/png" &&
+        mime_type != "image/jpeg") {
+        throw std::runtime_error(
+            "Only embedded PNG/JPEG glTF images are supported.");
+    }
+    result.bytes.assign(
+        buffer.bytes().begin() + start,
+        buffer.bytes().begin() + end);
+    return result;
+}
+
+float color_channel(
+    const Color3& color,
+    int channel) {
+    return channel == 0
+        ? color.r
+        : channel == 1
+            ? color.g
+            : color.b;
+}
+
+void set_color_channel(
+    Color3& color,
+    int channel,
+    float value) {
+    if (channel == 0) color.r = value;
+    else if (channel == 1) color.g = value;
+    else color.b = value;
+}
+
+std::array<Color3, 9> pre_scale_harmonics(
+    const std::array<Color3, 9>& polynomial) {
+    constexpr float c00xy = 0.3333338747897695f;
+    constexpr float c00z = 0.33333298856284405f;
+    constexpr float c1 = 1.4999984284682104f;
+    constexpr float c2 = 3.999982863580422f;
+    constexpr float c20zz = 1.3333326611423701f;
+    constexpr float c20xy = 0.6666653397393608f;
+    constexpr float c22 = 1.999991431790211f;
+    std::array<Color3, 9> result{};
+    for (int channel = 0; channel < 3; ++channel) {
+        const float x =
+            color_channel(polynomial[0], channel);
+        const float y =
+            color_channel(polynomial[1], channel);
+        const float z =
+            color_channel(polynomial[2], channel);
+        const float xx =
+            color_channel(polynomial[3], channel);
+        const float yy =
+            color_channel(polynomial[4], channel);
+        const float zz =
+            color_channel(polynomial[5], channel);
+        const float yz =
+            color_channel(polynomial[6], channel);
+        const float zx =
+            color_channel(polynomial[7], channel);
+        const float xy =
+            color_channel(polynomial[8], channel);
+        set_color_channel(
+            result[0],
+            channel,
+            (xx + yy) * c00xy + zz * c00z);
+        set_color_channel(
+            result[1], channel, y * c1);
+        set_color_channel(
+            result[2], channel, z * c1);
+        set_color_channel(
+            result[3], channel, x * c1);
+        set_color_channel(
+            result[4], channel, xy * c2);
+        set_color_channel(
+            result[5], channel, yz * c2);
+        set_color_channel(
+            result[6],
+            channel,
+            zz * c20zz - (xx + yy) * c20xy);
+        set_color_channel(
+            result[7], channel, zx * c2);
+        set_color_channel(
+            result[8],
+            channel,
+            (xx - yy) * c22);
+    }
+    return result;
+}
+
+bool load_image_based_environment(
+    EnvironmentState& environment,
+    const JsonObject& document,
+    const ts::ArrayBuffer& buffer,
+    const upstream::ParsedGlbContainer& container,
+    const std::vector<BufferViewInfo>& views,
+    const JsonArray& images) {
+    const ts::JsonValue* extensions_value =
+        optional(document, "extensions");
+    const JsonArray& scenes =
+        array_or_empty(document, "scenes");
+    if (!extensions_value || scenes.empty()) {
+        return false;
+    }
+    const JsonObject& extensions =
+        extensions_value->as_object();
+    const ts::JsonValue* ibl_value =
+        optional(extensions, "EXT_lights_image_based");
+    if (!ibl_value) return false;
+    const JsonArray& lights = array_or_empty(
+        ibl_value->as_object(),
+        "lights");
+    const std::size_t scene_index =
+        unsigned_or(document, "scene", 0);
+    if (scene_index >= scenes.size()) return false;
+    const JsonObject& scene =
+        scenes[scene_index].as_object();
+    const ts::JsonValue* scene_extensions_value =
+        optional(scene, "extensions");
+    if (!scene_extensions_value) return false;
+    const ts::JsonValue* scene_ibl_value =
+        optional(
+            scene_extensions_value->as_object(),
+            "EXT_lights_image_based");
+    if (!scene_ibl_value) return false;
+    const std::size_t light_index = unsigned_value(
+        required(
+            scene_ibl_value->as_object(),
+            "light"));
+    if (light_index >= lights.size()) return false;
+    const JsonObject& light =
+        lights[light_index].as_object();
+    const JsonArray& coefficients =
+        array_or_empty(
+            light,
+            "irradianceCoefficients");
+    const JsonArray& specular_images =
+        array_or_empty(light, "specularImages");
+    if (
+        coefficients.size() != 9 ||
+        specular_images.empty()) {
+        return false;
+    }
+    const float intensity =
+        float_or(light, "intensity", 1.0f);
+    const float scale = intensity / pi;
+    const float inverse_pi = 1.0f / pi;
+    std::array<Color3, 9> source{};
+    for (
+        std::size_t coefficient = 0;
+        coefficient < source.size();
+        ++coefficient) {
+        const std::vector<float> values =
+            float_array(&coefficients[coefficient]);
+        if (values.size() != 3) {
+            throw std::runtime_error(
+                "Image-based light irradiance coefficient must be vec3.");
+        }
+        source[coefficient] = Color3{
+            values[0] * scale,
+            values[1] * scale,
+            values[2] * scale,
+        };
+    }
+    std::array<Color3, 9> polynomial{};
+    for (int channel = 0; channel < 3; ++channel) {
+        const float l00 =
+            color_channel(source[0], channel);
+        const float l1_1 =
+            color_channel(source[1], channel);
+        const float l10 =
+            color_channel(source[2], channel);
+        const float l11 =
+            color_channel(source[3], channel);
+        const float l2_2 =
+            color_channel(source[4], channel);
+        const float l2_1 =
+            color_channel(source[5], channel);
+        const float l20 =
+            color_channel(source[6], channel);
+        const float l21 =
+            color_channel(source[7], channel);
+        const float l22 =
+            color_channel(source[8], channel);
+        set_color_channel(
+            polynomial[0],
+            channel,
+            -1.02333f * l11 * inverse_pi);
+        set_color_channel(
+            polynomial[1],
+            channel,
+            -1.02333f * l1_1 * inverse_pi);
+        set_color_channel(
+            polynomial[2],
+            channel,
+            1.02333f * l10 * inverse_pi);
+        set_color_channel(
+            polynomial[3],
+            channel,
+            (
+                0.886277f * l00 -
+                0.247708f * l20 +
+                0.429043f * l22) *
+                inverse_pi);
+        set_color_channel(
+            polynomial[4],
+            channel,
+            (
+                0.886277f * l00 -
+                0.247708f * l20 -
+                0.429043f * l22) *
+                inverse_pi);
+        set_color_channel(
+            polynomial[5],
+            channel,
+            (
+                0.886277f * l00 +
+                0.495417f * l20) *
+                inverse_pi);
+        set_color_channel(
+            polynomial[6],
+            channel,
+            -0.858086f * l2_1 * inverse_pi);
+        set_color_channel(
+            polynomial[7],
+            channel,
+            -0.858086f * l21 * inverse_pi);
+        set_color_channel(
+            polynomial[8],
+            channel,
+            0.858086f * l2_2 * inverse_pi);
+    }
+    environment.has_irradiance = true;
+    environment.spherical_harmonics =
+        pre_scale_harmonics(polynomial);
+    environment.specular_width =
+        static_cast<std::uint32_t>(
+            unsigned_value(
+                required(
+                    light,
+                    "specularImageSize")));
+    environment.specular_mip_count =
+        static_cast<std::uint32_t>(
+            specular_images.size());
+    environment.specular_faces.clear();
+    environment.specular_faces.reserve(
+        specular_images.size() * 6);
+    for (const ts::JsonValue& mip_value :
+         specular_images) {
+        const JsonArray& faces =
+            mip_value.as_array();
+        if (faces.size() != 6) {
+            throw std::runtime_error(
+                "Image-based light mip must contain six faces.");
+        }
+        for (const ts::JsonValue& face : faces) {
+            environment.specular_faces.push_back(
+                image_data(
+                    buffer,
+                    container,
+                    views,
+                    images,
+                    unsigned_value(face)));
+        }
+    }
+    environment.lod_generation_scale =
+        specular_images.size() > 1
+            ? static_cast<float>(
+                  specular_images.size() - 1) /
+                  std::log2(
+                      static_cast<float>(
+                          environment.specular_width))
+            : 0.0f;
+    const std::vector<float> rotation =
+        float_array(optional(light, "rotation"));
+    if (rotation.size() == 4) {
+        environment.rotation_y =
+            -2.0f *
+            std::atan2(rotation[1], rotation[3]);
+    }
+    environment.brdf_lut.bytes =
+        pal::read_binary_file(
+            asset_path(
+                "gltf-ibl-brdf-lut.png"));
+    environment.exposure = 0.8f;
+    environment.contrast = 1.2f;
+    environment.tone_mapping_enabled = true;
+    return true;
+}
+
 TextureData texture_data(
     const ts::ArrayBuffer& buffer,
     const upstream::ParsedGlbContainer& container,
@@ -571,17 +879,76 @@ TextureData texture_data(
     result.sampler.address_v = address_mode(
         sampler ? unsigned_or(*sampler, "wrapT", 10497) : 10497);
     const std::size_t image_index = unsigned_value(required(texture, "source"));
-    const JsonObject& image = images.at(image_index).as_object();
-    const BufferViewInfo& view = views.at(unsigned_value(required(image, "bufferView")));
-    const std::size_t start = container.bin_offset + view.offset;
-    const std::size_t end = start + view.length;
-    if (end > buffer.byte_length()) throw std::runtime_error("glTF image exceeds BIN chunk.");
-    const std::string mime_type = string_or(image, "mimeType");
-    if (mime_type != "image/png" && mime_type != "image/jpeg") {
-        throw std::runtime_error("Only embedded PNG/JPEG glTF images are supported.");
-    }
-    result.bytes.assign(buffer.bytes().begin() + start, buffer.bytes().begin() + end);
+    result.bytes = image_data(
+        buffer,
+        container,
+        views,
+        images,
+        image_index).bytes;
     return result;
+}
+
+void apply_texture_transform(
+    MaterialRecord& material,
+    const ts::JsonValue* texture_info) {
+    if (!texture_info) return;
+    const ts::JsonValue* extensions_value =
+        optional(
+            texture_info->as_object(),
+            "extensions");
+    if (!extensions_value) return;
+    const ts::JsonValue* transform_value =
+        optional(
+            extensions_value->as_object(),
+            "KHR_texture_transform");
+    if (!transform_value) return;
+    const JsonObject& transform =
+        transform_value->as_object();
+    const std::vector<float> scale =
+        float_array(optional(transform, "scale"));
+    const std::vector<float> offset =
+        float_array(optional(transform, "offset"));
+    if (scale.size() == 2) {
+        material.diffuse_u_scale = scale[0];
+        material.diffuse_v_scale = scale[1];
+    }
+    if (offset.size() == 2) {
+        if (
+            std::abs(offset[0]) > 0.000001f ||
+            std::abs(offset[1]) > 0.000001f) {
+            throw std::runtime_error(
+                "Offset glTF texture transforms are not supported.");
+        }
+    }
+    if (
+        std::abs(
+            float_or(transform, "rotation", 0.0f)) >
+        0.000001f) {
+        throw std::runtime_error(
+            "Rotated glTF texture transforms are not supported.");
+    }
+}
+
+void require_matching_texture_transform(
+    const MaterialRecord& material,
+    const ts::JsonValue* texture_info) {
+    if (!texture_info) return;
+    MaterialRecord candidate;
+    apply_texture_transform(
+        candidate,
+        texture_info);
+    if (
+        std::abs(
+            candidate.diffuse_u_scale -
+            material.diffuse_u_scale) >
+            0.000001f ||
+        std::abs(
+            candidate.diffuse_v_scale -
+            material.diffuse_v_scale) >
+            0.000001f) {
+        throw std::runtime_error(
+            "Reached glTF material uses distinct texture transforms.");
+    }
 }
 
 MaterialHandle load_material(
@@ -602,15 +969,31 @@ MaterialHandle load_material(
         if (base.size() == 4) material.base_color_factor = Color4{base[0], base[1], base[2], base[3]};
         material.metallic_factor = float_or(pbr, "metallicFactor", 1.0f);
         material.roughness_factor = float_or(pbr, "roughnessFactor", 1.0f);
+        const ts::JsonValue* base_color_texture =
+            optional(pbr, "baseColorTexture");
         material.base_color_texture = texture_data(
-            buffer, container, views, images, textures, samplers, optional(pbr, "baseColorTexture"));
+            buffer, container, views, images, textures, samplers, base_color_texture);
+        apply_texture_transform(
+            material,
+            base_color_texture);
+        const ts::JsonValue*
+            metallic_roughness_texture =
+                optional(
+                    pbr,
+                    "metallicRoughnessTexture");
         material.metallic_roughness_texture = texture_data(
-            buffer, container, views, images, textures, samplers, optional(pbr, "metallicRoughnessTexture"));
+            buffer, container, views, images, textures, samplers, metallic_roughness_texture);
+        require_matching_texture_transform(
+            material,
+            metallic_roughness_texture);
     }
     const ts::JsonValue* normal_texture =
         optional(material_json, "normalTexture");
     material.normal_texture = texture_data(
         buffer, container, views, images, textures, samplers, normal_texture);
+    require_matching_texture_transform(
+        material,
+        normal_texture);
     if (normal_texture) {
         material.normal_texture_scale =
             float_or(normal_texture->as_object(), "scale", 1.0f);
@@ -679,8 +1062,31 @@ MaterialHandle load_material(
     }
     material.emissive_texture = texture_data(
         buffer, container, views, images, textures, samplers, optional(material_json, "emissiveTexture"));
+    require_matching_texture_transform(
+        material,
+        optional(material_json, "emissiveTexture"));
+    require_matching_texture_transform(
+        material,
+        optional(material_json, "occlusionTexture"));
     const std::vector<float> emissive = float_array(optional(material_json, "emissiveFactor"));
     if (emissive.size() == 3) material.emissive_factor = Color3{emissive[0], emissive[1], emissive[2]};
+    if (const ts::JsonValue* extensions_value =
+            optional(material_json, "extensions")) {
+        const JsonObject& extensions =
+            extensions_value->as_object();
+        if (const ts::JsonValue* strength_value =
+                optional(
+                    extensions,
+                    "KHR_materials_emissive_strength")) {
+            const float strength = float_or(
+                strength_value->as_object(),
+                "emissiveStrength",
+                1.0f);
+            material.emissive_factor.r *= strength;
+            material.emissive_factor.g *= strength;
+            material.emissive_factor.b *= strength;
+        }
+    }
     material.double_sided = bool_or(material_json, "doubleSided", false);
     const std::string alpha_mode = string_or(material_json, "alphaMode", "OPAQUE");
     material.alpha_mode =
@@ -798,6 +1204,118 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     };
 
     AssetRecord asset;
+    EnvironmentState image_based_environment;
+    if (load_image_based_environment(
+            image_based_environment,
+            document,
+            buffer,
+            container,
+            views,
+            image_json)) {
+        asset.scene_setup =
+            [image_based_environment](Scene& scene) {
+            scene.environment =
+                image_based_environment;
+        };
+    }
+    if (const ts::JsonValue* extensions_value =
+            optional(document, "extensions")) {
+        const JsonObject& extensions =
+            extensions_value->as_object();
+        if (const ts::JsonValue* lights_value =
+                optional(
+                    extensions,
+                    "KHR_lights_punctual")) {
+            const JsonArray& light_definitions =
+                array_or_empty(
+                    lights_value->as_object(),
+                    "lights");
+            for (
+                std::size_t node_index = 0;
+                node_index < node_json.size();
+                ++node_index) {
+                const JsonObject& node =
+                    node_json[node_index].as_object();
+                const ts::JsonValue*
+                    node_extensions_value =
+                        optional(node, "extensions");
+                if (!node_extensions_value) continue;
+                const ts::JsonValue* light_value =
+                    optional(
+                        node_extensions_value
+                            ->as_object(),
+                        "KHR_lights_punctual");
+                if (!light_value) continue;
+                const std::size_t light_index =
+                    unsigned_value(
+                        required(
+                            light_value->as_object(),
+                            "light"));
+                if (
+                    light_index >=
+                    light_definitions.size()) {
+                    continue;
+                }
+                const JsonObject& definition =
+                    light_definitions[light_index]
+                        .as_object();
+                const std::string type =
+                    string_or(definition, "type");
+                if (
+                    type != "point" &&
+                    type != "directional") {
+                    continue;
+                }
+                const Matrix& light_world =
+                    compute_world(node_index);
+                LightRecord light;
+                light.kind = type == "point"
+                    ? LightKind::point
+                    : LightKind::directional;
+                light.position = Vec3{
+                    -light_world[12],
+                    light_world[13],
+                    light_world[14],
+                };
+                const Vec3 forward{
+                    light_world[8],
+                    -light_world[9],
+                    -light_world[10],
+                };
+                light.direction =
+                    normalize(forward);
+                const std::vector<float> color =
+                    float_array(
+                        optional(
+                            definition,
+                            "color"));
+                light.diffuse_color = color.size() == 3
+                    ? Color3{
+                          color[0],
+                          color[1],
+                          color[2],
+                      }
+                    : Color3{1.0f, 1.0f, 1.0f};
+                light.specular_color =
+                    light.diffuse_color;
+                light.intensity =
+                    float_or(
+                        definition,
+                        "intensity",
+                        1.0f);
+                light.range =
+                    float_or(
+                        definition,
+                        "range",
+                        std::numeric_limits<float>::max());
+                engine.lights.push_back(light);
+                asset.lights.push_back(
+                    LightHandle{
+                        static_cast<std::uint32_t>(
+                            engine.lights.size() - 1)});
+            }
+        }
+    }
     const auto animation_runtime =
         std::make_shared<AnimationRuntime>();
     animation_runtime->node_meshes.resize(node_json.size());

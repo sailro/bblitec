@@ -185,12 +185,33 @@ async function main(): Promise<void> {
     await Promise.all(result.manifest.assets.map((asset) => materializeAsset(asset, inputPath, outputPath)));
     const specializationFeatures =
         emitAssetSpecializations(outputPath, result.manifest.assets);
+    if (specializationFeatures.imageBasedLighting) {
+        const pin = readUpstreamPin();
+        const brdfAsset: CompileAsset = {
+            source:
+                "https://raw.githubusercontent.com/" +
+                `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
+                "/packages/babylon-lite/assets/brdf-lut.png",
+            output: "gltf-ibl-brdf-lut.png",
+            kind: "texture",
+        };
+        await materializeAsset(
+            brdfAsset,
+            inputPath,
+            outputPath,
+        );
+        result.manifest.assets.push(brdfAsset);
+    }
     emitUpstreamGenerated(outputPath, result.manifest.features, {
         idDiagnostics: options.idDiagnostics,
         pbrDiagnostics: options.pbrDiagnostics,
         shaderVariants: result.manifest.shaderVariants,
         geometryOutputTasks: result.manifest.geometryOutputTasks,
         gpuDeformation: specializationFeatures.gpuDeformation,
+        textureTransform:
+            specializationFeatures.textureTransform,
+        imageBasedLighting:
+            specializationFeatures.imageBasedLighting,
     });
     writeFileSync(resolve(outputPath, "main.cpp"), result.cpp);
     writeFileSync(resolve(outputPath, "features.cmake"), result.cmake);

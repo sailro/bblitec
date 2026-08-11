@@ -168,6 +168,7 @@ void add_to_scene(Scene& scene, AssetHandle asset) {
     const AssetRecord& record = scene.engine->assets[asset.value];
     for (const MeshHandle mesh : record.meshes) add_to_scene(scene, mesh);
     for (const LightHandle light : record.lights) add_to_scene(scene, light);
+    if (record.scene_setup) record.scene_setup(scene);
     if (record.has_camera) scene.camera = record.camera;
     if (record.has_clear_color) scene.clear_color = record.clear_color;
     if (record.animation_tick) {
@@ -188,6 +189,10 @@ void on_before_render(
 
 void register_scene(Scene& scene) {
     require_scene_engine(scene);
+    for (const auto& builder : scene.deferred_builders) {
+        builder();
+    }
+    scene.deferred_builders.clear();
     scene.material_family_mask = scene_material_families(scene);
     const auto found = std::find(
         scene.engine->registered_scenes.begin(),

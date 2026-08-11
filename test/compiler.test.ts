@@ -1652,6 +1652,7 @@ test("compiles animated and skinned glTF scenes", () => {
 
 test("compiles property animation scenes", () => {
     for (const sourcePath of [
+        "corpus/babylon-lite/lab/lite/src/lite/scene150.ts",
         "corpus/babylon-lite/lab/lite/src/lite/scene151.ts",
         "corpus/babylon-lite/lab/lite/src/lite/scene154.ts",
     ]) {
@@ -1677,6 +1678,12 @@ test("compiles property animation scenes", () => {
             result.cpp,
             /start_animation_manager/,
         );
+        if (sourcePath.endsWith("scene150.ts")) {
+            assert.match(
+                result.cpp,
+                /create_property_animation_clip\("xSlide", \{.*\}, 10\.0f\)/,
+            );
+        }
     }
 });
 

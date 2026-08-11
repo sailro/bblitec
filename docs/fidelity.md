@@ -85,12 +85,10 @@ The scene-color source is RGBA16F and remains linear through opaque and
 transmissive draws; exposure, tone mapping, gamma, and contrast run once in a
 final full-screen pass.
 
-Generated ground remains opt-in. Enabling it against the committed scene 13
-golden raises full MAD from `0.010` to `8.354`, confirming that the reference
-does not compose that background pass equivalently.
-Legacy `.env` DDS backgrounds are likewise opt-in with
-`BBLITE_BACKGROUND=1`; pinned Babylon Lite Scene 1 output keeps the clear
-background. Explicit HDR cubemap skyboxes remain enabled by default.
+Generated ground remains opt-in while its source-perfect composition is
+tracked against Scenes 1, 6, 13, and 14. Requested DDS and explicit HDR
+cubemap skyboxes render by default and can be disabled with
+`BBLITE_BACKGROUND=0`.
 
 glTF animation uses pinned LINEAR quaternion interpolation and deterministic
 time seeking, plus CUBICSPLINE quaternion/translation interpolation where
