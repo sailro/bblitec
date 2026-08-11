@@ -43,7 +43,7 @@ baselines belong in [status](docs/status.md) and Git history.
 - [ ] Extend shader IR to composed PBR/Grid/background fragments, then replace
   the remaining renderer-lowerer source-text contracts with parsed shader IR.
 - [x] Lower non-generic typed user functions, defaults, and one final return.
-- [ ] Support lexical scopes and safe variable shadowing.
+- [x] Support lexical block scopes and safe variable shadowing.
 - [ ] Lower `if`, `switch`, `for`, `for...of`, and `while`.
 - [ ] Generalize typed object and array literals.
 - [ ] Add enums, discriminated unions, and narrowing.

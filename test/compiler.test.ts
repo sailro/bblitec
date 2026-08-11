@@ -373,6 +373,61 @@ test("gives repeated user-function calls isolated native locals", () => {
     );
 });
 
+test("supports lexical block shadowing and if/else", () => {
+    const result = compileSource(
+        readFileSync(
+            resolve("examples/control-flow-scene.ts"),
+            "utf8",
+        ),
+        {
+            fileName:
+                "examples/control-flow-scene.ts",
+        },
+    );
+
+    assert.match(
+        result.cpp,
+        /auto v_fn0_exposure = v_fn0_requestedExposure/,
+    );
+    assert.match(
+        result.cpp,
+        /auto v_fn0_block\d+_exposure = 1\.0f/,
+    );
+    assert.match(result.cpp, /\} else \{/);
+    assert.match(
+        result.cpp,
+        /\.contrast = v_fn0_exposure/,
+    );
+});
+
+test("restores outer symbols after explicit blocks", () => {
+    const result = compileSource(`
+        const value = 1;
+        {
+            const value = 2;
+            const inside = value * 3;
+        }
+        const outside = value * 4;
+    `);
+
+    assert.match(
+        result.cpp,
+        /auto v_value = 1\.0f/,
+    );
+    assert.match(
+        result.cpp,
+        /auto v_block\d+_value = 2\.0f/,
+    );
+    assert.match(
+        result.cpp,
+        /auto v_outside = \(1\.0f \* 4\.0f\)/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /v_outside = \(v_block\d+_value/,
+    );
+});
+
 test("reports unsupported syntax in imported functions", () => {
     assert.throws(
         () =>

@@ -1931,6 +1931,10 @@ class Compiler
         return `fn${this.temporaryIndex++}_`;
     }
 
+    public allocateBlockPrefix(): string {
+        return `${this.cppNamePrefixes.at(-1) ?? ""}block${this.temporaryIndex++}_`;
+    }
+
     private compileStaticString(expression: ts.Expression): string {
         return this.compileStringLiteral(expression);
     }

@@ -44,6 +44,9 @@ export interface StatementLoweringContext {
     emit(line: string): void;
     increaseIndent(): void;
     decreaseIndent(): void;
+    pushScope(cppPrefix: string): void;
+    popScope(): void;
+    allocateBlockPrefix(): string;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -70,6 +73,10 @@ export class StatementLowerer {
             this.emitIf(context, statement);
             return;
         }
+        if (ts.isBlock(statement)) {
+            this.emitBlock(context, statement);
+            return;
+        }
         if (
             ts.isReturnStatement(statement) &&
             !statement.expression
@@ -89,26 +96,51 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.IfStatement,
     ): void {
-        if (statement.elseStatement) {
-            context.fail(
-                statement.elseStatement,
-                "Reached callbacks do not support else branches.",
-            );
-        }
         context.emit(
             `if (${context.compileCondition(statement.expression)}) {`,
         );
-        context.increaseIndent();
-        const statements = ts.isBlock(
+        this.emitScopedBody(
+            context,
             statement.thenStatement,
-        )
-            ? statement.thenStatement.statements
-            : [statement.thenStatement];
-        for (const nested of statements) {
-            this.emit(context, nested);
+        );
+        if (statement.elseStatement) {
+            context.emit("} else {");
+            this.emitScopedBody(
+                context,
+                statement.elseStatement,
+            );
         }
-        context.decreaseIndent();
         context.emit("}");
+    }
+
+    private emitBlock(
+        context: StatementLoweringContext,
+        statement: ts.Block,
+    ): void {
+        context.emit("{");
+        this.emitScopedBody(context, statement);
+        context.emit("}");
+    }
+
+    private emitScopedBody(
+        context: StatementLoweringContext,
+        statement: ts.Statement,
+    ): void {
+        context.increaseIndent();
+        context.pushScope(
+            context.allocateBlockPrefix(),
+        );
+        try {
+            const statements = ts.isBlock(statement)
+                ? statement.statements
+                : [statement];
+            for (const nested of statements) {
+                this.emit(context, nested);
+            }
+        } finally {
+            context.popScope();
+            context.decreaseIndent();
+        }
     }
 
     private emitExpression(

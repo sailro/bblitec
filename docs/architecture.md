@@ -88,6 +88,8 @@ Named local imports and re-exports resolve through the same `ts.Program`.
 Reached non-generic function declarations are type-checked at call sites and
 lowered with isolated symbol scopes, default parameters, and one final return.
 Recursive, generator, rest-parameter, and generic functions fail explicitly.
+Explicit blocks and `if`/`else` branches own nested symbol scopes and unique
+native names, so legal TypeScript shadowing does not leak or collide.
 
 Upstream semantic contracts use parsed declarations and expressions from the
 pinned reconstructed source. Entry behavior must not depend on scene names or
