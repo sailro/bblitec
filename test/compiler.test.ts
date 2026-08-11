@@ -473,6 +473,49 @@ test("rejects unsupported loop control explicitly", () => {
     );
 });
 
+test("unrolls for-of over static arrays", () => {
+    const result = compileSource(
+        readFileSync(
+            resolve("examples/control-flow-scene.ts"),
+            "utf8",
+        ),
+        {
+            fileName:
+                "examples/control-flow-scene.ts",
+        },
+    );
+
+    assert.equal(
+        result.cpp.match(
+            /samples \+= v_fn0_block\d+_bonus/g,
+        )?.length,
+        3,
+    );
+    assert.match(
+        result.cpp,
+        /auto v_fn0_block\d+_bonus = 1\.0f/,
+    );
+    assert.match(
+        result.cpp,
+        /auto v_fn0_block\d+_bonus = 3\.0f/,
+    );
+});
+
+test("rejects runtime for-of iterables", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                function values(): number[] {
+                    return [1, 2, 3];
+                }
+                for (const value of values()) {
+                    const doubled = value * 2;
+                }
+            `),
+        /Expected a static array literal/,
+    );
+});
+
 test("reports unsupported syntax in imported functions", () => {
     assert.throws(
         () =>

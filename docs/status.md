@@ -7,7 +7,7 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 
 | Area | Current support |
 | --- | --- |
-| TypeScript modules/functions | named local imports and re-exports, module constants, typed non-generic function parameters/defaults, one final return, lexical block scopes/shadowing, if/else, numeric for/while loops, recursion rejection |
+| TypeScript modules/functions | named local imports and re-exports, module constants, typed non-generic function parameters/defaults, one final return, lexical scopes, if/else, numeric for/while, static-array for-of unrolling, recursion rejection |
 | Engine/scene | creation, registration, fixed delta, reached before-render callbacks, runtime material-family append |
 | Cameras | ArcRotate, FreeCamera, default framing, native controls |
 | Lights | directional, hemispheric, and point with reached diffuse/specular colors; two reached Standard lights |

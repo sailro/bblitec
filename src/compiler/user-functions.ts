@@ -20,9 +20,7 @@ export interface UserFunctionIr {
 export interface UserFunctionContext {
     compileValue(expression: ts.Expression): Value;
     emitStatement(statement: ts.Statement): void;
-    emit(line: string): void;
-    cppIdentifier(sourceName: string): string;
-    defineVariable(
+    bindLocalValue(
         identifier: ts.Identifier,
         value: Value,
     ): void;
@@ -90,8 +88,7 @@ export class UserFunctionLowerer {
                               parameter.declaration,
                               `Optional parameter '${parameter.name.text}' requires a default value in reached user functions.`,
                           ));
-                this.bindParameter(
-                    context,
+                context.bindLocalValue(
                     parameter.name,
                     value,
                 );
@@ -253,40 +250,4 @@ export class UserFunctionLowerer {
         });
     }
 
-    private bindParameter(
-        context: UserFunctionContext,
-        identifier: ts.Identifier,
-        value: Value,
-    ): void {
-        if (value.kind === "void") {
-            context.fail(
-                identifier,
-                `Parameter '${identifier.text}' cannot receive void.`,
-            );
-        }
-        if (value.kind === "browser") {
-            context.defineVariable(identifier, value);
-            return;
-        }
-        const cppName = context.cppIdentifier(
-            identifier.text,
-        );
-        const reference =
-            value.kind === "engine" ||
-            value.kind === "scene";
-        context.emit(
-            `${reference ? "auto&" : "auto"} ${cppName} = ${value.cpp};`,
-        );
-        const stored: Value = {
-            ...value,
-            cpp: cppName,
-        };
-        if (value.kind === "animation-clip") {
-            stored.animationFrameRate =
-                `${cppName}.frame_rate`;
-            stored.animationDuration =
-                `${cppName}.duration`;
-        }
-        context.defineVariable(identifier, stored);
-    }
 }

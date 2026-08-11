@@ -12,6 +12,13 @@ export interface StatementLoweringContext {
     compileValue(expression: ts.Expression): Value;
     compileCondition(expression: ts.Expression): string;
     compileNumber(expression: ts.Expression): string;
+    expectStaticArrayLiteral(
+        expression: ts.Expression,
+    ): ts.ArrayLiteralExpression;
+    bindLocalValue(
+        identifier: ts.Identifier,
+        value: Value,
+    ): void;
     lookup(identifier: ts.Identifier): Value;
     expectKind(
         value: Value,
@@ -83,6 +90,10 @@ export class StatementLowerer {
         }
         if (ts.isWhileStatement(statement)) {
             this.emitWhile(context, statement);
+            return;
+        }
+        if (ts.isForOfStatement(statement)) {
+            this.emitForOf(context, statement);
             return;
         }
         if (
@@ -217,6 +228,68 @@ export class StatementLowerer {
             statement.statement,
         );
         context.emit("}");
+    }
+
+    private emitForOf(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+    ): void {
+        if (statement.awaitModifier) {
+            context.fail(
+                statement.awaitModifier,
+                "for await...of is not supported.",
+            );
+        }
+        if (
+            !ts.isVariableDeclarationList(
+                statement.initializer,
+            ) ||
+            statement.initializer.declarations.length !== 1
+        ) {
+            context.fail(
+                statement.initializer,
+                "for...of requires one variable declaration.",
+            );
+        }
+        const declaration =
+            statement.initializer.declarations[0]!;
+        if (
+            !ts.isIdentifier(declaration.name) ||
+            declaration.initializer
+        ) {
+            context.fail(
+                declaration,
+                "for...of requires an identifier without an initializer.",
+            );
+        }
+        const values = context.expectStaticArrayLiteral(
+            statement.expression,
+        );
+        for (const element of values.elements) {
+            context.emit("{");
+            context.increaseIndent();
+            context.pushScope(
+                context.allocateBlockPrefix(),
+            );
+            try {
+                context.bindLocalValue(
+                    declaration.name,
+                    context.compileValue(element),
+                );
+                const statements = ts.isBlock(
+                    statement.statement,
+                )
+                    ? statement.statement.statements
+                    : [statement.statement];
+                for (const nested of statements) {
+                    this.emit(context, nested);
+                }
+            } finally {
+                context.popScope();
+                context.decreaseIndent();
+            }
+            context.emit("}");
+        }
     }
 
     private emitScopedBody(

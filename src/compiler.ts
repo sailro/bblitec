@@ -1601,7 +1601,7 @@ class Compiler
         );
     }
 
-    private expectStaticArrayLiteral(
+    public expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression {
         return this.evaluator.expectStaticArrayLiteral(
@@ -2256,6 +2256,42 @@ class Compiler
             name: identifier.text,
             value,
         });
+    }
+
+    public bindLocalValue(
+        identifier: ts.Identifier,
+        value: Value,
+    ): void {
+        if (value.kind === "void") {
+            this.fail(
+                identifier,
+                `Variable '${identifier.text}' cannot receive void.`,
+            );
+        }
+        if (value.kind === "browser") {
+            this.defineVariable(identifier, value);
+            return;
+        }
+        const cppName = this.cppIdentifier(
+            identifier.text,
+        );
+        const reference =
+            value.kind === "engine" ||
+            value.kind === "scene";
+        this.emit(
+            `${reference ? "auto&" : "auto"} ${cppName} = ${value.cpp};`,
+        );
+        const stored: Value = {
+            ...value,
+            cpp: cppName,
+        };
+        if (value.kind === "animation-clip") {
+            stored.animationFrameRate =
+                `${cppName}.frame_rate`;
+            stored.animationDuration =
+                `${cppName}.duration`;
+        }
+        this.defineVariable(identifier, stored);
     }
 
     private visibleValues(): Value[] {

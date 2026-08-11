@@ -45,7 +45,8 @@ baselines belong in [status](docs/status.md) and Git history.
 - [x] Lower non-generic typed user functions, defaults, and one final return.
 - [x] Support lexical block scopes and safe variable shadowing.
 - [x] Lower block-scoped `if`/`else`, numeric `for`, and `while`.
-- [ ] Lower `switch`, `for...of`, `break`, and `continue`.
+- [x] Unroll `for...of` over statically resolved array literals.
+- [ ] Lower runtime iterables, `switch`, `break`, and `continue`.
 - [ ] Generalize typed object and array literals.
 - [ ] Add enums, discriminated unions, and narrowing.
 

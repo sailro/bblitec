@@ -10,6 +10,8 @@ import {
     type SceneContext,
 } from "@babylonjs/lite";
 
+const SAMPLE_BONUSES = [1, 2, 3];
+
 function configureImageProcessing(
     scene: SceneContext,
     requestedExposure: number,
@@ -30,6 +32,9 @@ function configureImageProcessing(
     while (remaining > 0) {
         samples += remaining;
         remaining--;
+    }
+    for (const bonus of SAMPLE_BONUSES) {
+        samples += bonus;
     }
     scene.fixedDeltaMs = samples;
     scene.imageProcessing.contrast = exposure;
