@@ -225,8 +225,12 @@ Asset specialization enables the deformation vertex variant only when a
 materialized glTF contains animation. Static scenes retain the compact
 96-byte/8-attribute vertex layout and one vertex uniform block. Reached
 animated scenes use the 200-byte/16-attribute layout and a second vertex
-uniform block containing up to 64 matrices and two morph targets. Larger
-reached inputs keep the general CPU deformation path rather than truncating.
+uniform block containing up to 64 matrices and two morph targets. Assets
+with more than two morph targets additionally enable Babylon Lite's
+uncapped storage-buffer morph path: a flat 6-float delta buffer and a
+16-byte-header weights buffer bound as vertex storage, evaluated with the
+pinned accumulation loop before skinning. Skins beyond 64 joints keep the
+general CPU deformation path rather than truncating.
 
 Generated `render_capabilities.hpp`, shader reflection, and native layout
 declarations must stay synchronized. The D3D12 pipeline failure encountered

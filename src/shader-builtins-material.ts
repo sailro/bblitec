@@ -1,7 +1,27 @@
 export function materialVertexWgsl(
     gpuDeformation = false,
     gpuInstancing = false,
+    morphStorage = false,
 ): string {
+    // Storage-buffer morphing mirrors Babylon Lite's uncapped
+    // morph-fragment-core contract: a flat 6-float deltas buffer and a
+    // weights buffer with a 16-byte {count, vertexCount} header.
+    const morphStorageBindings = gpuDeformation && morphStorage
+        ? `
+struct MorphUniforms {
+    count: u32,
+    vertexCount: u32,
+    _p0: u32,
+    _p1: u32,
+    weights: array<f32>,
+}
+struct MorphDeltasUniforms {
+    d: array<f32>,
+}
+@group(0) @binding(0) var<storage, read> morphDeltas: MorphDeltasUniforms;
+@group(0) @binding(1) var<storage, read> morph: MorphUniforms;
+`
+        : "";
     const deformationUniforms = gpuDeformation
         ? `
 struct DeformationUniforms {
@@ -10,10 +30,15 @@ struct DeformationUniforms {
     options: vec4<f32>,
 }
 @group(1) @binding(1) var<uniform> deformation: DeformationUniforms;
-`
+${morphStorageBindings}`
         : "";
     const deformationInputs = gpuDeformation
-        ? `    @location(8) joints: vec4<f32>,
+        ? morphStorage
+            ? `    @location(8) joints: vec4<f32>,
+    @location(9) weights: vec4<f32>,
+    @builtin(vertex_index) vertexIndex: u32,
+`
+            : `    @location(8) joints: vec4<f32>,
     @location(9) weights: vec4<f32>,
     @location(10) morphPosition0: vec3<f32>,
     @location(11) morphPosition1: vec3<f32>,
@@ -23,9 +48,19 @@ struct DeformationUniforms {
     @location(15) morphTangent1: vec3<f32>,
 `
         : "";
-    const deformationBody = gpuDeformation
-        ? `    if (deformation.options.x > 0.5) {
-        worldPosition +=
+    const morphAccumulation = morphStorage
+        ? `        var morphedPos = worldPosition;
+        var morphedNorm = worldNormal;
+        for (var i = 0u; i < morph.count; i = i + 1u) {
+            let w = morph.weights[i];
+            let b = (i * morph.vertexCount + input.vertexIndex) * 6u;
+            morphedPos = morphedPos + w * vec3<f32>(morphDeltas.d[b], morphDeltas.d[b + 1u], morphDeltas.d[b + 2u]);
+            morphedNorm = morphedNorm + w * vec3<f32>(morphDeltas.d[b + 3u], morphDeltas.d[b + 4u], morphDeltas.d[b + 5u]);
+        }
+        worldPosition = morphedPos;
+        worldNormal = morphedNorm;
+`
+        : `        worldPosition +=
             input.morphPosition0 * deformation.morphWeights.x +
             input.morphPosition1 * deformation.morphWeights.y;
         worldNormal +=
@@ -34,7 +69,10 @@ struct DeformationUniforms {
         worldTangent +=
             input.morphTangent0 * deformation.morphWeights.x +
             input.morphTangent1 * deformation.morphWeights.y;
-        let skin =
+`;
+    const deformationBody = gpuDeformation
+        ? `    if (deformation.options.x > 0.5) {
+${morphAccumulation}        let skin =
             deformation.boneMatrices[u32(input.joints.x)] * input.weights.x +
             deformation.boneMatrices[u32(input.joints.y)] * input.weights.y +
             deformation.boneMatrices[u32(input.joints.z)] * input.weights.z +

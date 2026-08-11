@@ -13,6 +13,7 @@ interface GltfSpecialization {
     features: {
         animations: boolean;
         morphTargets: boolean;
+        maxMorphTargets: number;
         skins: boolean;
         sparseAccessors: boolean;
         nonTrianglePrimitives: boolean;
@@ -179,6 +180,13 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
     const accessors = asRecords(document.accessors);
     const animations = asRecords(document.animations).length > 0;
     const morphTargets = primitives.some((primitive) => Array.isArray(primitive.targets) && primitive.targets.length > 0);
+    const maxMorphTargets = primitives.reduce(
+        (count, primitive) =>
+            Array.isArray(primitive.targets)
+                ? Math.max(count, primitive.targets.length)
+                : count,
+        0,
+    );
     const skins = asRecords(document.skins).length > 0;
     const sparseAccessors = accessors.some((accessor) => accessor.sparse !== undefined);
     const nonTrianglePrimitives = primitives.some(
@@ -201,6 +209,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
         features: {
             animations,
             morphTargets,
+            maxMorphTargets,
             skins,
             sparseAccessors,
             nonTrianglePrimitives,
@@ -211,6 +220,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
 
 export interface AssetSpecializationFeatures {
     gpuDeformation: boolean;
+    morphStorage: boolean;
     imageBasedLighting: boolean;
     textureTransform: boolean;
     gpuInstancing: boolean;
@@ -229,6 +239,7 @@ export function emitAssetSpecializations(
     if (gltfAssets.length === 0) {
         return {
             gpuDeformation: false,
+            morphStorage: false,
             imageBasedLighting: false,
             textureTransform: false,
             gpuInstancing: false,
@@ -267,6 +278,12 @@ export function emitAssetSpecializations(
     return {
         gpuDeformation: specializations.some(
             (specialization) => specialization.features.animations,
+        ),
+        // Meshes above the two-slot vertex-attribute morph slice use
+        // Babylon Lite's uncapped storage-buffer morph path.
+        morphStorage: specializations.some(
+            (specialization) =>
+                specialization.features.maxMorphTargets > 2,
         ),
         imageBasedLighting: usesExtension("EXT_lights_image_based"),
         textureTransform: usesExtension("KHR_texture_transform"),

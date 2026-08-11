@@ -209,6 +209,7 @@ async function main(): Promise<void> {
         shaderVariants: result.manifest.shaderVariants,
         geometryOutputTasks: result.manifest.geometryOutputTasks,
         gpuDeformation: specializationFeatures.gpuDeformation,
+        morphStorage: specializationFeatures.morphStorage,
         textureTransform:
             specializationFeatures.textureTransform,
         imageBasedLighting:
