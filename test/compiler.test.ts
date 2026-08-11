@@ -428,6 +428,51 @@ test("restores outer symbols after explicit blocks", () => {
     );
 });
 
+test("lowers numeric for and while loops", () => {
+    const result = compileSource(
+        readFileSync(
+            resolve("examples/control-flow-scene.ts"),
+            "utf8",
+        ),
+        {
+            fileName:
+                "examples/control-flow-scene.ts",
+        },
+    );
+
+    assert.match(
+        result.cpp,
+        /while \(\(v_fn0_block\d+_index < 3\.0f\)\)/,
+    );
+    assert.match(
+        result.cpp,
+        /v_fn0_samples \+= v_fn0_block\d+_index/,
+    );
+    assert.match(
+        result.cpp,
+        /v_fn0_block\d+_index\+\+/,
+    );
+    assert.match(
+        result.cpp,
+        /while \(\(v_fn0_remaining > 0\.0f\)\)/,
+    );
+    assert.match(result.cpp, /v_fn0_remaining--/);
+});
+
+test("rejects unsupported loop control explicitly", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                let value = 0;
+                while (value < 2) {
+                    value++;
+                    continue;
+                }
+            `),
+        /ContinueStatement is not supported in reached loops/,
+    );
+});
+
 test("reports unsupported syntax in imported functions", () => {
     assert.throws(
         () =>
@@ -450,7 +495,7 @@ test("reports unsupported syntax in imported functions", () => {
                         "test/compiler-multi-file-entry.ts",
                 },
             ),
-        /test[\\/]fixtures[\\/]compiler-modules[\\/]bad-helper\.ts:\d+:\d+: Unsupported statement: ForStatement/,
+        /test[\\/]fixtures[\\/]compiler-modules[\\/]bad-helper\.ts:\d+:\d+: Unsupported statement: SwitchStatement/,
     );
 });
 

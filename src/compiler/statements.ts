@@ -77,6 +77,23 @@ export class StatementLowerer {
             this.emitBlock(context, statement);
             return;
         }
+        if (ts.isForStatement(statement)) {
+            this.emitFor(context, statement);
+            return;
+        }
+        if (ts.isWhileStatement(statement)) {
+            this.emitWhile(context, statement);
+            return;
+        }
+        if (
+            ts.isBreakStatement(statement) ||
+            ts.isContinueStatement(statement)
+        ) {
+            context.fail(
+                statement,
+                `${ts.SyntaxKind[statement.kind]} is not supported in reached loops.`,
+            );
+        }
         if (
             ts.isReturnStatement(statement) &&
             !statement.expression
@@ -122,6 +139,86 @@ export class StatementLowerer {
         context.emit("}");
     }
 
+    private emitFor(
+        context: StatementLoweringContext,
+        statement: ts.ForStatement,
+    ): void {
+        context.emit("{");
+        context.increaseIndent();
+        context.pushScope(
+            context.allocateBlockPrefix(),
+        );
+        try {
+            if (statement.initializer) {
+                if (
+                    ts.isVariableDeclarationList(
+                        statement.initializer,
+                    )
+                ) {
+                    for (const declaration of statement
+                        .initializer.declarations) {
+                        context.emitVariableDeclaration(
+                            declaration,
+                        );
+                    }
+                } else {
+                    this.emitExpression(
+                        context,
+                        statement.initializer,
+                    );
+                }
+            }
+            const condition = statement.condition
+                ? context.compileCondition(
+                      statement.condition,
+                  )
+                : "true";
+            context.emit(`while (${condition}) {`);
+            context.increaseIndent();
+            context.pushScope(
+                context.allocateBlockPrefix(),
+            );
+            try {
+                const statements = ts.isBlock(
+                    statement.statement,
+                )
+                    ? statement.statement.statements
+                    : [statement.statement];
+                for (const nested of statements) {
+                    this.emit(context, nested);
+                }
+            } finally {
+                context.popScope();
+            }
+            if (statement.incrementor) {
+                this.emitExpression(
+                    context,
+                    statement.incrementor,
+                );
+            }
+            context.decreaseIndent();
+            context.emit("}");
+        } finally {
+            context.popScope();
+            context.decreaseIndent();
+        }
+        context.emit("}");
+    }
+
+    private emitWhile(
+        context: StatementLoweringContext,
+        statement: ts.WhileStatement,
+    ): void {
+        context.emit(
+            `while (${context.compileCondition(statement.expression)}) {`,
+        );
+        this.emitScopedBody(
+            context,
+            statement.statement,
+        );
+        context.emit("}");
+    }
+
     private emitScopedBody(
         context: StatementLoweringContext,
         statement: ts.Statement,
@@ -156,13 +253,37 @@ export class StatementLowerer {
                 ts.SyntaxKind.MinusEqualsToken,
             ].includes(unwrapped.operatorToken.kind)
         ) {
-            context.emitAssignment(unwrapped);
+            if (ts.isIdentifier(unwrapped.left)) {
+                const target = context.lookup(
+                    unwrapped.left,
+                );
+                context.expectKind(
+                    target,
+                    "number",
+                    unwrapped.left,
+                );
+                const operator = new Map<
+                    ts.SyntaxKind,
+                    string
+                >([
+                    [ts.SyntaxKind.EqualsToken, "="],
+                    [ts.SyntaxKind.PlusEqualsToken, "+="],
+                    [ts.SyntaxKind.MinusEqualsToken, "-="],
+                ]).get(unwrapped.operatorToken.kind)!;
+                context.emit(
+                    `${target.cpp} ${operator} ${context.compileNumber(unwrapped.right)};`,
+                );
+            } else {
+                context.emitAssignment(unwrapped);
+            }
             return;
         }
         if (
             ts.isPostfixUnaryExpression(unwrapped) &&
-            unwrapped.operator ===
-                ts.SyntaxKind.PlusPlusToken &&
+            [
+                ts.SyntaxKind.PlusPlusToken,
+                ts.SyntaxKind.MinusMinusToken,
+            ].includes(unwrapped.operator) &&
             ts.isIdentifier(unwrapped.operand)
         ) {
             const target = context.lookup(unwrapped.operand);
@@ -171,7 +292,9 @@ export class StatementLowerer {
                 "number",
                 unwrapped.operand,
             );
-            context.emit(`${target.cpp}++;`);
+            context.emit(
+                `${target.cpp}${unwrapped.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"};`,
+            );
             return;
         }
         if (

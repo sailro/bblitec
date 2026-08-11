@@ -44,7 +44,8 @@ baselines belong in [status](docs/status.md) and Git history.
   the remaining renderer-lowerer source-text contracts with parsed shader IR.
 - [x] Lower non-generic typed user functions, defaults, and one final return.
 - [x] Support lexical block scopes and safe variable shadowing.
-- [ ] Lower `if`, `switch`, `for`, `for...of`, and `while`.
+- [x] Lower block-scoped `if`/`else`, numeric `for`, and `while`.
+- [ ] Lower `switch`, `for...of`, `break`, and `continue`.
 - [ ] Generalize typed object and array literals.
 - [ ] Add enums, discriminated unions, and narrowing.
 

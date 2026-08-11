@@ -22,6 +22,16 @@ function configureImageProcessing(
         const exposure = requestedExposure;
         scene.imageProcessing.exposure = exposure;
     }
+    let samples = 0;
+    for (let index = 0; index < 3; index++) {
+        samples += index;
+    }
+    let remaining = 2;
+    while (remaining > 0) {
+        samples += remaining;
+        remaining--;
+    }
+    scene.fixedDeltaMs = samples;
     scene.imageProcessing.contrast = exposure;
 }
 
