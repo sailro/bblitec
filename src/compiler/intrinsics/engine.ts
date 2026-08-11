@@ -85,7 +85,8 @@ export function compileEngineIntrinsic(
             return {
                 kind: "scene",
                 cpp: `bbl::create_scene_context(${engine.cpp})`,
-                engineCpp: engine.cpp,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
             };
         }
 
@@ -124,7 +125,8 @@ export function compileEngineIntrinsic(
                 cpp:
                     `bbl::create_render_target_texture(` +
                     `${engine.cpp}, ${options})`,
-                engineCpp: engine.cpp,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
             };
         }
 
@@ -155,7 +157,8 @@ export function compileEngineIntrinsic(
                 cpp:
                     `bbl::create_render_task(${engine.cpp}, ` +
                     `${scene.cpp}, ${options})`,
-                engineCpp: engine.cpp,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
             };
         }
 
@@ -190,7 +193,8 @@ export function compileEngineIntrinsic(
                     `bbl::create_geometry_renderer_task(` +
                     `${engine.cpp}, ${scene.cpp}, ` +
                     `${compiled.cpp})`,
-                engineCpp: engine.cpp,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
                 geometryTask: compiled.manifest,
             };
         }
@@ -222,7 +226,8 @@ export function compileEngineIntrinsic(
                 cpp:
                     `bbl::create_copy_to_texture_task(` +
                     `${engine.cpp}, ${scene.cpp}, ${options})`,
-                engineCpp: engine.cpp,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
             };
         }
 

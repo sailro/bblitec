@@ -10,6 +10,26 @@ export class CompilerSymbols {
         private readonly checker: ts.TypeChecker,
     ) {}
 
+    public valueSymbol(
+        identifier: ts.Identifier,
+    ): ts.Symbol | undefined {
+        const symbol =
+            ts.isShorthandPropertyAssignment(
+                identifier.parent,
+            ) &&
+            identifier.parent.name === identifier
+                ? this.checker.getShorthandAssignmentValueSymbol(
+                      identifier.parent,
+                  )
+                : this.checker.getSymbolAtLocation(identifier);
+        if (!symbol) {
+            return undefined;
+        }
+        return (symbol.flags & ts.SymbolFlags.Alias) !== 0
+            ? this.checker.getAliasedSymbol(symbol)
+            : symbol;
+    }
+
     public importedName(
         identifier: ts.Identifier,
     ): string | undefined {

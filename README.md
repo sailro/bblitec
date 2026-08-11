@@ -20,6 +20,7 @@ Unsupported syntax and APIs fail at compile time with source locations.
 - 27 curated Babylon Lite parity scenes plus BoomBox, primitives, and
   project-owned differential regression gates.
 - External glTF/GLB and a reached `.babylon` slice.
+- Named local TypeScript modules plus typed non-recursive helper functions.
 - Generated Standard/PBR/Grid rendering, ordered draw lists, custom alpha
   variants, frame-graph MRT/depth passes, negative transforms, runtime scene
   mutation, property animation, and tree-shaken GPU deformation.

@@ -4,14 +4,17 @@ import type { Value } from "./types.js";
 type Fail = (node: ts.Node, message: string) => never;
 type Lookup = (identifier: ts.Identifier) => Value;
 type OnAwait = (expression: ts.AwaitExpression) => void;
+type ResolveSymbol = (
+    identifier: ts.Identifier,
+) => ts.Symbol | undefined;
 
 export class StaticEvaluator {
     public constructor(
-        private readonly sourceFile: ts.SourceFile,
         private readonly staticConstants: ReadonlyMap<
-            string,
+            ts.Symbol,
             ts.Expression
         >,
+        private readonly resolveSymbol: ResolveSymbol,
         private readonly lookup: Lookup,
         private readonly fail: Fail,
         private readonly onAwait: OnAwait,
@@ -226,9 +229,7 @@ export class StaticEvaluator {
         }
         this.fail(
             unwrapped,
-            `Expected a compileable number, received '${unwrapped.getText(
-                this.sourceFile,
-            )}'.`,
+            `Expected a compileable number, received '${unwrapped.getText()}'.`,
         );
     }
 
@@ -287,18 +288,22 @@ export class StaticEvaluator {
 
     public resolveStaticExpression(
         expression: ts.Expression,
-        resolving: ReadonlySet<string> = new Set(),
+        resolving: ReadonlySet<ts.Symbol> = new Set(),
     ): ts.Expression {
         const unwrapped = this.unwrap(expression);
         if (!ts.isIdentifier(unwrapped)) {
             return unwrapped;
         }
+        const symbol = this.resolveSymbol(unwrapped);
+        if (!symbol) {
+            return unwrapped;
+        }
         const initializer =
-            this.staticConstants.get(unwrapped.text);
+            this.staticConstants.get(symbol);
         if (!initializer) {
             return unwrapped;
         }
-        if (resolving.has(unwrapped.text)) {
+        if (resolving.has(symbol)) {
             this.fail(
                 unwrapped,
                 `Circular static constant '${unwrapped.text}'.`,
@@ -306,7 +311,7 @@ export class StaticEvaluator {
         }
         return this.resolveStaticExpression(
             initializer,
-            new Set([...resolving, unwrapped.text]),
+            new Set([...resolving, symbol]),
         );
     }
 

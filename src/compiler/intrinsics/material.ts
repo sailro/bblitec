@@ -104,7 +104,8 @@ export function compileMaterialIntrinsic(
                 cpp:
                     `bbl::create_solid_texture(` +
                     `${engine.cpp}, ${channels.join(", ")})`,
-                engineCpp: engine.cpp,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
             };
         }
 

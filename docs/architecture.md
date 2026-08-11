@@ -46,6 +46,8 @@ Primary source ownership:
 | `src/compiler/program.ts` | in-memory TypeScript `Program`/`TypeChecker` frontend |
 | `src/compiler/symbols.ts` | resolved Babylon import symbols and aliases |
 | `src/compiler/static-evaluator.ts` | typed static scalar/vector/color expression evaluation |
+| `src/compiler/user-functions.ts` | reachable typed local-function IR, calls, parameters, and returns |
+| `src/compiler/statements.ts` | statement dispatch, conditions, expression statements, and method calls |
 | `src/compiler/assignments.ts` | typed property-assignment validation and lowering |
 | `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, and material intrinsic lowerers |
 | `src/compiler/types.ts` | compiler public result types and internal typed values/features |
@@ -69,6 +71,7 @@ and native emission:
 
 ```text
 ts.Program + TypeChecker
+    -> reachable local module/function IR
     -> entry AST and static expression evaluation
     -> resolved Babylon intrinsic registry
     -> typed property-assignment contracts
@@ -80,6 +83,11 @@ Intrinsic identity comes from resolved TypeScript import symbols, not local
 identifier spelling. Static values, assignments, and intrinsic families are
 lowered by focused modules while `compiler.ts` owns compilation state and
 output orchestration.
+
+Named local imports and re-exports resolve through the same `ts.Program`.
+Reached non-generic function declarations are type-checked at call sites and
+lowered with isolated symbol scopes, default parameters, and one final return.
+Recursive, generator, rest-parameter, and generic functions fail explicitly.
 
 Upstream semantic contracts use parsed declarations and expressions from the
 pinned reconstructed source. Entry behavior must not depend on scene names or

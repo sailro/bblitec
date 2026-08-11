@@ -33,7 +33,8 @@ baselines belong in [status](docs/status.md) and Git history.
 
 ### Modules and functions
 
-- [ ] Resolve local multi-file imports and exports.
+- [x] Resolve named local multi-file imports and re-exports.
+- [ ] Add namespace/default imports and non-static module initialization.
 - [ ] Build a typed user-code IR from `ts.Program`/`TypeChecker` symbols.
 - [ ] Move statement, expression, intrinsic, and property lowering into
   focused compiler modules instead of extending the entry compiler monolith.
@@ -41,7 +42,7 @@ baselines belong in [status](docs/status.md) and Git history.
   instead of limiting native emission to predeclared variant names.
 - [ ] Extend shader IR to composed PBR/Grid/background fragments, then replace
   the remaining renderer-lowerer source-text contracts with parsed shader IR.
-- [ ] Lower typed user functions and return values.
+- [x] Lower non-generic typed user functions, defaults, and one final return.
 - [ ] Support lexical scopes and safe variable shadowing.
 - [ ] Lower `if`, `switch`, `for`, `for...of`, and `while`.
 - [ ] Generalize typed object and array literals.

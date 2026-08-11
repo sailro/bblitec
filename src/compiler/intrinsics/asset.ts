@@ -80,7 +80,8 @@ export function compileAssetIntrinsic(
                     `bbl::load_gltf(${engine.cpp}, ` +
                     `bbl::asset_path(` +
                     `${context.cppString(asset.output)}))`,
-                engineCpp: engine.cpp,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
             };
         }
 
@@ -116,7 +117,8 @@ export function compileAssetIntrinsic(
                     `bbl::load_babylon(${engine.cpp}, ` +
                     `bbl::asset_path(` +
                     `${context.cppString(asset.output)}))`,
-                engineCpp: engine.cpp,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
             };
         }
 

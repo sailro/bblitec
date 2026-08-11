@@ -279,6 +279,139 @@ test("resolves pinned Babylon types independently of cwd", () => {
     }
 });
 
+test("lowers imported typed user functions and constants", () => {
+    const result = compileSource(
+        `
+            import {
+                createEngine,
+                startEngine,
+            } from "@babylonjs/lite";
+            import {
+                buildScene,
+                configureScene as tuneScene,
+            } from "./fixtures/compiler-modules/index.js";
+
+            async function main() {
+                const engine = await createEngine({});
+                const scene = buildScene(engine);
+                tuneScene(scene);
+                startEngine(engine);
+            }
+        `,
+        {
+            fileName:
+                "test/compiler-multi-file-entry.ts",
+        },
+    );
+
+    assert.match(
+        result.cpp,
+        /auto& v_fn0_engine = v_engine/,
+    );
+    assert.match(
+        result.cpp,
+        /auto v_fn0_scene = bbl::create_scene_context\(v_fn0_engine\)/,
+    );
+    assert.match(
+        result.cpp,
+        /create_directional_light\(v_engine, bbl::Vec3\{0\.0f, \(-1\.0f\), 0\.0f\}, 0\.75f\)/,
+    );
+    assert.match(
+        result.cpp,
+        /v_fn1_scene\.environment\.exposure = v_fn1_exposure/,
+    );
+    assert.ok(
+        result.manifest.features.includes(
+            "light:directional",
+        ),
+    );
+});
+
+test("uses TypeChecker types for local function arguments", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                `
+                    import {
+                        createEngine,
+                    } from "@babylonjs/lite";
+                    import {
+                        configureScene,
+                    } from "./fixtures/compiler-modules/index.js";
+
+                    async function main() {
+                        const engine = await createEngine({});
+                        configureScene(engine);
+                    }
+                `,
+                {
+                    fileName:
+                        "test/compiler-multi-file-entry.ts",
+                },
+            ),
+        /Argument 1 of 'configureScene' is EngineContext, not SceneContext/,
+    );
+});
+
+test("gives repeated user-function calls isolated native locals", () => {
+    const result = compileSource(`
+        function doubled(value: number): number {
+            const result = value * 2;
+            return result;
+        }
+        const first = doubled(2);
+        const second = doubled(3);
+    `);
+
+    assert.match(
+        result.cpp,
+        /auto v_fn0_result = \(v_fn0_value \* 2\.0f\)/,
+    );
+    assert.match(
+        result.cpp,
+        /auto v_fn1_result = \(v_fn1_value \* 2\.0f\)/,
+    );
+});
+
+test("reports unsupported syntax in imported functions", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                `
+                    import {
+                        createEngine,
+                    } from "@babylonjs/lite";
+                    import {
+                        unsupportedLoop,
+                    } from "./fixtures/compiler-modules/bad-helper.js";
+
+                    async function main() {
+                        const engine = await createEngine({});
+                        unsupportedLoop(engine);
+                    }
+                `,
+                {
+                    fileName:
+                        "test/compiler-multi-file-entry.ts",
+                },
+            ),
+        /test[\\/]fixtures[\\/]compiler-modules[\\/]bad-helper\.ts:\d+:\d+: Unsupported statement: ForStatement/,
+    );
+});
+
+test("rejects recursive local functions", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                function recurse(value: number): number {
+                    return recurse(value);
+                }
+                const value = recurse(1);
+            `),
+        /Recursive call to 'recurse' is not supported/,
+    );
+});
+
 test("reads mutated flat-entry variables from live generated state", () => {
     const body = `
         const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;

@@ -59,7 +59,8 @@ export function compileMeshIntrinsic(
                 cpp:
                     `bbl::create_box(${engine.cpp}, ` +
                     `bbl::BoxOptions{${options.join(", ")}})`,
-                engineCpp: engine.cpp,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
             };
         }
 
@@ -89,7 +90,8 @@ export function compileMeshIntrinsic(
                     `bbl::GroundOptions{${options[0]}, ` +
                     `${options[1]}, ${options[2]}, ` +
                     `bbl::Vec2{${options[3]}, ${options[4]}}})`,
-                engineCpp: engine.cpp,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
             };
         }
 
@@ -111,7 +113,8 @@ export function compileMeshIntrinsic(
                 cpp:
                     `bbl::create_plane(${engine.cpp}, ` +
                     `bbl::PlaneOptions{${options.join(", ")}})`,
-                engineCpp: engine.cpp,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
             };
         }
 
@@ -133,7 +136,8 @@ export function compileMeshIntrinsic(
                 cpp:
                     `bbl::create_sphere(${engine.cpp}, ` +
                     `bbl::SphereOptions{${options.join(", ")}})`,
-                engineCpp: engine.cpp,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
             };
         }
 
@@ -155,7 +159,8 @@ export function compileMeshIntrinsic(
                 cpp:
                     `bbl::create_torus(${engine.cpp}, ` +
                     `bbl::TorusOptions{${options.join(", ")}})`,
-                engineCpp: engine.cpp,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
             };
         }
 

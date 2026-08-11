@@ -18,10 +18,6 @@ test("uses TypeScript semantic symbols instead of import-name text matching", ()
         compiler,
         /this\.imports/,
     );
-    assert.doesNotMatch(
-        source("src/compiler/symbols.ts"),
-        /getAliasedSymbol/,
-    );
 });
 
 test("keeps migrated upstream contracts AST-driven", () => {
@@ -122,5 +118,40 @@ test("matches custom shaders through typed WGSL IR", () => {
     assert.doesNotMatch(
         compiler,
         /fragmentSource ===/,
+    );
+});
+
+test("keeps local function lowering in its feature module", () => {
+    const compiler = source("src/compiler.ts");
+    const functions = source(
+        "src/compiler/user-functions.ts",
+    );
+    assert.match(compiler, /UserFunctionLowerer/);
+    assert.match(functions, /UserFunctionIr/);
+    assert.match(functions, /isTypeAssignableTo/);
+    assert.doesNotMatch(
+        compiler,
+        /Recursive call to/,
+    );
+    assert.doesNotMatch(
+        compiler,
+        /Generator functions are not supported/,
+    );
+});
+
+test("keeps statement lowering in its feature module", () => {
+    const compiler = source("src/compiler.ts");
+    const statements = source(
+        "src/compiler/statements.ts",
+    );
+    assert.match(compiler, /StatementLowerer/);
+    assert.match(statements, /StatementLoweringContext/);
+    assert.doesNotMatch(
+        compiler,
+        /Unsupported expression statement/,
+    );
+    assert.doesNotMatch(
+        compiler,
+        /Reached RenderTask\.addMesh requires/,
     );
 });

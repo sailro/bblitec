@@ -1,6 +1,7 @@
 import {
     dirname,
     resolve,
+    sep,
 } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -27,6 +28,12 @@ function cachedSourceFile(
         sharedSourceFiles.set(key, sourceFile);
     }
     return sourceFile;
+}
+
+function canCacheSourceFile(path: string): boolean {
+    return resolve(path).includes(
+        `${sep}node_modules${sep}`,
+    );
 }
 
 export interface CompilerProgram {
@@ -78,16 +85,16 @@ export function createCompilerProgram(
                     ts.ScriptKind.TS,
                 );
             }
-            return cachedSourceFile(
-                path,
-                () =>
-                    defaultHost.getSourceFile(
-                        path,
-                        languageVersion,
-                        onError,
-                        shouldCreateNewSourceFile,
-                    ),
-            );
+            const load = () =>
+                defaultHost.getSourceFile(
+                    path,
+                    languageVersion,
+                    onError,
+                    shouldCreateNewSourceFile,
+                );
+            return canCacheSourceFile(path)
+                ? cachedSourceFile(path, load)
+                : load();
         },
         resolveModuleNameLiterals: (
             moduleLiterals,

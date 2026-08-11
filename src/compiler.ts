@@ -16,6 +16,14 @@ import {
 import {
     StaticEvaluator,
 } from "./compiler/static-evaluator.js";
+import {
+    type StatementLoweringContext,
+    StatementLowerer,
+} from "./compiler/statements.js";
+import {
+    type UserFunctionContext,
+    UserFunctionLowerer,
+} from "./compiler/user-functions.js";
 import type {
     CompileAsset,
     CompileOptions,
@@ -103,6 +111,7 @@ export function compileSource(source: string, options: CompileOptions = {}): Com
     const fileName = options.fileName ?? "input.ts";
     const frontend = createCompilerProgram(source, fileName);
     const compiler = new Compiler(
+        frontend.program,
         frontend.sourceFile,
         frontend.checker,
         {
@@ -116,12 +125,27 @@ export function compileSource(source: string, options: CompileOptions = {}): Com
 }
 
 class Compiler
-    implements IntrinsicContext, AssignmentContext {
+    implements
+        IntrinsicContext,
+        AssignmentContext,
+        StatementLoweringContext,
+        UserFunctionContext {
     private readonly symbols: CompilerSymbols;
     private readonly evaluator: StaticEvaluator;
-    private readonly staticConstants = new Map<string, ts.Expression>();
+    private readonly statements = new StatementLowerer();
+    private readonly userFunctions: UserFunctionLowerer;
+    private readonly staticConstants = new Map<
+        ts.Symbol,
+        ts.Expression
+    >();
     private readonly sourceCppNames = new Set<string>();
-    private readonly variables = new Map<string, Value>();
+    private readonly variableScopes: Array<
+        Map<
+            ts.Symbol,
+            { name: string; value: Value }
+        >
+    > = [new Map()];
+    private readonly cppNamePrefixes: string[] = [""];
     private readonly features = new Set<Feature>(["core"]);
     private readonly assets = new Map<string, CompileAsset>();
     private readonly shaderVariants = new Set<ShaderMaterialVariantName>();
@@ -136,14 +160,18 @@ class Compiler
     private temporaryIndex = 0;
 
     public constructor(
+        private readonly program: ts.Program,
         private readonly sourceFile: ts.SourceFile,
         checker: ts.TypeChecker,
         private readonly options: ResolvedCompileOptions,
     ) {
         this.symbols = new CompilerSymbols(checker);
+        this.userFunctions =
+            new UserFunctionLowerer(checker);
         this.evaluator = new StaticEvaluator(
-            sourceFile,
             this.staticConstants,
+            (identifier) =>
+                this.symbols.valueSymbol(identifier),
             (identifier) => this.lookup(identifier),
             (node, message) => this.fail(node, message),
             (expression) =>
@@ -265,14 +293,37 @@ class Compiler
     }
 
     private collectStaticConstants(): void {
-        for (const statement of this.sourceFile.statements) {
-            if (!ts.isVariableStatement(statement)) continue;
-            for (const declaration of statement.declarationList.declarations) {
-                if (ts.isIdentifier(declaration.name) && declaration.initializer) {
-                    this.staticConstants.set(
-                        declaration.name.text,
-                        declaration.initializer,
-                    );
+        for (const file of this.program.getSourceFiles()) {
+            if (file.isDeclarationFile) {
+                continue;
+            }
+            for (const statement of file.statements) {
+                if (
+                    !ts.isVariableStatement(statement) ||
+                    (file !== this.sourceFile &&
+                        (statement.declarationList.flags &
+                            ts.NodeFlags.Const) ===
+                            0)
+                ) {
+                    continue;
+                }
+                for (const declaration of statement
+                    .declarationList.declarations) {
+                    if (
+                        ts.isIdentifier(declaration.name) &&
+                        declaration.initializer
+                    ) {
+                        const symbol =
+                            this.symbols.valueSymbol(
+                                declaration.name,
+                            );
+                        if (symbol) {
+                            this.staticConstants.set(
+                                symbol,
+                                declaration.initializer,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -291,7 +342,11 @@ class Compiler
             }
             ts.forEachChild(node, visit);
         };
-        visit(this.sourceFile);
+        for (const file of this.program.getSourceFiles()) {
+            if (!file.isDeclarationFile) {
+                visit(file);
+            }
+        }
     }
 
     private entryStatements(): readonly ts.Statement[] {
@@ -304,59 +359,23 @@ class Compiler
             return main.body!.statements;
         }
 
-        const statements = this.sourceFile.statements.filter((statement) => !ts.isImportDeclaration(statement));
+        const statements = this.sourceFile.statements.filter(
+            (statement) =>
+                !ts.isImportDeclaration(statement) &&
+                !ts.isFunctionDeclaration(statement) &&
+                !ts.isExportDeclaration(statement),
+        );
         if (statements.length === 0) {
             this.failAtFile("Expected top-level scene statements or a function named main with a body.");
         }
         return statements;
     }
 
-    private emitStatement(statement: ts.Statement): void {
-        if (ts.isVariableStatement(statement)) {
-            for (const declaration of statement.declarationList.declarations) {
-                this.emitVariableDeclaration(declaration);
-            }
-            return;
-        }
-
-        if (ts.isExpressionStatement(statement)) {
-            this.emitExpressionStatement(statement.expression);
-            return;
-        }
-
-        if (ts.isIfStatement(statement)) {
-            this.emitIfStatement(statement);
-            return;
-        }
-
-        if (ts.isReturnStatement(statement) && !statement.expression) {
-            return;
-        }
-
-        if (ts.isEmptyStatement(statement)) {
-            return;
-        }
-
-        this.fail(statement, `Unsupported statement: ${ts.SyntaxKind[statement.kind]}.`);
+    public emitStatement(statement: ts.Statement): void {
+        this.statements.emit(this, statement);
     }
 
-    private emitIfStatement(statement: ts.IfStatement): void {
-        if (statement.elseStatement) {
-            this.fail(statement.elseStatement, "Reached callbacks do not support else branches.");
-        }
-        this.emit(`if (${this.compileCondition(statement.expression)}) {`);
-        this.indentLevel += 1;
-        const statements = ts.isBlock(statement.thenStatement)
-            ? statement.thenStatement.statements
-            : [statement.thenStatement];
-        for (const nested of statements) {
-            this.emitStatement(nested);
-        }
-        this.indentLevel -= 1;
-        this.emit("}");
-    }
-
-    private emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
+    public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if (!ts.isIdentifier(declaration.name)) {
             this.fail(declaration.name, "Only identifier variable declarations are supported.");
         }
@@ -365,20 +384,29 @@ class Compiler
         }
 
         const sourceName = declaration.name.text;
-        if (this.variables.has(sourceName)) {
-            this.fail(declaration.name, `Variable shadowing is not supported for '${sourceName}'.`);
-        }
         if (
-            ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0
+            ts.isVariableDeclarationList(
+                declaration.parent,
+            ) &&
+            (declaration.parent.flags &
+                ts.NodeFlags.Const) ===
+                0
         ) {
-            this.staticConstants.delete(sourceName);
+            const symbol = this.symbols.valueSymbol(
+                declaration.name,
+            );
+            if (symbol) {
+                this.staticConstants.delete(symbol);
+            }
         }
         const cppName = this.cppIdentifier(sourceName);
 
         if (this.isBrowserOnlyExpression(declaration.initializer)) {
             this.erasedBrowserExpressions.add(declaration.initializer.pos);
-            this.variables.set(sourceName, { kind: "browser", cpp: "" });
+            this.defineVariable(declaration.name, {
+                kind: "browser",
+                cpp: "",
+            });
             return;
         }
 
@@ -391,7 +419,7 @@ class Compiler
                 engineCall,
                 cppName,
             );
-            this.variables.set(sourceName, engine);
+            this.defineVariable(declaration.name, engine);
             return;
         }
 
@@ -406,7 +434,7 @@ class Compiler
             stored.animationFrameRate = `${cppName}.frame_rate`;
             stored.animationDuration = `${cppName}.duration`;
         }
-        this.variables.set(sourceName, stored);
+        this.defineVariable(declaration.name, stored);
         if (value.kind === "engine") {
             if (this.defaultEngineCpp) {
                 this.fail(declaration, "The prototype currently supports one engine per entry point.");
@@ -415,116 +443,8 @@ class Compiler
         }
     }
 
-    private emitExpressionStatement(expression: ts.Expression): void {
-        const unwrapped = this.unwrap(expression);
-
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            [
-                ts.SyntaxKind.EqualsToken,
-                ts.SyntaxKind.PlusEqualsToken,
-                ts.SyntaxKind.MinusEqualsToken,
-            ].includes(unwrapped.operatorToken.kind)
-        ) {
-            this.emitAssignment(unwrapped);
-            return;
-        }
-
-        if (
-            ts.isPostfixUnaryExpression(unwrapped) &&
-            unwrapped.operator === ts.SyntaxKind.PlusPlusToken &&
-            ts.isIdentifier(unwrapped.operand)
-        ) {
-            const target = this.lookup(unwrapped.operand);
-            this.expectKind(target, "number", unwrapped.operand);
-            this.emit(`${target.cpp}++;`);
-            return;
-        }
-
-        if (ts.isCallExpression(unwrapped) && this.emitMemberSetCall(unwrapped)) {
-            return;
-        }
-
-        if (ts.isCallExpression(unwrapped) && this.emitTaskMethodCall(unwrapped)) {
-            return;
-        }
-
-        if (ts.isCallExpression(unwrapped) && this.isBrowserInstrumentationCall(unwrapped)) {
-            this.erasedBrowserInstrumentation.add(unwrapped.pos);
-            return;
-        }
-
-        if (ts.isCallExpression(unwrapped)) {
-            const value = this.compileCall(unwrapped);
-            if (value.kind !== "engine") {
-                this.emit(`${value.cpp};`);
-            }
-            return;
-        }
-
-        this.fail(unwrapped, `Unsupported expression statement: ${ts.SyntaxKind[unwrapped.kind]}.`);
-    }
-
-    private emitAssignment(expression: ts.BinaryExpression): void {
+    public emitAssignment(expression: ts.BinaryExpression): void {
         emitPropertyAssignment(this, expression);
-    }
-
-    private emitMemberSetCall(call: ts.CallExpression): boolean {
-        if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== "set") {
-            return false;
-        }
-        const owner = call.expression.expression;
-        if (!ts.isPropertyAccessExpression(owner) || !ts.isIdentifier(owner.expression)) {
-            return false;
-        }
-
-        const target = this.lookup(owner.expression);
-        if (target.kind !== "mesh") {
-            return false;
-        }
-        if (!["position", "rotation", "scaling"].includes(owner.name.text)) {
-            return false;
-        }
-        if (call.arguments.length !== 3) {
-            this.fail(call, `${owner.name.text}.set expects exactly three numeric arguments.`);
-        }
-
-        const vector = `bbl::Vec3{${call.arguments.map((argument) => this.compileNumber(argument)).join(", ")}}`;
-        this.emit(
-            `${this.requireEngine(target, call)}.meshes[${target.cpp}.value].${owner.name.text} = ${vector};`,
-        );
-        return true;
-    }
-
-    private emitTaskMethodCall(call: ts.CallExpression): boolean {
-        if (
-            !ts.isPropertyAccessExpression(call.expression) ||
-            call.expression.name.text !== "addMesh" ||
-            !ts.isIdentifier(call.expression.expression)
-        ) {
-            return false;
-        }
-        const task = this.lookup(call.expression.expression);
-        if (task.kind !== "task") return false;
-        this.expectArgumentCount(call, 2, 2);
-        const mesh = this.compileValue(call.arguments[0]!);
-        this.expectKind(mesh, "mesh", call.arguments[0]!);
-        const options = this.expectObjectLiteral(call.arguments[1]!);
-        const materialExpression = this.objectProperty(options, "material");
-        if (!materialExpression || options.properties.length !== 1) {
-            this.fail(
-                options,
-                "Reached RenderTask.addMesh requires only a material override.",
-            );
-        }
-        const material = this.compileValue(materialExpression);
-        this.expectKind(material, "material", materialExpression);
-        this.expectSameEngine(task, mesh, call);
-        this.expectSameEngine(task, material, call);
-        this.emit(
-            `bbl::add_render_task_mesh(${this.requireEngine(task, call)}, ${task.cpp}, ${mesh.cpp}, ${material.cpp});`,
-        );
-        return true;
     }
 
     public compileValue(expression: ts.Expression): Value {
@@ -553,7 +473,7 @@ class Compiler
         if (!ts.isIdentifier(expression.expression)) {
             this.fail(
                 expression,
-                `Unsupported property value '${expression.getText(this.sourceFile)}'.`,
+                `Unsupported property value '${expression.getText()}'.`,
             );
         }
         const owner = this.lookup(expression.expression);
@@ -629,33 +549,43 @@ class Compiler
         }
         this.fail(
             expression,
-            `Unsupported property value '${expression.getText(this.sourceFile)}'.`,
+            `Unsupported property value '${expression.getText()}'.`,
         );
     }
 
     private compileCall(call: ts.CallExpression): Value {
         const callee = this.unwrap(call.expression);
         if (!ts.isIdentifier(callee)) {
-            this.fail(callee, `Unsupported call target '${callee.getText(this.sourceFile)}'.`);
+            this.fail(callee, `Unsupported call target '${callee.getText()}'.`);
         }
 
         const importedName =
             this.symbols.importedName(callee);
-        if (!importedName) {
-            this.fail(callee, `Call '${callee.text}' is not a named import from @babylonjs/lite.`);
+        if (importedName) {
+            const registered = compileRegisteredIntrinsic(
+                this,
+                importedName,
+                call,
+            );
+            if (registered) {
+                return registered;
+            }
+            this.fail(
+                callee,
+                `Babylon Lite intrinsic '${importedName}' is not supported by this prototype. Supported scene APIs are documented in README.md.`,
+            );
         }
-        const registered = compileRegisteredIntrinsic(
+        const userFunction = this.userFunctions.compile(
             this,
-            importedName,
             call,
+            callee,
         );
-        if (registered) {
-            return registered;
+        if (userFunction) {
+            return userFunction;
         }
-
         this.fail(
             callee,
-            `Babylon Lite intrinsic '${importedName}' is not supported by this prototype. Supported scene APIs are documented in README.md.`,
+            `Call '${callee.text}' does not resolve to a supported Babylon intrinsic or local function declaration.`,
         );
     }
 
@@ -1798,7 +1728,7 @@ class Compiler
         return this.evaluator.compileBoolean(expression);
     }
 
-    private compileCondition(expression: ts.Expression): string {
+    public compileCondition(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
         if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.ExclamationToken) {
             return `!(${this.compileCondition(unwrapped.operand)})`;
@@ -1850,30 +1780,34 @@ class Compiler
         const parameterName = parameter && ts.isIdentifier(parameter.name)
             ? parameter.name.text
             : undefined;
-        const previousParameter = parameterName
-            ? this.variables.get(parameterName)
-            : undefined;
-        if (parameterName && previousParameter) {
-            this.fail(parameter!, `Variable shadowing is not supported for '${parameterName}'.`);
-        }
 
         const start = this.body.length;
         const previousIndent = this.indentLevel;
         this.indentLevel = 0;
-        if (parameterName) {
-            this.variables.set(parameterName, {
-                kind: "number",
-                cpp: this.cppIdentifier(parameterName),
-            });
-        }
-        for (const statement of unwrapped.body.statements) {
-            this.emitStatement(statement);
+        this.pushScope(
+            this.cppNamePrefixes.at(-1) ?? "",
+        );
+        try {
+            if (
+                parameter &&
+                ts.isIdentifier(parameter.name)
+            ) {
+                this.defineVariable(parameter.name, {
+                    kind: "number",
+                    cpp: this.cppIdentifier(
+                        parameter.name.text,
+                    ),
+                });
+            }
+            for (const statement of unwrapped.body
+                .statements) {
+                this.emitStatement(statement);
+            }
+        } finally {
+            this.popScope();
+            this.indentLevel = previousIndent;
         }
         const callbackBody = this.body.splice(start);
-        this.indentLevel = previousIndent;
-        if (parameterName) {
-            this.variables.delete(parameterName);
-        }
         const cppParameter = parameterName
             ? `float ${this.cppIdentifier(parameterName)}`
             : "float";
@@ -1910,7 +1844,7 @@ class Compiler
         return unwrapped;
     }
 
-    private objectProperty(object: ts.ObjectLiteralExpression, name: string): ts.Expression | undefined {
+    public objectProperty(object: ts.ObjectLiteralExpression, name: string): ts.Expression | undefined {
         for (const property of object.properties) {
             if (ts.isPropertyAssignment(property) && this.propertyName(property.name) === name) {
                 return property.initializer;
@@ -1978,6 +1912,7 @@ class Compiler
         return {
             kind: "engine",
             cpp: cppName,
+            engineCpp: cppName,
         };
     }
 
@@ -1992,13 +1927,17 @@ class Compiler
         }
     }
 
+    public allocateUserFunctionPrefix(): string {
+        return `fn${this.temporaryIndex++}_`;
+    }
+
     private compileStaticString(expression: ts.Expression): string {
         return this.compileStringLiteral(expression);
     }
 
     private resolveStaticExpression(
         expression: ts.Expression,
-        resolving: ReadonlySet<string> = new Set(),
+        resolving: ReadonlySet<ts.Symbol> = new Set(),
     ): ts.Expression {
         return this.evaluator.resolveStaticExpression(
             expression,
@@ -2073,7 +2012,7 @@ class Compiler
         return isCanvasLookup || isPerformanceNow;
     }
 
-    private isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
+    public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
         return (
             ts.isPropertyAccessExpression(call.expression) &&
             ts.isIdentifier(call.expression.expression) &&
@@ -2082,7 +2021,7 @@ class Compiler
         );
     }
 
-    private unwrap(expression: ts.Expression): ts.Expression {
+    public unwrap(expression: ts.Expression): ts.Expression {
         let current = expression;
         while (
             ts.isAwaitExpression(current) ||
@@ -2265,11 +2204,89 @@ class Compiler
     }
 
     public lookup(identifier: ts.Identifier): Value {
-        const value = this.variables.get(identifier.text);
-        if (!value) {
-            this.fail(identifier, `Unknown or unsupported variable '${identifier.text}'.`);
+        const symbol =
+            this.symbols.valueSymbol(identifier);
+        if (!symbol) {
+            this.fail(
+                identifier,
+                `Unknown or unsupported variable '${identifier.text}'.`,
+            );
         }
-        return value;
+        for (
+            let index = this.variableScopes.length - 1;
+            index >= 0;
+            index -= 1
+        ) {
+            const binding =
+                this.variableScopes[index]!.get(symbol);
+            if (binding) {
+                return binding.value;
+            }
+        }
+        this.fail(
+            identifier,
+            `Unknown or unsupported variable '${identifier.text}'.`,
+        );
+    }
+
+    public defineVariable(
+        identifier: ts.Identifier,
+        value: Value,
+    ): void {
+        const symbol =
+            this.symbols.valueSymbol(identifier);
+        if (!symbol) {
+            this.fail(
+                identifier,
+                `Unable to resolve variable '${identifier.text}'.`,
+            );
+        }
+        const scope = this.variableScopes.at(-1)!;
+        if (scope.has(symbol)) {
+            this.fail(
+                identifier,
+                `Variable shadowing is not supported for '${identifier.text}' in the same scope.`,
+            );
+        }
+        scope.set(symbol, {
+            name: identifier.text,
+            value,
+        });
+    }
+
+    private visibleValues(): Value[] {
+        const names = new Set<string>();
+        const result: Value[] = [];
+        for (
+            let index = this.variableScopes.length - 1;
+            index >= 0;
+            index -= 1
+        ) {
+            for (const binding of this.variableScopes[
+                index
+            ]!.values()) {
+                if (!names.has(binding.name)) {
+                    names.add(binding.name);
+                    result.push(binding.value);
+                }
+            }
+        }
+        return result;
+    }
+
+    public pushScope(cppPrefix: string): void {
+        this.variableScopes.push(new Map());
+        this.cppNamePrefixes.push(cppPrefix);
+    }
+
+    public popScope(): void {
+        if (this.variableScopes.length === 1) {
+            throw new Error(
+                "Cannot pop the compiler root scope.",
+            );
+        }
+        this.variableScopes.pop();
+        this.cppNamePrefixes.pop();
     }
 
     public expectKind(value: Value, kind: ValueKind, node: ts.Node): void {
@@ -2334,7 +2351,7 @@ class Compiler
     }
 
     public requireDefaultScene(node: ts.Node): Value {
-        const scenes = [...this.variables.values()].filter(
+        const scenes = this.visibleValues().filter(
             (value) => value.kind === "scene",
         );
         if (scenes.length !== 1) {
@@ -2353,8 +2370,9 @@ class Compiler
         }
     }
 
-    private cppIdentifier(sourceName: string): string {
-        return `v_${sourceName.replace(/[^A-Za-z0-9_]/g, "_")}`;
+    public cppIdentifier(sourceName: string): string {
+        const prefix = this.cppNamePrefixes.at(-1) ?? "";
+        return `v_${prefix}${sourceName.replace(/[^A-Za-z0-9_]/g, "_")}`;
     }
 
     public cppString(value: string): string {
@@ -2365,6 +2383,14 @@ class Compiler
 
     public emit(line: string): void {
         this.body.push(`${"    ".repeat(this.indentLevel)}${line}`);
+    }
+
+    public increaseIndent(): void {
+        this.indentLevel += 1;
+    }
+
+    public decreaseIndent(): void {
+        this.indentLevel -= 1;
     }
 
     private renderCpp(): string {
@@ -2409,8 +2435,19 @@ ${generatedSourceLines}
     }
 
     public fail(node: ts.Node, message: string): never {
-        const position = this.sourceFile.getLineAndCharacterOfPosition(node.getStart(this.sourceFile));
-        throw new CompileError(this.options.fileName, position.line + 1, position.character + 1, message);
+        const file = node.getSourceFile();
+        const position =
+            file.getLineAndCharacterOfPosition(
+                node.getStart(file),
+            );
+        throw new CompileError(
+            file === this.sourceFile
+                ? this.options.fileName
+                : file.fileName,
+            position.line + 1,
+            position.character + 1,
+            message,
+        );
     }
 
     private failAtFile(message: string): never {
