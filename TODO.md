@@ -23,9 +23,17 @@ independent compiler and API stacks agreeing to one LSB isolates
 CPU-side from GPU-side causes immediately.
 
 - [ ] Re-enable the pinned position-seeded background dither on Dawn
-  (scenes 6/14; identical codegen makes it reproducible and should
-  take both scenes below their SDL floors). Needs the dithered shader
-  variant emitted at generation time.
+  (scenes 6/14). The dithered ground/skybox variants are now emitted
+  at generation time, but enabling them on Dawn measurably regressed
+  scene 6 (0.283 → 0.333 full MAD): the pinned dither hash seeds on
+  interpolated world positions whose low bits follow the
+  barycentrics, so it only reproduces once the native camera
+  view-projection matches the pinned engine bit for bit. The real
+  dependency is porting Babylon's camera composition (view from the
+  camera world matrix, `mat4PerspectiveLHToRef` reverse-Z, JS-double
+  multiply) — which also implies adopting reverse-Z in the native
+  main pass (previously verified image-neutral) and would kill the
+  VP epsilon differences recorded by the instrumented captures.
 - [ ] Port the scene 1 diagnostics/attribution outputs to Dawn (draw
   IDs, triangle clusters, PBR diagnostic buffers); today
   `parity:diagnostics` renders them through SDL_GPU only.
@@ -347,8 +355,28 @@ reports an earlier compiler error.
 
 ### Vulkan
 
-- [ ] Emit SDL-compatible SPIR-V directly from Tint instead of recompiling
+First device run recorded (2026-08-12, Windows NVIDIA through SDL_GPU's
+Vulkan driver — enable the vcpkg `sdl3` port's `vulkan` feature to
+rebuild the driver in): geometry, camera, vertex uniforms, clip space,
+and the Standard material family are already correct (scene 2 is
+byte-identical to the golden), while the PBR family mis-shades
+(scene 1 darkens roughly one gamma-decode; scene 10 renders
+near-black), so the remaining work is shader-interface-level, not
+architectural. The generated SPIR-V lands in SDL's expected descriptor
+sets but declares each texture/sampler as separate descriptors sharing
+one binding, while SDL's Vulkan backend builds combined-image-sampler
+descriptors — out of spec even where the driver tolerates it, and the
+pinned Tint CLI exposes no combined-sampler emission, so the fix runs
+through the Tint SPIR-V writer options or an upstream Tint bump.
+Deliberately parked to keep the validation surface small at this
+stage.
+
+- [ ] Emit SDL-compatible SPIR-V (combined image samplers at SDL's
+  set/binding contract) directly from Tint instead of recompiling
   normalized Tint HLSL with DXC.
+- [ ] Localize and fix the PBR-family Vulkan shading divergence
+  (Standard is exact; suspects are the separate-sampler aliasing and
+  the PBR fragment's cbuffer/array layout).
 - [ ] Build and run generated SPIR-V on Linux.
 - [ ] Validate depth, clip space, cubemap orientation, and texture color spaces.
 - [ ] Validate BRDF LUT and cubemap orientation on Vulkan hardware.

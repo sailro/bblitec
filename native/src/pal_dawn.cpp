@@ -3322,6 +3322,13 @@ bool run_dawn_engine(Engine& engine) {
     rebuild_meshes();
 
     if (use_skybox) {
+        // The dithered variant stays disabled until the camera
+        // view-projection composition is bit-identical to the pinned
+        // engine: the dither hash seeds on interpolated world
+        // positions whose low bits follow the barycentrics, so the
+        // current VP epsilon differences decorrelate the noise and
+        // add variance instead of cancelling it (measured on scene 6:
+        // 0.283 -> 0.333 full MAD).
         state.skybox_module =
             load_wgsl_module(state, "background-skybox.frag");
         const upstream::SkyboxPlan skybox_plan =

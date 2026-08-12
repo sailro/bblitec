@@ -2204,27 +2204,45 @@ ${directMarker}`,
             });
         }
         if (options.ground) {
+            const groundProvenance = this.context.provenance(
+                backgroundGroundModule,
+                "buildBackgroundGroundRenderable",
+            );
             result.push({
                 output:
                     "upstream/shaders/background-ground.frag.native.wgsl",
+                data: backgroundGroundFragmentWgsl(groundProvenance),
+            });
+            // The pinned position-seeded dither variant: the Dawn
+            // backend compiles it bit-reproducibly (same compiler as
+            // the reference); SDL_GPU keeps the undithered fragment
+            // because its offline compilation decorrelates the noise.
+            result.push({
+                output:
+                    "upstream/shaders/background-ground-dither.frag.native.wgsl",
                 data: backgroundGroundFragmentWgsl(
-                    this.context.provenance(
-                        backgroundGroundModule,
-                        "buildBackgroundGroundRenderable",
-                    ),
+                    groundProvenance,
+                    true,
                 ),
             });
         }
         if (options.skybox) {
+            const skyboxProvenance = this.context.provenance(
+                backgroundDdsModule,
+                "buildDdsSkyboxRenderable",
+                `${backgroundHdrModule}#buildHdrSkyboxRenderable`,
+            );
             result.push({
                 output:
                     "upstream/shaders/background-skybox.frag.native.wgsl",
+                data: backgroundSkyboxFragmentWgsl(skyboxProvenance),
+            });
+            result.push({
+                output:
+                    "upstream/shaders/background-skybox-dither.frag.native.wgsl",
                 data: backgroundSkyboxFragmentWgsl(
-                    this.context.provenance(
-                        backgroundDdsModule,
-                        "buildDdsSkyboxRenderable",
-                        `${backgroundHdrModule}#buildHdrSkyboxRenderable`,
-                    ),
+                    skyboxProvenance,
+                    true,
                 ),
             });
         }

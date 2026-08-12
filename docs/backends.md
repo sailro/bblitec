@@ -70,6 +70,14 @@ npm run scenes:parity
 $env:BBLITE_GPU_BACKEND = "dawn"; npm run scenes:parity
 ```
 
+`scene -- parity <id> --differential` runs both backends and adds the
+direct backend-versus-backend diff to `report-differential.json` —
+the decisive diagnostic in one command. Scenes where Dawn is
+structurally closer to the golden (per-sample transmission, the
+browser-compiler identity) carry tighter `dawnThresholds` in the
+registry so Dawn regressions cannot hide under SDL_GPU-sized
+ceilings.
+
 Parity artifacts are backend-suffixed (`report-gpu.json` /
 `diff-map-gpu.png` for SDL_GPU, `-dawn` for Dawn, `-cpu` for the
 SDL_Renderer fallback), so both backends' reports, diff maps, and

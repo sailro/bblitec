@@ -8,11 +8,24 @@ function fragmentInput(): string {
 };`;
 }
 
+function ditherHelperWgsl(): string {
+    // Pinned WGSL_DITHER (shader/wgsl-helpers.ts): position-seeded
+    // +-variance/255 noise added by the background fragments.
+    return `fn dither(seed: vec2<f32>, varianceAmount: f32) -> f32 {
+    let rand = fract(sin(dot(seed, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+    let normVariance = varianceAmount / 255.0;
+    return mix(-normVariance, normVariance, rand);
+}
+
+`;
+}
+
 export function backgroundGroundFragmentWgsl(
     provenance: string,
+    dither = false,
 ): string {
     return `// ${provenance}
-@group(2) @binding(0) var groundTexture: texture_2d<f32>;
+${dither ? ditherHelperWgsl() : ""}@group(2) @binding(0) var groundTexture: texture_2d<f32>;
 @group(2) @binding(1) var groundSampler: sampler;
 
 struct GroundUniforms {
@@ -67,16 +80,21 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
             uniforms.imageParameters.x - 1.0,
         );
     }
-    return vec4<f32>(color * alpha, alpha);
+${dither
+        ? `    let premultiplied =
+        color * alpha + vec3<f32>(dither(input.worldPosition.xy, 0.5));
+    return max(vec4<f32>(premultiplied, alpha), vec4<f32>(0.0));`
+        : "    return vec4<f32>(color * alpha, alpha);"}
 }
 `;
 }
 
 export function backgroundSkyboxFragmentWgsl(
     provenance: string,
+    dither = false,
 ): string {
     return `// ${provenance}
-@group(2) @binding(0) var skyboxTexture: texture_cube<f32>;
+${dither ? ditherHelperWgsl() : ""}@group(2) @binding(0) var skyboxTexture: texture_cube<f32>;
 @group(2) @binding(1) var skyboxSampler: sampler;
 
 struct SkyboxUniforms {
@@ -127,7 +145,10 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
                 uniforms.imageParameters.x - 1.0,
             );
         }
-    }
+${dither
+        ? `        color = color + vec3<f32>(dither(input.worldPosition.xy, 0.5));
+`
+        : ""}    }
     return vec4<f32>(max(color, vec3<f32>(0.0)), 1.0);
 }
 `;
