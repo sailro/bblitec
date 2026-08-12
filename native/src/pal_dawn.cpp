@@ -500,8 +500,13 @@ WGPUSampler create_texture_sampler(
             : WGPUMipmapFilterMode_Linear;
     descriptor.addressModeU = address(sampler.address_u);
     descriptor.addressModeV = address(sampler.address_v);
-    descriptor.addressModeW = WGPUAddressMode_Repeat;
-    descriptor.lodMaxClamp = sampler.max_lod;
+    // Mirror the pinned descriptor exactly: W stays at the WebGPU
+    // clamp default, and only the noMip path overrides the LOD clamp
+    // (gltf-sampler-desc.ts leaves lodMaxClamp at the default 32
+    // otherwise).
+    if (sampler.max_lod < 32.0f) {
+        descriptor.lodMaxClamp = sampler.max_lod;
+    }
     descriptor.maxAnisotropy = static_cast<std::uint16_t>(
         std::max(1.0f, sampler.max_anisotropy));
     WGPUSampler result =
