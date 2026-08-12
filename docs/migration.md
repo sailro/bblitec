@@ -15,10 +15,10 @@ Seventeen curated scenes render on Dawn at values equal to or better
 than SDL_GPU (see the Dawn column in [status](status.md)): scenes 2, 10,
 32, and 259 are bit-exact (259 beats SDL_GPU, whose DXC-vs-browser
 rounding it eliminates), scene 1 (BoomBox) matches the SDL_GPU baseline
-at 0.001/0.015, and scenes 6, 13, 14, 31, 168, 210, 248, 257, 258, 265,
-and 266 pass their gates. The only open divergence is scene 249
-(0.012/0.499, max 7 on mask-cutout edges; suspects: discard versus
-alpha-to-coverage state or vertex-color interpolation).
+at 0.001/0.015, scene 249 matches its SDL_GPU baseline exactly at
+0.001/0.024, scene 248 beats it at 0.001/0.004, and scenes 6, 13, 14,
+31, 168, 210, 257, 258, 265, and 266 pass their gates. There is no open
+Dawn divergence in the migrated slice.
 
 Key empirical findings, in case any regress:
 
@@ -35,6 +35,17 @@ Key empirical findings, in case any regress:
   0.89 MAD; flipping restored 0.001.
 - The registry `backgroundColor` values are region-keying colors, not
   exact clear values (scene 2's actual background is 76, not 77).
+- **Measure Dawn only against a freshly processed build.** The formerly
+  recorded scene 249 "mask-edge residual" (0.012/0.499, max 7) and the
+  scene 248 offset (0.003/0.016) were stale shader/build pairings, not
+  divergences: Dawn reads `*.native.wgsl` from the build snapshot while
+  SDL_GPU reads offline DXIL, so a snapshot that mixes generations skews
+  only the Dawn side. After `scene -- process`, both scenes render
+  bit-near-identical to SDL_GPU (64 and 0 pixels at delta 1 in direct
+  backend comparison). A shader-level bisection confirmed the linear
+  shaded color is bit-identical between the backends across the full
+  frame, including derivative-driven geometric roughness, environment
+  LOD, BRDF LUT, and MSAA resolve.
 - The parity harness forwards the environment, so
   `BBLITE_GPU_BACKEND=dawn npm run scene -- parity sceneN` runs and
   labels a Dawn parity report.
@@ -159,35 +170,31 @@ authority if a regression appears:
 
 ## Remaining work, in suggested order
 
-1. **Scene 249 residual** — mask-edge speckle (max 7). Upstream
-   alpha-to-coverage is resolver-gated (scene 274's module) and unused
-   in 249, so compare discard behavior and vertex-color interpolation
-   against the SDL pipelines.
-2. **`.babylon` reflection cubes** — the standard reflection slot
+1. **`.babylon` reflection cubes** — the standard reflection slot
    currently binds the black fallback cube; scenes 24/145 need
    `engine.reflection_cubes` uploads (see SDL `upload_cube_texture`).
-3. **Scene 8 probe** — the compiled-HDR environment path
+2. **Scene 8 probe** — the compiled-HDR environment path
    (`specular_rgba16f` + environment skybox) is implemented but was
    never probed; likely works as-is.
-4. **Material extensions** (scenes 28, 29, 178, 212): extension texture
+3. **Material extensions** (scenes 28, 29, 178, 212): extension texture
    pairs append after the base bindings per
    `render_capabilities.hpp` defines; extend the group-2 bind group
    construction to mirror `append_material_extension_bindings`.
-5. **Deformation family** (scenes 5, 243, 245, 246, 247, 254, 255):
+4. **Deformation family** (scenes 5, 243, 245, 246, 247, 254, 255):
    lift the compile-time guard at the top of `run_dawn_engine`. Needs
    the `DeformationUniforms` uniform at group 1 binding 1, the
    instancing vertex buffer (slot 1, locations 16-19) plus its parent
    uniform, and the storage-morph buffers at group 0 — the WGSL side
    already exists and Dawn's binding model matches it directly.
-6. **GridMaterial** (scene 213): own `grid.vert`/`grid.frag` modules
+5. **GridMaterial** (scene 213): own `grid.vert`/`grid.frag` modules
    and four pipeline kinds.
-7. **Shader variants** (scenes 163, 273, 274): alpha-card and
+6. **Shader variants** (scenes 163, 273, 274): alpha-card and
    circular-cutout vertex/fragment pairs, including the
    alpha-to-coverage pipeline.
-8. **Frame graph** (scenes 116, 145, 146): render-target tasks,
+7. **Frame graph** (scenes 116, 145, 146): render-target tasks,
    depth-only passes, geometry MRTs, viewport/scissor copies, blits —
    the largest remaining chunk.
-9. **Transmission** (scenes 33, 176, 212): scene-color grab with the
+8. **Transmission** (scenes 33, 176, 212): scene-color grab with the
    pinned mip chain and repeat sampler, and — the payoff SDL_GPU could
    never express — the **per-sample image-processing pass**
    (`texture_multisampled_2d`, apply `ip()` per sample, then average)
@@ -196,11 +203,11 @@ authority if a regression appears:
    it reproducible), which should take scenes 6/14 below their SDL
    floors; that requires emitting the dithered shader variant at
    generation time.
-10. **Diagnostics/attribution** (scene 1 draw IDs, clusters, PBR
-    buffers), then the full-matrix Dawn validation, threshold review,
-    and the SDL_GPU retirement decision (delete DXC/normalization/
-    shader-cache machinery, rewrite the backend rationale in
-    [architecture](architecture.md)).
+9. **Diagnostics/attribution** (scene 1 draw IDs, clusters, PBR
+   buffers), then the full-matrix Dawn validation, threshold review,
+   and the SDL_GPU retirement decision (delete DXC/normalization/
+   shader-cache machinery, rewrite the backend rationale in
+   [architecture](architecture.md)).
 
 Performance has not been measured; Dawn runs with default validation
 and robustness (robustness must stay on — the browser has it on).

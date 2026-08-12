@@ -22,10 +22,10 @@ is a strict superset. The SDL_Renderer CPU fallback is out of scope.
 Progress, verified findings, ported pinned contracts, and the ordered
 remaining work live in [migration](docs/migration.md). Seventeen scenes
 pass on Dawn at values equal to or better than SDL_GPU, including
-bit-exact scenes 2/10/32/259 and BoomBox at the SDL baseline.
+bit-exact scenes 2/10/32/259 and BoomBox at the SDL baseline; the
+formerly recorded scene 248/249 offsets were stale shader/build
+pairings, resolved by reprocessing.
 
-- [ ] Scene 249 mask-edge residual (0.012/0.499, max 7): discard versus
-  alpha-to-coverage state or vertex-color interpolation.
 - [ ] `.babylon` reflection cubes, scene 8 probe, material extensions,
   deformation/instancing/storage-morph, GridMaterial, shader variants,
   frame graph, transmission with per-sample image processing plus the
