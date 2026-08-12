@@ -34,13 +34,21 @@ CPU-side from GPU-side causes immediately.
   multiply) — which also implies adopting reverse-Z in the native
   main pass (previously verified image-neutral) and would kill the
   VP epsilon differences recorded by the instrumented captures.
-- [ ] Port the scene 1 diagnostics/attribution outputs to Dawn (draw
-  IDs, triangle clusters, PBR diagnostic buffers); today
-  `parity:diagnostics` renders them through SDL_GPU only.
-- [ ] Formalize a backend-differential comparison mode in the parity
+- [x] Port the scene 1 diagnostics/attribution outputs to Dawn (draw
+  IDs, triangle clusters, PBR diagnostic buffers). Both backends now
+  serve `parity:diagnostics` (select with `BBLITE_GPU_BACKEND=dawn`);
+  the id and cluster buffers came out byte-identical across backends
+  and the PBR buffers agree to one LSB except pre-tone HDR (≤10 ulp
+  in the raw halfs from the offline-DXC-versus-Dawn compile split).
+  The cluster shader's `enable primitive_index` requires the Dawn
+  device to request the primitive-index feature (adapter-gated in
+  `pal_dawn`).
+- [x] Formalize a backend-differential comparison mode in the parity
   tooling (render both backends, diff them against each other and the
   golden in one report), then review the per-scene thresholds against
-  the Dawn columns.
+  the Dawn columns. `scene parity <id> --differential` writes
+  `report-differential.json` with per-backend and backend-delta
+  numbers; `dawnThresholds` registry entries gate the Dawn columns.
 - [ ] Extend the Dawn integration beyond Windows: the platform surface
   is one HWND branch plus the adapter backend selection and the per-OS
   Dawn library build — the WGSL feeds Dawn directly on every backend,
