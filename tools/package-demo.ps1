@@ -291,7 +291,7 @@ Troubleshooting:
   - Requires Windows 10/11.
   - run-$Scene-cpu.cmd forces the deterministic SDL_Renderer fallback.
   - bblitec-$Scene.log records startup errors and fallback information.
-  - Keep the assets and shaders directories beside the executable.
+  - Keep the assets and shaders directories beside the executable.$fxcNote
 
 $($fidelitySection)Compiler source:
   https://github.com/sailro/bblitec
