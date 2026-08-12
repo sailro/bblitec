@@ -195,18 +195,44 @@ CPU-side from GPU-side causes immediately.
 The exploratory audit uses the pinned
 `7184feda683072980735f9a180e6f567ee5717ba` corpus. These entries cover every
 scene that did not reach a MAD measurement; measured scenes are dashboarded in
-[status](docs/status.md). Each scene is listed under its first observed
-blocker; later compiler or runtime gaps may remain hidden behind it.
+[status](docs/status.md).
 
-### Compiler contract gaps
+The 188 unmeasured scenes are partitioned by the boundary required to reproduce
+their deterministic reference behavior, not by incidental browser helpers.
+Capture-inert demo controls and fixed-coordinate picking stay in the first
+lane when they can be erased or lowered inside the compiler, asset pipeline,
+or renderer. A scene is deferred when its covered behavior needs a new
+platform, user-input, or external-service contract.
+
+**Integrate first (154 scenes):** 3, 4, 7, 9, 11, 12, 15-23, 25-27, 30,
+34-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
+155-162, 165, 177, 179, 200-207, 211, 214-219, 223, 226, 229, 231, 241,
+242, 244, 251-253, 260-264, 267-271, 275-279.
+
+This lane includes static CSG/CSG2, compressed assets and splats,
+deterministic picking in Scenes 113-115, 117, 118, and 129, and the
+display-only gizmos in Scene 223.
+
+**Defer (34 scenes):** 40-42, 44-49, 100-106, 153, 164, 170-175, 180, 181,
+209, 221, 222, 224, 225, 227, 228, 272.
+
+Their required boundaries are listed after the first-wave blocker inventory.
+
+No audited scene currently requires audio, touch, gamepad, AR, or VR. Add any
+future scene that does to the deferred lane by default.
+
+Each scene below is listed under its first observed blocker; later compiler or
+runtime gaps may remain hidden behind it.
+
+### Integration-first compiler contract gaps
 
 - [ ] Scenes 3, 216: support `setFog`.
 - [ ] Scenes 4, 22, 65, 141: support light position setters.
 - [ ] Scenes 7, 115: support camera target assignment.
 - [ ] Scenes 11, 144, 152, 157, 158, 179, 229: generalize static array resolution.
-- [ ] Scenes 12, 40-47, 100-106, 224: fold or explicitly lower the reached browser-dependent conditions.
+- [ ] Scenes 12, 43: fold or explicitly lower the reached browser-dependent conditions.
 - [ ] Scenes 15, 67-72, 223: support `createSpotLight`.
-- [ ] Scenes 16, 171, 174, 175, 226, 251, 261: extend numeric expression operators.
+- [ ] Scenes 16, 226, 251, 261: extend numeric expression operators.
 - [ ] Scene 17: support `Math.atan`.
 - [ ] Scenes 18, 25: support Standard ground diffuse textures.
 - [ ] Scene 19: support `loadDdsEnvironment`.
@@ -219,8 +245,6 @@ blocker; later compiler or runtime gaps may remain hidden behind it.
 - [ ] Scene 36: support `loadBasisTexture2D`.
 - [ ] Scene 38: support `createCylinder`.
 - [ ] Scenes 39, 148: support reached scene-light list mutation.
-- [ ] Scene 48: support or explicitly classify Havok physics initialization.
-- [ ] Scenes 49, 222: support the reached four-argument intrinsic calls.
 - [ ] Scenes 50, 52-56, 58, 92-98, 117, 118: support `loadSpriteAtlas`.
 - [ ] Scene 51: lower the reached browser-derived numeric value.
 - [ ] Scenes 57, 59: support the `CAMERA_POSITION` shader binding.
@@ -247,20 +271,13 @@ blocker; later compiler or runtime gaps may remain hidden behind it.
 - [ ] Scene 142: support quaternion setters.
 - [ ] Scene 143: support `createBlurPostProcessTask`.
 - [ ] Scene 147: support `createCircleOfConfusionPostProcessTask`.
-- [ ] Scene 153: support the reached one-argument call.
 - [ ] Scenes 155, 156: support property-animation blending.
 - [ ] Scenes 159, 161, 165: generate the reached shader-material variants from typed shader IR.
 - [ ] Scenes 160, 162: extend reached shader-material options.
-- [ ] Scene 164: classify or lower reached GPU-device access.
-- [ ] Scenes 170, 172, 173: support `createNavigationPluginAsync`.
 - [ ] Scenes 177, 217: extend reached PBR material options.
-- [ ] Scenes 180, 181: support reached `void` expression statements.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
-- [ ] Scenes 202-207, 209: extend reached engine options.
+- [ ] Scenes 202-207: extend reached engine options.
 - [ ] Scenes 218, 219: support asset-container entity iteration.
-- [ ] Scene 221: support mesh names.
-- [ ] Scene 225: support `createGeospatialCamera`.
-- [ ] Scenes 227, 228: support `createSurface`.
 - [ ] Scene 231: support `enableStandardVertexColors`.
 - [ ] Scene 241: fold the reached query-derived camera alpha.
 - [ ] Scene 252: generalize the reached structured argument.
@@ -269,16 +286,15 @@ blocker; later compiler or runtime gaps may remain hidden behind it.
 - [ ] Scene 268: support orthographic cameras.
 - [ ] Scene 269: support transform nodes.
 - [ ] Scene 270: support the reached mesh scaling setter.
-- [ ] Scene 272: support Standard material diffuse textures.
 - [ ] Scene 275: support `loadFont`.
 - [ ] Scene 278: support `createLineSystem`.
 - [ ] Scene 279: support `createLineMaterial`.
 
-### Generation and asset packaging gaps
+### Integration-first generation and asset packaging gaps
 
 - [ ] Scene 211: support non-string glTF buffer URIs or reject the source contract earlier.
 
-### Native runtime and loader gaps
+### Integration-first native runtime and loader gaps
 
 - [ ] Port the pinned two-pass `.babylon` parent wiring and geometry-less
   `TransformNode` containers (`load-babylon.ts` second pass); the native
@@ -290,6 +306,46 @@ blocker; later compiler or runtime gaps may remain hidden behind it.
 - [ ] Scenes 34, 242, 244, 253: extend native glTF animation channel coverage.
 - [ ] Scene 37: support the reached glTF data without an image `source`.
 - [ ] Scene 260: support the reached non-triangle-list glTF primitive mode.
+
+### Deferred external and platform-feature scenes
+
+These stay out of the first integration wave even when the audit currently
+reports an earlier compiler error.
+
+#### Physics and navigation
+
+- [ ] Scenes 40-42, 44-49, 100-106, 209: add Havok behind an independent
+  physics dependency/PAL boundary. Current first blockers include browser
+  conditions, Havok initialization, four-argument calls, and engine options.
+- [ ] Scenes 170-175: add Recast navigation behind an explicit dependency
+  boundary. Current first blockers include numeric operators and
+  `createNavigationPluginAsync`.
+
+#### Browser-hosted UI and advanced input
+
+- [ ] Scene 153: add a runtime 2D-canvas boundary; its final frame is drawn
+  directly through `CanvasRenderingContext2D`, not Babylon Lite rendering.
+  The current first blocker is the reached one-argument call.
+- [ ] Scenes 180, 181: add live HTML text input, sliders, pointer drag, and
+  wheel handling for the text demos. The current first blocker is reached
+  `void` expression statements.
+- [ ] Scenes 221, 222, 224: add pointer-driven gizmo picking and drag routing.
+  Current first blockers are mesh names, four-argument calls, and a
+  browser-dependent condition.
+- [ ] Scene 225: add geospatial camera controls as an advanced-input contract;
+  the scene intentionally reaches `attachGeospatialControls` even though the
+  reference frame uses a static pose. The current first blocker is
+  `createGeospatialCamera`.
+
+#### GPU and surface lifecycle
+
+- [ ] Scene 164: add device-loss recovery and direct GPU-device lifecycle
+  access.
+- [ ] Scenes 227, 228: add multiple native surfaces/swapchains for
+  `createSurface`.
+- [ ] Scene 272: add the direct GPU validation-error event contract reached
+  through `engine._device` and `GPUUncapturedErrorEvent`; its current first
+  blocker is Standard material diffuse textures.
 
 ## P1 — Backend portability
 
