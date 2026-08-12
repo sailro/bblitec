@@ -59,8 +59,31 @@ struct DawnMeshBindings {
 };
 
 // Texture pair slots 0-3 and 5 mirror the SDL_GPU order; slot 4 is
-// the environment or reflection cube bound from shared state.
-constexpr std::size_t mesh_texture_slots = 5;
+// the environment or reflection cube bound from shared state. When the
+// scene compiles the transmission renderer, the scene-color/
+// transmission/thickness trio follows the base six pairs; reached
+// material-extension pairs append after that in the
+// append_material_extension_bindings order: clearcoat intensity/
+// roughness/normal, sheen color/roughness, iridescence intensity/
+// thickness. Mesh-owned slots: 0-3 material textures, 4 standard
+// emissive, then transmission/thickness, then extension textures.
+#if defined(BBLITE_RENDERER_TRANSMISSION)
+constexpr std::size_t transmission_texture_slots = 2;
+// The bound trio is one pair wider than the mesh-owned slots: the
+// scene-color pair rebinds the base color when no grab exists.
+constexpr std::size_t transmission_texture_pairs = 3;
+#else
+constexpr std::size_t transmission_texture_slots = 0;
+constexpr std::size_t transmission_texture_pairs = 0;
+#endif
+constexpr std::size_t material_extension_slots =
+    (BBLITE_MATERIAL_CLEARCOAT ? 3 : 0) +
+    (BBLITE_MATERIAL_SHEEN ? 2 : 0) +
+    (BBLITE_MATERIAL_IRIDESCENCE ? 2 : 0);
+constexpr std::size_t material_extension_slot_base =
+    5 + transmission_texture_slots;
+constexpr std::size_t mesh_texture_slots =
+    5 + transmission_texture_slots + material_extension_slots;
 
 struct DawnMesh {
     WGPUBuffer vertices = nullptr;
@@ -991,7 +1014,9 @@ DawnMeshBindings& bindings_for(
     // standard emissive. PBR: base color, metallic-roughness, normal,
     // emissive, environment cube, BRDF LUT.
     const PipelineKindTraits binding_traits = pipeline_traits(kind);
-    const std::array<WGPUTextureView, 6> views{
+    constexpr std::size_t max_texture_pairs =
+        6 + transmission_texture_pairs + material_extension_slots;
+    std::array<WGPUTextureView, max_texture_pairs> views{
         mesh.views[0],
         mesh.views[1],
         mesh.views[2],
@@ -1001,7 +1026,7 @@ DawnMeshBindings& bindings_for(
             : state.environment_cube_view,
         binding_traits.standard ? mesh.views[4] : state.brdf_view,
     };
-    const std::array<WGPUSampler, 6> samplers{
+    std::array<WGPUSampler, max_texture_pairs> samplers{
         mesh.samplers[0],
         mesh.samplers[1],
         mesh.samplers[2],
@@ -1011,8 +1036,38 @@ DawnMeshBindings& bindings_for(
             ? mesh.samplers[4]
             : state.clamp_sampler,
     };
-    std::array<WGPUBindGroupEntry, 12> texture_entries{};
-    for (std::uint32_t slot = 0; slot < views.size(); ++slot) {
+    // The transmission trio and material-extension pairs append after
+    // the base six; only the PBR fragment declares them, so standard
+    // pipelines keep six pairs. Without an implemented scene-color
+    // grab, the scene-color slot binds the base color exactly like the
+    // SDL backend does when transmission is disabled at runtime.
+    std::size_t pair = 6;
+    if (!binding_traits.standard) {
+#if defined(BBLITE_RENDERER_TRANSMISSION)
+        views[pair] = mesh.views[0];
+        samplers[pair] = mesh.samplers[0];
+        ++pair;
+        views[pair] = mesh.views[5];
+        samplers[pair] = mesh.samplers[5];
+        ++pair;
+        views[pair] = mesh.views[6];
+        samplers[pair] = mesh.samplers[6];
+        ++pair;
+#endif
+        for (std::size_t slot = 0;
+             slot < material_extension_slots;
+             ++slot) {
+            views[pair] = mesh.views[material_extension_slot_base + slot];
+            samplers[pair] =
+                mesh.samplers[material_extension_slot_base + slot];
+            ++pair;
+        }
+    }
+    const std::uint32_t pair_count =
+        static_cast<std::uint32_t>(pair);
+    std::array<WGPUBindGroupEntry, max_texture_pairs * 2>
+        texture_entries{};
+    for (std::uint32_t slot = 0; slot < pair_count; ++slot) {
         texture_entries[slot * 2] = WGPU_BIND_GROUP_ENTRY_INIT;
         texture_entries[slot * 2].binding = slot * 2;
         texture_entries[slot * 2].textureView = views[slot];
@@ -1025,7 +1080,7 @@ DawnMeshBindings& bindings_for(
     WGPUBindGroupDescriptor texture_descriptor =
         WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     texture_descriptor.layout = texture_layout;
-    texture_descriptor.entryCount = texture_entries.size();
+    texture_descriptor.entryCount = pair_count * 2;
     texture_descriptor.entries = texture_entries.data();
     bindings.textures =
         wgpuDeviceCreateBindGroup(state.device, &texture_descriptor);
@@ -1456,6 +1511,35 @@ bool run_dawn_engine(Engine& engine) {
                 dawn_error(
                     "transmissive materials are not implemented yet.");
             }
+            if (!standard_material) {
+#if defined(BBLITE_RENDERER_TRANSMISSION)
+                slot_data[5] = &material.transmission_texture;
+                slot_data[6] = &material.thickness_texture;
+#endif
+                std::size_t extension_slot =
+                    material_extension_slot_base;
+#if BBLITE_MATERIAL_CLEARCOAT
+                slot_data[extension_slot++] =
+                    &material.clearcoat_texture;
+                slot_data[extension_slot++] =
+                    &material.clearcoat_roughness_texture;
+                slot_data[extension_slot++] =
+                    &material.clearcoat_normal_texture;
+#endif
+#if BBLITE_MATERIAL_SHEEN
+                slot_data[extension_slot++] =
+                    &material.sheen_color_texture;
+                slot_data[extension_slot++] =
+                    &material.sheen_roughness_texture;
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+                slot_data[extension_slot++] =
+                    &material.iridescence_texture;
+                slot_data[extension_slot++] =
+                    &material.iridescence_thickness_texture;
+#endif
+                (void)extension_slot;
+            }
         }
         slot_srgb[0] = !standard_material;
         slot_srgb[3] = !standard_material;
@@ -1470,6 +1554,32 @@ bool run_dawn_engine(Engine& engine) {
                 ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
                 : std::array<std::uint8_t, 4>{0, 0, 0, 255};
         slot_fallback[4] = {0, 0, 0, 255};
+        {
+            // sRGB flags and fallbacks mirror the SDL upload_texture
+            // calls for the transmission trio and each extension pair.
+#if defined(BBLITE_RENDERER_TRANSMISSION)
+            slot_fallback[5] = {255, 255, 255, 255};
+            slot_fallback[6] = {255, 255, 255, 255};
+#endif
+            std::size_t extension_slot = material_extension_slot_base;
+#if BBLITE_MATERIAL_CLEARCOAT
+            slot_fallback[extension_slot++] = {255, 255, 255, 255};
+            slot_fallback[extension_slot++] = {255, 255, 255, 255};
+            slot_fallback[extension_slot++] = {128, 128, 255, 255};
+#endif
+#if BBLITE_MATERIAL_SHEEN
+            slot_srgb[extension_slot] = true;
+            slot_fallback[extension_slot++] = {255, 255, 255, 255};
+            slot_fallback[extension_slot++] = {255, 255, 255, 255};
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+            slot_srgb[extension_slot] = true;
+            slot_fallback[extension_slot++] = {255, 255, 255, 255};
+            slot_srgb[extension_slot] = true;
+            slot_fallback[extension_slot++] = {255, 255, 255, 255};
+#endif
+            (void)extension_slot;
+        }
         for (std::size_t slot = 0; slot < mesh_texture_slots; ++slot) {
             const TextureData empty{};
             const TextureData& data =
