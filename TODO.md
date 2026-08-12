@@ -38,6 +38,16 @@ CPU-side from GPU-side causes immediately.
   Dawn library build — the WGSL feeds Dawn directly on every backend,
   so no per-platform shader work exists on this path (unlike the
   SDL_GPU items below).
+- [ ] Single-backend release builds: the dual-backend binary is a
+  development asset (the differential gate); a shipped app wants one
+  backend and minimal footprint. `BBLITE_DAWN=0` already yields
+  SDL_GPU-only (exe + SDL3 DLLs + kilobytes of DXIL); a Dawn-only
+  shape needs a symmetric SDL_GPU compile guard, shader/DLL payload
+  deployment following the compiled set (WGSL text versus DXIL
+  snapshots; webgpu_dawn/dxcompiler/dxil DLLs are tens of MB and a
+  DXC-less Dawn build changes rendering per the recorded FXC
+  findings), explicit run_engine errors for absent backends, and a
+  packaging flow that picks one backend per release.
 
 ## P0 — Backend portability
 
