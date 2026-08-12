@@ -212,7 +212,34 @@ authority if a regression appears:
 
 1. **Frame graph** (scenes 116, 145, 146): render-target tasks,
    depth-only passes, geometry MRTs, viewport/scissor copies, blits —
-   the largest remaining chunk.
+   the largest remaining chunk. Port map from the SDL task loop
+   (`pal_sdl_gpu.cpp` ~4200-5090):
+   - Color render tasks begin a pass on the target (or swapchain)
+     with optional clear, depth cleared to 1.0 and stored only when
+     `sampled_depth`, per-task camera/aspect
+     (`canvas_size ? canvas : target`), per-task draw lists from
+     `build_render_task_draw_lists`, and the normal pipelines.
+   - Depth-only render tasks (`!has_color`) use
+     `build_view_projection(..., reverse_depth = true)`, clear depth
+     to 0.0, and draw only the explicit `render_meshes` (no-color
+     material views required) through the two-sided-mode depth-only
+     pipelines picked by sample count.
+   - Geometry tasks bind one MRT color per attachment with
+     `geometry_clear_color(type)` clears (plus the optional output
+     target appended last), resolve into `sampled_colors` when
+     multisampled, and draw with the per-task
+     `pbr-geometry-N.frag`/`standard-geometry-N.frag` pipeline set
+     and the main camera.
+   - Copy tasks are either a pure MSAA resolve pass
+     (`resolve_target` without `target`) or a fullscreen-triangle
+     blit (blit vs blit-msaa pipeline by target samples) with the
+     integer `resolve_copy_viewport` viewport+scissor and the clamp
+     sampler; a copy whose target is the swapchain records its source
+     as the capture texture.
+   - Standard materials with `has_emissive_render_texture` bind a
+     task source texture through the nearest sampler in the
+     standard-emissive slot (scene 116's material views).
+   - Capture saves the recorded capture source, not the swapchain.
 2. **Transmission** (scenes 33, 176, 212): scene-color grab with the
    pinned mip chain and repeat sampler, and — the payoff SDL_GPU could
    never express — the **per-sample image-processing pass**
