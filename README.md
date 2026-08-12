@@ -80,6 +80,7 @@ generator-specific.
 | [Development](docs/development.md) | Setup, commands, builds, switches, parity, troubleshooting |
 | [Fidelity](docs/fidelity.md) | Semantic adaptations, shader contracts, diagnostics |
 | [Status](docs/status.md) | Supported subset, measured baselines, known gaps |
+| [Migration](docs/migration.md) | Dawn (WebGPU) backend migration state and porting contracts |
 | [TODO](TODO.md) | Prioritized future work only |
 
 ## Design constraints

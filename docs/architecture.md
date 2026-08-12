@@ -296,6 +296,13 @@ same reached quaternion mesh transforms.
 
 ## Backend rationale
 
+An experimental Dawn (WebGPU) backend is being brought up behind the
+`BBLITE_DAWN` build option and `BBLITE_GPU_BACKEND=dawn`; it renders
+through the browser reference's own compiler and rasterization stack
+and already matches or beats SDL_GPU on every scene it can express.
+See [migration](migration.md) for its state and porting contracts. The
+rationale below describes the SDL_GPU default path.
+
 The shader-language migration is complete: all native GPU shaders originate as
 WGSL and compile through Tint. bblitec owns composition, SDL specialization,
 reflection checks, and fixed-function state. Tint can emit SPIR-V directly,

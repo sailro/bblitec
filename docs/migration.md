@@ -1,0 +1,206 @@
+# Dawn (WebGPU) backend migration
+
+Branch `claude/dawn-backend` migrates the GPU renderer from SDL_GPU to
+Dawn — Chrome's WebGPU implementation, built from the same pinned commit
+as the Tint shader compiler. The browser reference captures are produced
+by Chrome, i.e. by Dawn on D3D12 compiling WGSL with DXC; rendering
+through the identical stack makes parity structural instead of adapted.
+SDL_GPU remains the default backend until Dawn parity is a strict
+superset. SDL3 itself stays for windowing, input, and image I/O; the
+SDL_Renderer CPU fallback is out of scope.
+
+## Verified state
+
+Seventeen curated scenes render on Dawn at values equal to or better
+than SDL_GPU (see the Dawn column in [status](status.md)): scenes 2, 10,
+32, and 259 are bit-exact (259 beats SDL_GPU, whose DXC-vs-browser
+rounding it eliminates), scene 1 (BoomBox) matches the SDL_GPU baseline
+at 0.001/0.015, and scenes 6, 13, 14, 31, 168, 210, 248, 257, 258, 265,
+and 266 pass their gates. The only open divergence is scene 249
+(0.012/0.499, max 7 on mask-cutout edges; suspects: discard versus
+alpha-to-coverage state or vertex-color interpolation).
+
+Key empirical findings, in case any regress:
+
+- **Shader compiler identity is the parity linchpin.** Dawn hard-forces
+  `use_dxc` off unless the library is compiled with
+  `DAWN_USE_BUILT_DXC` (`PhysicalDeviceD3D12.cpp` ForceSet), and the
+  `dxcompiler` CMake target must be built separately and its DLL
+  deployed beside `webgpu_dawn.dll`. With FXC instead of DXC, a
+  systemic -1 LSB appeared on lit surfaces (scenes 259/248) plus larger
+  filter and discard deltas (248/249); with DXC all of it vanished.
+- **The `.env` RGBD cubemap Y-flip is pinned behavior**, not an SDL
+  adaptation: upstream `uploadCubemapRGBD` documents "BJS uploads
+  cubemap faces with invertY=true". Uploading unflipped cost scene 1
+  0.89 MAD; flipping restored 0.001.
+- The registry `backgroundColor` values are region-keying colors, not
+  exact clear values (scene 2's actual background is 76, not 77).
+- The parity harness forwards the environment, so
+  `BBLITE_GPU_BACKEND=dawn npm run scene -- parity sceneN` runs and
+  labels a Dawn parity report.
+
+## Building and running
+
+```powershell
+pwsh -File tools\build-dawn.ps1
+```
+
+- Pin: `upstream/tint.json` (one provenance for Tint and Dawn); source
+  checkout shared at `.cache/tint/dawn`, build tree
+  `.cache/tint/build-dawn`. **Wipe the build tree when changing CMake
+  options** — stale trees no-op silently.
+- Configuration: monolithic `webgpu_dawn` shared library, D3D12 only,
+  `DAWN_USE_BUILT_DXC=ON`, targets `webgpu_dawn` **and** `dxcompiler`,
+  installed to `artifacts/tools/dawn`.
+- Deployment: `webgpu_dawn.dll`, Dawn's built `dxcompiler.dll`,
+  `dxil.dll`, and the SDK `d3dcompiler_47.dll` (FXC fallback) must sit
+  beside the executable; Dawn resolves them module-relative with
+  hardened LoadLibraryEx flags, exactly as Chrome deploys them. The
+  native CMake `POST_BUILD` step copies all four.
+
+Enable per build directory and select at runtime:
+
+```powershell
+cmake -S native -B native\build-scene1-release -DBBLITE_DAWN=ON
+$env:BBLITE_GPU_BACKEND = "dawn"
+```
+
+The cache variable survives scene-command reconfigures, so one manual
+configure per build directory suffices; build through
+`npm run scene -- build sceneN` afterwards (direct `cmake --build`
+lacks the MSVC environment). `BBLITE_GPU_BACKEND=dawn` dispatches in
+`pal::run_engine` and throws explicitly when the build lacks Dawn.
+
+## Architecture of `native/src/pal_dawn.cpp`
+
+The backend reuses every semantic layer the SDL_GPU backend uses:
+`upstream::build_render_plan`, `build_view_projection`,
+`build_standard_uniforms`, `build_pbr_uniforms`,
+`build_background_plan/uniforms`, `build_skybox_plan/uniforms`,
+`sort_transparent_draws`, and the shared vertex packing and decode
+helpers in `native/src/pal_gpu_shared.hpp` (`GpuVertex`,
+`transformed_vertices`, `decode_rgbd`, `float_to_half` — extracted from
+the SDL backend, which was re-verified byte-identical afterwards). Only
+the GPU API layer differs:
+
+- **Shaders**: the generated `*.native.wgsl` files are read from the
+  snapshot shader directory and handed to
+  `wgpuDeviceCreateShaderModule` unchanged — no DXC invocation, no
+  register normalization, no shader cache. The WGSL `@group` scheme maps
+  natively: group 1 = vertex uniform (`viewProjection`), group 2 =
+  texture/sampler pairs at bindings `2n`/`2n+1` in the SDL slot order,
+  group 3 = fragment uniform, group 0 = vertex storage buffers (morph).
+- **Pipelines**: created lazily per `upstream::RenderPipelineKind` with
+  `layout = auto`; bind groups come from
+  `wgpuRenderPipelineGetBindGroupLayout` per (mesh, kind). Implemented
+  kinds: standard/pbr opaque back/none (+ pbr clockwise) and
+  standard/pbr transparent back/none (+ pbr clockwise). Blend for
+  transparent: color SrcAlpha/OneMinusSrcAlpha, alpha
+  One/OneMinusSrcAlpha, depth LESS_EQUAL with writes off (opaque: LESS
+  with writes on). Anything else throws — unimplemented paths must fail
+  explicitly, never approximate.
+- **Uniforms**: WebGPU has no push constants; each draw owns a uniform
+  buffer sized to its family's uniform struct, written per frame with
+  `wgpuQueueWriteBuffer` before submission.
+- **Frame**: 4x MSAA color (surface format) resolving into the surface
+  texture, `depth24plus-stencil8` (the browser's format — not the SDL
+  backend's D32), stage-driven draw order (skybox → opaque →
+  transparent → ground). The surface is configured
+  `RenderAttachment | CopySrc`; capture copies the resolved surface
+  texture into a mapped buffer (256-aligned rows) and saves via
+  SDL_image. The frame loop honors `BBLITE_MAX_FRAMES`,
+  `BBLITE_SCREENSHOT(_FRAME)`, `BBLITE_TEST_PASS`,
+  `BBLITE_ANIMATION_SEEK_SECONDS`, and the capture grace period.
+- **Device**: futures API with `TimedWaitAny`; the `use_dxc` adapter
+  toggle is chained to the adapter request; uncaptured device errors
+  are captured and thrown at frame end.
+
+## Ported pinned contracts
+
+These were re-derived from the pinned tree during the port; each is the
+authority if a regression appears:
+
+- **Mip generation** (`src/texture/generate-mipmaps.ts`): WebGPU has no
+  built-in mipmaps; the browser blits mip N-1 → N with a fullscreen
+  triangle and a bilinear clamp sampler. `pal_dawn.cpp` embeds that
+  WGSL verbatim. Every material texture gets the full chain
+  `1 + floor(log2(max(w,h)))`; sRGB correctness comes from the texture
+  format (`rgba8unorm-srgb` for base color/emissive on PBR).
+- **glTF samplers** (`gltf-sampler-desc.ts`): wrap 33071→clamp,
+  33648→mirror, else repeat; min/mip filters from the combined enum;
+  non-mipmap min filters mean "sample mip 0 only" → `lodMaxClamp 0`;
+  anisotropy 4 only when mag/min/mip are all linear and not noMip;
+  addressing W and `lodMaxClamp` otherwise stay at WebGPU defaults.
+- **Texture slots** (six pairs, group 2): base color,
+  specular/metallic-roughness, opacity/normal, ambient/emissive,
+  reflection-or-environment cube, standard-emissive-or-BRDF. Fallbacks:
+  white (base/mr), white or flat-normal 128/128/255 (slot 2),
+  white or black-by-emissive-factor (slot 3), black cube, black or
+  zero-rgba16f LUT. The BRDF LUT samples through a clamp sampler; the
+  environment cube through the repeat trilinear default sampler.
+- **Environment cube**: rgba16f with pre-baked mips.
+  `specular_rgba16f` faces upload raw and unflipped; RGBD faces decode
+  `pow(rgb, 2.2) / max(a, 1/255)` to half floats and upload
+  **Y-flipped** (pinned `uploadCubemapRGBD`). Fallback face
+  {0.15, 0.16, 0.2, 1}.
+- **BRDF LUT**: rgba16f raw when compiled, otherwise RGBD-decoded from
+  the PNG with `flipY: false`.
+- **DDS skybox**: rgba16f payload at `skybox_data_offset`, face-major
+  mip-minor, no flips; cube of 8 vertices/36 indices from
+  `build_skybox_plan`; cull none, blend off, depth writes off; the
+  vertex matrix is `build_skybox_view_projection` when
+  `skybox_uses_environment`, else the scene view-projection;
+  `SkyboxUniforms` from `build_skybox_uniforms(environment, false)`.
+- **Ground**: quad from `build_background_plan`, `pbr.vert` +
+  `background-ground.frag`, blend One/OneMinusSrcAlpha on both
+  channels, depth writes off, clamp sampler with `lodMaxClamp 0`,
+  linear ground texture with mips, `BackgroundUniforms` per frame,
+  drawn in the `ground` stage (last).
+
+## Remaining work, in suggested order
+
+1. **Scene 249 residual** — mask-edge speckle (max 7). Upstream
+   alpha-to-coverage is resolver-gated (scene 274's module) and unused
+   in 249, so compare discard behavior and vertex-color interpolation
+   against the SDL pipelines.
+2. **`.babylon` reflection cubes** — the standard reflection slot
+   currently binds the black fallback cube; scenes 24/145 need
+   `engine.reflection_cubes` uploads (see SDL `upload_cube_texture`).
+3. **Scene 8 probe** — the compiled-HDR environment path
+   (`specular_rgba16f` + environment skybox) is implemented but was
+   never probed; likely works as-is.
+4. **Material extensions** (scenes 28, 29, 178, 212): extension texture
+   pairs append after the base bindings per
+   `render_capabilities.hpp` defines; extend the group-2 bind group
+   construction to mirror `append_material_extension_bindings`.
+5. **Deformation family** (scenes 5, 243, 245, 246, 247, 254, 255):
+   lift the compile-time guard at the top of `run_dawn_engine`. Needs
+   the `DeformationUniforms` uniform at group 1 binding 1, the
+   instancing vertex buffer (slot 1, locations 16-19) plus its parent
+   uniform, and the storage-morph buffers at group 0 — the WGSL side
+   already exists and Dawn's binding model matches it directly.
+6. **GridMaterial** (scene 213): own `grid.vert`/`grid.frag` modules
+   and four pipeline kinds.
+7. **Shader variants** (scenes 163, 273, 274): alpha-card and
+   circular-cutout vertex/fragment pairs, including the
+   alpha-to-coverage pipeline.
+8. **Frame graph** (scenes 116, 145, 146): render-target tasks,
+   depth-only passes, geometry MRTs, viewport/scissor copies, blits —
+   the largest remaining chunk.
+9. **Transmission** (scenes 33, 176, 212): scene-color grab with the
+   pinned mip chain and repeat sampler, and — the payoff SDL_GPU could
+   never express — the **per-sample image-processing pass**
+   (`texture_multisampled_2d`, apply `ip()` per sample, then average)
+   that bounds today's edge bias. Also re-enable the pinned
+   position-seeded background dither on Dawn (identical codegen makes
+   it reproducible), which should take scenes 6/14 below their SDL
+   floors; that requires emitting the dithered shader variant at
+   generation time.
+10. **Diagnostics/attribution** (scene 1 draw IDs, clusters, PBR
+    buffers), then the full-matrix Dawn validation, threshold review,
+    and the SDL_GPU retirement decision (delete DXC/normalization/
+    shader-cache machinery, rewrite the backend rationale in
+    [architecture](architecture.md)).
+
+Performance has not been measured; Dawn runs with default validation
+and robustness (robustness must stay on — the browser has it on).

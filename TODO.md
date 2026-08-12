@@ -19,22 +19,20 @@ pin) makes shader codegen and rasterization structurally match the
 reference. Staged migration; SDL_GPU stays the default until Dawn parity
 is a strict superset. The SDL_Renderer CPU fallback is out of scope.
 
-- [x] Build the pinned monolithic `webgpu_dawn` (D3D12, FXC beside the
-  module like Chrome) via `tools/build-dawn.ps1`; CMake `BBLITE_DAWN`
-  option and `BBLITE_GPU_BACKEND=dawn` runtime dispatch.
-- [x] Bring-up skeleton: SDL window surface, adapter/device, surface
-  configuration, clear, screenshot readback (scene 2 clear verified).
-- [x] Clear-value rounding: resolved — the golden background is 76; the
-  registry color is only the region-keying value. No divergence exists.
-- [x] Mesh path: buffers, auto-layout WebGPU bind groups, depth24plus-
-  stencil8, 4x MSAA with surface resolve, ordered opaque draw lists.
-- [x] Feed generated WGSL directly to `wgpuDeviceCreateShaderModule`:
-  scene 2 (Standard) and scene 10 (PBR) render bit-exactly against the
-  browser goldens (MAD 0.000) with no DXC and no register normalization.
-- [ ] Report the active backend in parity metadata instead of the
-  hardcoded SDL_GPU label.
-- [ ] Real texture decode with Babylon's mip generation, environment
-  cube/BRDF/ground upload, then scene 1.
+Progress, verified findings, ported pinned contracts, and the ordered
+remaining work live in [migration](docs/migration.md). Seventeen scenes
+pass on Dawn at values equal to or better than SDL_GPU, including
+bit-exact scenes 2/10/32/259 and BoomBox at the SDL baseline.
+
+- [ ] Scene 249 mask-edge residual (0.012/0.499, max 7): discard versus
+  alpha-to-coverage state or vertex-color interpolation.
+- [ ] `.babylon` reflection cubes, scene 8 probe, material extensions,
+  deformation/instancing/storage-morph, GridMaterial, shader variants,
+  frame graph, transmission with per-sample image processing plus the
+  re-enabled pinned dither, diagnostics — see the ordered list in
+  [migration](docs/migration.md).
+- [ ] Full-matrix Dawn validation, threshold review, and the SDL_GPU
+  retirement decision.
 - [ ] Migrate scene families behind parity gates (Standard, PBR/IBL,
   backgrounds, frame graph, transmission with per-sample image
   processing, deformation); re-enable the pinned background dither.
