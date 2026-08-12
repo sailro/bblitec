@@ -52,24 +52,6 @@ CPU-side from GPU-side causes immediately.
   declare a target driver, and evaluate packed native assets (the P1
   entry below) for asset-payload reduction.
 
-## P0 — Backend portability
-
-### Vulkan
-
-- [ ] Emit SDL-compatible SPIR-V directly from Tint instead of recompiling
-  normalized Tint HLSL with DXC.
-- [ ] Build and run generated SPIR-V on Linux.
-- [ ] Validate depth, clip space, cubemap orientation, and texture color spaces.
-- [ ] Validate BRDF LUT and cubemap orientation on Vulkan hardware.
-- [ ] Test discrete and integrated adapters.
-
-### Metal
-
-- [ ] Build and run generated MSL on macOS.
-- [ ] Validate uniform layout, derivatives, cubemaps, and blending.
-- [ ] Validate BRDF LUT and cubemap orientation on Metal hardware.
-- [ ] Investigate iOS after macOS is stable.
-
 ## P1 — TypeScript compiler coverage
 
 ### Modules and functions
@@ -308,6 +290,24 @@ blocker; later compiler or runtime gaps may remain hidden behind it.
 - [ ] Scenes 34, 242, 244, 253: extend native glTF animation channel coverage.
 - [ ] Scene 37: support the reached glTF data without an image `source`.
 - [ ] Scene 260: support the reached non-triangle-list glTF primitive mode.
+
+## P1 — Backend portability
+
+### Vulkan
+
+- [ ] Emit SDL-compatible SPIR-V directly from Tint instead of recompiling
+  normalized Tint HLSL with DXC.
+- [ ] Build and run generated SPIR-V on Linux.
+- [ ] Validate depth, clip space, cubemap orientation, and texture color spaces.
+- [ ] Validate BRDF LUT and cubemap orientation on Vulkan hardware.
+- [ ] Test discrete and integrated adapters.
+
+### Metal
+
+- [ ] Build and run generated MSL on macOS.
+- [ ] Validate uniform layout, derivatives, cubemaps, and blending.
+- [ ] Validate BRDF LUT and cubemap orientation on Metal hardware.
+- [ ] Investigate iOS after macOS is stable.
 
 ## P2 — Platform and performance
 

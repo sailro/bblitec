@@ -35,19 +35,6 @@ Unsupported syntax and APIs fail at compile time with source locations.
 See [current status](docs/status.md) for the supported subset and all measured
 scene results.
 
-## Start here in a fresh session
-
-1. Read [Architecture](docs/architecture.md) for ownership and generated/PAL
-   boundaries.
-2. Read [Status](docs/status.md) for the validated vertical slice and current
-   scene metrics.
-3. Read [Fidelity](docs/fidelity.md) before changing renderer, loader,
-   animation, or parity behavior.
-4. Read [Backends](docs/backends.md) before touching either GPU backend.
-5. Read [Development](docs/development.md) before generating or building.
-6. Use [TODO](TODO.md) only for unfinished priorities; completed history lives
-   in Git and the status page.
-
 ## Quick start
 
 Requirements: Node.js 22+, CMake 3.24+, a C++20 compiler, vcpkg, PowerShell,
@@ -76,7 +63,7 @@ configuration, and a parallel native build. Ninja is the default generator;
 set `BBLITE_CMAKE_GENERATOR` to override it. Build trees are disposable and
 generator-specific.
 
-## Documentation
+## Documentation (start here in a fresh session)
 
 | Page | Purpose |
 | --- | --- |
@@ -99,5 +86,5 @@ generator-specific.
 ## Acknowledgements
 
 This prototype is not affiliated with or endorsed by Babylon.js. Babylon.js
-and Babylon Lite are Apache-2.0 projects. SDL, SDL_image, nlohmann-json, and
-downloaded assets retain their respective licenses.
+and Babylon Lite are Apache-2.0 projects. DAWN, SDL, and downloaded assets
+retain their respective licenses.
