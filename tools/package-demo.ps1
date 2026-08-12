@@ -3,7 +3,8 @@ param(
     [string]$OutputRoot = "artifacts\releases",
     [string]$BuildDirectory = "",
     [ValidateSet("", "SDL_GPU", "DAWN", "BOTH")]
-    [string]$ExpectBackend = ""
+    [string]$ExpectBackend = "",
+    [string]$Variant = ""
 )
 
 # Packages a portable Windows demo for one numbered scene. The payload
@@ -11,6 +12,11 @@ param(
 # (BBLITE_BACKEND): SDL_GPU ships offline DXIL/SPIR-V shaders and no
 # Dawn DLLs, DAWN ships WGSL text plus the Dawn runtime DLLs, and BOTH
 # ships the dual-backend development binary with both shader sets.
+# Statically linked builds (vcpkg x64-windows-static + BBLITE_MINSIZE,
+# Dawn from tools/build-dawn-min.ps1) are detected by the absence of
+# SDL3.dll / webgpu_dawn.dll beside the executable and ship no runtime
+# or CRT DLLs. -Variant appends a token to the package name
+# (for example -Variant min).
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -56,6 +62,9 @@ foreach ($required in @($executable, $shaderSource, $assetSource)) {
 }
 
 $backendToken = $backend.ToLowerInvariant().Replace("_", "-")
+if ($Variant) {
+    $backendToken = "$backendToken-$($Variant.ToLowerInvariant())"
+}
 $outputRootPath = Join-Path $root $OutputRoot
 $packageName = "bblitec-$Scene-$backendToken-windows-x64"
 $packageDirectory = Join-Path $outputRootPath $packageName
@@ -75,14 +84,23 @@ $licenses = Join-Path $packageDirectory "licenses"
 New-Item -ItemType Directory -Path $assets, $shaders, $licenses -Force | Out-Null
 
 Copy-Item $executable (Join-Path $packageDirectory $exeName)
-$runtimeDlls = @(
-    "SDL3.dll",
-    "SDL3_image.dll",
-    "jpeg62.dll",
-    "libpng16.dll",
-    "z.dll"
-)
-if ($backend -ne "SDL_GPU") {
+# Statically linked builds carry SDL (and Dawn) inside the executable:
+# no runtime DLLs sit beside it and no CRT redistributable is needed.
+# Dynamic builds ship the full DLL set exactly as before.
+$sdlShared = Test-Path (Join-Path $runtimeDirectory "SDL3.dll")
+$dawnShared = ($backend -ne "SDL_GPU") -and
+    (Test-Path (Join-Path $runtimeDirectory "webgpu_dawn.dll"))
+$runtimeDlls = @()
+if ($sdlShared) {
+    $runtimeDlls += @(
+        "SDL3.dll",
+        "SDL3_image.dll",
+        "jpeg62.dll",
+        "libpng16.dll",
+        "z.dll"
+    )
+}
+if ($dawnShared) {
     # Dawn resolves its compiler DLLs module-relative with hardened
     # LoadLibraryEx flags; all four must sit beside the executable.
     $runtimeDlls += @(
@@ -100,16 +118,18 @@ foreach ($dll in $runtimeDlls) {
     Copy-Item $source $packageDirectory
 }
 
-$redistRoot = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Redist\MSVC"
-$crtDirectory = Get-ChildItem $redistRoot -Directory |
-    Sort-Object Name -Descending |
-    ForEach-Object { Join-Path $_.FullName "x64\Microsoft.VC145.CRT" } |
-    Where-Object { Test-Path $_ } |
-    Select-Object -First 1
-if (-not $crtDirectory) {
-    throw "MSVC x64 CRT redistributable directory was not found under $redistRoot."
+if ($sdlShared) {
+    $redistRoot = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Redist\MSVC"
+    $crtDirectory = Get-ChildItem $redistRoot -Directory |
+        Sort-Object Name -Descending |
+        ForEach-Object { Join-Path $_.FullName "x64\Microsoft.VC145.CRT" } |
+        Where-Object { Test-Path $_ } |
+        Select-Object -First 1
+    if (-not $crtDirectory) {
+        throw "MSVC x64 CRT redistributable directory was not found under $redistRoot."
+    }
+    Copy-Item (Join-Path $crtDirectory "*.dll") $packageDirectory
 }
-Copy-Item (Join-Path $crtDirectory "*.dll") $packageDirectory
 
 Copy-Item (Join-Path $assetSource "*") $assets -Recurse
 
@@ -132,7 +152,24 @@ if (-not $shaderFiles) {
 }
 $shaderFiles | ForEach-Object { Copy-Item $_.FullName $shaders }
 
-$vcpkgShare = Join-Path $root "native\vcpkg_installed\x64-windows\share"
+# Third-party notices apply to static and dynamic linkage alike. The
+# vcpkg share tree lives in the build directory for manifest builds
+# (keyed by the configured triplet) with the legacy shared tree as a
+# fallback.
+$tripletEntry = Select-String -Path $cacheFile -Pattern "^VCPKG_TARGET_TRIPLET:\w+=(.+)$" |
+    Select-Object -First 1
+$triplet = if ($tripletEntry) {
+    $tripletEntry.Matches[0].Groups[1].Value.Trim()
+} else {
+    "x64-windows"
+}
+$vcpkgShare = @(
+    (Join-Path $buildPath "vcpkg_installed\$triplet\share"),
+    (Join-Path $root "native\vcpkg_installed\x64-windows\share")
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $vcpkgShare) {
+    throw "vcpkg share directory with dependency licenses was not found for $BuildDirectory."
+}
 $licensePackages = @{
     "SDL3.txt" = "sdl3"
     "SDL3_image.txt" = "sdl3-image"
@@ -148,9 +185,16 @@ foreach ($entry in $licensePackages.GetEnumerator()) {
     Copy-Item $source (Join-Path $licenses $entry.Key)
 }
 if ($backend -ne "SDL_GPU") {
-    $dawnLicense = Join-Path $root "artifacts\tools\dawn\LICENSE.txt"
+    $dawnDirEntry = Select-String -Path $cacheFile -Pattern "^BBLITE_DAWN_DIR:\w+=(.+)$" |
+        Select-Object -First 1
+    $dawnDir = if ($dawnDirEntry) {
+        $dawnDirEntry.Matches[0].Groups[1].Value.Trim()
+    } else {
+        Join-Path $root "artifacts\tools\dawn"
+    }
+    $dawnLicense = Join-Path $dawnDir "LICENSE.txt"
     if (-not (Test-Path $dawnLicense)) {
-        throw "Dawn license not found: $dawnLicense. Rebuild the Dawn library (tools/build-dawn.ps1)."
+        throw "Dawn license not found: $dawnLicense. Rebuild the Dawn library (tools/build-dawn.ps1 or tools/build-dawn-min.ps1)."
     }
     Copy-Item $dawnLicense (Join-Path $licenses "Dawn.txt")
 }
@@ -215,6 +259,12 @@ foreach ($report in @(
 $fidelitySection = if ($fidelityLines) {
     "Current D3D12 fidelity baseline (versus the pinned browser reference):`r`n" +
         ($fidelityLines -join "`r`n") + "`r`n`r`n"
+} else {
+    ""
+}
+
+$fxcNote = if (($backend -ne "SDL_GPU") -and -not $dawnShared) {
+    "`r`n  - Shaders compile through the Windows D3D compiler (d3dcompiler_47.dll), resolved from System32."
 } else {
     ""
 }

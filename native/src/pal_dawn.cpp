@@ -28,6 +28,12 @@
 #include <SDL3_image/SDL_image.h>
 #include <webgpu/webgpu.h>
 
+#if defined(_WIN32) && defined(BBLITE_DAWN_STATIC)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -3468,6 +3474,22 @@ bool run_dawn_engine(Engine& engine) {
     if (!state.window) {
         dawn_error(std::string("SDL_CreateWindow: ") + SDL_GetError());
     }
+
+#if defined(_WIN32) && defined(BBLITE_DAWN_STATIC)
+    // A static Dawn without built DXC compiles through FXC. Dawn
+    // resolves d3dcompiler_47.dll via absolute-path candidates (module
+    // and executable directories) and a final bare-name LoadLibraryEx
+    // whose LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR flag is invalid for
+    // relative names (ERROR_INVALID_PARAMETER), so with no compiler
+    // DLL beside the executable it never reaches System32. Preloading
+    // here makes Dawn's own load return the already-loaded module; the
+    // application directory keeps priority over System32, preserving
+    // the Chrome-style "ship the exact SDK compiler" override.
+    LoadLibraryExW(
+        L"d3dcompiler_47.dll",
+        nullptr,
+        LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+#endif
 
     static const WGPUInstanceFeatureName instance_features[] = {
         WGPUInstanceFeatureName_TimedWaitAny,
