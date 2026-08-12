@@ -1607,6 +1607,7 @@ SkyboxUniforms build_skybox_uniforms(
         sheen?: boolean;
         iridescence?: boolean;
         dispersion?: boolean;
+        occlusionUv2?: boolean;
     } = {
         ground: true,
         skybox: true,
@@ -2174,6 +2175,7 @@ ${directMarker}`,
             sheen: options.sheen === true,
             iridescence: options.iridescence === true,
             dispersion: options.dispersion === true,
+            occlusionUv2: options.occlusionUv2 === true,
         });
         const pbrProvenance = this.context.provenance(
             pbrTemplateModule,
@@ -2184,7 +2186,11 @@ ${directMarker}`,
             output: "upstream/shaders/pbr.frag.native.wgsl",
             data:
                 `// ${pbrProvenance}\n` +
-                pbrFragmentWgsl(convertedPbr, { kind: "color" }),
+                pbrFragmentWgsl(
+                    convertedPbr,
+                    { kind: "color" },
+                    options.occlusionUv2 === true,
+                ),
         });
         if (options.standardMaterial) {
             result.push({
@@ -2330,10 +2336,14 @@ ${directMarker}`,
                         `upstream/shaders/pbr-diagnostics-${variant}.frag.native.wgsl`,
                     data:
                         `// ${pbrProvenance}\n` +
-                        pbrFragmentWgsl(convertedPbr, {
-                            kind: "diagnostic",
-                            group: variant,
-                        }),
+                        pbrFragmentWgsl(
+                            convertedPbr,
+                            {
+                                kind: "diagnostic",
+                                group: variant,
+                            },
+                            options.occlusionUv2 === true,
+                        ),
                 });
             }
         }
@@ -2346,10 +2356,14 @@ ${directMarker}`,
                         pbrGeometryModule,
                         "attachmentExpr",
                     )}\n` +
-                    pbrFragmentWgsl(convertedPbr, {
-                        kind: "geometry",
-                        task,
-                    }),
+                    pbrFragmentWgsl(
+                        convertedPbr,
+                        {
+                            kind: "geometry",
+                            task,
+                        },
+                        options.occlusionUv2 === true,
+                    ),
             });
             if (options.standardMaterial) {
                 result.push({

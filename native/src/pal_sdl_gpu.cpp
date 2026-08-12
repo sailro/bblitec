@@ -60,6 +60,9 @@ constexpr std::uint32_t pbr_material_extension_binding_count =
 #if BBLITE_MATERIAL_IRIDESCENCE
     2u +
 #endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+    1u +
+#endif
     0u;
 
 constexpr std::uint32_t pbr_texture_binding_count =
@@ -101,6 +104,9 @@ struct GpuMesh {
     SDL_GPUTexture* iridescence = nullptr;
     SDL_GPUTexture* iridescence_thickness = nullptr;
 #endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+    SDL_GPUTexture* occlusion = nullptr;
+#endif
     SDL_GPUTexture* standard_emissive = nullptr;
     SDL_GPUTexture* reflection = nullptr;
     SDL_GPUSampler* base_color_sampler = nullptr;
@@ -121,6 +127,9 @@ struct GpuMesh {
 #if BBLITE_MATERIAL_IRIDESCENCE
     SDL_GPUSampler* iridescence_sampler = nullptr;
     SDL_GPUSampler* iridescence_thickness_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+    SDL_GPUSampler* occlusion_sampler = nullptr;
 #endif
     SDL_GPUSampler* standard_emissive_sampler = nullptr;
     std::uint32_t index_count = 0;
@@ -164,6 +173,12 @@ void append_material_extension_bindings(
     bindings[index++] = SDL_GPUTextureSamplerBinding{
         mesh.iridescence_thickness,
         mesh.iridescence_thickness_sampler,
+    };
+#endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+    bindings[index++] = SDL_GPUTextureSamplerBinding{
+        mesh.occlusion,
+        mesh.occlusion_sampler,
     };
 #endif
     (void)bindings;
@@ -2038,6 +2053,9 @@ void release(GpuState& state) {
         SDL_ReleaseGPUTexture(state.device, mesh.iridescence);
         SDL_ReleaseGPUTexture(state.device, mesh.iridescence_thickness);
 #endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+        SDL_ReleaseGPUTexture(state.device, mesh.occlusion);
+#endif
         SDL_ReleaseGPUTexture(state.device, mesh.standard_emissive);
         SDL_ReleaseGPUSampler(state.device, mesh.base_color_sampler);
         SDL_ReleaseGPUSampler(state.device, mesh.metallic_roughness_sampler);
@@ -2061,6 +2079,9 @@ void release(GpuState& state) {
         SDL_ReleaseGPUSampler(
             state.device,
             mesh.iridescence_thickness_sampler);
+#endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+        SDL_ReleaseGPUSampler(state.device, mesh.occlusion_sampler);
 #endif
         SDL_ReleaseGPUSampler(
             state.device,
@@ -3689,6 +3710,9 @@ bool run_gpu_engine(Engine& engine) {
             const TextureData* iridescence = nullptr;
             const TextureData* iridescence_thickness = nullptr;
 #endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+            const TextureData* occlusion = nullptr;
+#endif
             const TextureData* standard_emissive = nullptr;
             bool has_pbr_emissive_factor = false;
             const bool standard_material =
@@ -3745,6 +3769,13 @@ bool run_gpu_engine(Engine& engine) {
                 iridescence_thickness = standard_material
                     ? nullptr
                     : &material.iridescence_thickness_texture;
+#endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+                occlusion =
+                    standard_material ||
+                            !material.occlusion_texture_uv2
+                        ? nullptr
+                        : &material.occlusion_texture;
 #endif
                 if (
                     standard_material &&
@@ -3892,6 +3923,16 @@ bool run_gpu_engine(Engine& engine) {
                     iridescence_thickness
                         ? iridescence_thickness->sampler
                         : TextureSamplerState{});
+#endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+            gpu_mesh.occlusion = upload_texture(
+                state.device,
+                occlusion ? *occlusion : TextureData{},
+                false,
+                {255, 255, 255, 255});
+            gpu_mesh.occlusion_sampler = create_texture_sampler(
+                state.device,
+                occlusion ? occlusion->sampler : TextureSamplerState{});
 #endif
             gpu_mesh.standard_emissive = upload_texture(
                 state.device,

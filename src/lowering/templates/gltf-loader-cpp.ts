@@ -1038,7 +1038,80 @@ MaterialHandle load_material(
         material.normal_texture_scale =
             float_or(normal_texture->as_object(), "scale", 1.0f);
     }
-    material.has_occlusion_texture = optional(material_json, "occlusionTexture") != nullptr;
+    const ts::JsonValue* occlusion_texture_info =
+        optional(material_json, "occlusionTexture");
+    material.has_occlusion_texture = occlusion_texture_info != nullptr;
+    if (occlusion_texture_info) {
+        // Babylon Lite's buildDefaultPbrTexturesExt: an occlusion
+        // texture on TEXCOORD_1 without a metallic-roughness image
+        // keeps the factor-driven ORM slot and binds the occlusion
+        // image through the dedicated uv2 pair; on TEXCOORD_0 the
+        // occlusion image itself becomes the ORM texture while
+        // assemblePbrPropsExt drops the glTF metallic and roughness
+        // factors (the engine defaults of 1.0 apply). Distinct
+        // metallic-roughness and occlusion images composite upstream
+        // and stay unreached natively.
+        const ts::JsonValue* metallic_roughness_info = nullptr;
+        if (const ts::JsonValue* pbr_value =
+                optional(material_json, "pbrMetallicRoughness")) {
+            metallic_roughness_info = optional(
+                pbr_value->as_object(),
+                "metallicRoughnessTexture");
+        }
+        const auto texture_image =
+            [&](const ts::JsonValue* info) -> std::size_t {
+                const std::size_t texture_index = unsigned_value(
+                    required(info->as_object(), "index"));
+                return unsigned_value(
+                    required(
+                        textures.at(texture_index).as_object(),
+                        "source"));
+            };
+        const std::size_t occlusion_uv = unsigned_or(
+            occlusion_texture_info->as_object(),
+            "texCoord",
+            0);
+        if (occlusion_uv == 1) {
+            if (metallic_roughness_info) {
+                throw std::runtime_error(
+                    "Reached glTF occlusion texture on TEXCOORD_1 "
+                    "alongside a metallic-roughness texture is not "
+                    "lowered.");
+            }
+            material.occlusion_texture = texture_data(
+                buffer,
+                container,
+                views,
+                images,
+                textures,
+                samplers,
+                occlusion_texture_info);
+            material.occlusion_texture_uv2 = true;
+        } else if (occlusion_uv == 0) {
+            if (!metallic_roughness_info) {
+                material.metallic_roughness_texture = texture_data(
+                    buffer,
+                    container,
+                    views,
+                    images,
+                    textures,
+                    samplers,
+                    occlusion_texture_info);
+                material.metallic_factor = 1.0f;
+                material.roughness_factor = 1.0f;
+            } else if (
+                texture_image(metallic_roughness_info) !=
+                texture_image(occlusion_texture_info)) {
+                throw std::runtime_error(
+                    "Reached glTF material uses distinct occlusion "
+                    "and metallic-roughness images.");
+            }
+        } else {
+            throw std::runtime_error(
+                "Reached glTF occlusion texture uses an unsupported "
+                "texture-coordinate set.");
+        }
+    }
     if (const ts::JsonValue* extensions_value = optional(material_json, "extensions")) {
         const JsonObject& extensions = extensions_value->as_object();
         material.unlit = optional(extensions, "KHR_materials_unlit") != nullptr;
@@ -1678,6 +1751,9 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             const AccessorInfo* texcoords = optional(attributes, "TEXCOORD_0")
                 ? &accessors.at(unsigned_value(*optional(attributes, "TEXCOORD_0")))
                 : nullptr;
+            const AccessorInfo* texcoords1 = optional(attributes, "TEXCOORD_1")
+                ? &accessors.at(unsigned_value(*optional(attributes, "TEXCOORD_1")))
+                : nullptr;
             const AccessorInfo* colors = optional(attributes, "COLOR_0")
                 ? &accessors.at(unsigned_value(*optional(attributes, "COLOR_0")))
                 : nullptr;
@@ -1903,6 +1979,12 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     vertex.uv = Vec2{
                         read_component(buffer, container, views, *texcoords, index, 0),
                         read_component(buffer, container, views, *texcoords, index, 1),
+                    };
+                }
+                if (texcoords1) {
+                    vertex.uv2 = Vec2{
+                        read_component(buffer, container, views, *texcoords1, index, 0),
+                        read_component(buffer, container, views, *texcoords1, index, 1),
                     };
                 }
                 if (colors) {

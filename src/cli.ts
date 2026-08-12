@@ -222,6 +222,7 @@ async function main(): Promise<void> {
         sheen: specializationFeatures.sheen,
         iridescence: specializationFeatures.iridescence,
         dispersion: specializationFeatures.dispersion,
+        occlusionUv2: specializationFeatures.occlusionUv2,
     });
     writeFileSync(resolve(outputPath, "main.cpp"), result.cpp);
     writeFileSync(resolve(outputPath, "features.cmake"), result.cmake);

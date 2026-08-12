@@ -18,6 +18,7 @@ interface GltfSpecialization {
         sparseAccessors: boolean;
         nonTrianglePrimitives: boolean;
         extras: boolean;
+        occlusionUv2: boolean;
     };
 }
 
@@ -193,6 +194,13 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
         (primitive) => typeof primitive.mode === "number" && primitive.mode !== 4,
     );
     const extras = hasExtras(document);
+    // Babylon Lite's pbr-template-ext appends a dedicated occlusion
+    // texture pair sampled at uv2 when a material's occlusionTexture
+    // selects TEXCOORD_1.
+    const occlusionUv2 = asRecords(document.materials).some(
+        (material) =>
+            asRecord(material.occlusionTexture)?.texCoord === 1,
+    );
 
     if (animations) modules.add("./gltf-feature-animations.js");
     if (morphTargets) modules.add("./gltf-feature-morph.js");
@@ -214,6 +222,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
             sparseAccessors,
             nonTrianglePrimitives,
             extras,
+            occlusionUv2,
         },
     };
 }
@@ -229,6 +238,7 @@ export interface AssetSpecializationFeatures {
     sheen: boolean;
     iridescence: boolean;
     dispersion: boolean;
+    occlusionUv2: boolean;
 }
 
 export function emitAssetSpecializations(
@@ -248,6 +258,7 @@ export function emitAssetSpecializations(
             sheen: false,
             iridescence: false,
             dispersion: false,
+            occlusionUv2: false,
         };
     }
     let nextDrawId = 1;
@@ -293,5 +304,9 @@ export function emitAssetSpecializations(
         sheen: usesExtension("KHR_materials_sheen"),
         iridescence: usesExtension("KHR_materials_iridescence"),
         dispersion: usesExtension("KHR_materials_dispersion"),
+        occlusionUv2: specializations.some(
+            (specialization) =>
+                specialization.features.occlusionUv2,
+        ),
     };
 }

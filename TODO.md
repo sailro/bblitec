@@ -107,7 +107,11 @@ CPU-side from GPU-side causes immediately.
 
 ### glTF
 
-- [ ] Multiple UV sets and texture-coordinate selection.
+- [ ] Multiple UV sets and texture-coordinate selection beyond the
+  reached TEXCOORD_1 occlusion slice (the loader reads TEXCOORD_1 and
+  the dedicated uv2 occlusion pair is ported; base color, normal,
+  emissive, and metallic-roughness texCoord selection remain
+  unsupported).
 - [ ] Generalize texture transforms beyond one shared scale to per-slot
   offsets, rotations, and independent transforms.
 - [ ] Vertex colors beyond the reached alpha/mask slice.
@@ -177,29 +181,20 @@ CPU-side from GPU-side causes immediately.
 - [ ] Add headless renderer tests.
 - [ ] Add differential tests for camera, environment, material, and transform
   functions.
-- [ ] Close the residual morph and instancing raster-edge gaps in Scenes 243
-  and 247 without expanding geometry or adding scene-specific tolerances.
-  Both residuals are achromatic 4x-MSAA coverage stepping on deformed or
-  instanced silhouettes; interiors are within 2 LSB. Four suspects are
-  now eliminated by experiment: evaluation place (the pinned
-  storage-buffer morph path renders bit-identically to the former CPU
-  fallback), shader codegen and rasterization (the Dawn backend — the
-  browser's own Tint/DXC/D3D12 stack — reproduces SDL_GPU within one
-  LSB on 147/159 pixels while both differ from the golden identically),
-  input precision (recomputing keyframe interpolation, morph weights,
-  bone matrices, and instance/parent world composition with float64
-  intermediates rounded once at upload changed neither scene by a
-  thousandth — these scenes' inputs are exactly representable), and
-  pose timing (a seek sweep around the reference time minimizes MAD
-  exactly at the registered 0.5 s with symmetric rise). The remaining
-  structural difference is the shader source itself: the browser
-  compiles its own composed WGSL while the native backends compile the
-  generated variant — the same compiler over different source text
-  schedules the deformation arithmetic differently — plus whatever
-  sub-frame evaluation structure the browser applies beyond the seek
-  time. Next probe: capture the browser's actually-uploaded bone/weight
-  buffers, or diff against a native render fed the browser's composed
-  WGSL verbatim.
+- [ ] Close the residual instancing raster-edge gap in Scene 247 without
+  expanding geometry or adding scene-specific tolerances. Scene 243's
+  companion floor is closed: instrumented browser captures (hooked
+  shader modules, buffer/texture uploads, and render-bundle draws)
+  proved every deformation input bit-identical and localized the band
+  to the platform slab's TEXCOORD_1 occlusion texture, which the
+  native pipeline dropped — the dedicated uv2 occlusion pair took it
+  from 1.043 to 0.052 foreground MAD on both backends. That result
+  removes the assumption that 247 shares a cause with 243; its 0.405
+  foreground MAD keeps its own evidence (achromatic MSAA coverage
+  stepping on instanced silhouettes, Dawn reproducing SDL_GPU within
+  one LSB) and deserves the same instrumented differential capture
+  (per-draw isolation, uploaded instance matrices, composed WGSL)
+  before further arithmetic theories.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 
