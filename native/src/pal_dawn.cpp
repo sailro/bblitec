@@ -192,8 +192,22 @@ struct DawnState {
     WGPUQueue queue = nullptr;
     WGPUSurface surface = nullptr;
     WGPUTextureFormat surface_format = WGPUTextureFormat_BGRA8Unorm;
+    // Transmission scenes render the frame in linear rgba16float and
+    // apply image processing at the end; everything else targets the
+    // surface format directly.
+    WGPUTextureFormat frame_color_format = WGPUTextureFormat_BGRA8Unorm;
     WGPUTexture msaa_color = nullptr;
     WGPUTextureView msaa_color_view = nullptr;
+    WGPUSampler transmission_sampler = nullptr;
+    WGPUTexture transmission_color = nullptr;
+    WGPUTextureView transmission_color_view = nullptr;
+    std::uint32_t transmission_mip_count = 1;
+    WGPUShaderModule transmission_grab_module = nullptr;
+    WGPURenderPipeline transmission_grab_pipeline = nullptr;
+    WGPUShaderModule image_processing_module = nullptr;
+    WGPURenderPipeline image_processing_pipeline = nullptr;
+    WGPUBuffer image_processing_params = nullptr;
+    WGPUBindGroup image_processing_group = nullptr;
     WGPUTexture depth = nullptr;
     WGPUTextureView depth_view = nullptr;
     WGPUShaderModule vertex_module = nullptr;
@@ -478,6 +492,33 @@ struct DawnState {
         if (blit_vertex_module) {
             wgpuShaderModuleRelease(blit_vertex_module);
         }
+        if (image_processing_group) {
+            wgpuBindGroupRelease(image_processing_group);
+        }
+        if (image_processing_params) {
+            wgpuBufferRelease(image_processing_params);
+        }
+        if (image_processing_pipeline) {
+            wgpuRenderPipelineRelease(image_processing_pipeline);
+        }
+        if (image_processing_module) {
+            wgpuShaderModuleRelease(image_processing_module);
+        }
+        if (transmission_grab_pipeline) {
+            wgpuRenderPipelineRelease(transmission_grab_pipeline);
+        }
+        if (transmission_grab_module) {
+            wgpuShaderModuleRelease(transmission_grab_module);
+        }
+        if (transmission_color_view) {
+            wgpuTextureViewRelease(transmission_color_view);
+        }
+        if (transmission_color) {
+            wgpuTextureRelease(transmission_color);
+        }
+        if (transmission_sampler) {
+            wgpuSamplerRelease(transmission_sampler);
+        }
         if (nearest_sampler) wgpuSamplerRelease(nearest_sampler);
         if (mesh_pipeline_layout) {
             wgpuPipelineLayoutRelease(mesh_pipeline_layout);
@@ -723,9 +764,12 @@ WGPURenderPipeline mip_pipeline_for(
 }
 
 // The pinned generator blits one face at a time for cube textures
-// (recordMipmaps' optional layer): views become single-layer 2D.
-void generate_mipmaps(
+// (recordMipmaps' optional layer): views become single-layer 2D. The
+// record variant encodes into a caller-owned encoder (the pinned
+// recordMipmaps) so mid-frame chains stay ordered with the frame.
+void record_mipmaps(
     DawnState& state,
+    WGPUCommandEncoder encoder,
     WGPUTexture texture,
     WGPUTextureFormat format,
     std::uint32_t mip_count,
@@ -734,8 +778,6 @@ void generate_mipmaps(
     WGPURenderPipeline pipeline = mip_pipeline_for(state, format);
     WGPUBindGroupLayout layout =
         wgpuRenderPipelineGetBindGroupLayout(pipeline, 0);
-    WGPUCommandEncoder encoder =
-        wgpuDeviceCreateCommandEncoder(state.device, nullptr);
     for (std::uint32_t level = 1; level < mip_count; ++level) {
         WGPUTextureViewDescriptor source_descriptor =
             WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
@@ -796,6 +838,18 @@ void generate_mipmaps(
         wgpuTextureViewRelease(source);
     }
     wgpuBindGroupLayoutRelease(layout);
+}
+
+void generate_mipmaps(
+    DawnState& state,
+    WGPUTexture texture,
+    WGPUTextureFormat format,
+    std::uint32_t mip_count,
+    std::int32_t face = -1) {
+    if (mip_count <= 1) return;
+    WGPUCommandEncoder encoder =
+        wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+    record_mipmaps(state, encoder, texture, format, mip_count, face);
     WGPUCommandBuffer command = wgpuCommandEncoderFinish(encoder, nullptr);
     wgpuQueueSubmit(state.queue, 1, &command);
     wgpuCommandBufferRelease(command);
@@ -1688,7 +1742,7 @@ DawnPipeline& pipeline_for(
         traits.card_a2c && samples == 4;
 
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
-    color_target.format = state.surface_format;
+    color_target.format = state.frame_color_format;
     WGPUBlendState blend{};
     if (traits.transparent || traits.cutout) {
         blend.color.operation = WGPUBlendOperation_Add;
@@ -1877,6 +1931,247 @@ WGPURenderPipeline geometry_pipeline_for(
     if (!pipeline) dawn_error("geometry pipeline creation failed.");
     geometry.pipelines[kind] = pipeline;
     return pipeline;
+}
+
+// Verbatim transcriptions of the pinned transmission scene-color grab
+// (frame-graph/transmission.ts BLIT_MSAA_SHADER: per-texel sample
+// average with manual bilinear filtering, read straight from the
+// multisampled attachment) and the pinned per-sample image processing
+// (frame-graph/image-processing-task.ts: exposure, optional tonemap,
+// gamma, contrast applied per MSAA sample, then averaged).
+constexpr const char* transmission_grab_wgsl =
+    "@group(0)@binding(0)var t:texture_multisampled_2d<f32>;struct "
+    "V{@builtin(position)p:vec4f,@location(0)u:vec2f};@vertex fn "
+    "vs(@builtin(vertex_index)i:u32)->V{var "
+    "p=array<vec2f,3>(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3));var "
+    "u=array<vec2f,3>(vec2f(0,1),vec2f(2,1),vec2f(0,-1));return "
+    "V(vec4f(p[i],0,1),u[i]);}fn l(p:vec2i)->vec4f{let "
+    "n=textureNumSamples(t);var c=vec4f(0);for(var "
+    "i=0u;i<n;i++){c+=textureLoad(t,p,i);}return c/f32(n);}@fragment "
+    "fn fs(v:V)->@location(0)vec4f{let "
+    "d=vec2i(textureDimensions(t));let "
+    "q=clamp(v.u*vec2f(d)-.5,vec2f(0),vec2f(d-vec2i(1)));let "
+    "p=vec2i(floor(q));let f=fract(q);let "
+    "p1=min(p+vec2i(1),d-vec2i(1));return "
+    "mix(mix(l(p),l(vec2i(p1.x,p.y)),f.x),mix(l(vec2i(p.x,p1.y)),l(p1)"
+    ",f.x),f.y);}";
+
+constexpr const char* image_processing_wgsl =
+    "struct P{e:f32,c:f32,t:f32,p:f32}\n"
+    "@group(0)@binding(0)var<uniform> p:P;\n"
+    "@vertex fn vs(@builtin(vertex_index)i:u32)->@builtin(position) "
+    "vec4f{var "
+    "a=array<vec2f,3>(vec2f(-1,-3),vec2f(3,1),vec2f(-1,1));return "
+    "vec4f(a[i],0,1);}\n"
+    "fn ip(r:vec4f)->vec4f{var c=r.rgb*p.e;\n"
+    "if(p.t>0.5){c=1.0-exp2(-1.590579*c);}\n"
+    "c=clamp(pow(max(c,vec3f(0)),vec3f(1/2.2)),vec3f(0),vec3f(1));\n"
+    "let h=c*c*(3.0-2.0*c);\n"
+    "if(p.c<1.0){c=mix(vec3f(0.5),c,p.c);}else{c=mix(c,h,p.c-1.0);}\n"
+    "return vec4f(max(c,vec3f(0)),r.a);}\n"
+    "@group(0)@binding(1)var s:texture_multisampled_2d<f32>;\n"
+    "@fragment fn fs(@builtin(position) q:vec4f)->@location(0) "
+    "vec4f{let d=textureDimensions(s);let "
+    "px=clamp(vec2i(q.xy),vec2i(0),vec2i(d)-1);let "
+    "n=textureNumSamples(s);var c=vec4f(0);for(var "
+    "i=0u;i<n;i++){c+=ip(textureLoad(s,px,i));}return c/f32(n);}";
+
+WGPUShaderModule create_inline_module(
+    DawnState& state,
+    const char* source,
+    const char* label) {
+    WGPUShaderSourceWGSL wgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
+    wgsl.code = string_view(source);
+    WGPUShaderModuleDescriptor descriptor{};
+    descriptor.nextInChain = &wgsl.chain;
+    descriptor.label = string_view(label);
+    WGPUShaderModule module =
+        wgpuDeviceCreateShaderModule(state.device, &descriptor);
+    if (!module) dawn_error(std::string("shader module ") + label);
+    return module;
+}
+
+// Encodes the pinned mid-pass scene-color grab: the fullscreen
+// sample-averaging blit into transmission mip 0 followed by the
+// standard blit mip chain.
+void encode_transmission_grab(
+    DawnState& state,
+    WGPUCommandEncoder encoder) {
+    if (!state.transmission_grab_pipeline) {
+        state.transmission_grab_module = create_inline_module(
+            state,
+            transmission_grab_wgsl,
+            "transmission-grab");
+        WGPURenderPipelineDescriptor descriptor =
+            WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+        descriptor.vertex.module = state.transmission_grab_module;
+        descriptor.vertex.entryPoint = string_view("vs");
+        descriptor.primitive.topology =
+            WGPUPrimitiveTopology_TriangleList;
+        WGPUColorTargetState color_target =
+            WGPU_COLOR_TARGET_STATE_INIT;
+        color_target.format = WGPUTextureFormat_RGBA16Float;
+        WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+        fragment.module = state.transmission_grab_module;
+        fragment.entryPoint = string_view("fs");
+        fragment.targetCount = 1;
+        fragment.targets = &color_target;
+        descriptor.fragment = &fragment;
+        state.transmission_grab_pipeline =
+            wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+        if (!state.transmission_grab_pipeline) {
+            dawn_error("transmission grab pipeline creation failed.");
+        }
+    }
+    WGPUBindGroupLayout layout = wgpuRenderPipelineGetBindGroupLayout(
+        state.transmission_grab_pipeline,
+        0);
+    WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    entry.binding = 0;
+    entry.textureView = state.msaa_color_view;
+    WGPUBindGroupDescriptor bind_descriptor =
+        WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    bind_descriptor.layout = layout;
+    bind_descriptor.entryCount = 1;
+    bind_descriptor.entries = &entry;
+    WGPUBindGroup bind_group =
+        wgpuDeviceCreateBindGroup(state.device, &bind_descriptor);
+    wgpuBindGroupLayoutRelease(layout);
+    WGPUTextureViewDescriptor level_descriptor =
+        WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+    level_descriptor.baseMipLevel = 0;
+    level_descriptor.mipLevelCount = 1;
+    WGPUTextureView level_view = wgpuTextureCreateView(
+        state.transmission_color,
+        &level_descriptor);
+    WGPURenderPassColorAttachment color_attachment =
+        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+    color_attachment.view = level_view;
+    color_attachment.loadOp = WGPULoadOp_Clear;
+    color_attachment.storeOp = WGPUStoreOp_Store;
+    WGPURenderPassDescriptor pass_descriptor =
+        WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+    pass_descriptor.colorAttachmentCount = 1;
+    pass_descriptor.colorAttachments = &color_attachment;
+    WGPURenderPassEncoder pass =
+        wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+    wgpuRenderPassEncoderSetPipeline(
+        pass,
+        state.transmission_grab_pipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, bind_group, 0, nullptr);
+    wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
+    wgpuBindGroupRelease(bind_group);
+    wgpuTextureViewRelease(level_view);
+    record_mipmaps(
+        state,
+        encoder,
+        state.transmission_color,
+        WGPUTextureFormat_RGBA16Float,
+        state.transmission_mip_count);
+}
+
+// The pinned final pass: per-sample image processing of the linear
+// multisampled frame straight into the surface (the payoff SDL_GPU
+// could not express — it had to process the resolved pixel once).
+void encode_image_processing(
+    DawnState& state,
+    WGPUCommandEncoder encoder,
+    WGPUTextureView surface_view,
+    const Scene& scene) {
+    if (!state.image_processing_pipeline) {
+        state.image_processing_module = create_inline_module(
+            state,
+            image_processing_wgsl,
+            "image-processing");
+        WGPURenderPipelineDescriptor descriptor =
+            WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+        descriptor.vertex.module = state.image_processing_module;
+        descriptor.vertex.entryPoint = string_view("vs");
+        descriptor.primitive.topology =
+            WGPUPrimitiveTopology_TriangleList;
+        WGPUColorTargetState color_target =
+            WGPU_COLOR_TARGET_STATE_INIT;
+        color_target.format = state.surface_format;
+        WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+        fragment.module = state.image_processing_module;
+        fragment.entryPoint = string_view("fs");
+        fragment.targetCount = 1;
+        fragment.targets = &color_target;
+        descriptor.fragment = &fragment;
+        state.image_processing_pipeline =
+            wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+        if (!state.image_processing_pipeline) {
+            dawn_error("image processing pipeline creation failed.");
+        }
+        state.image_processing_params = create_buffer(
+            state,
+            WGPUBufferUsage_Uniform,
+            nullptr,
+            16);
+        WGPUBindGroupLayout layout =
+            wgpuRenderPipelineGetBindGroupLayout(
+                state.image_processing_pipeline,
+                0);
+        std::array<WGPUBindGroupEntry, 2> entries{};
+        entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+        entries[0].binding = 0;
+        entries[0].buffer = state.image_processing_params;
+        entries[0].size = 16;
+        entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+        entries[1].binding = 1;
+        entries[1].textureView = state.msaa_color_view;
+        WGPUBindGroupDescriptor bind_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        bind_descriptor.layout = layout;
+        bind_descriptor.entryCount = entries.size();
+        bind_descriptor.entries = entries.data();
+        state.image_processing_group =
+            wgpuDeviceCreateBindGroup(state.device, &bind_descriptor);
+        wgpuBindGroupLayoutRelease(layout);
+    }
+    const std::array<float, 4> params{
+        scene.environment.exposure,
+        scene.environment.contrast,
+        scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
+        0.0f,
+    };
+    wgpuQueueWriteBuffer(
+        state.queue,
+        state.image_processing_params,
+        0,
+        params.data(),
+        sizeof(params));
+    WGPURenderPassColorAttachment color_attachment =
+        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+    color_attachment.view = surface_view;
+    color_attachment.loadOp = WGPULoadOp_Clear;
+    color_attachment.storeOp = WGPUStoreOp_Store;
+    color_attachment.clearValue = WGPUColor{
+        scene.clear_color.r,
+        scene.clear_color.g,
+        scene.clear_color.b,
+        scene.clear_color.a,
+    };
+    WGPURenderPassDescriptor pass_descriptor =
+        WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+    pass_descriptor.colorAttachmentCount = 1;
+    pass_descriptor.colorAttachments = &color_attachment;
+    WGPURenderPassEncoder pass =
+        wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+    wgpuRenderPassEncoderSetPipeline(
+        pass,
+        state.image_processing_pipeline);
+    wgpuRenderPassEncoderSetBindGroup(
+        pass,
+        0,
+        state.image_processing_group,
+        0,
+        nullptr);
+    wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
 }
 
 // Copies a sampled depth attachment into an r32float color texture so
@@ -2106,14 +2401,20 @@ DawnMeshBindings& bindings_for(
     };
     // The transmission trio and material-extension pairs append after
     // the base six. The superset layout requires every pair for every
-    // kind; shaders that ignore a slot never sample it. Without an
-    // implemented scene-color grab, the scene-color slot binds the
-    // base color exactly like the SDL backend does when transmission
-    // is disabled at runtime.
+    // kind; shaders that ignore a slot never sample it. The
+    // scene-color slot binds the grab texture through the pinned
+    // repeat trilinear anisotropic sampler when transmission runs,
+    // and the base color as an inert stand-in otherwise (exactly like
+    // the SDL backend with transmission disabled at runtime).
     std::size_t pair = 6;
 #if defined(BBLITE_RENDERER_TRANSMISSION)
-    views[pair] = mesh.views[0];
-    samplers[pair] = mesh.samplers[0];
+    if (state.transmission_color_view) {
+        views[pair] = state.transmission_color_view;
+        samplers[pair] = state.transmission_sampler;
+    } else {
+        views[pair] = mesh.views[0];
+        samplers[pair] = mesh.samplers[0];
+    }
     ++pair;
     views[pair] = mesh.views[5];
     samplers[pair] = mesh.samplers[5];
@@ -2201,8 +2502,10 @@ bool run_dawn_engine(Engine& engine) {
         throw std::runtime_error("Dawn renderer requires a registered scene.");
     }
     Scene& scene = *engine.registered_scenes.front();
-    if (scene.transmission_enabled) {
-        dawn_error("transmission is not implemented yet.");
+    if (scene.transmission_enabled && !scene.tasks.empty()) {
+        dawn_error(
+            "transmission combined with frame-graph tasks is not "
+            "implemented yet.");
     }
     for (const TaskHandle handle : scene.tasks) {
         if (handle.value >= engine.frame_tasks.size()) {
@@ -2448,19 +2751,58 @@ bool run_dawn_engine(Engine& engine) {
     surface_configuration.presentMode = WGPUPresentMode_Immediate;
     wgpuSurfaceConfigure(state.surface, &surface_configuration);
 
-    // Shared frame targets: 4x MSAA color resolving into the surface
-    // texture, and the browser's depth24plus-stencil8 depth buffer.
+    // Shared frame targets: 4x MSAA color (surface format, or linear
+    // rgba16float for transmission frames whose multisampled texture
+    // feeds the grab and the per-sample image processing) and the
+    // browser's depth24plus-stencil8 depth buffer.
+    state.frame_color_format = scene.transmission_enabled
+        ? WGPUTextureFormat_RGBA16Float
+        : state.surface_format;
     {
         WGPUTextureDescriptor color_descriptor =
             WGPU_TEXTURE_DESCRIPTOR_INIT;
-        color_descriptor.usage = WGPUTextureUsage_RenderAttachment;
+        color_descriptor.usage = scene.transmission_enabled
+            ? WGPUTextureUsage_RenderAttachment |
+                WGPUTextureUsage_TextureBinding
+            : WGPUTextureUsage_RenderAttachment;
         color_descriptor.size = {width, height, 1};
-        color_descriptor.format = state.surface_format;
+        color_descriptor.format = state.frame_color_format;
         color_descriptor.sampleCount = 4;
         state.msaa_color =
             wgpuDeviceCreateTexture(state.device, &color_descriptor);
         state.msaa_color_view =
             wgpuTextureCreateView(state.msaa_color, nullptr);
+        if (scene.transmission_enabled) {
+            // The pinned refraction target: 1024x1024 rgba16float
+            // with the full chain minus the fixed 4-mip LOD bias.
+            constexpr std::uint32_t transmission_size = 1024;
+            constexpr std::uint32_t transmission_full_mips = 11;
+            state.transmission_mip_count = transmission_full_mips - 4;
+            WGPUTextureDescriptor transmission_descriptor =
+                WGPU_TEXTURE_DESCRIPTOR_INIT;
+            transmission_descriptor.usage =
+                WGPUTextureUsage_RenderAttachment |
+                WGPUTextureUsage_TextureBinding;
+            transmission_descriptor.size = {
+                transmission_size,
+                transmission_size,
+                1,
+            };
+            transmission_descriptor.format =
+                WGPUTextureFormat_RGBA16Float;
+            transmission_descriptor.mipLevelCount =
+                state.transmission_mip_count;
+            state.transmission_color = wgpuDeviceCreateTexture(
+                state.device,
+                &transmission_descriptor);
+            if (!state.transmission_color) {
+                dawn_error(
+                    "wgpuDeviceCreateTexture transmission color");
+            }
+            state.transmission_color_view = wgpuTextureCreateView(
+                state.transmission_color,
+                nullptr);
+        }
         WGPUTextureDescriptor depth_descriptor =
             WGPU_TEXTURE_DESCRIPTOR_INIT;
         depth_descriptor.usage = WGPUTextureUsage_RenderAttachment;
@@ -2551,6 +2893,20 @@ bool run_dawn_engine(Engine& engine) {
             WGPU_SAMPLER_DESCRIPTOR_INIT;
         state.nearest_sampler =
             wgpuDeviceCreateSampler(state.device, &nearest_descriptor);
+        // The pinned scene-color sampler: repeat trilinear with
+        // anisotropy 4 (getTrilinearAnisotropicSampler).
+        WGPUSamplerDescriptor transmission_descriptor =
+            WGPU_SAMPLER_DESCRIPTOR_INIT;
+        transmission_descriptor.addressModeU = WGPUAddressMode_Repeat;
+        transmission_descriptor.addressModeV = WGPUAddressMode_Repeat;
+        transmission_descriptor.addressModeW = WGPUAddressMode_Repeat;
+        transmission_descriptor.magFilter = WGPUFilterMode_Linear;
+        transmission_descriptor.minFilter = WGPUFilterMode_Linear;
+        transmission_descriptor.mipmapFilter =
+            WGPUMipmapFilterMode_Linear;
+        transmission_descriptor.maxAnisotropy = 4;
+        state.transmission_sampler =
+            wgpuDeviceCreateSampler(state.device, &transmission_descriptor);
     }
 #if BBLITE_GPU_MORPH_STORAGE
     {
@@ -2810,13 +3166,6 @@ bool run_dawn_engine(Engine& engine) {
                 material.emissive_factor.r != 0.0f ||
                 material.emissive_factor.g != 0.0f ||
                 material.emissive_factor.b != 0.0f;
-            if (
-                !standard_material &&
-                (material.transmission_factor > 0.0f ||
-                 !material.transmission_texture.bytes.empty())) {
-                dawn_error(
-                    "transmissive materials are not implemented yet.");
-            }
             if (!standard_material) {
 #if defined(BBLITE_RENDERER_TRANSMISSION)
                 slot_data[5] = &material.transmission_texture;
@@ -3072,7 +3421,7 @@ bool run_dawn_engine(Engine& engine) {
         descriptor.multisample.mask = ~0u;
         WGPUColorTargetState color_target =
             WGPU_COLOR_TARGET_STATE_INIT;
-        color_target.format = state.surface_format;
+        color_target.format = state.frame_color_format;
         WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
         fragment.module = state.skybox_module;
         fragment.entryPoint = string_view("mainFragment");
@@ -3222,7 +3571,7 @@ bool run_dawn_engine(Engine& engine) {
         descriptor.multisample.mask = ~0u;
         WGPUColorTargetState color_target =
             WGPU_COLOR_TARGET_STATE_INIT;
-        color_target.format = state.surface_format;
+        color_target.format = state.frame_color_format;
         WGPUBlendState blend{};
         blend.color.operation = WGPUBlendOperation_Add;
         blend.color.srcFactor = WGPUBlendFactor_One;
@@ -3563,7 +3912,9 @@ bool run_dawn_engine(Engine& engine) {
                     : matrix.data(),
                 64);
             const upstream::SkyboxUniforms skybox =
-                upstream::build_skybox_uniforms(scene.environment, false);
+                upstream::build_skybox_uniforms(
+                    scene.environment,
+                    scene.transmission_enabled);
             wgpuQueueWriteBuffer(
                 state.queue,
                 state.skybox_uniforms,
@@ -3755,22 +4106,51 @@ bool run_dawn_engine(Engine& engine) {
             }
         };
         if (scene.tasks.empty()) {
+        const bool transmission = scene.transmission_enabled;
         WGPURenderPassColorAttachment color_attachment =
             WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
         color_attachment.view = state.msaa_color_view;
-        color_attachment.resolveTarget = surface_view;
+        if (transmission) {
+            // The linear frame keeps its multisampled texture for the
+            // grab and the per-sample image processing; the clear
+            // color inverts the image processing exactly like the
+            // SDL backend and the pinned engine.
+            color_attachment.storeOp = WGPUStoreOp_Store;
+            color_attachment.clearValue = WGPUColor{
+                inverse_image_processed_channel(
+                    scene.clear_color.r,
+                    scene.environment.exposure,
+                    scene.environment.contrast,
+                    scene.environment.tone_mapping_enabled),
+                inverse_image_processed_channel(
+                    scene.clear_color.g,
+                    scene.environment.exposure,
+                    scene.environment.contrast,
+                    scene.environment.tone_mapping_enabled),
+                inverse_image_processed_channel(
+                    scene.clear_color.b,
+                    scene.environment.exposure,
+                    scene.environment.contrast,
+                    scene.environment.tone_mapping_enabled),
+                scene.clear_color.a,
+            };
+        } else {
+            color_attachment.resolveTarget = surface_view;
+            color_attachment.storeOp = WGPUStoreOp_Discard;
+            color_attachment.clearValue = WGPUColor{
+                scene.clear_color.r,
+                scene.clear_color.g,
+                scene.clear_color.b,
+                scene.clear_color.a,
+            };
+        }
         color_attachment.loadOp = WGPULoadOp_Clear;
-        color_attachment.storeOp = WGPUStoreOp_Discard;
-        color_attachment.clearValue = WGPUColor{
-            scene.clear_color.r,
-            scene.clear_color.g,
-            scene.clear_color.b,
-            scene.clear_color.a,
-        };
         WGPURenderPassDepthStencilAttachment depth_attachment{};
         depth_attachment.view = state.depth_view;
         depth_attachment.depthLoadOp = WGPULoadOp_Clear;
-        depth_attachment.depthStoreOp = WGPUStoreOp_Discard;
+        depth_attachment.depthStoreOp = transmission
+            ? WGPUStoreOp_Store
+            : WGPUStoreOp_Discard;
         depth_attachment.depthClearValue = 1.0f;
         depth_attachment.stencilLoadOp = WGPULoadOp_Clear;
         depth_attachment.stencilStoreOp = WGPUStoreOp_Discard;
@@ -3782,9 +4162,50 @@ bool run_dawn_engine(Engine& engine) {
         WGPURenderPassEncoder pass =
             wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
         WGPURenderPipeline bound_pipeline = nullptr;
+        bool transmission_copied = false;
         const auto draw_render_list =
             [&](const upstream::RenderDrawList& list) {
-                draw_list_into(pass, list, 4, bound_pipeline);
+                if (!transmission) {
+                    draw_list_into(pass, list, 4, bound_pipeline);
+                    return;
+                }
+                for (const upstream::RenderDrawCommand& draw :
+                     list.commands) {
+                    if (draw.item_index >= state.meshes.size()) {
+                        continue;
+                    }
+                    const MaterialRecord* material =
+                        draw.item.material.value <
+                                engine.materials.size()
+                            ? &engine.materials[
+                                  draw.item.material.value]
+                            : nullptr;
+                    if (
+                        !transmission_copied &&
+                        material &&
+                        (material->transmission_factor > 0.0f ||
+                         !material->transmission_texture.bytes
+                              .empty())) {
+                        // The pinned mid-pass break: grab the scene
+                        // color from the preserved multisampled
+                        // attachment, then resume loading color and
+                        // depth for the transmissive draws.
+                        wgpuRenderPassEncoderEnd(pass);
+                        wgpuRenderPassEncoderRelease(pass);
+                        encode_transmission_grab(state, encoder);
+                        color_attachment.loadOp = WGPULoadOp_Load;
+                        depth_attachment.depthLoadOp =
+                            WGPULoadOp_Load;
+                        pass = wgpuCommandEncoderBeginRenderPass(
+                            encoder,
+                            &pass_descriptor);
+                        bound_pipeline = nullptr;
+                        transmission_copied = true;
+                    }
+                    upstream::RenderDrawList single;
+                    single.commands.push_back(draw);
+                    draw_list_into(pass, single, 4, bound_pipeline);
+                }
             };
         const auto draw_ground = [&] {
             if (!state.ground_enabled) return;
@@ -3845,6 +4266,13 @@ bool run_dawn_engine(Engine& engine) {
         }
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);
+        if (transmission) {
+            encode_image_processing(
+                state,
+                encoder,
+                surface_view,
+                scene);
+        }
         } else {
         // Frame-graph execution replaces the main pass entirely,
         // mirroring the SDL task loop.

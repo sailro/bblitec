@@ -1336,45 +1336,8 @@ void create_processed_color(
     state.processed_color_height = height;
 }
 
-float inverse_image_processed_channel(
-    float value,
-    float exposure,
-    float contrast,
-    bool tone_mapping) {
-    float color = std::clamp(value, 0.0f, 1.0f);
-    if (contrast < 1.0f) {
-        color = contrast > 0.0f
-            ? std::clamp(
-                  (color - 0.5f * (1.0f - contrast)) / contrast,
-                  0.0f,
-                  1.0f)
-            : 0.5f;
-    } else if (contrast > 1.0f) {
-        const float mix_amount = contrast - 1.0f;
-        float low = 0.0f;
-        float high = 1.0f;
-        for (std::uint32_t index = 0; index < 16; ++index) {
-            const float middle = (low + high) * 0.5f;
-            const float smooth =
-                middle * middle * (3.0f - 2.0f * middle);
-            const float output =
-                middle + (smooth - middle) * mix_amount;
-            if (output < color) {
-                low = middle;
-            } else {
-                high = middle;
-            }
-        }
-        color = (low + high) * 0.5f;
-    }
-    color = std::pow(color, 2.2f);
-    if (tone_mapping) {
-        color =
-            -std::log2(std::max(1.0f - color, 0.000001f)) /
-            1.59057903289794921875f;
-    }
-    return exposure > 0.0f ? color / exposure : color;
-}
+// inverse_image_processed_channel moved verbatim to
+// pal_gpu_shared.hpp so both backends share the linear clear color.
 
 void create_transmission_color(
     GpuState& state,

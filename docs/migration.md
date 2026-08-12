@@ -11,11 +11,21 @@ SDL_Renderer CPU fallback is out of scope.
 
 ## Verified state
 
-Every scene the Dawn slice can express passes at values equal to or
-better than SDL_GPU: a full 42-scene sequential re-validation
-(process + Dawn parity per scene, 2026-08-12) covers 40 curated
-scenes plus the compiler-state and glTF-track-clamp project gates
-(see the Dawn column in [status](status.md)). Fourteen of them are
+Every scene either backend can express now passes on Dawn at values
+equal to or better than SDL_GPU — 43 curated scenes plus all six
+project gates (see the Dawn column in [status](status.md)); a
+42-scene sequential re-validation preceded the transmission port and
+the seven transmission scenes were gated individually after it. The
+transmission family is where Dawn structurally surpasses SDL_GPU: the
+scene-color grab reads the multisampled attachment directly with the
+pinned sample-averaging blit, and the final pass applies image
+processing per MSAA sample before averaging (both pinned WGSL
+transcribed verbatim), which SDL_GPU's resolve-then-process
+adaptation could never express. Scene 33's foreground falls from
+1.457 — the dashboard's only red cell — to 0.123, scene 212 from
+0.193 to 0.048, scene 176 from 0.064 to 0.039, and the
+scene-color/IOR/volume gates drop to 0.005/0.003/0.002 against
+SDL_GPU's 0.143/0.130/0.166. Fourteen of them are
 bit-exact — 2, 10, 32, 116, 150, 151, 154, 163, 240, 246, 259, 273,
 274, and both project gates — with 259 beating SDL_GPU, whose
 DXC-vs-browser rounding it eliminates, and 163/273/274 covering the
@@ -169,6 +179,19 @@ the GPU API layer differs:
   `maxColorAttachmentBytesPerSample` from the WebGPU render-target
   byte costs (the entry's `requiredLimits` option is compile-time
   erased), `maxVertexAttributes` 20 under instancing.
+- **Transmission**: the frame renders in linear rgba16float 4x MSAA
+  with the inverse-image-processed clear, keeping the multisampled
+  texture. At the first transmissive draw the pass breaks exactly like
+  the pinned render task: the scene color grabs straight from the
+  multisampled attachment through the pinned sample-averaging manual
+  bilinear blit into the 1024x1024 rgba16float refraction texture
+  (full chain minus the fixed 4-mip LOD bias, blit-generated mips),
+  then the pass resumes loading color and depth. The scene-color slot
+  binds that texture through the pinned repeat trilinear anisotropic-4
+  sampler. The final pass applies exposure, optional tonemap, gamma,
+  and contrast **per MSAA sample** and averages — the pinned
+  image-processing task transcribed verbatim, which SDL_GPU's
+  resolve-then-process adaptation could not express.
 - **Frame**: 4x MSAA color (surface format) resolving into the surface
   texture, `depth24plus-stencil8` (the browser's format — not the SDL
   backend's D32), stage-driven draw order (skybox → opaque →
@@ -239,15 +262,10 @@ authority if a regression appears:
 
 ## Remaining work, in suggested order
 
-1. **Transmission** (scenes 33, 176, 212): scene-color grab with the
-   pinned mip chain and repeat sampler, and — the payoff SDL_GPU could
-   never express — the **per-sample image-processing pass**
-   (`texture_multisampled_2d`, apply `ip()` per sample, then average)
-   that bounds today's edge bias. Also re-enable the pinned
-   position-seeded background dither on Dawn (identical codegen makes
-   it reproducible), which should take scenes 6/14 below their SDL
-   floors; that requires emitting the dithered shader variant at
-   generation time.
+1. **Pinned background dither** — re-enable the position-seeded
+   dither on Dawn (identical codegen makes it reproducible), which
+   should take scenes 6/14 below their SDL floors; requires emitting
+   the dithered shader variant at generation time.
 2. **Diagnostics/attribution** (scene 1 draw IDs, clusters, PBR
    buffers), then the threshold review and the backend end-state
    decision. The current direction is to keep both backends

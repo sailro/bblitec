@@ -20,18 +20,20 @@ reference. Staged migration; SDL_GPU stays the default until Dawn parity
 is a strict superset. The SDL_Renderer CPU fallback is out of scope.
 
 Progress, verified findings, ported pinned contracts, and the ordered
-remaining work live in [migration](docs/migration.md). All 42
-Dawn-capable scenes (40 curated plus two project gates) pass at
-values equal to or better than SDL_GPU, fourteen of them bit-exact;
-material extensions, deformation/instancing/storage-morph,
-GridMaterial, shader variants, runtime mesh appends, and the frame
-graph (render, depth-only, geometry-MRT, and copy tasks) are ported.
-The formerly recorded scene 248/249 offsets were stale shader/build
-pairings, resolved by reprocessing.
+remaining work live in [migration](docs/migration.md). Every scene
+either backend can express passes on Dawn at values equal to or
+better than SDL_GPU (43 curated plus all six project gates, fourteen
+bit-exact); material extensions, deformation/instancing/storage-morph,
+GridMaterial, shader variants, runtime mesh appends, the frame graph,
+and transmission with the pinned per-sample image processing are
+ported — scene 33's foreground falls from 1.457 to 0.123 and the
+transmission gates drop to the 0.002-0.005 range. The formerly
+recorded scene 248/249 offsets were stale shader/build pairings,
+resolved by reprocessing.
 
-- [ ] Transmission with per-sample image processing plus the
-  re-enabled pinned dither (scenes 33, 176, 212 and the transmission
-  project gates), then diagnostics — see the ordered list in
+- [ ] Re-enable the pinned position-seeded background dither on Dawn
+  (scenes 6/14; needs the dithered shader variant emitted at
+  generation time), then diagnostics — see the ordered list in
   [migration](docs/migration.md).
 - [ ] Threshold review and the backend end-state decision. Current
   direction: keep BOTH backends long-term as mutually validating
@@ -143,12 +145,15 @@ pairings, resolved by reprocessing.
 ## P1 — Runtime and validation
 
 - [ ] Match pinned per-sample image processing on the multisampled
-  transmission target: upstream's `image-processing-task.ts` applies
-  exposure/tonemap/gamma per MSAA sample and then averages, while SDL_GPU
-  cannot bind a multisampled texture for sampling, so the native pass
-  processes the resolved pixel once. Requires SDL_GPU multisampled-texture
-  sampling (vendored patch) or an equivalent custom per-sample resolve; this
-  bounds the remaining edge bias on Scenes 33, 176, and 212.
+  transmission target **on the SDL_GPU backend**: upstream's
+  `image-processing-task.ts` applies exposure/tonemap/gamma per MSAA
+  sample and then averages, while SDL_GPU cannot bind a multisampled
+  texture for sampling, so its pass processes the resolved pixel once.
+  The Dawn backend now runs the pinned per-sample pass verbatim (scene
+  33 foreground 1.457 → 0.123), so this entry tracks only the SDL_GPU
+  side of the keep-both-backends direction; it requires SDL_GPU
+  multisampled-texture sampling (vendored patch) or an equivalent
+  custom per-sample resolve.
 - [ ] Compose environment/camera sizing from object-local bounds through the
   pinned abs-matrix OBB-to-AABB world transform and add the
   `upperRadiusLimit` ground/skybox override (upstream `scene-size.ts`,
