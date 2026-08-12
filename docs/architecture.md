@@ -10,7 +10,7 @@ scene TypeScript
     -> dedicated lowerers
     -> generated C++20, shaders, manifests, provenance
     -> typed runtime + PAL
-    -> SDL3 / SDL_GPU
+    -> SDL3 + (SDL_GPU | Dawn)
 ```
 
 `bblitec` is a compiler, not an interpreter. Unsupported syntax or Babylon APIs
@@ -63,6 +63,8 @@ Primary source ownership:
 | `native/src/pal.cpp` | filesystem, paths, environment, timing, host engine |
 | `native/src/pal_sdl.cpp` | deterministic SDL_Renderer fallback |
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
+| `native/src/pal_dawn.cpp` | Dawn (WebGPU) resources, uploads, pipelines, readback, submission |
+| `native/src/pal_gpu_shared.hpp` | vertex packing, RGBD decode, deformation uniforms, and inverse image processing shared byte-identically by both GPU backends |
 
 `generated\` is disposable and never the source of a fix.
 
@@ -240,13 +242,21 @@ its local normal, so deformation inputs occupy locations 8-15.
 
 ## Renderer
 
-SDL_GPU is the default native renderer:
+Two peer GPU backends render the same generated plans; SDL_GPU is the
+runtime default and `BBLITE_GPU_BACKEND=dawn` selects the Dawn
+(WebGPU) backend, which renders through the browser reference's own
+compiler and rasterization stack (see [backends](backends.md) for the
+architecture and comparison). The SDL_GPU offline shader targets:
 
 | Platform | Backend | Artifact |
 | --- | --- | --- |
 | Windows | Direct3D 12 | Tint HLSL → DXC DXIL |
 | Linux / Android | Vulkan | Tint HLSL → DXC SPIR-V (temporary) |
 | macOS / iOS | Metal | Tint MSL |
+
+The Dawn backend needs no offline shader artifacts: the generated
+WGSL feeds Dawn directly and its in-process Tint compiles per
+platform (D3D12 today).
 
 Important contracts:
 
@@ -296,11 +306,24 @@ same reached quaternion mesh transforms.
 
 ## Backend rationale
 
+The project keeps two complete GPU backends on purpose. The Dawn
+backend renders through the browser reference's own compiler and
+rasterization stack (the pinned Dawn commit shared with the Tint
+pin), which makes parity structural instead of adapted: it matches or
+beats SDL_GPU on every scene, and uniquely expresses the pinned
+per-sample image processing and multisampled scene-color reads. The
+SDL_GPU backend is the independent implementation: offline-compiled
+shaders through a different toolchain and API. Two stacks that must
+agree pixel-for-pixel form the project's sharpest diagnostic — their
+direct diff separates CPU-side causes from GPU-side ones immediately.
+[Backends](backends.md) carries the full comparison, build recipes,
+and the ported pinned contracts.
+
 The shader-language migration is complete: all native GPU shaders originate as
 WGSL and compile through Tint. bblitec owns composition, SDL specialization,
-reflection checks, and fixed-function state. Tint can emit SPIR-V directly,
-but its WGSL resource layout does not yet match SDL_GPU's dense paired
-texture/sampler convention; DXC therefore temporarily compiles normalized
-Tint HLSL for Vulkan too. DXC remains mandatory for DXIL. Browser WebGPU is
-Babylon Lite's existing target, not a bblitec backend goal. Remaining work is
+reflection checks, and fixed-function state. For SDL_GPU, Tint can emit SPIR-V
+directly, but its WGSL resource layout does not yet match SDL_GPU's dense
+paired texture/sampler convention; DXC therefore temporarily compiles
+normalized Tint HLSL for Vulkan too, and remains mandatory for DXIL. The Dawn
+backend consumes the same WGSL with no offline step. Remaining work is
 tracked only in [TODO](../TODO.md).

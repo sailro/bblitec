@@ -11,6 +11,44 @@ baselines belong in [status](docs/status.md) and Git history.
 - do not add scene, geometry, or golden-image heuristics
 - validate generation, native builds, and relevant parity gates locally
 
+## P0 — Dual render backends
+
+The Dawn (WebGPU) backend is complete: every scene either backend can
+express passes on both at values equal to or better than SDL_GPU (see
+[backends](docs/backends.md) for the architecture, the honest
+comparison, and the empirical regression guards). Both backends stay
+long-term as mutually validating implementations — the direct
+Dawn-versus-SDL_GPU diff is the project's decisive diagnostic: two
+independent compiler and API stacks agreeing to one LSB isolates
+CPU-side from GPU-side causes immediately.
+
+- [ ] Re-enable the pinned position-seeded background dither on Dawn
+  (scenes 6/14; identical codegen makes it reproducible and should
+  take both scenes below their SDL floors). Needs the dithered shader
+  variant emitted at generation time.
+- [ ] Port the scene 1 diagnostics/attribution outputs to Dawn (draw
+  IDs, triangle clusters, PBR diagnostic buffers); today
+  `parity:diagnostics` renders them through SDL_GPU only.
+- [ ] Formalize a backend-differential comparison mode in the parity
+  tooling (render both backends, diff them against each other and the
+  golden in one report), then review the per-scene thresholds against
+  the Dawn columns.
+- [ ] Extend the Dawn integration beyond Windows: the platform surface
+  is one HWND branch plus the adapter backend selection and the per-OS
+  Dawn library build — the WGSL feeds Dawn directly on every backend,
+  so no per-platform shader work exists on this path (unlike the
+  SDL_GPU items below).
+- [ ] Single-backend release builds: the dual-backend binary is a
+  development asset (the differential gate); a shipped app wants one
+  backend and minimal footprint. `BBLITE_DAWN=0` already yields
+  SDL_GPU-only (exe + SDL3 DLLs + kilobytes of DXIL); a Dawn-only
+  shape needs a symmetric SDL_GPU compile guard, shader/DLL payload
+  deployment following the compiled set (WGSL text versus DXIL
+  snapshots; webgpu_dawn/dxcompiler/dxil DLLs are tens of MB and a
+  DXC-less Dawn build changes rendering per the recorded FXC
+  findings), explicit run_engine errors for absent backends, and a
+  packaging flow that picks one backend per release.
+
 ## P0 — Backend portability
 
 ### Vulkan
@@ -111,12 +149,15 @@ baselines belong in [status](docs/status.md) and Git history.
 ## P1 — Runtime and validation
 
 - [ ] Match pinned per-sample image processing on the multisampled
-  transmission target: upstream's `image-processing-task.ts` applies
-  exposure/tonemap/gamma per MSAA sample and then averages, while SDL_GPU
-  cannot bind a multisampled texture for sampling, so the native pass
-  processes the resolved pixel once. Requires SDL_GPU multisampled-texture
-  sampling (vendored patch) or an equivalent custom per-sample resolve; this
-  bounds the remaining edge bias on Scenes 33, 176, and 212.
+  transmission target **on the SDL_GPU backend**: upstream's
+  `image-processing-task.ts` applies exposure/tonemap/gamma per MSAA
+  sample and then averages, while SDL_GPU cannot bind a multisampled
+  texture for sampling, so its pass processes the resolved pixel once.
+  The Dawn backend now runs the pinned per-sample pass verbatim (scene
+  33 foreground 1.457 → 0.123), so this entry tracks only the SDL_GPU
+  side of the keep-both-backends direction; it requires SDL_GPU
+  multisampled-texture sampling (vendored patch) or an equivalent
+  custom per-sample resolve.
 - [ ] Compose environment/camera sizing from object-local bounds through the
   pinned abs-matrix OBB-to-AABB world transform and add the
   `upperRadiusLimit` ground/skybox override (upstream `scene-size.ts`,
@@ -138,13 +179,27 @@ baselines belong in [status](docs/status.md) and Git history.
   functions.
 - [ ] Close the residual morph and instancing raster-edge gaps in Scenes 243
   and 247 without expanding geometry or adding scene-specific tolerances.
-  Upstream history review classifies both residuals as achromatic
-  Dawn-versus-SDL_GPU 4x-MSAA coverage stepping on deformed or instanced
-  silhouettes; interiors are within 2 LSB. Porting the pinned
-  storage-buffer morph path produced frames bit-identical to the former
-  CPU fallback, ruling out evaluation-place divergence and attributing the
-  Scene 243 residual to browser-versus-native shader codegen or raster
-  behavior.
+  Both residuals are achromatic 4x-MSAA coverage stepping on deformed or
+  instanced silhouettes; interiors are within 2 LSB. Four suspects are
+  now eliminated by experiment: evaluation place (the pinned
+  storage-buffer morph path renders bit-identically to the former CPU
+  fallback), shader codegen and rasterization (the Dawn backend — the
+  browser's own Tint/DXC/D3D12 stack — reproduces SDL_GPU within one
+  LSB on 147/159 pixels while both differ from the golden identically),
+  input precision (recomputing keyframe interpolation, morph weights,
+  bone matrices, and instance/parent world composition with float64
+  intermediates rounded once at upload changed neither scene by a
+  thousandth — these scenes' inputs are exactly representable), and
+  pose timing (a seek sweep around the reference time minimizes MAD
+  exactly at the registered 0.5 s with symmetric rise). The remaining
+  structural difference is the shader source itself: the browser
+  compiles its own composed WGSL while the native backends compile the
+  generated variant — the same compiler over different source text
+  schedules the deformation arithmetic differently — plus whatever
+  sub-frame evaluation structure the browser applies beyond the seek
+  time. Next probe: capture the browser's actually-uploaded bone/weight
+  buffers, or diff against a native render fed the browser's composed
+  WGSL verbatim.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 

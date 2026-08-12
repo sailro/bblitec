@@ -225,6 +225,14 @@ Build the pinned Tint CLI with:
 pwsh -File tools\build-tint.ps1
 ```
 
+Build the pinned Dawn library (same source pin, shared checkout) with
+`pwsh -File tools\build-dawn.ps1`. Once `artifacts\tools\dawn` exists,
+scene builds enable the Dawn render backend automatically
+(`-DBBLITE_DAWN=ON`; set `BBLITE_DAWN=0` to force an SDL_GPU-only
+build) and `BBLITE_GPU_BACKEND=dawn` selects it at runtime — the
+parity harness forwards the environment and labels its reports with
+the active backend. See [backends](backends.md).
+
 Reached WGSL shaders require `artifacts\tools\tint\tint.exe` (or `TINT_PATH`).
 Tint validates WGSL and emits HLSL/MSL. DXC must compile HLSL to DXIL for
 D3D12; it also temporarily emits SPIR-V until Tint resource bindings are
@@ -236,6 +244,7 @@ records the selected backend in `shader-compiler.json`.
 | Variable | Purpose |
 | --- | --- |
 | `BBLITE_GPU=0` | force SDL_Renderer fallback |
+| `BBLITE_GPU_BACKEND=dawn` | select the Dawn (WebGPU) render backend |
 | `BBLITE_GPU_REQUIRED=1` | fail instead of falling back |
 | `BBLITE_GPU_DEBUG=1` | enable the backend GPU validation layer |
 | `BBLITE_MSAA=1` | force single-sample rendering for diagnostics |

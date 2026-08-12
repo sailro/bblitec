@@ -117,6 +117,37 @@ else()
     message(WARNING "SDL3 was not found. The generated application will use the headless backend.")
 endif()
 
+option(BBLITE_DAWN "Enable the pinned Dawn (WebGPU) render backend" OFF)
+if(BBLITE_DAWN)
+    find_package(
+        Dawn CONFIG REQUIRED
+        PATHS "${BBLITE_NATIVE_ROOT}/../artifacts/tools/dawn/lib/cmake/Dawn"
+        NO_DEFAULT_PATH
+    )
+    target_sources(
+        bblite_native
+        PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn.cpp"
+    )
+    target_link_libraries(bblite_native PRIVATE dawn::webgpu_dawn)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=1)
+    # Dawn's hardened DLL search resolves FXC (d3dcompiler_47.dll)
+    # relative to the loaded module, matching how Chrome deploys the
+    # SDK compiler beside chrome.dll.
+    add_custom_command(
+        TARGET bblite_native POST_BUILD
+        COMMAND
+            "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:dawn::webgpu_dawn>"
+            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/d3dcompiler_47.dll"
+            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxcompiler.dll"
+            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxil.dll"
+            "$<TARGET_FILE_DIR:bblite_native>"
+        VERBATIM
+    )
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=0)
+endif()
+
 if("renderer:pbr" IN_LIST BBLITE_RUNTIME_FEATURES)
     if("renderer:transmission" IN_LIST BBLITE_RUNTIME_FEATURES)
         target_compile_definitions(

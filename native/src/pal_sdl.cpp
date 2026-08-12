@@ -1185,6 +1185,15 @@ void print_benchmark(const char* renderer_name, std::vector<double> samples) {
 #endif
 
 void pal::run_engine(Engine& engine) {
+    const std::string gpu_backend =
+        pal::environment_variable("BBLITE_GPU_BACKEND");
+    if (gpu_backend == "dawn") {
+        if (pal::run_dawn_engine(engine)) {
+            return;
+        }
+        throw std::runtime_error(
+            "BBLITE_GPU_BACKEND=dawn requires a Dawn-enabled native build (BBLITE_DAWN=ON).");
+    }
     try {
         if (pal::run_gpu_engine(engine)) {
             return;
