@@ -243,7 +243,13 @@ export async function runSceneParity(
               implementation: "SDL_Renderer",
               driverSelection: process.env.SDL_RENDER_DRIVER ?? "software",
           };
-    const artifactSuffix = arguments_.gpu ? "gpu" : "cpu";
+    // Backend-suffixed artifacts keep both GPU backends' outputs side
+    // by side ("gpu" stays the SDL_GPU suffix for continuity).
+    const artifactSuffix = arguments_.gpu
+        ? process.env.BBLITE_GPU_BACKEND === "dawn"
+            ? "dawn"
+            : "gpu"
+        : "cpu";
     const idBufferPath = arguments_.gpu && config.attribution?.drawIds
         ? resolve(outputDirectory, "draw-ids-gpu.png")
         : undefined;
@@ -456,9 +462,7 @@ export async function runSceneParity(
     };
     const reportPath = resolve(
         outputDirectory,
-        config.attribution
-            ? `report-${artifactSuffix}.json`
-            : `report.json`,
+        `report-${artifactSuffix}.json`,
     );
     writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 

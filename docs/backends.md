@@ -58,7 +58,19 @@ npm run scene -- parity scene1
 The parity harness forwards the environment and labels the report
 with the active backend. `pal::run_engine` dispatches on
 `BBLITE_GPU_BACKEND` and throws explicitly when a build lacks the
-requested backend. **Measure only against a freshly processed
+requested backend. One binary carries both backends, so the full
+matrix runs on both with two invocations of the same command — with
+current builds the complete dual sweep takes about three minutes:
+
+```powershell
+npm run scenes:parity
+$env:BBLITE_GPU_BACKEND = "dawn"; npm run scenes:parity
+```
+
+Parity artifacts are backend-suffixed (`report-gpu.json` /
+`diff-map-gpu.png` for SDL_GPU, `-dawn` for Dawn, `-cpu` for the
+SDL_Renderer fallback), so both backends' reports, diff maps, and
+hotspots coexist per scene. **Measure only against a freshly processed
 build**: Dawn reads `*.native.wgsl` from the build snapshot while
 SDL_GPU reads offline DXIL, so a snapshot that mixes generations
 skews only the Dawn side (this masqueraded as scene 248/249
