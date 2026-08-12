@@ -22,7 +22,7 @@ is a strict superset. The SDL_Renderer CPU fallback is out of scope.
 Progress, verified findings, ported pinned contracts, and the ordered
 remaining work live in [migration](docs/migration.md). Every scene
 either backend can express passes on Dawn at values equal to or
-better than SDL_GPU (43 curated plus all six project gates, fourteen
+better than SDL_GPU (43 curated plus all seven project gates, fifteen
 bit-exact); material extensions, deformation/instancing/storage-morph,
 GridMaterial, shader variants, runtime mesh appends, the frame graph,
 and transmission with the pinned per-sample image processing are

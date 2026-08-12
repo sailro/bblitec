@@ -254,9 +254,13 @@ struct DawnState {
     std::map<std::pair<WGPUTextureFormat, std::uint32_t>,
         WGPURenderPipeline>
         blit_pipelines;
-    // Single-sample mesh pipelines for render tasks whose target is
-    // not multisampled; the 4x set stays in `pipelines`.
-    std::map<upstream::RenderPipelineKind, DawnPipeline> pipelines_1x;
+    // Mesh pipelines for render-task targets that differ from the
+    // main pass, keyed by [multisampled][has depth]; the main 4x set
+    // stays in `pipelines`.
+    std::array<
+        std::array<std::map<upstream::RenderPipelineKind, DawnPipeline>, 2>,
+        2>
+        task_pipelines{};
     std::uint32_t frame_graph_width = 0;
     std::uint32_t frame_graph_height = 0;
     // Explicit bind group layouts shared by every mesh pipeline
@@ -472,9 +476,13 @@ struct DawnState {
         for (auto& [key, pipeline] : blit_pipelines) {
             if (pipeline) wgpuRenderPipelineRelease(pipeline);
         }
-        for (auto& [kind, pipeline] : pipelines_1x) {
-            if (pipeline.pipeline) {
-                wgpuRenderPipelineRelease(pipeline.pipeline);
+        for (auto& by_depth : task_pipelines) {
+            for (auto& pipeline_map : by_depth) {
+                for (auto& [kind, pipeline] : pipeline_map) {
+                    if (pipeline.pipeline) {
+                        wgpuRenderPipelineRelease(pipeline.pipeline);
+                    }
+                }
             }
         }
         if (depth_copy_pipeline) {
@@ -1655,9 +1663,12 @@ WGPUPipelineLayout mesh_pipeline_layout_for(DawnState& state) {
 DawnPipeline& pipeline_for(
     DawnState& state,
     upstream::RenderPipelineKind kind,
-    std::uint32_t samples = 4) {
-    auto& pipeline_map =
-        samples == 4 ? state.pipelines : state.pipelines_1x;
+    std::uint32_t samples = 4,
+    bool has_depth = true) {
+    auto& pipeline_map = samples == 4 && has_depth
+        ? state.pipelines
+        : state.task_pipelines[samples == 4 ? 1 : 0]
+                              [has_depth ? 1 : 0];
     const auto existing = pipeline_map.find(kind);
     if (existing != pipeline_map.end()) return existing->second;
     const PipelineKindTraits traits = pipeline_traits(kind);
@@ -1734,7 +1745,9 @@ DawnPipeline& pipeline_for(
     depth_stencil.depthCompare = traits.transparent || traits.cutout
         ? WGPUCompareFunction_LessEqual
         : WGPUCompareFunction_Less;
-    descriptor.depthStencil = &depth_stencil;
+    // Depth-less render-task targets need attachment-compatible
+    // pipelines; WebGPU validates what SDL_GPU tolerated.
+    descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
 
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
@@ -4056,13 +4069,17 @@ bool run_dawn_engine(Engine& engine) {
                                             list,
                                         std::uint32_t samples,
                                         WGPURenderPipeline&
-                                            bound_pipeline) {
+                                            bound_pipeline,
+                                        bool pass_has_depth = true) {
             for (const upstream::RenderDrawCommand& draw :
                  list.commands) {
                 if (draw.item_index >= state.meshes.size()) continue;
                 DawnMesh& mesh = state.meshes[draw.item_index];
-                DawnPipeline& pipeline =
-                    pipeline_for(state, draw.pipeline, samples);
+                DawnPipeline& pipeline = pipeline_for(
+                    state,
+                    draw.pipeline,
+                    samples,
+                    pass_has_depth);
                 DawnMeshBindings& bindings =
                     bindings_for(state, mesh, draw.pipeline);
                 if (pipeline.pipeline != bound_pipeline) {
@@ -4546,16 +4563,20 @@ bool run_dawn_engine(Engine& engine) {
                         encoder,
                         &pass_descriptor);
                 WGPURenderPipeline bound_pipeline = nullptr;
+                const bool pass_has_depth =
+                    target_record.has_depth && target.depth;
                 draw_list_into(
                     task_pass,
                     render_task.draw_lists.opaque,
                     samples,
-                    bound_pipeline);
+                    bound_pipeline,
+                    pass_has_depth);
                 draw_list_into(
                     task_pass,
                     render_task.draw_lists.transparent,
                     samples,
-                    bound_pipeline);
+                    bound_pipeline,
+                    pass_has_depth);
                 wgpuRenderPassEncoderEnd(task_pass);
                 wgpuRenderPassEncoderRelease(task_pass);
                 continue;

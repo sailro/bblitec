@@ -12,8 +12,10 @@ SDL_Renderer CPU fallback is out of scope.
 ## Verified state
 
 Every scene either backend can express now passes on Dawn at values
-equal to or better than SDL_GPU — 43 curated scenes plus all six
-project gates (see the Dawn column in [status](status.md)); a
+equal to or better than SDL_GPU — 43 curated scenes plus all seven
+project gates (the shader-frame-graph audit is bit-exact through a
+depth-less render-task pipeline variant WebGPU validation requires
+where SDL_GPU tolerated the mismatch) (see the Dawn column in [status](status.md)); a
 42-scene sequential re-validation preceded the transmission port and
 the seven transmission scenes were gated individually after it. The
 transmission family is where Dawn structurally surpasses SDL_GPU: the
@@ -25,9 +27,10 @@ adaptation could never express. Scene 33's foreground falls from
 1.457 — the dashboard's only red cell — to 0.123, scene 212 from
 0.193 to 0.048, scene 176 from 0.064 to 0.039, and the
 scene-color/IOR/volume gates drop to 0.005/0.003/0.002 against
-SDL_GPU's 0.143/0.130/0.166. Fourteen of them are
+SDL_GPU's 0.143/0.130/0.166. Fifteen scenes are
 bit-exact — 2, 10, 32, 116, 150, 151, 154, 163, 240, 246, 259, 273,
-274, and both project gates — with 259 beating SDL_GPU, whose
+274, and the compiler-state, glTF-track-clamp, and shader-frame-graph
+project gates — with 259 beating SDL_GPU, whose
 DXC-vs-browser rounding it eliminates, and 163/273/274 covering the
 alpha-card, circular-cutout, alpha-to-coverage, and
 runtime-mesh-append paths. The frame graph runs end to end: scene 116
@@ -47,10 +50,8 @@ raster), 245
 255 (0.011/0.101) — scene 249 matches exactly at 0.001/0.024, scenes
 24 (HillValley `.babylon` reflection cubes, 0.015/0.016) and 248
 (0.001/0.004) beat theirs, and scenes 6, 13, 14, 31, 168, 210, 257,
-258, 265, and 266 pass their gates. There is no open Dawn divergence
-in the migrated slice; only the frame-graph scenes (116, 145, 146),
-the transmission scenes (33, 176, 212), and the four transmission
-project gates remain SDL_GPU-only.
+258, 265, and 266 pass their gates. There is no open Dawn divergence,
+and no scene remains SDL_GPU-only.
 
 Key empirical findings, in case any regress:
 
