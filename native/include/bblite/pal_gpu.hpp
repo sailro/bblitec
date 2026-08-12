@@ -14,4 +14,12 @@ inline bool run_gpu_engine(Engine&) {
 }
 #endif
 
+#if defined(BBLITE_HAS_DAWN) && BBLITE_HAS_DAWN
+bool run_dawn_engine(Engine& engine);
+#else
+inline bool run_dawn_engine(Engine&) {
+    return false;
+}
+#endif
+
 } // namespace bbl::pal

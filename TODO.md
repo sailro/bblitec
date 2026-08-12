@@ -11,6 +11,32 @@ baselines belong in [status](docs/status.md) and Git history.
 - do not add scene, geometry, or golden-image heuristics
 - validate generation, native builds, and relevant parity gates locally
 
+## P0 — Dawn (WebGPU) render backend
+
+The golden references are produced by Chrome's WebGPU, which is Dawn on
+D3D12. Rendering through the pinned Dawn commit (shared with the Tint
+pin) makes shader codegen and rasterization structurally match the
+reference. Staged migration; SDL_GPU stays the default until Dawn parity
+is a strict superset. The SDL_Renderer CPU fallback is out of scope.
+
+- [x] Build the pinned monolithic `webgpu_dawn` (D3D12, FXC beside the
+  module like Chrome) via `tools/build-dawn.ps1`; CMake `BBLITE_DAWN`
+  option and `BBLITE_GPU_BACKEND=dawn` runtime dispatch.
+- [x] Bring-up skeleton: SDL window surface, adapter/device, surface
+  configuration, clear, screenshot readback (scene 2 clear verified).
+- [ ] Investigate the clear-value rounding boundary: Dawn native clears
+  0.3*255 to 76 where the browser and SDL_GPU produce 77.
+- [ ] Port the mesh path: buffers, WebGPU bind groups from the generated
+  `*.native.wgsl` group layout, depth, 4x MSAA, ordered draw lists.
+- [ ] Feed generated WGSL directly to `wgpuDeviceCreateShaderModule`
+  (no DXC, no register normalization) and validate scene 2, then scene 1.
+- [ ] Migrate scene families behind parity gates (Standard, PBR/IBL,
+  backgrounds, frame graph, transmission with per-sample image
+  processing, deformation); re-enable the pinned background dither.
+- [ ] Retire SDL_GPU and the DXC/normalization/shader-cache machinery
+  once Dawn parity is a strict superset; update the docs' backend
+  rationale explicitly.
+
 ## P0 — Backend portability
 
 ### Vulkan
