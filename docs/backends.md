@@ -174,8 +174,10 @@ Regression guards from the migration; each was measured, not assumed:
   took the scene from 1.043 to 0.052 foreground MAD on both backends,
   and the scene-247 findings below (factor quantization and the
   normal-map horizon-occlusion gate) closed the rest to 0.005.
-  The instrumented differential capture is the repeatable lesson: it
-  also proved reverse-Z versus the native forward-Z adaptation and
+  The instrumented differential capture is the repeatable lesson —
+  it now ships as `scene -- capture` (see
+  [development](development.md#instrumented-browser-capture)) — and
+  it also proved reverse-Z versus the native forward-Z adaptation and
   the browser's world-matrix mirror versus the native baked-vertex
   mirror produce identical images to ~1e-5 px, so those adaptations
   stay.
