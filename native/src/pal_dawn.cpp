@@ -83,8 +83,9 @@ constexpr std::uint32_t instance_uniform_binding = 1;
 // material-extension pairs append after that in the
 // append_material_extension_bindings order: clearcoat intensity/
 // roughness/normal, sheen color/roughness, iridescence intensity/
-// thickness. Mesh-owned slots: 0-3 material textures, 4 standard
-// emissive, then transmission/thickness, then extension textures.
+// thickness, dedicated uv2 occlusion. Mesh-owned slots: 0-3 material
+// textures, 4 standard emissive, then transmission/thickness, then
+// extension textures.
 #if defined(BBLITE_RENDERER_TRANSMISSION)
 constexpr std::size_t transmission_texture_slots = 2;
 // The bound trio is one pair wider than the mesh-owned slots: the
@@ -97,7 +98,8 @@ constexpr std::size_t transmission_texture_pairs = 0;
 constexpr std::size_t material_extension_slots =
     (BBLITE_MATERIAL_CLEARCOAT ? 3 : 0) +
     (BBLITE_MATERIAL_SHEEN ? 2 : 0) +
-    (BBLITE_MATERIAL_IRIDESCENCE ? 2 : 0);
+    (BBLITE_MATERIAL_IRIDESCENCE ? 2 : 0) +
+    (BBLITE_MATERIAL_OCCLUSION_UV2 ? 1 : 0);
 constexpr std::size_t material_extension_slot_base =
     5 + transmission_texture_slots;
 constexpr std::size_t mesh_texture_slots =
@@ -3207,6 +3209,12 @@ bool run_dawn_engine(Engine& engine) {
                 slot_data[extension_slot++] =
                     &material.iridescence_thickness_texture;
 #endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+                slot_data[extension_slot++] =
+                    material.occlusion_texture_uv2
+                        ? &material.occlusion_texture
+                        : nullptr;
+#endif
                 (void)extension_slot;
             }
         }
@@ -3245,6 +3253,9 @@ bool run_dawn_engine(Engine& engine) {
             slot_srgb[extension_slot] = true;
             slot_fallback[extension_slot++] = {255, 255, 255, 255};
             slot_srgb[extension_slot] = true;
+            slot_fallback[extension_slot++] = {255, 255, 255, 255};
+#endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
             slot_fallback[extension_slot++] = {255, 255, 255, 255};
 #endif
             (void)extension_slot;

@@ -157,17 +157,28 @@ Regression guards from the migration; each was measured, not assumed:
   0.89 MAD; flipping restored 0.001.
 - The registry `backgroundColor` values are region-keying colors, not
   exact clear values (scene 2's actual background is 76, not 77).
-- **The scenes 243/247 silhouette floors are not GPU-side.** Five
-  suspects were eliminated by experiment: evaluation place (storage
-  morphing renders bit-identical to the CPU fallback), shader codegen
-  and rasterization (Dawn reproduces SDL_GPU within one LSB on ~150
-  pixels while both differ from the golden identically), input
-  precision (recomputing the full deformation input chain in float64
-  changed neither scene — the inputs are exactly representable), and
-  pose timing (a seek sweep minimizes MAD exactly at the reference
-  time). The remaining structural difference is the browser's
-  composed WGSL source versus the generated variant under the same
-  compiler.
+- **The scene 243 "silhouette floor" was a feature gap, not
+  arithmetic.** Five suspects were eliminated by experiment
+  (evaluation place, shader codegen, rasterization, input precision,
+  pose timing) before instrumented browser captures — hooked
+  `createShaderModule`, buffer and texture uploads, and render-bundle
+  draws — proved the weights, morph deltas, geometry, and matrices
+  bit-identical and localized the entire residual band to the
+  platform slab draw. The cause: the slab's baked-AO
+  `occlusionTexture` on TEXCOORD_1, which the native material
+  pipeline silently dropped (and the native glTF loader never read
+  TEXCOORD_1 at all). Porting the pinned dedicated uv2 occlusion pair
+  took the scene from 1.043 to 0.052 foreground MAD on both backends.
+  The instrumented differential capture is the repeatable lesson: it
+  also proved reverse-Z versus the native forward-Z adaptation and
+  the browser's world-matrix mirror versus the native baked-vertex
+  mirror produce identical images to ~1e-5 px, so those adaptations
+  stay.
+- **The scene 247 instancing floor keeps its own attribution** (MSAA
+  coverage stepping with Dawn reproducing SDL_GPU within one LSB);
+  the scene-243 result removes the assumption that both scenes shared
+  one cause, so its remaining 0.405 foreground MAD deserves the same
+  instrumented-capture treatment before further theorizing.
 
 ## Dawn backend architecture (`native/src/pal_dawn.cpp`)
 
@@ -293,8 +304,9 @@ the authority if a regression appears:
   `append_material_extension_bindings` order with SDL's sRGB flags and
   fallbacks (clearcoat/roughness white, coat normal 128/128/255, sheen
   color sRGB white, sheen roughness white, iridescence pairs sRGB
-  white). Standard pipelines keep six pairs — their fragment never
-  declares the appended bindings.
+  white, dedicated uv2 occlusion linear white). Standard pipelines
+  keep six pairs — their fragment never declares the appended
+  bindings.
 - **`.babylon` reflection cubes** (pinned `loadCubeTexture`): rgba8unorm
   faces with the full blit-generated mip chain rendered one face at a
   time; standard materials resolve `material.reflection_cube` into

@@ -308,8 +308,8 @@ export const scenes: readonly SceneDefinition[] = [
             referenceTimeSeconds: 0.5,
             actual: "artifacts/parity/scene243-native.png",
             outputDirectory: "artifacts/parity/scene243",
-            maxFullMad: 0.06,
-            maxForegroundMad: 1.1,
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.08,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: {

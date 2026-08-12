@@ -42,6 +42,7 @@ class GeneratedSourceWriter {
             sheen: boolean;
             iridescence: boolean;
             dispersion: boolean;
+            occlusionUv2: boolean;
         },
     ): void {
         const context = new LoweringContext(this.store);
@@ -62,6 +63,7 @@ class GeneratedSourceWriter {
 #define BBLITE_MATERIAL_SHEEN ${options.sheen ? 1 : 0}
 #define BBLITE_MATERIAL_IRIDESCENCE ${options.iridescence ? 1 : 0}
 #define BBLITE_MATERIAL_DISPERSION ${options.dispersion ? 1 : 0}
+#define BBLITE_MATERIAL_OCCLUSION_UV2 ${options.occlusionUv2 ? 1 : 0}
 `,
         );
 
@@ -250,6 +252,7 @@ class GeneratedSourceWriter {
                 sheen: options.sheen,
                 iridescence: options.iridescence,
                 dispersion: options.dispersion,
+                occlusionUv2: options.occlusionUv2,
             });
             for (const shader of shaders) {
                 const shaderPath = resolve(this.outputRoot, shader.output);
@@ -434,6 +437,7 @@ export function emitUpstreamGenerated(
         sheen: boolean;
         iridescence: boolean;
         dispersion: boolean;
+        occlusionUv2: boolean;
     } = {
         idDiagnostics: false,
         pbrDiagnostics: false,
@@ -449,6 +453,7 @@ export function emitUpstreamGenerated(
         sheen: false,
         iridescence: false,
         dispersion: false,
+        occlusionUv2: false,
     },
 ): void {
     new GeneratedSourceWriter(outputRoot, new UpstreamSourceStore()).emit(

@@ -199,7 +199,11 @@ fn mainFragment(
 `;
 }
 
-function colorEntry(): string {
+function colorEntry(occlusionUv2: boolean): string {
+    const uv2Input = occlusionUv2
+        ? "\n  @location(5u) bblUv2 : vec2<f32>,"
+        : "";
+    const uv2Argument = occlusionUv2 ? ", bblUv2" : "";
     return `@fragment
 fn mainFragment(
   @builtin(position) bblPosition : vec4<f32>,
@@ -207,11 +211,11 @@ fn mainFragment(
   @location(1u) v_115 : vec3<f32>,
   @location(2u) v_116 : vec4<f32>,
   @location(3u) v_117 : vec2<f32>,
-  @location(4u) bblLocalPosition : vec3<f32>,
+  @location(4u) bblLocalPosition : vec3<f32>,${uv2Input}
   @location(6u) v_118 : vec4<f32>,
   @builtin(front_facing) v_119 : bool,
 ) -> @location(0u) vec4<f32> {
-  main_inner(v_114, v_115, v_116, v_117, v_118, v_119);
+  main_inner(v_114, v_115, v_116, v_117, v_118, v_119${uv2Argument});
   return v;
 }
 `;
@@ -220,7 +224,13 @@ fn mainFragment(
 export function pbrFragmentWgsl(
     converted: string,
     variant: PbrFragmentVariant,
+    occlusionUv2 = false,
 ): string {
+    if (occlusionUv2 && variant.kind !== "color") {
+        throw new Error(
+            "PBR occlusion uv2 is lowered only for the color fragment variant.",
+        );
+    }
     const normalized = converted
         .replace("@location(5u) v_118", "@location(6u) v_118");
     const colorEntryIndex = normalized.indexOf("@fragment");
@@ -228,7 +238,7 @@ export function pbrFragmentWgsl(
         throw new Error("Converted PBR WGSL entry point changed.");
     }
     if (variant.kind === "color") {
-        return `${normalized.slice(0, colorEntryIndex)}${colorEntry()}`;
+        return `${normalized.slice(0, colorEntryIndex)}${colorEntry(occlusionUv2)}`;
     }
 
     const marker = "  let v_110 = v_108;";

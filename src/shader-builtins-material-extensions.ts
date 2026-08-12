@@ -5,6 +5,7 @@ export interface MaterialExtensionOptions {
     sheen: boolean;
     iridescence: boolean;
     dispersion: boolean;
+    occlusionUv2: boolean;
 }
 
 interface ExtensionBinding {
@@ -69,6 +70,15 @@ export function materialExtensionBindings(
                 sampler: "iridescenceThicknessSampler",
             },
         );
+    }
+    if (options.occlusionUv2) {
+        // Babylon Lite's pbr-template-ext appends a dedicated
+        // occlusion texture pair when the glTF occlusionTexture
+        // selects TEXCOORD_1.
+        result.push({
+            texture: "occlusionTexture",
+            sampler: "occlusionSampler",
+        });
     }
     return result;
 }
@@ -601,7 +611,8 @@ export function applyMaterialExtensionWgsl(
         !options.clearcoat &&
         !options.sheen &&
         !options.iridescence &&
-        !options.dispersion
+        !options.dispersion &&
+        !options.occlusionUv2
     ) {
         return converted;
     }
@@ -666,6 +677,29 @@ export function applyMaterialExtensionWgsl(
             singleRayRefraction,
             dispersionRefraction,
             "refracted scene-color sample",
+        );
+    }
+    if (options.occlusionUv2) {
+        result = replaceOnce(
+            result,
+            "fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, " +
+                "v_3 : vec4<f32>, v_4 : vec2<f32>, v_5 : vec4<f32>, " +
+                "v_6 : bool) {",
+            "fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, " +
+                "v_3 : vec4<f32>, v_4 : vec2<f32>, v_5 : vec4<f32>, " +
+                "v_6 : bool, bblUv2 : vec2<f32>) {",
+            "occlusion uv2 inner signature",
+        );
+        // Babylon Lite's pbr-template-ext occlusionOverride: the
+        // dedicated occlusion texture replaces the ORM red channel,
+        // sampled at uv2.
+        result = replaceOnce(
+            result,
+            "  let v_34 = mix(1.0f, v_33.x, " +
+                "FragmentUniforms.materialFactors.z);",
+            "  let v_34 = textureSample(occlusionTexture, " +
+                "occlusionSampler, bblUv2).x;",
+            "occlusion uv2 override",
         );
     }
     return result;

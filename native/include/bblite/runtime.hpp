@@ -502,6 +502,10 @@ struct MaterialRecord {
     TextureData opacity_texture;
     TextureData specular_texture;
     TextureData ambient_texture;
+    // Dedicated glTF occlusion texture sampled at uv2 (Babylon Lite's
+    // pbr-template-ext pair for occlusionTexture.texCoord == 1).
+    TextureData occlusion_texture;
+    bool occlusion_texture_uv2 = false;
     RenderTextureRef emissive_render_texture{};
     std::uint32_t reflection_cube = invalid_handle;
     float reflection_level = 1.0f;

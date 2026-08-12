@@ -111,6 +111,18 @@ Neutral white intensity/roughness textures and a flat coat-normal flag keep a
 single generated variant numerically identical to Babylon Lite's per-material
 shader variants. Combining a clearcoat or sheen layer with punctual
 multi-light PBR is not lowered and fails explicitly.
+glTF occlusion follows Babylon's `buildDefaultPbrTexturesExt` contract: an
+`occlusionTexture` on TEXCOORD_1 without a metallic-roughness image keeps the
+factor-driven ORM slot and binds the occlusion image through a dedicated
+texture pair sampled at uv2 (the pinned `occlusionOverride` replaces the ORM
+red channel; the native loader reads TEXCOORD_1 for this), while a TEXCOORD_0
+occlusion image without a metallic-roughness image becomes the ORM texture
+itself with the glTF metallic and roughness factors reverting to the engine
+defaults of 1.0, exactly as `assemblePbrPropsExt` passes them only alongside a
+metallic-roughness image. Distinct occlusion and metallic-roughness images
+(upstream's canvas composite) and occlusion on TEXCOORD_1 alongside a
+metallic-roughness texture stay unreached and fail explicitly. Scene 243
+gates the uv2 pair through MorphStressTest's baked-AO platform.
 The generated material records preserve Babylon's distinction between volume
 attenuation, thickness-based refraction depth, and glTF-only IOR-to-F0
 mapping; direct `createPbrMaterial` refraction options do not implicitly enable
