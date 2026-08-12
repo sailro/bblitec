@@ -756,6 +756,16 @@ PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
             return {false, false, WGPUCullMode_None, WGPUFrontFace_CCW};
         case Kind::pbr_opaque_none_clockwise:
             return {false, false, WGPUCullMode_None, WGPUFrontFace_CW};
+        case Kind::standard_transparent_back:
+            return {true, true, WGPUCullMode_Back, WGPUFrontFace_CCW};
+        case Kind::standard_transparent_none:
+            return {true, true, WGPUCullMode_None, WGPUFrontFace_CCW};
+        case Kind::pbr_transparent_back:
+            return {false, true, WGPUCullMode_Back, WGPUFrontFace_CCW};
+        case Kind::pbr_transparent_none:
+            return {false, true, WGPUCullMode_None, WGPUFrontFace_CCW};
+        case Kind::pbr_transparent_none_clockwise:
+            return {false, true, WGPUCullMode_None, WGPUFrontFace_CW};
         default:
             dawn_error(
                 "render pipeline kind " +
@@ -814,7 +824,9 @@ DawnPipeline& pipeline_for(
         traits.transparent
             ? WGPUOptionalBool_False
             : WGPUOptionalBool_True;
-    depth_stencil.depthCompare = WGPUCompareFunction_Less;
+    depth_stencil.depthCompare = traits.transparent
+        ? WGPUCompareFunction_LessEqual
+        : WGPUCompareFunction_Less;
     descriptor.depthStencil = &depth_stencil;
 
     descriptor.multisample.count = 4;
@@ -1808,42 +1820,45 @@ bool run_dawn_engine(Engine& engine) {
             0,
             matrix.data(),
             sizeof(matrix));
-        for (
-            const upstream::RenderDrawCommand& draw :
-            render_plan.draw_lists.opaque.commands) {
-            if (
-                draw.item.material_kind ==
-                upstream::RenderMaterialKind::standard) {
-                const upstream::StandardUniforms fragment =
-                    upstream::build_standard_uniforms(
-                        scene,
-                        engine,
-                        camera,
-                        draw.item);
-                wgpuQueueWriteBuffer(
-                    state.queue,
-                    state.meshes[draw.item_index].material_uniforms,
-                    0,
-                    &fragment,
-                    sizeof(fragment));
-            } else {
-                const upstream::PbrUniforms fragment =
-                    upstream::build_pbr_uniforms(
-                        scene,
-                        engine,
-                        camera,
-                        draw.item);
-                wgpuQueueWriteBuffer(
-                    state.queue,
-                    state.meshes[draw.item_index].material_uniforms,
-                    0,
-                    &fragment,
-                    sizeof(fragment));
-            }
-        }
-        if (!render_plan.draw_lists.transparent.commands.empty()) {
-            dawn_error("transparent draws are not implemented yet.");
-        }
+        const auto write_material_uniforms =
+            [&](const upstream::RenderDrawList& list) {
+                for (const upstream::RenderDrawCommand& draw :
+                     list.commands) {
+                    if (
+                        draw.item.material_kind ==
+                        upstream::RenderMaterialKind::standard) {
+                        const upstream::StandardUniforms fragment =
+                            upstream::build_standard_uniforms(
+                                scene,
+                                engine,
+                                camera,
+                                draw.item);
+                        wgpuQueueWriteBuffer(
+                            state.queue,
+                            state.meshes[draw.item_index]
+                                .material_uniforms,
+                            0,
+                            &fragment,
+                            sizeof(fragment));
+                    } else {
+                        const upstream::PbrUniforms fragment =
+                            upstream::build_pbr_uniforms(
+                                scene,
+                                engine,
+                                camera,
+                                draw.item);
+                        wgpuQueueWriteBuffer(
+                            state.queue,
+                            state.meshes[draw.item_index]
+                                .material_uniforms,
+                            0,
+                            &fragment,
+                            sizeof(fragment));
+                    }
+                }
+            };
+        write_material_uniforms(render_plan.draw_lists.opaque);
+        write_material_uniforms(render_plan.draw_lists.transparent);
         if (state.skybox_enabled) {
             const std::array<float, 16> skybox_view_projection =
                 upstream::build_skybox_view_projection(
