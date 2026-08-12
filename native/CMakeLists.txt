@@ -229,6 +229,16 @@ if(BBLITE_BACKEND_DAWN)
     else()
         target_compile_definitions(bblite_native PRIVATE BBLITE_DAWN_STATIC=1)
     endif()
+    # Whether the installed Dawn carries its built DXC
+    # (tools/build-dawn.ps1 deploys dxcompiler.dll into bin; the
+    # minimal FXC-only install has no bin at all). An FXC-only library
+    # force-ignores the use_dxc toggle with a console warning, so the
+    # request is only worth making when DXC is actually present.
+    if(EXISTS "${BBLITE_DAWN_DIR}/bin/dxcompiler.dll")
+        target_compile_definitions(bblite_native PRIVATE BBLITE_DAWN_DXC=1)
+    else()
+        target_compile_definitions(bblite_native PRIVATE BBLITE_DAWN_DXC=0)
+    endif()
 else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=0)
 endif()

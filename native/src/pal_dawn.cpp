@@ -3520,17 +3520,22 @@ bool run_dawn_engine(Engine& engine) {
         wgpuInstanceCreateSurface(state.instance, &surface_descriptor);
     if (!state.surface) dawn_error("wgpuInstanceCreateSurface failed.");
 
+    WGPURequestAdapterOptions adapter_options =
+        WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
+#if defined(BBLITE_DAWN_DXC) && BBLITE_DAWN_DXC
     // Chrome's Dawn compiles HLSL with DXC (dxcompiler.dll and
     // dxil.dll ship beside the browser); enable the same adapter
     // toggle so native shader codegen matches the reference captures.
+    // Libraries built without DAWN_USE_BUILT_DXC force-ignore the
+    // toggle with a console warning, so FXC-only builds skip the
+    // request entirely.
     static const char* adapter_toggles[] = {"use_dxc"};
     WGPUDawnTogglesDescriptor toggles = WGPU_DAWN_TOGGLES_DESCRIPTOR_INIT;
     toggles.chain.sType = WGPUSType_DawnTogglesDescriptor;
     toggles.enabledToggleCount = 1;
     toggles.enabledToggles = adapter_toggles;
-    WGPURequestAdapterOptions adapter_options =
-        WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
     adapter_options.nextInChain = &toggles.chain;
+#endif
     adapter_options.powerPreference = WGPUPowerPreference_HighPerformance;
     adapter_options.backendType = WGPUBackendType_D3D12;
     adapter_options.compatibleSurface = state.surface;
