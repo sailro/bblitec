@@ -417,11 +417,15 @@ npm run package:demo -- -Scene scene243
 follows the `BBLITE_BACKEND` the build directory was configured with
 (read from its CMake cache): `SDL_GPU` ships offline DXIL/SPIR-V
 shaders and no Dawn DLLs, `DAWN` ships WGSL text plus
-`webgpu_dawn.dll`/`dxcompiler.dll`/`dxil.dll`/`d3dcompiler_47.dll`
-and the Dawn license, and `BOTH` ships the dual-backend binary with
-both shader sets plus a `run-<scene>-dawn.cmd` launcher. Text shader
-intermediates (HLSL, MSL, reflection dumps) never ship. The archive
-is written to
+`webgpu_dawn.dll`/`dxcompiler.dll`/`dxil.dll` and the Dawn license
+(no FXC — see [backends](backends.md#building-and-running)), and
+`BOTH` ships the dual-backend binary with both shader sets plus a
+`run-<scene>-dawn.cmd` launcher. Statically linked builds (vcpkg
+`x64-windows-static` with `BBLITE_MINSIZE`, Dawn from
+`tools/build-dawn-min.ps1`) are detected by the absence of runtime
+DLLs beside the executable and ship the executable alone; `-Variant`
+appends a token to the package name. Text shader intermediates (HLSL,
+MSL, reflection dumps) never ship. The archive is written to
 `artifacts\releases\bblitec-<scene>-<backend>-windows-x64.zip`, and
 the README embeds the scene's current parity numbers when
 `artifacts\parity\<scene>` reports exist.

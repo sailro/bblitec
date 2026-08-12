@@ -106,16 +106,10 @@ if (-not $builtDxc) {
 }
 Copy-Item $builtDxc.FullName (Join-Path $output "bin") -Force
 
-# Dawn's D3D12 backend loads FXC relative to the webgpu_dawn module,
-# mirroring Chrome's deployment of the SDK compiler beside chrome.dll.
-$fxc = Get-ChildItem `
-    "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\d3dcompiler_47.dll" |
-    Sort-Object FullName -Descending |
-    Select-Object -First 1
-if (-not $fxc) {
-    throw "d3dcompiler_47.dll was not found in a Windows SDK."
-}
-Copy-Item $fxc.FullName (Join-Path $output "bin") -Force
+# FXC (d3dcompiler_47.dll) is intentionally not installed: it is only
+# reached when Dawn force-disables use_dxc on adapters below shader
+# model 6, and the PAL preloads it from the executable directory or
+# System32 at runtime.
 
 # Install the Dawn license beside the binaries so release packaging
 # can redistribute it without the source checkout.
@@ -125,7 +119,6 @@ Copy-Item (Join-Path $source "LICENSE") (Join-Path $output "LICENSE.txt") -Force
     repository = $pin.repository
     commit = $pin.commit
     license = $pin.license
-    fxc = $fxc.FullName
     builtAt = (Get-Date).ToUniversalTime().ToString("o")
 } | ConvertTo-Json | Set-Content (Join-Path $output "provenance.json")
 

@@ -210,24 +210,22 @@ if(BBLITE_BACKEND_DAWN)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=1)
     get_target_property(BBLITE_DAWN_LIBRARY_TYPE dawn::webgpu_dawn TYPE)
     if(BBLITE_DAWN_LIBRARY_TYPE STREQUAL "SHARED_LIBRARY")
-        # Dawn's hardened DLL search resolves FXC (d3dcompiler_47.dll)
-        # relative to the loaded module, matching how Chrome deploys the
-        # SDK compiler beside chrome.dll. A static Dawn ships no DLLs:
-        # built without DAWN_USE_BUILT_DXC it compiles through FXC,
-        # which Dawn resolves from the executable directory or System32.
+        # Dawn resolves its built DXC DLLs relative to the loaded
+        # module, matching how Chrome deploys them beside chrome.dll.
+        # FXC (d3dcompiler_47.dll) is not deployed: the PAL preloads it
+        # from the executable directory or System32, so only an
+        # intentionally placed SDK copy ever ships. A static Dawn
+        # deploys no DLLs at all.
         add_custom_command(
             TARGET bblite_native POST_BUILD
             COMMAND
                 "${CMAKE_COMMAND}" -E copy_if_different
                 "$<TARGET_FILE:dawn::webgpu_dawn>"
-                "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/d3dcompiler_47.dll"
                 "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxcompiler.dll"
                 "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxil.dll"
                 "$<TARGET_FILE_DIR:bblite_native>"
             VERBATIM
         )
-    else()
-        target_compile_definitions(bblite_native PRIVATE BBLITE_DAWN_STATIC=1)
     endif()
     # Whether the installed Dawn carries its built DXC
     # (tools/build-dawn.ps1 deploys dxcompiler.dll into bin; the

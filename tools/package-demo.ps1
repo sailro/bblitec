@@ -101,13 +101,14 @@ if ($sdlShared) {
     )
 }
 if ($dawnShared) {
-    # Dawn resolves its compiler DLLs module-relative with hardened
-    # LoadLibraryEx flags; all four must sit beside the executable.
+    # Dawn resolves its built DXC DLLs module-relative with hardened
+    # LoadLibraryEx flags; all three must sit beside the executable.
+    # FXC (d3dcompiler_47.dll) is not shipped - the PAL preloads it
+    # from the executable directory or System32.
     $runtimeDlls += @(
         "webgpu_dawn.dll",
         "dxcompiler.dll",
-        "dxil.dll",
-        "d3dcompiler_47.dll"
+        "dxil.dll"
     )
 }
 foreach ($dll in $runtimeDlls) {
