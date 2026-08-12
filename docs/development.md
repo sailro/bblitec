@@ -308,6 +308,13 @@ Outputs under `artifacts\parity` include the actual image, diff map, hotspots,
 JSON report, and optional draw/cluster/diagnostic buffers. Committed goldens
 live under `reference\<scene>`.
 
+Both GPU backends serve the attribution captures. `BBLITE_GPU_BACKEND=dawn`
+before any of the scene 1 commands renders the draw-id, triangle-cluster, and
+PBR diagnostic buffers through Dawn instead of SDL_GPU; the `-gpu` filenames
+always reflect whichever backend produced the run. The two backends produce
+byte-identical id/cluster buffers and one-LSB-equal PBR buffers, so either
+side can attribute a diff against the browser oracle.
+
 Render both GPU backends and diff them against each other and the
 golden in one report:
 

@@ -30,12 +30,16 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace bbl::pal {
@@ -304,6 +308,17 @@ struct DawnState {
 #endif
     std::map<WGPUTextureFormat, WGPURenderPipeline> mip_pipelines;
     std::map<upstream::RenderPipelineKind, DawnPipeline> pipelines;
+    // Attribution capture resources (scene-1 diagnostics tooling),
+    // created lazily on the first requested capture. Pipelines are
+    // keyed by [double_sided]; the PBR diagnostic set adds the MRT
+    // pass index.
+    WGPUShaderModule diagnostic_id_module = nullptr;
+    WGPUShaderModule diagnostic_cluster_module = nullptr;
+    std::array<WGPUShaderModule, 3> diagnostics_modules{};
+    std::array<WGPURenderPipeline, 2> id_pipelines{};
+    std::array<WGPURenderPipeline, 2> cluster_pipelines{};
+    std::array<std::array<WGPURenderPipeline, 2>, 3>
+        diagnostics_pipelines{};
     std::vector<DawnMesh> meshes;
     std::string uncaptured_error;
 
@@ -2512,6 +2527,750 @@ void save_capture_png(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Attribution captures (scene-1 diagnostics tooling): draw-id and
+// triangle-cluster id buffers plus the PBR diagnostic MRT set, matching
+// the SDL backend's save_geometry_id_buffer_png / save_pbr_diagnostic_
+// buffers outputs byte-for-byte in layout and conversion semantics.
+
+struct DiagnosticIdUniforms {
+    float id_color[4];
+    float alpha_options[4];
+};
+
+struct DiagnosticClusterUniforms {
+    std::uint32_t cluster_options[4];
+    float alpha_options[4];
+};
+
+// The diagnostic pipelines reuse the scene vertex module and the
+// superset mesh pipeline layout so the per-mesh bind groups from the
+// main pass stay valid; only the fragment module, cull mode, sample
+// count, and color target formats vary.
+WGPURenderPipeline create_diagnostic_pipeline(
+    DawnState& state,
+    WGPUShaderModule fragment_module,
+    bool double_sided,
+    std::uint32_t samples,
+    const WGPUTextureFormat* color_formats,
+    std::uint32_t color_count) {
+    std::array<WGPUVertexAttribute, base_vertex_attribute_count>
+        attributes{};
+    fill_base_vertex_attributes(attributes.data());
+    std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
+    vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
+    vertex_layouts[0].arrayStride = sizeof(GpuVertex);
+    vertex_layouts[0].attributeCount = attributes.size();
+    vertex_layouts[0].attributes = attributes.data();
+#if BBLITE_GPU_INSTANCING
+    std::array<WGPUVertexAttribute, 4> instance_attributes{};
+    for (std::uint32_t column = 0; column < 4; ++column) {
+        instance_attributes[column].format = WGPUVertexFormat_Float32x4;
+        instance_attributes[column].offset = column * 16;
+        instance_attributes[column].shaderLocation = 16 + column;
+    }
+    vertex_layouts[1].stepMode = WGPUVertexStepMode_Instance;
+    vertex_layouts[1].arrayStride = sizeof(std::array<float, 16>);
+    vertex_layouts[1].attributeCount = instance_attributes.size();
+    vertex_layouts[1].attributes = instance_attributes.data();
+    constexpr std::uint32_t vertex_buffer_count = 2;
+#else
+    constexpr std::uint32_t vertex_buffer_count = 1;
+#endif
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.layout = mesh_pipeline_layout_for(state);
+    descriptor.vertex.module = state.vertex_module;
+    descriptor.vertex.entryPoint = string_view("mainVertex");
+    descriptor.vertex.bufferCount = vertex_buffer_count;
+    descriptor.vertex.buffers = vertex_layouts.data();
+    descriptor.primitive.topology =
+        WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.frontFace = WGPUFrontFace_CCW;
+    descriptor.primitive.cullMode =
+        double_sided ? WGPUCullMode_None : WGPUCullMode_Back;
+    WGPUDepthStencilState depth_stencil =
+        WGPU_DEPTH_STENCIL_STATE_INIT;
+    depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
+    depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
+    depth_stencil.depthCompare = WGPUCompareFunction_Less;
+    descriptor.depthStencil = &depth_stencil;
+    descriptor.multisample.count = samples;
+    descriptor.multisample.mask = ~0u;
+    std::array<WGPUColorTargetState, 4> color_targets{};
+    for (std::uint32_t index = 0; index < color_count; ++index) {
+        color_targets[index] = WGPU_COLOR_TARGET_STATE_INIT;
+        color_targets[index].format = color_formats[index];
+    }
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = fragment_module;
+    fragment.entryPoint = string_view("mainFragment");
+    fragment.targetCount = color_count;
+    fragment.targets = color_targets.data();
+    descriptor.fragment = &fragment;
+    WGPURenderPipeline pipeline =
+        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    if (!pipeline) {
+        dawn_error("diagnostic render pipeline creation failed.");
+    }
+    return pipeline;
+}
+
+// Downloads a diagnostic render target and stores it with the SDL
+// backend's exact conversion semantics: rgba16float decodes through
+// the manual half conversion (clamped to bytes), r16float lands in the
+// red channel, rgba8unorm copies through, and the optional raw path
+// dumps the unpadded rgba16float rows.
+void save_dawn_texture_file(
+    DawnState& state,
+    WGPUTexture texture,
+    WGPUTextureFormat format,
+    std::uint32_t width,
+    std::uint32_t height,
+    const std::string& path,
+    const std::string& raw_path = {}) {
+    const std::uint32_t bytes_per_pixel =
+        format == WGPUTextureFormat_RGBA16Float
+            ? 8u
+            : format == WGPUTextureFormat_R16Float ? 2u : 4u;
+    const std::uint32_t source_row_bytes = width * bytes_per_pixel;
+    const std::uint32_t aligned_row_bytes =
+        (source_row_bytes + 255u) & ~255u;
+    WGPUBufferDescriptor readback_descriptor =
+        WGPU_BUFFER_DESCRIPTOR_INIT;
+    readback_descriptor.usage =
+        WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+    readback_descriptor.size =
+        static_cast<std::uint64_t>(aligned_row_bytes) * height;
+    WGPUBuffer readback =
+        wgpuDeviceCreateBuffer(state.device, &readback_descriptor);
+    WGPUCommandEncoder encoder =
+        wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+    WGPUTexelCopyTextureInfo copy_source =
+        WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    copy_source.texture = texture;
+    WGPUTexelCopyBufferInfo copy_destination =
+        WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
+    copy_destination.layout.bytesPerRow = aligned_row_bytes;
+    copy_destination.layout.rowsPerImage = height;
+    copy_destination.buffer = readback;
+    const WGPUExtent3D copy_size{width, height, 1};
+    wgpuCommandEncoderCopyTextureToBuffer(
+        encoder,
+        &copy_source,
+        &copy_destination,
+        &copy_size);
+    WGPUCommandBuffer command =
+        wgpuCommandEncoderFinish(encoder, nullptr);
+    wgpuQueueSubmit(state.queue, 1, &command);
+    wgpuCommandBufferRelease(command);
+    wgpuCommandEncoderRelease(encoder);
+    WGPUBufferMapCallbackInfo map_callback =
+        WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+    map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
+    map_callback.callback = [](
+                                WGPUMapAsyncStatus status,
+                                WGPUStringView message,
+                                void* userdata1,
+                                void*) {
+        if (status != WGPUMapAsyncStatus_Success) {
+            auto* error = static_cast<std::string*>(userdata1);
+            if (error->empty()) *error = view_text(message);
+        }
+    };
+    map_callback.userdata1 = &state.uncaptured_error;
+    wait_for(
+        state.instance,
+        wgpuBufferMapAsync(
+            readback,
+            WGPUMapMode_Read,
+            0,
+            static_cast<std::size_t>(aligned_row_bytes) * height,
+            map_callback));
+    const auto* mapped =
+        static_cast<const std::uint8_t*>(wgpuBufferGetConstMappedRange(
+            readback,
+            0,
+            static_cast<std::size_t>(aligned_row_bytes) * height));
+    if (!mapped) {
+        wgpuBufferRelease(readback);
+        dawn_error("diagnostic readback map returned no data.");
+    }
+    if (
+        !raw_path.empty() &&
+        format == WGPUTextureFormat_RGBA16Float) {
+        std::ofstream raw(raw_path, std::ios::binary);
+        if (!raw) {
+            wgpuBufferUnmap(readback);
+            wgpuBufferRelease(readback);
+            throw std::runtime_error(
+                "Unable to open HDR diagnostic output '" + raw_path +
+                "'.");
+        }
+        for (std::uint32_t y = 0; y < height; ++y) {
+            raw.write(
+                reinterpret_cast<const char*>(
+                    mapped +
+                    static_cast<std::size_t>(y) * aligned_row_bytes),
+                source_row_bytes);
+        }
+    }
+    const std::uint32_t output_row_bytes = width * 4;
+    std::vector<std::uint8_t> rgba(
+        static_cast<std::size_t>(output_row_bytes) * height);
+    const auto half_to_byte = [](std::uint16_t value) {
+        const bool negative = (value & 0x8000u) != 0;
+        const std::uint16_t exponent = (value >> 10) & 0x1fu;
+        const std::uint16_t mantissa = value & 0x03ffu;
+        float decoded = 0.0f;
+        if (exponent == 0) {
+            decoded = std::ldexp(static_cast<float>(mantissa), -24);
+        } else if (exponent == 31) {
+            decoded = mantissa == 0
+                ? std::numeric_limits<float>::infinity()
+                : std::numeric_limits<float>::quiet_NaN();
+        } else {
+            decoded = std::ldexp(
+                1.0f + static_cast<float>(mantissa) / 1024.0f,
+                static_cast<int>(exponent) - 15);
+        }
+        if (negative) decoded = -decoded;
+        return static_cast<std::uint8_t>(
+            std::lround(std::clamp(decoded, 0.0f, 1.0f) * 255.0f));
+    };
+    for (std::uint32_t y = 0; y < height; ++y) {
+        const std::uint8_t* source_row =
+            mapped + static_cast<std::size_t>(y) * aligned_row_bytes;
+        std::uint8_t* destination_row =
+            rgba.data() + static_cast<std::size_t>(y) * output_row_bytes;
+        if (format == WGPUTextureFormat_RGBA16Float) {
+            const auto* source_pixels =
+                reinterpret_cast<const std::uint16_t*>(source_row);
+            for (std::uint32_t x = 0; x < width; ++x) {
+                for (
+                    std::uint32_t channel = 0;
+                    channel < 4;
+                    ++channel) {
+                    destination_row[x * 4 + channel] =
+                        half_to_byte(source_pixels[x * 4 + channel]);
+                }
+            }
+        } else if (format == WGPUTextureFormat_R16Float) {
+            const auto* source_pixels =
+                reinterpret_cast<const std::uint16_t*>(source_row);
+            for (std::uint32_t x = 0; x < width; ++x) {
+                destination_row[x * 4] = half_to_byte(source_pixels[x]);
+                destination_row[x * 4 + 1] = 0;
+                destination_row[x * 4 + 2] = 0;
+                destination_row[x * 4 + 3] = 255;
+            }
+        } else {
+            std::memcpy(destination_row, source_row, output_row_bytes);
+        }
+    }
+    wgpuBufferUnmap(readback);
+    wgpuBufferRelease(readback);
+    save_capture_png(rgba, width, height, output_row_bytes, false, path);
+}
+
+void save_dawn_geometry_id_buffer(
+    DawnState& state,
+    std::uint32_t width,
+    std::uint32_t height,
+    const std::vector<upstream::RenderItem>& render_plan,
+    const Engine& engine,
+    const std::string& path,
+    bool cluster_ids) {
+    if (cluster_ids && !state.diagnostic_cluster_module) {
+        state.diagnostic_cluster_module =
+            load_wgsl_module(state, "diagnostic-cluster.frag");
+    }
+    if (!cluster_ids && !state.diagnostic_id_module) {
+        state.diagnostic_id_module =
+            load_wgsl_module(state, "diagnostic-id.frag");
+    }
+    const WGPUTextureFormat color_format = WGPUTextureFormat_RGBA8Unorm;
+    auto& pipelines =
+        cluster_ids ? state.cluster_pipelines : state.id_pipelines;
+    for (int sided = 0; sided < 2; ++sided) {
+        if (!pipelines[sided]) {
+            pipelines[sided] = create_diagnostic_pipeline(
+                state,
+                cluster_ids
+                    ? state.diagnostic_cluster_module
+                    : state.diagnostic_id_module,
+                sided == 1,
+                1,
+                &color_format,
+                1);
+        }
+    }
+
+    WGPUTextureDescriptor color_info = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    color_info.usage =
+        WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
+    color_info.size = {width, height, 1};
+    color_info.format = color_format;
+    WGPUTexture color =
+        wgpuDeviceCreateTexture(state.device, &color_info);
+    if (!color) dawn_error("wgpuDeviceCreateTexture ID buffer");
+    WGPUTextureView color_view = wgpuTextureCreateView(color, nullptr);
+    WGPUTextureDescriptor depth_info = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    depth_info.usage = WGPUTextureUsage_RenderAttachment;
+    depth_info.size = {width, height, 1};
+    depth_info.format = WGPUTextureFormat_Depth24PlusStencil8;
+    WGPUTexture depth =
+        wgpuDeviceCreateTexture(state.device, &depth_info);
+    if (!depth) dawn_error("wgpuDeviceCreateTexture ID depth");
+    WGPUTextureView depth_view = wgpuTextureCreateView(depth, nullptr);
+
+    std::vector<WGPUBuffer> transient_buffers;
+    std::vector<WGPUBindGroup> transient_groups;
+    WGPUCommandEncoder encoder =
+        wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+    WGPURenderPassColorAttachment color_attachment =
+        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+    color_attachment.view = color_view;
+    color_attachment.loadOp = WGPULoadOp_Clear;
+    color_attachment.storeOp = WGPUStoreOp_Store;
+    color_attachment.clearValue = WGPUColor{0.0, 0.0, 0.0, 0.0};
+    WGPURenderPassDepthStencilAttachment depth_attachment{};
+    depth_attachment.view = depth_view;
+    depth_attachment.depthLoadOp = WGPULoadOp_Clear;
+    depth_attachment.depthClearValue = 1.0f;
+    depth_attachment.depthStoreOp = WGPUStoreOp_Discard;
+    depth_attachment.stencilLoadOp = WGPULoadOp_Clear;
+    depth_attachment.stencilStoreOp = WGPUStoreOp_Discard;
+    WGPURenderPassDescriptor pass_descriptor =
+        WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+    pass_descriptor.colorAttachmentCount = 1;
+    pass_descriptor.colorAttachments = &color_attachment;
+    pass_descriptor.depthStencilAttachment = &depth_attachment;
+    WGPURenderPassEncoder pass =
+        wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+    for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
+        wgpuRenderPassEncoderSetPipeline(pass, pipelines[sided_mode]);
+        std::uint32_t cluster_id_base = 1;
+        for (
+            std::size_t mesh_index = 0;
+            mesh_index < state.meshes.size() &&
+            mesh_index < render_plan.size();
+            ++mesh_index) {
+            DawnMesh& mesh = state.meshes[mesh_index];
+            const std::uint32_t triangle_count = mesh.index_count / 3;
+            const std::uint32_t current_cluster_base = cluster_id_base;
+            cluster_id_base += (triangle_count + 127u) / 128u;
+            const upstream::RenderItem& item = render_plan[mesh_index];
+            const MaterialRecord* material =
+                item.material.value < engine.materials.size()
+                    ? &engine.materials[item.material.value]
+                    : nullptr;
+            const bool double_sided =
+                item.cull_mode == upstream::RenderCullMode::none;
+            if (double_sided != (sided_mode == 1)) continue;
+
+            float alpha_options[4]{};
+            if (material) {
+                alpha_options[0] =
+                    item.bucket == upstream::RenderBucket::alpha_blend
+                        ? 2.0f
+                        : item.bucket ==
+                                upstream::RenderBucket::alpha_mask
+                            ? 1.0f
+                            : 0.0f;
+                alpha_options[1] = material->alpha_cutoff;
+                alpha_options[2] = material->base_color_factor.a;
+            } else {
+                alpha_options[2] = 1.0f;
+            }
+            WGPUBufferDescriptor uniform_descriptor =
+                WGPU_BUFFER_DESCRIPTOR_INIT;
+            uniform_descriptor.usage =
+                WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+            uniform_descriptor.size = 32;
+            WGPUBuffer uniform_buffer = wgpuDeviceCreateBuffer(
+                state.device,
+                &uniform_descriptor);
+            if (cluster_ids) {
+                DiagnosticClusterUniforms uniforms{};
+                uniforms.cluster_options[0] = current_cluster_base;
+                uniforms.cluster_options[1] = 128;
+                std::copy_n(alpha_options, 4, uniforms.alpha_options);
+                wgpuQueueWriteBuffer(
+                    state.queue,
+                    uniform_buffer,
+                    0,
+                    &uniforms,
+                    sizeof(uniforms));
+            } else {
+                const std::uint32_t draw_id =
+                    static_cast<std::uint32_t>(mesh_index + 1);
+                DiagnosticIdUniforms uniforms{};
+                uniforms.id_color[0] =
+                    static_cast<float>(draw_id & 0xffu) / 255.0f;
+                uniforms.id_color[1] =
+                    static_cast<float>((draw_id >> 8) & 0xffu) / 255.0f;
+                uniforms.id_color[2] =
+                    static_cast<float>((draw_id >> 16) & 0xffu) /
+                    255.0f;
+                uniforms.id_color[3] = 1.0f;
+                std::copy_n(alpha_options, 4, uniforms.alpha_options);
+                wgpuQueueWriteBuffer(
+                    state.queue,
+                    uniform_buffer,
+                    0,
+                    &uniforms,
+                    sizeof(uniforms));
+            }
+            WGPUBindGroupEntry uniform_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+            uniform_entry.binding = 0;
+            uniform_entry.buffer = uniform_buffer;
+            uniform_entry.size = 32;
+            WGPUBindGroupDescriptor group_descriptor =
+                WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+            group_descriptor.layout = state.mesh_group_layouts[3];
+            group_descriptor.entryCount = 1;
+            group_descriptor.entries = &uniform_entry;
+            WGPUBindGroup uniform_group = wgpuDeviceCreateBindGroup(
+                state.device,
+                &group_descriptor);
+            transient_buffers.push_back(uniform_buffer);
+            transient_groups.push_back(uniform_group);
+
+            DawnMeshBindings& bindings = bindings_for(
+                state,
+                mesh,
+                upstream::RenderPipelineKind::pbr_opaque_back);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 1, bindings.scene, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 2, bindings.textures, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 3, uniform_group, 0, nullptr);
+#if BBLITE_GPU_MORPH_STORAGE
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 0, bindings.morph, 0, nullptr);
+#endif
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
+#if BBLITE_GPU_INSTANCING
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass, 1, mesh.instances, 0, WGPU_WHOLE_SIZE);
+#endif
+            wgpuRenderPassEncoderSetIndexBuffer(
+                pass,
+                mesh.indices,
+                WGPUIndexFormat_Uint32,
+                0,
+                WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderDrawIndexed(
+                pass,
+                mesh.index_count,
+#if BBLITE_GPU_INSTANCING
+                mesh.instance_count,
+#else
+                1,
+#endif
+                0,
+                0,
+                0);
+        }
+    }
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
+    WGPUCommandBuffer command =
+        wgpuCommandEncoderFinish(encoder, nullptr);
+    wgpuQueueSubmit(state.queue, 1, &command);
+    wgpuCommandBufferRelease(command);
+    wgpuCommandEncoderRelease(encoder);
+    save_dawn_texture_file(
+        state,
+        color,
+        color_format,
+        width,
+        height,
+        path);
+    for (WGPUBindGroup group : transient_groups) {
+        wgpuBindGroupRelease(group);
+    }
+    for (WGPUBuffer buffer : transient_buffers) {
+        wgpuBufferRelease(buffer);
+    }
+    wgpuTextureViewRelease(depth_view);
+    wgpuTextureRelease(depth);
+    wgpuTextureViewRelease(color_view);
+    wgpuTextureRelease(color);
+}
+
+void save_dawn_pbr_diagnostics(
+    DawnState& state,
+    std::uint32_t width,
+    std::uint32_t height,
+    const std::vector<upstream::RenderItem>& render_plan,
+    const Scene& scene,
+    const Engine& engine,
+    const CameraRecord& camera,
+    const std::string& output_directory) {
+    constexpr std::array<WGPUTextureFormat, 9> formats{
+        WGPUTextureFormat_RGBA16Float,
+        WGPUTextureFormat_RGBA8Unorm,
+        WGPUTextureFormat_RGBA16Float,
+        WGPUTextureFormat_RGBA16Float,
+        WGPUTextureFormat_R16Float,
+        WGPUTextureFormat_RGBA8Unorm,
+        WGPUTextureFormat_RGBA16Float,
+        WGPUTextureFormat_RGBA8Unorm,
+        WGPUTextureFormat_RGBA16Float,
+    };
+    constexpr std::array<const char*, 3> module_names{
+        "pbr-diagnostics-a.frag",
+        "pbr-diagnostics-b.frag",
+        "pbr-diagnostics-c.frag",
+    };
+    // Pass layout mirrors the SDL backend: outputs [0,4) from module
+    // a, [4,7) from module b, [7,9) from module c.
+    constexpr std::array<std::pair<std::size_t, std::size_t>, 3>
+        pass_ranges{{{0, 4}, {4, 3}, {7, 2}}};
+    constexpr std::uint32_t samples = 4;
+    for (std::size_t index = 0; index < module_names.size(); ++index) {
+        if (!state.diagnostics_modules[index]) {
+            state.diagnostics_modules[index] =
+                load_wgsl_module(state, module_names[index]);
+        }
+        for (int sided = 0; sided < 2; ++sided) {
+            if (!state.diagnostics_pipelines[index][sided]) {
+                std::array<WGPUTextureFormat, 4> pass_formats{};
+                for (
+                    std::size_t output = 0;
+                    output < pass_ranges[index].second;
+                    ++output) {
+                    pass_formats[output] =
+                        formats[pass_ranges[index].first + output];
+                }
+                state.diagnostics_pipelines[index][sided] =
+                    create_diagnostic_pipeline(
+                        state,
+                        state.diagnostics_modules[index],
+                        sided == 1,
+                        samples,
+                        pass_formats.data(),
+                        static_cast<std::uint32_t>(
+                            pass_ranges[index].second));
+            }
+        }
+    }
+
+    std::array<WGPUTexture, 9> textures{};
+    std::array<WGPUTextureView, 9> views{};
+    std::array<WGPUTexture, 9> multisample_textures{};
+    std::array<WGPUTextureView, 9> multisample_views{};
+    const auto release_textures = [&] {
+        for (std::size_t index = 0; index < textures.size(); ++index) {
+            if (multisample_views[index]) {
+                wgpuTextureViewRelease(multisample_views[index]);
+            }
+            if (multisample_textures[index]) {
+                wgpuTextureRelease(multisample_textures[index]);
+            }
+            if (views[index]) wgpuTextureViewRelease(views[index]);
+            if (textures[index]) wgpuTextureRelease(textures[index]);
+        }
+    };
+    for (std::size_t index = 0; index < textures.size(); ++index) {
+        WGPUTextureDescriptor texture_info = WGPU_TEXTURE_DESCRIPTOR_INIT;
+        texture_info.usage = WGPUTextureUsage_RenderAttachment |
+            WGPUTextureUsage_CopySrc;
+        texture_info.size = {width, height, 1};
+        texture_info.format = formats[index];
+        textures[index] =
+            wgpuDeviceCreateTexture(state.device, &texture_info);
+        if (!textures[index]) {
+            release_textures();
+            dawn_error("wgpuDeviceCreateTexture PBR diagnostic");
+        }
+        views[index] = wgpuTextureCreateView(textures[index], nullptr);
+        texture_info.usage = WGPUTextureUsage_RenderAttachment;
+        texture_info.sampleCount = samples;
+        multisample_textures[index] =
+            wgpuDeviceCreateTexture(state.device, &texture_info);
+        if (!multisample_textures[index]) {
+            release_textures();
+            dawn_error("wgpuDeviceCreateTexture PBR diagnostic MSAA");
+        }
+        multisample_views[index] =
+            wgpuTextureCreateView(multisample_textures[index], nullptr);
+    }
+    WGPUTextureDescriptor depth_info = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    depth_info.usage = WGPUTextureUsage_RenderAttachment;
+    depth_info.size = {width, height, 1};
+    depth_info.format = WGPUTextureFormat_Depth24PlusStencil8;
+    depth_info.sampleCount = samples;
+    WGPUTexture depth =
+        wgpuDeviceCreateTexture(state.device, &depth_info);
+    if (!depth) {
+        release_textures();
+        dawn_error("wgpuDeviceCreateTexture PBR diagnostic depth");
+    }
+    WGPUTextureView depth_view = wgpuTextureCreateView(depth, nullptr);
+
+    // The material uniform buffers already hold this frame's
+    // build_pbr_uniforms values for every drawn mesh, but the SDL
+    // backend rebuilds them for every render item; mirror that so
+    // meshes outside the frame's draw lists still diagnose correctly.
+    for (
+        std::size_t mesh_index = 0;
+        mesh_index < state.meshes.size() &&
+        mesh_index < render_plan.size();
+        ++mesh_index) {
+        DawnMesh& mesh = state.meshes[mesh_index];
+        if (mesh.material_uniform_size <
+            sizeof(upstream::PbrUniforms)) {
+            continue;
+        }
+        const upstream::PbrUniforms fragment = upstream::build_pbr_uniforms(
+            scene,
+            engine,
+            camera,
+            render_plan[mesh_index]);
+        wgpuQueueWriteBuffer(
+            state.queue,
+            mesh.material_uniforms,
+            0,
+            &fragment,
+            sizeof(fragment));
+    }
+
+    WGPUCommandEncoder encoder =
+        wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+    const auto draw_pass = [&](
+                               std::size_t output_offset,
+                               std::size_t output_count,
+                               std::size_t pipeline_index) {
+        std::array<WGPURenderPassColorAttachment, 4> targets{};
+        for (std::size_t index = 0; index < output_count; ++index) {
+            targets[index] = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+            targets[index].view =
+                multisample_views[output_offset + index];
+            targets[index].resolveTarget =
+                views[output_offset + index];
+            targets[index].loadOp = WGPULoadOp_Clear;
+            targets[index].storeOp = WGPUStoreOp_Discard;
+            targets[index].clearValue = output_offset + index == 4
+                ? WGPUColor{1.0, 0.0, 0.0, 1.0}
+                : WGPUColor{0.0, 0.0, 0.0, 0.0};
+        }
+        WGPURenderPassDepthStencilAttachment depth_attachment{};
+        depth_attachment.view = depth_view;
+        depth_attachment.depthLoadOp = WGPULoadOp_Clear;
+        depth_attachment.depthClearValue = 1.0f;
+        depth_attachment.depthStoreOp = WGPUStoreOp_Discard;
+        depth_attachment.stencilLoadOp = WGPULoadOp_Clear;
+        depth_attachment.stencilStoreOp = WGPUStoreOp_Discard;
+        WGPURenderPassDescriptor pass_descriptor =
+            WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+        pass_descriptor.colorAttachmentCount = output_count;
+        pass_descriptor.colorAttachments = targets.data();
+        pass_descriptor.depthStencilAttachment = &depth_attachment;
+        WGPURenderPassEncoder pass =
+            wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+        for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
+            wgpuRenderPassEncoderSetPipeline(
+                pass,
+                state.diagnostics_pipelines[pipeline_index]
+                                           [sided_mode]);
+            for (
+                std::size_t mesh_index = 0;
+                mesh_index < state.meshes.size() &&
+                mesh_index < render_plan.size();
+                ++mesh_index) {
+                const upstream::RenderItem& item =
+                    render_plan[mesh_index];
+                const bool double_sided =
+                    item.material.value < engine.materials.size() &&
+                    engine.materials[item.material.value].double_sided;
+                if (double_sided != (sided_mode == 1)) continue;
+                DawnMesh& mesh = state.meshes[mesh_index];
+                DawnMeshBindings& bindings = bindings_for(
+                    state,
+                    mesh,
+                    upstream::RenderPipelineKind::pbr_opaque_back);
+                wgpuRenderPassEncoderSetBindGroup(
+                    pass, 1, bindings.scene, 0, nullptr);
+                wgpuRenderPassEncoderSetBindGroup(
+                    pass, 2, bindings.textures, 0, nullptr);
+                wgpuRenderPassEncoderSetBindGroup(
+                    pass, 3, bindings.material, 0, nullptr);
+#if BBLITE_GPU_MORPH_STORAGE
+                wgpuRenderPassEncoderSetBindGroup(
+                    pass, 0, bindings.morph, 0, nullptr);
+#endif
+                wgpuRenderPassEncoderSetVertexBuffer(
+                    pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
+#if BBLITE_GPU_INSTANCING
+                wgpuRenderPassEncoderSetVertexBuffer(
+                    pass, 1, mesh.instances, 0, WGPU_WHOLE_SIZE);
+#endif
+                wgpuRenderPassEncoderSetIndexBuffer(
+                    pass,
+                    mesh.indices,
+                    WGPUIndexFormat_Uint32,
+                    0,
+                    WGPU_WHOLE_SIZE);
+                wgpuRenderPassEncoderDrawIndexed(
+                    pass,
+                    mesh.index_count,
+#if BBLITE_GPU_INSTANCING
+                    mesh.instance_count,
+#else
+                    1,
+#endif
+                    0,
+                    0,
+                    0);
+            }
+        }
+        wgpuRenderPassEncoderEnd(pass);
+        wgpuRenderPassEncoderRelease(pass);
+    };
+    draw_pass(0, 4, 0);
+    draw_pass(4, 3, 1);
+    draw_pass(7, 2, 2);
+    WGPUCommandBuffer command =
+        wgpuCommandEncoderFinish(encoder, nullptr);
+    wgpuQueueSubmit(state.queue, 1, &command);
+    wgpuCommandBufferRelease(command);
+    wgpuCommandEncoderRelease(encoder);
+
+    constexpr std::array<const char*, 9> names{
+        "normal-gpu.png",
+        "reflectivity-gpu.png",
+        "irradiance-gpu.png",
+        "ibl-gpu.png",
+        "normalized-depth-gpu.png",
+        "albedo-gpu.png",
+        "direct-light-gpu.png",
+        "base-color-gpu.png",
+        "pre-tone-hdr-gpu.png",
+    };
+    for (std::size_t index = 0; index < names.size(); ++index) {
+        save_dawn_texture_file(
+            state,
+            textures[index],
+            formats[index],
+            width,
+            height,
+            join_path(output_directory, names[index]),
+            index == 8
+                ? join_path(
+                      output_directory,
+                      "pre-tone-hdr-gpu.rgba16f")
+                : std::string{});
+    }
+    wgpuTextureViewRelease(depth_view);
+    wgpuTextureRelease(depth);
+    release_textures();
+}
+
 } // namespace
 
 bool run_dawn_engine(Engine& engine) {
@@ -2656,13 +3415,21 @@ bool run_dawn_engine(Engine& engine) {
     WGPUDeviceDescriptor device_descriptor = WGPU_DEVICE_DESCRIPTOR_INIT;
     // The pinned engine requests float32-filterable whenever the
     // adapter offers it; the depth-copy r32float texture relies on it.
-    std::array<WGPUFeatureName, 1> device_features{};
+    // Primitive-index unlocks the triangle-cluster diagnostic shader's
+    // `enable primitive_index` directive (attribution captures only).
+    std::array<WGPUFeatureName, 2> device_features{};
     std::size_t device_feature_count = 0;
     if (wgpuAdapterHasFeature(
             state.adapter,
             WGPUFeatureName_Float32Filterable)) {
         device_features[device_feature_count++] =
             WGPUFeatureName_Float32Filterable;
+    }
+    if (wgpuAdapterHasFeature(
+            state.adapter,
+            WGPUFeatureName_PrimitiveIndex)) {
+        device_features[device_feature_count++] =
+            WGPUFeatureName_PrimitiveIndex;
     }
     device_descriptor.requiredFeatureCount = device_feature_count;
     device_descriptor.requiredFeatures = device_features.data();
@@ -3702,6 +4469,12 @@ bool run_dawn_engine(Engine& engine) {
 
     const std::string screenshot_path =
         environment_variable("BBLITE_SCREENSHOT");
+    const std::string id_buffer_path =
+        environment_variable("BBLITE_ID_BUFFER");
+    const std::string cluster_buffer_path =
+        environment_variable("BBLITE_CLUSTER_BUFFER");
+    const std::string diagnostic_directory =
+        environment_variable("BBLITE_DIAGNOSTIC_DIR");
     const long screenshot_frame = [&] {
         const std::string value =
             environment_variable("BBLITE_SCREENSHOT_FRAME");
@@ -3726,13 +4499,26 @@ bool run_dawn_engine(Engine& engine) {
     }
 
     bool screenshot_saved = false;
+    bool id_buffer_saved = false;
+    bool cluster_buffer_saved = false;
+    bool diagnostics_saved = false;
     bool running = true;
     long frame = 0;
+    // Topology updates defer captures by one frame, so a requested
+    // capture may still be pending at the configured frame limit;
+    // extend the loop by a bounded grace period exactly like the SDL
+    // backend.
+    const auto pending_capture = [&] {
+        return (!screenshot_path.empty() && !screenshot_saved) ||
+            (!id_buffer_path.empty() && !id_buffer_saved) ||
+            (!cluster_buffer_path.empty() && !cluster_buffer_saved) ||
+            (!diagnostic_directory.empty() && !diagnostics_saved);
+    };
     constexpr long capture_grace_frames = 8;
     CameraPointerState pointer_state;
     while (running &&
            (limit <= 0 || frame < limit ||
-            (!screenshot_path.empty() && !screenshot_saved &&
+            (pending_capture() &&
              frame < limit + capture_grace_frames))) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -4996,6 +5782,49 @@ bool run_dawn_engine(Engine& engine) {
             screenshot_saved = true;
         }
         if (readback) wgpuBufferRelease(readback);
+
+        const bool capture_ready =
+            frame >= screenshot_frame && !topology_updated;
+        if (
+            capture_ready && !id_buffer_saved &&
+            !id_buffer_path.empty()) {
+            save_dawn_geometry_id_buffer(
+                state,
+                width,
+                height,
+                render_plan.items,
+                engine,
+                id_buffer_path,
+                false);
+            id_buffer_saved = true;
+        }
+        if (
+            capture_ready && !cluster_buffer_saved &&
+            !cluster_buffer_path.empty()) {
+            save_dawn_geometry_id_buffer(
+                state,
+                width,
+                height,
+                render_plan.items,
+                engine,
+                cluster_buffer_path,
+                true);
+            cluster_buffer_saved = true;
+        }
+        if (
+            capture_ready && !diagnostics_saved &&
+            !diagnostic_directory.empty()) {
+            save_dawn_pbr_diagnostics(
+                state,
+                width,
+                height,
+                render_plan.items,
+                scene,
+                engine,
+                camera,
+                diagnostic_directory);
+            diagnostics_saved = true;
+        }
 
         wgpuSurfacePresent(state.surface);
         if (benchmark && frame >= benchmark_warmup) {

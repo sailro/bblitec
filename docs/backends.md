@@ -87,6 +87,19 @@ SDL_GPU reads offline DXIL, so a snapshot that mixes generations
 skews only the Dawn side (this masqueraded as scene 248/249
 "residuals" until reprocessing removed them).
 
+The scene 1 attribution captures (draw-id buffer, triangle-cluster
+buffer, and the nine PBR diagnostic MRT buffers) render on either
+backend under the same environment switch; the diagnostic filenames
+keep their fixed `-gpu` suffix and reflect whichever backend produced
+the run. Dawn draws them through the shared superset mesh bind-group
+layout with dedicated diagnostic pipelines and requests the
+primitive-index device feature for the cluster shader's
+`enable primitive_index`. Measured cross-backend agreement: id and
+cluster buffers byte-identical, seven of nine PBR buffers
+byte-identical, ibl and pre-tone HDR within one LSB on <0.05% of
+pixels (≤10 ulp in the raw rgba16f halves — the offline-DXC-versus-
+in-process-compile split on HDR accumulation).
+
 ## Honest comparison
 
 Both backends render every expressible scene within its gate; the
