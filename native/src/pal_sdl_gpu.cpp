@@ -239,6 +239,16 @@ struct GpuSkybox {
     bool enabled = false;
 };
 
+#if BBLITE_IMAGE_SKYBOX
+struct GpuImageSkybox {
+    SDL_GPUBuffer* vertices = nullptr;
+    SDL_GPUBuffer* indices = nullptr;
+    SDL_GPUTexture* texture = nullptr;
+    SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    bool enabled = false;
+};
+#endif
+
 struct IdUniforms {
     float id_color[4];
     float alpha_options[4];
@@ -362,6 +372,17 @@ struct GpuState {
     std::vector<GpuGeometryTask> geometry_tasks;
     GpuBackground background;
     GpuSkybox skybox;
+#if BBLITE_IMAGE_SKYBOX
+    GpuImageSkybox image_skybox;
+#endif
+#if BBLITE_GPU_INSTANCING
+    // Identity per-instance matrix shared by the background ground and
+    // skybox draws: the shared material vertex stage consumes the
+    // per-instance attribute slots whenever instancing is compiled in,
+    // so background quads must bind a valid one-element instance
+    // stream.
+    SDL_GPUBuffer* background_instances = nullptr;
+#endif
 };
 
 struct ImageProcessingUniforms {
@@ -525,6 +546,43 @@ void save_texture_png(
     SDL_ReleaseGPUTransferBuffer(device, transfer);
     if (!saved) gpu_error("IMG_SavePNG screenshot");
 }
+
+#if BBLITE_GPU_DEFORMATION
+// BBLITE_DEFORMATION_DUMP=<path> appends each mesh's first-frame bone
+// palette and morph weights as hexfloats for bit-level comparison
+// against instrumented browser captures.
+void dump_deformation_uniforms(
+    std::uint32_t mesh,
+    const DeformationUniforms& deformation) {
+    static const std::string dump_path =
+        environment_variable("BBLITE_DEFORMATION_DUMP");
+    if (dump_path.empty()) return;
+    static std::vector<std::uint32_t> dumped;
+    for (const std::uint32_t existing : dumped) {
+        if (existing == mesh) return;
+    }
+    dumped.push_back(mesh);
+    std::ofstream out(dump_path, std::ios::app);
+    out << "mesh " << mesh << "\n";
+    out << std::hexfloat;
+    for (
+        std::size_t bone = 0;
+        bone < deformation.bone_matrices.size();
+        ++bone) {
+        out << "bone " << bone;
+        for (const float value :
+             deformation.bone_matrices[bone]) {
+            out << " " << value;
+        }
+        out << "\n";
+    }
+    out << "morph";
+    for (const float value : deformation.morph_weights) {
+        out << " " << value;
+    }
+    out << "\n";
+}
+#endif
 
 SDL_GPUShader* load_shader(
     SDL_GPUDevice* device,
@@ -2005,6 +2063,35 @@ void release(GpuState& state) {
         SDL_ReleaseGPUBuffer(state.device, state.empty_morph_weights);
     }
 #endif
+#if BBLITE_IMAGE_SKYBOX
+    if (state.image_skybox.pipeline) {
+        SDL_ReleaseGPUGraphicsPipeline(
+            state.device,
+            state.image_skybox.pipeline);
+    }
+    if (state.image_skybox.texture) {
+        SDL_ReleaseGPUTexture(
+            state.device,
+            state.image_skybox.texture);
+    }
+    if (state.image_skybox.indices) {
+        SDL_ReleaseGPUBuffer(
+            state.device,
+            state.image_skybox.indices);
+    }
+    if (state.image_skybox.vertices) {
+        SDL_ReleaseGPUBuffer(
+            state.device,
+            state.image_skybox.vertices);
+    }
+#endif
+#if BBLITE_GPU_INSTANCING
+    if (state.background_instances) {
+        SDL_ReleaseGPUBuffer(
+            state.device,
+            state.background_instances);
+    }
+#endif
     if (state.background.vertices) SDL_ReleaseGPUBuffer(state.device, state.background.vertices);
     if (state.background.indices) SDL_ReleaseGPUBuffer(state.device, state.background.indices);
     if (state.background.texture) SDL_ReleaseGPUTexture(state.device, state.background.texture);
@@ -3237,6 +3324,71 @@ bool run_gpu_engine(Engine& engine) {
             pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             state.background_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
         }
+#if BBLITE_IMAGE_SKYBOX
+        if (
+            scene.environment.has_image_skybox &&
+            background_enabled) {
+            SDL_GPUShader* image_skybox_vertex_shader =
+                load_shader(
+                    state.device,
+                    "skybox-cubemap.vert",
+                    SDL_GPU_SHADERSTAGE_VERTEX,
+                    0,
+                    1,
+                    "mainVertex");
+            SDL_GPUShader* image_skybox_fragment_shader =
+                load_shader(
+                    state.device,
+                    "skybox-cubemap.frag",
+                    SDL_GPU_SHADERSTAGE_FRAGMENT,
+                    1,
+                    1,
+                    "mainFragment");
+            const SDL_GPUVertexBufferDescription
+                image_skybox_buffer{
+                    0,
+                    sizeof(float) * 3,
+                    SDL_GPU_VERTEXINPUTRATE_VERTEX,
+                    0,
+                };
+            const SDL_GPUVertexAttribute
+                image_skybox_attribute{
+                    0,
+                    0,
+                    SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+                    0,
+                };
+            SDL_GPUGraphicsPipelineCreateInfo
+                image_skybox_info = pipeline_info;
+            image_skybox_info.vertex_shader =
+                image_skybox_vertex_shader;
+            image_skybox_info.fragment_shader =
+                image_skybox_fragment_shader;
+            image_skybox_info.vertex_input_state =
+                SDL_GPUVertexInputState{
+                    &image_skybox_buffer,
+                    1,
+                    &image_skybox_attribute,
+                    1,
+                };
+            image_skybox_info.rasterizer_state.cull_mode =
+                SDL_GPU_CULLMODE_NONE;
+            state.image_skybox.pipeline =
+                SDL_CreateGPUGraphicsPipeline(
+                    state.device,
+                    &image_skybox_info);
+            if (!state.image_skybox.pipeline) {
+                gpu_error(
+                    "SDL_CreateGPUGraphicsPipeline image skybox");
+            }
+            SDL_ReleaseGPUShader(
+                state.device,
+                image_skybox_vertex_shader);
+            SDL_ReleaseGPUShader(
+                state.device,
+                image_skybox_fragment_shader);
+        }
+#endif
         SDL_ReleaseGPUShader(state.device, vertex_shader);
         SDL_ReleaseGPUShader(state.device, fragment_shader);
         if (image_processing_vertex_shader) {
@@ -3467,6 +3619,47 @@ bool run_gpu_engine(Engine& engine) {
                 {255, 255, 255, 255});
             state.background.enabled = true;
         }
+#if BBLITE_IMAGE_SKYBOX
+        if (
+            scene.environment.has_image_skybox &&
+            background_enabled &&
+            state.image_skybox.pipeline) {
+            const upstream::ImageSkyboxPlan image_skybox_plan =
+                upstream::build_image_skybox_plan(
+                    scene.environment);
+            state.image_skybox.vertices = upload_buffer(
+                state.device,
+                SDL_GPU_BUFFERUSAGE_VERTEX,
+                image_skybox_plan.positions.data(),
+                sizeof(image_skybox_plan.positions));
+            state.image_skybox.indices = upload_buffer(
+                state.device,
+                SDL_GPU_BUFFERUSAGE_INDEX,
+                image_skybox_plan.indices.data(),
+                sizeof(image_skybox_plan.indices));
+            state.image_skybox.texture = upload_cube_texture(
+                state.device,
+                &scene.environment.image_skybox_faces);
+            state.image_skybox.enabled = true;
+        }
+#endif
+#if BBLITE_GPU_INSTANCING
+        if (
+            (state.background.enabled ||
+             state.skybox.enabled) &&
+            !state.background_instances) {
+            std::array<float, 16> identity{};
+            identity[0] = 1.0f;
+            identity[5] = 1.0f;
+            identity[10] = 1.0f;
+            identity[15] = 1.0f;
+            state.background_instances = upload_buffer(
+                state.device,
+                SDL_GPU_BUFFERUSAGE_VERTEX,
+                identity.data(),
+                sizeof(identity));
+        }
+#endif
 
         upstream::RenderPlan render_plan =
             upstream::build_render_plan(scene, engine);
@@ -5096,6 +5289,14 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info);
             bool transmission_copied = false;
             bool scene_matrix_bound = true;
+#if BBLITE_GPU_INSTANCING
+            const std::array<float, 16> identity_parent_world{
+                1.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 1.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 1.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, 1.0f,
+            };
+#endif
             const auto draw_skybox = [&] {
                 if (!state.skybox.enabled) return;
                 const upstream::SkyboxUniforms skybox =
@@ -5123,13 +5324,38 @@ bool run_gpu_engine(Engine& engine) {
 #endif
                 SDL_BindGPUGraphicsPipeline(pass, state.skybox_pipeline);
                 SDL_PushGPUFragmentUniformData(command, 0, &skybox, sizeof(skybox));
-                const SDL_GPUBufferBinding vertex_binding{state.skybox.vertices, 0};
                 const SDL_GPUBufferBinding index_binding{state.skybox.indices, 0};
                 const SDL_GPUTextureSamplerBinding texture_binding{
                     state.skybox.texture,
                     state.background_sampler,
                 };
+#if BBLITE_GPU_INSTANCING
+                const std::array<SDL_GPUBufferBinding, 2>
+                    skybox_vertex_bindings{
+                        SDL_GPUBufferBinding{
+                            state.skybox.vertices,
+                            0,
+                        },
+                        SDL_GPUBufferBinding{
+                            state.background_instances,
+                            0,
+                        },
+                    };
+                SDL_BindGPUVertexBuffers(
+                    pass,
+                    0,
+                    skybox_vertex_bindings.data(),
+                    static_cast<Uint32>(
+                        skybox_vertex_bindings.size()));
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    instance_uniform_slot,
+                    identity_parent_world.data(),
+                    sizeof(identity_parent_world));
+#else
+                const SDL_GPUBufferBinding vertex_binding{state.skybox.vertices, 0};
                 SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+#endif
 #if BBLITE_GPU_MORPH_STORAGE
                 const std::array<SDL_GPUBuffer*, 2> morph_storage{
                     state.empty_morph_deltas,
@@ -5149,6 +5375,64 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
                 scene_matrix_bound = false;
             };
+#if BBLITE_IMAGE_SKYBOX
+            const auto draw_image_skybox = [&] {
+                if (!state.image_skybox.enabled) return;
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    0,
+                    matrix.data(),
+                    sizeof(matrix));
+                const upstream::ImageSkyboxUniforms
+                    image_skybox_uniforms =
+                        upstream::build_image_skybox_uniforms(
+                            scene,
+                            camera);
+                SDL_BindGPUGraphicsPipeline(
+                    pass,
+                    state.image_skybox.pipeline);
+                SDL_PushGPUFragmentUniformData(
+                    command,
+                    0,
+                    &image_skybox_uniforms,
+                    sizeof(image_skybox_uniforms));
+                const SDL_GPUBufferBinding vertex_binding{
+                    state.image_skybox.vertices,
+                    0,
+                };
+                const SDL_GPUBufferBinding index_binding{
+                    state.image_skybox.indices,
+                    0,
+                };
+                const SDL_GPUTextureSamplerBinding
+                    texture_binding{
+                        state.image_skybox.texture,
+                        state.background_sampler,
+                    };
+                SDL_BindGPUVertexBuffers(
+                    pass,
+                    0,
+                    &vertex_binding,
+                    1);
+                SDL_BindGPUIndexBuffer(
+                    pass,
+                    &index_binding,
+                    SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                SDL_BindGPUFragmentSamplers(
+                    pass,
+                    0,
+                    &texture_binding,
+                    1);
+                SDL_DrawGPUIndexedPrimitives(
+                    pass,
+                    36,
+                    1,
+                    0,
+                    0,
+                    0);
+                scene_matrix_bound = true;
+            };
+#endif
             const auto pipeline_for =
                 [&](upstream::RenderPipelineKind kind) {
                 switch (kind) {
@@ -5334,6 +5618,9 @@ bool run_gpu_engine(Engine& engine) {
                                         item.mesh.value],
                                     engine.geometries[
                                         item.geometry].flat_normals);
+                            dump_deformation_uniforms(
+                                item.mesh.value,
+                                deformation);
                             SDL_PushGPUVertexUniformData(
                                 command,
                                 1,
@@ -5515,13 +5802,38 @@ bool run_gpu_engine(Engine& engine) {
                     0,
                     &background,
                     sizeof(background));
-                const SDL_GPUBufferBinding vertex_binding{state.background.vertices, 0};
                 const SDL_GPUBufferBinding index_binding{state.background.indices, 0};
                 const SDL_GPUTextureSamplerBinding texture_binding{
                     state.background.texture,
                     state.ground_sampler,
                 };
+#if BBLITE_GPU_INSTANCING
+                const std::array<SDL_GPUBufferBinding, 2>
+                    ground_vertex_bindings{
+                        SDL_GPUBufferBinding{
+                            state.background.vertices,
+                            0,
+                        },
+                        SDL_GPUBufferBinding{
+                            state.background_instances,
+                            0,
+                        },
+                    };
+                SDL_BindGPUVertexBuffers(
+                    pass,
+                    0,
+                    ground_vertex_bindings.data(),
+                    static_cast<Uint32>(
+                        ground_vertex_bindings.size()));
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    instance_uniform_slot,
+                    identity_parent_world.data(),
+                    sizeof(identity_parent_world));
+#else
+                const SDL_GPUBufferBinding vertex_binding{state.background.vertices, 0};
                 SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+#endif
 #if BBLITE_GPU_MORPH_STORAGE
                 const std::array<SDL_GPUBuffer*, 2> morph_storage{
                     state.empty_morph_deltas,
@@ -5545,6 +5857,9 @@ bool run_gpu_engine(Engine& engine) {
                 switch (stage) {
                     case upstream::RenderStage::skybox:
                         draw_skybox();
+#if BBLITE_IMAGE_SKYBOX
+                        draw_image_skybox();
+#endif
                         break;
                     case upstream::RenderStage::opaque:
                         draw_render_list(render_plan.draw_lists.opaque);

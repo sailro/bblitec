@@ -71,6 +71,7 @@ const featureSources: Record<Feature, string[]> = {
     "environment:hdr": [],
     "background:ground": [],
     "background:skybox": [],
+    "background:image-skybox": [],
     "light:hemispheric": [],
     "light:directional": [],
     "light:point": [],
@@ -247,6 +248,9 @@ class Compiler
         }
         if (features.includes("light:point")) {
             generatedSources.push("upstream/src/light_point.cpp");
+        }
+        if (features.includes("background:image-skybox")) {
+            generatedSources.push("upstream/src/image_skybox.cpp");
         }
         if (features.includes("loader:gltf")) {
             generatedSources.push(

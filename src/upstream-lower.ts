@@ -64,6 +64,7 @@ class GeneratedSourceWriter {
 #define BBLITE_MATERIAL_IRIDESCENCE ${options.iridescence ? 1 : 0}
 #define BBLITE_MATERIAL_DISPERSION ${options.dispersion ? 1 : 0}
 #define BBLITE_MATERIAL_OCCLUSION_UV2 ${options.occlusionUv2 ? 1 : 0}
+#define BBLITE_IMAGE_SKYBOX ${features.includes("background:image-skybox") ? 1 : 0}
 `,
         );
 
@@ -110,6 +111,15 @@ class GeneratedSourceWriter {
             this.writeSource(
                 "upstream/src/camera_default.cpp",
                 new CameraLowerer(context).lowerDefaultFactory(),
+                generated,
+            );
+        }
+        if (features.includes("background:image-skybox")) {
+            this.writeSource(
+                "upstream/src/image_skybox.cpp",
+                new EnvironmentLowerer(
+                    context,
+                ).lowerImageSkyboxAdapter(),
                 generated,
             );
         }
@@ -211,6 +221,9 @@ class GeneratedSourceWriter {
                 renderer.lowerRenderPlan({
                     transmission: features.includes("renderer:transmission"),
                     fog: features.includes("renderer:fog"),
+                    imageSkybox: features.includes(
+                        "background:image-skybox",
+                    ),
                     textureTransform:
                         options.textureTransform,
                     environmentRotation:
@@ -230,6 +243,9 @@ class GeneratedSourceWriter {
             const shaders = renderer.lowerShaders({
                 ground: features.includes("background:ground"),
                 skybox: features.includes("background:skybox"),
+                imageSkybox: features.includes(
+                    "background:image-skybox",
+                ),
                 transmission: features.includes("renderer:transmission"),
                 fog: features.includes("renderer:fog"),
                 normalTextureScale: features.includes("loader:gltf"),

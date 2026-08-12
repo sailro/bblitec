@@ -132,12 +132,19 @@ function initScript(skipDrawIndexCount: number): string {
     const bytes = ArrayBuffer.isView(data)
       ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
       : new Uint8Array(data);
+    // Float texel uploads carry animation state (Babylon Lite's
+    // per-skin bone-matrix textures are Nx1 rgba32float rows), so keep
+    // their raw bytes at a higher cap than color texel uploads.
+    const floatTexels =
+      typeof meta?.desc?.format === "string" &&
+      meta.desc.format.indexOf("32float") >= 0;
+    const byteCap = floatTexels ? 32768 : 256;
     window.__texUploads.push({
       tex: meta ? meta.id : -1,
       kind: "writeTexture",
       desc: meta ? meta.desc : null,
       mipLevel: (dest.mipLevel ?? 0),
-      bytes: bytes.length <= 256 ? Array.from(bytes) : null,
+      bytes: bytes.length <= byteCap ? Array.from(bytes) : null,
       byteLength: bytes.length,
     });
     return origWriteTexture.call(this, dest, data, layout, size);

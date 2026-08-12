@@ -61,6 +61,8 @@ const transmissionFrameGraphModule = "src/frame-graph/transmission.ts";
 const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
 const fogWgslModule = "src/shader/wgsl-fog.ts";
 const pbrFogWgslModule = "src/material/pbr/pbr-fog-wgsl.ts";
+const skyboxCubemapModule =
+    "src/material/standard/skybox-cubemap.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
 const backgroundHdrModule = "src/material/pbr/background-hdr-skybox.ts";
@@ -81,6 +83,7 @@ export class RendererLowerer {
     public lowerRenderPlan(options: {
         transmission?: boolean;
         fog?: boolean;
+        imageSkybox?: boolean;
         textureTransform?: boolean;
         environmentRotation?: boolean;
         gpuInstancing?: boolean;
@@ -527,6 +530,7 @@ struct StandardUniforms {
     std::array<float, 4> uv_options{};
     std::array<float, 4> material_options{};
     std::array<float, 4> reflection_options{};
+${fogUniformFields}\
 };
 
 struct GridUniforms {
@@ -559,6 +563,23 @@ struct SkyboxUniforms {
     std::array<float, 4> background_center{};
     std::array<float, 4> image_parameters{};
 };
+${options.imageSkybox
+    ? `
+struct ImageSkyboxPlan {
+    std::array<std::array<float, 3>, 8> positions{};
+    std::array<std::uint32_t, 36> indices{};
+};
+
+struct ImageSkyboxUniforms {
+    std::array<float, 4> camera_position{};
+    std::array<float, 4> view_right{};
+    std::array<float, 4> view_up{};
+    std::array<float, 4> view_forward{};
+    std::array<float, 4> fog_infos{};
+    std::array<float, 4> fog_color{};
+};
+`
+    : ""}\
 
 RenderPlan build_render_plan(const Scene& scene, const Engine& engine);
 RenderFeatures build_render_features(
@@ -611,6 +632,14 @@ SkyboxPlan build_skybox_plan(const EnvironmentState& environment);
 SkyboxUniforms build_skybox_uniforms(
     const EnvironmentState& environment,
     bool linear_image_processing);
+${options.imageSkybox
+    ? `ImageSkyboxPlan build_image_skybox_plan(
+    const EnvironmentState& environment);
+ImageSkyboxUniforms build_image_skybox_uniforms(
+    const Scene& scene,
+    const CameraRecord& camera);
+`
+    : ""}\
 
 } // namespace bbl::upstream
 `,
@@ -1307,6 +1336,7 @@ StandardUniforms build_standard_uniforms(
     result.view_right = {right.x, right.y, right.z, 0.0f};
     result.view_up = {up.x, up.y, up.z, 0.0f};
     result.view_forward = {forward.x, forward.y, forward.z, 0.0f};
+${fogUniforms}\
     if (scene.lights.size() > 2) {
         throw std::runtime_error(
             "Reached Standard material supports at most two lights.");
@@ -1604,6 +1634,69 @@ SkyboxUniforms build_skybox_uniforms(
     };
     return result;
 }
+${options.imageSkybox
+    ? `
+ImageSkyboxPlan build_image_skybox_plan(
+    const EnvironmentState& environment) {
+    // Pinned loadSkybox: createBoxData(size) spans plus/minus size/2
+    // around the world origin with an identity world matrix.
+    const float half = environment.image_skybox_size * 0.5f;
+    ImageSkyboxPlan result;
+    const std::array<std::array<float, 3>, 8> corners{{
+        {-half, -half, -half},
+        {half, -half, -half},
+        {-half, half, -half},
+        {half, half, -half},
+        {-half, -half, half},
+        {half, -half, half},
+        {-half, half, half},
+        {half, half, half},
+    }};
+    result.positions = corners;
+    result.indices = {
+        6, 4, 5, 7, 6, 5,
+        0, 2, 3, 1, 0, 3,
+        5, 1, 3, 7, 5, 3,
+        0, 4, 6, 2, 0, 6,
+        3, 2, 6, 7, 3, 6,
+        0, 1, 5, 4, 0, 5,
+    };
+    return result;
+}
+
+ImageSkyboxUniforms build_image_skybox_uniforms(
+    const Scene& scene,
+    const CameraRecord& camera) {
+    ImageSkyboxUniforms result;
+    const Vec3 eye = arc_rotate_eye_position(camera);
+    const Vec3 forward = normalize(Vec3{
+        camera.target.x - eye.x,
+        camera.target.y - eye.y,
+        camera.target.z - eye.z,
+    });
+    const Vec3 right =
+        normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, forward));
+    const Vec3 up = cross(forward, right);
+    result.camera_position = {eye.x, eye.y, eye.z, 0.0f};
+    result.view_right = {right.x, right.y, right.z, 0.0f};
+    result.view_up = {up.x, up.y, up.z, 0.0f};
+    result.view_forward = {forward.x, forward.y, forward.z, 0.0f};
+    result.fog_infos = {
+        scene.fog_mode,
+        scene.fog_start,
+        scene.fog_end,
+        scene.fog_density,
+    };
+    result.fog_color = {
+        scene.fog_color.r,
+        scene.fog_color.g,
+        scene.fog_color.b,
+        0.0f,
+    };
+    return result;
+}
+`
+    : ""}\
 
 } // namespace bbl::upstream
 `,
@@ -1613,6 +1706,7 @@ SkyboxUniforms build_skybox_uniforms(
     public lowerShaders(options: {
         ground: boolean;
         skybox: boolean;
+        imageSkybox?: boolean;
         transmission?: boolean;
         fog?: boolean;
         normalTextureScale?: boolean;
@@ -1993,7 +2087,6 @@ SkyboxUniforms build_skybox_uniforms(
                 boolean | undefined,
                 string,
             ])[] = [
-                [options.standardMaterial, "Standard materials"],
                 [options.gridMaterial, "GridMaterial"],
                 [options.ground, "environment grounds"],
                 [options.skybox, "environment skyboxes"],
@@ -2011,8 +2104,24 @@ SkyboxUniforms build_skybox_uniforms(
             for (const [reached, label] of unportedFogSurfaces) {
                 if (reached) {
                     throw new Error(
-                        `Scene fog is currently ported for PBR-only scenes; ${label} with fog are not supported yet.`,
+                        `Scene fog is currently ported for PBR and Standard surfaces; ${label} with fog are not supported yet.`,
                     );
+                }
+            }
+            if (options.standardMaterial) {
+                const stdFogSource = this.context.store.getSource(
+                    "src/material/standard/std-fog-wgsl.ts",
+                );
+                for (const marker of [
+                    "color = vec4<f32>(mix(scene.vFogColor.rgb, color.rgb, fog), color.a);",
+                    'out.vf = (scene.view * vec4<f32>(out.vp, 1.0)).xyz;',
+                    "let fog = calcFogFactor(input.vf);",
+                ]) {
+                    if (!stdFogSource.includes(marker)) {
+                        throw new Error(
+                            `Pinned Babylon Lite Standard fog blend changed: ${marker}`,
+                        );
+                    }
                 }
             }
             const fogSource =
@@ -2351,6 +2460,8 @@ ${directMarker}`,
                         standardTemplateModule,
                         "createStandardTemplate",
                     ),
+                    undefined,
+                    options.fog === true,
                 ),
             });
         }
@@ -2396,6 +2507,137 @@ ${directMarker}`,
                     true,
                 ),
             });
+        }
+        if (options.imageSkybox) {
+            // The skybox-cubemap WGSL ships as inlined string literals
+            // in the compiled module (raw imports carry no source-map
+            // entry), so the pinned contract is asserted against the
+            // packaged text like the compiled scene-uniform WGSL.
+            const imageSkyboxSource = readFileSync(
+                resolve(
+                    this.context.store.packageRoot,
+                    "lib/material/standard/skybox-cubemap.js",
+                ),
+                "utf8",
+            );
+            for (const marker of [
+                "let e=normalize(b.vPositionLocal);",
+                "textureSample(c,d,e)",
+                "if (scene.vFogInfos.x>0.0){let f=calcFogFactor(b.vFogDistance);",
+                "mix(scene.vFogColor.rgb,a.rgb,f)",
+                "a.vFogDistance=(scene.view*b).xyz;",
+            ]) {
+                if (!imageSkyboxSource.includes(marker)) {
+                    throw new Error(
+                        `Pinned Babylon Lite skybox-cubemap contract changed: ${marker}`,
+                    );
+                }
+            }
+            const imageSkyboxProvenance =
+                this.context.provenance(
+                    skyboxCubemapModule,
+                    "buildSkyboxCubeMapGPU",
+                    `${fogWgslModule}#WGSL_FOG`,
+                );
+            result.push(
+                {
+                    output:
+                        "upstream/shaders/skybox-cubemap.vert.native.wgsl",
+                    data: `// ${imageSkyboxProvenance}
+struct VertexUniforms {
+    viewProjection: mat4x4<f32>,
+}
+@group(1) @binding(0) var<uniform> uniforms: VertexUniforms;
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) worldPosition: vec3<f32>,
+    @location(1) localPosition: vec3<f32>,
+}
+
+@vertex
+fn mainVertex(@location(0) position: vec3<f32>) -> VertexOutput {
+    var output: VertexOutput;
+    output.position =
+        uniforms.viewProjection * vec4<f32>(position, 1.0);
+    output.worldPosition = position;
+    output.localPosition = position;
+    return output;
+}
+`,
+                },
+                {
+                    output:
+                        "upstream/shaders/skybox-cubemap.frag.native.wgsl",
+                    data: `// ${imageSkyboxProvenance}
+@group(2) @binding(0) var skyboxTexture: texture_cube<f32>;
+@group(2) @binding(1) var skyboxSampler: sampler;
+
+struct FragmentUniforms {
+    cameraPosition: vec4<f32>,
+    viewRight: vec4<f32>,
+    viewUp: vec4<f32>,
+    viewForward: vec4<f32>,
+    fogInfos: vec4<f32>,
+    fogColor: vec4<f32>,
+}
+@group(3) @binding(0) var<uniform> uniforms: FragmentUniforms;
+
+const bblFogE: f32 = 2.71828;
+
+fn bblCalcFogFactor(fogDistance: vec3<f32>) -> f32 {
+    var fogCoeff = 1.0;
+    let fogMode = uniforms.fogInfos.x;
+    let fogStart = uniforms.fogInfos.y;
+    let fogEnd = uniforms.fogInfos.z;
+    let fogDensity = uniforms.fogInfos.w;
+    let dist = length(fogDistance);
+    if (fogMode == 3.0) {
+        fogCoeff = (fogEnd - dist) / (fogEnd - fogStart);
+    } else if (fogMode == 1.0) {
+        fogCoeff = 1.0 / pow(bblFogE, dist * fogDensity);
+    } else if (fogMode == 2.0) {
+        fogCoeff =
+            1.0 / pow(bblFogE, dist * dist * fogDensity * fogDensity);
+    }
+    return clamp(fogCoeff, 0.0, 1.0);
+}
+
+struct FragmentInput {
+    // D3D12 links vertex and fragment signatures by hardware register,
+    // so the fragment must consume the position builtin to keep the
+    // varying registers aligned with the shared vertex outputs.
+    @builtin(position) position: vec4<f32>,
+    @location(0) worldPosition: vec3<f32>,
+    @location(1) localPosition: vec3<f32>,
+}
+
+@fragment
+fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
+    let direction = normalize(input.localPosition);
+    var color = textureSample(
+        skyboxTexture,
+        skyboxSampler,
+        direction,
+    );
+    if (uniforms.fogInfos.x > 0.0) {
+        let fogView =
+            input.worldPosition - uniforms.cameraPosition.xyz;
+        let fog = bblCalcFogFactor(vec3<f32>(
+            dot(uniforms.viewRight.xyz, fogView),
+            dot(uniforms.viewUp.xyz, fogView),
+            dot(uniforms.viewForward.xyz, fogView),
+        ));
+        color = vec4<f32>(
+            mix(uniforms.fogColor.xyz, color.rgb, fog),
+            color.a,
+        );
+    }
+    return color;
+}
+`,
+                },
+            );
         }
         if (options.transmission) {
             result.push(

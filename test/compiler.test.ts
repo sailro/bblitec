@@ -1755,6 +1755,35 @@ test("compiles Babylon Lite scene 216 PBR fog", () => {
     );
 });
 
+test("compiles Babylon Lite scene 3 Standard fog and image skybox", () => {
+    const source = readFileSync(
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene3.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene3.ts",
+    });
+    assert.ok(result.manifest.features.includes("renderer:fog"));
+    assert.ok(result.manifest.features.includes("material:standard"));
+    assert.ok(
+        result.manifest.features.includes("background:image-skybox"),
+    );
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/image_skybox.cpp",
+        ),
+    );
+    const faces = result.manifest.assets.filter(({ source: url }) =>
+        /skybox_[pn][xyz]\.jpg$/.test(url),
+    );
+    assert.equal(faces.length, 6);
+    assert.match(
+        result.cpp,
+        /bbl::set_scene_fog\(v_scene, 1\.0f, 0\.02f, 0\.0f, 1000\.0f, bbl::Color3\{0\.9f, 0\.9f, 0\.85f\}\)/,
+    );
+    assert.match(result.cpp, /bbl::load_image_skybox\(v_scene, /);
+});
+
 test("rejects setFog with a runtime fog mode", () => {
     assert.throws(
         () =>

@@ -32,6 +32,7 @@ export interface AssetIntrinsicContext {
     compileStringLiteral(
         expression: ts.Expression,
     ): string;
+    compileNumber(expression: ts.Expression): string;
     compileEnvironmentOptions(
         expression: ts.Expression,
     ): [string, string, string, string];
@@ -119,6 +120,55 @@ export function compileAssetIntrinsic(
                     `${context.cppString(asset.output)}))`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+            };
+        }
+
+        case "loadSkybox": {
+            context.expectArgumentCount(call, 3, 4);
+            const scene =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                scene,
+                "scene",
+                call.arguments[0]!,
+            );
+            const baseUrl = context.compileStringLiteral(
+                call.arguments[1]!,
+            );
+            const extension =
+                context.compileStringLiteral(
+                    call.arguments[2]!,
+                );
+            // Pinned loadCubeTexture face suffix order: layers 0-5.
+            const faceAssets = [
+                "_px",
+                "_nx",
+                "_py",
+                "_ny",
+                "_pz",
+                "_nz",
+            ].map((suffix) =>
+                context.registerAsset(
+                    `${baseUrl}${suffix}${extension}`,
+                    "texture",
+                ),
+            );
+            const size = call.arguments[3]
+                ? context.compileNumber(call.arguments[3])
+                : "100.0f";
+            context.reachFeature("background:image-skybox");
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::load_image_skybox(${scene.cpp}, ` +
+                    `std::array<std::string, 6>{` +
+                    faceAssets
+                        .map(
+                            (asset) =>
+                                `bbl::asset_path(${context.cppString(asset.output)})`,
+                        )
+                        .join(", ") +
+                    `}, ${size})`,
             };
         }
 

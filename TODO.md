@@ -177,17 +177,19 @@ CPU-side from GPU-side causes immediately.
   frame-indexed events such as Scene 273's runtime add). The bounded capture
   grace makes captures immune, but deterministic frame accounting is the
   real contract.
-- [ ] Compose environment ground/skybox draws with GPU instancing and
-  storage-buffer morphing: background draws now push an identity
-  deformation block (the scene 7 fix), but no scene yet reaches a
-  background combined with `BBLITE_GPU_INSTANCING` (missing parent
-  uniform/attribute bindings) or, on Dawn, with
-  `BBLITE_GPU_MORPH_STORAGE` (group 0 is unbound for the background
-  pipelines).
-- [ ] Chase Scene 7's sub-pixel arm-silhouette pose epsilon (~0.5% of
-  foreground pixels beyond 5) with an instrumented capture comparing
-  animated node TRS uploads bit for bit; both backends agree, so the
-  cause is CPU-side animation composition.
+- [ ] Close Scene 7's last sub-pixel silhouette epsilon (~0.5% of
+  foreground pixels beyond 5, concentrated on the tongue and eye
+  contours). Instrumented bone-texture captures now compare bit for
+  bit: after porting the pinned double-precision sampler evaluation
+  (including the near-parallel store-then-normalize rounding), four
+  of ChibiRex's six skin palettes are bit-identical under the
+  documented mirror convention. The two remaining skins belong to
+  the only skinned mesh nodes with their own transforms
+  (`ChibiRex_Eyes`, `ChibiRex_Tongue`): the pinned mixer composes
+  `invMeshWorld × jointWorld × IBM` and the mesh world cancels the
+  inverse only up to float rounding, so matching it exactly means
+  porting that inverse round-trip (including Babylon's matrix
+  inversion algorithm) into the native palette composition.
 - [ ] Add generation-checked handles and resource lifetime/leak checks.
 - [ ] Add dirty flags and incremental GPU updates.
 - [ ] Add device-loss and resize-safe resource recreation.
@@ -229,11 +231,11 @@ lane when they can be erased or lowered inside the compiler, asset pipeline,
 or renderer. A scene is deferred when its covered behavior needs a new
 platform, user-input, or external-service contract.
 
-**Integrate first (151 scenes):** 3, 4, 9, 11, 12, 15-23, 25-27, 30,
+**Integrate first (150 scenes):** 4, 9, 11, 12, 15-23, 25-27, 30,
 34, 36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229,
-231, 241, 242, 244, 251-253, 260-264, 267-271, 275-279. Scenes 7, 35,
-and 216 graduated to measured parity gates on 2026-08-12.
+231, 241, 242, 244, 251-253, 260-264, 267-271, 275-279. Scenes 3, 7,
+35, and 216 graduated to measured parity gates on 2026-08-12.
 
 This lane includes static CSG/CSG2, compressed assets and splats,
 deterministic picking in Scenes 113-115, 117, 118, and 129, and the
@@ -252,9 +254,6 @@ runtime gaps may remain hidden behind it.
 
 ### Integration-first compiler contract gaps
 
-- [ ] Scene 3: compose Standard-material fog with the ported PBR scene
-  fog (Scene 216's `setFog` slice) and support `loadSkybox` six-face
-  image skyboxes.
 - [ ] Scenes 4, 22, 65, 141: support light position setters.
 - [ ] Scene 115: re-audit past the ported camera-target assignment for
   its remaining deterministic-picking blockers.

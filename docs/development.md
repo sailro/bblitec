@@ -260,6 +260,7 @@ records the selected backend in `shader-compiler.json`.
 | `BBLITE_BENCHMARK_FRAMES=<n>` | benchmark after warmup |
 | `BBLITE_ASSET_DIR=<path>` | override asset directory |
 | `BBLITE_GPU_SHADER_DIR=<path>` | override shader directory |
+| `BBLITE_DEFORMATION_DUMP=<path>` | append first-frame bone palettes and morph weights as hexfloats (SDL_GPU deformation scenes) |
 
 Controls: left-drag orbit, right/middle-drag pan, wheel zoom; arrows and
 `W`/`S` are keyboard fallbacks.
@@ -348,7 +349,9 @@ writes to `artifacts\capture\<scene>`:
   size, usage, and uploaded bytes (base64; the last eight writes per
   buffer)
 - `tex-uploads.json` — texture uploads, including raw bytes for small
-  texels (the 1x1 factor textures) and a 4x4 sample of image uploads
+  texels (the 1x1 factor textures), raw bytes for 32-bit-float texel
+  rows up to 32 KB (the per-skin bone-matrix textures), and a 4x4
+  sample of image uploads
 - `draws.json` — draw-call census across pass **and render-bundle**
   encoders (Babylon Lite records mesh draws into bundles; hooking the
   pass encoder alone sees none of them)
