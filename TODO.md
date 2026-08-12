@@ -165,18 +165,26 @@ pairings, resolved by reprocessing.
 - [ ] Close the residual morph and instancing raster-edge gaps in Scenes 243
   and 247 without expanding geometry or adding scene-specific tolerances.
   Both residuals are achromatic 4x-MSAA coverage stepping on deformed or
-  instanced silhouettes; interiors are within 2 LSB. Porting the pinned
-  storage-buffer morph path produced frames bit-identical to the former
-  CPU fallback, ruling out evaluation-place divergence, and the Dawn
-  backend — the browser's own Tint/DXC/D3D12 stack — reproduces SDL_GPU
-  within one LSB on 147 (243) and 159 (247) pixels while both differ
-  from the golden identically, ruling out shader codegen and
-  rasterization as well. The remaining suspect is the deformation input
-  math: the pinned engine computes bone matrices, keyframe
-  interpolation, and instance/parent world composition in JavaScript
-  float64 intermediates rounded once at upload, while the native
-  runtime computes them in float32 throughout with its own operation
-  order.
+  instanced silhouettes; interiors are within 2 LSB. Four suspects are
+  now eliminated by experiment: evaluation place (the pinned
+  storage-buffer morph path renders bit-identically to the former CPU
+  fallback), shader codegen and rasterization (the Dawn backend — the
+  browser's own Tint/DXC/D3D12 stack — reproduces SDL_GPU within one
+  LSB on 147/159 pixels while both differ from the golden identically),
+  input precision (recomputing keyframe interpolation, morph weights,
+  bone matrices, and instance/parent world composition with float64
+  intermediates rounded once at upload changed neither scene by a
+  thousandth — these scenes' inputs are exactly representable), and
+  pose timing (a seek sweep around the reference time minimizes MAD
+  exactly at the registered 0.5 s with symmetric rise). The remaining
+  structural difference is the shader source itself: the browser
+  compiles its own composed WGSL while the native backends compile the
+  generated variant — the same compiler over different source text
+  schedules the deformation arithmetic differently — plus whatever
+  sub-frame evaluation structure the browser applies beyond the seek
+  time. Next probe: capture the browser's actually-uploaded bone/weight
+  buffers, or diff against a native render fed the browser's composed
+  WGSL verbatim.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 
