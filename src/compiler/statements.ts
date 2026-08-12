@@ -335,6 +335,10 @@ export class StatementLowerer {
             if (
                 (ts.isPostfixUnaryExpression(node) ||
                     ts.isPrefixUnaryExpression(node)) &&
+                [
+                    ts.SyntaxKind.PlusPlusToken,
+                    ts.SyntaxKind.MinusMinusToken,
+                ].includes(node.operator) &&
                 ts.isIdentifier(node.operand) &&
                 node.operand.text === indexName
             ) {

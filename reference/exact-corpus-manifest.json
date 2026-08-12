@@ -31,6 +31,13 @@
       "moduleSha256": "421a153ffcc2f041b55bec001ee8ffc55e857867c1efba718ba9eb68dcf9ede6"
     },
     {
+      "id": "scene7",
+      "sourceSha256": "6db2247ceb5e5c1560b68389a4ea54b6d5fef192206567018b62b47a182143bb",
+      "reference": "reference/scene7/babylon-lite-golden.png",
+      "referenceSha256": "0d32622868cc228a2090a8b3dca89d2015017e5da42c8753e123335a26dd2c42",
+      "moduleSha256": "5dc50fb982fc41e19e778ebd13e34cce0dfb5d1418fc525327622b1ad520ba7f"
+    },
+    {
       "id": "scene8",
       "sourceSha256": "379d19778aceebe196f32760c8727cfbdfec39cf1d6b5f4c15db77673558751f",
       "reference": "reference/scene8/babylon-lite-golden.png",
@@ -99,6 +106,13 @@
       "reference": "reference/scene33/babylon-lite-golden.png",
       "referenceSha256": "62222b7c2f38d35b488356b34a63fc713f40e4de612ea2d0eaad20133014cebf",
       "moduleSha256": "afee65daa26d1f746023356ee46793489654633f54c9ac15380c74f5e8a6a113"
+    },
+    {
+      "id": "scene35",
+      "sourceSha256": "a1f7c456e5b89ea608b0f54ba1ea916a1d418b674b25cb321b9525763e4fd1e2",
+      "reference": "reference/scene35/babylon-lite-golden.png",
+      "referenceSha256": "9947530e69c3773cf14f72e18eec1fd9d8761948f815e23b0b0fbfd8fda42005",
+      "moduleSha256": "ca7296b77e17946f139564fa11c98e8ecdadddd47278f1deacca347d6c44ee75"
     },
     {
       "id": "scene116",
@@ -190,6 +204,13 @@
       "reference": "reference/scene213/babylon-lite-golden.png",
       "referenceSha256": "366ec6ababeb3d142859694002376df475f37dc58198ba6d50b00a10974d8753",
       "moduleSha256": "57283648edbb1eade9e759588f14b13e6100b51f39fcfb19435399b8c2681ec8"
+    },
+    {
+      "id": "scene216",
+      "sourceSha256": "5a9d45754adc9f35d586ae205a86c06d1c88be40cea3faa9e0754aa4c687b6c6",
+      "reference": "reference/scene216/babylon-lite-golden.png",
+      "referenceSha256": "3b55d314cf12412742160175ceb831eeea25624db10c312d7497a316c2cc43ca",
+      "moduleSha256": "c39145676925ba898a48148cd2c30d59c28646d109b7082168acbfec06b434f3"
     },
     {
       "id": "scene240",

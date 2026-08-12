@@ -148,6 +148,7 @@ struct AnimationRuntime {
     bool paused = false;
     std::vector<RotationTrack> rotation_tracks;
     std::vector<TranslationTrack> translation_tracks;
+    std::vector<TranslationTrack> scale_tracks;
     std::vector<WeightTrack> weight_tracks;
     std::vector<std::vector<std::uint32_t>> node_meshes;
     std::vector<AnimatedNode> nodes;
@@ -2415,9 +2416,10 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 if (
                     path_name != "rotation" &&
                     path_name != "translation" &&
+                    path_name != "scale" &&
                     path_name != "weights") {
                     throw std::runtime_error(
-                        "Reached glTF animation lowering currently supports rotation and weights channels.");
+                        "Reached glTF animation lowering currently supports rotation, translation, scale, and weights channels.");
                 }
                 const std::size_t sampler_index =
                     unsigned_value(required(channel, "sampler"));
@@ -2499,7 +2501,9 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     animation_runtime
                         ->rotation_tracks
                         .push_back(std::move(track));
-                } else if (path_name == "translation") {
+                } else if (
+                    path_name == "translation" ||
+                    path_name == "scale") {
                     const bool cubic =
                         interpolation == "CUBICSPLINE";
                     if (
@@ -2507,7 +2511,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         output.count !=
                             input.count * (cubic ? 3u : 1u)) {
                         throw std::runtime_error(
-                            "glTF translation animation accessor layout is invalid.");
+                            "glTF translation or scale animation accessor layout is invalid.");
                     }
                     TranslationTrack track;
                     track.node = target_node;
@@ -2534,9 +2538,15 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                                 read_translation(index * 3 + 2));
                         }
                     }
-                    animation_runtime
-                        ->translation_tracks
-                        .push_back(std::move(track));
+                    if (path_name == "translation") {
+                        animation_runtime
+                            ->translation_tracks
+                            .push_back(std::move(track));
+                    } else {
+                        animation_runtime
+                            ->scale_tracks
+                            .push_back(std::move(track));
+                    }
                 } else {
                     if (interpolation != "LINEAR") {
                         throw std::runtime_error(
@@ -2665,6 +2675,59 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 const Vec3 left_value = track.values[left];
                 const Vec3 right_value = track.values[right];
                 animation_runtime->nodes[track.node].translation =
+                    track.cubic
+                        ? cubic_vec3(
+                              left_value,
+                              track.out_tangents[left],
+                              right_value,
+                              track.in_tangents[right],
+                              amount,
+                              span)
+                        : Vec3{
+                              left_value.x +
+                                  (right_value.x - left_value.x) *
+                                      amount,
+                              left_value.y +
+                                  (right_value.y - left_value.y) *
+                                      amount,
+                              left_value.z +
+                                  (right_value.z - left_value.z) *
+                                      amount,
+                          };
+            }
+            for (const TranslationTrack& track :
+                 animation_runtime->scale_tracks) {
+                if (
+                    track.times.empty() ||
+                    track.node >= animation_runtime->nodes.size()) {
+                    continue;
+                }
+                std::size_t right = 1;
+                while (
+                    right < track.times.size() &&
+                    track.times[right] <
+                        animation_runtime->time) {
+                    ++right;
+                }
+                if (right >= track.times.size()) {
+                    right = track.times.size() - 1;
+                }
+                const std::size_t left =
+                    right > 0 ? right - 1 : 0;
+                const float span =
+                    track.times[right] - track.times[left];
+                const float amount =
+                    span > 0.0f
+                        ? std::clamp(
+                              (animation_runtime->time -
+                               track.times[left]) /
+                                  span,
+                              0.0f,
+                              1.0f)
+                        : 0.0f;
+                const Vec3 left_value = track.values[left];
+                const Vec3 right_value = track.values[right];
+                animation_runtime->nodes[track.node].scale =
                     track.cubic
                         ? cubic_vec3(
                               left_value,

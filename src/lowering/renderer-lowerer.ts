@@ -59,6 +59,8 @@ const iridescenceLoaderModule = "src/loader-gltf/gltf-ext-iridescence.ts";
 const dielectricLoaderModule = "src/loader-gltf/gltf-ext-dielectric.ts";
 const transmissionFrameGraphModule = "src/frame-graph/transmission.ts";
 const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
+const fogWgslModule = "src/shader/wgsl-fog.ts";
+const pbrFogWgslModule = "src/material/pbr/pbr-fog-wgsl.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
 const backgroundHdrModule = "src/material/pbr/background-hdr-skybox.ts";
@@ -78,6 +80,7 @@ export class RendererLowerer {
 
     public lowerRenderPlan(options: {
         transmission?: boolean;
+        fog?: boolean;
         textureTransform?: boolean;
         environmentRotation?: boolean;
         gpuInstancing?: boolean;
@@ -194,6 +197,26 @@ export class RendererLowerer {
             options.textureTransform
                 ? "    std::array<float, 4> uv_transform{};\n"
                 : "";
+        const fogUniformFields = options.fog
+            ? `    std::array<float, 4> fog_infos{};
+    std::array<float, 4> fog_color{};
+`
+            : "";
+        const fogUniforms = options.fog
+            ? `    result.fog_infos = {
+        scene.fog_mode,
+        scene.fog_start,
+        scene.fog_end,
+        scene.fog_density,
+    };
+    result.fog_color = {
+        scene.fog_color.r,
+        scene.fog_color.g,
+        scene.fog_color.b,
+        0.0f,
+    };
+`
+            : "";
         const textureTransformMaterialUniform =
             options.textureTransform
                 ? `        result.uv_transform = {
@@ -476,6 +499,7 @@ ${multiLightUniformFields}\
     std::array<float, 4> normal_options{};
     std::array<float, 4> image_processing_options{};
 ${textureTransformUniformField}\
+${fogUniformFields}\
 ${transmissionUniformFields}\
 ${materialExtensionUniformFields}\
     std::array<std::array<float, 4>, 9> spherical_harmonics{};
@@ -1188,6 +1212,7 @@ ${options.environmentRotation
         scene.environment.rotation_y;
 `
     : ""}\
+${fogUniforms}\
     if (item.material.value < engine.materials.size()) {
         const MaterialRecord& material = engine.materials[item.material.value];
         result.base_color_factor = {
@@ -1589,6 +1614,7 @@ SkyboxUniforms build_skybox_uniforms(
         ground: boolean;
         skybox: boolean;
         transmission?: boolean;
+        fog?: boolean;
         normalTextureScale?: boolean;
         shaderVariants: ShaderMaterialVariantName[];
         standardMaterial: boolean;
@@ -1961,6 +1987,131 @@ SkyboxUniforms build_skybox_uniforms(
                 "  let linearColor = select(((((((v_89 * v_52) * v_34) + v_101) + v_102) + ((((v_70 * v_52) * v_71) * v_81) * v_69)) + v_40), v_31, vec3<bool>(v_103, v_103, v_103));\n" +
                 "  let v_104 = linearColor * FragmentUniforms.environmentFactors.x;\n" +
                 convertedPbr.slice(transmissionEnd);
+        }
+        if (options.fog) {
+            const unportedFogSurfaces: readonly (readonly [
+                boolean | undefined,
+                string,
+            ])[] = [
+                [options.standardMaterial, "Standard materials"],
+                [options.gridMaterial, "GridMaterial"],
+                [options.ground, "environment grounds"],
+                [options.skybox, "environment skyboxes"],
+                [options.transmission, "transmission"],
+                [
+                    options.geometryOutputTasks.length > 0,
+                    "geometry outputs",
+                ],
+                [options.pbrDiagnostics, "PBR diagnostics"],
+                [
+                    options.shaderVariants.length > 0,
+                    "custom shader materials",
+                ],
+            ];
+            for (const [reached, label] of unportedFogSurfaces) {
+                if (reached) {
+                    throw new Error(
+                        `Scene fog is currently ported for PBR-only scenes; ${label} with fog are not supported yet.`,
+                    );
+                }
+            }
+            const fogSource =
+                this.context.store.getSource(fogWgslModule);
+            for (const marker of [
+                "const E_FOG: f32 = 2.71828;",
+                "if (fogMode == 3.0) { fogCoeff = (fogEnd - dist) / (fogEnd - fogStart); }",
+                "else if (fogMode == 1.0) { fogCoeff = 1.0 / pow(E_FOG, dist * fogDensity); }",
+                "else if (fogMode == 2.0) { fogCoeff = 1.0 / pow(E_FOG, dist * dist * fogDensity * fogDensity); }",
+            ]) {
+                if (!fogSource.includes(marker)) {
+                    throw new Error(
+                        `Pinned Babylon Lite fog factor formula changed: ${marker}`,
+                    );
+                }
+            }
+            const pbrFogSource =
+                this.context.store.getSource(pbrFogWgslModule);
+            for (const marker of [
+                "calcFogFactor((scene.view*vec4<f32>(input.worldPos,1.0)).xyz)",
+                "fogFactor=pow(fogFactor,2.2)",
+                "color=mix(pow(scene.vFogColor.rgb,vec3<f32>(2.2)),color,fogFactor)",
+                "scene.vFogInfos.x>0.0",
+            ]) {
+                if (!pbrFogSource.includes(marker)) {
+                    throw new Error(
+                        `Pinned Babylon Lite PBR fog blend changed: ${marker}`,
+                    );
+                }
+            }
+            for (const marker of [
+                "  imageProcessingOptions : vec4<f32>,",
+                "@group(3u) @binding(0u) var<uniform> FragmentUniforms : S;",
+                "  let v_104 = linearColor * FragmentUniforms.environmentFactors.x;",
+                "    linearColor,\n    FragmentUniforms.imageProcessingOptions.x > 0.5f,",
+            ]) {
+                if (
+                    !convertedPbr
+                        .replaceAll("\r\n", "\n")
+                        .includes(marker)
+                ) {
+                    throw new Error(
+                        `PBR fog shader marker changed: ${marker}`,
+                    );
+                }
+            }
+            convertedPbr = convertedPbr.replace(
+                /  imageProcessingOptions : vec4<f32>,/,
+                "  imageProcessingOptions : vec4<f32>,\n" +
+                    "  fogInfos : vec4<f32>,\n" +
+                    "  fogColor : vec4<f32>,",
+            );
+            convertedPbr = convertedPbr.replace(
+                "@group(3u) @binding(0u) var<uniform> FragmentUniforms : S;",
+                `@group(3u) @binding(0u) var<uniform> FragmentUniforms : S;
+
+// ${this.context.provenance(fogWgslModule, "WGSL_FOG", `${pbrFogWgslModule}#PBR_FOG_BLOCK`)}
+const bblFogE : f32 = 2.71828f;
+
+fn bblCalcFogFactor(fogDistance : vec3<f32>) -> f32 {
+  var fogCoeff = 1.0f;
+  let fogMode = FragmentUniforms.fogInfos.x;
+  let fogStart = FragmentUniforms.fogInfos.y;
+  let fogEnd = FragmentUniforms.fogInfos.z;
+  let fogDensity = FragmentUniforms.fogInfos.w;
+  let dist = length(fogDistance);
+  if (fogMode == 3.0f) {
+    fogCoeff = ((fogEnd - dist) / (fogEnd - fogStart));
+  } else if (fogMode == 1.0f) {
+    fogCoeff = (1.0f / pow(bblFogE, (dist * fogDensity)));
+  } else if (fogMode == 2.0f) {
+    fogCoeff = (1.0f / pow(bblFogE, (((dist * dist) * fogDensity) * fogDensity)));
+  }
+  return clamp(fogCoeff, 0.0f, 1.0f);
+}`,
+            );
+            convertedPbr = convertedPbr.replace(
+                /  let v_104 = linearColor \* FragmentUniforms\.environmentFactors\.x;/,
+                `  var bblFoggedColor = linearColor;
+  if ((FragmentUniforms.fogInfos.x > 0.0f)) {
+    let bblFogView = (v_1 - FragmentUniforms.cameraPosition.xyz);
+    var bblFogFactor = bblCalcFogFactor(vec3<f32>(
+      dot(FragmentUniforms.viewRight.xyz, bblFogView),
+      dot(FragmentUniforms.viewUp.xyz, bblFogView),
+      dot(FragmentUniforms.viewForward.xyz, bblFogView),
+    ));
+    bblFogFactor = pow(bblFogFactor, 2.20000004768371582031f);
+    bblFoggedColor = mix(
+      pow(FragmentUniforms.fogColor.xyz, vec3<f32>(2.20000004768371582031f)),
+      bblFoggedColor,
+      vec3<f32>(bblFogFactor, bblFogFactor, bblFogFactor),
+    );
+  }
+  let v_104 = bblFoggedColor * FragmentUniforms.environmentFactors.x;`,
+            );
+            convertedPbr = convertedPbr.replace(
+                /    linearColor,\r?\n    FragmentUniforms\.imageProcessingOptions\.x > 0\.5f,/,
+                "    bblFoggedColor,\n    FragmentUniforms.imageProcessingOptions.x > 0.5f,",
+            );
         }
         if (options.textureTransform) {
             convertedPbr = convertedPbr.replace(

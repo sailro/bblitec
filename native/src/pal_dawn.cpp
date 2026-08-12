@@ -297,6 +297,14 @@ struct DawnState {
     WGPUBuffer skybox_matrix = nullptr;
     WGPUBuffer skybox_uniforms = nullptr;
     WGPUBindGroup skybox_scene_group = nullptr;
+#if BBLITE_GPU_DEFORMATION
+    // Identity deformation block shared by the background ground and
+    // skybox pipelines: their quads carry zeroed joint weights, and the
+    // shared material vertex stage statically binds the deformation
+    // uniforms, so the derived group layout requires an entry even for
+    // undeformed geometry.
+    WGPUBuffer background_deformation_uniforms = nullptr;
+#endif
     WGPUBindGroup skybox_texture_group = nullptr;
     WGPUBindGroup skybox_material_group = nullptr;
     bool skybox_enabled = false;
@@ -570,6 +578,11 @@ struct DawnState {
         if (skybox_material_group) wgpuBindGroupRelease(skybox_material_group);
         if (skybox_texture_group) wgpuBindGroupRelease(skybox_texture_group);
         if (skybox_scene_group) wgpuBindGroupRelease(skybox_scene_group);
+#if BBLITE_GPU_DEFORMATION
+        if (background_deformation_uniforms) {
+            wgpuBufferRelease(background_deformation_uniforms);
+        }
+#endif
         if (skybox_uniforms) wgpuBufferRelease(skybox_uniforms);
         if (skybox_matrix) wgpuBufferRelease(skybox_matrix);
         if (skybox_texture_view) wgpuTextureViewRelease(skybox_texture_view);
@@ -698,6 +711,19 @@ WGPUBuffer create_buffer(
     }
     return buffer;
 }
+
+#if BBLITE_GPU_DEFORMATION
+void ensure_background_deformation_uniforms(DawnState& state) {
+    if (state.background_deformation_uniforms) return;
+    const DeformationUniforms background_deformation =
+        build_deformation_uniforms(MeshRecord{}, false);
+    state.background_deformation_uniforms = create_buffer(
+        state,
+        WGPUBufferUsage_Uniform,
+        &background_deformation,
+        sizeof(background_deformation));
+}
+#endif
 
 WGPUTexture create_solid_texture(
     DawnState& state,
@@ -4259,15 +4285,26 @@ bool run_dawn_engine(Engine& engine) {
         WGPUBindGroupLayout scene_layout =
             wgpuRenderPipelineGetBindGroupLayout(
                 state.skybox_pipeline, 1);
-        WGPUBindGroupEntry scene_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-        scene_entry.binding = 0;
-        scene_entry.buffer = state.skybox_matrix;
-        scene_entry.size = 64;
+        std::array<WGPUBindGroupEntry, 2> scene_entries{};
+        scene_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entries[0].binding = 0;
+        scene_entries[0].buffer = state.skybox_matrix;
+        scene_entries[0].size = 64;
+        std::uint32_t scene_entry_count = 1;
+#if BBLITE_GPU_DEFORMATION
+        ensure_background_deformation_uniforms(state);
+        scene_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entries[1].binding = 1;
+        scene_entries[1].buffer =
+            state.background_deformation_uniforms;
+        scene_entries[1].size = sizeof(DeformationUniforms);
+        scene_entry_count = 2;
+#endif
         WGPUBindGroupDescriptor scene_descriptor =
             WGPU_BIND_GROUP_DESCRIPTOR_INIT;
         scene_descriptor.layout = scene_layout;
-        scene_descriptor.entryCount = 1;
-        scene_descriptor.entries = &scene_entry;
+        scene_descriptor.entryCount = scene_entry_count;
+        scene_descriptor.entries = scene_entries.data();
         state.skybox_scene_group =
             wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
         wgpuBindGroupLayoutRelease(scene_layout);
@@ -4412,15 +4449,26 @@ bool run_dawn_engine(Engine& engine) {
         WGPUBindGroupLayout scene_layout =
             wgpuRenderPipelineGetBindGroupLayout(
                 state.ground_pipeline, 1);
-        WGPUBindGroupEntry scene_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-        scene_entry.binding = 0;
-        scene_entry.buffer = state.view_projection;
-        scene_entry.size = 64;
+        std::array<WGPUBindGroupEntry, 2> scene_entries{};
+        scene_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entries[0].binding = 0;
+        scene_entries[0].buffer = state.view_projection;
+        scene_entries[0].size = 64;
+        std::uint32_t scene_entry_count = 1;
+#if BBLITE_GPU_DEFORMATION
+        ensure_background_deformation_uniforms(state);
+        scene_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entries[1].binding = 1;
+        scene_entries[1].buffer =
+            state.background_deformation_uniforms;
+        scene_entries[1].size = sizeof(DeformationUniforms);
+        scene_entry_count = 2;
+#endif
         WGPUBindGroupDescriptor scene_descriptor =
             WGPU_BIND_GROUP_DESCRIPTOR_INIT;
         scene_descriptor.layout = scene_layout;
-        scene_descriptor.entryCount = 1;
-        scene_descriptor.entries = &scene_entry;
+        scene_descriptor.entryCount = scene_entry_count;
+        scene_descriptor.entries = scene_entries.data();
         state.ground_scene_group =
             wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
         wgpuBindGroupLayoutRelease(scene_layout);

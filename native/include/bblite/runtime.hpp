@@ -632,6 +632,11 @@ struct Scene {
     std::uint64_t mesh_membership_version = 0;
     std::uint32_t material_family_mask = 0;
     bool transmission_enabled = false;
+    float fog_mode = 0.0f;
+    float fog_density = 0.0f;
+    float fog_start = 0.0f;
+    float fog_end = 0.0f;
+    Color3 fog_color{};
 };
 
 struct GroundOptions {
@@ -793,6 +798,13 @@ void attach_control(Engine& engine, CameraHandle camera, Scene& scene);
 void attach_free_control(Engine& engine, CameraHandle camera, Scene& scene);
 void register_scene(Scene& scene);
 void enable_scene_transmission(Scene& scene);
+void set_scene_fog(
+    Scene& scene,
+    float mode,
+    float density,
+    float start,
+    float end,
+    Color3 color);
 void start_engine(Engine& engine);
 
 } // namespace bbl
