@@ -6,7 +6,8 @@ struct Engine;
 
 namespace bbl::pal {
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER && \
+    defined(BBLITE_HAS_SDL_GPU) && BBLITE_HAS_SDL_GPU
 bool run_gpu_engine(Engine& engine);
 #else
 inline bool run_gpu_engine(Engine&) {

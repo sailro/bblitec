@@ -1192,8 +1192,10 @@ void pal::run_engine(Engine& engine) {
             return;
         }
         throw std::runtime_error(
-            "BBLITE_GPU_BACKEND=dawn requires a Dawn-enabled native build (BBLITE_DAWN=ON).");
+            "BBLITE_GPU_BACKEND=dawn requires a Dawn-enabled native "
+            "build (BBLITE_BACKEND=DAWN or BOTH).");
     }
+#if defined(BBLITE_HAS_SDL_GPU) && BBLITE_HAS_SDL_GPU
     try {
         if (pal::run_gpu_engine(engine)) {
             return;
@@ -1207,6 +1209,35 @@ void pal::run_engine(Engine& engine) {
             << "SDL_GPU unavailable (" << error.what()
             << "); falling back to SDL_Renderer.\n";
     }
+#elif defined(BBLITE_HAS_DAWN) && BBLITE_HAS_DAWN
+    // Dawn-only build: Dawn is the default backend. BBLITE_GPU=0
+    // still selects the deterministic SDL_Renderer fallback, matching
+    // the SDL_GPU shapes where run_gpu_engine performs that check.
+    {
+        const std::string gpu_enabled =
+            pal::environment_variable("BBLITE_GPU");
+        const bool gpu_disabled =
+            gpu_enabled == "0" ||
+            gpu_enabled == "false" ||
+            gpu_enabled == "off";
+        if (!gpu_disabled) {
+            try {
+                if (pal::run_dawn_engine(engine)) {
+                    return;
+                }
+            } catch (const std::exception& error) {
+                const std::string required =
+                    pal::environment_variable("BBLITE_GPU_REQUIRED");
+                if (required == "1" || required == "true") {
+                    throw;
+                }
+                std::cerr
+                    << "Dawn unavailable (" << error.what()
+                    << "); falling back to SDL_Renderer.\n";
+            }
+        }
+    }
+#endif
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("startEngine requires a registered scene.");
     }

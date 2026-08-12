@@ -1,0 +1,270 @@
+param(
+    [string]$Scene = "scene1",
+    [string]$OutputRoot = "artifacts\releases",
+    [string]$BuildDirectory = "",
+    [ValidateSet("", "SDL_GPU", "DAWN", "BOTH")]
+    [string]$ExpectBackend = ""
+)
+
+# Packages a portable Windows demo for one numbered scene. The payload
+# follows the backend the build directory was configured with
+# (BBLITE_BACKEND): SDL_GPU ships offline DXIL/SPIR-V shaders and no
+# Dawn DLLs, DAWN ships WGSL text plus the Dawn runtime DLLs, and BOTH
+# ships the dual-backend development binary with both shader sets.
+
+$ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $PSScriptRoot
+if (-not $BuildDirectory) {
+    $BuildDirectory = "native\build-$Scene-release"
+}
+$buildPath = Join-Path $root $BuildDirectory
+$upstreamPin = Get-Content (
+    Join-Path $root "upstream\babylon-lite.json"
+) -Raw | ConvertFrom-Json
+
+$cacheFile = Join-Path $buildPath "CMakeCache.txt"
+if (-not (Test-Path $cacheFile)) {
+    throw "CMake cache not found: $cacheFile. Build the scene first (npm run scene -- process $Scene)."
+}
+$backendEntry = Select-String -Path $cacheFile -Pattern "^BBLITE_BACKEND:\w+=(.+)$" |
+    Select-Object -First 1
+if (-not $backendEntry) {
+    throw "BBLITE_BACKEND is not recorded in $cacheFile. Reconfigure the scene with the current toolchain (npm run scene -- process $Scene)."
+}
+$backend = $backendEntry.Matches[0].Groups[1].Value.Trim()
+if ($backend -notin @("SDL_GPU", "DAWN", "BOTH")) {
+    throw "Unsupported BBLITE_BACKEND '$backend' in $cacheFile."
+}
+if ($ExpectBackend -and $backend -ne $ExpectBackend) {
+    throw "Build directory $BuildDirectory was configured with BBLITE_BACKEND=$backend, not $ExpectBackend."
+}
+
+$executable = @(
+    (Join-Path $buildPath "bblite_native.exe"),
+    (Join-Path $buildPath "Release\bblite_native.exe")
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $executable) {
+    throw "Required portable-demo executable not found under: $buildPath"
+}
+$runtimeDirectory = Split-Path -Parent $executable
+$shaderSource = Join-Path $runtimeDirectory "shaders"
+$assetSource = Join-Path $runtimeDirectory "assets"
+foreach ($required in @($executable, $shaderSource, $assetSource)) {
+    if (-not (Test-Path $required)) {
+        throw "Required portable-demo input not found: $required"
+    }
+}
+
+$backendToken = $backend.ToLowerInvariant().Replace("_", "-")
+$outputRootPath = Join-Path $root $OutputRoot
+$packageName = "bblitec-$Scene-$backendToken-windows-x64"
+$packageDirectory = Join-Path $outputRootPath $packageName
+$archivePath = Join-Path $outputRootPath "$packageName.zip"
+$exeName = "bblitec-$Scene.exe"
+
+if (Test-Path $packageDirectory) {
+    Remove-Item $packageDirectory -Recurse -Force
+}
+if (Test-Path $archivePath) {
+    Remove-Item $archivePath -Force
+}
+
+$assets = Join-Path $packageDirectory "assets"
+$shaders = Join-Path $packageDirectory "shaders"
+$licenses = Join-Path $packageDirectory "licenses"
+New-Item -ItemType Directory -Path $assets, $shaders, $licenses -Force | Out-Null
+
+Copy-Item $executable (Join-Path $packageDirectory $exeName)
+$runtimeDlls = @(
+    "SDL3.dll",
+    "SDL3_image.dll",
+    "jpeg62.dll",
+    "libpng16.dll",
+    "z.dll"
+)
+if ($backend -ne "SDL_GPU") {
+    # Dawn resolves its compiler DLLs module-relative with hardened
+    # LoadLibraryEx flags; all four must sit beside the executable.
+    $runtimeDlls += @(
+        "webgpu_dawn.dll",
+        "dxcompiler.dll",
+        "dxil.dll",
+        "d3dcompiler_47.dll"
+    )
+}
+foreach ($dll in $runtimeDlls) {
+    $source = Join-Path $runtimeDirectory $dll
+    if (-not (Test-Path $source)) {
+        throw "Required runtime DLL not found: $source"
+    }
+    Copy-Item $source $packageDirectory
+}
+
+$redistRoot = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Redist\MSVC"
+$crtDirectory = Get-ChildItem $redistRoot -Directory |
+    Sort-Object Name -Descending |
+    ForEach-Object { Join-Path $_.FullName "x64\Microsoft.VC145.CRT" } |
+    Where-Object { Test-Path $_ } |
+    Select-Object -First 1
+if (-not $crtDirectory) {
+    throw "MSVC x64 CRT redistributable directory was not found under $redistRoot."
+}
+Copy-Item (Join-Path $crtDirectory "*.dll") $packageDirectory
+
+Copy-Item (Join-Path $assetSource "*") $assets -Recurse
+
+# The runtime reads only its compiled backend's shader formats:
+# SDL_GPU loads offline .dxil (D3D12) or .spv (Vulkan); Dawn compiles
+# the .native.wgsl text in-process. Text intermediates (.hlsl, .msl,
+# reflection dumps, tool manifests) are development artifacts.
+$shaderPatterns = switch ($backend) {
+    "SDL_GPU" { @("*.dxil", "*.spv") }
+    "DAWN" { @("*.native.wgsl") }
+    "BOTH" { @("*.dxil", "*.spv", "*.native.wgsl") }
+}
+$shaderFiles = Get-ChildItem $shaderSource -File |
+    Where-Object {
+        $file = $_
+        ($shaderPatterns | Where-Object { $file.Name -like $_ }).Count -gt 0
+    }
+if (-not $shaderFiles) {
+    throw "No shader payload matched $($shaderPatterns -join ', ') under $shaderSource."
+}
+$shaderFiles | ForEach-Object { Copy-Item $_.FullName $shaders }
+
+$vcpkgShare = Join-Path $root "native\vcpkg_installed\x64-windows\share"
+$licensePackages = @{
+    "SDL3.txt" = "sdl3"
+    "SDL3_image.txt" = "sdl3-image"
+    "libjpeg-turbo.txt" = "libjpeg-turbo"
+    "libpng.txt" = "libpng"
+    "zlib.txt" = "zlib"
+}
+foreach ($entry in $licensePackages.GetEnumerator()) {
+    $source = Join-Path $vcpkgShare "$($entry.Value)\copyright"
+    if (-not (Test-Path $source)) {
+        throw "Dependency license not found: $source"
+    }
+    Copy-Item $source (Join-Path $licenses $entry.Key)
+}
+if ($backend -ne "SDL_GPU") {
+    $dawnLicense = Join-Path $root "artifacts\tools\dawn\LICENSE.txt"
+    if (-not (Test-Path $dawnLicense)) {
+        throw "Dawn license not found: $dawnLicense. Rebuild the Dawn library (tools/build-dawn.ps1)."
+    }
+    Copy-Item $dawnLicense (Join-Path $licenses "Dawn.txt")
+}
+
+$primaryLines = @(
+    "@echo off",
+    "setlocal"
+)
+if ($backend -ne "DAWN") {
+    $primaryLines += 'set "SDL_GPU_DRIVER=direct3d12"'
+}
+$primaryLines += @(
+    "`"%~dp0$exeName`" > `"%~dp0bblitec-$Scene.log`" 2>&1",
+    'set "RESULT=%ERRORLEVEL%"',
+    "type `"%~dp0bblitec-$Scene.log`"",
+    'if not "%RESULT%"=="0" pause',
+    "exit /b %RESULT%"
+)
+$primaryLines -join "`r`n" |
+    Set-Content (Join-Path $packageDirectory "run-$Scene.cmd") -Encoding Ascii
+
+if ($backend -eq "BOTH") {
+    @(
+        "@echo off",
+        "setlocal",
+        'set "BBLITE_GPU_BACKEND=dawn"',
+        "`"%~dp0$exeName`" > `"%~dp0bblitec-$Scene.log`" 2>&1",
+        'set "RESULT=%ERRORLEVEL%"',
+        "type `"%~dp0bblitec-$Scene.log`"",
+        'if not "%RESULT%"=="0" pause',
+        "exit /b %RESULT%"
+    ) -join "`r`n" |
+        Set-Content (Join-Path $packageDirectory "run-$Scene-dawn.cmd") -Encoding Ascii
+}
+
+@(
+    "@echo off",
+    "setlocal",
+    'set "BBLITE_GPU=0"',
+    "`"%~dp0$exeName`"",
+    "if errorlevel 1 pause"
+) -join "`r`n" |
+    Set-Content (Join-Path $packageDirectory "run-$Scene-cpu.cmd") -Encoding Ascii
+
+$backendDescription = switch ($backend) {
+    "SDL_GPU" { "SDL_GPU over Direct3D 12 with offline-compiled shaders" }
+    "DAWN" { "Dawn (Chrome's WebGPU) over Direct3D 12, compiling WGSL at startup" }
+    "BOTH" { "SDL_GPU by default; run-$Scene-dawn.cmd selects the Dawn (WebGPU) backend" }
+}
+
+$fidelityLines = @()
+foreach ($report in @(
+    @{ Path = "artifacts\parity\$Scene\report-gpu.json"; Label = "SDL_GPU" },
+    @{ Path = "artifacts\parity\$Scene\report-dawn.json"; Label = "Dawn" }
+)) {
+    $reportPath = Join-Path $root $report.Path
+    if (Test-Path $reportPath) {
+        $parsed = Get-Content $reportPath -Raw | ConvertFrom-Json
+        $fidelityLines += "  $($report.Label): full-image MAD $([math]::Round($parsed.full.mad, 3)), foreground MAD $([math]::Round($parsed.region.mad, 3))"
+    }
+}
+$fidelitySection = if ($fidelityLines) {
+    "Current D3D12 fidelity baseline (versus the pinned browser reference):`r`n" +
+        ($fidelityLines -join "`r`n") + "`r`n`r`n"
+} else {
+    ""
+}
+
+@"
+bblitec $Scene portable demo (Windows x64)
+================================================
+
+Backend: $backendDescription
+
+Run:
+  Double-click run-$Scene.cmd.
+  It automatically falls back to the deterministic SDL_Renderer
+  implementation when the GPU backend is unavailable.
+
+Controls:
+  Left drag            Orbit
+  Right/middle drag    Pan
+  Mouse wheel          Zoom
+  Arrow keys           Orbit fallback
+  W / S                Zoom fallback
+
+Troubleshooting:
+  - Requires Windows 10/11.
+  - run-$Scene-cpu.cmd forces the deterministic SDL_Renderer fallback.
+  - bblitec-$Scene.log records startup errors and fallback information.
+  - Keep the assets and shaders directories beside the executable.
+
+$($fidelitySection)Compiler source:
+  https://github.com/sailro/bblitec
+  $($upstreamPin.package) $($upstreamPin.version)
+  Pinned upstream commit: $($upstreamPin.sourceVersion)
+
+Third-party notices are included in the licenses directory.
+"@ | Set-Content (Join-Path $packageDirectory "README.txt") -Encoding UTF8
+
+$manifestPath = Join-Path $root "generated\$Scene\manifest.json"
+if (Test-Path $manifestPath) {
+    $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    $assetSources = @(
+        $manifest.assets |
+            Where-Object { $_.source -match "^https?://" } |
+            ForEach-Object { $_.source } |
+            Sort-Object -Unique
+    )
+    if ($assetSources) {
+        ($assetSources -join "`r`n") + "`r`n" |
+            Set-Content (Join-Path $packageDirectory "ASSET-SOURCES.txt") -Encoding UTF8
+    }
+}
+
+Compress-Archive -Path $packageDirectory -DestinationPath $archivePath -CompressionLevel Optimal
+Write-Output "Created $archivePath ($backend payload)"

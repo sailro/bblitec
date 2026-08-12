@@ -39,7 +39,8 @@
     "parity:lite-diagnostics": "npm run build && node dist/src/capture-lite-diagnostics.js",
     "parity:diagnostics:compare": "npm run build && node dist/src/compare-lite-diagnostics.js",
     "parity:diagnostics": "npm run parity:lite-diagnostics && npm run scene -- parity scene1 && npm run parity:diagnostics:compare",
-    "package:boombox": "pwsh -File tools/package-boombox-demo.ps1",
+    "package:demo": "pwsh -File tools/package-demo.ps1",
+    "package:boombox": "pwsh -File tools/package-demo.ps1 -Scene scene1",
     "shaders:build": "pwsh -File tools/compile-shaders.ps1"
   },
   "devDependencies": {

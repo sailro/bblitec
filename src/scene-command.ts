@@ -193,15 +193,34 @@ function buildScene(scene: (typeof scenes)[number]): void {
         "-G",
         generator,
     ];
-    // Both render backends build whenever the pinned Dawn library is
-    // installed (tools/build-dawn.ps1); BBLITE_GPU_BACKEND selects at
-    // runtime. Set BBLITE_DAWN=0 to force an SDL_GPU-only build.
+    // Backend selection: BOTH (the dual-backend differential binary)
+    // whenever the pinned Dawn library is installed
+    // (tools/build-dawn.ps1), SDL_GPU otherwise. Set
+    // BBLITE_BACKEND=SDL_GPU|DAWN|BOTH to override;
+    // BBLITE_GPU_BACKEND still selects at runtime in BOTH builds.
+    const dawnInstalled = existsSync(
+        resolve("artifacts", "tools", "dawn", "lib", "cmake", "Dawn"),
+    );
+    const requestedBackend = process.env.BBLITE_BACKEND;
     if (
-        process.env.BBLITE_DAWN !== "0" &&
-        existsSync(resolve("artifacts", "tools", "dawn", "lib", "cmake", "Dawn"))
+        requestedBackend !== undefined &&
+        !["SDL_GPU", "DAWN", "BOTH"].includes(requestedBackend)
     ) {
-        configureArguments.push("-DBBLITE_DAWN=ON");
+        throw new Error(
+            `BBLITE_BACKEND must be SDL_GPU, DAWN, or BOTH (got '${requestedBackend}').`,
+        );
     }
+    if (
+        (requestedBackend === "DAWN" || requestedBackend === "BOTH") &&
+        !dawnInstalled
+    ) {
+        throw new Error(
+            `BBLITE_BACKEND=${requestedBackend} requires the pinned Dawn library; run pwsh -File tools/build-dawn.ps1 first.`,
+        );
+    }
+    const backend =
+        requestedBackend ?? (dawnInstalled ? "BOTH" : "SDL_GPU");
+    configureArguments.push(`-DBBLITE_BACKEND=${backend}`);
     if (ninja) {
         configureArguments.push(
             `-DCMAKE_MAKE_PROGRAM=${ninja.ninja}`,

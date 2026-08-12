@@ -20,6 +20,43 @@ file(
     "${BBLITE_GENERATED_SHADER_DIR}/*"
 )
 
+# Native GPU render backend selection. BOTH compiles the dual-backend
+# development binary (the differential gate); SDL_GPU and DAWN produce
+# single-backend release shapes whose runtime payloads follow the
+# compiled set (offline DXIL/SPIR-V versus WGSL text, Dawn DLLs).
+set(
+    BBLITE_BACKEND
+    "SDL_GPU"
+    CACHE STRING
+    "Native GPU render backend set: SDL_GPU, DAWN, or BOTH"
+)
+set_property(
+    CACHE BBLITE_BACKEND
+    PROPERTY STRINGS "SDL_GPU" "DAWN" "BOTH"
+)
+if(BBLITE_BACKEND STREQUAL "SDL_GPU")
+    set(BBLITE_BACKEND_SDL_GPU ON)
+    set(BBLITE_BACKEND_DAWN OFF)
+elseif(BBLITE_BACKEND STREQUAL "DAWN")
+    set(BBLITE_BACKEND_SDL_GPU OFF)
+    set(BBLITE_BACKEND_DAWN ON)
+elseif(BBLITE_BACKEND STREQUAL "BOTH")
+    set(BBLITE_BACKEND_SDL_GPU ON)
+    set(BBLITE_BACKEND_DAWN ON)
+else()
+    message(
+        FATAL_ERROR
+        "BBLITE_BACKEND must be SDL_GPU, DAWN, or BOTH (got '${BBLITE_BACKEND}')."
+    )
+endif()
+if(NOT BBLITE_BACKEND_SDL_GPU)
+    list(
+        REMOVE_ITEM
+        BBLITE_RUNTIME_SOURCES
+        "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu.cpp"
+    )
+endif()
+
 add_executable(
     bblite_native
     "${BBLITE_GENERATED_DIR}/main.cpp"
@@ -117,8 +154,13 @@ else()
     message(WARNING "SDL3 was not found. The generated application will use the headless backend.")
 endif()
 
-option(BBLITE_DAWN "Enable the pinned Dawn (WebGPU) render backend" OFF)
-if(BBLITE_DAWN)
+if(BBLITE_BACKEND_SDL_GPU)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_SDL_GPU=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_SDL_GPU=0)
+endif()
+
+if(BBLITE_BACKEND_DAWN)
     find_package(
         Dawn CONFIG REQUIRED
         PATHS "${BBLITE_NATIVE_ROOT}/../artifacts/tools/dawn/lib/cmake/Dawn"
