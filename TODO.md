@@ -33,9 +33,15 @@ pairings, resolved by reprocessing.
   re-enabled pinned dither (scenes 33, 176, 212 and the transmission
   project gates), then diagnostics — see the ordered list in
   [migration](docs/migration.md).
-- [ ] Threshold review and the SDL_GPU retirement decision; retire the
-  DXC/normalization/shader-cache machinery once Dawn parity is a
-  strict superset and update the docs' backend rationale explicitly.
+- [ ] Threshold review and the backend end-state decision. Current
+  direction: keep BOTH backends long-term as mutually validating
+  implementations — the direct Dawn-versus-SDL_GPU diff has been the
+  decisive diagnostic for every residual attribution (two independent
+  compiler and API stacks agreeing to one LSB isolates CPU-side from
+  GPU-side causes immediately) — rather than retiring SDL_GPU and its
+  DXC/normalization/shader-cache machinery. Formalize a
+  backend-differential comparison mode in the parity tooling and
+  update the docs' backend rationale when decided.
 
 ## P0 — Backend portability
 

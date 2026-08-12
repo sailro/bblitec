@@ -249,10 +249,14 @@ authority if a regression appears:
    floors; that requires emitting the dithered shader variant at
    generation time.
 2. **Diagnostics/attribution** (scene 1 draw IDs, clusters, PBR
-   buffers), then the full-matrix Dawn validation, threshold review,
-   and the SDL_GPU retirement decision (delete DXC/normalization/
-   shader-cache machinery, rewrite the backend rationale in
-   [architecture](architecture.md)).
+   buffers), then the threshold review and the backend end-state
+   decision. The current direction is to keep both backends
+   long-term as mutually validating implementations — the direct
+   Dawn-versus-SDL_GPU diff has been the decisive diagnostic for
+   every residual attribution — with a formalized
+   backend-differential comparison mode, rather than retiring
+   SDL_GPU; rewrite the backend rationale in
+   [architecture](architecture.md) when decided.
 
 Performance has not been measured; Dawn runs with default validation
 and robustness (robustness must stay on — the browser has it on).
