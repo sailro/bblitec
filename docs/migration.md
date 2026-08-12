@@ -12,15 +12,19 @@ SDL_Renderer CPU fallback is out of scope.
 ## Verified state
 
 Every scene the Dawn slice can express passes at values equal to or
-better than SDL_GPU: a full 39-scene sequential re-validation
-(process + Dawn parity per scene, 2026-08-12) reported zero failures
-across 37 curated scenes plus the compiler-state and glTF-track-clamp
-project gates (see the Dawn column in [status](status.md)). Thirteen
-of them are bit-exact — 2, 10, 32, 150, 151, 154, 163, 240, 246, 259,
-273, 274, and both project gates — with 259 beating SDL_GPU, whose
+better than SDL_GPU: a full 42-scene sequential re-validation
+(process + Dawn parity per scene, 2026-08-12) covers 40 curated
+scenes plus the compiler-state and glTF-track-clamp project gates
+(see the Dawn column in [status](status.md)). Fourteen of them are
+bit-exact — 2, 10, 32, 116, 150, 151, 154, 163, 240, 246, 259, 273,
+274, and both project gates — with 259 beating SDL_GPU, whose
 DXC-vs-browser rounding it eliminates, and 163/273/274 covering the
 alpha-card, circular-cutout, alpha-to-coverage, and
-runtime-mesh-append paths. Scene 1 (BoomBox) matches the SDL_GPU
+runtime-mesh-append paths. The frame graph runs end to end: scene 116
+(no-color depth views) is bit-exact, scene 145 (Standard geometry
+MRTs) lands at 0.008/0.008 — beating its SDL_GPU 0.022/0.022 — and
+scene 146 (PBR geometry MRTs) matches its 0.021/0.018 baseline
+exactly. Scene 1 (BoomBox) matches the SDL_GPU
 baseline at 0.001/0.015, scene 8 matches exactly at 0.129/0.134 (the
 compiled-HDR environment path worked unmodified), the material
 extension scenes 28 (clearcoat), 29 (sheen), and 178 (iridescence)
@@ -140,6 +144,29 @@ the GPU API layer differs:
   binds the flat 6-float delta buffer and 16-byte-header weights buffer
   at group 0 bindings 0/1 with 4-byte/16-byte zero fallbacks; weights
   rewrite in place when `morph_weights_version` changes.
+- **Frame graph**: tasks replace the main pass exactly like the SDL
+  task loop. Color render tasks draw their
+  `build_render_task_draw_lists` lists into render targets with
+  sample-count-selected pipelines; depth-only tasks draw the explicit
+  no-color meshes through GREATER-compare pipelines with the
+  reverse-depth matrix and depth cleared to zero; geometry tasks bind
+  one MRT per attachment (`geometry_clear_color` clears, optional
+  output target last, resolve on multisample) with the per-task
+  `pbr-geometry-N.frag`/`standard-geometry-N.frag` modules; copy tasks
+  either resolve in an empty pass or run the generated fullscreen blit
+  with the integer `resolve_copy_viewport` viewport+scissor, and a
+  swapchain copy records its source as the capture texture. Every mesh
+  pipeline (main, task, geometry) shares one explicit superset
+  pipeline layout — WebGPU permits layout bindings a shader ignores —
+  so mesh bind groups stay interchangeable across shader variants.
+  Sampled depth attachments copy into an r32float texture after their
+  task (float32-filterable is requested like the pinned engine) so
+  standard emissive slots read them exactly like SDL's D3D12 depth
+  SRVs (r = depth, g/b = 0, a = 1), through the nearest sampler.
+  Device limits are derived from the task records at creation:
+  `maxColorAttachmentBytesPerSample` from the WebGPU render-target
+  byte costs (the entry's `requiredLimits` option is compile-time
+  erased), `maxVertexAttributes` 20 under instancing.
 - **Frame**: 4x MSAA color (surface format) resolving into the surface
   texture, `depth24plus-stencil8` (the browser's format — not the SDL
   backend's D32), stage-driven draw order (skybox → opaque →
@@ -210,37 +237,7 @@ authority if a regression appears:
 
 ## Remaining work, in suggested order
 
-1. **Frame graph** (scenes 116, 145, 146): render-target tasks,
-   depth-only passes, geometry MRTs, viewport/scissor copies, blits —
-   the largest remaining chunk. Port map from the SDL task loop
-   (`pal_sdl_gpu.cpp` ~4200-5090):
-   - Color render tasks begin a pass on the target (or swapchain)
-     with optional clear, depth cleared to 1.0 and stored only when
-     `sampled_depth`, per-task camera/aspect
-     (`canvas_size ? canvas : target`), per-task draw lists from
-     `build_render_task_draw_lists`, and the normal pipelines.
-   - Depth-only render tasks (`!has_color`) use
-     `build_view_projection(..., reverse_depth = true)`, clear depth
-     to 0.0, and draw only the explicit `render_meshes` (no-color
-     material views required) through the two-sided-mode depth-only
-     pipelines picked by sample count.
-   - Geometry tasks bind one MRT color per attachment with
-     `geometry_clear_color(type)` clears (plus the optional output
-     target appended last), resolve into `sampled_colors` when
-     multisampled, and draw with the per-task
-     `pbr-geometry-N.frag`/`standard-geometry-N.frag` pipeline set
-     and the main camera.
-   - Copy tasks are either a pure MSAA resolve pass
-     (`resolve_target` without `target`) or a fullscreen-triangle
-     blit (blit vs blit-msaa pipeline by target samples) with the
-     integer `resolve_copy_viewport` viewport+scissor and the clamp
-     sampler; a copy whose target is the swapchain records its source
-     as the capture texture.
-   - Standard materials with `has_emissive_render_texture` bind a
-     task source texture through the nearest sampler in the
-     standard-emissive slot (scene 116's material views).
-   - Capture saves the recorded capture source, not the swapchain.
-2. **Transmission** (scenes 33, 176, 212): scene-color grab with the
+1. **Transmission** (scenes 33, 176, 212): scene-color grab with the
    pinned mip chain and repeat sampler, and — the payoff SDL_GPU could
    never express — the **per-sample image-processing pass**
    (`texture_multisampled_2d`, apply `ip()` per sample, then average)
@@ -249,7 +246,7 @@ authority if a regression appears:
    it reproducible), which should take scenes 6/14 below their SDL
    floors; that requires emitting the dithered shader variant at
    generation time.
-3. **Diagnostics/attribution** (scene 1 draw IDs, clusters, PBR
+2. **Diagnostics/attribution** (scene 1 draw IDs, clusters, PBR
    buffers), then the full-matrix Dawn validation, threshold review,
    and the SDL_GPU retirement decision (delete DXC/normalization/
    shader-cache machinery, rewrite the backend rationale in

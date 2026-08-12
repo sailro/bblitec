@@ -15,7 +15,9 @@
 #if defined(BBLITE_HAS_DAWN) && BBLITE_HAS_DAWN
 
 #include <bblite/upstream/camera_math.hpp>
+#if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
 #include <bblite/upstream/frame_graph_geometry.hpp>
+#endif
 #include <bblite/upstream/render_capabilities.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 
@@ -243,6 +245,12 @@ struct DawnState {
     std::map<upstream::RenderPipelineKind, DawnPipeline> pipelines_1x;
     std::uint32_t frame_graph_width = 0;
     std::uint32_t frame_graph_height = 0;
+    // Explicit bind group layouts shared by every mesh pipeline
+    // (main, task, and geometry): WebGPU allows layout bindings the
+    // shader does not use, so one superset layout keeps all mesh bind
+    // groups interchangeable across shader variants.
+    std::array<WGPUBindGroupLayout, 4> mesh_group_layouts{};
+    WGPUPipelineLayout mesh_pipeline_layout = nullptr;
     WGPUShaderModule ground_module = nullptr;
     WGPURenderPipeline ground_pipeline = nullptr;
     WGPUBuffer ground_vertices = nullptr;
@@ -471,6 +479,12 @@ struct DawnState {
             wgpuShaderModuleRelease(blit_vertex_module);
         }
         if (nearest_sampler) wgpuSamplerRelease(nearest_sampler);
+        if (mesh_pipeline_layout) {
+            wgpuPipelineLayoutRelease(mesh_pipeline_layout);
+        }
+        for (WGPUBindGroupLayout layout : mesh_group_layouts) {
+            if (layout) wgpuBindGroupLayoutRelease(layout);
+        }
         release_meshes();
 #if BBLITE_GPU_MORPH_STORAGE
         if (empty_morph_weights) {
@@ -1475,6 +1489,115 @@ PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
     }
 }
 
+WGPUPipelineLayout mesh_pipeline_layout_for(DawnState& state) {
+    if (state.mesh_pipeline_layout) return state.mesh_pipeline_layout;
+    // Group 0: vertex storage morphing (always declared so the layout
+    // stays one superset; storage entries only when compiled).
+    {
+        std::array<WGPUBindGroupLayoutEntry, 2> entries{};
+        std::uint32_t count = 0;
+#if BBLITE_GPU_MORPH_STORAGE
+        for (std::uint32_t binding = 0; binding < 2; ++binding) {
+            entries[count] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            entries[count].binding = binding;
+            entries[count].visibility = WGPUShaderStage_Vertex;
+            entries[count].buffer.type =
+                WGPUBufferBindingType_ReadOnlyStorage;
+            ++count;
+        }
+#endif
+        WGPUBindGroupLayoutDescriptor descriptor =
+            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+        descriptor.entryCount = count;
+        descriptor.entries = entries.data();
+        state.mesh_group_layouts[0] = wgpuDeviceCreateBindGroupLayout(
+            state.device,
+            &descriptor);
+    }
+    // Group 1: vertex uniforms (scene matrix, deformation, instance).
+    {
+        std::array<WGPUBindGroupLayoutEntry, 3> entries{};
+        std::uint32_t count = 0;
+        const auto uniform = [&](std::uint32_t binding) {
+            entries[count] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            entries[count].binding = binding;
+            entries[count].visibility = WGPUShaderStage_Vertex;
+            entries[count].buffer.type = WGPUBufferBindingType_Uniform;
+            ++count;
+        };
+        uniform(0);
+#if BBLITE_GPU_DEFORMATION
+        uniform(1);
+#endif
+#if BBLITE_GPU_INSTANCING
+        uniform(instance_uniform_binding);
+#endif
+        WGPUBindGroupLayoutDescriptor descriptor =
+            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+        descriptor.entryCount = count;
+        descriptor.entries = entries.data();
+        state.mesh_group_layouts[1] = wgpuDeviceCreateBindGroupLayout(
+            state.device,
+            &descriptor);
+    }
+    // Group 2: fragment texture/sampler pairs in the SDL slot order;
+    // binding 8 is the cube slot.
+    {
+        constexpr std::size_t pair_count =
+            6 + transmission_texture_pairs + material_extension_slots;
+        std::array<WGPUBindGroupLayoutEntry, pair_count * 2> entries{};
+        for (std::uint32_t pair = 0; pair < pair_count; ++pair) {
+            entries[pair * 2] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            entries[pair * 2].binding = pair * 2;
+            entries[pair * 2].visibility = WGPUShaderStage_Fragment;
+            entries[pair * 2].texture.sampleType =
+                WGPUTextureSampleType_Float;
+            entries[pair * 2].texture.viewDimension = pair == 4
+                ? WGPUTextureViewDimension_Cube
+                : WGPUTextureViewDimension_2D;
+            entries[pair * 2 + 1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            entries[pair * 2 + 1].binding = pair * 2 + 1;
+            entries[pair * 2 + 1].visibility =
+                WGPUShaderStage_Fragment;
+            entries[pair * 2 + 1].sampler.type =
+                WGPUSamplerBindingType_Filtering;
+        }
+        WGPUBindGroupLayoutDescriptor descriptor =
+            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+        descriptor.entryCount = entries.size();
+        descriptor.entries = entries.data();
+        state.mesh_group_layouts[2] = wgpuDeviceCreateBindGroupLayout(
+            state.device,
+            &descriptor);
+    }
+    // Group 3: the fragment uniform block.
+    {
+        WGPUBindGroupLayoutEntry entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        entry.binding = 0;
+        entry.visibility = WGPUShaderStage_Fragment;
+        entry.buffer.type = WGPUBufferBindingType_Uniform;
+        WGPUBindGroupLayoutDescriptor descriptor =
+            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+        descriptor.entryCount = 1;
+        descriptor.entries = &entry;
+        state.mesh_group_layouts[3] = wgpuDeviceCreateBindGroupLayout(
+            state.device,
+            &descriptor);
+    }
+    WGPUPipelineLayoutDescriptor descriptor =
+        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    descriptor.bindGroupLayoutCount = state.mesh_group_layouts.size();
+    descriptor.bindGroupLayouts = state.mesh_group_layouts.data();
+    state.mesh_pipeline_layout = wgpuDeviceCreatePipelineLayout(
+        state.device,
+        &descriptor);
+    if (!state.mesh_pipeline_layout) {
+        dawn_error("mesh pipeline layout creation failed.");
+    }
+    return state.mesh_pipeline_layout;
+}
+
 DawnPipeline& pipeline_for(
     DawnState& state,
     upstream::RenderPipelineKind kind,
@@ -1530,6 +1653,7 @@ DawnPipeline& pipeline_for(
     }
     WGPURenderPipelineDescriptor descriptor =
         WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.layout = mesh_pipeline_layout_for(state);
     descriptor.vertex.module = traits.grid
         ? state.grid_vertex_module
         : traits.card
@@ -1644,6 +1768,115 @@ WGPURenderPipeline depth_only_pipeline_for(
     slot = wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
     if (!slot) dawn_error("depth-only pipeline creation failed.");
     return slot;
+}
+
+// Geometry MRT pipelines mirror SDL: the per-task generated fragment
+// modules over the shared vertex module, one color target per
+// attachment plus the optional output target, LESS depth (writes off
+// for the transparent variants, which also blend on every target).
+WGPURenderPipeline geometry_pipeline_for(
+    DawnState& state,
+    std::size_t task_index,
+    const FrameTaskRecord& task,
+    upstream::RenderPipelineKind kind) {
+    DawnGeometryTask& geometry = state.geometry_tasks[task_index];
+    const auto existing = geometry.pipelines.find(kind);
+    if (existing != geometry.pipelines.end()) return existing->second;
+    const PipelineKindTraits traits = pipeline_traits(kind);
+    if (traits.grid || traits.card || traits.cutout) {
+        dawn_error("geometry tasks reached a non-mesh pipeline kind.");
+    }
+    if (!geometry.pbr_fragment) {
+        geometry.pbr_fragment = load_wgsl_module(
+            state,
+            "pbr-geometry-" +
+                std::to_string(task.geometry.shader_index) + ".frag");
+    }
+    if (traits.standard && !geometry.standard_fragment) {
+        geometry.standard_fragment = load_wgsl_module(
+            state,
+            "standard-geometry-" +
+                std::to_string(task.geometry.shader_index) + ".frag");
+    }
+    std::array<WGPUVertexAttribute, base_vertex_attribute_count>
+        attributes{};
+    fill_base_vertex_attributes(attributes.data());
+    std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
+    vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
+    vertex_layouts[0].arrayStride = sizeof(GpuVertex);
+    vertex_layouts[0].attributeCount = attributes.size();
+    vertex_layouts[0].attributes = attributes.data();
+#if BBLITE_GPU_INSTANCING
+    std::array<WGPUVertexAttribute, 4> instance_attributes{};
+    for (std::uint32_t column = 0; column < 4; ++column) {
+        instance_attributes[column].format = WGPUVertexFormat_Float32x4;
+        instance_attributes[column].offset = column * 16;
+        instance_attributes[column].shaderLocation = 16 + column;
+    }
+    vertex_layouts[1].stepMode = WGPUVertexStepMode_Instance;
+    vertex_layouts[1].arrayStride = sizeof(std::array<float, 16>);
+    vertex_layouts[1].attributeCount = instance_attributes.size();
+    vertex_layouts[1].attributes = instance_attributes.data();
+    constexpr std::uint32_t vertex_buffer_count = 2;
+#else
+    constexpr std::uint32_t vertex_buffer_count = 1;
+#endif
+    const std::uint32_t samples =
+        task_sample_count(task.geometry.samples);
+    std::vector<WGPUColorTargetState> color_targets;
+    color_targets.reserve(task.geometry.attachments.size() + 1);
+    WGPUBlendState blend{};
+    blend.color.operation = WGPUBlendOperation_Add;
+    blend.color.srcFactor = WGPUBlendFactor_SrcAlpha;
+    blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    blend.alpha.operation = WGPUBlendOperation_Add;
+    blend.alpha.srcFactor = WGPUBlendFactor_One;
+    blend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    for (const GeometryTextureDescription& description :
+         task.geometry.attachments) {
+        WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
+        target.format = geometry_texture_format(description);
+        if (traits.transparent) target.blend = &blend;
+        color_targets.push_back(target);
+    }
+    if (task.geometry.target.value != invalid_handle) {
+        WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
+        target.format = state.surface_format;
+        if (traits.transparent) target.blend = &blend;
+        color_targets.push_back(target);
+    }
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.layout = mesh_pipeline_layout_for(state);
+    descriptor.vertex.module = state.vertex_module;
+    descriptor.vertex.entryPoint = string_view("mainVertex");
+    descriptor.vertex.bufferCount = vertex_buffer_count;
+    descriptor.vertex.buffers = vertex_layouts.data();
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.frontFace = traits.front;
+    descriptor.primitive.cullMode = traits.cull;
+    WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
+    depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
+    depth_stencil.depthWriteEnabled = traits.transparent
+        ? WGPUOptionalBool_False
+        : WGPUOptionalBool_True;
+    depth_stencil.depthCompare = WGPUCompareFunction_Less;
+    descriptor.depthStencil = &depth_stencil;
+    descriptor.multisample.count = samples;
+    descriptor.multisample.mask = ~0u;
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = traits.standard
+        ? geometry.standard_fragment
+        : geometry.pbr_fragment;
+    fragment.entryPoint = string_view("mainFragment");
+    fragment.targetCount = color_targets.size();
+    fragment.targets = color_targets.data();
+    descriptor.fragment = &fragment;
+    WGPURenderPipeline pipeline =
+        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    if (!pipeline) dawn_error("geometry pipeline creation failed.");
+    geometry.pipelines[kind] = pipeline;
+    return pipeline;
 }
 
 // Copies a sampled depth attachment into an r32float color texture so
@@ -1776,14 +2009,10 @@ DawnMeshBindings& bindings_for(
     DawnMeshBindings bindings;
 
     const PipelineKindTraits binding_traits = pipeline_traits(kind);
-    // Only the standard/pbr vertex module declares the deformation and
-    // instancing uniforms; grid and shader-variant pipelines keep the
-    // single vertex uniform (the alpha card replaces the scene matrix
-    // with its own center/angle/depth block).
-    const bool mesh_vertex_uniforms = !binding_traits.grid &&
-        !binding_traits.card && !binding_traits.cutout;
-    WGPUBindGroupLayout scene_layout =
-        wgpuRenderPipelineGetBindGroupLayout(pipeline.pipeline, 1);
+    mesh_pipeline_layout_for(state);
+    // The explicit superset layout requires every binding; kinds whose
+    // shader ignores a slot still supply the mesh's resource (the
+    // alpha card swaps the scene matrix for its own uniform block).
     std::array<WGPUBindGroupEntry, 3> scene_entries{};
     std::uint32_t scene_entry_count = 0;
     scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
@@ -1798,39 +2027,32 @@ DawnMeshBindings& bindings_for(
     }
     ++scene_entry_count;
 #if BBLITE_GPU_DEFORMATION
-    if (mesh_vertex_uniforms) {
-        scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
-        scene_entries[scene_entry_count].binding = 1;
-        scene_entries[scene_entry_count].buffer =
-            mesh.deformation_uniforms;
-        scene_entries[scene_entry_count].size =
-            sizeof(DeformationUniforms);
-        ++scene_entry_count;
-    }
+    scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
+    scene_entries[scene_entry_count].binding = 1;
+    scene_entries[scene_entry_count].buffer =
+        mesh.deformation_uniforms;
+    scene_entries[scene_entry_count].size =
+        sizeof(DeformationUniforms);
+    ++scene_entry_count;
 #endif
 #if BBLITE_GPU_INSTANCING
-    if (mesh_vertex_uniforms) {
-        scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
-        scene_entries[scene_entry_count].binding =
-            instance_uniform_binding;
-        scene_entries[scene_entry_count].buffer = mesh.instance_uniform;
-        scene_entries[scene_entry_count].size = 64;
-        ++scene_entry_count;
-    }
+    scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
+    scene_entries[scene_entry_count].binding =
+        instance_uniform_binding;
+    scene_entries[scene_entry_count].buffer = mesh.instance_uniform;
+    scene_entries[scene_entry_count].size = 64;
+    ++scene_entry_count;
 #endif
     WGPUBindGroupDescriptor scene_descriptor =
         WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    scene_descriptor.layout = scene_layout;
+    scene_descriptor.layout = state.mesh_group_layouts[1];
     scene_descriptor.entryCount = scene_entry_count;
     scene_descriptor.entries = scene_entries.data();
     bindings.scene =
         wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
-    wgpuBindGroupLayoutRelease(scene_layout);
 
 #if BBLITE_GPU_MORPH_STORAGE
     {
-        WGPUBindGroupLayout morph_layout =
-            wgpuRenderPipelineGetBindGroupLayout(pipeline.pipeline, 0);
         std::array<WGPUBindGroupEntry, 2> morph_entries{};
         morph_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
         morph_entries[0].binding = 0;
@@ -1842,12 +2064,11 @@ DawnMeshBindings& bindings_for(
         morph_entries[1].size = WGPU_WHOLE_SIZE;
         WGPUBindGroupDescriptor morph_descriptor =
             WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-        morph_descriptor.layout = morph_layout;
+        morph_descriptor.layout = state.mesh_group_layouts[0];
         morph_descriptor.entryCount = morph_entries.size();
         morph_descriptor.entries = morph_entries.data();
         bindings.morph =
             wgpuDeviceCreateBindGroup(state.device, &morph_descriptor);
-        wgpuBindGroupLayoutRelease(morph_layout);
     }
 #endif
 
@@ -1884,35 +2105,30 @@ DawnMeshBindings& bindings_for(
             : state.clamp_sampler,
     };
     // The transmission trio and material-extension pairs append after
-    // the base six; only the PBR fragment declares them, so standard
-    // pipelines keep six pairs. Without an implemented scene-color
-    // grab, the scene-color slot binds the base color exactly like the
-    // SDL backend does when transmission is disabled at runtime.
-    // GridMaterial and the shader variants sample no textures; their
-    // group-2 layouts are empty.
-    const bool textureless = binding_traits.grid ||
-        binding_traits.card || binding_traits.cutout;
-    std::size_t pair = textureless ? 0 : 6;
-    if (!binding_traits.standard && !textureless) {
+    // the base six. The superset layout requires every pair for every
+    // kind; shaders that ignore a slot never sample it. Without an
+    // implemented scene-color grab, the scene-color slot binds the
+    // base color exactly like the SDL backend does when transmission
+    // is disabled at runtime.
+    std::size_t pair = 6;
 #if defined(BBLITE_RENDERER_TRANSMISSION)
-        views[pair] = mesh.views[0];
-        samplers[pair] = mesh.samplers[0];
-        ++pair;
-        views[pair] = mesh.views[5];
-        samplers[pair] = mesh.samplers[5];
-        ++pair;
-        views[pair] = mesh.views[6];
-        samplers[pair] = mesh.samplers[6];
-        ++pair;
+    views[pair] = mesh.views[0];
+    samplers[pair] = mesh.samplers[0];
+    ++pair;
+    views[pair] = mesh.views[5];
+    samplers[pair] = mesh.samplers[5];
+    ++pair;
+    views[pair] = mesh.views[6];
+    samplers[pair] = mesh.samplers[6];
+    ++pair;
 #endif
-        for (std::size_t slot = 0;
-             slot < material_extension_slots;
-             ++slot) {
-            views[pair] = mesh.views[material_extension_slot_base + slot];
-            samplers[pair] =
-                mesh.samplers[material_extension_slot_base + slot];
-            ++pair;
-        }
+    for (std::size_t slot = 0;
+         slot < material_extension_slots;
+         ++slot) {
+        views[pair] = mesh.views[material_extension_slot_base + slot];
+        samplers[pair] =
+            mesh.samplers[material_extension_slot_base + slot];
+        ++pair;
     }
     const std::uint32_t pair_count =
         static_cast<std::uint32_t>(pair);
@@ -1926,32 +2142,25 @@ DawnMeshBindings& bindings_for(
         texture_entries[slot * 2 + 1].binding = slot * 2 + 1;
         texture_entries[slot * 2 + 1].sampler = samplers[slot];
     }
-    WGPUBindGroupLayout texture_layout =
-        wgpuRenderPipelineGetBindGroupLayout(pipeline.pipeline, 2);
     WGPUBindGroupDescriptor texture_descriptor =
         WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    texture_descriptor.layout = texture_layout;
+    texture_descriptor.layout = state.mesh_group_layouts[2];
     texture_descriptor.entryCount = pair_count * 2;
     texture_descriptor.entries = texture_entries.data();
     bindings.textures =
         wgpuDeviceCreateBindGroup(state.device, &texture_descriptor);
-    wgpuBindGroupLayoutRelease(texture_layout);
 
-    WGPUBindGroupLayout material_layout =
-        wgpuRenderPipelineGetBindGroupLayout(pipeline.pipeline, 3);
     WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
     material_entry.binding = 0;
     material_entry.buffer = mesh.material_uniforms;
     material_entry.size = mesh.material_uniform_size;
     WGPUBindGroupDescriptor material_descriptor =
         WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    material_descriptor.layout = material_layout;
-    // The circular cutout fragment declares no uniforms at all.
-    material_descriptor.entryCount = binding_traits.cutout ? 0 : 1;
+    material_descriptor.layout = state.mesh_group_layouts[3];
+    material_descriptor.entryCount = 1;
     material_descriptor.entries = &material_entry;
     bindings.material =
         wgpuDeviceCreateBindGroup(state.device, &material_descriptor);
-    wgpuBindGroupLayoutRelease(material_layout);
 
     return mesh.bindings.emplace(kind, bindings).first->second;
 }
@@ -2001,10 +2210,6 @@ bool run_dawn_engine(Engine& engine) {
                 "Scene frame task handle is invalid.");
         }
         const FrameTaskRecord& task = engine.frame_tasks[handle.value];
-        if (task.kind == FrameTaskKind::geometry) {
-            dawn_error(
-                "frame-graph geometry tasks are not implemented yet.");
-        }
         if (
             task.kind == FrameTaskKind::render &&
             task.render.has_camera &&
@@ -2141,14 +2346,53 @@ bool run_dawn_engine(Engine& engine) {
     }
     device_descriptor.requiredFeatureCount = device_feature_count;
     device_descriptor.requiredFeatures = device_features.data();
+    WGPULimits required_limits = WGPU_LIMITS_INIT;
+    bool needs_limits = false;
 #if BBLITE_GPU_INSTANCING
     // The SDL-specialized WGSL feeds per-instance matrix columns at
     // locations 16-19; the WebGPU default caps attribute locations
     // below 16, so raise the device limit to cover location 19.
-    WGPULimits required_limits = WGPU_LIMITS_INIT;
     required_limits.maxVertexAttributes = 20;
-    device_descriptor.requiredLimits = &required_limits;
+    needs_limits = true;
 #endif
+    // Geometry MRT chains can exceed the default 32-byte color budget;
+    // the entry's erased requiredLimits option is derived here from
+    // the task records with the WebGPU render-target byte costs
+    // (rgba8/bgra8/rgba16f cost 8, r32f 4, r16f 2).
+    {
+        std::uint32_t color_bytes_per_sample = 0;
+        for (const FrameTaskRecord& task : engine.frame_tasks) {
+            if (task.kind != FrameTaskKind::geometry) continue;
+            std::uint32_t total = 0;
+            for (const GeometryTextureDescription& description :
+                 task.geometry.attachments) {
+                switch (geometry_texture_format(description)) {
+                    case WGPUTextureFormat_R16Float:
+                        total += 2;
+                        break;
+                    case WGPUTextureFormat_R32Float:
+                        total += 4;
+                        break;
+                    default:
+                        total += 8;
+                        break;
+                }
+            }
+            if (task.geometry.target.value != invalid_handle) {
+                total += 8;
+            }
+            color_bytes_per_sample =
+                std::max(color_bytes_per_sample, total);
+        }
+        if (color_bytes_per_sample > 32) {
+            required_limits.maxColorAttachmentBytesPerSample =
+                color_bytes_per_sample;
+            needs_limits = true;
+        }
+    }
+    if (needs_limits) {
+        device_descriptor.requiredLimits = &required_limits;
+    }
     device_descriptor.uncapturedErrorCallbackInfo.callback =
         [](
             WGPUDevice const*,
@@ -2669,17 +2913,23 @@ bool run_dawn_engine(Engine& engine) {
     state.render_tasks.resize(engine.frame_tasks.size());
     for (const TaskHandle handle : scene.tasks) {
         const FrameTaskRecord& task = engine.frame_tasks[handle.value];
-        if (task.kind != FrameTaskKind::render) continue;
+        if (
+            task.kind != FrameTaskKind::render &&
+            task.kind != FrameTaskKind::geometry) {
+            continue;
+        }
         DawnRenderTask& render_task = state.render_tasks[handle.value];
         render_task.draw_lists = upstream::build_render_task_draw_lists(
             render_plan.items,
             engine,
             task);
-        render_task.view_projection = create_buffer(
-            state,
-            WGPUBufferUsage_Uniform,
-            nullptr,
-            64);
+        if (task.kind == FrameTaskKind::render) {
+            render_task.view_projection = create_buffer(
+                state,
+                WGPUBufferUsage_Uniform,
+                nullptr,
+                64);
+        }
     }
     };
     rebuild_meshes();
@@ -3374,6 +3624,14 @@ bool run_dawn_engine(Engine& engine) {
             for (const TaskHandle handle : scene.tasks) {
                 const FrameTaskRecord& task =
                     engine.frame_tasks[handle.value];
+                if (task.kind == FrameTaskKind::geometry) {
+                    upstream::sort_transparent_draws(
+                        state.render_tasks[handle.value]
+                            .draw_lists.transparent,
+                        engine,
+                        camera);
+                    continue;
+                }
                 if (task.kind != FrameTaskKind::render) continue;
                 DawnRenderTask& render_task =
                     state.render_tasks[handle.value];
@@ -3590,23 +3848,17 @@ bool run_dawn_engine(Engine& engine) {
         } else {
         // Frame-graph execution replaces the main pass entirely,
         // mirroring the SDL task loop.
-        const auto source_texture_view =
-            [&](const RenderTextureRef& reference)
+        const auto render_target_texture =
+            [&](RenderTargetHandle target_handle)
             -> std::pair<WGPUTexture, WGPUTextureView> {
-            if (
-                reference.source !=
-                RenderTextureSource::render_target) {
-                dawn_error(
-                    "geometry task sources are not implemented yet.");
-            }
-            if (reference.target.value >= state.render_targets.size()) {
+            if (target_handle.value >= state.render_targets.size()) {
                 throw std::runtime_error(
                     "Frame graph render target handle is invalid.");
             }
             const RenderTargetRecord& record =
-                engine.render_targets[reference.target.value];
+                engine.render_targets[target_handle.value];
             DawnRenderTarget& target =
-                state.render_targets[reference.target.value];
+                state.render_targets[target_handle.value];
             if (!record.has_color) {
                 if (record.has_depth && target.depth_copy) {
                     return {target.depth_copy, target.depth_copy_view};
@@ -3615,6 +3867,52 @@ bool run_dawn_engine(Engine& engine) {
                     "Depth-only render target has no color texture.");
             }
             return {target.sampled_color, target.sampled_color_view};
+        };
+        const auto source_texture_view =
+            [&](const RenderTextureRef& reference)
+            -> std::pair<WGPUTexture, WGPUTextureView> {
+            if (
+                reference.source ==
+                RenderTextureSource::render_target) {
+                return render_target_texture(reference.target);
+            }
+            if (reference.task.value >= engine.frame_tasks.size()) {
+                throw std::runtime_error(
+                    "Frame graph source task handle is invalid.");
+            }
+            const FrameTaskRecord& source_task =
+                engine.frame_tasks[reference.task.value];
+            if (source_task.kind != FrameTaskKind::geometry) {
+                throw std::runtime_error(
+                    "Frame graph source task is not geometry.");
+            }
+            if (
+                reference.source ==
+                RenderTextureSource::geometry_output) {
+                return render_target_texture(
+                    source_task.geometry.target);
+            }
+            const auto found = std::find_if(
+                source_task.geometry.attachments.begin(),
+                source_task.geometry.attachments.end(),
+                [&](const GeometryTextureDescription& description) {
+                    return description.type == reference.geometry_type;
+                });
+            if (found == source_task.geometry.attachments.end()) {
+                throw std::runtime_error(
+                    "Geometry source attachment was not requested.");
+            }
+            const std::size_t attachment_index =
+                static_cast<std::size_t>(
+                    std::distance(
+                        source_task.geometry.attachments.begin(),
+                        found));
+            DawnGeometryTask& geometry =
+                state.geometry_tasks[reference.task.value];
+            return {
+                geometry.sampled_colors[attachment_index],
+                geometry.sampled_views[attachment_index],
+            };
         };
         for (const TaskHandle handle : scene.tasks) {
             const FrameTaskRecord& task =
@@ -3830,6 +4128,155 @@ bool run_dawn_engine(Engine& engine) {
                     render_task.draw_lists.transparent,
                     samples,
                     bound_pipeline);
+                wgpuRenderPassEncoderEnd(task_pass);
+                wgpuRenderPassEncoderRelease(task_pass);
+                continue;
+            }
+            if (task.kind == FrameTaskKind::geometry) {
+                DawnGeometryTask& geometry =
+                    state.geometry_tasks[handle.value];
+                DawnRenderTask& render_task =
+                    state.render_tasks[handle.value];
+                const std::uint32_t samples =
+                    task_sample_count(task.geometry.samples);
+                std::vector<WGPURenderPassColorAttachment>
+                    color_attachments;
+                color_attachments.reserve(
+                    task.geometry.attachments.size() + 1);
+                for (
+                    std::size_t index = 0;
+                    index < task.geometry.attachments.size();
+                    ++index) {
+                    WGPURenderPassColorAttachment attachment =
+                        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+                    attachment.view = geometry.color_views[index];
+                    attachment.loadOp = WGPULoadOp_Clear;
+                    attachment.clearValue = geometry_clear_color(
+                        task.geometry.attachments[index].type);
+                    if (samples == 1) {
+                        attachment.storeOp = WGPUStoreOp_Store;
+                    } else {
+                        attachment.storeOp = WGPUStoreOp_Discard;
+                        attachment.resolveTarget =
+                            geometry.sampled_views[index];
+                    }
+                    color_attachments.push_back(attachment);
+                }
+                if (task.geometry.target.value != invalid_handle) {
+                    DawnRenderTarget& output_target =
+                        state.render_targets[
+                            task.geometry.target.value];
+                    WGPURenderPassColorAttachment attachment =
+                        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+                    attachment.view = output_target.color_view;
+                    attachment.loadOp = task.geometry.clear_target
+                        ? WGPULoadOp_Clear
+                        : WGPULoadOp_Load;
+                    attachment.clearValue = WGPUColor{
+                        task.geometry.target_clear_color.r,
+                        task.geometry.target_clear_color.g,
+                        task.geometry.target_clear_color.b,
+                        task.geometry.target_clear_color.a,
+                    };
+                    if (samples == 1) {
+                        attachment.storeOp = WGPUStoreOp_Store;
+                    } else {
+                        attachment.storeOp = WGPUStoreOp_Discard;
+                        attachment.resolveTarget =
+                            output_target.sampled_color_view;
+                    }
+                    color_attachments.push_back(attachment);
+                }
+                WGPURenderPassDepthStencilAttachment depth_attachment{};
+                depth_attachment.view = geometry.depth_view;
+                depth_attachment.depthLoadOp = WGPULoadOp_Clear;
+                depth_attachment.depthClearValue = 1.0f;
+                depth_attachment.depthStoreOp = WGPUStoreOp_Discard;
+                depth_attachment.stencilLoadOp = WGPULoadOp_Clear;
+                depth_attachment.stencilStoreOp = WGPUStoreOp_Discard;
+                WGPURenderPassDescriptor pass_descriptor =
+                    WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+                pass_descriptor.colorAttachmentCount =
+                    color_attachments.size();
+                pass_descriptor.colorAttachments =
+                    color_attachments.data();
+                pass_descriptor.depthStencilAttachment =
+                    &depth_attachment;
+                WGPURenderPassEncoder task_pass =
+                    wgpuCommandEncoderBeginRenderPass(
+                        encoder,
+                        &pass_descriptor);
+                WGPURenderPipeline bound_pipeline = nullptr;
+                const auto draw_geometry_list =
+                    [&](const upstream::RenderDrawList& list) {
+                        for (const upstream::RenderDrawCommand& draw :
+                             list.commands) {
+                            if (
+                                draw.item_index >=
+                                state.meshes.size()) {
+                                continue;
+                            }
+                            DawnMesh& mesh =
+                                state.meshes[draw.item_index];
+                            WGPURenderPipeline pipeline =
+                                geometry_pipeline_for(
+                                    state,
+                                    handle.value,
+                                    task,
+                                    draw.pipeline);
+                            DawnMeshBindings& bindings = bindings_for(
+                                state,
+                                mesh,
+                                draw.pipeline);
+                            if (pipeline != bound_pipeline) {
+                                wgpuRenderPassEncoderSetPipeline(
+                                    task_pass,
+                                    pipeline);
+                                bound_pipeline = pipeline;
+                            }
+                            wgpuRenderPassEncoderSetBindGroup(
+                                task_pass, 1, bindings.scene, 0,
+                                nullptr);
+                            wgpuRenderPassEncoderSetBindGroup(
+                                task_pass, 2, bindings.textures, 0,
+                                nullptr);
+                            wgpuRenderPassEncoderSetBindGroup(
+                                task_pass, 3, bindings.material, 0,
+                                nullptr);
+#if BBLITE_GPU_MORPH_STORAGE
+                            wgpuRenderPassEncoderSetBindGroup(
+                                task_pass, 0, bindings.morph, 0,
+                                nullptr);
+#endif
+                            wgpuRenderPassEncoderSetVertexBuffer(
+                                task_pass, 0, mesh.vertices, 0,
+                                WGPU_WHOLE_SIZE);
+#if BBLITE_GPU_INSTANCING
+                            wgpuRenderPassEncoderSetVertexBuffer(
+                                task_pass, 1, mesh.instances, 0,
+                                WGPU_WHOLE_SIZE);
+#endif
+                            wgpuRenderPassEncoderSetIndexBuffer(
+                                task_pass,
+                                mesh.indices,
+                                WGPUIndexFormat_Uint32,
+                                0,
+                                WGPU_WHOLE_SIZE);
+                            wgpuRenderPassEncoderDrawIndexed(
+                                task_pass,
+                                mesh.index_count,
+#if BBLITE_GPU_INSTANCING
+                                mesh.instance_count,
+#else
+                                1,
+#endif
+                                0,
+                                0,
+                                0);
+                        }
+                    };
+                draw_geometry_list(render_task.draw_lists.opaque);
+                draw_geometry_list(render_task.draw_lists.transparent);
                 wgpuRenderPassEncoderEnd(task_pass);
                 wgpuRenderPassEncoderRelease(task_pass);
                 continue;

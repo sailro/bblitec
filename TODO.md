@@ -20,19 +20,18 @@ reference. Staged migration; SDL_GPU stays the default until Dawn parity
 is a strict superset. The SDL_Renderer CPU fallback is out of scope.
 
 Progress, verified findings, ported pinned contracts, and the ordered
-remaining work live in [migration](docs/migration.md). All 39
-Dawn-capable scenes (37 curated plus two project gates) pass a full
-sequential re-validation at values equal to or better than SDL_GPU,
-thirteen of them bit-exact; material extensions,
-deformation/instancing/storage-morph, GridMaterial, shader variants,
-and runtime mesh appends are ported. The formerly recorded scene
-248/249 offsets were stale shader/build pairings, resolved by
-reprocessing.
+remaining work live in [migration](docs/migration.md). All 42
+Dawn-capable scenes (40 curated plus two project gates) pass at
+values equal to or better than SDL_GPU, fourteen of them bit-exact;
+material extensions, deformation/instancing/storage-morph,
+GridMaterial, shader variants, runtime mesh appends, and the frame
+graph (render, depth-only, geometry-MRT, and copy tasks) are ported.
+The formerly recorded scene 248/249 offsets were stale shader/build
+pairings, resolved by reprocessing.
 
-- [ ] Frame graph (scenes 116, 145, 146), then transmission with
-  per-sample image processing plus the re-enabled pinned dither
-  (scenes 33, 176, 212 and the transmission project gates),
-  then diagnostics — see the ordered list in
+- [ ] Transmission with per-sample image processing plus the
+  re-enabled pinned dither (scenes 33, 176, 212 and the transmission
+  project gates), then diagnostics — see the ordered list in
   [migration](docs/migration.md).
 - [ ] Threshold review and the SDL_GPU retirement decision; retire the
   DXC/normalization/shader-cache machinery once Dawn parity is a
