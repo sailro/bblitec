@@ -1,12 +1,20 @@
 param(
     [string]$Workspace = ".cache\tint",
-    [string]$OutputDirectory = "artifacts\tools\dawn",
+    [string]$OutputDirectory = "artifacts\tools\dawn-min",
     [string]$CMake = $env:CMAKE_COMMAND
 )
 
-# Builds the pinned Dawn native (WebGPU) runtime library from the same
-# commit as the pinned Tint CLI, so native rendering and shader
-# compilation share one upstream provenance.
+# Builds a minimal-footprint variant of the pinned Dawn library for
+# size-optimized release packages: monolithic STATIC library folded
+# into the executable, D3D12 only, MinSizeRel, static MSVC runtime,
+# and no built DXC. Without DAWN_USE_BUILT_DXC Dawn force-disables the
+# use_dxc toggle and compiles through FXC (d3dcompiler_47.dll), which
+# it resolves from the executable directory or System32 - so the
+# package ships no compiler DLLs at all. Parity note: FXC instead of
+# DXC carries the documented ~1 LSB deltas on lit surfaces
+# (docs/backends.md, "Shader compiler identity is the parity
+# linchpin"); the differential-gate library remains
+# tools/build-dawn.ps1.
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -18,7 +26,7 @@ $workspacePath = if ([System.IO.Path]::IsPathRooted($Workspace)) {
     Join-Path $root $Workspace
 }
 $source = Join-Path $workspacePath "dawn"
-$build = Join-Path $workspacePath "build-dawn"
+$build = Join-Path $workspacePath "build-dawn-min"
 $output = Join-Path $root $OutputDirectory
 
 if (-not $CMake) {
@@ -51,12 +59,15 @@ if ($head -ne $pin.commit) {
 }
 
 & $CMake -S $source -B $build `
-    -DCMAKE_BUILD_TYPE=Release `
+    -DCMAKE_BUILD_TYPE=MinSizeRel `
     "-DCMAKE_INSTALL_PREFIX=$output" `
+    '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>' `
+    -DABSL_MSVC_STATIC_RUNTIME=ON `
+    '-DCMAKE_CXX_FLAGS_MINSIZEREL=/O1 /Ob1 /DNDEBUG /Gw /Zc:inline' `
+    '-DCMAKE_C_FLAGS_MINSIZEREL=/O1 /Ob1 /DNDEBUG /Gw' `
     -DDAWN_FETCH_DEPENDENCIES=ON `
     -DDAWN_ENABLE_INSTALL=ON `
-    -DDAWN_BUILD_MONOLITHIC_LIBRARY=SHARED `
-    -DDAWN_USE_BUILT_DXC=ON `
+    -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC `
     -DDAWN_ENABLE_D3D11=OFF `
     -DDAWN_ENABLE_D3D12=ON `
     -DDAWN_ENABLE_VULKAN=OFF `
@@ -72,54 +83,36 @@ if ($head -ne $pin.commit) {
     -DTINT_BUILD_TESTS=OFF `
     -DTINT_BUILD_BENCHMARKS=OFF `
     -DTINT_BUILD_CMD_TOOLS=OFF `
-    -DTINT_BUILD_IR_BINARY=OFF
+    -DTINT_BUILD_IR_BINARY=OFF `
+    -DTINT_BUILD_GLSL_VALIDATOR=OFF
 if ($LASTEXITCODE -ne 0) {
-    throw "Dawn CMake configuration failed."
+    throw "Dawn minimal CMake configuration failed."
 }
 
 & $CMake --build $build `
-    --target webgpu_dawn --target dxcompiler `
-    --config Release `
+    --target webgpu_dawn `
+    --config MinSizeRel `
     --parallel
 if ($LASTEXITCODE -ne 0) {
-    throw "Dawn build failed."
+    throw "Dawn minimal build failed."
 }
 
-& $CMake --install $build --config Release
+& $CMake --install $build --config MinSizeRel
 if ($LASTEXITCODE -ne 0) {
-    throw "Dawn install failed."
+    throw "Dawn minimal install failed."
 }
 
-# Deploy Dawn's own-built DXC beside the module: with
-# DAWN_USE_BUILT_DXC the D3D12 backend loads this exact dxcompiler.dll
-# (version-matched to the pin) instead of FXC when use_dxc is enabled.
-$builtDxc = Get-ChildItem -Recurse (Join-Path $build "third_party") `
-    -Filter "dxcompiler.dll" -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -match "Release" } |
-    Select-Object -First 1
-if (-not $builtDxc) {
-    $builtDxc = Get-ChildItem -Recurse $build -Filter "dxcompiler.dll" `
-        -ErrorAction SilentlyContinue | Select-Object -First 1
-}
-if (-not $builtDxc) {
-    throw "Dawn's built dxcompiler.dll was not found in the build tree."
-}
-Copy-Item $builtDxc.FullName (Join-Path $output "bin") -Force
-
-# FXC (d3dcompiler_47.dll) is intentionally not installed: it is only
-# reached when Dawn force-disables use_dxc on adapters below shader
-# model 6, and the PAL preloads it from the executable directory or
-# System32 at runtime.
-
-# Install the Dawn license beside the binaries so release packaging
-# can redistribute it without the source checkout.
+# Install the Dawn license beside the library so release packaging can
+# redistribute it without the source checkout (static linking still
+# requires the notice).
 Copy-Item (Join-Path $source "LICENSE") (Join-Path $output "LICENSE.txt") -Force
 
 @{
     repository = $pin.repository
     commit = $pin.commit
     license = $pin.license
+    variant = "monolithic-static, MinSizeRel, static CRT, D3D12 only, FXC (no built DXC)"
     builtAt = (Get-Date).ToUniversalTime().ToString("o")
 } | ConvertTo-Json | Set-Content (Join-Path $output "provenance.json")
 
-Write-Output "Built Dawn $($pin.commit) into $output."
+Write-Output "Built minimal Dawn $($pin.commit) into $output."

@@ -39,11 +39,16 @@ pwsh -File tools\build-dawn.ps1
 - Configuration: monolithic `webgpu_dawn` shared library, D3D12
   backend, `DAWN_USE_BUILT_DXC=ON`, targets `webgpu_dawn` **and**
   `dxcompiler`, installed to `artifacts/tools/dawn`.
-- Deployment: `webgpu_dawn.dll`, Dawn's built `dxcompiler.dll`,
-  `dxil.dll`, and the SDK `d3dcompiler_47.dll` (FXC fallback) must sit
-  beside the executable; Dawn resolves them module-relative with
-  hardened LoadLibraryEx flags, exactly as Chrome deploys them. The
-  native CMake `POST_BUILD` step copies all four.
+- Deployment: `webgpu_dawn.dll` and Dawn's built `dxcompiler.dll` and
+  `dxil.dll` must sit beside the executable; Dawn resolves them
+  module-relative with hardened LoadLibraryEx flags, exactly as Chrome
+  deploys them. The native CMake `POST_BUILD` step copies all three.
+  FXC (`d3dcompiler_47.dll`) is not deployed: it is reached only when
+  Dawn force-disables `use_dxc` on adapters below shader model 6, and
+  the PAL preloads it from the executable directory or System32 (Dawn's
+  own bare-name LoadLibraryEx fallback cannot reach System32 because
+  `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR` is invalid for relative names).
+  An SDK copy placed beside the executable still takes priority.
 
 The compiled backend set is the CMake `BBLITE_BACKEND` selection:
 `SDL_GPU`, `DAWN`, or `BOTH`. `scene-command` passes `BOTH` whenever

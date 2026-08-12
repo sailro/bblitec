@@ -28,6 +28,12 @@
 #include <SDL3_image/SDL_image.h>
 #include <webgpu/webgpu.h>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -3469,6 +3475,25 @@ bool run_dawn_engine(Engine& engine) {
         dawn_error(std::string("SDL_CreateWindow: ") + SDL_GetError());
     }
 
+#if defined(_WIN32)
+    // Every Dawn shape can reach FXC: builds without built DXC compile
+    // through it exclusively, and DXC builds fall back to it when Dawn
+    // force-disables use_dxc on adapters below shader model 6. Dawn
+    // resolves d3dcompiler_47.dll via absolute-path candidates (module
+    // and executable directories) and a final bare-name LoadLibraryEx
+    // whose LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR flag is invalid for
+    // relative names (ERROR_INVALID_PARAMETER), so with no compiler
+    // DLL beside the executable it never reaches System32. Preloading
+    // here makes Dawn's own load return the already-loaded module, so
+    // packages ship no FXC; the application directory keeps priority
+    // over System32, preserving the Chrome-style "ship the exact SDK
+    // compiler" override.
+    LoadLibraryExW(
+        L"d3dcompiler_47.dll",
+        nullptr,
+        LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+#endif
+
     static const WGPUInstanceFeatureName instance_features[] = {
         WGPUInstanceFeatureName_TimedWaitAny,
     };
@@ -3498,17 +3523,22 @@ bool run_dawn_engine(Engine& engine) {
         wgpuInstanceCreateSurface(state.instance, &surface_descriptor);
     if (!state.surface) dawn_error("wgpuInstanceCreateSurface failed.");
 
+    WGPURequestAdapterOptions adapter_options =
+        WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
+#if defined(BBLITE_DAWN_DXC) && BBLITE_DAWN_DXC
     // Chrome's Dawn compiles HLSL with DXC (dxcompiler.dll and
     // dxil.dll ship beside the browser); enable the same adapter
     // toggle so native shader codegen matches the reference captures.
+    // Libraries built without DAWN_USE_BUILT_DXC force-ignore the
+    // toggle with a console warning, so FXC-only builds skip the
+    // request entirely.
     static const char* adapter_toggles[] = {"use_dxc"};
     WGPUDawnTogglesDescriptor toggles = WGPU_DAWN_TOGGLES_DESCRIPTOR_INIT;
     toggles.chain.sType = WGPUSType_DawnTogglesDescriptor;
     toggles.enabledToggleCount = 1;
     toggles.enabledToggles = adapter_toggles;
-    WGPURequestAdapterOptions adapter_options =
-        WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
     adapter_options.nextInChain = &toggles.chain;
+#endif
     adapter_options.powerPreference = WGPUPowerPreference_HighPerformance;
     adapter_options.backendType = WGPUBackendType_D3D12;
     adapter_options.compatibleSurface = state.surface;
@@ -3618,6 +3648,28 @@ bool run_dawn_engine(Engine& engine) {
             if (error->empty()) *error = view_text(message);
         };
     device_descriptor.uncapturedErrorCallbackInfo.userdata1 =
+        &state.uncaptured_error;
+    // An explicit device-lost callback keeps Dawn from warning at
+    // device creation that none was set. Destroyed is the expected
+    // teardown transition; any other reason funnels into the same
+    // first-error capture the uncaptured-error callback uses and is
+    // thrown at frame end.
+    device_descriptor.deviceLostCallbackInfo.mode =
+        WGPUCallbackMode_AllowSpontaneous;
+    device_descriptor.deviceLostCallbackInfo.callback =
+        [](
+            WGPUDevice const*,
+            WGPUDeviceLostReason reason,
+            WGPUStringView message,
+            void* userdata1,
+            void*) {
+            if (reason == WGPUDeviceLostReason_Destroyed) return;
+            auto* error = static_cast<std::string*>(userdata1);
+            if (error->empty()) {
+                *error = "device lost: " + view_text(message);
+            }
+        };
+    device_descriptor.deviceLostCallbackInfo.userdata1 =
         &state.uncaptured_error;
     WGPURequestDeviceCallbackInfo device_callback =
         WGPU_REQUEST_DEVICE_CALLBACK_INFO_INIT;

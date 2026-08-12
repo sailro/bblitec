@@ -30,6 +30,27 @@ set(
     CACHE STRING
     "Native GPU render backend set: SDL_GPU, DAWN, or BOTH"
 )
+
+# Minimal-size release shape: whole-program optimization and
+# dead-stripping for the executable. Pair with the vcpkg
+# x64-windows-static triplet (static SDL/image/CRT) and, for Dawn,
+# BBLITE_DAWN_DIR pointing at a tools/build-dawn-min.ps1 install so
+# the whole payload folds into one executable.
+option(
+    BBLITE_MINSIZE
+    "Optimize the executable for minimal size (LTCG, dead-stripping)"
+    OFF
+)
+
+# Installed pinned Dawn package root. The default is the differential-
+# gate library (tools/build-dawn.ps1, shared + built DXC); minimal
+# builds point this at artifacts/tools/dawn-min.
+set(
+    BBLITE_DAWN_DIR
+    "${BBLITE_NATIVE_ROOT}/../artifacts/tools/dawn"
+    CACHE PATH
+    "Installed pinned Dawn library root"
+)
 set_property(
     CACHE BBLITE_BACKEND
     PROPERTY STRINGS "SDL_GPU" "DAWN" "BOTH"
@@ -163,8 +184,23 @@ endif()
 if(BBLITE_BACKEND_DAWN)
     find_package(
         Dawn CONFIG REQUIRED
-        PATHS "${BBLITE_NATIVE_ROOT}/../artifacts/tools/dawn/lib/cmake/Dawn"
+        PATHS "${BBLITE_DAWN_DIR}/lib/cmake/Dawn"
         NO_DEFAULT_PATH
+    )
+    # The static monolithic Dawn export references Threads::Threads,
+    # which DawnConfig.cmake does not resolve itself.
+    find_package(Threads REQUIRED)
+    # Installed Dawn packages carry a single configuration (Release for
+    # the shared differential-gate library, MinSizeRel for the minimal
+    # static one); map every consumer configuration onto whichever
+    # exists so multi-config generators can generate all of them.
+    set_target_properties(
+        dawn::webgpu_dawn
+        PROPERTIES
+        MAP_IMPORTED_CONFIG_RELEASE "Release;MinSizeRel;RelWithDebInfo"
+        MAP_IMPORTED_CONFIG_RELWITHDEBINFO "RelWithDebInfo;Release;MinSizeRel"
+        MAP_IMPORTED_CONFIG_MINSIZEREL "MinSizeRel;Release;RelWithDebInfo"
+        MAP_IMPORTED_CONFIG_DEBUG "Debug;Release;MinSizeRel;RelWithDebInfo"
     )
     target_sources(
         bblite_native
@@ -172,20 +208,35 @@ if(BBLITE_BACKEND_DAWN)
     )
     target_link_libraries(bblite_native PRIVATE dawn::webgpu_dawn)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=1)
-    # Dawn's hardened DLL search resolves FXC (d3dcompiler_47.dll)
-    # relative to the loaded module, matching how Chrome deploys the
-    # SDK compiler beside chrome.dll.
-    add_custom_command(
-        TARGET bblite_native POST_BUILD
-        COMMAND
-            "${CMAKE_COMMAND}" -E copy_if_different
-            "$<TARGET_FILE:dawn::webgpu_dawn>"
-            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/d3dcompiler_47.dll"
-            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxcompiler.dll"
-            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxil.dll"
-            "$<TARGET_FILE_DIR:bblite_native>"
-        VERBATIM
-    )
+    get_target_property(BBLITE_DAWN_LIBRARY_TYPE dawn::webgpu_dawn TYPE)
+    if(BBLITE_DAWN_LIBRARY_TYPE STREQUAL "SHARED_LIBRARY")
+        # Dawn resolves its built DXC DLLs relative to the loaded
+        # module, matching how Chrome deploys them beside chrome.dll.
+        # FXC (d3dcompiler_47.dll) is not deployed: the PAL preloads it
+        # from the executable directory or System32, so only an
+        # intentionally placed SDK copy ever ships. A static Dawn
+        # deploys no DLLs at all.
+        add_custom_command(
+            TARGET bblite_native POST_BUILD
+            COMMAND
+                "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_FILE:dawn::webgpu_dawn>"
+                "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxcompiler.dll"
+                "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxil.dll"
+                "$<TARGET_FILE_DIR:bblite_native>"
+            VERBATIM
+        )
+    endif()
+    # Whether the installed Dawn carries its built DXC
+    # (tools/build-dawn.ps1 deploys dxcompiler.dll into bin; the
+    # minimal FXC-only install has no bin at all). An FXC-only library
+    # force-ignores the use_dxc toggle with a console warning, so the
+    # request is only worth making when DXC is actually present.
+    if(EXISTS "${BBLITE_DAWN_DIR}/bin/dxcompiler.dll")
+        target_compile_definitions(bblite_native PRIVATE BBLITE_DAWN_DXC=1)
+    else()
+        target_compile_definitions(bblite_native PRIVATE BBLITE_DAWN_DXC=0)
+    endif()
 else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=0)
 endif()
@@ -237,6 +288,22 @@ if(MSVC)
     target_compile_options(bblite_native PRIVATE /W4 /permissive- /EHsc)
 else()
     target_compile_options(bblite_native PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(BBLITE_MINSIZE)
+    if(MSVC)
+        target_compile_options(bblite_native PRIVATE /GL /Gw /Zc:inline)
+        target_link_options(
+            bblite_native
+            PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO
+        )
+    else()
+        target_compile_options(
+            bblite_native
+            PRIVATE -ffunction-sections -fdata-sections
+        )
+        target_link_options(bblite_native PRIVATE -Wl,--gc-sections)
+    endif()
 endif()
 
 message(STATUS "Babylon Lite native features: ${BBLITE_RUNTIME_FEATURES}")
