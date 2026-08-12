@@ -112,6 +112,9 @@ struct DawnMesh {
     // Standard-material `.babylon` reflection cube view, non-owning
     // (points into DawnState::reflection_cube_views).
     WGPUTextureView reflection = nullptr;
+    // Alpha-card shader vertex uniforms (center/angle/depth).
+    WGPUBuffer shader_vertex_uniforms = nullptr;
+    std::uint64_t transform_version = 0;
 #if BBLITE_GPU_DEFORMATION
     WGPUBuffer deformation_uniforms = nullptr;
 #endif
@@ -150,6 +153,12 @@ struct DawnState {
     WGPUShaderModule vertex_module = nullptr;
     WGPUShaderModule standard_module = nullptr;
     WGPUShaderModule pbr_module = nullptr;
+    WGPUShaderModule grid_vertex_module = nullptr;
+    WGPUShaderModule grid_fragment_module = nullptr;
+    WGPUShaderModule card_vertex_module = nullptr;
+    WGPUShaderModule card_fragment_module = nullptr;
+    WGPUShaderModule cutout_vertex_module = nullptr;
+    WGPUShaderModule cutout_fragment_module = nullptr;
     WGPUBuffer view_projection = nullptr;
     WGPUTexture white_texture = nullptr;
     WGPUTextureView white_view = nullptr;
@@ -202,12 +211,9 @@ struct DawnState {
     std::vector<DawnMesh> meshes;
     std::string uncaptured_error;
 
-    ~DawnState() {
-        for (auto& [format, pipeline] : mip_pipelines) {
-            if (pipeline) wgpuRenderPipelineRelease(pipeline);
-        }
-        if (mip_sampler) wgpuSamplerRelease(mip_sampler);
-        if (mip_module) wgpuShaderModuleRelease(mip_module);
+    // Runtime scene mutation rebuilds the mesh set; the GPU must be
+    // idle before release (the frame loop waits on submitted work).
+    void release_meshes() {
         for (DawnMesh& mesh : meshes) {
             for (std::size_t slot = 0;
                  slot < mesh_texture_slots;
@@ -237,6 +243,9 @@ struct DawnState {
             if (mesh.material_uniforms) {
                 wgpuBufferRelease(mesh.material_uniforms);
             }
+            if (mesh.shader_vertex_uniforms) {
+                wgpuBufferRelease(mesh.shader_vertex_uniforms);
+            }
 #if BBLITE_GPU_DEFORMATION
             if (mesh.deformation_uniforms) {
                 wgpuBufferRelease(mesh.deformation_uniforms);
@@ -261,6 +270,16 @@ struct DawnState {
             if (mesh.vertices) wgpuBufferRelease(mesh.vertices);
             if (mesh.indices) wgpuBufferRelease(mesh.indices);
         }
+        meshes.clear();
+    }
+
+    ~DawnState() {
+        for (auto& [format, pipeline] : mip_pipelines) {
+            if (pipeline) wgpuRenderPipelineRelease(pipeline);
+        }
+        if (mip_sampler) wgpuSamplerRelease(mip_sampler);
+        if (mip_module) wgpuShaderModuleRelease(mip_module);
+        release_meshes();
 #if BBLITE_GPU_MORPH_STORAGE
         if (empty_morph_weights) {
             wgpuBufferRelease(empty_morph_weights);
@@ -319,6 +338,24 @@ struct DawnState {
         if (white_view) wgpuTextureViewRelease(white_view);
         if (white_texture) wgpuTextureRelease(white_texture);
         if (view_projection) wgpuBufferRelease(view_projection);
+        if (cutout_fragment_module) {
+            wgpuShaderModuleRelease(cutout_fragment_module);
+        }
+        if (cutout_vertex_module) {
+            wgpuShaderModuleRelease(cutout_vertex_module);
+        }
+        if (card_fragment_module) {
+            wgpuShaderModuleRelease(card_fragment_module);
+        }
+        if (card_vertex_module) {
+            wgpuShaderModuleRelease(card_vertex_module);
+        }
+        if (grid_fragment_module) {
+            wgpuShaderModuleRelease(grid_fragment_module);
+        }
+        if (grid_vertex_module) {
+            wgpuShaderModuleRelease(grid_vertex_module);
+        }
         if (pbr_module) wgpuShaderModuleRelease(pbr_module);
         if (standard_module) wgpuShaderModuleRelease(standard_module);
         if (vertex_module) wgpuShaderModuleRelease(vertex_module);
@@ -972,6 +1009,10 @@ struct PipelineKindTraits {
     bool transparent = false;
     WGPUCullMode cull = WGPUCullMode_Back;
     WGPUFrontFace front = WGPUFrontFace_CCW;
+    bool grid = false;
+    bool card = false;
+    bool card_a2c = false;
+    bool cutout = false;
 };
 
 PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
@@ -997,6 +1038,43 @@ PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
             return {false, true, WGPUCullMode_None, WGPUFrontFace_CCW};
         case Kind::pbr_transparent_none_clockwise:
             return {false, true, WGPUCullMode_None, WGPUFrontFace_CW};
+        case Kind::grid_opaque_back:
+            return {
+                false, false, WGPUCullMode_Back, WGPUFrontFace_CCW,
+                true};
+        case Kind::grid_opaque_none:
+            return {
+                false, false, WGPUCullMode_None, WGPUFrontFace_CCW,
+                true};
+        case Kind::grid_transparent_back:
+            return {
+                false, true, WGPUCullMode_Back, WGPUFrontFace_CCW,
+                true};
+        case Kind::grid_transparent_none:
+            return {
+                false, true, WGPUCullMode_None, WGPUFrontFace_CCW,
+                true};
+        case Kind::shader_alpha_card: {
+            PipelineKindTraits traits;
+            traits.cull = WGPUCullMode_None;
+            traits.card = true;
+            return traits;
+        }
+        case Kind::shader_alpha_card_a2c: {
+            PipelineKindTraits traits;
+            traits.cull = WGPUCullMode_None;
+            traits.card = true;
+            traits.card_a2c = true;
+            return traits;
+        }
+        case Kind::shader_circular_cutout: {
+            // Blends like a transparent draw but keeps the opaque
+            // stage ordering: LESS_EQUAL depth without writes.
+            PipelineKindTraits traits;
+            traits.cull = WGPUCullMode_None;
+            traits.cutout = true;
+            return traits;
+        }
         default:
             dawn_error(
                 "render pipeline kind " +
@@ -1038,9 +1116,32 @@ DawnPipeline& pipeline_for(
     constexpr std::uint32_t vertex_buffer_count = 1;
 #endif
 
+    if (traits.grid && !state.grid_vertex_module) {
+        state.grid_vertex_module = load_wgsl_module(state, "grid.vert");
+        state.grid_fragment_module =
+            load_wgsl_module(state, "grid.frag");
+    }
+    if (traits.card && !state.card_vertex_module) {
+        state.card_vertex_module =
+            load_wgsl_module(state, "alpha-card.vert");
+        state.card_fragment_module =
+            load_wgsl_module(state, "alpha-card.frag");
+    }
+    if (traits.cutout && !state.cutout_vertex_module) {
+        state.cutout_vertex_module =
+            load_wgsl_module(state, "circular-cutout.vert");
+        state.cutout_fragment_module =
+            load_wgsl_module(state, "circular-cutout.frag");
+    }
     WGPURenderPipelineDescriptor descriptor =
         WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.vertex.module = state.vertex_module;
+    descriptor.vertex.module = traits.grid
+        ? state.grid_vertex_module
+        : traits.card
+            ? state.card_vertex_module
+            : traits.cutout
+                ? state.cutout_vertex_module
+                : state.vertex_module;
     descriptor.vertex.entryPoint = string_view("mainVertex");
     descriptor.vertex.bufferCount = vertex_buffer_count;
     descriptor.vertex.buffers = vertex_layouts.data();
@@ -1054,21 +1155,22 @@ DawnPipeline& pipeline_for(
         WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
     depth_stencil.depthWriteEnabled =
-        traits.transparent
+        traits.transparent || traits.cutout
             ? WGPUOptionalBool_False
             : WGPUOptionalBool_True;
-    depth_stencil.depthCompare = traits.transparent
+    depth_stencil.depthCompare = traits.transparent || traits.cutout
         ? WGPUCompareFunction_LessEqual
         : WGPUCompareFunction_Less;
     descriptor.depthStencil = &depth_stencil;
 
     descriptor.multisample.count = 4;
     descriptor.multisample.mask = ~0u;
+    descriptor.multisample.alphaToCoverageEnabled = traits.card_a2c;
 
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = state.surface_format;
     WGPUBlendState blend{};
-    if (traits.transparent) {
+    if (traits.transparent || traits.cutout) {
         blend.color.operation = WGPUBlendOperation_Add;
         blend.color.srcFactor = WGPUBlendFactor_SrcAlpha;
         blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
@@ -1078,7 +1180,13 @@ DawnPipeline& pipeline_for(
         color_target.blend = &blend;
     }
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = fragment_module_for(state, traits.standard);
+    fragment.module = traits.grid
+        ? state.grid_fragment_module
+        : traits.card
+            ? state.card_fragment_module
+            : traits.cutout
+                ? state.cutout_fragment_module
+                : fragment_module_for(state, traits.standard);
     fragment.entryPoint = string_view("mainFragment");
     fragment.targetCount = 1;
     fragment.targets = &color_target;
@@ -1101,29 +1209,48 @@ DawnMeshBindings& bindings_for(
     DawnPipeline& pipeline = pipeline_for(state, kind);
     DawnMeshBindings bindings;
 
+    const PipelineKindTraits binding_traits = pipeline_traits(kind);
+    // Only the standard/pbr vertex module declares the deformation and
+    // instancing uniforms; grid and shader-variant pipelines keep the
+    // single vertex uniform (the alpha card replaces the scene matrix
+    // with its own center/angle/depth block).
+    const bool mesh_vertex_uniforms = !binding_traits.grid &&
+        !binding_traits.card && !binding_traits.cutout;
     WGPUBindGroupLayout scene_layout =
         wgpuRenderPipelineGetBindGroupLayout(pipeline.pipeline, 1);
     std::array<WGPUBindGroupEntry, 3> scene_entries{};
     std::uint32_t scene_entry_count = 0;
     scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
     scene_entries[scene_entry_count].binding = 0;
-    scene_entries[scene_entry_count].buffer = state.view_projection;
-    scene_entries[scene_entry_count].size = 64;
+    if (binding_traits.card) {
+        scene_entries[scene_entry_count].buffer =
+            mesh.shader_vertex_uniforms;
+        scene_entries[scene_entry_count].size = 16;
+    } else {
+        scene_entries[scene_entry_count].buffer = state.view_projection;
+        scene_entries[scene_entry_count].size = 64;
+    }
     ++scene_entry_count;
 #if BBLITE_GPU_DEFORMATION
-    scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
-    scene_entries[scene_entry_count].binding = 1;
-    scene_entries[scene_entry_count].buffer = mesh.deformation_uniforms;
-    scene_entries[scene_entry_count].size =
-        sizeof(DeformationUniforms);
-    ++scene_entry_count;
+    if (mesh_vertex_uniforms) {
+        scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entries[scene_entry_count].binding = 1;
+        scene_entries[scene_entry_count].buffer =
+            mesh.deformation_uniforms;
+        scene_entries[scene_entry_count].size =
+            sizeof(DeformationUniforms);
+        ++scene_entry_count;
+    }
 #endif
 #if BBLITE_GPU_INSTANCING
-    scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
-    scene_entries[scene_entry_count].binding = instance_uniform_binding;
-    scene_entries[scene_entry_count].buffer = mesh.instance_uniform;
-    scene_entries[scene_entry_count].size = 64;
-    ++scene_entry_count;
+    if (mesh_vertex_uniforms) {
+        scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entries[scene_entry_count].binding =
+            instance_uniform_binding;
+        scene_entries[scene_entry_count].buffer = mesh.instance_uniform;
+        scene_entries[scene_entry_count].size = 64;
+        ++scene_entry_count;
+    }
 #endif
     WGPUBindGroupDescriptor scene_descriptor =
         WGPU_BIND_GROUP_DESCRIPTOR_INIT;
@@ -1162,7 +1289,6 @@ DawnMeshBindings& bindings_for(
     // base color, specular, opacity, ambient, reflection cube,
     // standard emissive. PBR: base color, metallic-roughness, normal,
     // emissive, environment cube, BRDF LUT.
-    const PipelineKindTraits binding_traits = pipeline_traits(kind);
     constexpr std::size_t max_texture_pairs =
         6 + transmission_texture_pairs + material_extension_slots;
     std::array<WGPUTextureView, max_texture_pairs> views{
@@ -1190,8 +1316,12 @@ DawnMeshBindings& bindings_for(
     // pipelines keep six pairs. Without an implemented scene-color
     // grab, the scene-color slot binds the base color exactly like the
     // SDL backend does when transmission is disabled at runtime.
-    std::size_t pair = 6;
-    if (!binding_traits.standard) {
+    // GridMaterial and the shader variants sample no textures; their
+    // group-2 layouts are empty.
+    const bool textureless = binding_traits.grid ||
+        binding_traits.card || binding_traits.cutout;
+    std::size_t pair = textureless ? 0 : 6;
+    if (!binding_traits.standard && !textureless) {
 #if defined(BBLITE_RENDERER_TRANSMISSION)
         views[pair] = mesh.views[0];
         samplers[pair] = mesh.samplers[0];
@@ -1244,7 +1374,8 @@ DawnMeshBindings& bindings_for(
     WGPUBindGroupDescriptor material_descriptor =
         WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     material_descriptor.layout = material_layout;
-    material_descriptor.entryCount = 1;
+    // The circular cutout fragment declares no uniforms at all.
+    material_descriptor.entryCount = binding_traits.cutout ? 0 : 1;
     material_descriptor.entries = &material_entry;
     bindings.material =
         wgpuDeviceCreateBindGroup(state.device, &material_descriptor);
@@ -1595,15 +1726,32 @@ bool run_dawn_engine(Engine& engine) {
         state.reflection_cube_views.push_back(cube_view(texture));
     }
 
-    upstream::RenderPlan render_plan =
-        upstream::build_render_plan(scene, engine);
+    upstream::RenderPlan render_plan;
+    std::uint64_t synced_mesh_membership_version =
+        scene.mesh_membership_version;
+    const auto rebuild_meshes = [&] {
+    render_plan = upstream::build_render_plan(scene, engine);
     for (const upstream::RenderItem& item : render_plan.items) {
         if (
+            item.material_kind ==
+            upstream::RenderMaterialKind::shader) {
+            if (
+                item.shader_variant !=
+                    ShaderMaterialVariant::alpha_card &&
+                item.shader_variant !=
+                    ShaderMaterialVariant::circular_cutout) {
+                dawn_error(
+                    "this shader material variant is not implemented "
+                    "yet.");
+            }
+        } else if (
             item.material_kind !=
                 upstream::RenderMaterialKind::standard &&
-            item.material_kind != upstream::RenderMaterialKind::pbr) {
+            item.material_kind != upstream::RenderMaterialKind::pbr &&
+            item.material_kind != upstream::RenderMaterialKind::grid) {
             dawn_error(
-                "only Standard and PBR materials are implemented yet.");
+                "only Standard, PBR, Grid, and shader-variant "
+                "materials are implemented yet.");
         }
         const ModelGeometry& geometry = engine.geometries[item.geometry];
         const MeshRecord& mesh_record = engine.meshes[item.mesh.value];
@@ -1747,7 +1895,13 @@ bool run_dawn_engine(Engine& engine) {
             ((item.material_kind ==
                       upstream::RenderMaterialKind::standard
                   ? sizeof(upstream::StandardUniforms)
-                  : sizeof(upstream::PbrUniforms)) +
+                  : item.material_kind ==
+                          upstream::RenderMaterialKind::grid
+                      ? sizeof(upstream::GridUniforms)
+                      : item.material_kind ==
+                              upstream::RenderMaterialKind::shader
+                          ? 16
+                          : sizeof(upstream::PbrUniforms)) +
              15) &
             ~15ull;
         mesh.material_uniforms = create_buffer(
@@ -1755,6 +1909,17 @@ bool run_dawn_engine(Engine& engine) {
             WGPUBufferUsage_Uniform,
             nullptr,
             mesh.material_uniform_size);
+        if (
+            item.material_kind ==
+            upstream::RenderMaterialKind::shader) {
+            mesh.shader_vertex_uniforms = create_buffer(
+                state,
+                WGPUBufferUsage_Uniform,
+                nullptr,
+                16);
+        }
+        mesh.transform_version =
+            mesh_record.transform_version;
 
         // Per-slot texture selection mirrors the SDL_GPU backend's
         // material remapping for the Standard and PBR families.
@@ -1892,6 +2057,8 @@ bool run_dawn_engine(Engine& engine) {
         }
         state.meshes.push_back(std::move(mesh));
     }
+    };
+    rebuild_meshes();
 
     if (use_skybox) {
         state.skybox_module =
@@ -2294,6 +2461,32 @@ bool run_dawn_engine(Engine& engine) {
         for (const auto& callback : scene.before_render) {
             callback(delta_ms);
         }
+        bool topology_updated = false;
+        if (
+            scene.mesh_membership_version !=
+            synced_mesh_membership_version) {
+            // Runtime mesh append: wait for the submitted work, then
+            // rebuild the mesh set from a fresh render plan. Capture
+            // defers past this frame exactly like the SDL backend.
+            WGPUQueueWorkDoneCallbackInfo done_callback =
+                WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
+            done_callback.mode = WGPUCallbackMode_WaitAnyOnly;
+            done_callback.callback = [](
+                                         WGPUQueueWorkDoneStatus,
+                                         WGPUStringView,
+                                         void*,
+                                         void*) {};
+            wait_for(
+                state.instance,
+                wgpuQueueOnSubmittedWorkDone(
+                    state.queue,
+                    done_callback));
+            state.release_meshes();
+            rebuild_meshes();
+            synced_mesh_membership_version =
+                scene.mesh_membership_version;
+            topology_updated = true;
+        }
         upstream::sort_transparent_draws(
             render_plan.draw_lists.transparent,
             engine,
@@ -2316,10 +2509,36 @@ bool run_dawn_engine(Engine& engine) {
                     DawnMesh& draw_mesh = state.meshes[draw.item_index];
                     const MeshRecord& draw_record =
                         engine.meshes[draw.item.mesh.value];
-                    (void)draw_mesh;
+                    const bool grid_draw =
+                        draw.item.material_kind ==
+                        upstream::RenderMaterialKind::grid;
+                    const bool shader_draw =
+                        draw.item.material_kind ==
+                        upstream::RenderMaterialKind::shader;
+                    // Grid and shader-variant vertex stages own no
+                    // deformation or instancing uniforms.
+                    const bool mesh_uniform_draw =
+                        !grid_draw && !shader_draw;
                     (void)draw_record;
+                    (void)mesh_uniform_draw;
+                    if (
+                        draw_mesh.transform_version !=
+                        draw_record.transform_version) {
+                        const std::vector<GpuVertex> vertices =
+                            transformed_vertices(
+                                engine.geometries[draw.item.geometry],
+                                draw_record);
+                        wgpuQueueWriteBuffer(
+                            state.queue,
+                            draw_mesh.vertices,
+                            0,
+                            vertices.data(),
+                            vertices.size() * sizeof(GpuVertex));
+                        draw_mesh.transform_version =
+                            draw_record.transform_version;
+                    }
 #if BBLITE_GPU_DEFORMATION
-                    {
+                    if (mesh_uniform_draw) {
                         const DeformationUniforms deformation =
                             build_deformation_uniforms(
                                 draw_record,
@@ -2334,12 +2553,14 @@ bool run_dawn_engine(Engine& engine) {
                     }
 #endif
 #if BBLITE_GPU_INSTANCING
-                    wgpuQueueWriteBuffer(
-                        state.queue,
-                        draw_mesh.instance_uniform,
-                        0,
-                        draw_record.instance_parent_matrix.data(),
-                        64);
+                    if (mesh_uniform_draw) {
+                        wgpuQueueWriteBuffer(
+                            state.queue,
+                            draw_mesh.instance_uniform,
+                            0,
+                            draw_record.instance_parent_matrix.data(),
+                            64);
+                    }
 #endif
 #if BBLITE_GPU_MORPH_STORAGE
                     if (
@@ -2387,6 +2608,54 @@ bool run_dawn_engine(Engine& engine) {
                             0,
                             &fragment,
                             sizeof(fragment));
+                    } else if (grid_draw) {
+                        const upstream::GridUniforms fragment =
+                            upstream::build_grid_uniforms(
+                                engine,
+                                draw.item);
+                        wgpuQueueWriteBuffer(
+                            state.queue,
+                            state.meshes[draw.item_index]
+                                .material_uniforms,
+                            0,
+                            &fragment,
+                            sizeof(fragment));
+                    } else if (shader_draw) {
+                        if (
+                            draw.item.shader_variant ==
+                                ShaderMaterialVariant::alpha_card &&
+                            draw.item.material.value <
+                                engine.materials.size()) {
+                            const MaterialRecord& material =
+                                engine.materials[
+                                    draw.item.material.value];
+                            const std::array<float, 4> vertex_block{
+                                material.shader_center.x,
+                                material.shader_center.y,
+                                material.shader_angle,
+                                material.shader_depth,
+                            };
+                            const std::array<float, 4> fragment_block{
+                                material.shader_color.r,
+                                material.shader_color.g,
+                                material.shader_color.b,
+                                material.shader_opacity,
+                            };
+                            wgpuQueueWriteBuffer(
+                                state.queue,
+                                draw_mesh.shader_vertex_uniforms,
+                                0,
+                                vertex_block.data(),
+                                sizeof(vertex_block));
+                            wgpuQueueWriteBuffer(
+                                state.queue,
+                                draw_mesh.material_uniforms,
+                                0,
+                                fragment_block.data(),
+                                sizeof(fragment_block));
+                        }
+                        // The circular cutout has no uniforms beyond
+                        // the shared scene matrix.
                     } else {
                         const upstream::PbrUniforms fragment =
                             upstream::build_pbr_uniforms(
@@ -2594,7 +2863,8 @@ bool run_dawn_engine(Engine& engine) {
         const bool capture_frame =
             frame >= screenshot_frame &&
             !screenshot_saved &&
-            !screenshot_path.empty();
+            !screenshot_path.empty() &&
+            !topology_updated;
         WGPUBuffer readback = nullptr;
         const std::uint32_t bytes_per_row = (width * 4 + 255) & ~255u;
         if (capture_frame) {

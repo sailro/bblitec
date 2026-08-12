@@ -11,15 +11,18 @@ SDL_Renderer CPU fallback is out of scope.
 
 ## Verified state
 
-Twenty-nine curated scenes render on Dawn at values equal to or better
-than SDL_GPU (see the Dawn column in [status](status.md)): scenes 2, 10,
-32, 246, and 259 are bit-exact (259 beats SDL_GPU, whose DXC-vs-browser
-rounding it eliminates), scene 1 (BoomBox) matches the SDL_GPU baseline
-at 0.001/0.015, scene 8 matches its baseline exactly at 0.129/0.134
-(the compiled-HDR environment path worked unmodified), the material
-extension scenes 28 (clearcoat), 29 (sheen), and 178 (iridescence)
-match their baselines exactly, the deformation family lands at its
-SDL_GPU values — 5 (0.001/0.020), 243 (0.046/1.043, the documented
+Thirty-three curated scenes render on Dawn at values equal to or
+better than SDL_GPU (see the Dawn column in [status](status.md)):
+scenes 2, 10, 32, 163, 246, 259, 273, and 274 are bit-exact (259 beats
+SDL_GPU, whose DXC-vs-browser rounding it eliminates; 163/273/274
+cover the alpha-card, circular-cutout, alpha-to-coverage, and
+runtime-mesh-append paths), scene 1 (BoomBox) matches the SDL_GPU
+baseline at 0.001/0.015, scene 8 matches its baseline exactly at
+0.129/0.134 (the compiled-HDR environment path worked unmodified), the
+material extension scenes 28 (clearcoat), 29 (sheen), and 178
+(iridescence) match their baselines exactly, GridMaterial scene 213
+matches at 0.000/0.001, the deformation family lands at its SDL_GPU
+values — 5 (0.001/0.020), 243 (0.046/1.043, the documented
 browser-versus-native raster floor), 245 (0.000/0.001), 247
 (0.035/0.406), 254 (0.001/0.003, beating 0.004), 255 (0.011/0.101) —
 scene 249 matches its SDL_GPU baseline exactly at 0.001/0.024, scenes
@@ -202,15 +205,10 @@ authority if a regression appears:
 
 ## Remaining work, in suggested order
 
-1. **GridMaterial** (scene 213): own `grid.vert`/`grid.frag` modules
-   and four pipeline kinds.
-2. **Shader variants** (scenes 163, 273, 274): alpha-card and
-   circular-cutout vertex/fragment pairs, including the
-   alpha-to-coverage pipeline.
-3. **Frame graph** (scenes 116, 145, 146): render-target tasks,
+1. **Frame graph** (scenes 116, 145, 146): render-target tasks,
    depth-only passes, geometry MRTs, viewport/scissor copies, blits —
    the largest remaining chunk.
-4. **Transmission** (scenes 33, 176, 212): scene-color grab with the
+2. **Transmission** (scenes 33, 176, 212): scene-color grab with the
    pinned mip chain and repeat sampler, and — the payoff SDL_GPU could
    never express — the **per-sample image-processing pass**
    (`texture_multisampled_2d`, apply `ip()` per sample, then average)
@@ -219,7 +217,7 @@ authority if a regression appears:
    it reproducible), which should take scenes 6/14 below their SDL
    floors; that requires emitting the dithered shader variant at
    generation time.
-5. **Diagnostics/attribution** (scene 1 draw IDs, clusters, PBR
+3. **Diagnostics/attribution** (scene 1 draw IDs, clusters, PBR
    buffers), then the full-matrix Dawn validation, threshold review,
    and the SDL_GPU retirement decision (delete DXC/normalization/
    shader-cache machinery, rewrite the backend rationale in
