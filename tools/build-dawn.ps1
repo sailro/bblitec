@@ -78,7 +78,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 & $CMake --build $build `
-    --target webgpu_dawn `
+    --target webgpu_dawn --target dxcompiler `
     --config Release `
     --parallel
 if ($LASTEXITCODE -ne 0) {
@@ -89,6 +89,22 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
     throw "Dawn install failed."
 }
+
+# Deploy Dawn's own-built DXC beside the module: with
+# DAWN_USE_BUILT_DXC the D3D12 backend loads this exact dxcompiler.dll
+# (version-matched to the pin) instead of FXC when use_dxc is enabled.
+$builtDxc = Get-ChildItem -Recurse (Join-Path $build "third_party") `
+    -Filter "dxcompiler.dll" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match "Release" } |
+    Select-Object -First 1
+if (-not $builtDxc) {
+    $builtDxc = Get-ChildItem -Recurse $build -Filter "dxcompiler.dll" `
+        -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+if (-not $builtDxc) {
+    throw "Dawn's built dxcompiler.dll was not found in the build tree."
+}
+Copy-Item $builtDxc.FullName (Join-Path $output "bin") -Force
 
 # Dawn's D3D12 backend loads FXC relative to the webgpu_dawn module,
 # mirroring Chrome's deployment of the SDK compiler beside chrome.dll.

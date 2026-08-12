@@ -3,7 +3,9 @@
 // byte-identical vertex data.
 #pragma once
 
+#include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
 
 #include <array>
@@ -281,6 +283,73 @@ inline std::vector<GpuVertex> transformed_vertices(
         });
     }
     return result;
+}
+
+// RGBD decode and half-float packing shared by both render
+// backends (moved verbatim from pal_sdl_gpu.cpp).
+inline std::vector<float> decode_rgbd(const TextureData& texture_data, int& width, int& height) {
+    if (texture_data.bytes.empty()) {
+        width = height = 1;
+        return {0.0f, 0.0f, 0.0f, 1.0f};
+    }
+    const DecodedImage image = decode_image(ts::ArrayBuffer(texture_data.bytes));
+    width = image.width;
+    height = image.height;
+    std::vector<float> result(static_cast<std::size_t>(width) * height * 4);
+    for (std::size_t index = 0; index < image.rgba.size(); index += 4) {
+        const float alpha = std::max(static_cast<float>(image.rgba[index + 3]) / 255.0f, 1.0f / 255.0f);
+        result[index] = std::pow(static_cast<float>(image.rgba[index]) / 255.0f, 2.2f) / alpha;
+        result[index + 1] = std::pow(static_cast<float>(image.rgba[index + 1]) / 255.0f, 2.2f) / alpha;
+        result[index + 2] = std::pow(static_cast<float>(image.rgba[index + 2]) / 255.0f, 2.2f) / alpha;
+        result[index + 3] = 1.0f;
+    }
+    return result;
+}
+
+inline std::uint16_t float_to_half(float value) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    const std::uint16_t sign =
+        static_cast<std::uint16_t>((bits >> 16) & 0x8000u);
+    const std::uint32_t exponent = (bits >> 23) & 0xffu;
+    const std::uint32_t mantissa = bits & 0x7fffffu;
+    if (exponent == 0xffu) {
+        return static_cast<std::uint16_t>(
+            sign | (mantissa == 0 ? 0x7c00u : 0x7e00u));
+    }
+    const int half_exponent =
+        static_cast<int>(exponent) - 127 + 15;
+    if (half_exponent >= 0x1f) {
+        return static_cast<std::uint16_t>(sign | 0x7c00u);
+    }
+    if (half_exponent <= 0) {
+        if (half_exponent < -10) return sign;
+        const std::uint32_t normalized = mantissa | 0x800000u;
+        const int shift = 14 - half_exponent;
+        const std::uint32_t rounded =
+            (
+                normalized +
+                (1u << (shift - 1)) -
+                1u +
+                ((normalized >> shift) & 1u)) >>
+            shift;
+        return static_cast<std::uint16_t>(sign | rounded);
+    }
+    const std::uint32_t rounded =
+        mantissa + 0xfffu + ((mantissa >> 13) & 1u);
+    if ((rounded & 0x800000u) != 0) {
+        const int next_exponent = half_exponent + 1;
+        return static_cast<std::uint16_t>(
+            next_exponent >= 0x1f
+                ? sign | 0x7c00u
+                : sign |
+                    static_cast<std::uint16_t>(
+                        next_exponent << 10));
+    }
+    return static_cast<std::uint16_t>(
+        sign |
+        static_cast<std::uint16_t>(half_exponent << 10) |
+        static_cast<std::uint16_t>(rounded >> 13));
 }
 
 } // namespace bbl::pal

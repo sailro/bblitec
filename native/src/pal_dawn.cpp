@@ -108,6 +108,31 @@ struct DawnState {
     WGPUTexture brdf_texture = nullptr;
     WGPUTextureView brdf_view = nullptr;
     WGPUSampler default_sampler = nullptr;
+    WGPUSampler clamp_sampler = nullptr;
+    WGPUSampler ground_sampler = nullptr;
+    WGPUShaderModule ground_module = nullptr;
+    WGPURenderPipeline ground_pipeline = nullptr;
+    WGPUBuffer ground_vertices = nullptr;
+    WGPUBuffer ground_indices = nullptr;
+    WGPUTexture ground_texture = nullptr;
+    WGPUTextureView ground_texture_view = nullptr;
+    WGPUBuffer ground_uniforms = nullptr;
+    WGPUBindGroup ground_scene_group = nullptr;
+    WGPUBindGroup ground_texture_group = nullptr;
+    WGPUBindGroup ground_material_group = nullptr;
+    bool ground_enabled = false;
+    WGPUShaderModule skybox_module = nullptr;
+    WGPURenderPipeline skybox_pipeline = nullptr;
+    WGPUBuffer skybox_vertices = nullptr;
+    WGPUBuffer skybox_indices = nullptr;
+    WGPUTexture skybox_texture = nullptr;
+    WGPUTextureView skybox_texture_view = nullptr;
+    WGPUBuffer skybox_matrix = nullptr;
+    WGPUBuffer skybox_uniforms = nullptr;
+    WGPUBindGroup skybox_scene_group = nullptr;
+    WGPUBindGroup skybox_texture_group = nullptr;
+    WGPUBindGroup skybox_material_group = nullptr;
+    bool skybox_enabled = false;
     WGPUShaderModule mip_module = nullptr;
     WGPUSampler mip_sampler = nullptr;
     std::map<WGPUTextureFormat, WGPURenderPipeline> mip_pipelines;
@@ -155,6 +180,29 @@ struct DawnState {
                 wgpuRenderPipelineRelease(pipeline.pipeline);
             }
         }
+        if (skybox_material_group) wgpuBindGroupRelease(skybox_material_group);
+        if (skybox_texture_group) wgpuBindGroupRelease(skybox_texture_group);
+        if (skybox_scene_group) wgpuBindGroupRelease(skybox_scene_group);
+        if (skybox_uniforms) wgpuBufferRelease(skybox_uniforms);
+        if (skybox_matrix) wgpuBufferRelease(skybox_matrix);
+        if (skybox_texture_view) wgpuTextureViewRelease(skybox_texture_view);
+        if (skybox_texture) wgpuTextureRelease(skybox_texture);
+        if (skybox_indices) wgpuBufferRelease(skybox_indices);
+        if (skybox_vertices) wgpuBufferRelease(skybox_vertices);
+        if (skybox_pipeline) wgpuRenderPipelineRelease(skybox_pipeline);
+        if (skybox_module) wgpuShaderModuleRelease(skybox_module);
+        if (ground_material_group) wgpuBindGroupRelease(ground_material_group);
+        if (ground_texture_group) wgpuBindGroupRelease(ground_texture_group);
+        if (ground_scene_group) wgpuBindGroupRelease(ground_scene_group);
+        if (ground_uniforms) wgpuBufferRelease(ground_uniforms);
+        if (ground_texture_view) wgpuTextureViewRelease(ground_texture_view);
+        if (ground_texture) wgpuTextureRelease(ground_texture);
+        if (ground_indices) wgpuBufferRelease(ground_indices);
+        if (ground_vertices) wgpuBufferRelease(ground_vertices);
+        if (ground_pipeline) wgpuRenderPipelineRelease(ground_pipeline);
+        if (ground_module) wgpuShaderModuleRelease(ground_module);
+        if (ground_sampler) wgpuSamplerRelease(ground_sampler);
+        if (clamp_sampler) wgpuSamplerRelease(clamp_sampler);
         if (default_sampler) wgpuSamplerRelease(default_sampler);
         if (brdf_view) wgpuTextureViewRelease(brdf_view);
         if (brdf_texture) wgpuTextureRelease(brdf_texture);
@@ -515,6 +563,166 @@ WGPUSampler create_texture_sampler(
     return result;
 }
 
+// Upload the environment cubemap exactly as the browser does: rgba16f
+// faces with pre-baked mips, uploaded unflipped (the SDL_GPU vertical
+// reversal is an SDL-only adaptation).
+void upload_environment(DawnState& state, const EnvironmentState& environment) {
+    const bool has_environment =
+        environment.specular_width != 0 &&
+        environment.specular_mip_count != 0 &&
+        environment.specular_faces.size() >=
+            static_cast<std::size_t>(environment.specular_mip_count) * 6;
+    if (!has_environment) return;
+    const std::uint32_t width = environment.specular_width;
+    const std::uint32_t mip_count = environment.specular_mip_count;
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.usage =
+        WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    descriptor.size = {width, width, 6};
+    descriptor.format = WGPUTextureFormat_RGBA16Float;
+    descriptor.mipLevelCount = mip_count;
+    WGPUTexture texture =
+        wgpuDeviceCreateTexture(state.device, &descriptor);
+    if (!texture) dawn_error("wgpuDeviceCreateTexture environment");
+    for (std::uint32_t mip = 0; mip < mip_count; ++mip) {
+        const std::uint32_t mip_width = std::max(width >> mip, 1u);
+        for (std::uint32_t face = 0; face < 6; ++face) {
+            const TextureData& face_data =
+                environment.specular_faces[
+                    static_cast<std::size_t>(mip) * 6 + face];
+            std::vector<std::uint16_t> half_pixels;
+            const std::uint8_t* source_bytes = nullptr;
+            std::size_t byte_size = 0;
+            if (environment.specular_rgba16f) {
+                byte_size = static_cast<std::size_t>(mip_width) *
+                    mip_width * 8;
+                if (face_data.bytes.size() != byte_size) {
+                    throw std::runtime_error(
+                        "Compiled HDR cubemap face has an invalid size.");
+                }
+                source_bytes = face_data.bytes.data();
+            } else {
+                // RGBD faces are Y-flipped on upload, matching the
+                // pinned uploadCubemapRGBD (BJS invertY cubemaps).
+                int face_width = 0;
+                int face_height = 0;
+                const std::vector<float> pixels =
+                    decode_rgbd(face_data, face_width, face_height);
+                half_pixels.resize(pixels.size());
+                const std::size_t row_floats =
+                    static_cast<std::size_t>(face_width) * 4;
+                for (int row = 0; row < face_height; ++row) {
+                    const std::size_t source_row =
+                        static_cast<std::size_t>(
+                            face_height - row - 1);
+                    for (std::size_t column = 0;
+                         column < row_floats;
+                         ++column) {
+                        half_pixels[
+                            static_cast<std::size_t>(row) * row_floats +
+                            column] = float_to_half(
+                            pixels[source_row * row_floats + column]);
+                    }
+                }
+                source_bytes = reinterpret_cast<const std::uint8_t*>(
+                    half_pixels.data());
+                byte_size =
+                    half_pixels.size() * sizeof(std::uint16_t);
+            }
+            WGPUTexelCopyTextureInfo destination =
+                WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+            destination.texture = texture;
+            destination.mipLevel = mip;
+            destination.origin = {0, 0, face};
+            WGPUTexelCopyBufferLayout layout{};
+            layout.bytesPerRow = mip_width * 8;
+            layout.rowsPerImage = mip_width;
+            const WGPUExtent3D size{mip_width, mip_width, 1};
+            wgpuQueueWriteTexture(
+                state.queue,
+                &destination,
+                source_bytes,
+                byte_size,
+                &layout,
+                &size);
+        }
+    }
+    if (state.environment_cube_view) {
+        wgpuTextureViewRelease(state.environment_cube_view);
+    }
+    if (state.environment_cube) {
+        wgpuTextureRelease(state.environment_cube);
+    }
+    state.environment_cube = texture;
+    WGPUTextureViewDescriptor view_descriptor =
+        WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+    view_descriptor.dimension = WGPUTextureViewDimension_Cube;
+    view_descriptor.arrayLayerCount = 6;
+    state.environment_cube_view =
+        wgpuTextureCreateView(texture, &view_descriptor);
+}
+
+void upload_brdf(DawnState& state, const EnvironmentState& environment) {
+    std::vector<std::uint16_t> half_pixels;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    if (environment.brdf_lut_rgba16f) {
+        const std::size_t expected_size =
+            static_cast<std::size_t>(environment.brdf_lut_width) *
+            environment.brdf_lut_width * 8;
+        if (
+            environment.brdf_lut_width == 0 ||
+            environment.brdf_lut.bytes.size() != expected_size) {
+            throw std::runtime_error(
+                "Compiled BRDF LUT has invalid RGBA16F dimensions.");
+        }
+        width = height = environment.brdf_lut_width;
+        half_pixels.resize(expected_size / 2);
+        std::memcpy(
+            half_pixels.data(),
+            environment.brdf_lut.bytes.data(),
+            expected_size);
+    } else {
+        if (environment.brdf_lut.bytes.empty()) return;
+        int lut_width = 0;
+        int lut_height = 0;
+        const std::vector<float> pixels =
+            decode_rgbd(environment.brdf_lut, lut_width, lut_height);
+        width = static_cast<std::uint32_t>(lut_width);
+        height = static_cast<std::uint32_t>(lut_height);
+        half_pixels.reserve(pixels.size());
+        for (const float value : pixels) {
+            half_pixels.push_back(float_to_half(value));
+        }
+    }
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.usage =
+        WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    descriptor.size = {width, height, 1};
+    descriptor.format = WGPUTextureFormat_RGBA16Float;
+    WGPUTexture texture =
+        wgpuDeviceCreateTexture(state.device, &descriptor);
+    if (!texture) dawn_error("wgpuDeviceCreateTexture brdf");
+    WGPUTexelCopyTextureInfo destination =
+        WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    destination.texture = texture;
+    WGPUTexelCopyBufferLayout layout{};
+    layout.bytesPerRow = width * 8;
+    layout.rowsPerImage = height;
+    const WGPUExtent3D size{width, height, 1};
+    wgpuQueueWriteTexture(
+        state.queue,
+        &destination,
+        half_pixels.data(),
+        half_pixels.size() * sizeof(std::uint16_t),
+        &layout,
+        &size);
+    if (state.brdf_view) wgpuTextureViewRelease(state.brdf_view);
+    if (state.brdf_texture) wgpuTextureRelease(state.brdf_texture);
+    state.brdf_texture = texture;
+    state.brdf_view = wgpuTextureCreateView(texture, nullptr);
+}
+
 WGPUShaderModule& fragment_module_for(
     DawnState& state,
     bool standard) {
@@ -686,7 +894,7 @@ DawnMeshBindings& bindings_for(
         state.default_sampler,
         binding_traits.standard
             ? mesh.samplers[4]
-            : state.default_sampler,
+            : state.clamp_sampler,
     };
     std::array<WGPUBindGroupEntry, 12> texture_entries{};
     for (std::uint32_t slot = 0; slot < views.size(); ++slot) {
@@ -788,14 +996,13 @@ bool run_dawn_engine(Engine& engine) {
         background_flag == "true" ||
         (background_flag.empty() &&
          scene.environment.background_enabled_by_default);
-    if (background_enabled && scene.environment.has_skybox) {
-        dawn_error("skyboxes are not implemented yet.");
-    }
-    if (
+    const bool use_skybox =
+        background_enabled && scene.environment.has_skybox;
+    const std::string ground_flag = environment_variable("BBLITE_GROUND");
+    const bool use_ground =
         scene.environment.has_ground &&
-        environment_variable("BBLITE_GROUND") != "0") {
-        dawn_error("environment grounds are not implemented yet.");
-    }
+        ground_flag != "0" &&
+        ground_flag != "false";
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         dawn_error(std::string("SDL_Init: ") + SDL_GetError());
     }
@@ -1031,7 +1238,17 @@ bool run_dawn_engine(Engine& engine) {
         sampler_descriptor.mipmapFilter = WGPUMipmapFilterMode_Linear;
         state.default_sampler =
             wgpuDeviceCreateSampler(state.device, &sampler_descriptor);
+        sampler_descriptor.addressModeU = WGPUAddressMode_ClampToEdge;
+        sampler_descriptor.addressModeV = WGPUAddressMode_ClampToEdge;
+        sampler_descriptor.addressModeW = WGPUAddressMode_ClampToEdge;
+        state.clamp_sampler =
+            wgpuDeviceCreateSampler(state.device, &sampler_descriptor);
+        sampler_descriptor.lodMaxClamp = 0.0f;
+        state.ground_sampler =
+            wgpuDeviceCreateSampler(state.device, &sampler_descriptor);
     }
+    upload_environment(state, scene.environment);
+    upload_brdf(state, scene.environment);
 
     upstream::RenderPlan render_plan =
         upstream::build_render_plan(scene, engine);
@@ -1147,6 +1364,400 @@ bool run_dawn_engine(Engine& engine) {
         state.meshes.push_back(std::move(mesh));
     }
 
+    if (use_skybox) {
+        state.skybox_module =
+            load_wgsl_module(state, "background-skybox.frag");
+        const upstream::SkyboxPlan skybox_plan =
+            upstream::build_skybox_plan(scene.environment);
+        std::array<GpuVertex, 8> skybox_quad{};
+        for (std::size_t index = 0; index < skybox_quad.size(); ++index) {
+            const ModelVertex& vertex = skybox_plan.vertices[index];
+            skybox_quad[index] = GpuVertex{
+                {vertex.position.x, vertex.position.y, vertex.position.z},
+                {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+                {vertex.tangent.x,
+                 vertex.tangent.y,
+                 vertex.tangent.z,
+                 vertex.tangent.w},
+                {vertex.uv.x, vertex.uv.y},
+                {vertex.local_position.x,
+                 vertex.local_position.y,
+                 vertex.local_position.z},
+                {vertex.uv2.x, vertex.uv2.y},
+                {vertex.color.x,
+                 vertex.color.y,
+                 vertex.color.z,
+                 vertex.color.w},
+                {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+            };
+        }
+        state.skybox_vertices = create_buffer(
+            state,
+            WGPUBufferUsage_Vertex,
+            skybox_quad.data(),
+            sizeof(skybox_quad));
+        state.skybox_indices = create_buffer(
+            state,
+            WGPUBufferUsage_Index,
+            skybox_plan.indices.data(),
+            sizeof(skybox_plan.indices));
+        WGPUTextureView skybox_view = nullptr;
+        if (scene.environment.skybox_uses_environment) {
+            skybox_view = state.environment_cube_view;
+        } else {
+            const EnvironmentState& environment = scene.environment;
+            const TextureData& data = environment.skybox_texture;
+            if (
+                environment.skybox_width == 0 ||
+                environment.skybox_mip_count == 0 ||
+                environment.skybox_data_offset >= data.bytes.size()) {
+                throw std::runtime_error(
+                    "DDS skybox metadata is incomplete.");
+            }
+            WGPUTextureDescriptor descriptor =
+                WGPU_TEXTURE_DESCRIPTOR_INIT;
+            descriptor.usage =
+                WGPUTextureUsage_TextureBinding |
+                WGPUTextureUsage_CopyDst;
+            descriptor.size = {
+                environment.skybox_width,
+                environment.skybox_width,
+                6,
+            };
+            descriptor.format = WGPUTextureFormat_RGBA16Float;
+            descriptor.mipLevelCount = environment.skybox_mip_count;
+            state.skybox_texture =
+                wgpuDeviceCreateTexture(state.device, &descriptor);
+            if (!state.skybox_texture) {
+                dawn_error("wgpuDeviceCreateTexture DDS skybox");
+            }
+            std::size_t offset = environment.skybox_data_offset;
+            for (std::uint32_t face = 0; face < 6; ++face) {
+                for (std::uint32_t mip = 0;
+                     mip < environment.skybox_mip_count;
+                     ++mip) {
+                    const std::uint32_t mip_size =
+                        std::max(environment.skybox_width >> mip, 1u);
+                    const std::size_t byte_size =
+                        static_cast<std::size_t>(mip_size) *
+                        mip_size * 8;
+                    if (offset + byte_size > data.bytes.size()) {
+                        throw std::runtime_error(
+                            "DDS skybox payload is truncated.");
+                    }
+                    WGPUTexelCopyTextureInfo destination =
+                        WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+                    destination.texture = state.skybox_texture;
+                    destination.mipLevel = mip;
+                    destination.origin = {0, 0, face};
+                    WGPUTexelCopyBufferLayout layout{};
+                    layout.bytesPerRow = mip_size * 8;
+                    layout.rowsPerImage = mip_size;
+                    const WGPUExtent3D size{mip_size, mip_size, 1};
+                    wgpuQueueWriteTexture(
+                        state.queue,
+                        &destination,
+                        data.bytes.data() + offset,
+                        byte_size,
+                        &layout,
+                        &size);
+                    offset += byte_size;
+                }
+            }
+            WGPUTextureViewDescriptor view_descriptor =
+                WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+            view_descriptor.dimension = WGPUTextureViewDimension_Cube;
+            view_descriptor.arrayLayerCount = 6;
+            state.skybox_texture_view = wgpuTextureCreateView(
+                state.skybox_texture,
+                &view_descriptor);
+            skybox_view = state.skybox_texture_view;
+        }
+
+        std::array<WGPUVertexAttribute, 8> attributes{};
+        const auto attribute = [&](
+                                   std::uint32_t location,
+                                   WGPUVertexFormat format,
+                                   std::uint64_t offset) {
+            attributes[location].format = format;
+            attributes[location].offset = offset;
+            attributes[location].shaderLocation = location;
+        };
+        attribute(0, WGPUVertexFormat_Float32x3, 0);
+        attribute(1, WGPUVertexFormat_Float32x3, 12);
+        attribute(2, WGPUVertexFormat_Float32x4, 24);
+        attribute(3, WGPUVertexFormat_Float32x2, 40);
+        attribute(4, WGPUVertexFormat_Float32x3, 48);
+        attribute(5, WGPUVertexFormat_Float32x2, 60);
+        attribute(6, WGPUVertexFormat_Float32x4, 68);
+        attribute(7, WGPUVertexFormat_Float32x3, 84);
+        WGPUVertexBufferLayout vertex_layout{};
+        vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
+        vertex_layout.arrayStride = sizeof(GpuVertex);
+        vertex_layout.attributeCount = attributes.size();
+        vertex_layout.attributes = attributes.data();
+        WGPURenderPipelineDescriptor descriptor =
+            WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+        descriptor.vertex.module = state.vertex_module;
+        descriptor.vertex.entryPoint = string_view("mainVertex");
+        descriptor.vertex.bufferCount = 1;
+        descriptor.vertex.buffers = &vertex_layout;
+        descriptor.primitive.topology =
+            WGPUPrimitiveTopology_TriangleList;
+        descriptor.primitive.frontFace = WGPUFrontFace_CCW;
+        descriptor.primitive.cullMode = WGPUCullMode_None;
+        WGPUDepthStencilState depth_stencil =
+            WGPU_DEPTH_STENCIL_STATE_INIT;
+        depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
+        depth_stencil.depthWriteEnabled = WGPUOptionalBool_False;
+        depth_stencil.depthCompare = WGPUCompareFunction_Less;
+        descriptor.depthStencil = &depth_stencil;
+        descriptor.multisample.count = 4;
+        descriptor.multisample.mask = ~0u;
+        WGPUColorTargetState color_target =
+            WGPU_COLOR_TARGET_STATE_INIT;
+        color_target.format = state.surface_format;
+        WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+        fragment.module = state.skybox_module;
+        fragment.entryPoint = string_view("mainFragment");
+        fragment.targetCount = 1;
+        fragment.targets = &color_target;
+        descriptor.fragment = &fragment;
+        state.skybox_pipeline =
+            wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+        if (!state.skybox_pipeline) {
+            dawn_error("skybox pipeline creation failed.");
+        }
+
+        state.skybox_matrix = create_buffer(
+            state,
+            WGPUBufferUsage_Uniform,
+            nullptr,
+            64);
+        state.skybox_uniforms = create_buffer(
+            state,
+            WGPUBufferUsage_Uniform,
+            nullptr,
+            (sizeof(upstream::SkyboxUniforms) + 15) & ~15ull);
+        WGPUBindGroupLayout scene_layout =
+            wgpuRenderPipelineGetBindGroupLayout(
+                state.skybox_pipeline, 1);
+        WGPUBindGroupEntry scene_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entry.binding = 0;
+        scene_entry.buffer = state.skybox_matrix;
+        scene_entry.size = 64;
+        WGPUBindGroupDescriptor scene_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        scene_descriptor.layout = scene_layout;
+        scene_descriptor.entryCount = 1;
+        scene_descriptor.entries = &scene_entry;
+        state.skybox_scene_group =
+            wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
+        wgpuBindGroupLayoutRelease(scene_layout);
+        WGPUBindGroupLayout texture_layout =
+            wgpuRenderPipelineGetBindGroupLayout(
+                state.skybox_pipeline, 2);
+        std::array<WGPUBindGroupEntry, 2> texture_entries{};
+        texture_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+        texture_entries[0].binding = 0;
+        texture_entries[0].textureView = skybox_view;
+        texture_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+        texture_entries[1].binding = 1;
+        texture_entries[1].sampler = state.clamp_sampler;
+        WGPUBindGroupDescriptor texture_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        texture_descriptor.layout = texture_layout;
+        texture_descriptor.entryCount = texture_entries.size();
+        texture_descriptor.entries = texture_entries.data();
+        state.skybox_texture_group =
+            wgpuDeviceCreateBindGroup(state.device, &texture_descriptor);
+        wgpuBindGroupLayoutRelease(texture_layout);
+        WGPUBindGroupLayout material_layout =
+            wgpuRenderPipelineGetBindGroupLayout(
+                state.skybox_pipeline, 3);
+        WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        material_entry.binding = 0;
+        material_entry.buffer = state.skybox_uniforms;
+        material_entry.size =
+            (sizeof(upstream::SkyboxUniforms) + 15) & ~15ull;
+        WGPUBindGroupDescriptor material_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        material_descriptor.layout = material_layout;
+        material_descriptor.entryCount = 1;
+        material_descriptor.entries = &material_entry;
+        state.skybox_material_group =
+            wgpuDeviceCreateBindGroup(state.device, &material_descriptor);
+        wgpuBindGroupLayoutRelease(material_layout);
+        state.skybox_enabled = true;
+    }
+
+    if (use_ground) {
+        state.ground_module =
+            load_wgsl_module(state, "background-ground.frag");
+        const upstream::BackgroundPlan background =
+            upstream::build_background_plan(scene.environment);
+        std::array<GpuVertex, 4> ground_quad{};
+        for (std::size_t index = 0; index < ground_quad.size(); ++index) {
+            const ModelVertex& vertex = background.vertices[index];
+            ground_quad[index] = GpuVertex{
+                {vertex.position.x, vertex.position.y, vertex.position.z},
+                {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+                {vertex.tangent.x,
+                 vertex.tangent.y,
+                 vertex.tangent.z,
+                 vertex.tangent.w},
+                {vertex.uv.x, vertex.uv.y},
+                {vertex.local_position.x,
+                 vertex.local_position.y,
+                 vertex.local_position.z},
+                {vertex.uv2.x, vertex.uv2.y},
+                {vertex.color.x,
+                 vertex.color.y,
+                 vertex.color.z,
+                 vertex.color.w},
+                {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+            };
+        }
+        state.ground_vertices = create_buffer(
+            state,
+            WGPUBufferUsage_Vertex,
+            ground_quad.data(),
+            sizeof(ground_quad));
+        state.ground_indices = create_buffer(
+            state,
+            WGPUBufferUsage_Index,
+            background.indices.data(),
+            sizeof(background.indices));
+        std::uint32_t ground_mips = 1;
+        state.ground_texture = upload_material_texture(
+            state,
+            scene.environment.ground_texture,
+            false,
+            {255, 255, 255, 255},
+            ground_mips);
+        state.ground_texture_view =
+            wgpuTextureCreateView(state.ground_texture, nullptr);
+
+        std::array<WGPUVertexAttribute, 8> attributes{};
+        const auto attribute = [&](
+                                   std::uint32_t location,
+                                   WGPUVertexFormat format,
+                                   std::uint64_t offset) {
+            attributes[location].format = format;
+            attributes[location].offset = offset;
+            attributes[location].shaderLocation = location;
+        };
+        attribute(0, WGPUVertexFormat_Float32x3, 0);
+        attribute(1, WGPUVertexFormat_Float32x3, 12);
+        attribute(2, WGPUVertexFormat_Float32x4, 24);
+        attribute(3, WGPUVertexFormat_Float32x2, 40);
+        attribute(4, WGPUVertexFormat_Float32x3, 48);
+        attribute(5, WGPUVertexFormat_Float32x2, 60);
+        attribute(6, WGPUVertexFormat_Float32x4, 68);
+        attribute(7, WGPUVertexFormat_Float32x3, 84);
+        WGPUVertexBufferLayout vertex_layout{};
+        vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
+        vertex_layout.arrayStride = sizeof(GpuVertex);
+        vertex_layout.attributeCount = attributes.size();
+        vertex_layout.attributes = attributes.data();
+        WGPURenderPipelineDescriptor descriptor =
+            WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+        descriptor.vertex.module = state.vertex_module;
+        descriptor.vertex.entryPoint = string_view("mainVertex");
+        descriptor.vertex.bufferCount = 1;
+        descriptor.vertex.buffers = &vertex_layout;
+        descriptor.primitive.topology =
+            WGPUPrimitiveTopology_TriangleList;
+        descriptor.primitive.frontFace = WGPUFrontFace_CCW;
+        descriptor.primitive.cullMode = WGPUCullMode_Back;
+        WGPUDepthStencilState depth_stencil =
+            WGPU_DEPTH_STENCIL_STATE_INIT;
+        depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
+        depth_stencil.depthWriteEnabled = WGPUOptionalBool_False;
+        depth_stencil.depthCompare = WGPUCompareFunction_Less;
+        descriptor.depthStencil = &depth_stencil;
+        descriptor.multisample.count = 4;
+        descriptor.multisample.mask = ~0u;
+        WGPUColorTargetState color_target =
+            WGPU_COLOR_TARGET_STATE_INIT;
+        color_target.format = state.surface_format;
+        WGPUBlendState blend{};
+        blend.color.operation = WGPUBlendOperation_Add;
+        blend.color.srcFactor = WGPUBlendFactor_One;
+        blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+        blend.alpha.operation = WGPUBlendOperation_Add;
+        blend.alpha.srcFactor = WGPUBlendFactor_One;
+        blend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+        color_target.blend = &blend;
+        WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+        fragment.module = state.ground_module;
+        fragment.entryPoint = string_view("mainFragment");
+        fragment.targetCount = 1;
+        fragment.targets = &color_target;
+        descriptor.fragment = &fragment;
+        state.ground_pipeline =
+            wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+        if (!state.ground_pipeline) {
+            dawn_error("ground pipeline creation failed.");
+        }
+
+        state.ground_uniforms = create_buffer(
+            state,
+            WGPUBufferUsage_Uniform,
+            nullptr,
+            (sizeof(upstream::BackgroundUniforms) + 15) & ~15ull);
+        WGPUBindGroupLayout scene_layout =
+            wgpuRenderPipelineGetBindGroupLayout(
+                state.ground_pipeline, 1);
+        WGPUBindGroupEntry scene_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entry.binding = 0;
+        scene_entry.buffer = state.view_projection;
+        scene_entry.size = 64;
+        WGPUBindGroupDescriptor scene_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        scene_descriptor.layout = scene_layout;
+        scene_descriptor.entryCount = 1;
+        scene_descriptor.entries = &scene_entry;
+        state.ground_scene_group =
+            wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
+        wgpuBindGroupLayoutRelease(scene_layout);
+        WGPUBindGroupLayout texture_layout =
+            wgpuRenderPipelineGetBindGroupLayout(
+                state.ground_pipeline, 2);
+        std::array<WGPUBindGroupEntry, 2> texture_entries{};
+        texture_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+        texture_entries[0].binding = 0;
+        texture_entries[0].textureView = state.ground_texture_view;
+        texture_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+        texture_entries[1].binding = 1;
+        texture_entries[1].sampler = state.ground_sampler;
+        WGPUBindGroupDescriptor texture_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        texture_descriptor.layout = texture_layout;
+        texture_descriptor.entryCount = texture_entries.size();
+        texture_descriptor.entries = texture_entries.data();
+        state.ground_texture_group =
+            wgpuDeviceCreateBindGroup(state.device, &texture_descriptor);
+        wgpuBindGroupLayoutRelease(texture_layout);
+        WGPUBindGroupLayout material_layout =
+            wgpuRenderPipelineGetBindGroupLayout(
+                state.ground_pipeline, 3);
+        WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        material_entry.binding = 0;
+        material_entry.buffer = state.ground_uniforms;
+        material_entry.size =
+            (sizeof(upstream::BackgroundUniforms) + 15) & ~15ull;
+        WGPUBindGroupDescriptor material_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        material_descriptor.layout = material_layout;
+        material_descriptor.entryCount = 1;
+        material_descriptor.entries = &material_entry;
+        state.ground_material_group =
+            wgpuDeviceCreateBindGroup(state.device, &material_descriptor);
+        wgpuBindGroupLayoutRelease(material_layout);
+        state.ground_enabled = true;
+    }
+
     CameraRecord fallback_camera;
     CameraRecord& camera =
         scene.camera.value < engine.cameras.size()
@@ -1233,6 +1844,40 @@ bool run_dawn_engine(Engine& engine) {
         if (!render_plan.draw_lists.transparent.commands.empty()) {
             dawn_error("transparent draws are not implemented yet.");
         }
+        if (state.skybox_enabled) {
+            const std::array<float, 16> skybox_view_projection =
+                upstream::build_skybox_view_projection(
+                    camera,
+                    static_cast<float>(width) / height);
+            wgpuQueueWriteBuffer(
+                state.queue,
+                state.skybox_matrix,
+                0,
+                scene.environment.skybox_uses_environment
+                    ? skybox_view_projection.data()
+                    : matrix.data(),
+                64);
+            const upstream::SkyboxUniforms skybox =
+                upstream::build_skybox_uniforms(scene.environment, false);
+            wgpuQueueWriteBuffer(
+                state.queue,
+                state.skybox_uniforms,
+                0,
+                &skybox,
+                sizeof(skybox));
+        }
+        if (state.ground_enabled) {
+            const upstream::BackgroundUniforms background =
+                upstream::build_background_uniforms(
+                    scene.environment,
+                    camera);
+            wgpuQueueWriteBuffer(
+                state.queue,
+                state.ground_uniforms,
+                0,
+                &background,
+                sizeof(background));
+        }
 
         WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
         wgpuSurfaceGetCurrentTexture(state.surface, &surface_texture);
@@ -1275,33 +1920,94 @@ bool run_dawn_engine(Engine& engine) {
         WGPURenderPassEncoder pass =
             wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
         WGPURenderPipeline bound_pipeline = nullptr;
-        for (
-            const upstream::RenderDrawCommand& draw :
-            render_plan.draw_lists.opaque.commands) {
-            DawnMesh& mesh = state.meshes[draw.item_index];
-            DawnPipeline& pipeline = pipeline_for(state, draw.pipeline);
-            DawnMeshBindings& bindings =
-                bindings_for(state, mesh, draw.pipeline);
-            if (pipeline.pipeline != bound_pipeline) {
-                wgpuRenderPassEncoderSetPipeline(pass, pipeline.pipeline);
-                bound_pipeline = pipeline.pipeline;
-            }
+        const auto draw_render_list =
+            [&](const upstream::RenderDrawList& list) {
+                for (const upstream::RenderDrawCommand& draw :
+                     list.commands) {
+                    DawnMesh& mesh = state.meshes[draw.item_index];
+                    DawnPipeline& pipeline =
+                        pipeline_for(state, draw.pipeline);
+                    DawnMeshBindings& bindings =
+                        bindings_for(state, mesh, draw.pipeline);
+                    if (pipeline.pipeline != bound_pipeline) {
+                        wgpuRenderPassEncoderSetPipeline(
+                            pass, pipeline.pipeline);
+                        bound_pipeline = pipeline.pipeline;
+                    }
+                    wgpuRenderPassEncoderSetBindGroup(
+                        pass, 1, bindings.scene, 0, nullptr);
+                    wgpuRenderPassEncoderSetBindGroup(
+                        pass, 2, bindings.textures, 0, nullptr);
+                    wgpuRenderPassEncoderSetBindGroup(
+                        pass, 3, bindings.material, 0, nullptr);
+                    wgpuRenderPassEncoderSetVertexBuffer(
+                        pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
+                    wgpuRenderPassEncoderSetIndexBuffer(
+                        pass,
+                        mesh.indices,
+                        WGPUIndexFormat_Uint32,
+                        0,
+                        WGPU_WHOLE_SIZE);
+                    wgpuRenderPassEncoderDrawIndexed(
+                        pass, mesh.index_count, 1, 0, 0, 0);
+                }
+            };
+        const auto draw_ground = [&] {
+            if (!state.ground_enabled) return;
+            wgpuRenderPassEncoderSetPipeline(pass, state.ground_pipeline);
+            bound_pipeline = state.ground_pipeline;
             wgpuRenderPassEncoderSetBindGroup(
-                pass, 1, bindings.scene, 0, nullptr);
+                pass, 1, state.ground_scene_group, 0, nullptr);
             wgpuRenderPassEncoderSetBindGroup(
-                pass, 2, bindings.textures, 0, nullptr);
+                pass, 2, state.ground_texture_group, 0, nullptr);
             wgpuRenderPassEncoderSetBindGroup(
-                pass, 3, bindings.material, 0, nullptr);
+                pass, 3, state.ground_material_group, 0, nullptr);
             wgpuRenderPassEncoderSetVertexBuffer(
-                pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
+                pass, 0, state.ground_vertices, 0, WGPU_WHOLE_SIZE);
             wgpuRenderPassEncoderSetIndexBuffer(
                 pass,
-                mesh.indices,
+                state.ground_indices,
                 WGPUIndexFormat_Uint32,
                 0,
                 WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderDrawIndexed(
-                pass, mesh.index_count, 1, 0, 0, 0);
+            wgpuRenderPassEncoderDrawIndexed(pass, 6, 1, 0, 0, 0);
+        };
+        const auto draw_skybox = [&] {
+            if (!state.skybox_enabled) return;
+            wgpuRenderPassEncoderSetPipeline(pass, state.skybox_pipeline);
+            bound_pipeline = state.skybox_pipeline;
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 1, state.skybox_scene_group, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 2, state.skybox_texture_group, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 3, state.skybox_material_group, 0, nullptr);
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass, 0, state.skybox_vertices, 0, WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderSetIndexBuffer(
+                pass,
+                state.skybox_indices,
+                WGPUIndexFormat_Uint32,
+                0,
+                WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderDrawIndexed(pass, 36, 1, 0, 0, 0);
+        };
+        for (const upstream::RenderStage stage : render_plan.stages) {
+            switch (stage) {
+                case upstream::RenderStage::skybox:
+                    draw_skybox();
+                    break;
+                case upstream::RenderStage::opaque:
+                    draw_render_list(render_plan.draw_lists.opaque);
+                    break;
+                case upstream::RenderStage::transparent:
+                    draw_render_list(
+                        render_plan.draw_lists.transparent);
+                    break;
+                case upstream::RenderStage::ground:
+                    draw_ground();
+                    break;
+            }
         }
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);
