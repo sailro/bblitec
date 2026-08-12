@@ -19,22 +19,30 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 | Deformation | recursive skeleton hierarchies, inverse bind matrices, four-weight GPU skinning, GPU position/normal/tangent morph targets, uncapped storage-buffer morphing beyond two targets, static GPU instancing, post-deformation flat normals |
 | Frame graph | render targets/tasks, material overrides, depth-only passes, 7+4 geometry MRTs, blits, MSAA resolve |
 | Runtime | typed handles/records, immediate AOT promises, typed JSON/binary views, tree-shaken GPU deformation and cyclic flat-normal uploads |
-| Shaders | generated WGSL through pinned Tint; DXIL/SPIR-V via normalized Tint HLSL and DXC; MSL via Tint |
-| Native renderer | generated ordered draw lists over SDL_GPU, linear RGBA16F transmission, deterministic SDL_Renderer fallback |
+| Shaders | generated WGSL through pinned Tint; DXIL/SPIR-V via normalized Tint HLSL and DXC; MSL via Tint; the Dawn backend consumes the WGSL directly |
+| Native renderer | generated ordered draw lists over two peer GPU backends (SDL_GPU and Dawn/WebGPU), linear RGBA16F transmission with per-sample image processing on Dawn, deterministic SDL_Renderer fallback |
 
 Generated behavior is tied to `@babylonjs/lite@1.18.0` at commit
 `7184feda683072980735f9a180e6f567ee5717ba`.
 
 ## Scene 1 (BoomBox) baseline
 
-Development Windows machine, D3D12, 1280x720:
+Development Windows machine, D3D12, 1280x720; frame times are
+same-session paired runs (`BBLITE_BENCHMARK_FRAMES=2000`, 30 warmup
+frames, immediate present, frame CPU time from acquire through
+submit and present):
 
 | Renderer | Full MAD | Foreground MAD | Frame time |
 | --- | ---: | ---: | ---: |
-| SDL_GPU, 4x MSAA | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.015}}$ | 0.176 ms average, 0.141 ms median |
+| SDL_GPU, 4x MSAA | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.015}}$ | 0.192 ms average, 0.155 ms median |
+| Dawn, 4x MSAA | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.015}}$ | 0.229 ms average, 0.179 ms median |
 
-Against the pinned Babylon Lite output, Scene 1 rendering is effectively exact.
-Regression ceilings are `0.01` full and `0.03` foreground MAD.
+Against the pinned Babylon Lite output, Scene 1 rendering is effectively exact
+on both backends. Dawn's higher CPU frame time is its always-on validation and
+robustness (the browser reference runs with both) plus per-draw uniform-buffer
+writes where SDL_GPU uses push constants; see
+[backends](backends.md) for the full comparison. Regression ceilings are
+`0.01` full and `0.03` foreground MAD.
 
 ## Curated parity scenes
 
@@ -42,8 +50,9 @@ Thresholds live in `src/scene-registry.ts`; run one scene with
 `npm run scene -- parity scene<ID>` or all registered parity scenes with
 `npm run scenes:parity`.
 
-The Dawn column tracks the in-progress WebGPU backend migration; scenes
-not yet renderable on Dawn show —. MAD severity:
+Both native GPU backends are measured against the same goldens; the
+Dawn backend renders through the browser reference's own compiler and
+rasterization stack (see [backends](backends.md)). MAD severity:
 $\color{#1a7f37}{\textsf{green below 0.500}}$,
 $\color{#9a6700}{\textsf{yellow from 0.500 to below 1.000}}$, and
 $\color{#cf222e}{\textsf{red above 1.000}}$.
@@ -141,7 +150,9 @@ or MSL source templates remain under `src/`.
 
 Tint Inspector bindings are checked against generated WGSL. DXIL/SPIR-V
 artifacts are content-addressed and reused across scenes. Direct Tint SPIR-V is
-deferred until its resource bindings are remapped to SDL_GPU conventions.
+deferred until its resource bindings are remapped to SDL_GPU conventions. The
+Dawn backend bypasses this table entirely: it hands the generated WGSL to its
+in-process pinned Tint at startup, with no offline artifacts or shader cache.
 
 ## Current boundaries
 

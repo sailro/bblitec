@@ -1,7 +1,7 @@
 # Babylon Lite Native
 
-> Experimental Babylon Lite TypeScript-to-C++ compiler with an SDL3/SDL_GPU
-> native runtime.
+> Experimental Babylon Lite TypeScript-to-C++ compiler with an SDL3 native
+> runtime and dual SDL_GPU / Dawn (WebGPU) render backends.
 
 `bblitec` compiles a statically analyzable subset of `@babylonjs/lite` scene
 code into C++20. It reconstructs the pinned upstream TypeScript from source
@@ -26,6 +26,9 @@ Unsupported syntax and APIs fail at compile time with source locations.
   mutation, property animation, and tree-shaken GPU deformation.
 - Exact HDR GGX preprocessing and transmission/IOR/volume scene-color rendering.
 - WGSL shaders compiled by pinned Tint for D3D12, Vulkan, and Metal.
+- Two complete, mutually validating GPU backends: SDL_GPU over offline-compiled
+  shaders, and Dawn (WebGPU) rendering through the browser reference's own
+  compiler and rasterization stack — every expressible scene passes on both.
 - Scene 1 (BoomBox) D3D12 parity is effectively exact; measured quality and performance
   baselines live only in [Status](docs/status.md).
 
@@ -40,8 +43,9 @@ scene results.
    scene metrics.
 3. Read [Fidelity](docs/fidelity.md) before changing renderer, loader,
    animation, or parity behavior.
-4. Read [Development](docs/development.md) before generating or building.
-5. Use [TODO](TODO.md) only for unfinished priorities; completed history lives
+4. Read [Backends](docs/backends.md) before touching either GPU backend.
+5. Read [Development](docs/development.md) before generating or building.
+6. Use [TODO](TODO.md) only for unfinished priorities; completed history lives
    in Git and the status page.
 
 ## Quick start
@@ -80,7 +84,7 @@ generator-specific.
 | [Development](docs/development.md) | Setup, commands, builds, switches, parity, troubleshooting |
 | [Fidelity](docs/fidelity.md) | Semantic adaptations, shader contracts, diagnostics |
 | [Status](docs/status.md) | Supported subset, measured baselines, known gaps |
-| [Migration](docs/migration.md) | Dawn (WebGPU) backend migration state and porting contracts |
+| [Backends](docs/backends.md) | The two GPU render backends: architecture, comparison, porting contracts |
 | [TODO](TODO.md) | Prioritized future work only |
 
 ## Design constraints

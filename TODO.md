@@ -11,39 +11,33 @@ baselines belong in [status](docs/status.md) and Git history.
 - do not add scene, geometry, or golden-image heuristics
 - validate generation, native builds, and relevant parity gates locally
 
-## P0 — Dawn (WebGPU) render backend
+## P0 — Dual render backends
 
-The golden references are produced by Chrome's WebGPU, which is Dawn on
-D3D12. Rendering through the pinned Dawn commit (shared with the Tint
-pin) makes shader codegen and rasterization structurally match the
-reference. Staged migration; SDL_GPU stays the default until Dawn parity
-is a strict superset. The SDL_Renderer CPU fallback is out of scope.
-
-Progress, verified findings, ported pinned contracts, and the ordered
-remaining work live in [migration](docs/migration.md). Every scene
-either backend can express passes on Dawn at values equal to or
-better than SDL_GPU (43 curated plus all seven project gates, fifteen
-bit-exact); material extensions, deformation/instancing/storage-morph,
-GridMaterial, shader variants, runtime mesh appends, the frame graph,
-and transmission with the pinned per-sample image processing are
-ported — scene 33's foreground falls from 1.457 to 0.123 and the
-transmission gates drop to the 0.002-0.005 range. The formerly
-recorded scene 248/249 offsets were stale shader/build pairings,
-resolved by reprocessing.
+The Dawn (WebGPU) backend is complete: every scene either backend can
+express passes on both at values equal to or better than SDL_GPU (see
+[backends](docs/backends.md) for the architecture, the honest
+comparison, and the empirical regression guards). Both backends stay
+long-term as mutually validating implementations — the direct
+Dawn-versus-SDL_GPU diff is the project's decisive diagnostic: two
+independent compiler and API stacks agreeing to one LSB isolates
+CPU-side from GPU-side causes immediately.
 
 - [ ] Re-enable the pinned position-seeded background dither on Dawn
-  (scenes 6/14; needs the dithered shader variant emitted at
-  generation time), then diagnostics — see the ordered list in
-  [migration](docs/migration.md).
-- [ ] Threshold review and the backend end-state decision. Current
-  direction: keep BOTH backends long-term as mutually validating
-  implementations — the direct Dawn-versus-SDL_GPU diff has been the
-  decisive diagnostic for every residual attribution (two independent
-  compiler and API stacks agreeing to one LSB isolates CPU-side from
-  GPU-side causes immediately) — rather than retiring SDL_GPU and its
-  DXC/normalization/shader-cache machinery. Formalize a
-  backend-differential comparison mode in the parity tooling and
-  update the docs' backend rationale when decided.
+  (scenes 6/14; identical codegen makes it reproducible and should
+  take both scenes below their SDL floors). Needs the dithered shader
+  variant emitted at generation time.
+- [ ] Port the scene 1 diagnostics/attribution outputs to Dawn (draw
+  IDs, triangle clusters, PBR diagnostic buffers); today
+  `parity:diagnostics` renders them through SDL_GPU only.
+- [ ] Formalize a backend-differential comparison mode in the parity
+  tooling (render both backends, diff them against each other and the
+  golden in one report), then review the per-scene thresholds against
+  the Dawn columns.
+- [ ] Extend the Dawn integration beyond Windows: the platform surface
+  is one HWND branch plus the adapter backend selection and the per-OS
+  Dawn library build — the WGSL feeds Dawn directly on every backend,
+  so no per-platform shader work exists on this path (unlike the
+  SDL_GPU items below).
 
 ## P0 — Backend portability
 

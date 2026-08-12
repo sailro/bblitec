@@ -31,6 +31,7 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -3675,10 +3676,23 @@ bool run_dawn_engine(Engine& engine) {
             environment_variable("BBLITE_SCREENSHOT_FRAME");
         return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
     }();
+    const long benchmark_frames = [&] {
+        const std::string value =
+            environment_variable("BBLITE_BENCHMARK_FRAMES");
+        return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
+    }();
+    const bool benchmark = benchmark_frames > 0;
+    const long benchmark_warmup = benchmark ? 30 : 0;
     const long limit = [&] {
+        if (benchmark) return benchmark_frames + benchmark_warmup;
         const std::string value = environment_variable("BBLITE_MAX_FRAMES");
         return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
     }();
+    std::vector<double> benchmark_samples;
+    if (benchmark) {
+        benchmark_samples.reserve(
+            static_cast<std::size_t>(benchmark_frames));
+    }
 
     bool screenshot_saved = false;
     bool running = true;
@@ -4048,6 +4062,10 @@ bool run_dawn_engine(Engine& engine) {
             }
         }
 
+        // The benchmark bracket mirrors the SDL backend: frame CPU
+        // time from surface acquire through submit and present, under
+        // the immediate present mode both backends configure.
+        const double benchmark_start = monotonic_milliseconds();
         WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
         wgpuSurfaceGetCurrentTexture(state.surface, &surface_texture);
         if (
@@ -4941,6 +4959,10 @@ bool run_dawn_engine(Engine& engine) {
         if (readback) wgpuBufferRelease(readback);
 
         wgpuSurfacePresent(state.surface);
+        if (benchmark && frame >= benchmark_warmup) {
+            benchmark_samples.push_back(
+                monotonic_milliseconds() - benchmark_start);
+        }
         wgpuTextureViewRelease(surface_view);
         wgpuTextureRelease(surface_texture.texture);
         wgpuInstanceProcessEvents(state.instance);
@@ -4948,6 +4970,18 @@ bool run_dawn_engine(Engine& engine) {
             dawn_error("uncaptured error: " + state.uncaptured_error);
         }
         ++frame;
+    }
+    if (!benchmark_samples.empty()) {
+        std::sort(benchmark_samples.begin(), benchmark_samples.end());
+        double sum = 0.0;
+        for (const double sample : benchmark_samples) sum += sample;
+        std::cout
+            << "Babylon Lite Dawn benchmark | driver=D3D12"
+            << " | frames=" << benchmark_samples.size()
+            << " | average=" << (sum / benchmark_samples.size())
+            << " ms | median="
+            << benchmark_samples[benchmark_samples.size() / 2]
+            << " ms\n";
     }
     SDL_DestroyWindow(state.window);
     state.window = nullptr;

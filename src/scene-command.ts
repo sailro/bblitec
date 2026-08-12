@@ -193,6 +193,15 @@ function buildScene(scene: (typeof scenes)[number]): void {
         "-G",
         generator,
     ];
+    // Both render backends build whenever the pinned Dawn library is
+    // installed (tools/build-dawn.ps1); BBLITE_GPU_BACKEND selects at
+    // runtime. Set BBLITE_DAWN=0 to force an SDL_GPU-only build.
+    if (
+        process.env.BBLITE_DAWN !== "0" &&
+        existsSync(resolve("artifacts", "tools", "dawn", "lib", "cmake", "Dawn"))
+    ) {
+        configureArguments.push("-DBBLITE_DAWN=ON");
+    }
     if (ninja) {
         configureArguments.push(
             `-DCMAKE_MAKE_PROGRAM=${ninja.ninja}`,
