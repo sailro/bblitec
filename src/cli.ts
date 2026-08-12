@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { CompileAsset, CompileError, compileSource } from "./compiler.js";
 import { emitUpstreamGenerated } from "./upstream-lower.js";
@@ -151,6 +151,62 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
     copyFileSync(resolve(dirname(inputPath), source), destination);
 }
 
+const jpegNamePattern = /\.jpe?g(?:[?#]|$)/i;
+
+function glbReachesJpeg(bytes: Buffer): boolean {
+    if (bytes.length < 20 || bytes.readUInt32LE(0) !== 0x46546c67) {
+        return false;
+    }
+    const jsonLength = bytes.readUInt32LE(12);
+    if (bytes.length < 20 + jsonLength) {
+        return false;
+    }
+    const document = JSON.parse(
+        bytes.subarray(20, 20 + jsonLength).toString("utf8"),
+    ) as { images?: { mimeType?: string; uri?: string }[] };
+    return (document.images ?? []).some(
+        (image) =>
+            image.mimeType === "image/jpeg" ||
+            (typeof image.uri === "string" &&
+                (/^data:image\/jpeg/i.test(image.uri) ||
+                    jpegNamePattern.test(image.uri))),
+    );
+}
+
+function reachedImageCodecs(
+    outputPath: string,
+    assets: CompileAsset[],
+): string[] {
+    // PNG stays unconditional: .env RGBD payloads and the RGBD BRDF
+    // LUT decode through PNG, and screenshot capture encodes PNG.
+    // JPEG is reached only when a materialized asset carries JPEG
+    // content; the native build then links the JPEG codec (vcpkg
+    // manifest feature "jpeg") and packaging ships its runtime.
+    let jpeg = false;
+    for (const asset of assets) {
+        if (jpegNamePattern.test(asset.output)) {
+            jpeg = true;
+            break;
+        }
+        const materialized = resolve(outputPath, "assets", asset.output);
+        if (!existsSync(materialized)) {
+            continue;
+        }
+        if (/\.glb$/i.test(asset.output)) {
+            jpeg = glbReachesJpeg(readFileSync(materialized));
+        } else if (/\.(?:babylon|gltf)$/i.test(asset.output)) {
+            const text = readFileSync(materialized, "utf8");
+            jpeg =
+                /image\/jpeg/i.test(text) ||
+                /\.jpe?g["']/i.test(text);
+        }
+        if (jpeg) {
+            break;
+        }
+    }
+    return jpeg ? ["png", "jpeg"] : ["png"];
+}
+
 function materializedAssetSource(
     source: string,
     inputPath: string,
@@ -225,7 +281,21 @@ async function main(): Promise<void> {
         occlusionUv2: specializationFeatures.occlusionUv2,
     });
     writeFileSync(resolve(outputPath, "main.cpp"), result.cpp);
-    writeFileSync(resolve(outputPath, "features.cmake"), result.cmake);
+    const imageCodecs = reachedImageCodecs(
+        outputPath,
+        result.manifest.assets,
+    );
+    const imageCodecLines = imageCodecs
+        .map((codec) => `    "${codec}"`)
+        .join("\n");
+    writeFileSync(
+        resolve(outputPath, "features.cmake"),
+        `${result.cmake}
+set(BBLITE_IMAGE_CODECS
+${imageCodecLines}
+)
+`,
+    );
     writeFileSync(resolve(outputPath, "manifest.json"), `${JSON.stringify(result.manifest, null, 2)}\n`);
     writeFileSync(
         resolve(outputPath, "fidelity.json"),

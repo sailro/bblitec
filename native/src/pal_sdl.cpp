@@ -1156,7 +1156,8 @@ void pal::run_engine(Engine& engine) {
         }
     }
 
-#if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL
+#if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && \
+    defined(BBLITE_CPU_FALLBACK) && BBLITE_CPU_FALLBACK
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         throw std::runtime_error(std::string("SDL_Init failed: ") + SDL_GetError());
     }
@@ -1325,6 +1326,13 @@ void pal::run_engine(Engine& engine) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
+#elif defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL
+    // Minimal release shapes compile out the SDL_Renderer fallback
+    // (and link an SDL built without SDL_RENDER); reaching this point
+    // means every compiled GPU backend declined.
+    throw std::runtime_error(
+        "This build compiles no SDL_Renderer CPU fallback "
+        "(BBLITE_CPU_FALLBACK=OFF).");
 #else
     std::cout << "Babylon Lite native headless scene: "
               << scene.meshes.size() << " meshes, "

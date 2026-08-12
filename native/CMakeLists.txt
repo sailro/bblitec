@@ -1,7 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(babylon_lite_native LANGUAGES CXX)
-
 set(BBLITE_GENERATED_DIR "" CACHE PATH "Directory produced by bblitec")
 if(NOT BBLITE_GENERATED_DIR)
     message(FATAL_ERROR "Set BBLITE_GENERATED_DIR to a directory containing main.cpp and features.cmake.")
@@ -9,7 +7,22 @@ endif()
 
 get_filename_component(BBLITE_GENERATED_DIR "${BBLITE_GENERATED_DIR}" ABSOLUTE)
 set(BBLITE_NATIVE_ROOT "${CMAKE_CURRENT_LIST_DIR}")
+# Included before project() so the reached feature set can select
+# vcpkg manifest features - the toolchain installs dependencies
+# during project().
 include("${BBLITE_GENERATED_DIR}/features.cmake")
+
+# Image codecs reached by the scene's materialized assets (emitted by
+# generation since codec tree-shaking). Generated directories
+# predating the list carry the historical png+jpeg set.
+if(NOT DEFINED BBLITE_IMAGE_CODECS)
+    set(BBLITE_IMAGE_CODECS "png" "jpeg")
+endif()
+if("jpeg" IN_LIST BBLITE_IMAGE_CODECS AND NOT "jpeg" IN_LIST VCPKG_MANIFEST_FEATURES)
+    list(APPEND VCPKG_MANIFEST_FEATURES "jpeg")
+endif()
+
+project(babylon_lite_native LANGUAGES CXX)
 
 set(BBLITE_GENERATED_SHADER_DIR "${BBLITE_GENERATED_DIR}/upstream/shaders")
 set(BBLITE_BUILD_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders")
@@ -51,6 +64,20 @@ set(
     CACHE PATH
     "Installed pinned Dawn library root"
 )
+
+# Optional subsystem-trimmed static SDL3 (tools/build-sdl-min.ps1).
+# Empty selects the toolchain-provided SDL3 (vcpkg).
+set(
+    BBLITE_SDL_DIR
+    ""
+    CACHE PATH
+    "Installed trimmed SDL3 root (empty = toolchain SDL3)"
+)
+
+# The SDL_Renderer CPU fallback. Minimal release shapes compile it out
+# (pair with a BBLITE_SDL_DIR library built without SDL_RENDER); the
+# scene1 --cpu parity gate requires the default ON shape.
+option(BBLITE_CPU_FALLBACK "Compile the SDL_Renderer CPU fallback" ON)
 set_property(
     CACHE BBLITE_BACKEND
     PROPERTY STRINGS "SDL_GPU" "DAWN" "BOTH"
@@ -166,13 +193,52 @@ if(BBLITE_GENERATED_SHADER_FILES)
     )
 endif()
 
-find_package(SDL3 CONFIG QUIET)
+if(BBLITE_SDL_DIR)
+    # find_package prefers a cached SDL3_DIR from an earlier
+    # configure; pin it to the requested install so switching
+    # BBLITE_SDL_DIR never silently keeps the toolchain SDL3.
+    if(EXISTS "${BBLITE_SDL_DIR}/cmake/SDL3Config.cmake")
+        set(SDL3_DIR "${BBLITE_SDL_DIR}/cmake" CACHE PATH "SDL3 package directory" FORCE)
+    elseif(EXISTS "${BBLITE_SDL_DIR}/lib/cmake/SDL3/SDL3Config.cmake")
+        set(SDL3_DIR "${BBLITE_SDL_DIR}/lib/cmake/SDL3" CACHE PATH "SDL3 package directory" FORCE)
+    else()
+        message(
+            FATAL_ERROR
+            "BBLITE_SDL_DIR does not contain an SDL3 CMake package: ${BBLITE_SDL_DIR}"
+        )
+    endif()
+    find_package(SDL3 CONFIG REQUIRED NO_DEFAULT_PATH PATHS "${SDL3_DIR}")
+    # Trimmed installs carry a single configuration (MinSizeRel); map
+    # every consumer configuration onto whichever exists.
+    foreach(bblite_sdl_target SDL3::SDL3-static SDL3::SDL3-shared)
+        if(TARGET ${bblite_sdl_target})
+            set_target_properties(
+                ${bblite_sdl_target}
+                PROPERTIES
+                MAP_IMPORTED_CONFIG_RELEASE "Release;MinSizeRel;RelWithDebInfo"
+                MAP_IMPORTED_CONFIG_RELWITHDEBINFO "RelWithDebInfo;Release;MinSizeRel"
+                MAP_IMPORTED_CONFIG_MINSIZEREL "MinSizeRel;Release;RelWithDebInfo"
+                MAP_IMPORTED_CONFIG_DEBUG "Debug;Release;MinSizeRel;RelWithDebInfo"
+            )
+        endif()
+    endforeach()
+else()
+    # Forget a trimmed-SDL selection from an earlier configure of this
+    # build directory; the toolchain package should win again.
+    unset(SDL3_DIR CACHE)
+    find_package(SDL3 CONFIG QUIET)
+endif()
 if(SDL3_FOUND)
     target_link_libraries(bblite_native PRIVATE SDL3::SDL3)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_SDL=1)
 else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_SDL=0)
     message(WARNING "SDL3 was not found. The generated application will use the headless backend.")
+endif()
+if(BBLITE_CPU_FALLBACK)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_CPU_FALLBACK=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_CPU_FALLBACK=0)
 endif()
 
 if(BBLITE_BACKEND_SDL_GPU)
@@ -293,9 +359,11 @@ endif()
 if(BBLITE_MINSIZE)
     if(MSVC)
         target_compile_options(bblite_native PRIVATE /GL /Gw /Zc:inline)
+        # /MAP emits the linker map beside the executable for
+        # tools/map-size-report.mjs attribution.
         target_link_options(
             bblite_native
-            PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO
+            PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
         )
     else()
         target_compile_options(
