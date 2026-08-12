@@ -11,25 +11,30 @@ SDL_Renderer CPU fallback is out of scope.
 
 ## Verified state
 
-Thirty-three curated scenes render on Dawn at values equal to or
-better than SDL_GPU (see the Dawn column in [status](status.md)):
-scenes 2, 10, 32, 163, 246, 259, 273, and 274 are bit-exact (259 beats
-SDL_GPU, whose DXC-vs-browser rounding it eliminates; 163/273/274
-cover the alpha-card, circular-cutout, alpha-to-coverage, and
-runtime-mesh-append paths), scene 1 (BoomBox) matches the SDL_GPU
-baseline at 0.001/0.015, scene 8 matches its baseline exactly at
-0.129/0.134 (the compiled-HDR environment path worked unmodified), the
-material extension scenes 28 (clearcoat), 29 (sheen), and 178
-(iridescence) match their baselines exactly, GridMaterial scene 213
-matches at 0.000/0.001, the deformation family lands at its SDL_GPU
-values — 5 (0.001/0.020), 243 (0.046/1.043, the documented
-browser-versus-native raster floor), 245 (0.000/0.001), 247
-(0.035/0.406), 254 (0.001/0.003, beating 0.004), 255 (0.011/0.101) —
-scene 249 matches its SDL_GPU baseline exactly at 0.001/0.024, scenes
+Every scene the Dawn slice can express passes at values equal to or
+better than SDL_GPU: a full 39-scene sequential re-validation
+(process + Dawn parity per scene, 2026-08-12) reported zero failures
+across 37 curated scenes plus the compiler-state and glTF-track-clamp
+project gates (see the Dawn column in [status](status.md)). Thirteen
+of them are bit-exact — 2, 10, 32, 150, 151, 154, 163, 240, 246, 259,
+273, 274, and both project gates — with 259 beating SDL_GPU, whose
+DXC-vs-browser rounding it eliminates, and 163/273/274 covering the
+alpha-card, circular-cutout, alpha-to-coverage, and
+runtime-mesh-append paths. Scene 1 (BoomBox) matches the SDL_GPU
+baseline at 0.001/0.015, scene 8 matches exactly at 0.129/0.134 (the
+compiled-HDR environment path worked unmodified), the material
+extension scenes 28 (clearcoat), 29 (sheen), and 178 (iridescence)
+match exactly, GridMaterial scene 213 matches at 0.000/0.001, the
+deformation family lands at its SDL_GPU values — 5 (0.001/0.020), 243
+(0.046/1.043, the documented browser-versus-native raster floor), 245
+(0.000/0.001), 247 (0.035/0.406), 254 (0.001/0.003, beating 0.004),
+255 (0.011/0.101) — scene 249 matches exactly at 0.001/0.024, scenes
 24 (HillValley `.babylon` reflection cubes, 0.015/0.016) and 248
 (0.001/0.004) beat theirs, and scenes 6, 13, 14, 31, 168, 210, 257,
-258, 265, and 266 pass their gates. There is no open Dawn divergence in
-the migrated slice.
+258, 265, and 266 pass their gates. There is no open Dawn divergence
+in the migrated slice; only the frame-graph scenes (116, 145, 146),
+the transmission scenes (33, 176, 212), and the four transmission
+project gates remain SDL_GPU-only.
 
 Key empirical findings, in case any regress:
 

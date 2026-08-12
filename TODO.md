@@ -20,26 +20,23 @@ reference. Staged migration; SDL_GPU stays the default until Dawn parity
 is a strict superset. The SDL_Renderer CPU fallback is out of scope.
 
 Progress, verified findings, ported pinned contracts, and the ordered
-remaining work live in [migration](docs/migration.md). Nineteen scenes
-pass on Dawn at values equal to or better than SDL_GPU, including
-bit-exact scenes 2/10/32/259, BoomBox at the SDL baseline, HillValley
-`.babylon` reflection cubes, and the compiled-HDR scene 8 path; the
-formerly recorded scene 248/249 offsets were stale shader/build
-pairings, resolved by reprocessing.
+remaining work live in [migration](docs/migration.md). All 39
+Dawn-capable scenes (37 curated plus two project gates) pass a full
+sequential re-validation at values equal to or better than SDL_GPU,
+thirteen of them bit-exact; material extensions,
+deformation/instancing/storage-morph, GridMaterial, shader variants,
+and runtime mesh appends are ported. The formerly recorded scene
+248/249 offsets were stale shader/build pairings, resolved by
+reprocessing.
 
-- [ ] Material extensions, deformation/instancing/storage-morph,
-  GridMaterial, shader variants, frame graph, transmission with
-  per-sample image processing plus the re-enabled pinned dither,
-  diagnostics — see the ordered list in
+- [ ] Frame graph (scenes 116, 145, 146), then transmission with
+  per-sample image processing plus the re-enabled pinned dither
+  (scenes 33, 176, 212 and the transmission project gates),
+  then diagnostics — see the ordered list in
   [migration](docs/migration.md).
-- [ ] Full-matrix Dawn validation, threshold review, and the SDL_GPU
-  retirement decision.
-- [ ] Migrate scene families behind parity gates (Standard, PBR/IBL,
-  backgrounds, frame graph, transmission with per-sample image
-  processing, deformation); re-enable the pinned background dither.
-- [ ] Retire SDL_GPU and the DXC/normalization/shader-cache machinery
-  once Dawn parity is a strict superset; update the docs' backend
-  rationale explicitly.
+- [ ] Threshold review and the SDL_GPU retirement decision; retire the
+  DXC/normalization/shader-cache machinery once Dawn parity is a
+  strict superset and update the docs' backend rationale explicitly.
 
 ## P0 — Backend portability
 
