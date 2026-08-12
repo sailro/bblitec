@@ -166,6 +166,7 @@ export interface AssignmentContext {
     compileBoolean(expression: ts.Expression): string;
     compileColor3(expression: ts.Expression): string;
     compileColor4(expression: ts.Expression): string;
+    compileVec3(expression: ts.Expression): string;
     objectProperty(
         object: ts.ObjectLiteralExpression,
         name: string,
@@ -513,6 +514,21 @@ export function emitPropertyAssignment(
             );
             context.emit(
                 `${engine}.materials[${target.cpp}.value].has_emissive_render_texture = true;`,
+            );
+            return;
+        }
+
+        if (
+            target.kind === "camera" &&
+            property === "target"
+        ) {
+            requireSimpleAssignment(
+                context,
+                expression,
+                "camera target",
+            );
+            context.emit(
+                `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].target = ${context.compileVec3(expression.right)};`,
             );
             return;
         }

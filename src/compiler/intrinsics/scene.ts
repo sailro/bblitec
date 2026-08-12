@@ -12,6 +12,15 @@ export interface SceneIntrinsicContext {
         maximum: number,
     ): void;
     compileValue(expression: ts.Expression): Value;
+    compileNumber(expression: ts.Expression): string;
+    compileColor3(expression: ts.Expression): string;
+    expectObjectLiteral(
+        expression: ts.Expression,
+    ): ts.ObjectLiteralExpression;
+    objectProperty(
+        object: ts.ObjectLiteralExpression,
+        name: string,
+    ): ts.Expression | undefined;
     expectKind(
         value: Value,
         kind: ValueKind,
@@ -151,6 +160,59 @@ export function compileSceneIntrinsic(
                     importedName === "attachFreeControl"
                         ? `bbl::attach_free_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp})`
                         : `bbl::attach_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp})`,
+            };
+        }
+
+        case "setFog": {
+            context.expectArgumentCount(call, 2, 2);
+            const scene =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                scene,
+                "scene",
+                call.arguments[0]!,
+            );
+            const config = context.expectObjectLiteral(
+                call.arguments[1]!,
+            );
+            const property = (
+                name: string,
+            ): ts.Expression => {
+                const expression = context.objectProperty(
+                    config,
+                    name,
+                );
+                if (!expression) {
+                    context.fail(
+                        config,
+                        `setFog requires a '${name}' property.`,
+                    );
+                }
+                return expression;
+            };
+            const modeExpression = property("mode");
+            const mode =
+                context.compileValue(modeExpression);
+            if (
+                mode.kind !== "number" ||
+                mode.staticNumber === undefined ||
+                ![0, 1, 2, 3].includes(mode.staticNumber)
+            ) {
+                context.fail(
+                    modeExpression,
+                    "setFog mode must be a static 0 (none), 1 (exp), 2 (exp2), or 3 (linear) literal.",
+                );
+            }
+            context.reachFeature("renderer:fog");
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_scene_fog(${scene.cpp}, ` +
+                    `${mode.staticNumber}.0f, ` +
+                    `${context.compileNumber(property("density"))}, ` +
+                    `${context.compileNumber(property("start"))}, ` +
+                    `${context.compileNumber(property("end"))}, ` +
+                    `${context.compileColor3(property("color"))})`,
             };
         }
 

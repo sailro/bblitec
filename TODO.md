@@ -23,12 +23,14 @@ independent compiler and API stacks agreeing to one LSB isolates
 CPU-side from GPU-side causes immediately.
 
 - [ ] Re-enable the pinned position-seeded background dither on Dawn
-  (scenes 6/14). The dithered ground/skybox variants are now emitted
-  at generation time, but enabling them on Dawn measurably regressed
-  scene 6 (0.283 → 0.333 full MAD): the pinned dither hash seeds on
-  interpolated world positions whose low bits follow the
-  barycentrics, so it only reproduces once the native camera
-  view-projection matches the pinned engine bit for bit. The real
+  (scenes 6/14; scene 7's solid skybox and ground share the same
+  disabled dither and reduce to the clear color without it — its
+  0.247 full MAD is this floor). The dithered ground/skybox variants
+  are now emitted at generation time, but enabling them on Dawn
+  measurably regressed scene 6 (0.283 → 0.333 full MAD): the pinned
+  dither hash seeds on interpolated world positions whose low bits
+  follow the barycentrics, so it only reproduces once the native
+  camera view-projection matches the pinned engine bit for bit. The real
   dependency is porting Babylon's camera composition (view from the
   camera world matrix, `mat4PerspectiveLHToRef` reverse-Z, JS-double
   multiply) — which also implies adopting reverse-Z in the native
@@ -175,6 +177,17 @@ CPU-side from GPU-side causes immediately.
   frame-indexed events such as Scene 273's runtime add). The bounded capture
   grace makes captures immune, but deterministic frame accounting is the
   real contract.
+- [ ] Compose environment ground/skybox draws with GPU instancing and
+  storage-buffer morphing: background draws now push an identity
+  deformation block (the scene 7 fix), but no scene yet reaches a
+  background combined with `BBLITE_GPU_INSTANCING` (missing parent
+  uniform/attribute bindings) or, on Dawn, with
+  `BBLITE_GPU_MORPH_STORAGE` (group 0 is unbound for the background
+  pipelines).
+- [ ] Chase Scene 7's sub-pixel arm-silhouette pose epsilon (~0.5% of
+  foreground pixels beyond 5) with an instrumented capture comparing
+  animated node TRS uploads bit for bit; both backends agree, so the
+  cause is CPU-side animation composition.
 - [ ] Add generation-checked handles and resource lifetime/leak checks.
 - [ ] Add dirty flags and incremental GPU updates.
 - [ ] Add device-loss and resize-safe resource recreation.
@@ -216,10 +229,11 @@ lane when they can be erased or lowered inside the compiler, asset pipeline,
 or renderer. A scene is deferred when its covered behavior needs a new
 platform, user-input, or external-service contract.
 
-**Integrate first (154 scenes):** 3, 4, 7, 9, 11, 12, 15-23, 25-27, 30,
-34-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
-155-162, 165, 177, 179, 200-207, 211, 214-219, 223, 226, 229, 231, 241,
-242, 244, 251-253, 260-264, 267-271, 275-279.
+**Integrate first (151 scenes):** 3, 4, 9, 11, 12, 15-23, 25-27, 30,
+34, 36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
+155-162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229,
+231, 241, 242, 244, 251-253, 260-264, 267-271, 275-279. Scenes 7, 35,
+and 216 graduated to measured parity gates on 2026-08-12.
 
 This lane includes static CSG/CSG2, compressed assets and splats,
 deterministic picking in Scenes 113-115, 117, 118, and 129, and the
@@ -238,9 +252,12 @@ runtime gaps may remain hidden behind it.
 
 ### Integration-first compiler contract gaps
 
-- [ ] Scenes 3, 216: support `setFog`.
+- [ ] Scene 3: compose Standard-material fog with the ported PBR scene
+  fog (Scene 216's `setFog` slice) and support `loadSkybox` six-face
+  image skyboxes.
 - [ ] Scenes 4, 22, 65, 141: support light position setters.
-- [ ] Scenes 7, 115: support camera target assignment.
+- [ ] Scene 115: re-audit past the ported camera-target assignment for
+  its remaining deterministic-picking blockers.
 - [ ] Scenes 11, 144, 152, 157, 158, 179, 229: generalize static array resolution.
 - [ ] Scenes 12, 43: fold or explicitly lower the reached browser-dependent conditions.
 - [ ] Scenes 15, 67-72, 223: support `createSpotLight`.
@@ -253,7 +270,6 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 23: support `Math.cos` with runtime numeric arguments.
 - [ ] Scenes 26, 87: support image-processing `toneMapping`.
 - [ ] Scene 27: support glTF `selectVariant`.
-- [ ] Scene 35: expose camera target values.
 - [ ] Scene 36: support `loadBasisTexture2D`.
 - [ ] Scene 38: support `createCylinder`.
 - [ ] Scenes 39, 148: support reached scene-light list mutation.
@@ -315,7 +331,9 @@ runtime gaps may remain hidden behind it.
   Scenes 9 and 143 (Sponza `.babylon`).
 - [ ] Scene 9: support nullable glTF fields currently read as strings.
 - [ ] Scene 30: support the reached glTF data without a `bufferView`.
-- [ ] Scenes 34, 242, 244, 253: extend native glTF animation channel coverage.
+- [ ] Scenes 34, 242, 244, 253: extend native glTF animation channel
+  coverage (LINEAR/CUBICSPLINE scale landed with Scene 7; STEP channels
+  and the remaining audited gaps stay).
 - [ ] Scene 37: support the reached glTF data without an image `source`.
 - [ ] Scene 260: support the reached non-triangle-list glTF primitive mode.
 

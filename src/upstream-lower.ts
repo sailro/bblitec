@@ -74,7 +74,9 @@ class GeneratedSourceWriter {
         );
         this.writeSource(
             "upstream/src/scene_core.cpp",
-            new SceneLowerer(context).lowerCore(),
+            new SceneLowerer(context).lowerCore({
+                fog: features.includes("renderer:fog"),
+            }),
             generated,
         );
 
@@ -208,6 +210,7 @@ class GeneratedSourceWriter {
                 "upstream/src/renderer_plan.cpp",
                 renderer.lowerRenderPlan({
                     transmission: features.includes("renderer:transmission"),
+                    fog: features.includes("renderer:fog"),
                     textureTransform:
                         options.textureTransform,
                     environmentRotation:
@@ -228,6 +231,7 @@ class GeneratedSourceWriter {
                 ground: features.includes("background:ground"),
                 skybox: features.includes("background:skybox"),
                 transmission: features.includes("renderer:transmission"),
+                fog: features.includes("renderer:fog"),
                 normalTextureScale: features.includes("loader:gltf"),
                 shaderVariants: options.shaderVariants,
                 standardMaterial:

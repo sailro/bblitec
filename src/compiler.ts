@@ -88,6 +88,7 @@ const featureSources: Record<Feature, string[]> = {
     "mesh:torus": [],
     "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],
+    "renderer:fog": [],
     "renderer:geometry-output": [],
 };
 
@@ -519,6 +520,13 @@ class Compiler
         const value = this.compileValue(
             declaration.initializer,
         );
+        if (value.kind === "record") {
+            this.emitRecordBindingDeclaration(
+                declaration.name,
+                value,
+            );
+            return;
+        }
         if (
             value.kind !== "render-target-texture"
         ) {
@@ -584,6 +592,59 @@ class Compiler
             this.defineVariable(element.name, {
                 ...propertyValue,
                 cpp: cppName,
+            });
+        }
+    }
+
+    private emitRecordBindingDeclaration(
+        pattern: ts.ObjectBindingPattern,
+        value: Value,
+    ): void {
+        for (const element of pattern.elements) {
+            if (
+                element.dotDotDotToken ||
+                !ts.isIdentifier(element.name)
+            ) {
+                this.fail(
+                    element,
+                    "Object destructuring supports identifier properties only.",
+                );
+            }
+            const property =
+                element.propertyName &&
+                (ts.isIdentifier(element.propertyName) ||
+                    ts.isStringLiteral(element.propertyName))
+                    ? element.propertyName.text
+                    : element.name.text;
+            const propertyValue =
+                value.recordProperties?.[property];
+            if (!propertyValue) {
+                this.fail(
+                    element,
+                    `Record has no property '${property}'.`,
+                );
+            }
+            if (propertyValue.kind !== "number") {
+                this.fail(
+                    element,
+                    `Record destructuring supports numeric properties only, received ${propertyValue.kind}.`,
+                );
+            }
+            const cppName = this.cppIdentifier(
+                element.name.text,
+            );
+            this.emit(
+                `[[maybe_unused]] double ${cppName} = ${propertyValue.cpp};`,
+            );
+            this.defineVariable(element.name, {
+                kind: "number",
+                cpp: cppName,
+                ...(propertyValue.staticNumber === undefined
+                    ? {}
+                    : {
+                          staticNumber:
+                              propertyValue.staticNumber,
+                      }),
             });
         }
     }
@@ -842,6 +903,27 @@ class Compiler
                     ...(owner.engineCpp
                         ? { engineCpp: owner.engineCpp }
                         : {}),
+                };
+            }
+            if (property === "target") {
+                const cameraRecord = `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value]`;
+                const component = (
+                    name: "x" | "y" | "z",
+                ): Value => ({
+                    kind: "number",
+                    cpp: `${cameraRecord}.target.${name}`,
+                    ...(owner.engineCpp
+                        ? { engineCpp: owner.engineCpp }
+                        : {}),
+                });
+                return {
+                    kind: "record",
+                    cpp: "",
+                    recordProperties: {
+                        x: component("x"),
+                        y: component("y"),
+                        z: component("z"),
+                    },
                 };
             }
             if (property === "worldMatrix") {

@@ -1700,3 +1700,78 @@ test("compiles Babylon Lite scene 249 vertex alpha clip", () => {
     assert.ok(result.manifest.features.includes("loader:gltf"));
     assert.ok(result.manifest.features.includes("renderer:pbr"));
 });
+
+test("compiles Babylon Lite scene 7 camera target assignment", () => {
+    const source = readFileSync(
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene7.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene7.ts",
+    });
+    assert.ok(result.manifest.features.includes("loader:gltf"));
+    assert.ok(result.manifest.features.includes("camera:default"));
+    assert.match(
+        result.cpp,
+        /\.target = bbl::Vec3\{\(-0\.025979936122894287f\), 1\.6681787837296724f, 0\.4591848850250244f\}/,
+    );
+    assert.match(result.cpp, /\.fixed_delta_ms = 16\.0f/);
+});
+
+test("compiles Babylon Lite scene 35 camera target destructuring", () => {
+    const source = readFileSync(
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene35.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene35.ts",
+    });
+    assert.ok(result.manifest.features.includes("loader:gltf"));
+    assert.ok(result.manifest.features.includes("camera:default"));
+    assert.match(result.cpp, /\.alpha \+= bbl::pi/);
+    assert.match(
+        result.cpp,
+        /\[\[maybe_unused\]\] double v_x = v_engine\.cameras\[v_cam\.value\]\.target\.x;/,
+    );
+    assert.match(
+        result.cpp,
+        /\[\[maybe_unused\]\] double v_z = v_engine\.cameras\[v_cam\.value\]\.target\.z;/,
+    );
+});
+
+test("compiles Babylon Lite scene 216 PBR fog", () => {
+    const source = readFileSync(
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene216.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene216.ts",
+    });
+    assert.ok(result.manifest.features.includes("renderer:fog"));
+    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.match(
+        result.cpp,
+        /bbl::set_scene_fog\(v_scene, 3\.0f, 0\.0f, 12\.0f, 60\.0f, bbl::Color3\{0\.7f, 0\.75f, 0\.82f\}\)/,
+    );
+});
+
+test("rejects setFog with a runtime fog mode", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                `import { createEngine, createSceneContext, setFog, registerScene, startEngine } from "babylon-lite";
+async function main(): Promise<void> {
+    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+    const engine = await createEngine(canvas);
+    const scene = createSceneContext(engine);
+    setFog(scene, { mode: 5 as 0 | 1 | 2 | 3, density: 0.1, start: 0, end: 10, color: [1, 1, 1] });
+    await registerScene(scene);
+    await startEngine(engine);
+}
+void main();
+`,
+                { fileName: "corpus/babylon-lite/lab/lite/src/lite/fog-mode.ts" },
+            ),
+        /setFog mode must be a static 0 \(none\), 1 \(exp\), 2 \(exp2\), or 3 \(linear\) literal/,
+    );
+});

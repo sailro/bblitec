@@ -4,12 +4,16 @@ import { LoweredSource, LoweringContext } from "./context.js";
 export class SceneLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerCore(): LoweredSource {
+    public lowerCore(
+        options: { fog?: boolean } = {},
+    ): LoweredSource {
         const modulePath = "src/scene/scene-core.ts";
         const createName = "createSceneContext";
         const addName = "addToScene";
         const beforeName = "onBeforeRender";
         const registerName = "registerScene";
+        const fogModulePath = "src/scene/scene-ubo-extras.ts";
+        const fogName = "setFog";
         const { file, declaration } = this.context.functionDeclaration(modulePath, createName);
         const scene = this.context.objectInitializer(declaration, "ctxLocal");
         const clearExpression = this.context.propertyInitializer(scene, "clearColor");
@@ -93,10 +97,163 @@ export class SceneLowerer {
                 "Expected idempotent rendering-context registration.",
             );
         }
+        if (options.fog) {
+            const { declaration: setFog } =
+                this.context.functionDeclaration(
+                    fogModulePath,
+                    fogName,
+                );
+            if (
+                !this.context.hasNode(
+                    setFog,
+                    (node) =>
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind ===
+                            ts.SyntaxKind.EqualsToken &&
+                        this.context
+                            .propertyPath(node.left)
+                            ?.join(".") === "scene.fog" &&
+                        ts.isIdentifier(node.right) &&
+                        node.right.text === "config",
+                )
+            ) {
+                this.context.contractError(
+                    setFog,
+                    "Expected setFog to store the fog config on the scene.",
+                );
+            }
+            if (
+                !this.context.hasCall(
+                    setFog,
+                    "registerContributor",
+                )
+            ) {
+                this.context.contractError(
+                    setFog,
+                    "Expected setFog to register the fog scene-uniform contributor.",
+                );
+            }
+            const { declaration: writeFogUbo } =
+                this.context.functionDeclaration(
+                    fogModulePath,
+                    "writeFogUbo",
+                );
+            const fogUboWrites: readonly (readonly [
+                number,
+                string,
+            ])[] = [
+                [80, "fog.mode"],
+                [81, "fog.start"],
+                [82, "fog.end"],
+                [83, "fog.density"],
+            ];
+            for (const [offset, path] of fogUboWrites) {
+                if (
+                    !this.context.hasNode(
+                        writeFogUbo,
+                        (node) =>
+                            ts.isBinaryExpression(node) &&
+                            node.operatorToken.kind ===
+                                ts.SyntaxKind.EqualsToken &&
+                            ts.isElementAccessExpression(
+                                node.left,
+                            ) &&
+                            ts.isNumericLiteral(
+                                node.left.argumentExpression,
+                            ) &&
+                            Number(
+                                node.left.argumentExpression
+                                    .text,
+                            ) === offset &&
+                            this.context
+                                .propertyPath(node.right)
+                                ?.join(".") === path,
+                    )
+                ) {
+                    this.context.contractError(
+                        writeFogUbo,
+                        `Expected fog UBO write data[${offset}] = ${path}.`,
+                    );
+                }
+            }
+            for (const channel of [0, 1, 2]) {
+                if (
+                    !this.context.hasNode(
+                        writeFogUbo,
+                        (node) => {
+                            if (
+                                !ts.isBinaryExpression(node) ||
+                                node.operatorToken.kind !==
+                                    ts.SyntaxKind.EqualsToken ||
+                                !ts.isElementAccessExpression(
+                                    node.left,
+                                ) ||
+                                !ts.isNumericLiteral(
+                                    node.left
+                                        .argumentExpression,
+                                ) ||
+                                Number(
+                                    node.left
+                                        .argumentExpression
+                                        .text,
+                                ) !== 84 + channel
+                            ) {
+                                return false;
+                            }
+                            const right =
+                                this.context.unwrapExpression(
+                                    node.right,
+                                );
+                            return (
+                                ts.isElementAccessExpression(
+                                    right,
+                                ) &&
+                                ts.isNumericLiteral(
+                                    right.argumentExpression,
+                                ) &&
+                                Number(
+                                    right.argumentExpression
+                                        .text,
+                                ) === channel &&
+                                this.context
+                                    .propertyPath(
+                                        right.expression,
+                                    )
+                                    ?.join(".") === "fog.color"
+                            );
+                        },
+                    )
+                ) {
+                    this.context.contractError(
+                        writeFogUbo,
+                        `Expected fog UBO color write data[${84 + channel}].`,
+                    );
+                }
+            }
+        }
         const value = (input: number): string => this.context.floatLiteral(input);
+        const fogSource = options.fog
+            ? `
+// ${this.context.provenance(fogModulePath, `${fogName}, writeFogUbo`)}
+void set_scene_fog(
+    Scene& scene,
+    float mode,
+    float density,
+    float start,
+    float end,
+    Color3 color) {
+    require_scene_engine(scene);
+    scene.fog_mode = mode;
+    scene.fog_density = density;
+    scene.fog_start = start;
+    scene.fog_end = end;
+    scene.fog_color = color;
+}
+`
+            : "";
         return {
             modulePath,
-            symbolName: `${createName},${addName},${beforeName},${registerName}`,
+            symbolName: `${createName},${addName},${beforeName},${registerName}${options.fog ? `,${fogName}` : ""}`,
             header: "",
             source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${registerName}`)}
 #include <bblite/runtime.hpp>
@@ -207,7 +364,7 @@ void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
     scene.transmission_enabled = true;
 }
-
+${fogSource}
 } // namespace bbl
 `,
         };

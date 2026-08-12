@@ -144,6 +144,7 @@ export type Feature =
     | "mesh:torus"
     | "renderer:pbr"
     | "renderer:transmission"
+    | "renderer:fog"
     | "renderer:geometry-output";
 
 export interface ResolvedCompileOptions {

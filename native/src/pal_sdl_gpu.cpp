@@ -5109,6 +5109,18 @@ bool run_gpu_engine(Engine& engine) {
                         ? skybox_matrix.data()
                         : matrix.data(),
                     sizeof(matrix));
+#if BBLITE_GPU_DEFORMATION
+                // Background geometry carries zeroed joint weights; without
+                // a fresh identity deformation block the previous mesh
+                // draw's skinning uniforms would collapse the quad.
+                const DeformationUniforms skybox_deformation =
+                    build_deformation_uniforms(MeshRecord{}, false);
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    1,
+                    &skybox_deformation,
+                    sizeof(skybox_deformation));
+#endif
                 SDL_BindGPUGraphicsPipeline(pass, state.skybox_pipeline);
                 SDL_PushGPUFragmentUniformData(command, 0, &skybox, sizeof(skybox));
                 const SDL_GPUBufferBinding vertex_binding{state.skybox.vertices, 0};
@@ -5483,6 +5495,18 @@ bool run_gpu_engine(Engine& engine) {
                         matrix.data(),
                         sizeof(matrix));
                 }
+#if BBLITE_GPU_DEFORMATION
+                // Background geometry carries zeroed joint weights; without
+                // a fresh identity deformation block the previous mesh
+                // draw's skinning uniforms would collapse the quad.
+                const DeformationUniforms ground_deformation =
+                    build_deformation_uniforms(MeshRecord{}, false);
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    1,
+                    &ground_deformation,
+                    sizeof(ground_deformation));
+#endif
                 const upstream::BackgroundUniforms background =
                     upstream::build_background_uniforms(scene.environment, camera);
                 SDL_BindGPUGraphicsPipeline(pass, state.background_pipeline);
