@@ -11,14 +11,17 @@ SDL_Renderer CPU fallback is out of scope.
 
 ## Verified state
 
-Seventeen curated scenes render on Dawn at values equal to or better
+Nineteen curated scenes render on Dawn at values equal to or better
 than SDL_GPU (see the Dawn column in [status](status.md)): scenes 2, 10,
 32, and 259 are bit-exact (259 beats SDL_GPU, whose DXC-vs-browser
 rounding it eliminates), scene 1 (BoomBox) matches the SDL_GPU baseline
-at 0.001/0.015, scene 249 matches its SDL_GPU baseline exactly at
-0.001/0.024, scene 248 beats it at 0.001/0.004, and scenes 6, 13, 14,
-31, 168, 210, 257, 258, 265, and 266 pass their gates. There is no open
-Dawn divergence in the migrated slice.
+at 0.001/0.015, scene 8 matches its baseline exactly at 0.129/0.134
+(the compiled-HDR environment path worked unmodified), scene 249
+matches its SDL_GPU baseline exactly at 0.001/0.024, scenes 24
+(HillValley `.babylon` reflection cubes, 0.015/0.016) and 248
+(0.001/0.004) beat theirs, and scenes 6, 13, 14, 31, 168, 210, 257,
+258, 265, and 266 pass their gates. There is no open Dawn divergence in
+the migrated slice.
 
 Key empirical findings, in case any regress:
 
@@ -170,31 +173,25 @@ authority if a regression appears:
 
 ## Remaining work, in suggested order
 
-1. **`.babylon` reflection cubes** — the standard reflection slot
-   currently binds the black fallback cube; scenes 24/145 need
-   `engine.reflection_cubes` uploads (see SDL `upload_cube_texture`).
-2. **Scene 8 probe** — the compiled-HDR environment path
-   (`specular_rgba16f` + environment skybox) is implemented but was
-   never probed; likely works as-is.
-3. **Material extensions** (scenes 28, 29, 178, 212): extension texture
+1. **Material extensions** (scenes 28, 29, 178, 212): extension texture
    pairs append after the base bindings per
    `render_capabilities.hpp` defines; extend the group-2 bind group
    construction to mirror `append_material_extension_bindings`.
-4. **Deformation family** (scenes 5, 243, 245, 246, 247, 254, 255):
+2. **Deformation family** (scenes 5, 243, 245, 246, 247, 254, 255):
    lift the compile-time guard at the top of `run_dawn_engine`. Needs
    the `DeformationUniforms` uniform at group 1 binding 1, the
    instancing vertex buffer (slot 1, locations 16-19) plus its parent
    uniform, and the storage-morph buffers at group 0 — the WGSL side
    already exists and Dawn's binding model matches it directly.
-5. **GridMaterial** (scene 213): own `grid.vert`/`grid.frag` modules
+3. **GridMaterial** (scene 213): own `grid.vert`/`grid.frag` modules
    and four pipeline kinds.
-6. **Shader variants** (scenes 163, 273, 274): alpha-card and
+4. **Shader variants** (scenes 163, 273, 274): alpha-card and
    circular-cutout vertex/fragment pairs, including the
    alpha-to-coverage pipeline.
-7. **Frame graph** (scenes 116, 145, 146): render-target tasks,
+5. **Frame graph** (scenes 116, 145, 146): render-target tasks,
    depth-only passes, geometry MRTs, viewport/scissor copies, blits —
    the largest remaining chunk.
-8. **Transmission** (scenes 33, 176, 212): scene-color grab with the
+6. **Transmission** (scenes 33, 176, 212): scene-color grab with the
    pinned mip chain and repeat sampler, and — the payoff SDL_GPU could
    never express — the **per-sample image-processing pass**
    (`texture_multisampled_2d`, apply `ip()` per sample, then average)
@@ -203,7 +200,7 @@ authority if a regression appears:
    it reproducible), which should take scenes 6/14 below their SDL
    floors; that requires emitting the dithered shader variant at
    generation time.
-9. **Diagnostics/attribution** (scene 1 draw IDs, clusters, PBR
+7. **Diagnostics/attribution** (scene 1 draw IDs, clusters, PBR
    buffers), then the full-matrix Dawn validation, threshold review,
    and the SDL_GPU retirement decision (delete DXC/normalization/
    shader-cache machinery, rewrite the backend rationale in

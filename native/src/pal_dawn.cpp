@@ -72,6 +72,9 @@ struct DawnMesh {
     std::array<WGPUTextureView, mesh_texture_slots> owned_views{};
     std::array<WGPUTextureView, mesh_texture_slots> views{};
     std::array<WGPUSampler, mesh_texture_slots> samplers{};
+    // Standard-material `.babylon` reflection cube view, non-owning
+    // (points into DawnState::reflection_cube_views).
+    WGPUTextureView reflection = nullptr;
     std::map<upstream::RenderPipelineKind, DawnMeshBindings> bindings;
 };
 
@@ -103,6 +106,8 @@ struct DawnState {
     WGPUTextureView black_cube_view = nullptr;
     WGPUTexture normal_flat_texture = nullptr;
     WGPUTextureView normal_flat_view = nullptr;
+    std::vector<WGPUTexture> reflection_cubes;
+    std::vector<WGPUTextureView> reflection_cube_views;
     WGPUTexture environment_cube = nullptr;
     WGPUTextureView environment_cube_view = nullptr;
     WGPUTexture brdf_texture = nullptr;
@@ -210,6 +215,12 @@ struct DawnState {
             wgpuTextureViewRelease(environment_cube_view);
         }
         if (environment_cube) wgpuTextureRelease(environment_cube);
+        for (WGPUTextureView view : reflection_cube_views) {
+            if (view) wgpuTextureViewRelease(view);
+        }
+        for (WGPUTexture texture : reflection_cubes) {
+            if (texture) wgpuTextureRelease(texture);
+        }
         if (normal_flat_view) wgpuTextureViewRelease(normal_flat_view);
         if (normal_flat_texture) wgpuTextureRelease(normal_flat_texture);
         if (black_cube_view) wgpuTextureViewRelease(black_cube_view);
@@ -379,11 +390,14 @@ WGPURenderPipeline mip_pipeline_for(
     return pipeline;
 }
 
+// The pinned generator blits one face at a time for cube textures
+// (recordMipmaps' optional layer): views become single-layer 2D.
 void generate_mipmaps(
     DawnState& state,
     WGPUTexture texture,
     WGPUTextureFormat format,
-    std::uint32_t mip_count) {
+    std::uint32_t mip_count,
+    std::int32_t face = -1) {
     if (mip_count <= 1) return;
     WGPURenderPipeline pipeline = mip_pipeline_for(state, format);
     WGPUBindGroupLayout layout =
@@ -395,12 +409,22 @@ void generate_mipmaps(
             WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
         source_descriptor.baseMipLevel = level - 1;
         source_descriptor.mipLevelCount = 1;
-        WGPUTextureView source =
-            wgpuTextureCreateView(texture, &source_descriptor);
         WGPUTextureViewDescriptor target_descriptor =
             WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
         target_descriptor.baseMipLevel = level;
         target_descriptor.mipLevelCount = 1;
+        if (face >= 0) {
+            source_descriptor.dimension = WGPUTextureViewDimension_2D;
+            source_descriptor.baseArrayLayer =
+                static_cast<std::uint32_t>(face);
+            source_descriptor.arrayLayerCount = 1;
+            target_descriptor.dimension = WGPUTextureViewDimension_2D;
+            target_descriptor.baseArrayLayer =
+                static_cast<std::uint32_t>(face);
+            target_descriptor.arrayLayerCount = 1;
+        }
+        WGPUTextureView source =
+            wgpuTextureCreateView(texture, &source_descriptor);
         WGPUTextureView target =
             wgpuTextureCreateView(texture, &target_descriptor);
 
@@ -521,6 +545,85 @@ WGPUTexture upload_material_texture(
         &layout,
         &size);
     generate_mipmaps(state, texture, format, mip_count);
+    return texture;
+}
+
+// `.babylon` reflection cube, matching the pinned loadCubeTexture:
+// rgba8unorm faces with a full GPU-blit mip chain generated per face.
+WGPUTexture upload_reflection_cube(
+    DawnState& state,
+    const std::array<TextureData, 6>& texture_data) {
+    std::array<DecodedImage, 6> images;
+    int width = 1;
+    int height = 1;
+    for (std::size_t index = 0; index < images.size(); ++index) {
+        if (!texture_data[index].bytes.empty()) {
+            images[index] = decode_image(
+                ts::ArrayBuffer(texture_data[index].bytes));
+        } else {
+            images[index].width = 1;
+            images[index].height = 1;
+            images[index].rgba = {0, 0, 0, 255};
+        }
+        if (index == 0) {
+            width = images[index].width;
+            height = images[index].height;
+        } else if (
+            images[index].width != width ||
+            images[index].height != height) {
+            throw std::runtime_error(
+                "Cube texture faces must have matching dimensions.");
+        }
+    }
+    const std::uint32_t mip_count =
+        1u + static_cast<std::uint32_t>(
+                 std::floor(
+                     std::log2(
+                         static_cast<double>(
+                             std::max(width, height)))));
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.usage =
+        WGPUTextureUsage_TextureBinding |
+        WGPUTextureUsage_RenderAttachment |
+        WGPUTextureUsage_CopyDst;
+    descriptor.size = {
+        static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(height),
+        6,
+    };
+    descriptor.format = WGPUTextureFormat_RGBA8Unorm;
+    descriptor.mipLevelCount = mip_count;
+    WGPUTexture texture =
+        wgpuDeviceCreateTexture(state.device, &descriptor);
+    if (!texture) dawn_error("wgpuDeviceCreateTexture reflection cube");
+    for (std::uint32_t face = 0; face < 6; ++face) {
+        const DecodedImage& image = images[face];
+        WGPUTexelCopyTextureInfo destination =
+            WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+        destination.texture = texture;
+        destination.origin = {0, 0, face};
+        WGPUTexelCopyBufferLayout layout{};
+        layout.bytesPerRow = static_cast<std::uint32_t>(width) * 4;
+        layout.rowsPerImage = static_cast<std::uint32_t>(height);
+        const WGPUExtent3D size{
+            static_cast<std::uint32_t>(width),
+            static_cast<std::uint32_t>(height),
+            1,
+        };
+        wgpuQueueWriteTexture(
+            state.queue,
+            &destination,
+            image.rgba.data(),
+            image.rgba.size(),
+            &layout,
+            &size);
+        generate_mipmaps(
+            state,
+            texture,
+            WGPUTextureFormat_RGBA8Unorm,
+            mip_count,
+            static_cast<std::int32_t>(face));
+    }
     return texture;
 }
 
@@ -894,7 +997,7 @@ DawnMeshBindings& bindings_for(
         mesh.views[2],
         mesh.views[3],
         binding_traits.standard
-            ? state.black_cube_view
+            ? (mesh.reflection ? mesh.reflection : state.black_cube_view)
             : state.environment_cube_view,
         binding_traits.standard ? mesh.views[4] : state.brdf_view,
     };
@@ -1261,6 +1364,13 @@ bool run_dawn_engine(Engine& engine) {
     }
     upload_environment(state, scene.environment);
     upload_brdf(state, scene.environment);
+    state.reflection_cubes.reserve(engine.reflection_cubes.size());
+    state.reflection_cube_views.reserve(engine.reflection_cubes.size());
+    for (const auto& cube : engine.reflection_cubes) {
+        WGPUTexture texture = upload_reflection_cube(state, cube);
+        state.reflection_cubes.push_back(texture);
+        state.reflection_cube_views.push_back(cube_view(texture));
+    }
 
     upstream::RenderPlan render_plan =
         upstream::build_render_plan(scene, engine);
@@ -1314,6 +1424,14 @@ bool run_dawn_engine(Engine& engine) {
         if (item.material.value < engine.materials.size()) {
             const MaterialRecord& material =
                 engine.materials[item.material.value];
+            if (
+                standard_material &&
+                material.reflection_cube <
+                    state.reflection_cube_views.size()) {
+                mesh.reflection =
+                    state.reflection_cube_views[
+                        material.reflection_cube];
+            }
             slot_data[0] = &material.base_color_texture;
             slot_data[1] = standard_material
                 ? &material.specular_texture

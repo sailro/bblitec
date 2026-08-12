@@ -20,16 +20,17 @@ reference. Staged migration; SDL_GPU stays the default until Dawn parity
 is a strict superset. The SDL_Renderer CPU fallback is out of scope.
 
 Progress, verified findings, ported pinned contracts, and the ordered
-remaining work live in [migration](docs/migration.md). Seventeen scenes
+remaining work live in [migration](docs/migration.md). Nineteen scenes
 pass on Dawn at values equal to or better than SDL_GPU, including
-bit-exact scenes 2/10/32/259 and BoomBox at the SDL baseline; the
+bit-exact scenes 2/10/32/259, BoomBox at the SDL baseline, HillValley
+`.babylon` reflection cubes, and the compiled-HDR scene 8 path; the
 formerly recorded scene 248/249 offsets were stale shader/build
 pairings, resolved by reprocessing.
 
-- [ ] `.babylon` reflection cubes, scene 8 probe, material extensions,
-  deformation/instancing/storage-morph, GridMaterial, shader variants,
-  frame graph, transmission with per-sample image processing plus the
-  re-enabled pinned dither, diagnostics — see the ordered list in
+- [ ] Material extensions, deformation/instancing/storage-morph,
+  GridMaterial, shader variants, frame graph, transmission with
+  per-sample image processing plus the re-enabled pinned dither,
+  diagnostics — see the ordered list in
   [migration](docs/migration.md).
 - [ ] Full-matrix Dawn validation, threshold review, and the SDL_GPU
   retirement decision.
