@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import {
+    copyFileSync,
     existsSync,
     mkdirSync,
     readFileSync,
@@ -184,6 +185,16 @@ export function resolveParityThresholds(
     gate: "enforced" | "diagnostic-only";
 } {
     if (gpu) {
+        if (
+            process.env.BBLITE_GPU_BACKEND === "dawn" &&
+            config.dawnThresholds
+        ) {
+            return {
+                maxMad: config.dawnThresholds.maxFullMad,
+                maxRegionMad: config.dawnThresholds.maxForegroundMad,
+                gate: "enforced",
+            };
+        }
         const enforced =
             config.maxFullMad !== undefined &&
             config.maxForegroundMad !== undefined;
@@ -527,6 +538,82 @@ export async function runSceneParity(
         if (arguments_.noFail) console.warn(message);
         else throw new Error(message);
     }
+}
+
+// Renders both GPU backends through the standard gates, then diffs
+// the two native images against each other — the project's decisive
+// diagnostic (backend agreement to one LSB puts a divergence on the
+// CPU side; disagreement puts it on the GPU side) — and writes the
+// combined report beside the per-backend ones.
+export async function runSceneParityDifferential(
+    sceneId: string,
+): Promise<void> {
+    const scene = resolveScene(sceneId);
+    const config = scene.parity;
+    if (!config) {
+        throw new Error(`Scene '${scene.id}' has no parity definition.`);
+    }
+    const outputDirectory = resolve(config.outputDirectory);
+    mkdirSync(outputDirectory, { recursive: true });
+    const sdlImage = resolve(outputDirectory, "native-gpu.png");
+    const dawnImage = resolve(outputDirectory, "native-dawn.png");
+    const previousBackend = process.env.BBLITE_GPU_BACKEND;
+    try {
+        delete process.env.BBLITE_GPU_BACKEND;
+        await runSceneParity([sceneId]);
+        copyFileSync(resolve(config.actual), sdlImage);
+        process.env.BBLITE_GPU_BACKEND = "dawn";
+        await runSceneParity([sceneId]);
+        copyFileSync(resolve(config.actual), dawnImage);
+    } finally {
+        if (previousBackend === undefined) {
+            delete process.env.BBLITE_GPU_BACKEND;
+        } else {
+            process.env.BBLITE_GPU_BACKEND = previousBackend;
+        }
+    }
+    const backendDelta = compareImages(sdlImage, dawnImage);
+    const readBackendReport = (suffix: string): {
+        full: { mad: number };
+        region: { mad: number };
+    } =>
+        JSON.parse(
+            readFileSync(
+                resolve(outputDirectory, `report-${suffix}.json`),
+                "utf8",
+            ),
+        ) as { full: { mad: number }; region: { mad: number } };
+    const sdlReport = readBackendReport("gpu");
+    const dawnReport = readBackendReport("dawn");
+    const report = {
+        scene: scene.name,
+        goldenVersusSdlGpu: {
+            fullMad: sdlReport.full.mad,
+            foregroundMad: sdlReport.region.mad,
+        },
+        goldenVersusDawn: {
+            fullMad: dawnReport.full.mad,
+            foregroundMad: dawnReport.region.mad,
+        },
+        sdlGpuVersusDawn: backendDelta,
+    };
+    const reportPath = resolve(
+        outputDirectory,
+        "report-differential.json",
+    );
+    writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    console.log(
+        `Backend differential (${scene.name}): ` +
+            `SDL_GPU ${sdlReport.full.mad.toFixed(3)}/${sdlReport.region.mad.toFixed(3)}, ` +
+            `Dawn ${dawnReport.full.mad.toFixed(3)}/${dawnReport.region.mad.toFixed(3)}, ` +
+            `SDL_GPU-vs-Dawn MAD=${backendDelta.mad.toFixed(3)} ` +
+            `max=${backendDelta.maxDiff} ` +
+            `within1=${(
+                (backendDelta.within1 / backendDelta.totalPixels) *
+                100
+            ).toFixed(2)}%`,
+    );
+    console.log(`Report: ${reportPath}`);
 }
 
 if (

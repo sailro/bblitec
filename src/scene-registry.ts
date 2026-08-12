@@ -8,6 +8,11 @@ export interface SceneParityDefinition {
     maxFullMad?: number;
     maxForegroundMad?: number;
     cpuThresholds?: { maxFullMad: number; maxForegroundMad: number };
+    // Tighter gates for the Dawn backend where it is structurally
+    // closer to the golden than SDL_GPU (per-sample transmission,
+    // browser-compiler parity); the shared thresholds above gate
+    // SDL_GPU and any scene without an entry here.
+    dawnThresholds?: { maxFullMad: number; maxForegroundMad: number };
     backgroundColor: [number, number, number];
     backgroundThreshold: number;
     nativeEnvironment?: Record<string, string>;
@@ -123,6 +128,7 @@ export const scenes: readonly SceneDefinition[] = [
             outputDirectory: "artifacts/parity/scene24",
             maxFullMad: 0.05,
             maxForegroundMad: 0.05,
+            dawnThresholds: { maxFullMad: 0.03, maxForegroundMad: 0.03 },
             backgroundColor: [174, 129, 107],
             backgroundThreshold: 30,
         },
@@ -203,6 +209,7 @@ export const scenes: readonly SceneDefinition[] = [
             outputDirectory: "artifacts/parity/scene33",
             maxFullMad: 0.08,
             maxForegroundMad: 1.7,
+            dawnThresholds: { maxFullMad: 0.02, maxForegroundMad: 0.2 },
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },
@@ -289,6 +296,7 @@ export const scenes: readonly SceneDefinition[] = [
             outputDirectory: "artifacts/parity/scene212",
             maxFullMad: 0.25,
             maxForegroundMad: 0.28,
+            dawnThresholds: { maxFullMad: 0.05, maxForegroundMad: 0.05 },
             backgroundColor: [255, 255, 255],
             backgroundThreshold: 30,
         },
@@ -743,6 +751,7 @@ export const scenes: readonly SceneDefinition[] = [
             outputDirectory: "artifacts/parity/transmission-scene-color",
             maxFullMad: 0.04,
             maxForegroundMad: 0.18,
+            dawnThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
         },
@@ -763,6 +772,7 @@ export const scenes: readonly SceneDefinition[] = [
             outputDirectory: "artifacts/parity/transmission-ior",
             maxFullMad: 0.08,
             maxForegroundMad: 0.18,
+            dawnThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
         },
@@ -783,6 +793,7 @@ export const scenes: readonly SceneDefinition[] = [
             outputDirectory: "artifacts/parity/transmission-volume",
             maxFullMad: 0.09,
             maxForegroundMad: 0.22,
+            dawnThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
         },
@@ -803,6 +814,7 @@ export const scenes: readonly SceneDefinition[] = [
             outputDirectory: "artifacts/parity/scene176",
             maxFullMad: 0.12,
             maxForegroundMad: 0.12,
+            dawnThresholds: { maxFullMad: 0.06, maxForegroundMad: 0.06 },
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             attribution: {
@@ -977,6 +989,7 @@ export const scenes: readonly SceneDefinition[] = [
             outputDirectory: "artifacts/parity/scene145",
             maxFullMad: 0.05,
             maxForegroundMad: 0.05,
+            dawnThresholds: { maxFullMad: 0.02, maxForegroundMad: 0.02 },
             backgroundColor: [255, 255, 255],
             backgroundThreshold: 30,
         },

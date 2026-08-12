@@ -3,7 +3,10 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { runSceneParity } from "./parity-scene.js";
+import {
+    runSceneParity,
+    runSceneParityDifferential,
+} from "./parity-scene.js";
 import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
 import { runInstrumentedCapture } from "./capture-instrumented.js";
 import { resolveScene, scenes } from "./scene-registry.js";
@@ -153,10 +156,18 @@ async function parity(
     idOrSource: string,
     extraArguments: string[],
 ): Promise<void> {
+    const differential = extraArguments.includes("--differential");
+    const passthrough = extraArguments.filter(
+        (argument) => argument !== "--differential",
+    );
     if (idOrSource === "all") {
         for (const scene of scenes) {
             if (scene.parity) {
-                await runSceneParity([scene.id, ...extraArguments]);
+                if (differential) {
+                    await runSceneParityDifferential(scene.id);
+                } else {
+                    await runSceneParity([scene.id, ...passthrough]);
+                }
                 if (process.platform === "win32") {
                     await new Promise((done) =>
                         setTimeout(done, 500),
@@ -168,7 +179,11 @@ async function parity(
     }
     const scene = resolveScene(idOrSource);
     if (!scene.parity) throw new Error(`Scene '${scene.id}' has no parity definition.`);
-    await runSceneParity([idOrSource, ...extraArguments]);
+    if (differential) {
+        await runSceneParityDifferential(scene.id);
+        return;
+    }
+    await runSceneParity([idOrSource, ...passthrough]);
 }
 
 function build(idOrSource: string): void {

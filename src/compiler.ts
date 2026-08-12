@@ -3211,15 +3211,15 @@ class Compiler
             features.includes("background:ground")
         ) {
             adaptations.push({
-                id: "background-dither-disabled",
+                id: "background-dither-sdl-gpu-disabled",
                 category: "rendering",
                 sourceSemantics: "Babylon Lite adds position-seeded ±0.5/255 dither to generated background fragments.",
-                nativeSemantics: "Native backgrounds omit the dither because backend interpolation differences decorrelate position-seeded noise.",
+                nativeSemantics: "The Dawn backend compiles the pinned dither variant bit-reproducibly (same compiler as the reference); SDL_GPU backgrounds omit the dither because offline compilation decorrelates the position-seeded noise.",
                 risk: "medium",
                 validation: [
                     "pinned dither formula experiment",
                     "Scene 1 background attribution",
-                    "documented no-dither regression floor",
+                    "scenes 6/14 Dawn dither parity",
                 ],
             });
         }

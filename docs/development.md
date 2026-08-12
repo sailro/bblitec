@@ -308,6 +308,20 @@ Outputs under `artifacts\parity` include the actual image, diff map, hotspots,
 JSON report, and optional draw/cluster/diagnostic buffers. Committed goldens
 live under `reference\<scene>`.
 
+Render both GPU backends and diff them against each other and the
+golden in one report:
+
+```powershell
+npm run scene -- parity scene33 --differential
+```
+
+Each backend still runs through its standard gates (scenes where Dawn
+is structurally closer to the golden carry tighter `dawnThresholds`
+in the registry), and `report-differential.json` adds the direct
+SDL_GPU-versus-Dawn comparison — backend agreement to one LSB puts a
+divergence on the CPU side, disagreement puts it on the GPU side.
+`--differential` also composes with `parity all`.
+
 ## Instrumented browser capture
 
 When a parity residual resists chain reasoning, capture the browser's
