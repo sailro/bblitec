@@ -11,6 +11,128 @@ interface EnvironmentConstants {
 export class EnvironmentLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
+    public lowerImageSkyboxAdapter(): LoweredSource {
+        const modulePath = "src/loader-skybox/load-skybox.ts";
+        const symbolName = "loadSkybox";
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        const sizeParameter = declaration.parameters[3];
+        if (
+            !sizeParameter?.initializer ||
+            this.context.numericValue(
+                sizeParameter.initializer,
+                file,
+            ) !== 100
+        ) {
+            this.context.contractError(
+                sizeParameter ?? declaration,
+                "Expected the pinned loadSkybox size default of 100.",
+            );
+        }
+        for (const called of [
+            "loadCubeTexture",
+            "createBoxData",
+            "buildSkyboxRenderable",
+        ]) {
+            if (!this.context.hasCall(declaration, called)) {
+                this.context.contractError(
+                    declaration,
+                    `Expected loadSkybox to call ${called}.`,
+                );
+            }
+        }
+        const cubeModulePath = "src/texture/cube-texture.ts";
+        const { declaration: loadCubeTexture } =
+            this.context.functionDeclaration(
+                cubeModulePath,
+                "loadCubeTexture",
+            );
+        const faceSuffixes = [
+            "_px",
+            "_nx",
+            "_py",
+            "_ny",
+            "_pz",
+            "_nz",
+        ];
+        if (
+            !this.context.hasNode(
+                loadCubeTexture,
+                (node) =>
+                    ts.isArrayLiteralExpression(node) &&
+                    node.elements.length ===
+                        faceSuffixes.length &&
+                    node.elements.every(
+                        (element, index) =>
+                            ts.isStringLiteral(element) &&
+                            element.text ===
+                                faceSuffixes[index],
+                    ),
+            )
+        ) {
+            this.context.contractError(
+                loadCubeTexture,
+                "Expected the pinned cube face suffix order.",
+            );
+        }
+        if (
+            !this.context.hasNode(
+                loadCubeTexture,
+                (node) =>
+                    ts.isPropertyAssignment(node) &&
+                    ts.isIdentifier(node.name) &&
+                    node.name.text === "format" &&
+                    ts.isStringLiteral(node.initializer) &&
+                    node.initializer.text === "rgba8unorm",
+            )
+        ) {
+            this.context.contractError(
+                loadCubeTexture,
+                "Expected the pinned rgba8unorm cube format.",
+            );
+        }
+        if (
+            !this.context.hasCall(
+                loadCubeTexture,
+                "mipLevelCount",
+            )
+        ) {
+            this.context.contractError(
+                loadCubeTexture,
+                "Expected the pinned full cube mip chain.",
+            );
+        }
+        return {
+            modulePath,
+            symbolName,
+            header: "",
+            source: `// ${this.context.provenance(modulePath, symbolName, "src/texture/cube-texture.ts#loadCubeTexture")}
+#include <bblite/pal.hpp>
+#include <bblite/runtime.hpp>
+
+namespace bbl {
+
+void load_image_skybox(
+    Scene& scene,
+    std::array<std::string, 6> face_paths,
+    float size) {
+    for (std::size_t face = 0; face < face_paths.size(); ++face) {
+        scene.environment.image_skybox_faces[face].bytes =
+            pal::read_binary_file(face_paths[face]);
+    }
+    scene.environment.image_skybox_size = size;
+    scene.environment.has_image_skybox = true;
+    scene.environment.background_enabled_by_default = true;
+}
+
+} // namespace bbl
+`,
+        };
+    }
+
     public lowerParser(): LoweredSource {
         const modulePath = "src/loader-env/env-parse.ts";
         const symbolName = "parseEnvFile";

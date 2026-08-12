@@ -73,6 +73,26 @@ export const scenes: readonly SceneDefinition[] = [
         },
     },
     {
+        id: "scene3",
+        name: "Scene 3 - Fog Boxes",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene3.ts",
+        output: "generated/scene3",
+        title: "Babylon Lite Native - Fog Boxes",
+        buildDirectory: "native/build-scene3-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/scene3/babylon-lite-golden.png",
+            },
+            actual: "artifacts/parity/scene3-native.png",
+            outputDirectory: "artifacts/parity/scene3",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [200, 200, 190],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene6",
         name: "Scene 6 - PBR Gold Sphere",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene6.ts",
@@ -726,6 +746,85 @@ export const scenes: readonly SceneDefinition[] = [
             maxForegroundMad: 0.001,
             backgroundColor: [9, 11, 18],
             backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-standard-fog",
+        name: "Regression - Standard Fog",
+        source: "examples/regression-standard-fog.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/regression-standard-fog",
+        title: "Babylon Lite Native - Standard Fog",
+        buildDirectory:
+            "native/build-regression-standard-fog-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-standard-fog/babylon-lite-golden.png",
+            },
+            actual:
+                "artifacts/parity/regression-standard-fog-native.png",
+            outputDirectory:
+                "artifacts/parity/regression-standard-fog",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-instanced-ground",
+        name: "Regression - Instanced Ground",
+        source: "examples/regression-instanced-ground.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/regression-instanced-ground",
+        title: "Babylon Lite Native - Instanced Ground",
+        buildDirectory:
+            "native/build-regression-instanced-ground-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-instanced-ground/babylon-lite-golden.png",
+            },
+            actual:
+                "artifacts/parity/regression-instanced-ground-native.png",
+            outputDirectory:
+                "artifacts/parity/regression-instanced-ground",
+            maxFullMad: 0.2,
+            maxForegroundMad: 0.15,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-morph-ground",
+        name: "Regression - Morph Storage Ground",
+        source: "examples/regression-morph-ground.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/regression-morph-ground",
+        title: "Babylon Lite Native - Morph Storage Ground",
+        buildDirectory:
+            "native/build-regression-morph-ground-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-morph-ground/babylon-lite-golden.png",
+            },
+            referenceTimeSeconds: 0.5,
+            actual:
+                "artifacts/parity/regression-morph-ground-native.png",
+            outputDirectory:
+                "artifacts/parity/regression-morph-ground",
+            maxFullMad: 0.2,
+            maxForegroundMad: 0.25,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "0.5",
+            },
         },
     },
     {

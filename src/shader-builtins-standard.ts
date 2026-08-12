@@ -110,10 +110,60 @@ ${writes.join("\n")}
 export function standardFragmentWgsl(
     provenance: string,
     task?: GeometryOutputTaskManifest,
+    fog = false,
 ): string {
+    if (fog && task) {
+        throw new Error(
+            "Standard fog is lowered only for the color fragment variant.",
+        );
+    }
     const returnType = task
         ? "FragmentOutput"
         : "@location(0) vec4<f32>";
+    const fogUniformFields = fog
+        ? `    fogInfos: vec4<f32>,
+    fogColor: vec4<f32>,
+`
+        : "";
+    const fogHelper = fog
+        ? `const bblFogE: f32 = 2.71828;
+
+fn bblCalcFogFactor(fogDistance: vec3<f32>) -> f32 {
+    var fogCoeff = 1.0;
+    let fogMode = uniforms.fogInfos.x;
+    let fogStart = uniforms.fogInfos.y;
+    let fogEnd = uniforms.fogInfos.z;
+    let fogDensity = uniforms.fogInfos.w;
+    let dist = length(fogDistance);
+    if (fogMode == 3.0) {
+        fogCoeff = (fogEnd - dist) / (fogEnd - fogStart);
+    } else if (fogMode == 1.0) {
+        fogCoeff = 1.0 / pow(bblFogE, dist * fogDensity);
+    } else if (fogMode == 2.0) {
+        fogCoeff =
+            1.0 / pow(bblFogE, dist * dist * fogDensity * fogDensity);
+    }
+    return clamp(fogCoeff, 0.0, 1.0);
+}
+
+`
+        : "";
+    const fogBlend = fog
+        ? `    if (uniforms.fogInfos.x > 0.0) {
+        let fogView =
+            input.worldPosition - uniforms.cameraPosition.xyz;
+        let fog = bblCalcFogFactor(vec3<f32>(
+            dot(uniforms.viewRight.xyz, fogView),
+            dot(uniforms.viewUp.xyz, fogView),
+            dot(uniforms.viewForward.xyz, fogView),
+        ));
+        color = vec4<f32>(
+            mix(uniforms.fogColor.xyz, color.rgb, fog),
+            color.a,
+        );
+    }
+`
+        : "";
     return `// ${provenance}
 @group(2) @binding(0) var diffuseTexture: texture_2d<f32>;
 @group(2) @binding(1) var diffuseSampler: sampler;
@@ -150,7 +200,7 @@ struct FragmentUniforms {
     uvOptions: vec4<f32>,
     materialOptions: vec4<f32>,
     reflectionOptions: vec4<f32>,
-}
+${fogUniformFields}}
 @group(3) @binding(0) var<uniform> uniforms: FragmentUniforms;
 
 struct FragmentInput {
@@ -238,7 +288,7 @@ fn evaluateLight(
     return result;
 }
 
-${outputDeclaration(task)}
+${fogHelper}${outputDeclaration(task)}
 @fragment
 fn mainFragment(input: FragmentInput) -> ${returnType} {
     let normalW = normalize(input.normal);
@@ -370,12 +420,12 @@ fn mainFragment(input: FragmentInput) -> ${returnType} {
     if (uniforms.materialOptions.w > 0.5) {
         selectedColor = unlitColor;
     }
-    let color = vec4<f32>(
+    ${fog ? "var" : "let"} color = vec4<f32>(
         max(selectedColor, vec3<f32>(0.0)),
         alpha,
     );
 
-${outputWrites(task)}
+${fogBlend}${outputWrites(task)}
 }
 `;
 }

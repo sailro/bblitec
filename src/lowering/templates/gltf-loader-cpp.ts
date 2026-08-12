@@ -283,56 +283,71 @@ Vec3 normalize(Vec3 value) {
 }
 
 Vec4 normalize_quaternion(Vec4 value) {
-    const float length = std::sqrt(
-        value.x * value.x +
-        value.y * value.y +
-        value.z * value.z +
-        value.w * value.w);
-    return length > 0.000001f
-        ? Vec4{
-              value.x / length,
-              value.y / length,
-              value.z / length,
-              value.w / length,
-          }
-        : Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+    // Pinned normalizeQuat4: double length over float32 components,
+    // a multiply by the inverse square root, one rounding at the
+    // Float32Array store, no epsilon, and the input kept verbatim on
+    // zero length.
+    const double x = value.x;
+    const double y = value.y;
+    const double z = value.z;
+    const double w = value.w;
+    const double length_squared =
+        x * x + y * y + z * z + w * w;
+    if (length_squared > 0.0) {
+        const double inverse =
+            1.0 / std::sqrt(length_squared);
+        return Vec4{
+            static_cast<float>(x * inverse),
+            static_cast<float>(y * inverse),
+            static_cast<float>(z * inverse),
+            static_cast<float>(w * inverse),
+        };
+    }
+    return value;
 }
 
-Vec4 interpolate_quaternion(Vec4 left, Vec4 right, float amount) {
-    float dot =
-        left.x * right.x +
-        left.y * right.y +
-        left.z * right.z +
-        left.w * right.w;
-    if (dot < 0.0f) {
-        right = Vec4{-right.x, -right.y, -right.z, -right.w};
+Vec4 interpolate_quaternion(Vec4 left, Vec4 right, double amount) {
+    // Pinned sampler evaluation lifts float32 keyframes to JavaScript
+    // doubles and rounds once at the Float32Array store.
+    const double lx = left.x;
+    const double ly = left.y;
+    const double lz = left.z;
+    const double lw = left.w;
+    double rx = right.x;
+    double ry = right.y;
+    double rz = right.z;
+    double rw = right.w;
+    double dot = lx * rx + ly * ry + lz * rz + lw * rw;
+    if (dot < 0.0) {
+        rx = -rx;
+        ry = -ry;
+        rz = -rz;
+        rw = -rw;
         dot = -dot;
     }
-    if (dot > 0.9995f) {
-        return normalize_quaternion(Vec4{
-            left.x + (right.x - left.x) * amount,
-            left.y + (right.y - left.y) * amount,
-            left.z + (right.z - left.z) * amount,
-            left.w + (right.w - left.w) * amount,
-        });
+    if (dot > 0.9995) {
+        // The pinned near-parallel path stores the double lerp into a
+        // Float32Array scratch before normalizing it in place, so the
+        // components round to float32 between the two steps.
+        const Vec4 lerped{
+            static_cast<float>(lx + amount * (rx - lx)),
+            static_cast<float>(ly + amount * (ry - ly)),
+            static_cast<float>(lz + amount * (rz - lz)),
+            static_cast<float>(lw + amount * (rw - lw)),
+        };
+        return normalize_quaternion(lerped);
     }
-    const float theta = std::acos(dot);
-    const float sin_theta = std::sin(theta);
-    const float left_weight =
-        std::sin((1.0f - amount) * theta) /
-        sin_theta;
-    const float right_weight =
-        std::sin(amount * theta) /
-        sin_theta;
+    const double theta = std::acos(dot);
+    const double sin_theta = std::sin(theta);
+    const double left_weight =
+        std::sin((1.0 - amount) * theta) / sin_theta;
+    const double right_weight =
+        std::sin(amount * theta) / sin_theta;
     return Vec4{
-        left_weight * left.x +
-            right_weight * right.x,
-        left_weight * left.y +
-            right_weight * right.y,
-        left_weight * left.z +
-            right_weight * right.z,
-        left_weight * left.w +
-            right_weight * right.w,
+        static_cast<float>(left_weight * lx + right_weight * rx),
+        static_cast<float>(left_weight * ly + right_weight * ry),
+        static_cast<float>(left_weight * lz + right_weight * rz),
+        static_cast<float>(left_weight * lw + right_weight * rw),
     };
 }
 
@@ -341,24 +356,34 @@ Vec4 cubic_quaternion(
     Vec4 left_tangent,
     Vec4 right,
     Vec4 right_tangent,
-    float amount,
-    float span) {
-    const float amount2 = amount * amount;
-    const float amount3 = amount2 * amount;
-    const float h00 = 2.0f * amount3 - 3.0f * amount2 + 1.0f;
-    const float h10 = amount3 - 2.0f * amount2 + amount;
-    const float h01 = -2.0f * amount3 + 3.0f * amount2;
-    const float h11 = amount3 - amount2;
-    return normalize_quaternion(Vec4{
-        h00 * left.x + h10 * span * left_tangent.x +
-            h01 * right.x + h11 * span * right_tangent.x,
-        h00 * left.y + h10 * span * left_tangent.y +
-            h01 * right.y + h11 * span * right_tangent.y,
-        h00 * left.z + h10 * span * left_tangent.z +
-            h01 * right.z + h11 * span * right_tangent.z,
-        h00 * left.w + h10 * span * left_tangent.w +
-            h01 * right.w + h11 * span * right_tangent.w,
-    });
+    double amount,
+    double span) {
+    // Pinned sampler evaluation lifts float32 keyframes to JavaScript
+    // doubles and rounds once at the Float32Array store.
+    const double amount2 = amount * amount;
+    const double amount3 = amount2 * amount;
+    const double h00 = 2.0 * amount3 - 3.0 * amount2 + 1.0;
+    const double h10 = amount3 - 2.0 * amount2 + amount;
+    const double h01 = -2.0 * amount3 + 3.0 * amount2;
+    const double h11 = amount3 - amount2;
+    // The pinned evaluator scales tangents by the key delta before
+    // weighting, stores the Hermite sum into a Float32Array, and then
+    // normalizes the rounded components in place.
+    const Vec4 combined{
+        static_cast<float>(
+            h00 * left.x + h10 * (left_tangent.x * span) +
+            h01 * right.x + h11 * (right_tangent.x * span)),
+        static_cast<float>(
+            h00 * left.y + h10 * (left_tangent.y * span) +
+            h01 * right.y + h11 * (right_tangent.y * span)),
+        static_cast<float>(
+            h00 * left.z + h10 * (left_tangent.z * span) +
+            h01 * right.z + h11 * (right_tangent.z * span)),
+        static_cast<float>(
+            h00 * left.w + h10 * (left_tangent.w * span) +
+            h01 * right.w + h11 * (right_tangent.w * span)),
+    };
+    return normalize_quaternion(combined);
 }
 
 Vec3 cubic_vec3(
@@ -366,21 +391,28 @@ Vec3 cubic_vec3(
     Vec3 left_tangent,
     Vec3 right,
     Vec3 right_tangent,
-    float amount,
-    float span) {
-    const float amount2 = amount * amount;
-    const float amount3 = amount2 * amount;
-    const float h00 = 2.0f * amount3 - 3.0f * amount2 + 1.0f;
-    const float h10 = amount3 - 2.0f * amount2 + amount;
-    const float h01 = -2.0f * amount3 + 3.0f * amount2;
-    const float h11 = amount3 - amount2;
+    double amount,
+    double span) {
+    // Pinned sampler evaluation lifts float32 keyframes to JavaScript
+    // doubles and rounds once at the Float32Array store.
+    const double amount2 = amount * amount;
+    const double amount3 = amount2 * amount;
+    const double h00 = 2.0 * amount3 - 3.0 * amount2 + 1.0;
+    const double h10 = amount3 - 2.0 * amount2 + amount;
+    const double h01 = -2.0 * amount3 + 3.0 * amount2;
+    const double h11 = amount3 - amount2;
+    // The pinned evaluator scales tangents by the key delta before
+    // weighting and rounds once at the Float32Array store.
     return Vec3{
-        h00 * left.x + h10 * span * left_tangent.x +
-            h01 * right.x + h11 * span * right_tangent.x,
-        h00 * left.y + h10 * span * left_tangent.y +
-            h01 * right.y + h11 * span * right_tangent.y,
-        h00 * left.z + h10 * span * left_tangent.z +
-            h01 * right.z + h11 * span * right_tangent.z,
+        static_cast<float>(
+            h00 * left.x + h10 * (left_tangent.x * span) +
+            h01 * right.x + h11 * (right_tangent.x * span)),
+        static_cast<float>(
+            h00 * left.y + h10 * (left_tangent.y * span) +
+            h01 * right.y + h11 * (right_tangent.y * span)),
+        static_cast<float>(
+            h00 * left.z + h10 * (left_tangent.z * span) +
+            h01 * right.z + h11 * (right_tangent.z * span)),
     };
 }
 
@@ -2617,17 +2649,19 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 }
                 const std::size_t left =
                     right > 0 ? right - 1 : 0;
-                const float span =
-                    track.times[right] - track.times[left];
-                const float amount =
-                    span > 0.0f
+                const double span =
+                    static_cast<double>(track.times[right]) -
+                    track.times[left];
+                const double amount =
+                    span > 0.0
                         ? std::clamp(
-                              (animation_runtime->time -
+                              (static_cast<double>(
+                                   animation_runtime->time) -
                                track.times[left]) /
                                   span,
-                              0.0f,
-                              1.0f)
-                        : 0.0f;
+                              0.0,
+                              1.0)
+                        : 0.0;
                 animation_runtime->nodes[track.node].rotation =
                     track.cubic
                         ? cubic_quaternion(
@@ -2661,17 +2695,19 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 }
                 const std::size_t left =
                     right > 0 ? right - 1 : 0;
-                const float span =
-                    track.times[right] - track.times[left];
-                const float amount =
-                    span > 0.0f
+                const double span =
+                    static_cast<double>(track.times[right]) -
+                    track.times[left];
+                const double amount =
+                    span > 0.0
                         ? std::clamp(
-                              (animation_runtime->time -
+                              (static_cast<double>(
+                                   animation_runtime->time) -
                                track.times[left]) /
                                   span,
-                              0.0f,
-                              1.0f)
-                        : 0.0f;
+                              0.0,
+                              1.0)
+                        : 0.0;
                 const Vec3 left_value = track.values[left];
                 const Vec3 right_value = track.values[right];
                 animation_runtime->nodes[track.node].translation =
@@ -2684,15 +2720,24 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                               amount,
                               span)
                         : Vec3{
-                              left_value.x +
-                                  (right_value.x - left_value.x) *
-                                      amount,
-                              left_value.y +
-                                  (right_value.y - left_value.y) *
-                                      amount,
-                              left_value.z +
-                                  (right_value.z - left_value.z) *
-                                      amount,
+                              static_cast<float>(
+                                  left_value.x +
+                                  (static_cast<double>(
+                                       right_value.x) -
+                                   left_value.x) *
+                                      amount),
+                              static_cast<float>(
+                                  left_value.y +
+                                  (static_cast<double>(
+                                       right_value.y) -
+                                   left_value.y) *
+                                      amount),
+                              static_cast<float>(
+                                  left_value.z +
+                                  (static_cast<double>(
+                                       right_value.z) -
+                                   left_value.z) *
+                                      amount),
                           };
             }
             for (const TranslationTrack& track :
@@ -2714,17 +2759,19 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 }
                 const std::size_t left =
                     right > 0 ? right - 1 : 0;
-                const float span =
-                    track.times[right] - track.times[left];
-                const float amount =
-                    span > 0.0f
+                const double span =
+                    static_cast<double>(track.times[right]) -
+                    track.times[left];
+                const double amount =
+                    span > 0.0
                         ? std::clamp(
-                              (animation_runtime->time -
+                              (static_cast<double>(
+                                   animation_runtime->time) -
                                track.times[left]) /
                                   span,
-                              0.0f,
-                              1.0f)
-                        : 0.0f;
+                              0.0,
+                              1.0)
+                        : 0.0;
                 const Vec3 left_value = track.values[left];
                 const Vec3 right_value = track.values[right];
                 animation_runtime->nodes[track.node].scale =
@@ -2737,15 +2784,24 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                               amount,
                               span)
                         : Vec3{
-                              left_value.x +
-                                  (right_value.x - left_value.x) *
-                                      amount,
-                              left_value.y +
-                                  (right_value.y - left_value.y) *
-                                      amount,
-                              left_value.z +
-                                  (right_value.z - left_value.z) *
-                                      amount,
+                              static_cast<float>(
+                                  left_value.x +
+                                  (static_cast<double>(
+                                       right_value.x) -
+                                   left_value.x) *
+                                      amount),
+                              static_cast<float>(
+                                  left_value.y +
+                                  (static_cast<double>(
+                                       right_value.y) -
+                                   left_value.y) *
+                                      amount),
+                              static_cast<float>(
+                                  left_value.z +
+                                  (static_cast<double>(
+                                       right_value.z) -
+                                   left_value.z) *
+                                      amount),
                           };
             }
             for (
@@ -2775,17 +2831,19 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 }
                 const std::size_t left =
                     right > 0 ? right - 1 : 0;
-                const float span =
-                    track.times[right] - track.times[left];
-                const float amount =
-                    span > 0.0f
+                const double span =
+                    static_cast<double>(track.times[right]) -
+                    track.times[left];
+                const double amount =
+                    span > 0.0
                         ? std::clamp(
-                              (animation_runtime->time -
+                              (static_cast<double>(
+                                   animation_runtime->time) -
                                track.times[left]) /
                                   span,
-                              0.0f,
-                              1.0f)
-                        : 0.0f;
+                              0.0,
+                              1.0)
+                        : 0.0;
                 AnimatedNode& node =
                     animation_runtime->nodes[track.node];
                 node.weights.resize(track.target_count);
@@ -2794,9 +2852,11 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         track.values[left * track.target_count + target];
                     const float right_value =
                         track.values[right * track.target_count + target];
-                    node.weights[target] =
+                    node.weights[target] = static_cast<float>(
                         left_value +
-                        (right_value - left_value) * amount;
+                        (static_cast<double>(right_value) -
+                         left_value) *
+                            amount);
                 }
             }
             for (AnimatedNode& node : animation_runtime->nodes) {

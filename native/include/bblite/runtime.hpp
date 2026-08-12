@@ -603,6 +603,9 @@ struct EnvironmentState {
     bool brdf_lut_rgba16f = false;
     TextureData ground_texture;
     TextureData skybox_texture;
+    std::array<TextureData, 6> image_skybox_faces{};
+    float image_skybox_size = 0.0f;
+    bool has_image_skybox = false;
     bool has_ground = false;
     bool has_skybox = false;
     bool background_enabled_by_default = false;
@@ -798,6 +801,10 @@ void attach_control(Engine& engine, CameraHandle camera, Scene& scene);
 void attach_free_control(Engine& engine, CameraHandle camera, Scene& scene);
 void register_scene(Scene& scene);
 void enable_scene_transmission(Scene& scene);
+void load_image_skybox(
+    Scene& scene,
+    std::array<std::string, 6> face_paths,
+    float size);
 void set_scene_fog(
     Scene& scene,
     float mode,

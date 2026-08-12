@@ -305,6 +305,35 @@ struct DawnState {
     // undeformed geometry.
     WGPUBuffer background_deformation_uniforms = nullptr;
 #endif
+#if BBLITE_GPU_INSTANCING
+    // One identity per-instance matrix plus an identity parent-world
+    // uniform for the background pipelines: the shared material vertex
+    // stage consumes the instance attribute stream and instance
+    // uniforms whenever instancing is compiled in.
+    WGPUBuffer background_instances = nullptr;
+    WGPUBuffer background_instance_uniform = nullptr;
+#endif
+#if BBLITE_GPU_MORPH_STORAGE
+    // Group-0 morph storage groups for the background pipelines; the
+    // shared vertex module statically binds the storage buffers, so
+    // the derived layouts require them even for undeformed quads.
+    WGPUBindGroup ground_morph_group = nullptr;
+    WGPUBindGroup skybox_morph_group = nullptr;
+#endif
+#if BBLITE_IMAGE_SKYBOX
+    WGPUShaderModule image_skybox_vertex_module = nullptr;
+    WGPUShaderModule image_skybox_fragment_module = nullptr;
+    WGPURenderPipeline image_skybox_pipeline = nullptr;
+    WGPUBuffer image_skybox_vertices = nullptr;
+    WGPUBuffer image_skybox_indices = nullptr;
+    WGPUBuffer image_skybox_uniforms = nullptr;
+    WGPUTexture image_skybox_texture = nullptr;
+    WGPUTextureView image_skybox_texture_view = nullptr;
+    WGPUBindGroup image_skybox_scene_group = nullptr;
+    WGPUBindGroup image_skybox_texture_group = nullptr;
+    WGPUBindGroup image_skybox_material_group = nullptr;
+    bool image_skybox_enabled = false;
+#endif
     WGPUBindGroup skybox_texture_group = nullptr;
     WGPUBindGroup skybox_material_group = nullptr;
     bool skybox_enabled = false;
@@ -575,12 +604,63 @@ struct DawnState {
                 wgpuRenderPipelineRelease(pipeline.pipeline);
             }
         }
+#if BBLITE_IMAGE_SKYBOX
+        if (image_skybox_material_group) {
+            wgpuBindGroupRelease(image_skybox_material_group);
+        }
+        if (image_skybox_texture_group) {
+            wgpuBindGroupRelease(image_skybox_texture_group);
+        }
+        if (image_skybox_scene_group) {
+            wgpuBindGroupRelease(image_skybox_scene_group);
+        }
+        if (image_skybox_texture_view) {
+            wgpuTextureViewRelease(image_skybox_texture_view);
+        }
+        if (image_skybox_texture) {
+            wgpuTextureRelease(image_skybox_texture);
+        }
+        if (image_skybox_uniforms) {
+            wgpuBufferRelease(image_skybox_uniforms);
+        }
+        if (image_skybox_indices) {
+            wgpuBufferRelease(image_skybox_indices);
+        }
+        if (image_skybox_vertices) {
+            wgpuBufferRelease(image_skybox_vertices);
+        }
+        if (image_skybox_pipeline) {
+            wgpuRenderPipelineRelease(image_skybox_pipeline);
+        }
+        if (image_skybox_fragment_module) {
+            wgpuShaderModuleRelease(image_skybox_fragment_module);
+        }
+        if (image_skybox_vertex_module) {
+            wgpuShaderModuleRelease(image_skybox_vertex_module);
+        }
+#endif
         if (skybox_material_group) wgpuBindGroupRelease(skybox_material_group);
         if (skybox_texture_group) wgpuBindGroupRelease(skybox_texture_group);
         if (skybox_scene_group) wgpuBindGroupRelease(skybox_scene_group);
 #if BBLITE_GPU_DEFORMATION
         if (background_deformation_uniforms) {
             wgpuBufferRelease(background_deformation_uniforms);
+        }
+#endif
+#if BBLITE_GPU_INSTANCING
+        if (background_instance_uniform) {
+            wgpuBufferRelease(background_instance_uniform);
+        }
+        if (background_instances) {
+            wgpuBufferRelease(background_instances);
+        }
+#endif
+#if BBLITE_GPU_MORPH_STORAGE
+        if (skybox_morph_group) {
+            wgpuBindGroupRelease(skybox_morph_group);
+        }
+        if (ground_morph_group) {
+            wgpuBindGroupRelease(ground_morph_group);
         }
 #endif
         if (skybox_uniforms) wgpuBufferRelease(skybox_uniforms);
@@ -722,6 +802,27 @@ void ensure_background_deformation_uniforms(DawnState& state) {
         WGPUBufferUsage_Uniform,
         &background_deformation,
         sizeof(background_deformation));
+}
+#endif
+
+#if BBLITE_GPU_INSTANCING
+void ensure_background_instance_resources(DawnState& state) {
+    if (state.background_instances) return;
+    std::array<float, 16> identity{};
+    identity[0] = 1.0f;
+    identity[5] = 1.0f;
+    identity[10] = 1.0f;
+    identity[15] = 1.0f;
+    state.background_instances = create_buffer(
+        state,
+        WGPUBufferUsage_Vertex,
+        identity.data(),
+        sizeof(identity));
+    state.background_instance_uniform = create_buffer(
+        state,
+        WGPUBufferUsage_Uniform,
+        identity.data(),
+        sizeof(identity));
 }
 #endif
 
@@ -3733,7 +3834,11 @@ bool run_dawn_engine(Engine& engine) {
             WGPUBufferUsage_Storage,
             zero_delta.data(),
             sizeof(zero_delta));
-        const std::array<std::uint32_t, 4> zero_header{};
+        // Sixteen-byte {count, vertexCount} header plus one zero
+        // weight: derived background pipeline layouts require the
+        // shader's 20-byte minimum binding size for the runtime
+        // weights array.
+        const std::array<std::uint32_t, 5> zero_header{};
         state.empty_morph_weights = create_buffer(
             state,
             WGPUBufferUsage_Storage,
@@ -4234,17 +4339,33 @@ bool run_dawn_engine(Engine& engine) {
         std::array<WGPUVertexAttribute, base_vertex_attribute_count>
             attributes{};
         fill_base_vertex_attributes(attributes.data());
-        WGPUVertexBufferLayout vertex_layout{};
-        vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
-        vertex_layout.arrayStride = sizeof(GpuVertex);
-        vertex_layout.attributeCount = attributes.size();
-        vertex_layout.attributes = attributes.data();
+        std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
+        vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
+        vertex_layouts[0].arrayStride = sizeof(GpuVertex);
+        vertex_layouts[0].attributeCount = attributes.size();
+        vertex_layouts[0].attributes = attributes.data();
+#if BBLITE_GPU_INSTANCING
+        std::array<WGPUVertexAttribute, 4> instance_attributes{};
+        for (std::uint32_t column = 0; column < 4; ++column) {
+            instance_attributes[column].format =
+                WGPUVertexFormat_Float32x4;
+            instance_attributes[column].offset = column * 16;
+            instance_attributes[column].shaderLocation = 16 + column;
+        }
+        vertex_layouts[1].stepMode = WGPUVertexStepMode_Instance;
+        vertex_layouts[1].arrayStride = sizeof(std::array<float, 16>);
+        vertex_layouts[1].attributeCount = instance_attributes.size();
+        vertex_layouts[1].attributes = instance_attributes.data();
+        constexpr std::uint32_t skybox_vertex_buffer_count = 2;
+#else
+        constexpr std::uint32_t skybox_vertex_buffer_count = 1;
+#endif
         WGPURenderPipelineDescriptor descriptor =
             WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
         descriptor.vertex.module = state.vertex_module;
         descriptor.vertex.entryPoint = string_view("mainVertex");
-        descriptor.vertex.bufferCount = 1;
-        descriptor.vertex.buffers = &vertex_layout;
+        descriptor.vertex.bufferCount = skybox_vertex_buffer_count;
+        descriptor.vertex.buffers = vertex_layouts.data();
         descriptor.primitive.topology =
             WGPUPrimitiveTopology_TriangleList;
         descriptor.primitive.frontFace = WGPUFrontFace_CCW;
@@ -4285,7 +4406,7 @@ bool run_dawn_engine(Engine& engine) {
         WGPUBindGroupLayout scene_layout =
             wgpuRenderPipelineGetBindGroupLayout(
                 state.skybox_pipeline, 1);
-        std::array<WGPUBindGroupEntry, 2> scene_entries{};
+        std::array<WGPUBindGroupEntry, 3> scene_entries{};
         scene_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
         scene_entries[0].binding = 0;
         scene_entries[0].buffer = state.skybox_matrix;
@@ -4293,12 +4414,25 @@ bool run_dawn_engine(Engine& engine) {
         std::uint32_t scene_entry_count = 1;
 #if BBLITE_GPU_DEFORMATION
         ensure_background_deformation_uniforms(state);
-        scene_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-        scene_entries[1].binding = 1;
-        scene_entries[1].buffer =
+        scene_entries[scene_entry_count] =
+            WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entries[scene_entry_count].binding = 1;
+        scene_entries[scene_entry_count].buffer =
             state.background_deformation_uniforms;
-        scene_entries[1].size = sizeof(DeformationUniforms);
-        scene_entry_count = 2;
+        scene_entries[scene_entry_count].size =
+            sizeof(DeformationUniforms);
+        ++scene_entry_count;
+#endif
+#if BBLITE_GPU_INSTANCING
+        ensure_background_instance_resources(state);
+        scene_entries[scene_entry_count] =
+            WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entries[scene_entry_count].binding =
+            instance_uniform_binding;
+        scene_entries[scene_entry_count].buffer =
+            state.background_instance_uniform;
+        scene_entries[scene_entry_count].size = 64;
+        ++scene_entry_count;
 #endif
         WGPUBindGroupDescriptor scene_descriptor =
             WGPU_BIND_GROUP_DESCRIPTOR_INIT;
@@ -4308,6 +4442,31 @@ bool run_dawn_engine(Engine& engine) {
         state.skybox_scene_group =
             wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
         wgpuBindGroupLayoutRelease(scene_layout);
+#if BBLITE_GPU_MORPH_STORAGE
+        {
+            WGPUBindGroupLayout morph_layout =
+                wgpuRenderPipelineGetBindGroupLayout(
+                    state.skybox_pipeline, 0);
+            std::array<WGPUBindGroupEntry, 2> morph_entries{};
+            morph_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+            morph_entries[0].binding = 0;
+            morph_entries[0].buffer = state.empty_morph_deltas;
+            morph_entries[0].size = WGPU_WHOLE_SIZE;
+            morph_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+            morph_entries[1].binding = 1;
+            morph_entries[1].buffer = state.empty_morph_weights;
+            morph_entries[1].size = WGPU_WHOLE_SIZE;
+            WGPUBindGroupDescriptor morph_descriptor =
+                WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+            morph_descriptor.layout = morph_layout;
+            morph_descriptor.entryCount = morph_entries.size();
+            morph_descriptor.entries = morph_entries.data();
+            state.skybox_morph_group = wgpuDeviceCreateBindGroup(
+                state.device,
+                &morph_descriptor);
+            wgpuBindGroupLayoutRelease(morph_layout);
+        }
+#endif
         WGPUBindGroupLayout texture_layout =
             wgpuRenderPipelineGetBindGroupLayout(
                 state.skybox_pipeline, 2);
@@ -4344,6 +4503,147 @@ bool run_dawn_engine(Engine& engine) {
         wgpuBindGroupLayoutRelease(material_layout);
         state.skybox_enabled = true;
     }
+
+#if BBLITE_IMAGE_SKYBOX
+    if (
+        scene.environment.has_image_skybox &&
+        background_enabled) {
+        state.image_skybox_vertex_module =
+            load_wgsl_module(state, "skybox-cubemap.vert");
+        state.image_skybox_fragment_module =
+            load_wgsl_module(state, "skybox-cubemap.frag");
+        const upstream::ImageSkyboxPlan image_skybox_plan =
+            upstream::build_image_skybox_plan(scene.environment);
+        state.image_skybox_vertices = create_buffer(
+            state,
+            WGPUBufferUsage_Vertex,
+            image_skybox_plan.positions.data(),
+            sizeof(image_skybox_plan.positions));
+        state.image_skybox_indices = create_buffer(
+            state,
+            WGPUBufferUsage_Index,
+            image_skybox_plan.indices.data(),
+            sizeof(image_skybox_plan.indices));
+        state.image_skybox_uniforms = create_buffer(
+            state,
+            WGPUBufferUsage_Uniform,
+            nullptr,
+            (sizeof(upstream::ImageSkyboxUniforms) + 15) & ~15ull);
+        state.image_skybox_texture = upload_reflection_cube(
+            state,
+            scene.environment.image_skybox_faces);
+        WGPUTextureViewDescriptor view_descriptor =
+            WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+        view_descriptor.dimension = WGPUTextureViewDimension_Cube;
+        view_descriptor.arrayLayerCount = 6;
+        state.image_skybox_texture_view = wgpuTextureCreateView(
+            state.image_skybox_texture,
+            &view_descriptor);
+
+        WGPUVertexAttribute position_attribute{};
+        position_attribute.format = WGPUVertexFormat_Float32x3;
+        position_attribute.offset = 0;
+        position_attribute.shaderLocation = 0;
+        WGPUVertexBufferLayout vertex_layout{};
+        vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
+        vertex_layout.arrayStride = sizeof(float) * 3;
+        vertex_layout.attributeCount = 1;
+        vertex_layout.attributes = &position_attribute;
+        WGPURenderPipelineDescriptor descriptor =
+            WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+        descriptor.vertex.module =
+            state.image_skybox_vertex_module;
+        descriptor.vertex.entryPoint = string_view("mainVertex");
+        descriptor.vertex.bufferCount = 1;
+        descriptor.vertex.buffers = &vertex_layout;
+        descriptor.primitive.topology =
+            WGPUPrimitiveTopology_TriangleList;
+        descriptor.primitive.frontFace = WGPUFrontFace_CCW;
+        descriptor.primitive.cullMode = WGPUCullMode_None;
+        WGPUDepthStencilState depth_stencil =
+            WGPU_DEPTH_STENCIL_STATE_INIT;
+        depth_stencil.format =
+            WGPUTextureFormat_Depth24PlusStencil8;
+        depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
+        depth_stencil.depthCompare = WGPUCompareFunction_Less;
+        descriptor.depthStencil = &depth_stencil;
+        descriptor.multisample.count = 4;
+        descriptor.multisample.mask = ~0u;
+        WGPUColorTargetState color_target =
+            WGPU_COLOR_TARGET_STATE_INIT;
+        color_target.format = state.frame_color_format;
+        WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+        fragment.module = state.image_skybox_fragment_module;
+        fragment.entryPoint = string_view("mainFragment");
+        fragment.targetCount = 1;
+        fragment.targets = &color_target;
+        descriptor.fragment = &fragment;
+        state.image_skybox_pipeline =
+            wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+        if (!state.image_skybox_pipeline) {
+            dawn_error("image skybox pipeline creation failed.");
+        }
+
+        WGPUBindGroupLayout scene_layout =
+            wgpuRenderPipelineGetBindGroupLayout(
+                state.image_skybox_pipeline, 1);
+        WGPUBindGroupEntry scene_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entry.binding = 0;
+        scene_entry.buffer = state.view_projection;
+        scene_entry.size = 64;
+        WGPUBindGroupDescriptor scene_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        scene_descriptor.layout = scene_layout;
+        scene_descriptor.entryCount = 1;
+        scene_descriptor.entries = &scene_entry;
+        state.image_skybox_scene_group =
+            wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
+        wgpuBindGroupLayoutRelease(scene_layout);
+
+        WGPUBindGroupLayout texture_layout =
+            wgpuRenderPipelineGetBindGroupLayout(
+                state.image_skybox_pipeline, 2);
+        std::array<WGPUBindGroupEntry, 2> texture_entries{};
+        texture_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+        texture_entries[0].binding = 0;
+        texture_entries[0].textureView =
+            state.image_skybox_texture_view;
+        texture_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+        texture_entries[1].binding = 1;
+        texture_entries[1].sampler = state.default_sampler;
+        WGPUBindGroupDescriptor texture_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        texture_descriptor.layout = texture_layout;
+        texture_descriptor.entryCount = texture_entries.size();
+        texture_descriptor.entries = texture_entries.data();
+        state.image_skybox_texture_group =
+            wgpuDeviceCreateBindGroup(
+                state.device,
+                &texture_descriptor);
+        wgpuBindGroupLayoutRelease(texture_layout);
+
+        WGPUBindGroupLayout material_layout =
+            wgpuRenderPipelineGetBindGroupLayout(
+                state.image_skybox_pipeline, 3);
+        WGPUBindGroupEntry material_entry =
+            WGPU_BIND_GROUP_ENTRY_INIT;
+        material_entry.binding = 0;
+        material_entry.buffer = state.image_skybox_uniforms;
+        material_entry.size =
+            sizeof(upstream::ImageSkyboxUniforms);
+        WGPUBindGroupDescriptor material_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        material_descriptor.layout = material_layout;
+        material_descriptor.entryCount = 1;
+        material_descriptor.entries = &material_entry;
+        state.image_skybox_material_group =
+            wgpuDeviceCreateBindGroup(
+                state.device,
+                &material_descriptor);
+        wgpuBindGroupLayoutRelease(material_layout);
+        state.image_skybox_enabled = true;
+    }
+#endif
 
     if (use_ground) {
         state.ground_module =
@@ -4395,17 +4695,33 @@ bool run_dawn_engine(Engine& engine) {
         std::array<WGPUVertexAttribute, base_vertex_attribute_count>
             attributes{};
         fill_base_vertex_attributes(attributes.data());
-        WGPUVertexBufferLayout vertex_layout{};
-        vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
-        vertex_layout.arrayStride = sizeof(GpuVertex);
-        vertex_layout.attributeCount = attributes.size();
-        vertex_layout.attributes = attributes.data();
+        std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
+        vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
+        vertex_layouts[0].arrayStride = sizeof(GpuVertex);
+        vertex_layouts[0].attributeCount = attributes.size();
+        vertex_layouts[0].attributes = attributes.data();
+#if BBLITE_GPU_INSTANCING
+        std::array<WGPUVertexAttribute, 4> instance_attributes{};
+        for (std::uint32_t column = 0; column < 4; ++column) {
+            instance_attributes[column].format =
+                WGPUVertexFormat_Float32x4;
+            instance_attributes[column].offset = column * 16;
+            instance_attributes[column].shaderLocation = 16 + column;
+        }
+        vertex_layouts[1].stepMode = WGPUVertexStepMode_Instance;
+        vertex_layouts[1].arrayStride = sizeof(std::array<float, 16>);
+        vertex_layouts[1].attributeCount = instance_attributes.size();
+        vertex_layouts[1].attributes = instance_attributes.data();
+        constexpr std::uint32_t ground_vertex_buffer_count = 2;
+#else
+        constexpr std::uint32_t ground_vertex_buffer_count = 1;
+#endif
         WGPURenderPipelineDescriptor descriptor =
             WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
         descriptor.vertex.module = state.vertex_module;
         descriptor.vertex.entryPoint = string_view("mainVertex");
-        descriptor.vertex.bufferCount = 1;
-        descriptor.vertex.buffers = &vertex_layout;
+        descriptor.vertex.bufferCount = ground_vertex_buffer_count;
+        descriptor.vertex.buffers = vertex_layouts.data();
         descriptor.primitive.topology =
             WGPUPrimitiveTopology_TriangleList;
         descriptor.primitive.frontFace = WGPUFrontFace_CCW;
@@ -4449,7 +4765,7 @@ bool run_dawn_engine(Engine& engine) {
         WGPUBindGroupLayout scene_layout =
             wgpuRenderPipelineGetBindGroupLayout(
                 state.ground_pipeline, 1);
-        std::array<WGPUBindGroupEntry, 2> scene_entries{};
+        std::array<WGPUBindGroupEntry, 3> scene_entries{};
         scene_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
         scene_entries[0].binding = 0;
         scene_entries[0].buffer = state.view_projection;
@@ -4457,12 +4773,25 @@ bool run_dawn_engine(Engine& engine) {
         std::uint32_t scene_entry_count = 1;
 #if BBLITE_GPU_DEFORMATION
         ensure_background_deformation_uniforms(state);
-        scene_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-        scene_entries[1].binding = 1;
-        scene_entries[1].buffer =
+        scene_entries[scene_entry_count] =
+            WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entries[scene_entry_count].binding = 1;
+        scene_entries[scene_entry_count].buffer =
             state.background_deformation_uniforms;
-        scene_entries[1].size = sizeof(DeformationUniforms);
-        scene_entry_count = 2;
+        scene_entries[scene_entry_count].size =
+            sizeof(DeformationUniforms);
+        ++scene_entry_count;
+#endif
+#if BBLITE_GPU_INSTANCING
+        ensure_background_instance_resources(state);
+        scene_entries[scene_entry_count] =
+            WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entries[scene_entry_count].binding =
+            instance_uniform_binding;
+        scene_entries[scene_entry_count].buffer =
+            state.background_instance_uniform;
+        scene_entries[scene_entry_count].size = 64;
+        ++scene_entry_count;
 #endif
         WGPUBindGroupDescriptor scene_descriptor =
             WGPU_BIND_GROUP_DESCRIPTOR_INIT;
@@ -4472,6 +4801,31 @@ bool run_dawn_engine(Engine& engine) {
         state.ground_scene_group =
             wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
         wgpuBindGroupLayoutRelease(scene_layout);
+#if BBLITE_GPU_MORPH_STORAGE
+        {
+            WGPUBindGroupLayout morph_layout =
+                wgpuRenderPipelineGetBindGroupLayout(
+                    state.ground_pipeline, 0);
+            std::array<WGPUBindGroupEntry, 2> morph_entries{};
+            morph_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+            morph_entries[0].binding = 0;
+            morph_entries[0].buffer = state.empty_morph_deltas;
+            morph_entries[0].size = WGPU_WHOLE_SIZE;
+            morph_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+            morph_entries[1].binding = 1;
+            morph_entries[1].buffer = state.empty_morph_weights;
+            morph_entries[1].size = WGPU_WHOLE_SIZE;
+            WGPUBindGroupDescriptor morph_descriptor =
+                WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+            morph_descriptor.layout = morph_layout;
+            morph_descriptor.entryCount = morph_entries.size();
+            morph_descriptor.entries = morph_entries.data();
+            state.ground_morph_group = wgpuDeviceCreateBindGroup(
+                state.device,
+                &morph_descriptor);
+            wgpuBindGroupLayoutRelease(morph_layout);
+        }
+#endif
         WGPUBindGroupLayout texture_layout =
             wgpuRenderPipelineGetBindGroupLayout(
                 state.ground_pipeline, 2);
@@ -4834,6 +5188,21 @@ bool run_dawn_engine(Engine& engine) {
                 &background,
                 sizeof(background));
         }
+#if BBLITE_IMAGE_SKYBOX
+        if (state.image_skybox_enabled) {
+            const upstream::ImageSkyboxUniforms
+                image_skybox_uniforms =
+                    upstream::build_image_skybox_uniforms(
+                        scene,
+                        camera);
+            wgpuQueueWriteBuffer(
+                state.queue,
+                state.image_skybox_uniforms,
+                0,
+                &image_skybox_uniforms,
+                sizeof(image_skybox_uniforms));
+        }
+#endif
         if (!scene.tasks.empty()) {
             create_frame_graph_textures(state, engine, width, height);
             // Resolve frame-graph source textures bound in standard
@@ -5119,6 +5488,10 @@ bool run_dawn_engine(Engine& engine) {
             if (!state.ground_enabled) return;
             wgpuRenderPassEncoderSetPipeline(pass, state.ground_pipeline);
             bound_pipeline = state.ground_pipeline;
+#if BBLITE_GPU_MORPH_STORAGE
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 0, state.ground_morph_group, 0, nullptr);
+#endif
             wgpuRenderPassEncoderSetBindGroup(
                 pass, 1, state.ground_scene_group, 0, nullptr);
             wgpuRenderPassEncoderSetBindGroup(
@@ -5127,6 +5500,14 @@ bool run_dawn_engine(Engine& engine) {
                 pass, 3, state.ground_material_group, 0, nullptr);
             wgpuRenderPassEncoderSetVertexBuffer(
                 pass, 0, state.ground_vertices, 0, WGPU_WHOLE_SIZE);
+#if BBLITE_GPU_INSTANCING
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass,
+                1,
+                state.background_instances,
+                0,
+                WGPU_WHOLE_SIZE);
+#endif
             wgpuRenderPassEncoderSetIndexBuffer(
                 pass,
                 state.ground_indices,
@@ -5139,6 +5520,10 @@ bool run_dawn_engine(Engine& engine) {
             if (!state.skybox_enabled) return;
             wgpuRenderPassEncoderSetPipeline(pass, state.skybox_pipeline);
             bound_pipeline = state.skybox_pipeline;
+#if BBLITE_GPU_MORPH_STORAGE
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 0, state.skybox_morph_group, 0, nullptr);
+#endif
             wgpuRenderPassEncoderSetBindGroup(
                 pass, 1, state.skybox_scene_group, 0, nullptr);
             wgpuRenderPassEncoderSetBindGroup(
@@ -5147,6 +5532,14 @@ bool run_dawn_engine(Engine& engine) {
                 pass, 3, state.skybox_material_group, 0, nullptr);
             wgpuRenderPassEncoderSetVertexBuffer(
                 pass, 0, state.skybox_vertices, 0, WGPU_WHOLE_SIZE);
+#if BBLITE_GPU_INSTANCING
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass,
+                1,
+                state.background_instances,
+                0,
+                WGPU_WHOLE_SIZE);
+#endif
             wgpuRenderPassEncoderSetIndexBuffer(
                 pass,
                 state.skybox_indices,
@@ -5155,10 +5548,41 @@ bool run_dawn_engine(Engine& engine) {
                 WGPU_WHOLE_SIZE);
             wgpuRenderPassEncoderDrawIndexed(pass, 36, 1, 0, 0, 0);
         };
+#if BBLITE_IMAGE_SKYBOX
+        const auto draw_image_skybox = [&] {
+            if (!state.image_skybox_enabled) return;
+            wgpuRenderPassEncoderSetPipeline(
+                pass,
+                state.image_skybox_pipeline);
+            bound_pipeline = state.image_skybox_pipeline;
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 1, state.image_skybox_scene_group, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 2, state.image_skybox_texture_group, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 3, state.image_skybox_material_group, 0, nullptr);
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass,
+                0,
+                state.image_skybox_vertices,
+                0,
+                WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderSetIndexBuffer(
+                pass,
+                state.image_skybox_indices,
+                WGPUIndexFormat_Uint32,
+                0,
+                WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderDrawIndexed(pass, 36, 1, 0, 0, 0);
+        };
+#endif
         for (const upstream::RenderStage stage : render_plan.stages) {
             switch (stage) {
                 case upstream::RenderStage::skybox:
                     draw_skybox();
+#if BBLITE_IMAGE_SKYBOX
+                    draw_image_skybox();
+#endif
                     break;
                 case upstream::RenderStage::opaque:
                     draw_render_list(render_plan.draw_lists.opaque);

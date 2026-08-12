@@ -219,11 +219,11 @@ test("generates GLB framing validation from upstream constants", () => {
         adapter.source,
         /weight_tracks\.rbegin\(\)[\s\S]*?const WeightTrack& track[\s\S]*?std::clamp\(/,
     );
-    assert.match(adapter.source, /if \(dot > 0\.9995f\)/);
-    assert.match(adapter.source, /const float theta = std::acos\(dot\)/);
+    assert.match(adapter.source, /if \(dot > 0\.9995\)/);
+    assert.match(adapter.source, /const double theta = std::acos\(dot\)/);
     assert.match(
         adapter.source,
-        /std::sin\(\(1\.0f - amount\) \* theta\)/,
+        /std::sin\(\(1\.0 - amount\) \* theta\)/,
     );
     assert.match(adapter.source, /geometry\.morph_positions\.size\(\) <= 2/);
     assert.match(adapter.source, /\.joints\.size\(\) <= 64/);
