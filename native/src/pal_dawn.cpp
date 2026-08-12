@@ -9,6 +9,7 @@
 
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
+#include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
 
 #if defined(BBLITE_HAS_DAWN) && BBLITE_HAS_DAWN
@@ -57,12 +58,20 @@ struct DawnMeshBindings {
     WGPUBindGroup material = nullptr;
 };
 
+// Texture pair slots 0-3 and 5 mirror the SDL_GPU order; slot 4 is
+// the environment or reflection cube bound from shared state.
+constexpr std::size_t mesh_texture_slots = 5;
+
 struct DawnMesh {
     WGPUBuffer vertices = nullptr;
     WGPUBuffer indices = nullptr;
     std::uint32_t index_count = 0;
     WGPUBuffer material_uniforms = nullptr;
     std::uint64_t material_uniform_size = 0;
+    std::array<WGPUTexture, mesh_texture_slots> owned_textures{};
+    std::array<WGPUTextureView, mesh_texture_slots> owned_views{};
+    std::array<WGPUTextureView, mesh_texture_slots> views{};
+    std::array<WGPUSampler, mesh_texture_slots> samplers{};
     std::map<upstream::RenderPipelineKind, DawnMeshBindings> bindings;
 };
 
@@ -99,12 +108,33 @@ struct DawnState {
     WGPUTexture brdf_texture = nullptr;
     WGPUTextureView brdf_view = nullptr;
     WGPUSampler default_sampler = nullptr;
+    WGPUShaderModule mip_module = nullptr;
+    WGPUSampler mip_sampler = nullptr;
+    std::map<WGPUTextureFormat, WGPURenderPipeline> mip_pipelines;
     std::map<upstream::RenderPipelineKind, DawnPipeline> pipelines;
     std::vector<DawnMesh> meshes;
     std::string uncaptured_error;
 
     ~DawnState() {
+        for (auto& [format, pipeline] : mip_pipelines) {
+            if (pipeline) wgpuRenderPipelineRelease(pipeline);
+        }
+        if (mip_sampler) wgpuSamplerRelease(mip_sampler);
+        if (mip_module) wgpuShaderModuleRelease(mip_module);
         for (DawnMesh& mesh : meshes) {
+            for (std::size_t slot = 0;
+                 slot < mesh_texture_slots;
+                 ++slot) {
+                if (mesh.owned_views[slot]) {
+                    wgpuTextureViewRelease(mesh.owned_views[slot]);
+                }
+                if (mesh.owned_textures[slot]) {
+                    wgpuTextureRelease(mesh.owned_textures[slot]);
+                }
+                if (mesh.samplers[slot]) {
+                    wgpuSamplerRelease(mesh.samplers[slot]);
+                }
+            }
             for (auto& [kind, binding] : mesh.bindings) {
                 if (binding.scene) wgpuBindGroupRelease(binding.scene);
                 if (binding.textures) {
@@ -244,6 +274,240 @@ WGPUTexture create_solid_texture(
             &size);
     }
     return texture;
+}
+
+// Verbatim transcription of the pinned mip generator
+// (src/texture/generate-mipmaps.ts BLIT_SHADER): a fullscreen-triangle
+// bilinear blit from mip N-1 into mip N.
+constexpr const char* mip_blit_wgsl =
+    "@group(0)@binding(0)var t:texture_2d<f32>;@group(0)@binding(1)var "
+    "s:sampler;\n"
+    "struct V{@builtin(position)p:vec4f,@location(0)u:vec2f};\n"
+    "@vertex fn vs(@builtin(vertex_index)i:u32)->V{let "
+    "p=array<vec2f,3>(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3))[i];return "
+    "V(vec4f(p,0,1),p*vec2f(.5,-.5)+.5);}\n"
+    "@fragment fn fs(v:V)->@location(0)vec4f{return "
+    "textureSample(t,s,v.u);}";
+
+WGPURenderPipeline mip_pipeline_for(
+    DawnState& state,
+    WGPUTextureFormat format) {
+    const auto existing = state.mip_pipelines.find(format);
+    if (existing != state.mip_pipelines.end()) return existing->second;
+    if (!state.mip_module) {
+        WGPUShaderSourceWGSL wgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
+        wgsl.code = string_view(mip_blit_wgsl);
+        WGPUShaderModuleDescriptor descriptor{};
+        descriptor.nextInChain = &wgsl.chain;
+        descriptor.label = string_view("mip-blit");
+        state.mip_module =
+            wgpuDeviceCreateShaderModule(state.device, &descriptor);
+        // The pinned generator samples with the bilinear sampler:
+        // linear filters and WebGPU-default clamp addressing.
+        WGPUSamplerDescriptor sampler_descriptor =
+            WGPU_SAMPLER_DESCRIPTOR_INIT;
+        sampler_descriptor.magFilter = WGPUFilterMode_Linear;
+        sampler_descriptor.minFilter = WGPUFilterMode_Linear;
+        state.mip_sampler =
+            wgpuDeviceCreateSampler(state.device, &sampler_descriptor);
+    }
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.vertex.module = state.mip_module;
+    descriptor.vertex.entryPoint = string_view("vs");
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
+    color_target.format = format;
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = state.mip_module;
+    fragment.entryPoint = string_view("fs");
+    fragment.targetCount = 1;
+    fragment.targets = &color_target;
+    descriptor.fragment = &fragment;
+    WGPURenderPipeline pipeline =
+        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    if (!pipeline) dawn_error("mip blit pipeline creation failed.");
+    state.mip_pipelines[format] = pipeline;
+    return pipeline;
+}
+
+void generate_mipmaps(
+    DawnState& state,
+    WGPUTexture texture,
+    WGPUTextureFormat format,
+    std::uint32_t mip_count) {
+    if (mip_count <= 1) return;
+    WGPURenderPipeline pipeline = mip_pipeline_for(state, format);
+    WGPUBindGroupLayout layout =
+        wgpuRenderPipelineGetBindGroupLayout(pipeline, 0);
+    WGPUCommandEncoder encoder =
+        wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+    for (std::uint32_t level = 1; level < mip_count; ++level) {
+        WGPUTextureViewDescriptor source_descriptor =
+            WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+        source_descriptor.baseMipLevel = level - 1;
+        source_descriptor.mipLevelCount = 1;
+        WGPUTextureView source =
+            wgpuTextureCreateView(texture, &source_descriptor);
+        WGPUTextureViewDescriptor target_descriptor =
+            WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+        target_descriptor.baseMipLevel = level;
+        target_descriptor.mipLevelCount = 1;
+        WGPUTextureView target =
+            wgpuTextureCreateView(texture, &target_descriptor);
+
+        std::array<WGPUBindGroupEntry, 2> entries{};
+        entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+        entries[0].binding = 0;
+        entries[0].textureView = source;
+        entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+        entries[1].binding = 1;
+        entries[1].sampler = state.mip_sampler;
+        WGPUBindGroupDescriptor bind_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        bind_descriptor.layout = layout;
+        bind_descriptor.entryCount = entries.size();
+        bind_descriptor.entries = entries.data();
+        WGPUBindGroup bind_group =
+            wgpuDeviceCreateBindGroup(state.device, &bind_descriptor);
+
+        WGPURenderPassColorAttachment color_attachment =
+            WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+        color_attachment.view = target;
+        color_attachment.loadOp = WGPULoadOp_Clear;
+        color_attachment.storeOp = WGPUStoreOp_Store;
+        WGPURenderPassDescriptor pass_descriptor =
+            WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+        pass_descriptor.colorAttachmentCount = 1;
+        pass_descriptor.colorAttachments = &color_attachment;
+        WGPURenderPassEncoder pass =
+            wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+        wgpuRenderPassEncoderSetPipeline(pass, pipeline);
+        wgpuRenderPassEncoderSetBindGroup(pass, 0, bind_group, 0, nullptr);
+        wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+        wgpuRenderPassEncoderEnd(pass);
+        wgpuRenderPassEncoderRelease(pass);
+        wgpuBindGroupRelease(bind_group);
+        wgpuTextureViewRelease(target);
+        wgpuTextureViewRelease(source);
+    }
+    wgpuBindGroupLayoutRelease(layout);
+    WGPUCommandBuffer command = wgpuCommandEncoderFinish(encoder, nullptr);
+    wgpuQueueSubmit(state.queue, 1, &command);
+    wgpuCommandBufferRelease(command);
+    wgpuCommandEncoderRelease(encoder);
+}
+
+WGPUTexture upload_material_texture(
+    DawnState& state,
+    const TextureData& texture_data,
+    bool srgb,
+    const std::array<std::uint8_t, 4>& fallback,
+    std::uint32_t& out_mip_count) {
+    DecodedImage image;
+    if (texture_data.bytes.empty()) {
+        image.width = image.height = 1;
+        image.rgba.assign(fallback.begin(), fallback.end());
+    } else {
+        image = decode_image(ts::ArrayBuffer(texture_data.bytes));
+    }
+    if (texture_data.invert_y && image.height > 1) {
+        const std::size_t row_bytes =
+            static_cast<std::size_t>(image.width) * 4;
+        std::vector<std::uint8_t> row(row_bytes);
+        for (int y = 0; y < image.height / 2; ++y) {
+            std::uint8_t* top =
+                image.rgba.data() +
+                static_cast<std::size_t>(y) * row_bytes;
+            std::uint8_t* bottom =
+                image.rgba.data() +
+                static_cast<std::size_t>(image.height - 1 - y) *
+                    row_bytes;
+            std::memcpy(row.data(), top, row_bytes);
+            std::memcpy(top, bottom, row_bytes);
+            std::memcpy(bottom, row.data(), row_bytes);
+        }
+    }
+    const std::uint32_t mip_count =
+        1u + static_cast<std::uint32_t>(
+                 std::floor(
+                     std::log2(
+                         static_cast<double>(
+                             std::max(image.width, image.height)))));
+    out_mip_count = mip_count;
+    const WGPUTextureFormat format = srgb
+        ? WGPUTextureFormat_RGBA8UnormSrgb
+        : WGPUTextureFormat_RGBA8Unorm;
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.usage =
+        WGPUTextureUsage_TextureBinding |
+        WGPUTextureUsage_RenderAttachment |
+        WGPUTextureUsage_CopyDst;
+    descriptor.size = {
+        static_cast<std::uint32_t>(image.width),
+        static_cast<std::uint32_t>(image.height),
+        1,
+    };
+    descriptor.format = format;
+    descriptor.mipLevelCount = mip_count;
+    WGPUTexture texture =
+        wgpuDeviceCreateTexture(state.device, &descriptor);
+    if (!texture) dawn_error("wgpuDeviceCreateTexture material");
+    WGPUTexelCopyTextureInfo destination =
+        WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    destination.texture = texture;
+    WGPUTexelCopyBufferLayout layout{};
+    layout.offset = 0;
+    layout.bytesPerRow = static_cast<std::uint32_t>(image.width) * 4;
+    layout.rowsPerImage = static_cast<std::uint32_t>(image.height);
+    const WGPUExtent3D size{
+        static_cast<std::uint32_t>(image.width),
+        static_cast<std::uint32_t>(image.height),
+        1,
+    };
+    wgpuQueueWriteTexture(
+        state.queue,
+        &destination,
+        image.rgba.data(),
+        image.rgba.size(),
+        &layout,
+        &size);
+    generate_mipmaps(state, texture, format, mip_count);
+    return texture;
+}
+
+WGPUSampler create_texture_sampler(
+    DawnState& state,
+    const TextureSamplerState& sampler) {
+    const auto filter = [](TextureFilter value) {
+        return value == TextureFilter::nearest
+            ? WGPUFilterMode_Nearest
+            : WGPUFilterMode_Linear;
+    };
+    const auto address = [](TextureAddressMode value) {
+        return value == TextureAddressMode::clamp
+            ? WGPUAddressMode_ClampToEdge
+            : value == TextureAddressMode::mirror
+                ? WGPUAddressMode_MirrorRepeat
+                : WGPUAddressMode_Repeat;
+    };
+    WGPUSamplerDescriptor descriptor = WGPU_SAMPLER_DESCRIPTOR_INIT;
+    descriptor.minFilter = filter(sampler.min_filter);
+    descriptor.magFilter = filter(sampler.mag_filter);
+    descriptor.mipmapFilter =
+        sampler.mipmap_mode == TextureMipmapMode::nearest
+            ? WGPUMipmapFilterMode_Nearest
+            : WGPUMipmapFilterMode_Linear;
+    descriptor.addressModeU = address(sampler.address_u);
+    descriptor.addressModeV = address(sampler.address_v);
+    descriptor.addressModeW = WGPUAddressMode_Repeat;
+    descriptor.lodMaxClamp = sampler.max_lod;
+    descriptor.maxAnisotropy = static_cast<std::uint16_t>(
+        std::max(1.0f, sampler.max_anisotropy));
+    WGPUSampler result =
+        wgpuDeviceCreateSampler(state.device, &descriptor);
+    if (!result) dawn_error("wgpuDeviceCreateSampler material");
+    return result;
 }
 
 WGPUShaderModule& fragment_module_for(
@@ -395,28 +659,30 @@ DawnMeshBindings& bindings_for(
     wgpuBindGroupLayoutRelease(scene_layout);
 
     // Fragment texture pairs mirror the SDL_GPU slot order. Standard:
-    // base color, metallic-roughness, normal, emissive, reflection
-    // cube, standard emissive. PBR: base color, metallic-roughness,
-    // normal, emissive, environment cube, BRDF LUT.
+    // base color, specular, opacity, ambient, reflection cube,
+    // standard emissive. PBR: base color, metallic-roughness, normal,
+    // emissive, environment cube, BRDF LUT.
     const PipelineKindTraits binding_traits = pipeline_traits(kind);
-    const std::array<WGPUTextureView, 6> views =
+    const std::array<WGPUTextureView, 6> views{
+        mesh.views[0],
+        mesh.views[1],
+        mesh.views[2],
+        mesh.views[3],
         binding_traits.standard
-            ? std::array<WGPUTextureView, 6>{
-                  state.white_view,
-                  state.white_view,
-                  state.white_view,
-                  state.white_view,
-                  state.black_cube_view,
-                  state.black_view,
-              }
-            : std::array<WGPUTextureView, 6>{
-                  state.white_view,
-                  state.white_view,
-                  state.normal_flat_view,
-                  state.white_view,
-                  state.environment_cube_view,
-                  state.brdf_view,
-              };
+            ? state.black_cube_view
+            : state.environment_cube_view,
+        binding_traits.standard ? mesh.views[4] : state.brdf_view,
+    };
+    const std::array<WGPUSampler, 6> samplers{
+        mesh.samplers[0],
+        mesh.samplers[1],
+        mesh.samplers[2],
+        mesh.samplers[3],
+        state.default_sampler,
+        binding_traits.standard
+            ? mesh.samplers[4]
+            : state.default_sampler,
+    };
     std::array<WGPUBindGroupEntry, 12> texture_entries{};
     for (std::uint32_t slot = 0; slot < views.size(); ++slot) {
         texture_entries[slot * 2] = WGPU_BIND_GROUP_ENTRY_INIT;
@@ -424,7 +690,7 @@ DawnMeshBindings& bindings_for(
         texture_entries[slot * 2].textureView = views[slot];
         texture_entries[slot * 2 + 1] = WGPU_BIND_GROUP_ENTRY_INIT;
         texture_entries[slot * 2 + 1].binding = slot * 2 + 1;
-        texture_entries[slot * 2 + 1].sampler = state.default_sampler;
+        texture_entries[slot * 2 + 1].sampler = samplers[slot];
     }
     WGPUBindGroupLayout texture_layout =
         wgpuRenderPipelineGetBindGroupLayout(pipeline.pipeline, 2);
@@ -792,6 +1058,78 @@ bool run_dawn_engine(Engine& engine) {
             WGPUBufferUsage_Uniform,
             nullptr,
             mesh.material_uniform_size);
+
+        // Per-slot texture selection mirrors the SDL_GPU backend's
+        // material remapping for the Standard and PBR families.
+        const bool standard_material =
+            item.material_kind == upstream::RenderMaterialKind::standard;
+        const TextureData* slot_data[mesh_texture_slots] = {};
+        bool slot_srgb[mesh_texture_slots] = {};
+        std::array<std::uint8_t, 4>
+            slot_fallback[mesh_texture_slots] = {};
+        bool has_pbr_emissive_factor = false;
+        if (item.material.value < engine.materials.size()) {
+            const MaterialRecord& material =
+                engine.materials[item.material.value];
+            slot_data[0] = &material.base_color_texture;
+            slot_data[1] = standard_material
+                ? &material.specular_texture
+                : &material.metallic_roughness_texture;
+            slot_data[2] = standard_material
+                ? &material.opacity_texture
+                : &material.normal_texture;
+            slot_data[3] = standard_material
+                ? &material.ambient_texture
+                : &material.emissive_texture;
+            slot_data[4] = standard_material
+                ? &material.emissive_texture
+                : nullptr;
+            has_pbr_emissive_factor =
+                material.emissive_factor.r != 0.0f ||
+                material.emissive_factor.g != 0.0f ||
+                material.emissive_factor.b != 0.0f;
+            if (
+                !standard_material &&
+                (material.transmission_factor > 0.0f ||
+                 !material.transmission_texture.bytes.empty())) {
+                dawn_error(
+                    "transmissive materials are not implemented yet.");
+            }
+        }
+        slot_srgb[0] = !standard_material;
+        slot_srgb[3] = !standard_material;
+        slot_fallback[0] = {255, 255, 255, 255};
+        slot_fallback[1] = {255, 255, 255, 255};
+        slot_fallback[2] = standard_material
+            ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
+            : std::array<std::uint8_t, 4>{128, 128, 255, 255};
+        slot_fallback[3] = standard_material
+            ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
+            : has_pbr_emissive_factor
+                ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
+                : std::array<std::uint8_t, 4>{0, 0, 0, 255};
+        slot_fallback[4] = {0, 0, 0, 255};
+        for (std::size_t slot = 0; slot < mesh_texture_slots; ++slot) {
+            const TextureData empty{};
+            const TextureData& data =
+                slot_data[slot] ? *slot_data[slot] : empty;
+            std::uint32_t mip_count = 1;
+            mesh.owned_textures[slot] = upload_material_texture(
+                state,
+                data,
+                slot_srgb[slot],
+                slot_fallback[slot],
+                mip_count);
+            mesh.owned_views[slot] = wgpuTextureCreateView(
+                mesh.owned_textures[slot],
+                nullptr);
+            mesh.views[slot] = mesh.owned_views[slot];
+            mesh.samplers[slot] = create_texture_sampler(
+                state,
+                slot_data[slot]
+                    ? slot_data[slot]->sampler
+                    : TextureSamplerState{});
+        }
         state.meshes.push_back(std::move(mesh));
     }
 
