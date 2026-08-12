@@ -2765,7 +2765,14 @@ bool run_dawn_engine(Engine& engine) {
         WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
     surface_configuration.width = width;
     surface_configuration.height = height;
-    surface_configuration.presentMode = WGPUPresentMode_Immediate;
+    // Present with vsync like the SDL_GPU backend so the per-frame
+    // camera inertia integrates identically across backends;
+    // benchmarks keep immediate present (the recorded frame-time
+    // numbers depend on it).
+    surface_configuration.presentMode =
+        environment_variable("BBLITE_BENCHMARK_FRAMES").empty()
+            ? WGPUPresentMode_Fifo
+            : WGPUPresentMode_Immediate;
     wgpuSurfaceConfigure(state.surface, &surface_configuration);
 
     // Shared frame targets: 4x MSAA color (surface format, or linear
