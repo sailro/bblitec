@@ -1,0 +1,286 @@
+// Vertex packing shared by the SDL_GPU and Dawn render backends.
+// Moved verbatim from pal_sdl_gpu.cpp so both backends upload
+// byte-identical vertex data.
+#pragma once
+
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <vector>
+
+namespace bbl::pal {
+
+struct GpuVertex {
+    float position[3];
+    float normal[3];
+    float tangent[4];
+    float uv[2];
+    float local_position[3];
+    float uv2[2];
+    float color[4];
+    float local_normal[3];
+#if BBLITE_GPU_DEFORMATION
+    float joints[4];
+    float weights[4];
+    float morph_position_0[3];
+    float morph_position_1[3];
+    float morph_normal_0[3];
+    float morph_normal_1[3];
+    float morph_tangent_0[3];
+    float morph_tangent_1[3];
+#endif
+};
+#if BBLITE_GPU_DEFORMATION
+static_assert(sizeof(GpuVertex) == 200);
+#else
+static_assert(sizeof(GpuVertex) == 96);
+#endif
+
+inline Vec3 rotate_euler(Vec3 value, const Vec3& rotation) {
+    const float sin_x = std::sin(rotation.x);
+    const float cos_x = std::cos(rotation.x);
+    value = Vec3{
+        value.x,
+        value.y * cos_x - value.z * sin_x,
+        value.y * sin_x + value.z * cos_x,
+    };
+    const float sin_y = std::sin(rotation.y);
+    const float cos_y = std::cos(rotation.y);
+    value = Vec3{
+        value.x * cos_y + value.z * sin_y,
+        value.y,
+        -value.x * sin_y + value.z * cos_y,
+    };
+    const float sin_z = std::sin(rotation.z);
+    const float cos_z = std::cos(rotation.z);
+    return Vec3{
+        value.x * cos_z - value.y * sin_z,
+        value.x * sin_z + value.y * cos_z,
+        value.z,
+    };
+}
+
+inline Vec3 rotate_quaternion(Vec3 value, const Vec4& quaternion) {
+    const float length = std::sqrt(
+        quaternion.x * quaternion.x +
+        quaternion.y * quaternion.y +
+        quaternion.z * quaternion.z +
+        quaternion.w * quaternion.w);
+    if (length <= 0.000001f) return value;
+    const float x = quaternion.x / length;
+    const float y = quaternion.y / length;
+    const float z = quaternion.z / length;
+    const float w = quaternion.w / length;
+    const Vec3 doubled_cross{
+        2.0f * (y * value.z - z * value.y),
+        2.0f * (z * value.x - x * value.z),
+        2.0f * (x * value.y - y * value.x),
+    };
+    return Vec3{
+        value.x +
+            w * doubled_cross.x +
+            (y * doubled_cross.z - z * doubled_cross.y),
+        value.y +
+            w * doubled_cross.y +
+            (z * doubled_cross.x - x * doubled_cross.z),
+        value.z +
+            w * doubled_cross.z +
+            (x * doubled_cross.y - y * doubled_cross.x),
+    };
+}
+
+inline Vec3 rotate_mesh(Vec3 value, const MeshRecord& mesh) {
+    return mesh.has_rotation_quaternion
+        ? rotate_quaternion(value, mesh.rotation_quaternion)
+        : rotate_euler(value, mesh.rotation);
+}
+
+inline Vec3 normalize_vec3(Vec3 value) {
+    const float length = std::sqrt(
+        value.x * value.x +
+        value.y * value.y +
+        value.z * value.z);
+    return length > 0.000001f
+        ? Vec3{
+              value.x / length,
+              value.y / length,
+              value.z / length,
+          }
+        : Vec3{};
+}
+
+inline std::vector<GpuVertex> transformed_vertices(
+    const ModelGeometry& geometry,
+    const MeshRecord& mesh) {
+    const std::vector<ModelVertex>& source_vertices =
+        mesh.gpu_deformation &&
+                geometry.bind_vertices.size() ==
+                    geometry.vertices.size()
+            ? geometry.bind_vertices
+            : geometry.vertices;
+    std::vector<GpuVertex> result;
+    result.reserve(source_vertices.size());
+    for (
+        std::size_t vertex_index = 0;
+        vertex_index < source_vertices.size();
+        ++vertex_index) {
+        const ModelVertex& vertex =
+            source_vertices[vertex_index];
+        const ModelVertex& normal_vertex =
+            mesh.gpu_deformation && geometry.flat_normals
+                ? geometry.vertices[vertex_index]
+                : vertex;
+        Vec3 position{
+            vertex.position.x * mesh.scaling.x,
+            vertex.position.y * mesh.scaling.y,
+            vertex.position.z * mesh.scaling.z,
+        };
+        position = rotate_mesh(position, mesh);
+        position.x += mesh.position.x;
+        position.y += mesh.position.y;
+        position.z += mesh.position.z;
+        const Vec3 normal = normalize_vec3(
+            rotate_mesh(
+                Vec3{
+                    mesh.scaling.x != 0.0f
+                        ? normal_vertex.normal.x / mesh.scaling.x
+                        : 0.0f,
+                    mesh.scaling.y != 0.0f
+                        ? normal_vertex.normal.y / mesh.scaling.y
+                        : 0.0f,
+                    mesh.scaling.z != 0.0f
+                        ? normal_vertex.normal.z / mesh.scaling.z
+                        : 0.0f,
+                },
+                mesh));
+        const Vec3 tangent = normalize_vec3(
+            rotate_mesh(
+                Vec3{
+                    vertex.tangent.x * mesh.scaling.x,
+                    vertex.tangent.y * mesh.scaling.y,
+                    vertex.tangent.z * mesh.scaling.z,
+                },
+                mesh));
+        result.push_back(GpuVertex{
+            {position.x, position.y, position.z},
+            {normal.x, normal.y, normal.z},
+            {
+                tangent.x,
+                tangent.y,
+                tangent.z,
+                vertex.tangent.w,
+            },
+            {vertex.uv.x, vertex.uv.y},
+            {
+                vertex.local_position.x,
+                vertex.local_position.y,
+                vertex.local_position.z,
+            },
+            {vertex.uv2.x, vertex.uv2.y},
+            {
+                vertex.color.x,
+                vertex.color.y,
+                vertex.color.z,
+                vertex.color.w,
+            },
+            {
+                vertex.normal.x,
+                vertex.normal.y,
+                vertex.normal.z,
+            },
+#if BBLITE_GPU_DEFORMATION
+            {
+                static_cast<float>(vertex.joints[0]),
+                static_cast<float>(vertex.joints[1]),
+                static_cast<float>(vertex.joints[2]),
+                static_cast<float>(vertex.joints[3]),
+            },
+            {
+                mesh.gpu_deformation &&
+                        vertex.weights.x +
+                                vertex.weights.y +
+                                vertex.weights.z +
+                                vertex.weights.w <=
+                            0.0f
+                    ? 1.0f
+                    : vertex.weights.x,
+                vertex.weights.y,
+                vertex.weights.z,
+                vertex.weights.w,
+            },
+            {
+                geometry.morph_positions.size() > 0
+                    ? -geometry.morph_positions[0][vertex_index].x
+                    : 0.0f,
+                geometry.morph_positions.size() > 0
+                    ? geometry.morph_positions[0][vertex_index].y
+                    : 0.0f,
+                geometry.morph_positions.size() > 0
+                    ? geometry.morph_positions[0][vertex_index].z
+                    : 0.0f,
+            },
+            {
+                geometry.morph_positions.size() > 1
+                    ? -geometry.morph_positions[1][vertex_index].x
+                    : 0.0f,
+                geometry.morph_positions.size() > 1
+                    ? geometry.morph_positions[1][vertex_index].y
+                    : 0.0f,
+                geometry.morph_positions.size() > 1
+                    ? geometry.morph_positions[1][vertex_index].z
+                    : 0.0f,
+            },
+            {
+                geometry.morph_normals.size() > 0
+                    ? -geometry.morph_normals[0][vertex_index].x
+                    : 0.0f,
+                geometry.morph_normals.size() > 0
+                    ? geometry.morph_normals[0][vertex_index].y
+                    : 0.0f,
+                geometry.morph_normals.size() > 0
+                    ? geometry.morph_normals[0][vertex_index].z
+                    : 0.0f,
+            },
+            {
+                geometry.morph_normals.size() > 1
+                    ? -geometry.morph_normals[1][vertex_index].x
+                    : 0.0f,
+                geometry.morph_normals.size() > 1
+                    ? geometry.morph_normals[1][vertex_index].y
+                    : 0.0f,
+                geometry.morph_normals.size() > 1
+                    ? geometry.morph_normals[1][vertex_index].z
+                    : 0.0f,
+            },
+            {
+                geometry.morph_tangents.size() > 0
+                    ? -geometry.morph_tangents[0][vertex_index].x
+                    : 0.0f,
+                geometry.morph_tangents.size() > 0
+                    ? geometry.morph_tangents[0][vertex_index].y
+                    : 0.0f,
+                geometry.morph_tangents.size() > 0
+                    ? geometry.morph_tangents[0][vertex_index].z
+                    : 0.0f,
+            },
+            {
+                geometry.morph_tangents.size() > 1
+                    ? -geometry.morph_tangents[1][vertex_index].x
+                    : 0.0f,
+                geometry.morph_tangents.size() > 1
+                    ? geometry.morph_tangents[1][vertex_index].y
+                    : 0.0f,
+                geometry.morph_tangents.size() > 1
+                    ? geometry.morph_tangents[1][vertex_index].z
+                    : 0.0f,
+            },
+#endif
+        });
+    }
+    return result;
+}
+
+} // namespace bbl::pal
