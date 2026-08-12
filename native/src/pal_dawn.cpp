@@ -3162,9 +3162,14 @@ bool run_dawn_engine(Engine& engine) {
         std::array<std::uint8_t, 4>
             slot_fallback[mesh_texture_slots] = {};
         bool has_pbr_emissive_factor = false;
+        std::array<std::uint8_t, 4> base_color_fallback{
+            255, 255, 255, 255};
         if (item.material.value < engine.materials.size()) {
             const MaterialRecord& material =
                 engine.materials[item.material.value];
+            if (!standard_material) {
+                base_color_fallback = material.base_color_fallback;
+            }
             if (
                 standard_material &&
                 material.reflection_cube <
@@ -3228,7 +3233,7 @@ bool run_dawn_engine(Engine& engine) {
         }
         slot_srgb[0] = !standard_material;
         slot_srgb[3] = !standard_material;
-        slot_fallback[0] = {255, 255, 255, 255};
+        slot_fallback[0] = base_color_fallback;
         slot_fallback[1] = {255, 255, 255, 255};
         slot_fallback[2] = standard_material
             ? std::array<std::uint8_t, 4>{255, 255, 255, 255}

@@ -19,7 +19,7 @@ function browserCandidates(): string[] {
     return ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium"];
 }
 
-function resolveBrowserPath(): string {
+export function resolveBrowserPath(): string {
     const candidates = [process.env.CHROME_PATH, ...browserCandidates()]
         .filter((value): value is string => !!value);
     const found = candidates.find((candidate) => existsSync(candidate));
@@ -99,24 +99,11 @@ export function suiteBrowserModule(
     }).outputText;
 }
 
-export async function captureSuiteReference(
+export function createSuiteSceneServer(
     sourcePath: string,
-    referencePath: string,
-    force: boolean,
-    transform?: SuiteSourceTransform,
-    captureTimeSeconds?: number,
-    captureFrameRate?: number,
-    captureAnimationGroups?: string[],
-): Promise<void> {
-    if (existsSync(referencePath) && !force) return;
+    moduleSource: string,
+): ReturnType<typeof createServer> {
     const root = resolve(".");
-    const moduleSource = suiteBrowserModule(
-        sourcePath,
-        transform,
-        captureTimeSeconds,
-        captureFrameRate,
-        captureAnimationGroups,
-    );
     const html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:block}
 </style></head><body><canvas id="renderCanvas" width="1280" height="720"></canvas>
@@ -125,7 +112,7 @@ html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:bloc
         string,
         { bytes: Uint8Array; contentType: string }
     >();
-    const server = createServer(async (request, response) => {
+    return createServer(async (request, response) => {
         const url = new URL(request.url ?? "/", "http://127.0.0.1");
         if (url.pathname === "/scene.html") {
             response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -206,6 +193,26 @@ html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:bloc
         response.writeHead(200, { "Content-Type": mimeType(path) });
         response.end(readFileSync(path));
     });
+}
+
+export async function captureSuiteReference(
+    sourcePath: string,
+    referencePath: string,
+    force: boolean,
+    transform?: SuiteSourceTransform,
+    captureTimeSeconds?: number,
+    captureFrameRate?: number,
+    captureAnimationGroups?: string[],
+): Promise<void> {
+    if (existsSync(referencePath) && !force) return;
+    const moduleSource = suiteBrowserModule(
+        sourcePath,
+        transform,
+        captureTimeSeconds,
+        captureFrameRate,
+        captureAnimationGroups,
+    );
+    const server = createSuiteSceneServer(sourcePath, moduleSource);
     await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Unable to start parity server.");

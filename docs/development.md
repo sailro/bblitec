@@ -308,6 +308,44 @@ Outputs under `artifacts\parity` include the actual image, diff map, hotspots,
 JSON report, and optional draw/cluster/diagnostic buffers. Committed goldens
 live under `reference\<scene>`.
 
+## Instrumented browser capture
+
+When a parity residual resists chain reasoning, capture the browser's
+actual GPU state instead of theorizing about it:
+
+```powershell
+npm run scene -- capture scene247
+npm run scene -- capture scene247 --skip-draw 12096
+```
+
+The command renders the scene through the pinned package exactly like
+the reference capture, with every WebGPU entry point hooked, and
+writes to `artifacts\capture\<scene>`:
+
+- `shaders/*.wgsl` — the browser's composed shader modules
+- `buffers.json` / `buffers-summary.txt` — every buffer with its
+  size, usage, and uploaded bytes (base64; the last eight writes per
+  buffer)
+- `tex-uploads.json` — texture uploads, including raw bytes for small
+  texels (the 1x1 factor textures) and a 4x4 sample of image uploads
+- `draws.json` — draw-call census across pass **and render-bundle**
+  encoders (Babylon Lite records mesh draws into bundles; hooking the
+  pass encoder alone sees none of them)
+- `screenshot.png` — checked byte-for-byte against the committed
+  golden when no draw filter is active, proving the hooks are
+  non-perturbing
+
+`--seek` overrides the registry's `referenceTimeSeconds`, and
+`--skip-draw <indexCount>` drops matching draws for per-draw
+isolation; pair it with a matching temporary filter in the native
+frame loop to localize a residual to a single draw. The recorded
+buffer bytes support bit-level comparison against native uploads —
+weights, morph deltas, instance matrices, material UBOs, and factor
+texels. This workflow resolved the scene 243 occlusion gap and the
+scene 247 shading contracts recorded in
+[backends](backends.md#empirical-findings) and
+[fidelity](fidelity.md).
+
 There is no hosted CI. During iteration, run only the smallest relevant tests,
 generation steps, affected native builds, and scene parity gates. Do not repeat
 the complete corpus matrix after every local change.

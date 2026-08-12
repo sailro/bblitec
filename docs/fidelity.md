@@ -111,6 +111,33 @@ Neutral white intensity/roughness textures and a flat coat-normal flag keep a
 single generated variant numerically identical to Babylon Lite's per-material
 shader variants. Combining a clearcoat or sheen layer with punctual
 multi-light PBR is not lowered and fails explicitly.
+Texture-less PBR factors follow Babylon's factor-texture bake:
+`uploadBaseColorFactorTexture` and `uploadOrmFactorTexture` write the
+factors into 1x1 8-bit texels (base color through `linearToSrgbByte`,
+metallic/roughness as linear bytes) and leave the shader uniforms at
+their defaults, so the browser shades with the quantized values.
+Native mirrors each path at its exact precision boundary:
+metallic/roughness quantize on the record (`round(f * 255) / 255` —
+the unorm decode is that division, so the white fallback times the
+quantized uniform is bit-equal to the baked texel), while the base
+color bakes the pinned sRGB bytes into the fallback texel itself with
+the shader uniform reverted to white, because the hardware sRGB
+decode of those bytes is the reference — a CPU transcription of the
+IEC formula measurably disagreed with the GPU's table (scene 255
+regressed 0.101 to 0.249 before the texel-level port took it to
+0.000). The record keeps the raw alpha for the pinned blend
+semantics.
+Environment horizon occlusion applies only to normal-mapped materials:
+the pinned `ibl-fragment` composes `eho = 1.0` without a normal map,
+and the native fragment gates the same factor on the has-normal-map
+uniform. Scene 247's metallic teapots gate this — applying the
+polynomial unconditionally darkened silhouette speculars by one MSAA
+sample step across the instance field.
+Node TRS and world-matrix composition run in double precision and
+round once per component at the float32 store, matching JavaScript's
+number semantics in the pinned `mat4ComposeInto` and matrix multiply;
+this makes native glTF instance matrices bit-identical to the
+browser's uploaded thin-instance buffers.
 glTF occlusion follows Babylon's `buildDefaultPbrTexturesExt` contract: an
 `occlusionTexture` on TEXCOORD_1 without a metallic-roughness image keeps the
 factor-driven ORM slot and binds the occlusion image through a dedicated

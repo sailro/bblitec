@@ -5,6 +5,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { runSceneParity } from "./parity-scene.js";
 import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
+import { runInstrumentedCapture } from "./capture-instrumented.js";
 import { resolveScene, scenes } from "./scene-registry.js";
 
 function runNode(module: string, arguments_: string[]): void {
@@ -311,8 +312,29 @@ async function main(): Promise<void> {
         );
         return;
     }
+    if (command === "capture" && id) {
+        const argument = (name: string): string | undefined => {
+            const index = rest.indexOf(name);
+            return index >= 0 ? rest[index + 1] : undefined;
+        };
+        const seek = argument("--seek");
+        const skipDraw = argument("--skip-draw");
+        const output = argument("--out");
+        await runInstrumentedCapture(id, {
+            ...(seek !== undefined
+                ? { seekSeconds: Number(seek) }
+                : {}),
+            ...(skipDraw !== undefined
+                ? { skipDrawIndexCount: Number(skipDraw) }
+                : {}),
+            ...(output !== undefined
+                ? { outputDirectory: output }
+                : {}),
+        });
+        return;
+    }
     throw new Error(
-        "Usage: scene-command <list | show <id|source.ts> | compile|build|process|parity|geometry <id|source.ts|all> [options]>",
+        "Usage: scene-command <list | show <id|source.ts> | compile|build|process|parity|geometry|capture <id|source.ts|all> [options]>",
     );
 }
 

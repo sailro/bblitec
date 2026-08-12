@@ -166,20 +166,16 @@ CPU-side from GPU-side causes immediately.
 - [ ] Add headless renderer tests.
 - [ ] Add differential tests for camera, environment, material, and transform
   functions.
-- [ ] Close the residual instancing raster-edge gap in Scene 247 without
-  expanding geometry or adding scene-specific tolerances. Scene 243's
-  companion floor is closed: instrumented browser captures (hooked
-  shader modules, buffer/texture uploads, and render-bundle draws)
-  proved every deformation input bit-identical and localized the band
-  to the platform slab's TEXCOORD_1 occlusion texture, which the
-  native pipeline dropped — the dedicated uv2 occlusion pair took it
-  from 1.043 to 0.052 foreground MAD on both backends. That result
-  removes the assumption that 247 shares a cause with 243; its 0.405
-  foreground MAD keeps its own evidence (achromatic MSAA coverage
-  stepping on instanced silhouettes, Dawn reproducing SDL_GPU within
-  one LSB) and deserves the same instrumented differential capture
-  (per-draw isolation, uploaded instance matrices, composed WGSL)
-  before further arithmetic theories.
+- [ ] Chase the last sub-0.02 foreground residuals on Scenes 243
+  (0.005) and 247 (0.014) only if a structural cause surfaces; both
+  former floors are closed by ported pinned contracts (the dedicated
+  uv2 occlusion pair, the factor-texture bake at its exact precision
+  boundaries, JS-double matrix composition, and the normal-map
+  horizon-occlusion gate — see [backends](docs/backends.md) and
+  [fidelity](docs/fidelity.md)). What remains is scattered one-LSB
+  rounding on sparkle pixels with no directional bias; treat it as
+  the same-browser raster floor unless an instrumented capture says
+  otherwise.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 

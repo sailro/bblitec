@@ -237,7 +237,8 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
   let v_96 = v_95.y;
   let v_97 = (v_42 + v_34);
   let v_98 = clamp((((v_97 * v_97) - 1.0f) + v_34), 0.0f, 1.0f);
-  let v_99 = clamp((1.0f + (1.10000002384185791016f * dot(v_90, v_29))), 0.0f, 1.0f);
+  let v_99_horizon = clamp((1.0f + (1.10000002384185791016f * dot(v_90, v_29))), 0.0f, 1.0f);
+  let v_99 = select(1.0f, v_99_horizon, FragmentUniforms.normalOptions.y > 0.5f);
   let v_100 = (vec3<f32>(1.0f) + (v_75 * ((1.0f / max(v_96, 0.00100000004749745131f)) - 1.0f)));
   let v_101 = ((v_94 * (((((v_76 * v_95.x) + (v_75 * v_96)) * v_98) * v_99) * v_99)) * v_100);
   let v_102 = (((v_80 * v_81) * v_69) * mix(vec3<f32>(1.0f), v_100, vec3<f32>(v_88, v_88, v_88)));
