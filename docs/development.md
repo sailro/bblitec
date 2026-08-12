@@ -243,6 +243,78 @@ D3D12; it also temporarily emits SPIR-V until Tint resource bindings are
 remapped to SDL_GPU's dense texture/sampler convention. Each shader directory
 records the selected backend in `shader-compiler.json`.
 
+## Build switches
+
+The CMake cache variables that shape a native build (see
+[Minimal-size builds](#minimal-size-builds) for the size-optimized
+combination):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `BBLITE_GENERATED_DIR` | required | directory produced by bblitec (`main.cpp`, `features.cmake`) |
+| `BBLITE_BACKEND` | `SDL_GPU` | compiled GPU backend set: `SDL_GPU`, `DAWN`, or `BOTH`; `scene -- build` defaults to `BOTH` once the Dawn library is installed and honors the `BBLITE_BACKEND` environment variable |
+| `BBLITE_DAWN_DIR` | `artifacts/tools/dawn` | installed Dawn package root; point at `artifacts/tools/dawn-min` for the minimal static FXC-only library |
+| `BBLITE_SDL_DIR` | empty | subsystem-trimmed static SDL3 root (`tools/build-sdl-min.ps1`); empty selects the toolchain (vcpkg) SDL3 |
+| `BBLITE_MINSIZE` | `OFF` | whole-program optimization and dead-stripping (`/GL /Gw`, `/LTCG /OPT:REF /OPT:ICF`) plus a `/MAP` linker map for `tools/map-size-report.mjs` |
+| `BBLITE_CPU_FALLBACK` | `ON` | compile the SDL_Renderer CPU fallback; the scene 1 `--cpu` gate requires the default, minimal shapes turn it off |
+| `VCPKG_TARGET_TRIPLET` | `x64-windows` | `x64-windows-static` folds SDL/image/codec dependencies into the executable |
+| `CMAKE_MSVC_RUNTIME_LIBRARY` | toolchain | pass `MultiThreaded$<$<CONFIG:Debug>:Debug>` with the static triplet; vcpkg does not flip the project's own CRT |
+
+Generation additionally writes `BBLITE_IMAGE_CODECS` into
+`features.cmake` (the image codecs the scene's materialized assets
+reach). The build maps it onto vcpkg manifest features before
+`project()`, so JPEG support is compiled and deployed only for scenes
+that actually carry JPEG content; generated directories predating the
+list keep the historical png+jpeg set.
+
+## Minimal-size builds
+
+The minimal release shape statically links everything into one
+executable per backend. Measured on Scene 1: 2.2 MB SDL_GPU and
+7.7 MB Dawn, versus 5.9 MB across 17 files and 37.8 MB across 21
+files for the dynamic packages, at identical parity.
+
+Build the trimmed dependencies once:
+
+```powershell
+pwsh -File tools\build-sdl-min.ps1
+pwsh -File tools\build-dawn-min.ps1
+```
+
+`build-sdl-min.ps1` compiles the vcpkg-pinned SDL3 version with only
+video, events, and SDL_GPU (no audio, joystick, haptic, HIDAPI,
+sensor, camera, power, dialog, GL/Vulkan, or SDL_Renderer).
+`build-dawn-min.ps1` builds the monolithic static, D3D12-only,
+FXC-only Dawn: the package ships no compiler DLLs and resolves
+`d3dcompiler_47.dll` from the executable directory or System32, with
+the documented FXC-versus-DXC LSB tradeoff
+(see [backends](backends.md#empirical-findings)).
+
+Configure with the static triplet:
+
+```powershell
+cmake -S native -B native\build-scene1-min-sdl `
+  -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+  '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>' `
+  -DBBLITE_GENERATED_DIR="$PWD\generated\scene1" `
+  -DBBLITE_BACKEND=SDL_GPU `
+  -DBBLITE_MINSIZE=ON `
+  -DBBLITE_SDL_DIR="$PWD\artifacts\tools\sdl-min" `
+  -DBBLITE_CPU_FALLBACK=OFF
+cmake --build native\build-scene1-min-sdl --config Release --parallel
+```
+
+The Dawn shape adds `-DBBLITE_BACKEND=DAWN` and
+`-DBBLITE_DAWN_DIR="$PWD\artifacts\tools\dawn-min"`. Package with
+`tools/package-demo.ps1 -BuildDirectory <dir> -Variant min`; static
+layouts are detected automatically and ship no runtime or CRT DLLs.
+Attribute the executable's bytes after any change:
+
+```powershell
+node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native.map
+```
+
 ## Runtime switches
 
 | Variable | Purpose |
@@ -420,8 +492,11 @@ shaders and no Dawn DLLs, `DAWN` ships WGSL text plus
 `webgpu_dawn.dll`/`dxcompiler.dll`/`dxil.dll` and the Dawn license
 (no FXC — see [backends](backends.md#building-and-running)), and
 `BOTH` ships the dual-backend binary with both shader sets plus a
-`run-<scene>-dawn.cmd` launcher. Statically linked builds (vcpkg
-`x64-windows-static` with `BBLITE_MINSIZE`, Dawn from
+`run-<scene>-dawn.cmd` launcher. `jpeg62.dll` and the libjpeg-turbo
+notice ship only when the scene's `BBLITE_IMAGE_CODECS` reaches JPEG,
+and the `run-<scene>-cpu.cmd` launcher only when the build compiled
+the CPU fallback (`BBLITE_CPU_FALLBACK`). Statically linked builds
+(vcpkg `x64-windows-static` with `BBLITE_MINSIZE`, Dawn from
 `tools/build-dawn-min.ps1`) are detected by the absence of runtime
 DLLs beside the executable and ship the executable alone; `-Variant`
 appends a token to the package name. Text shader intermediates (HLSL,

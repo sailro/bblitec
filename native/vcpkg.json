@@ -6,11 +6,25 @@
     "nlohmann-json",
     {
       "name": "sdl3-image",
+      "default-features": false,
       "features": [
-        "jpeg",
         "png"
       ]
     },
     "sdl3"
-  ]
+  ],
+  "features": {
+    "jpeg": {
+      "description": "JPEG texture decoding for scenes whose materialized assets reach image/jpeg",
+      "dependencies": [
+        {
+          "name": "sdl3-image",
+          "default-features": false,
+          "features": [
+            "jpeg"
+          ]
+        }
+      ]
+    }
+  }
 }
