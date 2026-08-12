@@ -139,6 +139,8 @@ if(BBLITE_DAWN)
             "${CMAKE_COMMAND}" -E copy_if_different
             "$<TARGET_FILE:dawn::webgpu_dawn>"
             "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/d3dcompiler_47.dll"
+            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxcompiler.dll"
+            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxil.dll"
             "$<TARGET_FILE_DIR:bblite_native>"
         VERBATIM
     )

@@ -232,7 +232,10 @@ export async function runSceneParity(
     const renderer = arguments_.gpu
         ? {
               mode: "gpu",
-              implementation: "SDL_GPU",
+              implementation:
+                  process.env.BBLITE_GPU_BACKEND === "dawn"
+                      ? "Dawn"
+                      : "SDL_GPU",
               driverSelection: process.env.SDL_GPU_DRIVER ?? "auto",
           }
         : {
