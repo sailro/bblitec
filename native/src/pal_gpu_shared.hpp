@@ -8,9 +8,11 @@
 #include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 namespace bbl::pal {
@@ -39,6 +41,47 @@ struct GpuVertex {
 static_assert(sizeof(GpuVertex) == 200);
 #else
 static_assert(sizeof(GpuVertex) == 96);
+#endif
+
+#if BBLITE_GPU_DEFORMATION
+// Vertex deformation uniforms shared by both render backends (moved
+// verbatim from pal_sdl_gpu.cpp).
+struct DeformationUniforms {
+    std::array<std::array<float, 16>, 64> bone_matrices{};
+    float morph_weights[4]{};
+    float options[4]{};
+};
+
+inline DeformationUniforms build_deformation_uniforms(
+    const MeshRecord& mesh,
+    bool flat_normals) {
+    DeformationUniforms result;
+    for (std::array<float, 16>& matrix : result.bone_matrices) {
+        matrix[0] = 1.0f;
+        matrix[5] = 1.0f;
+        matrix[10] = 1.0f;
+        matrix[15] = 1.0f;
+    }
+    if (!mesh.gpu_deformation) return result;
+    if (mesh.bone_matrices.size() > result.bone_matrices.size()) {
+        throw std::runtime_error(
+            "GPU deformation bone palette exceeds 64 matrices.");
+    }
+    const std::size_t count = std::min(
+        mesh.bone_matrices.size(),
+        result.bone_matrices.size());
+    std::copy_n(
+        mesh.bone_matrices.begin(),
+        count,
+        result.bone_matrices.begin());
+    std::copy(
+        mesh.morph_weights.begin(),
+        mesh.morph_weights.end(),
+        result.morph_weights);
+    result.options[0] = 1.0f;
+    result.options[1] = flat_normals ? 1.0f : 0.0f;
+    return result;
+}
 #endif
 
 inline Vec3 rotate_euler(Vec3 value, const Vec3& rotation) {

@@ -11,18 +11,22 @@ SDL_Renderer CPU fallback is out of scope.
 
 ## Verified state
 
-Twenty-two curated scenes render on Dawn at values equal to or better
+Twenty-nine curated scenes render on Dawn at values equal to or better
 than SDL_GPU (see the Dawn column in [status](status.md)): scenes 2, 10,
-32, and 259 are bit-exact (259 beats SDL_GPU, whose DXC-vs-browser
+32, 246, and 259 are bit-exact (259 beats SDL_GPU, whose DXC-vs-browser
 rounding it eliminates), scene 1 (BoomBox) matches the SDL_GPU baseline
 at 0.001/0.015, scene 8 matches its baseline exactly at 0.129/0.134
 (the compiled-HDR environment path worked unmodified), the material
 extension scenes 28 (clearcoat), 29 (sheen), and 178 (iridescence)
-match their baselines exactly, scene 249 matches its SDL_GPU baseline
-exactly at 0.001/0.024, scenes 24 (HillValley `.babylon` reflection
-cubes, 0.015/0.016) and 248 (0.001/0.004) beat theirs, and scenes 6,
-13, 14, 31, 168, 210, 257, 258, 265, and 266 pass their gates. There is
-no open Dawn divergence in the migrated slice.
+match their baselines exactly, the deformation family lands at its
+SDL_GPU values — 5 (0.001/0.020), 243 (0.046/1.043, the documented
+browser-versus-native raster floor), 245 (0.000/0.001), 247
+(0.035/0.406), 254 (0.001/0.003, beating 0.004), 255 (0.011/0.101) —
+scene 249 matches its SDL_GPU baseline exactly at 0.001/0.024, scenes
+24 (HillValley `.babylon` reflection cubes, 0.015/0.016) and 248
+(0.001/0.004) beat theirs, and scenes 6, 13, 14, 31, 168, 210, 257,
+258, 265, and 266 pass their gates. There is no open Dawn divergence in
+the migrated slice.
 
 Key empirical findings, in case any regress:
 
@@ -117,6 +121,17 @@ the GPU API layer differs:
 - **Uniforms**: WebGPU has no push constants; each draw owns a uniform
   buffer sized to its family's uniform struct, written per frame with
   `wgpuQueueWriteBuffer` before submission.
+- **Deformation/instancing/storage morph**: the shared 200-byte
+  16-attribute `GpuVertex` layout feeds locations 8-15; the shared
+  `build_deformation_uniforms` (moved to `pal_gpu_shared.hpp`) writes a
+  per-mesh uniform at group 1 binding 1 each frame. Instancing adds the
+  per-instance matrix-column vertex buffer (slot 1, locations 16-19,
+  which needs `maxVertexAttributes` raised to 20 at device creation —
+  the SDL-specialized layout exceeds the WebGPU default of 16) plus the
+  parent-world uniform at the next group-1 binding. Storage morphing
+  binds the flat 6-float delta buffer and 16-byte-header weights buffer
+  at group 0 bindings 0/1 with 4-byte/16-byte zero fallbacks; weights
+  rewrite in place when `morph_weights_version` changes.
 - **Frame**: 4x MSAA color (surface format) resolving into the surface
   texture, `depth24plus-stencil8` (the browser's format — not the SDL
   backend's D32), stage-driven draw order (skybox → opaque →
@@ -187,21 +202,15 @@ authority if a regression appears:
 
 ## Remaining work, in suggested order
 
-1. **Deformation family** (scenes 5, 243, 245, 246, 247, 254, 255):
-   lift the compile-time guard at the top of `run_dawn_engine`. Needs
-   the `DeformationUniforms` uniform at group 1 binding 1, the
-   instancing vertex buffer (slot 1, locations 16-19) plus its parent
-   uniform, and the storage-morph buffers at group 0 — the WGSL side
-   already exists and Dawn's binding model matches it directly.
-2. **GridMaterial** (scene 213): own `grid.vert`/`grid.frag` modules
+1. **GridMaterial** (scene 213): own `grid.vert`/`grid.frag` modules
    and four pipeline kinds.
-3. **Shader variants** (scenes 163, 273, 274): alpha-card and
+2. **Shader variants** (scenes 163, 273, 274): alpha-card and
    circular-cutout vertex/fragment pairs, including the
    alpha-to-coverage pipeline.
-4. **Frame graph** (scenes 116, 145, 146): render-target tasks,
+3. **Frame graph** (scenes 116, 145, 146): render-target tasks,
    depth-only passes, geometry MRTs, viewport/scissor copies, blits —
    the largest remaining chunk.
-5. **Transmission** (scenes 33, 176, 212): scene-color grab with the
+4. **Transmission** (scenes 33, 176, 212): scene-color grab with the
    pinned mip chain and repeat sampler, and — the payoff SDL_GPU could
    never express — the **per-sample image-processing pass**
    (`texture_multisampled_2d`, apply `ip()` per sample, then average)
@@ -210,7 +219,7 @@ authority if a regression appears:
    it reproducible), which should take scenes 6/14 below their SDL
    floors; that requires emitting the dithered shader variant at
    generation time.
-6. **Diagnostics/attribution** (scene 1 draw IDs, clusters, PBR
+5. **Diagnostics/attribution** (scene 1 draw IDs, clusters, PBR
    buffers), then the full-matrix Dawn validation, threshold review,
    and the SDL_GPU retirement decision (delete DXC/normalization/
    shader-cache machinery, rewrite the backend rationale in

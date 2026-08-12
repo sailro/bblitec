@@ -56,7 +56,21 @@ struct DawnMeshBindings {
     WGPUBindGroup scene = nullptr;
     WGPUBindGroup textures = nullptr;
     WGPUBindGroup material = nullptr;
+#if BBLITE_GPU_MORPH_STORAGE
+    WGPUBindGroup morph = nullptr;
+#endif
 };
+
+// Vertex uniform bindings in group 1 mirror the SDL vertex uniform
+// slots: 0 = viewProjection, 1 = deformation, then the instance
+// parent world matrix.
+#if BBLITE_GPU_INSTANCING
+#if BBLITE_GPU_DEFORMATION
+constexpr std::uint32_t instance_uniform_binding = 2;
+#else
+constexpr std::uint32_t instance_uniform_binding = 1;
+#endif
+#endif
 
 // Texture pair slots 0-3 and 5 mirror the SDL_GPU order; slot 4 is
 // the environment or reflection cube bound from shared state. When the
@@ -98,6 +112,22 @@ struct DawnMesh {
     // Standard-material `.babylon` reflection cube view, non-owning
     // (points into DawnState::reflection_cube_views).
     WGPUTextureView reflection = nullptr;
+#if BBLITE_GPU_DEFORMATION
+    WGPUBuffer deformation_uniforms = nullptr;
+#endif
+#if BBLITE_GPU_INSTANCING
+    WGPUBuffer instances = nullptr;
+    WGPUBuffer instance_uniform = nullptr;
+    std::uint32_t instance_count = 1;
+#endif
+#if BBLITE_GPU_MORPH_STORAGE
+    // Owned when the mesh has storage morphs; otherwise these alias
+    // the shared empty fallbacks.
+    WGPUBuffer morph_deltas = nullptr;
+    WGPUBuffer morph_weights = nullptr;
+    bool owns_morph_buffers = false;
+    std::uint64_t morph_weights_version = 0;
+#endif
     std::map<upstream::RenderPipelineKind, DawnMeshBindings> bindings;
 };
 
@@ -163,6 +193,10 @@ struct DawnState {
     bool skybox_enabled = false;
     WGPUShaderModule mip_module = nullptr;
     WGPUSampler mip_sampler = nullptr;
+#if BBLITE_GPU_MORPH_STORAGE
+    WGPUBuffer empty_morph_deltas = nullptr;
+    WGPUBuffer empty_morph_weights = nullptr;
+#endif
     std::map<WGPUTextureFormat, WGPURenderPipeline> mip_pipelines;
     std::map<upstream::RenderPipelineKind, DawnPipeline> pipelines;
     std::vector<DawnMesh> meshes;
@@ -196,13 +230,45 @@ struct DawnState {
                 if (binding.material) {
                     wgpuBindGroupRelease(binding.material);
                 }
+#if BBLITE_GPU_MORPH_STORAGE
+                if (binding.morph) wgpuBindGroupRelease(binding.morph);
+#endif
             }
             if (mesh.material_uniforms) {
                 wgpuBufferRelease(mesh.material_uniforms);
             }
+#if BBLITE_GPU_DEFORMATION
+            if (mesh.deformation_uniforms) {
+                wgpuBufferRelease(mesh.deformation_uniforms);
+            }
+#endif
+#if BBLITE_GPU_INSTANCING
+            if (mesh.instance_uniform) {
+                wgpuBufferRelease(mesh.instance_uniform);
+            }
+            if (mesh.instances) wgpuBufferRelease(mesh.instances);
+#endif
+#if BBLITE_GPU_MORPH_STORAGE
+            if (mesh.owns_morph_buffers) {
+                if (mesh.morph_deltas) {
+                    wgpuBufferRelease(mesh.morph_deltas);
+                }
+                if (mesh.morph_weights) {
+                    wgpuBufferRelease(mesh.morph_weights);
+                }
+            }
+#endif
             if (mesh.vertices) wgpuBufferRelease(mesh.vertices);
             if (mesh.indices) wgpuBufferRelease(mesh.indices);
         }
+#if BBLITE_GPU_MORPH_STORAGE
+        if (empty_morph_weights) {
+            wgpuBufferRelease(empty_morph_weights);
+        }
+        if (empty_morph_deltas) {
+            wgpuBufferRelease(empty_morph_deltas);
+        }
+#endif
         for (auto& [kind, pipeline] : pipelines) {
             if (pipeline.pipeline) {
                 wgpuRenderPipelineRelease(pipeline.pipeline);
@@ -862,6 +928,45 @@ WGPUShaderModule& fragment_module_for(
     return module;
 }
 
+#if BBLITE_GPU_DEFORMATION
+constexpr std::uint32_t base_vertex_attribute_count = 16;
+#else
+constexpr std::uint32_t base_vertex_attribute_count = 8;
+#endif
+
+// The GpuVertex attribute table shared by mesh, skybox, and ground
+// pipelines; deformation appends joints/weights/morph deltas at
+// locations 8-15 exactly like the SDL backend.
+void fill_base_vertex_attributes(WGPUVertexAttribute* attributes) {
+    const auto attribute = [&](
+                               std::uint32_t location,
+                               WGPUVertexFormat format,
+                               std::uint64_t offset) {
+        attributes[location] = WGPUVertexAttribute{};
+        attributes[location].format = format;
+        attributes[location].offset = offset;
+        attributes[location].shaderLocation = location;
+    };
+    attribute(0, WGPUVertexFormat_Float32x3, 0);
+    attribute(1, WGPUVertexFormat_Float32x3, 12);
+    attribute(2, WGPUVertexFormat_Float32x4, 24);
+    attribute(3, WGPUVertexFormat_Float32x2, 40);
+    attribute(4, WGPUVertexFormat_Float32x3, 48);
+    attribute(5, WGPUVertexFormat_Float32x2, 60);
+    attribute(6, WGPUVertexFormat_Float32x4, 68);
+    attribute(7, WGPUVertexFormat_Float32x3, 84);
+#if BBLITE_GPU_DEFORMATION
+    attribute(8, WGPUVertexFormat_Float32x4, 96);
+    attribute(9, WGPUVertexFormat_Float32x4, 112);
+    attribute(10, WGPUVertexFormat_Float32x3, 128);
+    attribute(11, WGPUVertexFormat_Float32x3, 140);
+    attribute(12, WGPUVertexFormat_Float32x3, 152);
+    attribute(13, WGPUVertexFormat_Float32x3, 164);
+    attribute(14, WGPUVertexFormat_Float32x3, 176);
+    attribute(15, WGPUVertexFormat_Float32x3, 188);
+#endif
+}
+
 struct PipelineKindTraits {
     bool standard = false;
     bool transparent = false;
@@ -907,36 +1012,38 @@ DawnPipeline& pipeline_for(
     if (existing != state.pipelines.end()) return existing->second;
     const PipelineKindTraits traits = pipeline_traits(kind);
 
-    std::array<WGPUVertexAttribute, 8> attributes{};
-    const auto attribute = [&](
-                               std::uint32_t location,
-                               WGPUVertexFormat format,
-                               std::uint64_t offset) {
-        attributes[location] = WGPUVertexAttribute{};
-        attributes[location].format = format;
-        attributes[location].offset = offset;
-        attributes[location].shaderLocation = location;
-    };
-    attribute(0, WGPUVertexFormat_Float32x3, 0);
-    attribute(1, WGPUVertexFormat_Float32x3, 12);
-    attribute(2, WGPUVertexFormat_Float32x4, 24);
-    attribute(3, WGPUVertexFormat_Float32x2, 40);
-    attribute(4, WGPUVertexFormat_Float32x3, 48);
-    attribute(5, WGPUVertexFormat_Float32x2, 60);
-    attribute(6, WGPUVertexFormat_Float32x4, 68);
-    attribute(7, WGPUVertexFormat_Float32x3, 84);
-    WGPUVertexBufferLayout vertex_layout{};
-    vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
-    vertex_layout.arrayStride = sizeof(GpuVertex);
-    vertex_layout.attributeCount = attributes.size();
-    vertex_layout.attributes = attributes.data();
+    std::array<WGPUVertexAttribute, base_vertex_attribute_count>
+        attributes{};
+    fill_base_vertex_attributes(attributes.data());
+    std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
+    vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
+    vertex_layouts[0].arrayStride = sizeof(GpuVertex);
+    vertex_layouts[0].attributeCount = attributes.size();
+    vertex_layouts[0].attributes = attributes.data();
+#if BBLITE_GPU_INSTANCING
+    // Per-instance world-matrix columns at locations 16-19, exactly
+    // like the SDL backend's second vertex buffer.
+    std::array<WGPUVertexAttribute, 4> instance_attributes{};
+    for (std::uint32_t column = 0; column < 4; ++column) {
+        instance_attributes[column].format = WGPUVertexFormat_Float32x4;
+        instance_attributes[column].offset = column * 16;
+        instance_attributes[column].shaderLocation = 16 + column;
+    }
+    vertex_layouts[1].stepMode = WGPUVertexStepMode_Instance;
+    vertex_layouts[1].arrayStride = sizeof(std::array<float, 16>);
+    vertex_layouts[1].attributeCount = instance_attributes.size();
+    vertex_layouts[1].attributes = instance_attributes.data();
+    constexpr std::uint32_t vertex_buffer_count = 2;
+#else
+    constexpr std::uint32_t vertex_buffer_count = 1;
+#endif
 
     WGPURenderPipelineDescriptor descriptor =
         WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.vertex.module = state.vertex_module;
     descriptor.vertex.entryPoint = string_view("mainVertex");
-    descriptor.vertex.bufferCount = 1;
-    descriptor.vertex.buffers = &vertex_layout;
+    descriptor.vertex.bufferCount = vertex_buffer_count;
+    descriptor.vertex.buffers = vertex_layouts.data();
 
     descriptor.primitive.topology =
         WGPUPrimitiveTopology_TriangleList;
@@ -996,18 +1103,60 @@ DawnMeshBindings& bindings_for(
 
     WGPUBindGroupLayout scene_layout =
         wgpuRenderPipelineGetBindGroupLayout(pipeline.pipeline, 1);
-    WGPUBindGroupEntry scene_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-    scene_entry.binding = 0;
-    scene_entry.buffer = state.view_projection;
-    scene_entry.size = 64;
+    std::array<WGPUBindGroupEntry, 3> scene_entries{};
+    std::uint32_t scene_entry_count = 0;
+    scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
+    scene_entries[scene_entry_count].binding = 0;
+    scene_entries[scene_entry_count].buffer = state.view_projection;
+    scene_entries[scene_entry_count].size = 64;
+    ++scene_entry_count;
+#if BBLITE_GPU_DEFORMATION
+    scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
+    scene_entries[scene_entry_count].binding = 1;
+    scene_entries[scene_entry_count].buffer = mesh.deformation_uniforms;
+    scene_entries[scene_entry_count].size =
+        sizeof(DeformationUniforms);
+    ++scene_entry_count;
+#endif
+#if BBLITE_GPU_INSTANCING
+    scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
+    scene_entries[scene_entry_count].binding = instance_uniform_binding;
+    scene_entries[scene_entry_count].buffer = mesh.instance_uniform;
+    scene_entries[scene_entry_count].size = 64;
+    ++scene_entry_count;
+#endif
     WGPUBindGroupDescriptor scene_descriptor =
         WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     scene_descriptor.layout = scene_layout;
-    scene_descriptor.entryCount = 1;
-    scene_descriptor.entries = &scene_entry;
+    scene_descriptor.entryCount = scene_entry_count;
+    scene_descriptor.entries = scene_entries.data();
     bindings.scene =
         wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
     wgpuBindGroupLayoutRelease(scene_layout);
+
+#if BBLITE_GPU_MORPH_STORAGE
+    {
+        WGPUBindGroupLayout morph_layout =
+            wgpuRenderPipelineGetBindGroupLayout(pipeline.pipeline, 0);
+        std::array<WGPUBindGroupEntry, 2> morph_entries{};
+        morph_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+        morph_entries[0].binding = 0;
+        morph_entries[0].buffer = mesh.morph_deltas;
+        morph_entries[0].size = WGPU_WHOLE_SIZE;
+        morph_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+        morph_entries[1].binding = 1;
+        morph_entries[1].buffer = mesh.morph_weights;
+        morph_entries[1].size = WGPU_WHOLE_SIZE;
+        WGPUBindGroupDescriptor morph_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        morph_descriptor.layout = morph_layout;
+        morph_descriptor.entryCount = morph_entries.size();
+        morph_descriptor.entries = morph_entries.data();
+        bindings.morph =
+            wgpuDeviceCreateBindGroup(state.device, &morph_descriptor);
+        wgpuBindGroupLayoutRelease(morph_layout);
+    }
+#endif
 
     // Fragment texture pairs mirror the SDL_GPU slot order. Standard:
     // base color, specular, opacity, ambient, reflection cube,
@@ -1136,11 +1285,6 @@ void save_capture_png(
 } // namespace
 
 bool run_dawn_engine(Engine& engine) {
-#if BBLITE_GPU_DEFORMATION || BBLITE_GPU_INSTANCING || BBLITE_GPU_MORPH_STORAGE
-    dawn_error(
-        "GPU deformation, instancing, and storage morphing are not "
-        "implemented yet.");
-#else
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("Dawn renderer requires a registered scene.");
     }
@@ -1262,6 +1406,14 @@ bool run_dawn_engine(Engine& engine) {
     }
 
     WGPUDeviceDescriptor device_descriptor = WGPU_DEVICE_DESCRIPTOR_INIT;
+#if BBLITE_GPU_INSTANCING
+    // The SDL-specialized WGSL feeds per-instance matrix columns at
+    // locations 16-19; the WebGPU default caps attribute locations
+    // below 16, so raise the device limit to cover location 19.
+    WGPULimits required_limits = WGPU_LIMITS_INIT;
+    required_limits.maxVertexAttributes = 20;
+    device_descriptor.requiredLimits = &required_limits;
+#endif
     device_descriptor.uncapturedErrorCallbackInfo.callback =
         [](
             WGPUDevice const*,
@@ -1417,6 +1569,22 @@ bool run_dawn_engine(Engine& engine) {
         state.ground_sampler =
             wgpuDeviceCreateSampler(state.device, &sampler_descriptor);
     }
+#if BBLITE_GPU_MORPH_STORAGE
+    {
+        const std::array<float, 1> zero_delta{0.0f};
+        state.empty_morph_deltas = create_buffer(
+            state,
+            WGPUBufferUsage_Storage,
+            zero_delta.data(),
+            sizeof(zero_delta));
+        const std::array<std::uint32_t, 4> zero_header{};
+        state.empty_morph_weights = create_buffer(
+            state,
+            WGPUBufferUsage_Storage,
+            zero_header.data(),
+            sizeof(zero_header));
+    }
+#endif
     upload_environment(state, scene.environment);
     upload_brdf(state, scene.environment);
     state.reflection_cubes.reserve(engine.reflection_cubes.size());
@@ -1454,6 +1622,127 @@ bool run_dawn_engine(Engine& engine) {
             geometry.indices.size() * sizeof(std::uint32_t));
         mesh.index_count =
             static_cast<std::uint32_t>(geometry.indices.size());
+#if BBLITE_GPU_DEFORMATION
+        mesh.deformation_uniforms = create_buffer(
+            state,
+            WGPUBufferUsage_Uniform,
+            nullptr,
+            sizeof(DeformationUniforms));
+#endif
+#if BBLITE_GPU_MORPH_STORAGE
+        mesh.morph_deltas = state.empty_morph_deltas;
+        mesh.morph_weights = state.empty_morph_weights;
+        if (
+            mesh_record.gpu_deformation &&
+            !geometry.morph_positions.empty()) {
+            // Flat 6-float deltas indexed
+            // (target * vertexCount + vertex) * 6, packed with the
+            // same x negation as the vertex attributes.
+            const std::size_t target_count =
+                geometry.morph_positions.size();
+            const std::size_t vertex_count =
+                geometry.vertices.size();
+            std::vector<float> deltas(
+                target_count * vertex_count * 6,
+                0.0f);
+            for (
+                std::size_t target = 0;
+                target < target_count;
+                ++target) {
+                const std::vector<Vec3>& positions =
+                    geometry.morph_positions[target];
+                for (
+                    std::size_t vertex = 0;
+                    vertex < vertex_count;
+                    ++vertex) {
+                    const std::size_t offset =
+                        (target * vertex_count + vertex) * 6;
+                    const Vec3 position =
+                        vertex < positions.size()
+                            ? positions[vertex]
+                            : Vec3{};
+                    const Vec3 normal =
+                        target < geometry.morph_normals.size() &&
+                        vertex <
+                            geometry.morph_normals[target].size()
+                            ? geometry.morph_normals[target][vertex]
+                            : Vec3{};
+                    deltas[offset] = -position.x;
+                    deltas[offset + 1] = position.y;
+                    deltas[offset + 2] = position.z;
+                    deltas[offset + 3] = -normal.x;
+                    deltas[offset + 4] = normal.y;
+                    deltas[offset + 5] = normal.z;
+                }
+            }
+            mesh.morph_deltas = create_buffer(
+                state,
+                WGPUBufferUsage_Storage,
+                deltas.data(),
+                deltas.size() * sizeof(float));
+            std::vector<std::uint8_t> weights_blob(
+                16 + target_count * sizeof(float),
+                0);
+            const std::uint32_t header[2] = {
+                static_cast<std::uint32_t>(target_count),
+                static_cast<std::uint32_t>(vertex_count),
+            };
+            std::memcpy(
+                weights_blob.data(),
+                header,
+                sizeof(header));
+            for (
+                std::size_t target = 0;
+                target < target_count;
+                ++target) {
+                const float weight =
+                    target <
+                    mesh_record.morph_storage_weights.size()
+                        ? mesh_record.morph_storage_weights[target]
+                        : 0.0f;
+                std::memcpy(
+                    weights_blob.data() + 16 +
+                        target * sizeof(float),
+                    &weight,
+                    sizeof(float));
+            }
+            mesh.morph_weights = create_buffer(
+                state,
+                WGPUBufferUsage_Storage,
+                weights_blob.data(),
+                weights_blob.size());
+            mesh.morph_weights_version =
+                mesh_record.morph_weights_version;
+            mesh.owns_morph_buffers = true;
+        }
+#endif
+#if BBLITE_GPU_INSTANCING
+        {
+            std::vector<std::array<float, 16>> instance_matrices =
+                mesh_record.instance_matrices;
+            if (instance_matrices.empty()) {
+                std::array<float, 16> identity{};
+                identity[0] = 1.0f;
+                identity[5] = 1.0f;
+                identity[10] = 1.0f;
+                identity[15] = 1.0f;
+                instance_matrices.push_back(identity);
+            }
+            mesh.instances = create_buffer(
+                state,
+                WGPUBufferUsage_Vertex,
+                instance_matrices.data(),
+                instance_matrices.size() *
+                    sizeof(instance_matrices.front()));
+            mesh.instance_count = static_cast<std::uint32_t>(
+                instance_matrices.size());
+            mesh.instance_uniform = create_buffer(
+                state,
+                WGPUBufferUsage_Uniform,
+                nullptr,
+                64);
+        }
+#endif
         mesh.material_uniform_size =
             ((item.material_kind ==
                       upstream::RenderMaterialKind::standard
@@ -1714,23 +2003,9 @@ bool run_dawn_engine(Engine& engine) {
             skybox_view = state.skybox_texture_view;
         }
 
-        std::array<WGPUVertexAttribute, 8> attributes{};
-        const auto attribute = [&](
-                                   std::uint32_t location,
-                                   WGPUVertexFormat format,
-                                   std::uint64_t offset) {
-            attributes[location].format = format;
-            attributes[location].offset = offset;
-            attributes[location].shaderLocation = location;
-        };
-        attribute(0, WGPUVertexFormat_Float32x3, 0);
-        attribute(1, WGPUVertexFormat_Float32x3, 12);
-        attribute(2, WGPUVertexFormat_Float32x4, 24);
-        attribute(3, WGPUVertexFormat_Float32x2, 40);
-        attribute(4, WGPUVertexFormat_Float32x3, 48);
-        attribute(5, WGPUVertexFormat_Float32x2, 60);
-        attribute(6, WGPUVertexFormat_Float32x4, 68);
-        attribute(7, WGPUVertexFormat_Float32x3, 84);
+        std::array<WGPUVertexAttribute, base_vertex_attribute_count>
+            attributes{};
+        fill_base_vertex_attributes(attributes.data());
         WGPUVertexBufferLayout vertex_layout{};
         vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
         vertex_layout.arrayStride = sizeof(GpuVertex);
@@ -1878,23 +2153,9 @@ bool run_dawn_engine(Engine& engine) {
         state.ground_texture_view =
             wgpuTextureCreateView(state.ground_texture, nullptr);
 
-        std::array<WGPUVertexAttribute, 8> attributes{};
-        const auto attribute = [&](
-                                   std::uint32_t location,
-                                   WGPUVertexFormat format,
-                                   std::uint64_t offset) {
-            attributes[location].format = format;
-            attributes[location].offset = offset;
-            attributes[location].shaderLocation = location;
-        };
-        attribute(0, WGPUVertexFormat_Float32x3, 0);
-        attribute(1, WGPUVertexFormat_Float32x3, 12);
-        attribute(2, WGPUVertexFormat_Float32x4, 24);
-        attribute(3, WGPUVertexFormat_Float32x2, 40);
-        attribute(4, WGPUVertexFormat_Float32x3, 48);
-        attribute(5, WGPUVertexFormat_Float32x2, 60);
-        attribute(6, WGPUVertexFormat_Float32x4, 68);
-        attribute(7, WGPUVertexFormat_Float32x3, 84);
+        std::array<WGPUVertexAttribute, base_vertex_attribute_count>
+            attributes{};
+        fill_base_vertex_attributes(attributes.data());
         WGPUVertexBufferLayout vertex_layout{};
         vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
         vertex_layout.arrayStride = sizeof(GpuVertex);
@@ -2052,6 +2313,64 @@ bool run_dawn_engine(Engine& engine) {
             [&](const upstream::RenderDrawList& list) {
                 for (const upstream::RenderDrawCommand& draw :
                      list.commands) {
+                    DawnMesh& draw_mesh = state.meshes[draw.item_index];
+                    const MeshRecord& draw_record =
+                        engine.meshes[draw.item.mesh.value];
+                    (void)draw_mesh;
+                    (void)draw_record;
+#if BBLITE_GPU_DEFORMATION
+                    {
+                        const DeformationUniforms deformation =
+                            build_deformation_uniforms(
+                                draw_record,
+                                engine.geometries[draw.item.geometry]
+                                    .flat_normals);
+                        wgpuQueueWriteBuffer(
+                            state.queue,
+                            draw_mesh.deformation_uniforms,
+                            0,
+                            &deformation,
+                            sizeof(deformation));
+                    }
+#endif
+#if BBLITE_GPU_INSTANCING
+                    wgpuQueueWriteBuffer(
+                        state.queue,
+                        draw_mesh.instance_uniform,
+                        0,
+                        draw_record.instance_parent_matrix.data(),
+                        64);
+#endif
+#if BBLITE_GPU_MORPH_STORAGE
+                    if (
+                        draw_mesh.owns_morph_buffers &&
+                        draw_mesh.morph_weights_version !=
+                            draw_record.morph_weights_version) {
+                        const std::size_t target_count =
+                            engine.geometries[draw.item.geometry]
+                                .morph_positions.size();
+                        std::vector<float> weights(target_count, 0.0f);
+                        for (
+                            std::size_t target = 0;
+                            target < target_count;
+                            ++target) {
+                            weights[target] =
+                                target <
+                                draw_record.morph_storage_weights.size()
+                                    ? draw_record
+                                          .morph_storage_weights[target]
+                                    : 0.0f;
+                        }
+                        wgpuQueueWriteBuffer(
+                            state.queue,
+                            draw_mesh.morph_weights,
+                            16,
+                            weights.data(),
+                            weights.size() * sizeof(float));
+                        draw_mesh.morph_weights_version =
+                            draw_record.morph_weights_version;
+                    }
+#endif
                     if (
                         draw.item.material_kind ==
                         upstream::RenderMaterialKind::standard) {
@@ -2183,8 +2502,16 @@ bool run_dawn_engine(Engine& engine) {
                         pass, 2, bindings.textures, 0, nullptr);
                     wgpuRenderPassEncoderSetBindGroup(
                         pass, 3, bindings.material, 0, nullptr);
+#if BBLITE_GPU_MORPH_STORAGE
+                    wgpuRenderPassEncoderSetBindGroup(
+                        pass, 0, bindings.morph, 0, nullptr);
+#endif
                     wgpuRenderPassEncoderSetVertexBuffer(
                         pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
+#if BBLITE_GPU_INSTANCING
+                    wgpuRenderPassEncoderSetVertexBuffer(
+                        pass, 1, mesh.instances, 0, WGPU_WHOLE_SIZE);
+#endif
                     wgpuRenderPassEncoderSetIndexBuffer(
                         pass,
                         mesh.indices,
@@ -2192,7 +2519,16 @@ bool run_dawn_engine(Engine& engine) {
                         0,
                         WGPU_WHOLE_SIZE);
                     wgpuRenderPassEncoderDrawIndexed(
-                        pass, mesh.index_count, 1, 0, 0, 0);
+                        pass,
+                        mesh.index_count,
+#if BBLITE_GPU_INSTANCING
+                        mesh.instance_count,
+#else
+                        1,
+#endif
+                        0,
+                        0,
+                        0);
                 }
             };
         const auto draw_ground = [&] {
@@ -2348,7 +2684,6 @@ bool run_dawn_engine(Engine& engine) {
     SDL_DestroyWindow(state.window);
     state.window = nullptr;
     return true;
-#endif
 }
 
 } // namespace bbl::pal

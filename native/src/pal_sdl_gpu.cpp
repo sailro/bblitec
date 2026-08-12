@@ -357,14 +357,6 @@ struct ImageProcessingUniforms {
     float parameters[4];
 };
 
-#if BBLITE_GPU_DEFORMATION
-struct DeformationUniforms {
-    std::array<std::array<float, 16>, 64> bone_matrices{};
-    float morph_weights[4]{};
-    float options[4]{};
-};
-#endif
-
 #if BBLITE_GPU_INSTANCING
 #if BBLITE_GPU_DEFORMATION
 constexpr Uint32 instance_uniform_slot = 2;
@@ -376,40 +368,6 @@ constexpr Uint32 instance_uniform_slot = 1;
 [[noreturn]] void gpu_error(const char* operation) {
     throw std::runtime_error(std::string(operation) + ": " + SDL_GetError());
 }
-
-
-#if BBLITE_GPU_DEFORMATION
-DeformationUniforms build_deformation_uniforms(
-    const MeshRecord& mesh,
-    bool flat_normals) {
-    DeformationUniforms result;
-    for (std::array<float, 16>& matrix : result.bone_matrices) {
-        matrix[0] = 1.0f;
-        matrix[5] = 1.0f;
-        matrix[10] = 1.0f;
-        matrix[15] = 1.0f;
-    }
-    if (!mesh.gpu_deformation) return result;
-    if (mesh.bone_matrices.size() > result.bone_matrices.size()) {
-        throw std::runtime_error(
-            "GPU deformation bone palette exceeds 64 matrices.");
-    }
-    const std::size_t count = std::min(
-        mesh.bone_matrices.size(),
-        result.bone_matrices.size());
-    std::copy_n(
-        mesh.bone_matrices.begin(),
-        count,
-        result.bone_matrices.begin());
-    std::copy(
-        mesh.morph_weights.begin(),
-        mesh.morph_weights.end(),
-        result.morph_weights);
-    result.options[0] = 1.0f;
-    result.options[1] = flat_normals ? 1.0f : 0.0f;
-    return result;
-}
-#endif
 
 
 void handle_camera_pointer_event(
