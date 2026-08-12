@@ -30,7 +30,9 @@ compiled-HDR environment path worked unmodified), the material
 extension scenes 28 (clearcoat), 29 (sheen), and 178 (iridescence)
 match exactly, GridMaterial scene 213 matches at 0.000/0.001, the
 deformation family lands at its SDL_GPU values — 5 (0.001/0.020), 243
-(0.046/1.043, the documented browser-versus-native raster floor), 245
+(0.046/1.043, the documented deformation-input floor — Dawn
+reproduces SDL_GPU within one LSB there, exonerating codegen and
+raster), 245
 (0.000/0.001), 247 (0.035/0.406), 254 (0.001/0.003, beating 0.004),
 255 (0.011/0.101) — scene 249 matches exactly at 0.001/0.024, scenes
 24 (HillValley `.babylon` reflection cubes, 0.015/0.016) and 248

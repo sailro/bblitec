@@ -164,13 +164,19 @@ pairings, resolved by reprocessing.
   functions.
 - [ ] Close the residual morph and instancing raster-edge gaps in Scenes 243
   and 247 without expanding geometry or adding scene-specific tolerances.
-  Upstream history review classifies both residuals as achromatic
-  Dawn-versus-SDL_GPU 4x-MSAA coverage stepping on deformed or instanced
-  silhouettes; interiors are within 2 LSB. Porting the pinned
+  Both residuals are achromatic 4x-MSAA coverage stepping on deformed or
+  instanced silhouettes; interiors are within 2 LSB. Porting the pinned
   storage-buffer morph path produced frames bit-identical to the former
-  CPU fallback, ruling out evaluation-place divergence and attributing the
-  Scene 243 residual to browser-versus-native shader codegen or raster
-  behavior.
+  CPU fallback, ruling out evaluation-place divergence, and the Dawn
+  backend — the browser's own Tint/DXC/D3D12 stack — reproduces SDL_GPU
+  within one LSB on 147 (243) and 159 (247) pixels while both differ
+  from the golden identically, ruling out shader codegen and
+  rasterization as well. The remaining suspect is the deformation input
+  math: the pinned engine computes bone matrices, keyframe
+  interpolation, and instance/parent world composition in JavaScript
+  float64 intermediates rounded once at upload, while the native
+  runtime computes them in float32 throughout with its own operation
+  order.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 
