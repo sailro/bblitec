@@ -506,6 +506,11 @@ struct MaterialRecord {
     // pbr-template-ext pair for occlusionTexture.texCoord == 1).
     TextureData occlusion_texture;
     bool occlusion_texture_uv2 = false;
+    // Texture-less base color baked to the pinned 8-bit sRGB texel
+    // (uploadBaseColorFactorTexture); the hardware decode of these
+    // bytes is the browser's effective base color.
+    std::array<std::uint8_t, 4> base_color_fallback{
+        255, 255, 255, 255};
     RenderTextureRef emissive_render_texture{};
     std::uint32_t reflection_cube = invalid_handle;
     float reflection_level = 1.0f;

@@ -390,12 +390,19 @@ Matrix identity_matrix() {
 }
 
 Matrix multiply_matrix(const Matrix& left, const Matrix& right) {
+    // Pinned matrix multiplication runs in JavaScript double
+    // precision over float32 entries and rounds once per component
+    // at the Float32Array store; mirror that exactly.
     Matrix result{};
     for (int column = 0; column < 4; ++column) {
         for (int row = 0; row < 4; ++row) {
+            double sum = 0.0;
             for (int index = 0; index < 4; ++index) {
-                result[column * 4 + row] += left[index * 4 + row] * right[column * 4 + index];
+                sum +=
+                    static_cast<double>(left[index * 4 + row]) *
+                    static_cast<double>(right[column * 4 + index]);
             }
+            result[column * 4 + row] = static_cast<float>(sum);
         }
     }
     return result;
@@ -442,20 +449,35 @@ Matrix trs_matrix(
     Vec3 translation,
     Vec4 rotation,
     Vec3 scale) {
-    const float x = rotation.x;
-    const float y = rotation.y;
-    const float z = rotation.z;
-    const float w = rotation.w;
+    // Pinned mat4ComposeInto runs in JavaScript double precision and
+    // rounds once at the Float32Array store; mirror its products and
+    // association exactly.
+    const double x = rotation.x;
+    const double y = rotation.y;
+    const double z = rotation.z;
+    const double w = rotation.w;
+    const double xx = x * x;
+    const double yy = y * y;
+    const double zz = z * z;
+    const double xy = x * y;
+    const double xz = x * z;
+    const double yz = y * z;
+    const double wx = w * x;
+    const double wy = w * y;
+    const double wz = w * z;
+    const double sx = scale.x;
+    const double sy = scale.y;
+    const double sz = scale.z;
     Matrix result = identity_matrix();
-    result[0] = (1.0f - 2.0f * (y * y + z * z)) * scale.x;
-    result[1] = (2.0f * (x * y + z * w)) * scale.x;
-    result[2] = (2.0f * (x * z - y * w)) * scale.x;
-    result[4] = (2.0f * (x * y - z * w)) * scale.y;
-    result[5] = (1.0f - 2.0f * (x * x + z * z)) * scale.y;
-    result[6] = (2.0f * (y * z + x * w)) * scale.y;
-    result[8] = (2.0f * (x * z + y * w)) * scale.z;
-    result[9] = (2.0f * (y * z - x * w)) * scale.z;
-    result[10] = (1.0f - 2.0f * (x * x + y * y)) * scale.z;
+    result[0] = static_cast<float>((1.0 - 2.0 * (yy + zz)) * sx);
+    result[1] = static_cast<float>(2.0 * (xy + wz) * sx);
+    result[2] = static_cast<float>(2.0 * (xz - wy) * sx);
+    result[4] = static_cast<float>(2.0 * (xy - wz) * sy);
+    result[5] = static_cast<float>((1.0 - 2.0 * (xx + zz)) * sy);
+    result[6] = static_cast<float>(2.0 * (yz + wx) * sy);
+    result[8] = static_cast<float>(2.0 * (xz + wy) * sz);
+    result[9] = static_cast<float>(2.0 * (yz - wx) * sz);
+    result[10] = static_cast<float>((1.0 - 2.0 * (xx + yy)) * sz);
     result[12] = translation.x;
     result[13] = translation.y;
     result[14] = translation.z;
@@ -991,6 +1013,33 @@ void require_matching_texture_transform(
     }
 }
 
+// Babylon Lite bakes texture-less PBR factors into 1x1 factor
+// textures (gltf-pbr-builder uploadBaseColorFactorTexture /
+// uploadOrmFactorTexture) and leaves the shader uniforms at their
+// defaults, so the browser shades with the 8-bit quantized values.
+// Quantize the record factors identically: the native white-fallback
+// texture times the quantized uniform reproduces the browser's
+// quantized texel times the default uniform bit for bit.
+float quantized_unorm_factor(float value) {
+    return std::round(
+               std::clamp(value, 0.0f, 1.0f) * 255.0f) /
+        255.0f;
+}
+
+std::uint8_t linear_to_srgb_byte(float value) {
+    // Pinned linearToSrgbByte: the byte lands in an rgba8unorm-srgb
+    // texel whose hardware decode is the browser's effective value.
+    const double clamped = std::clamp(
+        static_cast<double>(value),
+        0.0,
+        1.0);
+    const double encoded = clamped <= 0.0031308
+        ? clamped * 12.92
+        : 1.055 * std::pow(clamped, 1.0 / 2.4) - 0.055;
+    return static_cast<std::uint8_t>(
+        std::round(encoded * 255.0));
+}
+
 MaterialHandle load_material(
     Engine& engine,
     const JsonObject& material_json,
@@ -1026,6 +1075,33 @@ MaterialHandle load_material(
         require_matching_texture_transform(
             material,
             metallic_roughness_texture);
+        if (material.metallic_roughness_texture.bytes.empty()) {
+            material.metallic_factor =
+                quantized_unorm_factor(material.metallic_factor);
+            material.roughness_factor =
+                quantized_unorm_factor(material.roughness_factor);
+        }
+        if (material.base_color_texture.bytes.empty()) {
+            // Pinned uploadBaseColorFactorTexture: the factor bakes
+            // into the sRGB fallback texel (alpha as a linear byte)
+            // and the shader uniform reverts to white; the raw alpha
+            // stays on the record for the pinned blend semantics.
+            material.base_color_fallback = {
+                linear_to_srgb_byte(material.base_color_factor.r),
+                linear_to_srgb_byte(material.base_color_factor.g),
+                linear_to_srgb_byte(material.base_color_factor.b),
+                static_cast<std::uint8_t>(
+                    std::round(
+                        std::clamp(
+                            material.base_color_factor.a,
+                            0.0f,
+                            1.0f) *
+                        255.0f)),
+            };
+            material.base_color_factor.r = 1.0f;
+            material.base_color_factor.g = 1.0f;
+            material.base_color_factor.b = 1.0f;
+        }
     }
     const ts::JsonValue* normal_texture =
         optional(material_json, "normalTexture");

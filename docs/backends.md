@@ -171,17 +171,28 @@ Regression guards from the migration; each was measured, not assumed:
   `occlusionTexture` on TEXCOORD_1, which the native material
   pipeline silently dropped (and the native glTF loader never read
   TEXCOORD_1 at all). Porting the pinned dedicated uv2 occlusion pair
-  took the scene from 1.043 to 0.052 foreground MAD on both backends.
+  took the scene from 1.043 to 0.052 foreground MAD on both backends,
+  and the scene-247 findings below (factor quantization and the
+  normal-map horizon-occlusion gate) closed the rest to 0.005.
   The instrumented differential capture is the repeatable lesson: it
   also proved reverse-Z versus the native forward-Z adaptation and
   the browser's world-matrix mirror versus the native baked-vertex
   mirror produce identical images to ~1e-5 px, so those adaptations
   stay.
-- **The scene 247 instancing floor keeps its own attribution** (MSAA
-  coverage stepping with Dawn reproducing SDL_GPU within one LSB);
-  the scene-243 result removes the assumption that both scenes shared
-  one cause, so its remaining 0.405 foreground MAD deserves the same
-  instrumented-capture treatment before further theorizing.
+- **The scene 247 instancing floor dissolved under the same
+  instrumented capture.** Three stacked causes, none of them
+  instancing arithmetic: texture-less PBR factors shade quantized in
+  the browser (the pinned factor-texture bake, with base color baked
+  as sRGB bytes whose hardware decode is the reference — a CPU
+  transcription of the decode was measurably off), the browser
+  composes TRS and world matrices in JavaScript doubles rounded once
+  (native now matches — all 1899 captured thin-instance matrices are
+  bit-identical), and environment horizon occlusion is composed only
+  for normal-mapped materials (native applied it unconditionally,
+  dimming metallic silhouette speculars by one MSAA sample step —
+  the dominant term). 0.405 → 0.014 foreground MAD on both backends;
+  the old float32-versus-float64 world-composition attribution was
+  wrong, and the same contracts took scene 255 from 0.101 to 0.000.
 
 ## Dawn backend architecture (`native/src/pal_dawn.cpp`)
 

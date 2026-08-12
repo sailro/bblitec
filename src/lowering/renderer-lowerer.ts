@@ -2144,7 +2144,7 @@ ${directMarker}`,
                     "  let v_90 = vec3<f32>(environment_reflection_raw.x * environment_cos + environment_reflection_raw.z * environment_sin, environment_reflection_raw.y, -environment_reflection_raw.x * environment_sin + environment_reflection_raw.z * environment_cos);",
             );
             const horizonOcclusion =
-                "  let v_99 = clamp((1.0f + " +
+                "  let v_99_horizon = clamp((1.0f + " +
                 "(1.10000002384185791016f * dot(v_90, v_29))), " +
                 "0.0f, 1.0f);";
             if (!convertedPbr.includes(horizonOcclusion)) {
@@ -2154,7 +2154,7 @@ ${directMarker}`,
             }
             convertedPbr = convertedPbr.replace(
                 horizonOcclusion,
-                "  let v_99 = clamp((1.0f + " +
+                "  let v_99_horizon = clamp((1.0f + " +
                     "(1.10000002384185791016f * " +
                     "dot(environment_reflection_raw, v_29))), " +
                     "0.0f, 1.0f);",

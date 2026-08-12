@@ -3625,6 +3625,8 @@ bool run_gpu_engine(Engine& engine) {
 #endif
             const TextureData* standard_emissive = nullptr;
             bool has_pbr_emissive_factor = false;
+            std::array<std::uint8_t, 4> base_color_fallback{
+                255, 255, 255, 255};
             const bool standard_material =
                 item.material_kind == upstream::RenderMaterialKind::standard;
             if (item.material.value < engine.materials.size()) {
@@ -3644,6 +3646,10 @@ bool run_gpu_engine(Engine& engine) {
                     material.emissive_factor.r != 0.0f ||
                     material.emissive_factor.g != 0.0f ||
                     material.emissive_factor.b != 0.0f;
+                if (!standard_material) {
+                    base_color_fallback =
+                        material.base_color_fallback;
+                }
                 transmission = standard_material
                     ? nullptr
                     : &material.transmission_texture;
@@ -3704,7 +3710,7 @@ bool run_gpu_engine(Engine& engine) {
                 state.device,
                 texture ? *texture : TextureData{},
                 !standard_material,
-                {255, 255, 255, 255});
+                base_color_fallback);
             gpu_mesh.base_color_sampler = create_texture_sampler(
                 state.device,
                 texture ? texture->sampler : TextureSamplerState{});
