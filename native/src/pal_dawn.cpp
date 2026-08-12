@@ -21,6 +21,7 @@
 #include <bblite/upstream/render_capabilities.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 
+#include "pal_camera_controls.hpp"
 #include "pal_gpu_shared.hpp"
 
 #include <SDL3/SDL.h>
@@ -2764,7 +2765,14 @@ bool run_dawn_engine(Engine& engine) {
         WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
     surface_configuration.width = width;
     surface_configuration.height = height;
-    surface_configuration.presentMode = WGPUPresentMode_Immediate;
+    // Present with vsync like the SDL_GPU backend so the per-frame
+    // camera inertia integrates identically across backends;
+    // benchmarks keep immediate present (the recorded frame-time
+    // numbers depend on it).
+    surface_configuration.presentMode =
+        environment_variable("BBLITE_BENCHMARK_FRAMES").empty()
+            ? WGPUPresentMode_Fifo
+            : WGPUPresentMode_Immediate;
     wgpuSurfaceConfigure(state.surface, &surface_configuration);
 
     // Shared frame targets: 4x MSAA color (surface format, or linear
@@ -3709,6 +3717,7 @@ bool run_dawn_engine(Engine& engine) {
     bool running = true;
     long frame = 0;
     constexpr long capture_grace_frames = 8;
+    CameraPointerState pointer_state;
     while (running &&
            (limit <= 0 || frame < limit ||
             (!screenshot_path.empty() && !screenshot_saved &&
@@ -3716,6 +3725,12 @@ bool run_dawn_engine(Engine& engine) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) running = false;
+            if (!hidden_test_pass) {
+                handle_camera_pointer_event(
+                    event,
+                    camera,
+                    pointer_state);
+            }
         }
         const float delta_ms =
             scene.fixed_delta_ms > 0.0f ? scene.fixed_delta_ms : 16.0f;
@@ -3748,6 +3763,7 @@ bool run_dawn_engine(Engine& engine) {
                 scene.mesh_membership_version;
             topology_updated = true;
         }
+        update_camera(camera);
         upstream::sort_transparent_draws(
             render_plan.draw_lists.transparent,
             engine,

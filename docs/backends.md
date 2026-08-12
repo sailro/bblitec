@@ -45,10 +45,13 @@ pwsh -File tools\build-dawn.ps1
   hardened LoadLibraryEx flags, exactly as Chrome deploys them. The
   native CMake `POST_BUILD` step copies all four.
 
-Scene builds enable the Dawn backend automatically whenever the
-installed library exists (`scene-command` passes `-DBBLITE_DAWN=ON`
-when `artifacts/tools/dawn` is present; set `BBLITE_DAWN=0` to force
-an SDL_GPU-only build). Select at runtime:
+The compiled backend set is the CMake `BBLITE_BACKEND` selection:
+`SDL_GPU`, `DAWN`, or `BOTH`. `scene-command` passes `BOTH` whenever
+the installed Dawn library exists and `SDL_GPU` otherwise; set the
+`BBLITE_BACKEND` environment variable to override (a single-backend
+shape compiles the other backend out, `run_engine` defaults to the
+compiled backend, and requesting an absent backend fails explicitly).
+In `BOTH` builds, select at runtime:
 
 ```powershell
 $env:BBLITE_GPU_BACKEND = "dawn"

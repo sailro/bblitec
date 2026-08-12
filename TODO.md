@@ -38,16 +38,19 @@ CPU-side from GPU-side causes immediately.
   Dawn library build — the WGSL feeds Dawn directly on every backend,
   so no per-platform shader work exists on this path (unlike the
   SDL_GPU items below).
-- [ ] Single-backend release builds: the dual-backend binary is a
-  development asset (the differential gate); a shipped app wants one
-  backend and minimal footprint. `BBLITE_DAWN=0` already yields
-  SDL_GPU-only (exe + SDL3 DLLs + kilobytes of DXIL); a Dawn-only
-  shape needs a symmetric SDL_GPU compile guard, shader/DLL payload
-  deployment following the compiled set (WGSL text versus DXIL
-  snapshots; webgpu_dawn/dxcompiler/dxil DLLs are tens of MB and a
-  DXC-less Dawn build changes rendering per the recorded FXC
-  findings), explicit run_engine errors for absent backends, and a
-  packaging flow that picks one backend per release.
+- [ ] Minimize release-package size beyond the backend split. The
+  `BBLITE_BACKEND` selection (SDL_GPU/DAWN/BOTH) and the
+  scene-parameterized `package:demo` flow now ship only the compiled
+  backend's payload (offline DXIL/SPIR-V versus WGSL text, Dawn DLLs
+  only when compiled, no text shader intermediates). Remaining
+  directions: measure and trim the Dawn DLL set (webgpu_dawn plus its
+  DXC pair dominate the DAWN payload; a DXC-less Dawn build changes
+  rendering per the recorded FXC findings, so slimming means Dawn
+  build options, not dropping the compiler), strip or compress the
+  MSVC CRT set to the DLLs the exe actually imports, drop the SPIR-V
+  variants from D3D12-only packages once the packaging flow can
+  declare a target driver, and evaluate packed native assets (the P1
+  entry below) for asset-payload reduction.
 
 ## P0 — Backend portability
 

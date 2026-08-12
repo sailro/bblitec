@@ -226,12 +226,16 @@ pwsh -File tools\build-tint.ps1
 ```
 
 Build the pinned Dawn library (same source pin, shared checkout) with
-`pwsh -File tools\build-dawn.ps1`. Once `artifacts\tools\dawn` exists,
-scene builds enable the Dawn render backend automatically
-(`-DBBLITE_DAWN=ON`; set `BBLITE_DAWN=0` to force an SDL_GPU-only
-build) and `BBLITE_GPU_BACKEND=dawn` selects it at runtime — the
-parity harness forwards the environment and labels its reports with
-the active backend. See [backends](backends.md).
+`pwsh -File tools\build-dawn.ps1`. The CMake `BBLITE_BACKEND`
+selection (`SDL_GPU`, `DAWN`, or `BOTH`) picks the compiled backend
+set: scene builds default to `BOTH` once `artifacts\tools\dawn`
+exists and `SDL_GPU` otherwise, and the `BBLITE_BACKEND` environment
+variable overrides the default. In `BOTH` builds
+`BBLITE_GPU_BACKEND=dawn` selects Dawn at runtime — the parity
+harness forwards the environment and labels its reports with the
+active backend; single-backend builds default to their compiled
+backend and fail explicitly when the other one is requested. See
+[backends](backends.md).
 
 Reached WGSL shaders require `artifacts\tools\tint\tint.exe` (or `TINT_PATH`).
 Tint validates WGSL and emits HLSL/MSL. DXC must compile HLSL to DXIL for
@@ -339,14 +343,26 @@ capture seeking. Native parity uses `BBLITE_ANIMATION_SEEK_SECONDS`. Capture
 metadata must match the pinned scene's own frame rate and explicit groups;
 glTF scenes usually seek `scene.animationGroups`.
 
-## Portable BoomBox package
+## Portable demo packages
+
+Package any built numbered scene:
 
 ```powershell
-npm run package:boombox
+npm run package:demo -- -Scene scene243
 ```
 
-The archive is written to
-`artifacts\releases\bblitec-boombox-windows-x64.zip`.
+`npm run package:boombox` remains the Scene 1 shorthand. The payload
+follows the `BBLITE_BACKEND` the build directory was configured with
+(read from its CMake cache): `SDL_GPU` ships offline DXIL/SPIR-V
+shaders and no Dawn DLLs, `DAWN` ships WGSL text plus
+`webgpu_dawn.dll`/`dxcompiler.dll`/`dxil.dll`/`d3dcompiler_47.dll`
+and the Dawn license, and `BOTH` ships the dual-backend binary with
+both shader sets plus a `run-<scene>-dawn.cmd` launcher. Text shader
+intermediates (HLSL, MSL, reflection dumps) never ship. The archive
+is written to
+`artifacts\releases\bblitec-<scene>-<backend>-windows-x64.zip`, and
+the README embeds the scene's current parity numbers when
+`artifacts\parity\<scene>` reports exist.
 
 ## Windows troubleshooting
 

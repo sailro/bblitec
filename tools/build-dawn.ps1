@@ -117,6 +117,10 @@ if (-not $fxc) {
 }
 Copy-Item $fxc.FullName (Join-Path $output "bin") -Force
 
+# Install the Dawn license beside the binaries so release packaging
+# can redistribute it without the source checkout.
+Copy-Item (Join-Path $source "LICENSE") (Join-Path $output "LICENSE.txt") -Force
+
 @{
     repository = $pin.repository
     commit = $pin.commit
