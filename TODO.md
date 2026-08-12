@@ -24,12 +24,17 @@ is a strict superset. The SDL_Renderer CPU fallback is out of scope.
   option and `BBLITE_GPU_BACKEND=dawn` runtime dispatch.
 - [x] Bring-up skeleton: SDL window surface, adapter/device, surface
   configuration, clear, screenshot readback (scene 2 clear verified).
-- [ ] Investigate the clear-value rounding boundary: Dawn native clears
-  0.3*255 to 76 where the browser and SDL_GPU produce 77.
-- [ ] Port the mesh path: buffers, WebGPU bind groups from the generated
-  `*.native.wgsl` group layout, depth, 4x MSAA, ordered draw lists.
-- [ ] Feed generated WGSL directly to `wgpuDeviceCreateShaderModule`
-  (no DXC, no register normalization) and validate scene 2, then scene 1.
+- [x] Clear-value rounding: resolved — the golden background is 76; the
+  registry color is only the region-keying value. No divergence exists.
+- [x] Mesh path: buffers, auto-layout WebGPU bind groups, depth24plus-
+  stencil8, 4x MSAA with surface resolve, ordered opaque draw lists.
+- [x] Feed generated WGSL directly to `wgpuDeviceCreateShaderModule`:
+  scene 2 (Standard) and scene 10 (PBR) render bit-exactly against the
+  browser goldens (MAD 0.000) with no DXC and no register normalization.
+- [ ] Report the active backend in parity metadata instead of the
+  hardcoded SDL_GPU label.
+- [ ] Real texture decode with Babylon's mip generation, environment
+  cube/BRDF/ground upload, then scene 1.
 - [ ] Migrate scene families behind parity gates (Standard, PBR/IBL,
   backgrounds, frame graph, transmission with per-sample image
   processing, deformation); re-enable the pinned background dither.

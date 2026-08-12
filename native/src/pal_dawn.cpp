@@ -84,6 +84,7 @@ struct DawnState {
     WGPUTextureView depth_view = nullptr;
     WGPUShaderModule vertex_module = nullptr;
     WGPUShaderModule standard_module = nullptr;
+    WGPUShaderModule pbr_module = nullptr;
     WGPUBuffer view_projection = nullptr;
     WGPUTexture white_texture = nullptr;
     WGPUTextureView white_view = nullptr;
@@ -91,6 +92,12 @@ struct DawnState {
     WGPUTextureView black_view = nullptr;
     WGPUTexture black_cube = nullptr;
     WGPUTextureView black_cube_view = nullptr;
+    WGPUTexture normal_flat_texture = nullptr;
+    WGPUTextureView normal_flat_view = nullptr;
+    WGPUTexture environment_cube = nullptr;
+    WGPUTextureView environment_cube_view = nullptr;
+    WGPUTexture brdf_texture = nullptr;
+    WGPUTextureView brdf_view = nullptr;
     WGPUSampler default_sampler = nullptr;
     std::map<upstream::RenderPipelineKind, DawnPipeline> pipelines;
     std::vector<DawnMesh> meshes;
@@ -119,6 +126,14 @@ struct DawnState {
             }
         }
         if (default_sampler) wgpuSamplerRelease(default_sampler);
+        if (brdf_view) wgpuTextureViewRelease(brdf_view);
+        if (brdf_texture) wgpuTextureRelease(brdf_texture);
+        if (environment_cube_view) {
+            wgpuTextureViewRelease(environment_cube_view);
+        }
+        if (environment_cube) wgpuTextureRelease(environment_cube);
+        if (normal_flat_view) wgpuTextureViewRelease(normal_flat_view);
+        if (normal_flat_texture) wgpuTextureRelease(normal_flat_texture);
         if (black_cube_view) wgpuTextureViewRelease(black_cube_view);
         if (black_cube) wgpuTextureRelease(black_cube);
         if (black_view) wgpuTextureViewRelease(black_view);
@@ -126,6 +141,7 @@ struct DawnState {
         if (white_view) wgpuTextureViewRelease(white_view);
         if (white_texture) wgpuTextureRelease(white_texture);
         if (view_projection) wgpuBufferRelease(view_projection);
+        if (pbr_module) wgpuShaderModuleRelease(pbr_module);
         if (standard_module) wgpuShaderModuleRelease(standard_module);
         if (vertex_module) wgpuShaderModuleRelease(vertex_module);
         if (depth_view) wgpuTextureViewRelease(depth_view);
@@ -196,7 +212,7 @@ WGPUBuffer create_buffer(
 
 WGPUTexture create_solid_texture(
     DawnState& state,
-    const std::array<std::uint8_t, 4>& color,
+    const std::vector<std::uint8_t>& texel,
     WGPUTextureFormat format,
     std::uint32_t layers) {
     WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
@@ -218,7 +234,7 @@ WGPUTexture create_solid_texture(
         layout.rowsPerImage = 1;
         const WGPUExtent3D size{1, 1, 1};
         std::array<std::uint8_t, 256> row{};
-        std::memcpy(row.data(), color.data(), color.size());
+        std::memcpy(row.data(), texel.data(), texel.size());
         wgpuQueueWriteTexture(
             state.queue,
             &destination,
@@ -228,6 +244,19 @@ WGPUTexture create_solid_texture(
             &size);
     }
     return texture;
+}
+
+WGPUShaderModule& fragment_module_for(
+    DawnState& state,
+    bool standard) {
+    WGPUShaderModule& module =
+        standard ? state.standard_module : state.pbr_module;
+    if (!module) {
+        module = load_wgsl_module(
+            state,
+            standard ? "standard.frag" : "pbr.frag");
+    }
+    return module;
 }
 
 struct PipelineKindTraits {
@@ -244,6 +273,12 @@ PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
             return {true, false, WGPUCullMode_Back, WGPUFrontFace_CCW};
         case Kind::standard_opaque_none:
             return {true, false, WGPUCullMode_None, WGPUFrontFace_CCW};
+        case Kind::pbr_opaque_back:
+            return {false, false, WGPUCullMode_Back, WGPUFrontFace_CCW};
+        case Kind::pbr_opaque_none:
+            return {false, false, WGPUCullMode_None, WGPUFrontFace_CCW};
+        case Kind::pbr_opaque_none_clockwise:
+            return {false, false, WGPUCullMode_None, WGPUFrontFace_CW};
         default:
             dawn_error(
                 "render pipeline kind " +
@@ -321,7 +356,7 @@ DawnPipeline& pipeline_for(
         color_target.blend = &blend;
     }
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = state.standard_module;
+    fragment.module = fragment_module_for(state, traits.standard);
     fragment.entryPoint = string_view("mainFragment");
     fragment.targetCount = 1;
     fragment.targets = &color_target;
@@ -359,17 +394,29 @@ DawnMeshBindings& bindings_for(
         wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
     wgpuBindGroupLayoutRelease(scene_layout);
 
-    // Standard fragment texture pairs mirror the SDL_GPU slot order:
+    // Fragment texture pairs mirror the SDL_GPU slot order. Standard:
     // base color, metallic-roughness, normal, emissive, reflection
-    // cube, standard emissive.
-    const std::array<WGPUTextureView, 6> views{
-        state.white_view,
-        state.white_view,
-        state.white_view,
-        state.white_view,
-        state.black_cube_view,
-        state.black_view,
-    };
+    // cube, standard emissive. PBR: base color, metallic-roughness,
+    // normal, emissive, environment cube, BRDF LUT.
+    const PipelineKindTraits binding_traits = pipeline_traits(kind);
+    const std::array<WGPUTextureView, 6> views =
+        binding_traits.standard
+            ? std::array<WGPUTextureView, 6>{
+                  state.white_view,
+                  state.white_view,
+                  state.white_view,
+                  state.white_view,
+                  state.black_cube_view,
+                  state.black_view,
+              }
+            : std::array<WGPUTextureView, 6>{
+                  state.white_view,
+                  state.white_view,
+                  state.normal_flat_view,
+                  state.white_view,
+                  state.environment_cube_view,
+                  state.brdf_view,
+              };
     std::array<WGPUBindGroupEntry, 12> texture_entries{};
     for (std::uint32_t slot = 0; slot < views.size(); ++slot) {
         texture_entries[slot * 2] = WGPU_BIND_GROUP_ENTRY_INIT;
@@ -639,7 +686,6 @@ bool run_dawn_engine(Engine& engine) {
     }
 
     state.vertex_module = load_wgsl_module(state, "pbr.vert");
-    state.standard_module = load_wgsl_module(state, "standard.frag");
 
     state.view_projection = create_buffer(
         state,
@@ -660,19 +706,40 @@ bool run_dawn_engine(Engine& engine) {
         1);
     state.black_view =
         wgpuTextureCreateView(state.black_texture, nullptr);
+    state.normal_flat_texture = create_solid_texture(
+        state,
+        {128, 128, 255, 255},
+        WGPUTextureFormat_RGBA8Unorm,
+        1);
+    state.normal_flat_view =
+        wgpuTextureCreateView(state.normal_flat_texture, nullptr);
+    const auto cube_view = [&](WGPUTexture texture) {
+        WGPUTextureViewDescriptor cube_descriptor =
+            WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+        cube_descriptor.dimension = WGPUTextureViewDimension_Cube;
+        cube_descriptor.arrayLayerCount = 6;
+        return wgpuTextureCreateView(texture, &cube_descriptor);
+    };
     state.black_cube = create_solid_texture(
         state,
         {0, 0, 0, 255},
         WGPUTextureFormat_RGBA8Unorm,
         6);
-    {
-        WGPUTextureViewDescriptor cube_descriptor =
-            WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
-        cube_descriptor.dimension = WGPUTextureViewDimension_Cube;
-        cube_descriptor.arrayLayerCount = 6;
-        state.black_cube_view =
-            wgpuTextureCreateView(state.black_cube, &cube_descriptor);
-    }
+    state.black_cube_view = cube_view(state.black_cube);
+    const std::vector<std::uint8_t> zero_rgba16f(8, 0);
+    state.environment_cube = create_solid_texture(
+        state,
+        zero_rgba16f,
+        WGPUTextureFormat_RGBA16Float,
+        6);
+    state.environment_cube_view = cube_view(state.environment_cube);
+    state.brdf_texture = create_solid_texture(
+        state,
+        zero_rgba16f,
+        WGPUTextureFormat_RGBA16Float,
+        1);
+    state.brdf_view =
+        wgpuTextureCreateView(state.brdf_texture, nullptr);
     {
         WGPUSamplerDescriptor sampler_descriptor =
             WGPU_SAMPLER_DESCRIPTOR_INIT;
@@ -691,8 +758,10 @@ bool run_dawn_engine(Engine& engine) {
     for (const upstream::RenderItem& item : render_plan.items) {
         if (
             item.material_kind !=
-            upstream::RenderMaterialKind::standard) {
-            dawn_error("only Standard materials are implemented yet.");
+                upstream::RenderMaterialKind::standard &&
+            item.material_kind != upstream::RenderMaterialKind::pbr) {
+            dawn_error(
+                "only Standard and PBR materials are implemented yet.");
         }
         const ModelGeometry& geometry = engine.geometries[item.geometry];
         const MeshRecord& mesh_record = engine.meshes[item.mesh.value];
@@ -712,7 +781,12 @@ bool run_dawn_engine(Engine& engine) {
         mesh.index_count =
             static_cast<std::uint32_t>(geometry.indices.size());
         mesh.material_uniform_size =
-            (sizeof(upstream::StandardUniforms) + 15) & ~15ull;
+            ((item.material_kind ==
+                      upstream::RenderMaterialKind::standard
+                  ? sizeof(upstream::StandardUniforms)
+                  : sizeof(upstream::PbrUniforms)) +
+             15) &
+            ~15ull;
         mesh.material_uniforms = create_buffer(
             state,
             WGPUBufferUsage_Uniform,
@@ -774,18 +848,35 @@ bool run_dawn_engine(Engine& engine) {
         for (
             const upstream::RenderDrawCommand& draw :
             render_plan.draw_lists.opaque.commands) {
-            const upstream::StandardUniforms fragment =
-                upstream::build_standard_uniforms(
-                    scene,
-                    engine,
-                    camera,
-                    draw.item);
-            wgpuQueueWriteBuffer(
-                state.queue,
-                state.meshes[draw.item_index].material_uniforms,
-                0,
-                &fragment,
-                sizeof(fragment));
+            if (
+                draw.item.material_kind ==
+                upstream::RenderMaterialKind::standard) {
+                const upstream::StandardUniforms fragment =
+                    upstream::build_standard_uniforms(
+                        scene,
+                        engine,
+                        camera,
+                        draw.item);
+                wgpuQueueWriteBuffer(
+                    state.queue,
+                    state.meshes[draw.item_index].material_uniforms,
+                    0,
+                    &fragment,
+                    sizeof(fragment));
+            } else {
+                const upstream::PbrUniforms fragment =
+                    upstream::build_pbr_uniforms(
+                        scene,
+                        engine,
+                        camera,
+                        draw.item);
+                wgpuQueueWriteBuffer(
+                    state.queue,
+                    state.meshes[draw.item_index].material_uniforms,
+                    0,
+                    &fragment,
+                    sizeof(fragment));
+            }
         }
         if (!render_plan.draw_lists.transparent.commands.empty()) {
             dawn_error("transparent draws are not implemented yet.");
