@@ -93,6 +93,7 @@ export interface UserFunctionIr {
     parameters: UserFunctionParameterIr[];
     statements: readonly ts.Statement[];
     returnExpression?: ts.Expression | undefined;
+    needsWrapper: boolean;
 }
 
 export interface UserFunctionContext {
@@ -105,6 +106,11 @@ export interface UserFunctionContext {
     pushScope(cppPrefix: string): void;
     popScope(): void;
     allocateUserFunctionPrefix(): string;
+    beginInlineFrame(wrapped: boolean): void;
+    endInlineFrame(): void;
+    emit(line: string): void;
+    increaseIndent(): void;
+    decreaseIndent(): void;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -143,7 +149,59 @@ export class UserFunctionLowerer {
             context,
             ir,
             call.arguments.map((argument) =>
-                context.compileValue(argument),
+                this.argumentValue(context, argument),
+            ),
+            call,
+        );
+    }
+
+    /**
+     * Inline function-literal arguments bind as callback values; every
+     * other argument compiles normally.
+     */
+    private argumentValue(
+        context: UserFunctionContext,
+        argument: ts.Expression,
+    ): Value {
+        if (
+            ts.isArrowFunction(argument) ||
+            ts.isFunctionExpression(argument)
+        ) {
+            return {
+                kind: "callback",
+                cpp: "",
+                callbackDeclaration: argument,
+            };
+        }
+        return context.compileValue(argument);
+    }
+
+    /**
+     * Inlines a call whose target is a bound callback value (a function
+     * literal passed as an argument to the enclosing user function).
+     */
+    public compileCallbackCall(
+        context: UserFunctionContext,
+        call: ts.CallExpression,
+        declaration: SupportedFunction,
+    ): Value {
+        const ir = this.irFor(
+            declaration,
+            "callback",
+            (node, message) =>
+                context.fail(node, message),
+        );
+        this.validateCall(
+            call,
+            ir,
+            (node, message) =>
+                context.fail(node, message),
+        );
+        return this.lower(
+            context,
+            ir,
+            call.arguments.map((argument) =>
+                this.argumentValue(context, argument),
             ),
             call,
         );
@@ -215,8 +273,21 @@ export class UserFunctionLowerer {
                     value,
                 );
             });
-            for (const statement of ir.statements) {
-                context.emitStatement(statement);
+            if (ir.needsWrapper) {
+                context.emit("do {");
+                context.increaseIndent();
+            }
+            context.beginInlineFrame(ir.needsWrapper);
+            try {
+                for (const statement of ir.statements) {
+                    context.emitStatement(statement);
+                }
+            } finally {
+                context.endInlineFrame();
+            }
+            if (ir.needsWrapper) {
+                context.decreaseIndent();
+                context.emit("} while (false);");
             }
             return ir.returnExpression
                 ? context.compileValue(ir.returnExpression)
@@ -239,6 +310,18 @@ export class UserFunctionLowerer {
         if (!declaration) {
             return undefined;
         }
+        return this.irFor(
+            declaration,
+            identifier.text,
+            fail,
+        );
+    }
+
+    private irFor(
+        declaration: SupportedFunction,
+        nameHint: string,
+        fail: Fail,
+    ): UserFunctionIr {
         const cached = this.cache.get(declaration);
         if (cached) {
             return cached;
@@ -267,26 +350,25 @@ export class UserFunctionLowerer {
                 "User arrow functions require a block body.",
             );
         }
-        const returns = body.statements.filter(
-            (
-                statement,
-            ): statement is ts.ReturnStatement =>
-                ts.isReturnStatement(statement),
+        // The final statement may be a value return; earlier bare returns
+        // lower through a breakable wrapper. Everything else is rejected.
+        const finalStatement = body.statements.at(-1);
+        const finalReturn =
+            finalStatement &&
+            ts.isReturnStatement(finalStatement)
+                ? finalStatement
+                : undefined;
+        const statements = finalReturn
+            ? body.statements.slice(0, -1)
+            : body.statements;
+        const needsWrapper = this.validateEarlyReturns(
+            statements,
+            fail,
         );
-        if (returns.length > 1) {
+        if (needsWrapper && finalReturn?.expression) {
             fail(
-                returns[1]!,
-                "User functions support one final return statement.",
-            );
-        }
-        const returned = returns[0];
-        if (
-            returned &&
-            body.statements.at(-1) !== returned
-        ) {
-            fail(
-                returned,
-                "A user-function return must be the final statement.",
+                finalReturn,
+                "Inlined functions cannot combine early returns with a final return value.",
             );
         }
         const ir: UserFunctionIr = {
@@ -295,20 +377,66 @@ export class UserFunctionLowerer {
                 (ts.isFunctionDeclaration(declaration) ||
                 ts.isFunctionExpression(declaration)
                     ? declaration.name?.text
-                    : undefined) ?? identifier.text,
+                    : undefined) ?? nameHint,
             parameters,
-            statements: returned
-                ? body.statements.slice(0, -1)
-                : body.statements,
-            ...(returned?.expression
+            statements,
+            needsWrapper,
+            ...(finalReturn?.expression
                 ? {
                       returnExpression:
-                          returned.expression,
+                          finalReturn.expression,
                   }
                 : {}),
         };
         this.cache.set(declaration, ir);
         return ir;
+    }
+
+    /**
+     * Validates early returns in an inlined body: bare returns are allowed
+     * outside loops and switches (they lower to a breakable wrapper);
+     * value returns before the final statement are rejected.
+     */
+    private validateEarlyReturns(
+        statements: readonly ts.Statement[],
+        fail: Fail,
+    ): boolean {
+        let found = false;
+        const visit = (
+            node: ts.Node,
+            insideBreakable: boolean,
+        ): void => {
+            if (ts.isFunctionLike(node)) {
+                return;
+            }
+            if (ts.isReturnStatement(node)) {
+                if (node.expression) {
+                    fail(
+                        node,
+                        "Inlined functions support a value return only as the final statement.",
+                    );
+                }
+                if (insideBreakable) {
+                    fail(
+                        node,
+                        "Early returns inside loops or switches of inlined functions are not supported.",
+                    );
+                }
+                found = true;
+                return;
+            }
+            const breakable =
+                insideBreakable ||
+                ts.isIterationStatement(node, false) ||
+                ts.isSwitchStatement(node);
+            ts.forEachChild(node, (child) =>
+                visit(child, breakable),
+            );
+        };
+        for (const statement of statements) {
+            visit(statement, false);
+        }
+        return found;
     }
 
     private validateCall(

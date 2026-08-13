@@ -78,6 +78,11 @@ inline void array_truncate(Array<T>& values, double count) {
     return std::fmod(left, right);
 }
 
+// Numeric `a || b`: 0 and NaN fall through to the fallback.
+[[nodiscard]] inline double or_number(double value, double fallback) {
+    return (value != 0.0 && !std::isnan(value)) ? value : fallback;
+}
+
 // JavaScript typed arrays reached by the compiled subset.
 using F32Array = std::vector<float>;
 using U32Array = std::vector<std::uint32_t>;

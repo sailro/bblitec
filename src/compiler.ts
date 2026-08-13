@@ -165,8 +165,9 @@ class Compiler
         [];
     private readonly nativeFunctionDefinitions: string[] =
         [];
-    private readonly nativeReturnTypes: Array<
-        DataType | "void"
+    private readonly returnFrames: Array<
+        | { kind: "native"; type: DataType | "void" }
+        | { kind: "inline"; wrapped: boolean }
     > = [];
     private jsDataReached = false;
     private jsRandomReached = false;
@@ -224,12 +225,15 @@ class Compiler
                 ),
             (expression) => this.compileValue(expression),
             (expression) => this.compileValue(expression),
+            (expression) =>
+                this.compileCondition(expression),
             (identifier) => this.lookup(identifier),
             (node, message) => this.fail(node, message),
             (expression) =>
                 this.unwrappedAwaitExpressions.add(
                     expression.pos,
                 ),
+            () => this.reachJsData(),
         );
     }
 
@@ -437,6 +441,10 @@ class Compiler
             this.emitObjectBindingDeclaration(declaration);
             return;
         }
+        if (ts.isArrayBindingPattern(declaration.name)) {
+            this.emitArrayBindingDeclaration(declaration);
+            return;
+        }
         if (!ts.isIdentifier(declaration.name)) {
             this.fail(declaration.name, "Only identifier variable declarations are supported.");
         }
@@ -589,6 +597,20 @@ class Compiler
             stored.animationFrameRate = `${cppName}.frame_rate`;
             stored.animationDuration = `${cppName}.duration`;
         }
+        if (
+            ts.isVariableDeclarationList(
+                declaration.parent,
+            ) &&
+            (declaration.parent.flags &
+                ts.NodeFlags.Const) ===
+                0
+        ) {
+            // Mutable locals must never fold to their initial value:
+            // later reads reference the native local, not the constant
+            // the declaration happened to start from.
+            delete stored.staticNumber;
+            delete stored.staticString;
+        }
         this.defineVariable(declaration.name, stored);
         if (value.kind === "engine") {
             if (this.defaultEngineCpp) {
@@ -618,16 +640,24 @@ class Compiler
             ),
             declaration.type,
         );
+        const initializerLiteral = this.unwrap(
+            declaration.initializer,
+        );
         if (
             !annotated ||
             annotated.kind === "number" ||
             annotated.kind === "boolean" ||
             annotated.kind === "span" ||
-            annotated.kind === "tuple" ||
-            annotated.kind === "table"
+            annotated.kind === "table" ||
+            (annotated.kind === "tuple" &&
+                !ts.isArrayLiteralExpression(
+                    initializerLiteral,
+                ))
         ) {
             // Readonly views keep the legacy static-tuple declaration
-            // semantics; only owning composites take the data path.
+            // semantics; only owning composites (and mutable tuple
+            // locals initialized from array literals) take the data
+            // path.
             return false;
         }
         this.reachJsData();
@@ -673,6 +703,90 @@ class Compiler
             dataType: annotated,
         });
         return true;
+    }
+
+    /**
+     * Destructures a tuple-producing initializer (inlined callback results,
+     * static tuples, or data tuples) into per-element locals.
+     */
+    private emitArrayBindingDeclaration(
+        declaration: ts.VariableDeclaration,
+    ): void {
+        if (
+            !ts.isArrayBindingPattern(declaration.name) ||
+            !declaration.initializer
+        ) {
+            this.fail(
+                declaration,
+                "Array destructuring requires an initializer.",
+            );
+        }
+        const value = this.compileValue(
+            declaration.initializer,
+        );
+        const bindings = declaration.name.elements;
+        const bindElement = (
+            element: ts.ArrayBindingElement,
+            bound: Value,
+        ): void => {
+            if (ts.isOmittedExpression(element)) {
+                return;
+            }
+            if (
+                !ts.isIdentifier(element.name) ||
+                element.initializer ||
+                element.dotDotDotToken
+            ) {
+                this.fail(
+                    element,
+                    "Tuple destructuring supports plain identifiers.",
+                );
+            }
+            this.bindLocalValue(element.name, bound);
+        };
+        if (
+            value.kind === "tuple" &&
+            value.tupleElements
+        ) {
+            if (
+                bindings.length >
+                value.tupleElements.length
+            ) {
+                this.fail(
+                    declaration.name,
+                    `Tuple has ${value.tupleElements.length} elements, destructuring expects ${bindings.length}.`,
+                );
+            }
+            bindings.forEach((element, index) => {
+                bindElement(
+                    element,
+                    value.tupleElements![index]!,
+                );
+            });
+            return;
+        }
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "tuple"
+        ) {
+            const temporary =
+                this.allocateTemporaryCppName("tuple");
+            this.emit(
+                `const ${this.dataTypes.cppType(value.dataType)} ${temporary} = ${value.cpp};`,
+            );
+            bindings.forEach((element, index) => {
+                bindElement(element, {
+                    kind: "number",
+                    cpp: `${temporary}[${index}]`,
+                    dataType: { kind: "number" },
+                });
+            });
+            return;
+        }
+        this.fail(
+            declaration.initializer,
+            "Array destructuring requires a tuple-producing initializer.",
+        );
     }
 
     private emitObjectBindingDeclaration(
@@ -1277,6 +1391,21 @@ class Compiler
         }
         if (!ts.isIdentifier(callee)) {
             this.fail(callee, `Unsupported call target '${callee.getText()}'.`);
+        }
+
+        const bound = this.lookupOptional(callee);
+        if (bound?.kind === "callback") {
+            if (!bound.callbackDeclaration) {
+                this.fail(
+                    callee,
+                    "Callback value is missing its declaration.",
+                );
+            }
+            return this.userFunctions.compileCallbackCall(
+                this,
+                call,
+                bound.callbackDeclaration,
+            );
         }
 
         const importedName =
@@ -2900,6 +3029,12 @@ class Compiler
         return this.cppIdentifier(sourceName);
     }
 
+    public isEntrySourceFile(
+        file: ts.SourceFile,
+    ): boolean {
+        return file === this.sourceFile;
+    }
+
     public reachJsData(): void {
         this.jsDataReached = true;
     }
@@ -2941,20 +3076,40 @@ class Compiler
     public beginNativeFunctionBody(
         returnType: DataType | undefined,
     ): void {
-        this.nativeReturnTypes.push(
-            returnType ?? "void",
-        );
+        this.returnFrames.push({
+            kind: "native",
+            type: returnType ?? "void",
+        });
     }
 
     public endNativeFunctionBody(): void {
-        this.nativeReturnTypes.pop();
+        this.returnFrames.pop();
+    }
+
+    public beginInlineFrame(wrapped: boolean): void {
+        this.returnFrames.push({
+            kind: "inline",
+            wrapped,
+        });
+    }
+
+    public endInlineFrame(): void {
+        this.returnFrames.pop();
     }
 
     public activeNativeReturnType():
         | DataType
         | "void"
         | undefined {
-        return this.nativeReturnTypes.at(-1);
+        const top = this.returnFrames.at(-1);
+        return top?.kind === "native"
+            ? top.type
+            : undefined;
+    }
+
+    public activeInlineWrapper(): boolean {
+        const top = this.returnFrames.at(-1);
+        return top?.kind === "inline" && top.wrapped;
     }
 
     public emitNativeReturn(
@@ -3824,7 +3979,8 @@ class Compiler
         if (
             value.kind === "tuple" ||
             value.kind === "record" ||
-            value.kind === "string"
+            value.kind === "string" ||
+            value.kind === "callback"
         ) {
             this.defineVariable(identifier, value);
             return;

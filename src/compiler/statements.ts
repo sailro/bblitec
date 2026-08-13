@@ -26,6 +26,7 @@ export interface StatementLoweringContext {
         | DataType
         | "void"
         | undefined;
+    activeInlineWrapper(): boolean;
     emitNativeReturn(
         statement: ts.ReturnStatement,
     ): void;
@@ -156,6 +157,16 @@ export class StatementLowerer {
                 );
             }
             context.emit("continue;");
+            return;
+        }
+        if (
+            ts.isReturnStatement(statement) &&
+            !statement.expression &&
+            context.activeInlineWrapper()
+        ) {
+            // Early bare return of an inlined function: leave the
+            // breakable wrapper emitted around the inline body.
+            context.emit("break;");
             return;
         }
         if (

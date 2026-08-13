@@ -1,8 +1,10 @@
 // Project-owned differential gate: compiles the pinned tetris chamfered-box
-// generator (corpus demos/tetris/chamfered-box.ts) through the plain-data
+// and rounded-box generators (corpus demos/tetris/) through the plain-data
 // subset, feeds the resulting typed arrays into createMeshFromData, and
 // thin-instances a ring of segments — the demo renderer's mesh-data and
-// static-instancing contracts without its class/closure layer.
+// static-instancing contracts without its class/closure layer. The rounded
+// generator exercises function-valued parameters (its addGrid vertex
+// callback), mutable tuple locals, early bare returns, and numeric ||.
 
 import {
     addToScene,
@@ -20,6 +22,7 @@ import {
 } from "babylon-lite";
 import type { ArcRotateCamera } from "babylon-lite";
 import { createChamferedBoxData } from "../corpus/babylon-lite/lab/lite/src/demos/tetris/chamfered-box.js";
+import { createRoundedBoxData } from "../corpus/babylon-lite/lab/lite/src/demos/tetris/rounded-box.js";
 
 const BLOCK_COLORS: readonly (readonly [number, number, number])[] = [
     [0.95, 0.24, 0.52],
@@ -110,6 +113,29 @@ async function main(): Promise<void> {
             BLOCK_COLORS[index]![0],
             BLOCK_COLORS[index]![1],
             BLOCK_COLORS[index]![2],
+        ];
+        block.material = material;
+        addToScene(scene, block);
+    }
+
+    // The demo's "smooth" restyle below: rounded blocks from the pinned
+    // quarter-cylinder/spherical-octant generator.
+    const rounded = createRoundedBoxData(1, 0.2, 3);
+    for (let index = 0; index < 7; index++) {
+        const block = createMeshFromData(
+            engine,
+            "tetris_round",
+            rounded.positions,
+            rounded.normals,
+            rounded.indices,
+            rounded.uvs,
+        );
+        block.position.set(index - 3, 1.25, 0);
+        const material = createStandardMaterial();
+        material.diffuseColor = [
+            BLOCK_COLORS[index]![0] * 0.85,
+            BLOCK_COLORS[index]![1] * 0.85,
+            BLOCK_COLORS[index]![2] * 0.85,
         ];
         block.material = material;
         addToScene(scene, block);

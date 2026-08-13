@@ -16,6 +16,9 @@ type ResolveElement = (
 type ResolveCall = (
     expression: ts.CallExpression,
 ) => Value;
+type CompileCondition = (
+    expression: ts.Expression,
+) => string;
 
 export class StaticEvaluator {
     public constructor(
@@ -27,9 +30,11 @@ export class StaticEvaluator {
         private readonly resolveProperty: ResolveProperty,
         private readonly resolveElement: ResolveElement,
         private readonly resolveCall: ResolveCall,
+        private readonly compileCondition: CompileCondition,
         private readonly lookup: Lookup,
         private readonly fail: Fail,
         private readonly onAwait: OnAwait,
+        private readonly onJsData: () => void,
     ) {}
 
     public compileVec3(expression: ts.Expression): string {
@@ -263,6 +268,24 @@ export class StaticEvaluator {
         if (ts.isBinaryExpression(unwrapped)) {
             if (
                 unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.BarBarToken
+            ) {
+                // Numeric `a || b`: JavaScript falls through on 0 and NaN.
+                // Both operands evaluate eagerly (reached uses are pure).
+                const compiled = `bbl::js::or_number(${this.compileNumber(
+                    unwrapped.left,
+                    "double",
+                )}, ${this.compileNumber(
+                    unwrapped.right,
+                    "double",
+                )})`;
+                this.onJsData();
+                return precision === "float"
+                    ? `static_cast<float>(${compiled})`
+                    : compiled;
+            }
+            if (
+                unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.PercentToken
             ) {
                 // JavaScript % keeps the dividend sign, exactly like fmod.
@@ -371,6 +394,20 @@ export class StaticEvaluator {
             return precision === "float"
                 ? `static_cast<float>(${value.cpp})`
                 : value.cpp;
+        }
+        if (ts.isConditionalExpression(unwrapped)) {
+            const compiled = `(${this.compileCondition(
+                unwrapped.condition,
+            )} ? ${this.compileNumber(
+                unwrapped.whenTrue,
+                "double",
+            )} : ${this.compileNumber(
+                unwrapped.whenFalse,
+                "double",
+            )})`;
+            return precision === "float"
+                ? `static_cast<float>(${compiled})`
+                : compiled;
         }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookup(unwrapped);

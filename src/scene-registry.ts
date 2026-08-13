@@ -1373,11 +1373,11 @@ export const scenes: readonly SceneDefinition[] = [
                 "artifacts/parity/tetris-blocks-native.png",
             outputDirectory:
                 "artifacts/parity/tetris-blocks",
-            // Six rotated-silhouette pixels differ by up to one shading
-            // step: unpinned std::cos/sin ULPs against V8 shift the
-            // instanced-edge raster sub-pixel (same class as the fdlibm
-            // Math.pow TODO). Measured 0.000 full / 0.002 foreground on
-            // both backends.
+            // A handful of rotated-silhouette pixels differ by one
+            // shading step: unpinned std::cos/sin ULPs against V8 shift
+            // the instanced-edge raster sub-pixel (same class as the
+            // fdlibm Math.pow TODO). Measured 0.000 full / 0.001
+            // foreground on both backends.
             maxFullMad: 0.001,
             maxForegroundMad: 0.004,
             backgroundColor: [5, 6, 13],
