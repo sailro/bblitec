@@ -22,8 +22,7 @@ on both GPU backends — click any frame for the measured numbers.*
 
 - Pinned upstream: `@babylonjs/lite@1.20.0`,
   commit `95ed3029cc43e479ec924741aea4024e9bf33527`.
-- 49 curated Babylon Lite parity scenes, including Scene 1 (BoomBox), plus
-  primitives and project-owned differential regression gates.
+- 49 curated Babylon Lite parity scenes, plus primitives and project-owned differential regression gates.
 - External glTF/GLB and a reached `.babylon` slice.
 - Named local TypeScript modules plus typed non-recursive helper functions.
 - A plain-data language slice — structs, nullable objects, dynamic arrays,
