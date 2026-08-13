@@ -80,6 +80,7 @@ struct GpuMesh {
     SDL_GPUBuffer* vertices = nullptr;
     SDL_GPUBuffer* indices = nullptr;
     SDL_GPUBuffer* instances = nullptr;
+    std::uint64_t instance_version = 0;
 #if BBLITE_GPU_MORPH_STORAGE
     SDL_GPUBuffer* morph_deltas = nullptr;
     SDL_GPUBuffer* morph_weights = nullptr;
@@ -3781,6 +3782,9 @@ bool run_gpu_engine(Engine& engine) {
                 identity[15] = 1.0f;
                 instance_matrices.push_back(identity);
             }
+            // The buffer holds the full capacity pool; dynamic pools
+            // draw record.instance_count of it and re-upload through the
+            // version-gated per-frame sync below.
             gpu_mesh.instances = upload_buffer(
                 state.device,
                 SDL_GPU_BUFFERUSAGE_VERTEX,
@@ -3788,8 +3792,12 @@ bool run_gpu_engine(Engine& engine) {
                 instance_matrices.size() *
                     sizeof(instance_matrices.front()));
             gpu_mesh.instance_count =
-                static_cast<std::uint32_t>(
-                    instance_matrices.size());
+                mesh_record.thin_instanced
+                    ? mesh_record.instance_count
+                    : static_cast<std::uint32_t>(
+                          instance_matrices.size());
+            gpu_mesh.instance_version =
+                mesh_record.instance_version;
 #endif
             gpu_mesh.index_count =             static_cast<std::uint32_t>(geometry.indices.size());
             gpu_mesh.transform_version =
@@ -4164,6 +4172,34 @@ bool run_gpu_engine(Engine& engine) {
                 const MeshRecord& mesh =
                     engine.meshes[item.mesh.value];
                 GpuMesh& gpu_mesh = state.meshes[index];
+#if BBLITE_GPU_INSTANCING
+                if (
+                    mesh.thin_instanced &&
+                    gpu_mesh.instance_version !=
+                        mesh.instance_version) {
+                    // Re-upload the pinned dirty range [0, count) from
+                    // the record pool; slots past the active count keep
+                    // their previous contents and are never drawn.
+                    const std::size_t active_count = std::min(
+                        static_cast<std::size_t>(
+                            mesh.instance_count),
+                        mesh.instance_matrices.size());
+                    if (active_count > 0) {
+                        update_buffer(
+                            state.device,
+                            gpu_mesh.instances,
+                            mesh.instance_matrices.data(),
+                            active_count *
+                                sizeof(mesh.instance_matrices
+                                           .front()));
+                    }
+                    gpu_mesh.instance_count =
+                        static_cast<std::uint32_t>(
+                            active_count);
+                    gpu_mesh.instance_version =
+                        mesh.instance_version;
+                }
+#endif
                 if (
                     mesh.gpu_deformation &&
                     !engine.geometries[item.geometry].flat_normals) {
@@ -4602,10 +4638,10 @@ bool run_gpu_engine(Engine& engine) {
 #endif
 #if BBLITE_GPU_INSTANCING
                             if (!grid_bucket) {
-                                const std::array<float, 16>& parent_world =
-                                    engine.meshes[
-                                        draw_item.mesh.value]
-                                        .instance_parent_matrix;
+                                const std::array<float, 16> parent_world =
+                                    upstream::build_instance_parent_world(
+                                        engine.meshes[
+                                            draw_item.mesh.value]);
                                 SDL_PushGPUVertexUniformData(
                                     command,
                                     instance_uniform_slot,
@@ -5632,10 +5668,10 @@ bool run_gpu_engine(Engine& engine) {
                         if (
                             item.material_kind !=
                             upstream::RenderMaterialKind::grid) {
-                            const std::array<float, 16>& parent_world =
-                                engine.meshes[
-                                    item.mesh.value]
-                                    .instance_parent_matrix;
+                            const std::array<float, 16> parent_world =
+                                upstream::build_instance_parent_world(
+                                    engine.meshes[
+                                        item.mesh.value]);
                             SDL_PushGPUVertexUniformData(
                                 command,
                                 instance_uniform_slot,

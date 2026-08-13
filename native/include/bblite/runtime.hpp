@@ -366,6 +366,19 @@ struct MeshRecord {
         0.0f, 0.0f, 0.0f, 1.0f,
     };
     std::vector<std::array<float, 16>> instance_matrices;
+    // Thin-instance pool state mirroring the pinned ThinInstanceData:
+    // instance_matrices holds the fixed capacity pool, instance_count is
+    // the active draw count, and instance_version gates the PAL re-upload
+    // exactly like morph_weights_version. instance_source aliases the
+    // caller's matrix array bound by set_thin_instances; the compiler only
+    // accepts named bindings there, and generated main keeps every such
+    // binding alive for the whole frame loop, so the pointer cannot
+    // dangle. Loader-built instancing (glTF EXT_mesh_gpu_instancing)
+    // leaves it null and never bumps the version.
+    bool thin_instanced = false;
+    std::uint32_t instance_count = 0;
+    std::uint64_t instance_version = 0;
+    const std::vector<float>* instance_source = nullptr;
     std::array<float, 4> morph_weights{};
     // Uncapped weights for the storage-buffer morph path; versioned so
     // PAL re-uploads only when the animation evaluator writes them.
@@ -712,11 +725,20 @@ MeshHandle create_mesh_from_data(
     const std::vector<float>& uvs2 = {},
     const std::vector<float>& tangents = {},
     const std::vector<float>& colors = {});
+// The matrices parameter is a non-const lvalue reference on purpose: the
+// record keeps aliasing the caller's array for later per-frame updates
+// (the pinned setThinInstances adopts the array by reference), so a
+// temporary here would dangle. The compiler only passes named bindings.
 void set_thin_instances(
     Engine& engine,
     MeshHandle mesh,
-    const std::vector<float>& matrices,
+    std::vector<float>& matrices,
     double count);
+void set_thin_instance_count(
+    Engine& engine,
+    MeshHandle mesh,
+    double count);
+void flush_thin_instances(Engine& engine, MeshHandle mesh);
 AssetHandle load_gltf(Engine& engine, const std::string& path);
 AssetHandle load_babylon(Engine& engine, const std::string& path);
 void load_environment(Scene& scene, EnvironmentOptions options);

@@ -100,6 +100,7 @@ const featureSources: Record<Feature, string[]> = {
     "mesh:plane": [],
     "mesh:sphere": [],
     "mesh:thin-instances": [],
+    "mesh:thin-instances-dynamic": [],
     "mesh:torus": [],
     "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],
@@ -333,6 +334,7 @@ class Compiler
             features.includes("mesh:plane") ||
             features.includes("mesh:sphere") ||
             features.includes("mesh:thin-instances") ||
+            features.includes("mesh:thin-instances-dynamic") ||
             features.includes("mesh:torus")
         ) {
             generatedSources.push("upstream/src/mesh_factories.cpp");
@@ -1182,14 +1184,29 @@ class Compiler
     }
 
     private compilePropertyAccess(expression: ts.PropertyAccessExpression): Value {
-        if (!ts.isIdentifier(expression.expression)) {
+        const ownerExpression = this.unwrap(
+            expression.expression,
+        );
+        if (!ts.isIdentifier(ownerExpression)) {
             this.fail(
                 expression,
                 `Unsupported property value '${expression.getText()}'.`,
             );
         }
-        const owner = this.lookup(expression.expression);
+        const owner = this.lookup(ownerExpression);
         const property = expression.name.text;
+        if (
+            owner.kind === "engine" &&
+            property === "_device"
+        ) {
+            // The lab demos reach the raw GPUDevice to writeBuffer
+            // thin-instance pools each frame; the compiled surface has a
+            // sanctioned equivalent instead of a device escape hatch.
+            this.fail(
+                expression,
+                "engine._device is not part of the compiled surface; update thin-instance pools through flushThinInstances or setThinInstanceCount instead of writing GPU buffers directly.",
+            );
+        }
         if (
             owner.kind === "engine" &&
             property === "msaaSamples"
@@ -3963,6 +3980,38 @@ class Compiler
         identifier: ts.Identifier,
         value: Value,
     ): void {
+        this.bindLocalOrParameterValue(
+            identifier,
+            value,
+            false,
+        );
+    }
+
+    /**
+     * Binds an inlined user-function parameter. Unlike local
+     * declarations (the pinned value model copies path-bound locals),
+     * JavaScript object arguments alias, and the native-function path
+     * already passes struct/vector/typed-array parameters by reference
+     * — so the inline path binds through a forwarding reference:
+     * lvalue arguments alias the caller's binding (writes through the
+     * parameter mutate it) while temporaries stay owned.
+     */
+    public bindParameterValue(
+        identifier: ts.Identifier,
+        value: Value,
+    ): void {
+        this.bindLocalOrParameterValue(
+            identifier,
+            value,
+            true,
+        );
+    }
+
+    private bindLocalOrParameterValue(
+        identifier: ts.Identifier,
+        value: Value,
+        parameter: boolean,
+    ): void {
         if (value.kind === "void") {
             this.fail(
                 identifier,
@@ -3994,7 +4043,9 @@ class Compiler
               ? "double"
               : value.kind === "boolean"
                 ? "bool"
-                : "auto";
+                : parameter
+                  ? "auto&&"
+                  : "auto";
         const initializerCpp =
             value.kind === "number" &&
             value.staticNumber !== undefined

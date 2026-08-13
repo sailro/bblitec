@@ -103,6 +103,10 @@ export interface UserFunctionContext {
         identifier: ts.Identifier,
         value: Value,
     ): void;
+    bindParameterValue(
+        identifier: ts.Identifier,
+        value: Value,
+    ): void;
     pushScope(cppPrefix: string): void;
     popScope(): void;
     allocateUserFunctionPrefix(): string;
@@ -268,7 +272,7 @@ export class UserFunctionLowerer {
                               parameter.declaration,
                               `Optional parameter '${parameter.name.text}' requires a default value in reached user functions.`,
                           ));
-                context.bindLocalValue(
+                context.bindParameterValue(
                     parameter.name,
                     value,
                 );

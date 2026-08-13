@@ -272,6 +272,25 @@ test("generates mesh and standard-material factories from upstream defaults", ()
     assert.match(mesh.source, /create_plane\(Engine& engine, PlaneOptions options\)/);
     assert.match(mesh.source, /create_torus\(Engine& engine, TorusOptions options\)/);
     assert.match(mesh.source, /Vec2\{1\.0f, 1\.0f\}/);
+    // The dynamic thin-instance path: the pool adopts the caller's named
+    // array, and the per-frame helpers copy the pinned [0, count) dirty
+    // range and bump the version the PAL sync gates on.
+    assert.match(
+        mesh.source,
+        /record\.instance_source = &matrices/,
+    );
+    assert.match(
+        mesh.source,
+        /void set_thin_instance_count\(/,
+    );
+    assert.match(
+        mesh.source,
+        /void flush_thin_instances\(/,
+    );
+    assert.match(
+        mesh.source,
+        /record\.instance_version \+= 1/,
+    );
     assert.match(material.source, /material\.diffuse_color = Color3\{1\.0f, 1\.0f, 1\.0f\}/);
     assert.match(material.source, /material\.standard_material = true/);
     assert.match(grid.source, /material\.grid_material = true/);
@@ -554,6 +573,42 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         fidelity.invariants.some(
             ({ id }) => id === "environment-cubemap-orientation",
         ),
+    );
+});
+
+test("composes the thin-instance parent world from the pinned TRS formulas", () => {
+    const lowerer = new RendererLowerer(new LoweringContext());
+    const plan = lowerer.lowerRenderPlan({ gpuInstancing: true });
+    assert.match(
+        plan.header,
+        /build_instance_parent_world\(\s*const MeshRecord& mesh\)/,
+    );
+    // mat4ComposeInto's quaternion basis, eulerToQuat's half-angle
+    // products, and the mat4MultiplyInto column loop all transcribe into
+    // the emitted helper; the record's own transform never reaches it
+    // for non-thin-instanced meshes.
+    assert.match(plan.source, /\(1\.0 - 2\.0 \* \(yy \+ zz\)\) \* scale_x/);
+    assert.match(plan.source, /qx = sx \* cy \* cz \+ cx \* sy \* sz;/);
+    assert.match(
+        plan.source,
+        /if \(!mesh\.thin_instanced\) \{\s*\r?\n\s*return mesh\.instance_parent_matrix;/,
+    );
+    // Both analytic slots fold material.directIntensity like the pinned
+    // single-light and extra-light terms.
+    assert.match(
+        plan.source,
+        /result\.light_color\[3\] \*= material\.direct_intensity;/,
+    );
+    assert.match(
+        plan.source,
+        /result\.light_color_2\[3\] \*= material\.direct_intensity;/,
+    );
+    const withoutInstancing = new RendererLowerer(
+        new LoweringContext(),
+    ).lowerRenderPlan({});
+    assert.doesNotMatch(
+        withoutInstancing.header,
+        /build_instance_parent_world/,
     );
 });
 

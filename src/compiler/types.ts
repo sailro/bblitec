@@ -153,6 +153,7 @@ export type Feature =
     | "mesh:plane"
     | "mesh:sphere"
     | "mesh:thin-instances"
+    | "mesh:thin-instances-dynamic"
     | "mesh:torus"
     | "renderer:pbr"
     | "renderer:transmission"

@@ -99,6 +99,26 @@ export class RendererLowerer {
                 symbol,
             );
         }
+        if (options.gpuInstancing) {
+            // The instance parent-world helper transcribes these pinned
+            // modules; assert they still carry the composed symbols.
+            this.context.functionDeclaration(
+                "src/math/mat4-compose-into.ts",
+                "mat4ComposeInto",
+            );
+            this.context.functionDeclaration(
+                "src/math/mat4-multiply-into.ts",
+                "mat4MultiplyInto",
+            );
+            this.context.functionDeclaration(
+                "src/math/quat-euler.ts",
+                "eulerToQuat",
+            );
+            this.context.functionDeclaration(
+                "src/scene/world-matrix-state.ts",
+                "composeTrsLocalMatrix",
+            );
+        }
         const { declaration: sortTransparentBindings } =
             this.context.functionDeclaration(
                 renderTaskModule,
@@ -628,6 +648,11 @@ std::array<float, 16> build_view_projection(
 std::array<float, 16> build_skybox_view_projection(
     const CameraRecord& camera,
     float aspect);
+${options.gpuInstancing
+    ? `std::array<float, 16> build_instance_parent_world(
+    const MeshRecord& mesh);
+`
+    : ""}\
 PbrUniforms build_pbr_uniforms(
     const Scene& scene,
     const Engine& engine,
@@ -1168,6 +1193,105 @@ std::array<float, 16> build_skybox_view_projection(
     return multiply(projection, view);
 }
 
+${options.gpuInstancing
+    ? `// src/scene/world-matrix-state.ts composeTrsLocalMatrix +
+// src/math/mat4-compose-into.ts mat4ComposeInto: a thin-instanced mesh
+// reaches the vertex stage's mesh.world (the instance parent-world
+// uniform) from its record TRS, composed in JavaScript double precision
+// and stored to f32 exactly like the pinned Float32Array world matrix.
+// src/math/quat-euler.ts eulerToQuat converts Euler records the way the
+// pinned Euler proxy writes the quaternion source of truth (non-zero
+// Euler angles inherit the recorded std::sin/cos-versus-V8 ULP caveat).
+// The pinned-parent multiply keeps the src/math/mat4-multiply-into.ts
+// accumulation order, so a loader-built glTF pool (identity record TRS)
+// reproduces instance_parent_matrix byte for byte and a user pool
+// (identity parent) reproduces the composed TRS byte for byte.
+std::array<float, 16> build_instance_parent_world(
+    const MeshRecord& mesh) {
+    if (!mesh.thin_instanced) {
+        return mesh.instance_parent_matrix;
+    }
+    double qx = 0.0;
+    double qy = 0.0;
+    double qz = 0.0;
+    double qw = 1.0;
+    if (mesh.has_rotation_quaternion) {
+        qx = mesh.rotation_quaternion.x;
+        qy = mesh.rotation_quaternion.y;
+        qz = mesh.rotation_quaternion.z;
+        qw = mesh.rotation_quaternion.w;
+    } else if (
+        mesh.rotation.x != 0.0f ||
+        mesh.rotation.y != 0.0f ||
+        mesh.rotation.z != 0.0f) {
+        const double half_x =
+            static_cast<double>(mesh.rotation.x) * 0.5;
+        const double half_y =
+            static_cast<double>(mesh.rotation.y) * 0.5;
+        const double half_z =
+            static_cast<double>(mesh.rotation.z) * 0.5;
+        const double cx = std::cos(half_x);
+        const double sx = std::sin(half_x);
+        const double cy = std::cos(half_y);
+        const double sy = std::sin(half_y);
+        const double cz = std::cos(half_z);
+        const double sz = std::sin(half_z);
+        qx = sx * cy * cz + cx * sy * sz;
+        qy = cx * sy * cz - sx * cy * sz;
+        qz = cx * cy * sz + sx * sy * cz;
+        qw = cx * cy * cz - sx * sy * sz;
+    }
+    const double scale_x = mesh.scaling.x;
+    const double scale_y = mesh.scaling.y;
+    const double scale_z = mesh.scaling.z;
+    const double xx = qx * qx;
+    const double yy = qy * qy;
+    const double zz = qz * qz;
+    const double xy = qx * qy;
+    const double xz = qx * qz;
+    const double yz = qy * qz;
+    const double wx = qw * qx;
+    const double wy = qw * qy;
+    const double wz = qw * qz;
+    std::array<double, 16> local{};
+    local[0] = (1.0 - 2.0 * (yy + zz)) * scale_x;
+    local[1] = 2.0 * (xy + wz) * scale_x;
+    local[2] = 2.0 * (xz - wy) * scale_x;
+    local[4] = 2.0 * (xy - wz) * scale_y;
+    local[5] = (1.0 - 2.0 * (xx + zz)) * scale_y;
+    local[6] = 2.0 * (yz + wx) * scale_y;
+    local[8] = 2.0 * (xz + wy) * scale_z;
+    local[9] = 2.0 * (yz - wx) * scale_z;
+    local[10] = (1.0 - 2.0 * (xx + yy)) * scale_z;
+    local[12] = mesh.position.x;
+    local[13] = mesh.position.y;
+    local[14] = mesh.position.z;
+    local[15] = 1.0;
+    std::array<float, 16> result{};
+    for (std::size_t column = 0; column < 4; ++column) {
+        for (std::size_t row = 0; row < 4; ++row) {
+            // Seed with the first product so signed zeros follow the
+            // pinned a0*b0 + a4*b1 + a8*b2 + a12*b3 evaluation exactly.
+            double sum =
+                static_cast<double>(
+                    mesh.instance_parent_matrix[row]) *
+                local[column * 4];
+            for (std::size_t term = 1; term < 4; ++term) {
+                sum +=
+                    static_cast<double>(
+                        mesh.instance_parent_matrix[
+                            term * 4 + row]) *
+                    local[column * 4 + term];
+            }
+            result[column * 4 + row] =
+                static_cast<float>(sum);
+        }
+    }
+    return result;
+}
+
+`
+    : ""}\
 PbrUniforms build_pbr_uniforms(
     const Scene& scene,
     const Engine& engine,
@@ -1301,6 +1425,11 @@ ${fogUniforms}\
                 ? material.environment_intensity
                 : 0.0f;
         result.light_color[3] *= material.direct_intensity;
+        // The pinned extra-light terms multiply material.directIntensity
+        // explicitly (src/material/pbr/fragments/multilight-wgsl.ts), so
+        // the second analytic slot folds it into its intensity scalar
+        // exactly like the primary slot.
+        result.light_color_2[3] *= material.direct_intensity;
 ${multiLightMaterialUniforms}\
         result.material_options[2] = material.unlit ? 1.0f : 0.0f;
         result.material_options[3] = material.double_sided ? 1.0f : 0.0f;

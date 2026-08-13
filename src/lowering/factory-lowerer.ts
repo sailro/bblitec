@@ -478,6 +478,14 @@ export class FactoryLowerer {
             "src/mesh/thin-instance.ts",
             "setThinInstances",
         );
+        this.context.functionDeclaration(
+            "src/mesh/thin-instance.ts",
+            "setThinInstanceCount",
+        );
+        this.context.functionDeclaration(
+            "src/mesh/thin-instance.ts",
+            "flushThinInstances",
+        );
         const value = (input: number): string => this.context.floatLiteral(input);
         return {
             modulePath,
@@ -493,6 +501,7 @@ export class FactoryLowerer {
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 namespace bbl {
@@ -939,28 +948,99 @@ MeshHandle create_mesh_from_data(
         static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
 
-// src/mesh/thin-instance.ts setThinInstances: adopt the caller's matrix
-// array and active count. The reached subset sets count == capacity; the
-// record's own transform stays identity like the demo prototypes.
-void set_thin_instances(
-    Engine& engine,
-    MeshHandle mesh,
+namespace {
+
+// Copy [0, count) instances from the bound caller array into the record's
+// pool mirror, matching the pinned dirty range [_dirtyMin=0, _dirtyMax=count).
+void copy_thin_instance_range(
+    MeshRecord& record,
     const std::vector<float>& matrices,
-    double count) {
-    MeshRecord& record = engine.meshes[mesh.value];
-    const std::size_t available = matrices.size() / 16;
-    const std::size_t instance_count = std::min(
-        static_cast<std::size_t>(count),
-        available);
-    record.instance_matrices.assign(
-        instance_count,
-        std::array<float, 16>{});
-    for (std::size_t index = 0; index < instance_count; ++index) {
+    std::size_t count) {
+    const std::size_t available = std::min(
+        count,
+        matrices.size() / 16);
+    for (std::size_t index = 0; index < available; ++index) {
         std::copy_n(
             matrices.data() + index * 16,
             16,
             record.instance_matrices[index].data());
     }
+}
+
+} // namespace
+
+// src/mesh/thin-instance.ts setThinInstances: adopt the caller's matrix
+// array with count as both the active count and the allocated capacity
+// (_capacity = count). The record keeps aliasing the array so the pinned
+// per-frame helpers below can re-read it; the version field mirrors
+// _version and gates the PAL re-upload.
+void set_thin_instances(
+    Engine& engine,
+    MeshHandle mesh,
+    std::vector<float>& matrices,
+    double count) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    const std::size_t capacity = std::min(
+        static_cast<std::size_t>(count),
+        matrices.size() / 16);
+    record.instance_matrices.assign(
+        capacity,
+        std::array<float, 16>{});
+    copy_thin_instance_range(record, matrices, capacity);
+    record.thin_instanced = true;
+    record.instance_count =
+        static_cast<std::uint32_t>(capacity);
+    record.instance_source = &matrices;
+    record.instance_version += 1;
+}
+
+// src/mesh/thin-instance.ts setThinInstanceCount: update only the active
+// instance count and re-upload the [0, count) matrix range from the SAME
+// array bound by setThinInstances, leaving the capacity (and therefore
+// the allocated GPU buffer) untouched. The pinned helper is a no-op on a
+// mesh without thin instances; growing past the established capacity
+// would recreate the GPU buffer upstream and is not reached, so it fails
+// explicitly here.
+void set_thin_instance_count(
+    Engine& engine,
+    MeshHandle mesh,
+    double count) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (!record.thin_instanced ||
+        record.instance_source == nullptr) {
+        return;
+    }
+    const std::size_t requested =
+        static_cast<std::size_t>(count);
+    if (requested > record.instance_matrices.size()) {
+        throw std::runtime_error(
+            "setThinInstanceCount beyond the established capacity is not reached.");
+    }
+    copy_thin_instance_range(
+        record,
+        *record.instance_source,
+        requested);
+    record.instance_count =
+        static_cast<std::uint32_t>(requested);
+    record.instance_version += 1;
+}
+
+// src/mesh/thin-instance.ts flushThinInstances: mark the whole active
+// range dirty after direct array manipulation (_dirtyMin = 0,
+// _dirtyMax = count). The pinned helper non-null asserts
+// mesh.thinInstances, so a flush without a bound pool fails explicitly.
+void flush_thin_instances(Engine& engine, MeshHandle mesh) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (!record.thin_instanced ||
+        record.instance_source == nullptr) {
+        throw std::runtime_error(
+            "flushThinInstances requires thin instances bound by setThinInstances.");
+    }
+    copy_thin_instance_range(
+        record,
+        *record.instance_source,
+        record.instance_count);
+    record.instance_version += 1;
 }
 
 } // namespace bbl

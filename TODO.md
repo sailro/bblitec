@@ -105,6 +105,17 @@ CPU-side from GPU-side causes immediately.
   read-only copies; owned locals reject writes after escaping by copy)
   with real escape analysis when a reached scene needs shared mutable
   objects.
+- [ ] Close the primary-slot directional specular residual: a
+  directional light in the FIRST analytic slot under mid/low roughness
+  renders its specular highlight a few percent dim (probe measurement
+  2026-08-13: sphere, roughness 0.35, max channel delta 10-15 at the
+  highlight, independent of `directIntensity`). No gated scene and no
+  demo reaches this combination — the tetris rig adds the hemispheric
+  first, so its directional key runs in the second slot, which is
+  byte-effectively exact (tetris-well) — but the primary directional
+  block should be diffed against the pinned
+  `singlelight-directional-wgsl.ts` term by term before a scene needs
+  it.
 - [ ] Port fdlibm/V8 transcendentals (`pow`, `exp`, `cos`, `sin`) for
   bit-exact parity. `pow` gates level 3+ gravity (tetris-logic stays
   below 10 cleared lines so the reached exponent is exact); `cos`/`sin`
@@ -279,15 +290,26 @@ the identical generator, keyed off the generated manifest's
   scenes keep the second slot's terms additive outside the layer
   composition; composing them properly stays with the layered
   multi-light TODO.
+- [x] Dynamic thin instances — the sanctioned per-frame update path
+  replacing the demo's `engine._device` escape hatch (which the
+  compiler now recognizes and rejects with a pointer at the sanctioned
+  helpers): `setThinInstances` adopts the caller's named array as a
+  fixed-capacity pool, `flushThinInstances`/`setThinInstanceCount`
+  re-upload the pinned `[0, count)` dirty range through a version-gated
+  PAL sync on both backends, and thin-instanced records compose
+  mesh.world × instanceWorld through the pinned double-precision
+  TRS/parent composition instead of the baked-vertex transform. Gated
+  by tetris-well: the scripted rules play one action per frame inside
+  `onBeforeRender`, seven fixed-capacity color pools rewrite and flush
+  every frame with degenerate hidden slots, the ghost preview varies
+  its count, and every pool mesh carries a non-identity record
+  transform.
 - [ ] Stage 2 (remaining) — renderer contracts for `tetris/renderer.ts`:
-  a sanctioned dynamic thin-instance update path replacing the demo's
-  `engine._device` escape hatch (`setThinInstanceCount` semantics;
-  native instancing is build-once today), composing the record
-  transform with instance matrices, scene-local shader variants from
-  typed WGSL IR (also scenes 159/161/165) for the particle material,
-  `removeFromScene`, per-frame camera clamping, and the class/closure
-  subset for `TetrisParticles` and the renderer record. Validate with a
-  static-board gate before any game loop.
+  scene-local shader variants from typed WGSL IR (also scenes
+  159/161/165) for the particle material, `removeFromScene`, per-frame
+  camera clamping, and the class/closure subset for `TetrisParticles`
+  and the renderer record. Validate with a static-board gate before any
+  game loop.
 - [ ] Inlined value returns compile through the default float path in
   compound numeric contexts (a double-to-float-to-double round-trip);
   route inline return expressions through double precision. Parameter
