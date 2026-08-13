@@ -272,7 +272,9 @@ export class NativeFunctionLowerer {
                 byReference:
                     parameterType.kind === "struct" ||
                     parameterType.kind === "vector" ||
-                    parameterType.kind === "optional",
+                    parameterType.kind === "optional" ||
+                    parameterType.kind === "f32array" ||
+                    parameterType.kind === "u32array",
             });
         }
         if (!ts.isBlock(declaration.body ?? declaration)) {

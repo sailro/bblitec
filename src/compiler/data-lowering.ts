@@ -149,7 +149,11 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
-            return this.elementRead(owner, unwrapped);
+            return this.elementRead(
+                owner,
+                unwrapped,
+                mode,
+            );
         }
         return undefined;
     }
@@ -270,7 +274,9 @@ export class DataLowerer {
         }
         if (
             (dataType.kind === "vector" ||
-                dataType.kind === "span") &&
+                dataType.kind === "span" ||
+                dataType.kind === "f32array" ||
+                dataType.kind === "u32array") &&
             property === "length"
         ) {
             this.context.reachJsData();
@@ -310,6 +316,7 @@ export class DataLowerer {
     private elementRead(
         ownerValue: Value,
         access: ts.ElementAccessExpression,
+        mode: "read" | "write" = "read",
     ): Value | undefined {
         const owner = this.narrowOptional(
             ownerValue,
@@ -325,6 +332,30 @@ export class DataLowerer {
         );
         this.context.reachJsData();
         const indexed = `${owner.cpp}[bbl::js::array_index(${index})]`;
+        if (
+            dataType.kind === "f32array" ||
+            dataType.kind === "u32array"
+        ) {
+            // Reads widen to JavaScript numbers; writes keep the raw
+            // element lvalue and record the storage so assignment inserts
+            // the exact conversion (fround for f32, ToUint32 for u32).
+            if (mode === "write") {
+                return {
+                    kind: "number",
+                    cpp: indexed,
+                    dataType: { kind: "number" },
+                    dataStore:
+                        dataType.kind === "f32array"
+                            ? "f32"
+                            : "u32",
+                };
+            }
+            return {
+                kind: "number",
+                cpp: `static_cast<double>(${indexed})`,
+                dataType: { kind: "number" },
+            };
+        }
         switch (dataType.kind) {
             case "vector":
             case "span":
@@ -682,19 +713,22 @@ export class DataLowerer {
         }
         this.context.reachJsData();
         if (method === "push") {
-            if (call.arguments.length !== 1) {
+            if (call.arguments.length === 0) {
                 this.context.fail(
                     call,
-                    "Reached array push supports exactly one element.",
+                    "Array push requires at least one element.",
                 );
             }
-            const value = this.compileForSink(
-                call.arguments[0]!,
-                dataType.element,
+            const pushes = call.arguments.map(
+                (argument) =>
+                    `${narrowed.cpp}.push_back(${this.compileForSink(argument, dataType.element)})`,
             );
             return {
                 kind: "void",
-                cpp: `${narrowed.cpp}.push_back(${value})`,
+                cpp:
+                    pushes.length === 1
+                        ? pushes[0]!
+                        : `(${pushes.join(", ")})`,
             };
         }
         if (method === "pop") {
@@ -816,6 +850,97 @@ export class DataLowerer {
                 kind: "vector",
                 element: created.element,
             },
+        };
+    }
+
+    /**
+     * Compiles supported constructor expressions: `new Array`,
+     * `new Float32Array`, and `new Uint32Array` (sized, from a numeric
+     * array literal, or from a number[] value).
+     */
+    public compileNewExpression(
+        expression: ts.NewExpression,
+    ): Value | undefined {
+        return (
+            this.compileNewArray(expression) ??
+            this.compileTypedArrayNew(expression)
+        );
+    }
+
+    private compileTypedArrayNew(
+        expression: ts.NewExpression,
+    ): Value | undefined {
+        if (
+            !ts.isIdentifier(expression.expression) ||
+            this.context.lookupIdentifierValue(
+                expression.expression,
+            )
+        ) {
+            return undefined;
+        }
+        const name = expression.expression.text;
+        if (
+            name !== "Float32Array" &&
+            name !== "Uint32Array"
+        ) {
+            return undefined;
+        }
+        const prefix =
+            name === "Float32Array" ? "f32" : "u32";
+        const dataType: DataType =
+            name === "Float32Array"
+                ? { kind: "f32array" }
+                : { kind: "u32array" };
+        this.context.reachJsData();
+        const argument = expression.arguments?.[0];
+        if (!argument) {
+            return {
+                kind: "data",
+                cpp: `${this.context.dataTypes.cppType(dataType)}{}`,
+                dataType,
+            };
+        }
+        if ((expression.arguments?.length ?? 0) > 1) {
+            this.context.fail(
+                expression,
+                `new ${name} supports at most one argument.`,
+            );
+        }
+        const unwrapped = this.context.unwrap(argument);
+        if (ts.isArrayLiteralExpression(unwrapped)) {
+            const elements = unwrapped.elements.map(
+                (element) =>
+                    this.context.compileNumber(
+                        element,
+                        "double",
+                    ),
+            );
+            return {
+                kind: "data",
+                cpp: `bbl::js::${prefix}_array_from(bbl::js::Array<double>{${elements.join(", ")}})`,
+                dataType,
+            };
+        }
+        const source =
+            this.compileDataPath(unwrapped, "read") ??
+            (ts.isCallExpression(unwrapped)
+                ? this.context.compileValue(unwrapped)
+                : undefined);
+        if (
+            source?.kind === "data" &&
+            source.dataType?.kind === "vector" &&
+            source.dataType.element.kind === "number"
+        ) {
+            return {
+                kind: "data",
+                cpp: `bbl::js::${prefix}_array_from(${source.cpp})`,
+                dataType,
+            };
+        }
+        return {
+            kind: "data",
+            cpp: `bbl::js::${prefix}_array_sized(${this.context.compileNumber(argument, "double")})`,
+            dataType,
         };
     }
 
@@ -942,6 +1067,30 @@ export class DataLowerer {
                         )
                     ) {
                         return chained.cpp;
+                    }
+                }
+                const value = this.requireDataValue(
+                    unwrapped,
+                    dataType,
+                );
+                this.markEscaped(value);
+                return value.cpp;
+            }
+            case "f32array":
+            case "u32array": {
+                if (ts.isNewExpression(unwrapped)) {
+                    const value =
+                        this.compileTypedArrayNew(
+                            unwrapped,
+                        );
+                    if (
+                        value?.dataType &&
+                        dataTypesEqual(
+                            value.dataType,
+                            dataType,
+                        )
+                    ) {
+                        return value.cpp;
                     }
                 }
                 const value = this.requireDataValue(
@@ -1318,8 +1467,26 @@ export class DataLowerer {
             return false;
         }
         if (target.kind === "number") {
+            const right = this.context.compileNumber(
+                expression.right,
+                "double",
+            );
+            if (target.dataStore) {
+                if (operator !== "=") {
+                    this.context.fail(
+                        expression,
+                        "Typed-array elements support plain assignment only.",
+                    );
+                }
+                this.context.emit(
+                    target.dataStore === "u32"
+                        ? `${target.cpp} = bbl::js::to_uint32(${right});`
+                        : `${target.cpp} = static_cast<float>(${right});`,
+                );
+                return true;
+            }
             this.context.emit(
-                `${target.cpp} ${operator} ${this.context.compileNumber(expression.right, "double")};`,
+                `${target.cpp} ${operator} ${right};`,
             );
             return true;
         }

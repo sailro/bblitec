@@ -1355,6 +1355,36 @@ export const scenes: readonly SceneDefinition[] = [
         },
     },
     {
+        id: "tetris-blocks",
+        name: "Tetris Blocks",
+        source: "examples/tetris-blocks.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/tetris-blocks",
+        title: "Babylon Lite Native - Tetris Blocks",
+        buildDirectory:
+            "native/build-tetris-blocks-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/tetris-blocks/babylon-lite-golden.png",
+            },
+            actual:
+                "artifacts/parity/tetris-blocks-native.png",
+            outputDirectory:
+                "artifacts/parity/tetris-blocks",
+            // Six rotated-silhouette pixels differ by up to one shading
+            // step: unpinned std::cos/sin ULPs against V8 shift the
+            // instanced-edge raster sub-pixel (same class as the fdlibm
+            // Math.pow TODO). Measured 0.000 full / 0.002 foreground on
+            // both backends.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.004,
+            backgroundColor: [5, 6, 13],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "tetris-logic",
         name: "Tetris Logic - Compiled Game Rules",
         source: "examples/tetris-logic.ts",

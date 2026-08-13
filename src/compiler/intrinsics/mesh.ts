@@ -32,6 +32,15 @@ export interface MeshIntrinsicContext {
     compileTorusOptions(
         expression: ts.Expression,
     ): [string, string, string];
+    compileTypedArrayArgument(
+        expression: ts.Expression,
+        kind: "f32array" | "u32array",
+    ): string;
+    compileStringLiteral(
+        expression: ts.Expression,
+    ): string;
+    compileNumber(expression: ts.Expression): string;
+    requireEngine(value: Value, node: ts.Node): string;
     reachFeature(feature: Feature): void;
 }
 
@@ -41,6 +50,84 @@ export function compileMeshIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "createMeshFromData": {
+            context.expectArgumentCount(call, 5, 9);
+            const engine =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                engine,
+                "engine",
+                call.arguments[0]!,
+            );
+            // Mesh names have no native meaning yet (picking is not part
+            // of the supported subset); the name argument is validated as
+            // a static string and dropped.
+            context.compileStringLiteral(
+                call.arguments[1]!,
+            );
+            const positions =
+                context.compileTypedArrayArgument(
+                    call.arguments[2]!,
+                    "f32array",
+                );
+            const normals =
+                context.compileTypedArrayArgument(
+                    call.arguments[3]!,
+                    "f32array",
+                );
+            const indices =
+                context.compileTypedArrayArgument(
+                    call.arguments[4]!,
+                    "u32array",
+                );
+            const optional = [5, 6, 7, 8].map((index) =>
+                call.arguments[index] &&
+                call.arguments[index]!.kind !==
+                    ts.SyntaxKind.UndefinedKeyword
+                    ? context.compileTypedArrayArgument(
+                          call.arguments[index]!,
+                          "f32array",
+                      )
+                    : "{}",
+            );
+            context.reachFeature("mesh:from-data");
+            return {
+                kind: "mesh",
+                cpp:
+                    `bbl::create_mesh_from_data(${engine.cpp}, ` +
+                    `${positions}, ${normals}, ${indices}, ` +
+                    `${optional.join(", ")})`,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
+            };
+        }
+
+        case "setThinInstances": {
+            context.expectArgumentCount(call, 3, 3);
+            const mesh =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                mesh,
+                "mesh",
+                call.arguments[0]!,
+            );
+            const matrices =
+                context.compileTypedArrayArgument(
+                    call.arguments[1]!,
+                    "f32array",
+                );
+            const count = context.compileNumber(
+                call.arguments[2]!,
+            );
+            context.reachFeature("mesh:thin-instances");
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_thin_instances(${context.requireEngine(mesh, call)}, ` +
+                    `${mesh.cpp}, ${matrices}, ${count})`,
+            };
+        }
+
         case "createBox": {
             context.expectArgumentCount(call, 1, 2);
             const engine =

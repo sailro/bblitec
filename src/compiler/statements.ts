@@ -180,6 +180,11 @@ export class StatementLowerer {
         ) {
             return;
         }
+        if (ts.isFunctionDeclaration(statement)) {
+            // Nested function declarations lower lazily at their call
+            // sites (native data functions or the inline path).
+            return;
+        }
         context.fail(
             statement,
             `Unsupported statement: ${ts.SyntaxKind[statement.kind]}.`,
