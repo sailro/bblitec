@@ -33,8 +33,6 @@ Unsupported syntax and APIs fail at compile time with source locations.
 - Two complete, mutually validating GPU backends: SDL_GPU over offline-compiled
   shaders, and Dawn (WebGPU) rendering through the browser reference's own
   compiler and rasterization stack — every expressible scene passes on both.
-- Scene 1 (BoomBox) D3D12 parity is effectively exact; measured quality and performance
-  baselines live only in [Status](docs/status.md).
 
 See [current status](docs/status.md) for the supported subset and all measured
 scene results.
