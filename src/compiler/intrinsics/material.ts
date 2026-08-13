@@ -420,6 +420,28 @@ export function compileMaterialIntrinsic(
             );
         }
 
+        case "setPbrEmissive": {
+            // src/material/pbr/set-emissive.ts: the linear-RGB emissive
+            // color became an opt-in setter over the same material field
+            // the glTF emissiveFactor writes.
+            context.expectArgumentCount(call, 2, 2);
+            const material =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                material,
+                "material",
+                call.arguments[0]!,
+            );
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_pbr_emissive(` +
+                    `${context.requireEngine(material, call)}, ` +
+                    `${material.cpp}, ` +
+                    `${context.compileColor3(call.arguments[1]!)})`,
+            };
+        }
+
         case "setPbrUnlit":
         case "setPbrSkybox": {
             // src/material/pbr/set-unlit.ts and set-skybox.ts: the

@@ -87,6 +87,8 @@ export interface StatementLoweringContext {
         expression: ts.Expression,
     ): boolean | undefined;
     eraseBrowserInstrumentation(position: number): void;
+    snapshotAliasState(): Map<string, string>;
+    restoreAliasState(snapshot: Map<string, string>): void;
     emit(line: string): void;
     increaseIndent(): void;
     decreaseIndent(): void;
@@ -445,16 +447,27 @@ export class StatementLowerer {
         context.emit(
             `if (${context.compileCondition(statement.expression)}) {`,
         );
+        // Alias invalidation is path-sensitive: a branch that always
+        // leaves the iteration cannot invalidate anything for the code
+        // that follows the `if`, so its effects are rolled back.
+        const beforeThen = context.snapshotAliasState();
         this.emitScopedBody(
             context,
             statement.thenStatement,
         );
+        if (terminatesFlow(statement.thenStatement)) {
+            context.restoreAliasState(beforeThen);
+        }
         if (statement.elseStatement) {
             context.emit("} else {");
+            const beforeElse = context.snapshotAliasState();
             this.emitScopedBody(
                 context,
                 statement.elseStatement,
             );
+            if (terminatesFlow(statement.elseStatement)) {
+                context.restoreAliasState(beforeElse);
+            }
         }
         context.emit("}");
     }
@@ -1121,4 +1134,23 @@ export class StatementLowerer {
         );
         return true;
     }
+}
+
+/**
+ * True when a branch always leaves the surrounding iteration or
+ * function, so code after the branch never observes its effects.
+ */
+function terminatesFlow(statement: ts.Statement): boolean {
+    if (
+        ts.isContinueStatement(statement) ||
+        ts.isBreakStatement(statement) ||
+        ts.isReturnStatement(statement)
+    ) {
+        return true;
+    }
+    if (ts.isBlock(statement)) {
+        const last = statement.statements.at(-1);
+        return last ? terminatesFlow(last) : false;
+    }
+    return false;
 }

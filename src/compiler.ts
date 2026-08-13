@@ -556,25 +556,45 @@ class Compiler
                     "Data expression is missing its type.",
                 );
             }
-            this.emit(
-                `${this.dataTypes.cppType(narrowed.dataType)} ${cppName} = ${narrowed.cpp};`,
-            );
             const initializer = this.unwrap(
                 declaration.initializer,
             );
-            this.dataLowerer.registerLocal(
-                cppName,
+            const constructs =
                 ts.isCallExpression(initializer) ||
-                    ts.isNewExpression(initializer) ||
-                    ts.isObjectLiteralExpression(
+                ts.isNewExpression(initializer) ||
+                ts.isObjectLiteralExpression(initializer) ||
+                ts.isArrayLiteralExpression(initializer);
+            // A const local bound to an element or member of a
+            // container binds a reference, so writes through it reach
+            // the container the way a JavaScript object binding does.
+            // `let` keeps the copy: a reference cannot be reseated.
+            const aliases =
+                !constructs &&
+                ts.isVariableDeclarationList(
+                    declaration.parent,
+                ) &&
+                (declaration.parent.flags &
+                    ts.NodeFlags.Const) !==
+                    0 &&
+                (ts.isElementAccessExpression(initializer) ||
+                    ts.isPropertyAccessExpression(
                         initializer,
-                    ) ||
-                    ts.isArrayLiteralExpression(
-                        initializer,
-                    )
-                    ? "owned"
-                    : "copy",
+                    )) &&
+                narrowed.dataType.kind !== "table";
+            this.emit(
+                `${this.dataTypes.cppType(narrowed.dataType)}${aliases ? "&" : ""} ${cppName} = ${narrowed.cpp};`,
             );
+            if (aliases) {
+                this.dataLowerer.registerAlias(
+                    cppName,
+                    narrowed.cpp,
+                );
+            } else {
+                this.dataLowerer.registerLocal(
+                    cppName,
+                    constructs ? "owned" : "copy",
+                );
+            }
             this.defineVariable(declaration.name, {
                 kind: "data",
                 cpp: cppName,
@@ -3356,6 +3376,16 @@ class Compiler
         this.jsDataReached = true;
     }
 
+    public snapshotAliasState(): Map<string, string> {
+        return this.dataLowerer.snapshotAliasState();
+    }
+
+    public restoreAliasState(
+        snapshot: Map<string, string>,
+    ): void {
+        this.dataLowerer.restoreAliasState(snapshot);
+    }
+
     public defaultEngine(): string | undefined {
         return this.defaultEngineCpp;
     }
@@ -4078,7 +4108,7 @@ class Compiler
                 id: "plain-data-value-model",
                 category: "language",
                 sourceSemantics: "JavaScript objects and arrays are heap references with garbage collection; sparse arrays read undefined.",
-                nativeSemantics: "Plain-data objects compile to value-semantic structs and vectors: locals bound from data paths are copies that reject writes, function object parameters pass by native reference, and new Array elements zero-initialize.",
+                nativeSemantics: "Plain-data objects compile to structs and vectors: a const local bound to an element or member binds a native reference, so writes through it reach the container, while a mutable local stays a copy that rejects writes; function object parameters pass by native reference; new Array elements zero-initialize. A structural mutation of a container makes references taken into it unusable, and later use is a compile error rather than a dangling read.",
                 risk: "medium",
                 validation: ["compiler data-model tests", "differential logic parity gates"],
             });
