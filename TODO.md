@@ -365,10 +365,38 @@ the identical generator, keyed off the generated manifest's
   long after that scope is left; only the body runs in the captured
   scope, since the arguments were written at the call site. Gated by
   tetris-modes.
+- [ ] **IBL environment lighting on thin-instanced meshes diverges.**
+  Found by building the stage-2 capstone (the demo board with the
+  renderer's own PBR recipes) and measuring it: SDL_GPU and Dawn agree
+  with each other exactly and both differ from the browser at
+  MAD 0.422, max 28, with the whole surface of every instanced block
+  wrong rather than just its edges.
+  What the evidence pins down:
+  - `tetris-well` already passes with `material:pbr` + `mesh:from-data`
+    + `mesh:thin-instances(-dynamic)` + `renderer:pbr`. The capstone
+    adds exactly `environment:ibl` and `environment:env`.
+  - Diff attribution is `background=0.000`: the skybox box, which
+    samples the environment directly, is byte-exact. So the loaded
+    cubemap and its prefiltered mips are right in native.
+  - A plain (non-instanced) box under the same IBL — the backboard —
+    shows only faint streaks, while the thin-instanced blocks are
+    wrong across their whole face.
+  - Not the transmission path (removing `setPbrSkybox` leaves it at
+    0.407) and not `setPbrEmissive` (removing it makes it 0.605).
+  Reading: the environment lookup needs a world-space normal and view
+  vector, and thin-instanced meshes keep local vertices with the
+  instance transform applied in the vertex stage
+  (`pal_gpu_shared.hpp` substitutes `identity_transform` for them), so
+  the IBL term is likely evaluated against the un-instanced world.
+  Fix that, then land the capstone as a gate.
 - [ ] Stage 2 (remaining) — `Array.indexOf`, which the demo's
   `toggleMode` uses to cycle `MODE_CYCLE`. tetris-modes writes the same
-  cycle as a comparison chain. Validate with a static-board gate before
-  any game loop.
+  cycle as a comparison chain. Validate with the static-board gate above
+  once the IBL divergence is fixed, before any game loop.
+- [ ] `createPbrMaterial` is missing `baseColorFactor`, `alphaBlend`,
+  and `enableSpecularAA`, all of which the demo renderer uses. A solid
+  colour texture substitutes for the first; the other two have no
+  substitute.
 - [ ] An object-literal method DECLARATION (`{ sync(g, d) { ... } }`) is
   still rejected; only a property naming a local function is a method.
   The demo writes the shorthand form, so this is unreached.
