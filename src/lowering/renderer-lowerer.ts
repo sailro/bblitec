@@ -236,6 +236,20 @@ export class RendererLowerer {
     std::array<std::array<float, 4>, 7> extra_light_colors{};
 `
                 : "";
+        // Under multi-light the extras loop owns every light past the
+        // primary slot, so the second analytic slot stays disabled to
+        // avoid double-counting scene.lights[1].
+        const secondAnalyticLightFill =
+            options.multiLight
+                ? ""
+                : `    if (scene.lights.size() > 1) {
+        write_pbr_light(
+            scene.lights[1],
+            result.light_direction_2,
+            result.light_color_2,
+            result.ground_color_2);
+    }
+`;
         const multiLightMaterialUniforms =
             options.multiLight
                 ? `        for (
@@ -489,6 +503,9 @@ struct PbrUniforms {
     std::array<float, 4> light_color{};
     std::array<float, 4> ground_color{};
 ${multiLightUniformFields}\
+    std::array<float, 4> light_direction_2{};
+    std::array<float, 4> light_color_2{};
+    std::array<float, 4> ground_color_2{};
     std::array<float, 4> camera_position{};
     std::array<float, 4> camera_forward_near{};
     std::array<float, 4> view_right{};
@@ -1158,8 +1175,19 @@ PbrUniforms build_pbr_uniforms(
     const RenderItem& item) {
     PbrUniforms result;
     result.light_direction[1] = 1.0f;
-    if (!scene.lights.empty() && scene.lights.front().value < engine.lights.size()) {
-        const LightRecord& light = engine.lights[scene.lights.front().value];
+    // Analytic light kinds encode in light_direction.w: 0 hemispheric,
+    // 1 point, 2 directional (src/material/pbr/fragments/
+    // singlelight-directional-wgsl.ts drives the directional block).
+    const auto write_pbr_light =
+        [&engine](
+            const LightHandle handle,
+            std::array<float, 4>& light_direction,
+            std::array<float, 4>& light_color,
+            std::array<float, 4>& ground_color) {
+        if (handle.value >= engine.lights.size()) {
+            return;
+        }
+        const LightRecord& light = engine.lights[handle.value];
         const Vec3 matrix_direction{
             light.local_matrix[8],
             light.local_matrix[9],
@@ -1176,7 +1204,7 @@ PbrUniforms build_pbr_uniforms(
                   matrix_direction.z / matrix_length,
               }
             : light.direction;
-        result.light_direction =
+        light_direction =
             light.kind == LightKind::point
                 ? std::array<float, 4>{
                       light.position.x,
@@ -1188,22 +1216,31 @@ PbrUniforms build_pbr_uniforms(
                       direction.x,
                       direction.y,
                       direction.z,
-                      0.0f,
+                      light.kind == LightKind::directional
+                          ? 2.0f
+                          : 0.0f,
                   };
-        result.light_color = {
+        light_color = {
             light.diffuse_color.r,
             light.diffuse_color.g,
             light.diffuse_color.b,
             light.intensity,
         };
-        result.ground_color = {
+        ground_color = {
             light.ground_color.r,
             light.ground_color.g,
             light.ground_color.b,
             light.kind == LightKind::point ? light.range : 0.0f,
         };
+    };
+    if (!scene.lights.empty()) {
+        write_pbr_light(
+            scene.lights.front(),
+            result.light_direction,
+            result.light_color,
+            result.ground_color);
     }
-    const Vec3 eye = arc_rotate_eye_position(camera);
+${secondAnalyticLightFill}    const Vec3 eye = arc_rotate_eye_position(camera);
     const Vec3 forward = normalize(Vec3{
         camera.target.x - eye.x,
         camera.target.y - eye.y,
@@ -2047,6 +2084,13 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                 options.morphStorage,
             ),
         });
+        // The template's directional branch and second analytic light
+        // derive from the pinned single-light PBR block; assert the
+        // upstream module still carries it.
+        this.context.functionDeclaration(
+            "src/material/pbr/fragments/singlelight-directional-wgsl.ts",
+            "getSingleLightBlock",
+        );
         let convertedPbr = readFileSync(
             resolve(templateRoot, "pbr.frag.wgsl"),
             "utf8",
@@ -2078,7 +2122,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             }
             convertedPbr =
                 convertedPbr.slice(0, transmissionStart) +
-                "  let linearColor = select(((((((v_89 * v_52) * v_34) + v_101) + v_102) + ((((v_70 * v_52) * v_71) * v_81) * v_69)) + v_40), v_31, vec3<bool>(v_103, v_103, v_103));\n" +
+                "  let linearColor = select((((((((v_89 * v_52) * v_34) + v_101) + v_102) + ((((v_70 * v_52) * v_71) * v_81) * v_69)) + (bblExtraDiffuse + bblExtraSpecular)) + v_40), v_31, vec3<bool>(v_103, v_103, v_103));\n" +
                 "  let v_104 = linearColor * FragmentUniforms.environmentFactors.x;\n" +
                 convertedPbr.slice(transmissionEnd);
         }
@@ -2314,43 +2358,9 @@ fn bblCalcFogFactor(fogDistance : vec3<f32>) -> f32 {
             }
             convertedPbr = convertedPbr.replace(
                     directMarker,
-                    `  var bblExtraDiffuse = vec3<f32>(0.0f);
-  var bblExtraSpecular = vec3<f32>(0.0f);
-${extraLights}
+                    `${extraLights}
 ${directMarker}`,
             );
-            const baseComposition =
-                "(((((v_89 * v_52) * v_34) + v_101) + v_102) + " +
-                "((((v_70 * v_52) * v_71) * v_81) * v_69)) + v_40";
-            if (!convertedPbr.includes(baseComposition)) {
-                throw new Error(
-                    "PBR base lighting composition marker changed.",
-                );
-            }
-            convertedPbr = convertedPbr.replace(
-                baseComposition,
-                `(${baseComposition} + ` +
-                    "bblExtraDiffuse + bblExtraSpecular)",
-            );
-            if (options.transmission) {
-                const refractionComposition =
-                    /    shadedColor = \(\(v_89 \* v_52\) \* v_34\) \* opaqueRatio \+ v_101 \+ v_102 \+\r?\n      \(\(\(\(v_70 \* v_52\) \* v_71\) \* v_81\) \* v_69\) \* opaqueRatio \+\r?\n      transmitted \+ v_40;/;
-                if (!refractionComposition.test(convertedPbr)) {
-                    throw new Error(
-                        "PBR refraction lighting composition marker changed.",
-                    );
-                }
-                convertedPbr = convertedPbr.replace(
-                    refractionComposition,
-                    "    shadedColor = ((v_89 * v_52) * v_34) * " +
-                        "opaqueRatio + v_101 + v_102 + " +
-                        "bblExtraSpecular +\n" +
-                        "      ((((v_70 * v_52) * v_71) * v_81) * " +
-                        "v_69) * opaqueRatio + " +
-                        "bblExtraDiffuse * opaqueRatio +\n" +
-                        "      transmitted + v_40;",
-                );
-            }
             const alphaLuminance =
                 "    let v_113 = dot((v_101 + v_102), " +
                 "vec3<f32>(0.21259999275207519531f, " +

@@ -269,12 +269,16 @@ the identical generator, keyed off the generated manifest's
   requires srgb: true, matching the native slot). The tetris-blocks
   ring wears the demo frame colormap through the demo-exact nearest
   options. Scenes 62/81/83 keep their later blockers (node materials).
-- [ ] Port PBR shading under scene-level directional (and second
-  analytic) lights from the pinned fragment: the corpus reaches PBR
-  with hemispheric only (scenes 1/10) or KHR punctual lights (scene
-  33), so a scene directional on PBR mis-lights natively today — the
-  tetris demo's key light needs it composed with IBL for the full
-  renderer port.
+- [x] PBR under scene-level directional lights and a second analytic
+  slot, derived from the pinned single-light and multi-light blocks
+  (`src/material/pbr/fragments/`): the primary slot discriminates
+  hemispheric/point/directional at runtime, the second slot accumulates
+  through the shared extra-light terms (disabled under glTF multi-light,
+  which owns lights past the primary), and the tetris-blocks gate runs
+  the demo rig byte-effectively-exactly. Layered (clearcoat/sheen)
+  scenes keep the second slot's terms additive outside the layer
+  composition; composing them properly stays with the layered
+  multi-light TODO.
 - [ ] Stage 2 (remaining) — renderer contracts for `tetris/renderer.ts`:
   a sanctioned dynamic thin-instance update path replacing the demo's
   `engine._device` escape hatch (`setThinInstanceCount` semantics;

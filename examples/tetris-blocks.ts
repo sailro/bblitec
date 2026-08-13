@@ -10,6 +10,7 @@ import {
     addToScene,
     attachControl,
     createArcRotateCamera,
+    createDirectionalLight,
     createEngine,
     createHemisphericLight,
     createMeshFromData,
@@ -88,12 +89,17 @@ async function main(): Promise<void> {
         scene,
     );
     scene.clearColor = { r: 0.02, g: 0.024, b: 0.05, a: 1 };
-    // Hemispheric lighting only: the PBR ring stays inside the reached
-    // analytic-light slice (scene 10 shape). PBR under a scene-level
-    // directional light is an unreached upstream port tracked in TODO.
+    // The demo renderer's lighting rig: a hemispheric floor lift plus the
+    // directional key light, exercising the ported PBR directional and
+    // second-analytic-light contracts alongside the Standard two-light
+    // slice.
     addToScene(
         scene,
-        createHemisphericLight([0, 1, 0.25], 0.95),
+        createHemisphericLight([0, 1, 0.25], 0.75),
+    );
+    addToScene(
+        scene,
+        createDirectionalLight([0.22, -0.5, -0.84], 1.4),
     );
 
     const chamfer = createChamferedBoxData(1, 0.08);
