@@ -285,5 +285,17 @@
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene274.ts",
       "sha256": "2bd13833f1f32013fdd29087ea426242f6fc96671c0f690852ee62b0384465f9"
     }
+  ],
+  "modules": [
+    {
+      "upstreamPath": "lab/lite/src/demos/tetris/game.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/game.ts",
+      "sha256": "9137cfdb08e7a7fe44257a90145e49e153e7dcf1234bcb746262284bdd28187f"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/tetris/pieces.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/pieces.ts",
+      "sha256": "0826d2c172b292b9f7bb58c2b9bf53ac4f0904020e60147c5820fa087caa3df0"
+    }
   ]
 }

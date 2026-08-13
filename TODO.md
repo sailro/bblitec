@@ -87,9 +87,31 @@ CPU-side from GPU-side causes immediately.
 - [x] Support lexical block scopes and safe variable shadowing.
 - [x] Lower block-scoped `if`/`else`, numeric `for`, and `while`.
 - [x] Unroll `for...of` over statically resolved array literals.
-- [ ] Lower runtime iterables, `switch`, `break`, and `continue`.
-- [ ] Generalize typed object and array literals.
-- [ ] Add enums, discriminated unions, and narrowing.
+- [x] Emit fully data-typed user functions as real C++ functions with
+  native early returns and once-only emission (handle-touching helpers
+  keep the inline path); runtime `for` headers carry the incrementor so
+  `continue` matches JavaScript.
+- [x] Lower runtime iterables over data containers, numeric `switch`,
+  `break`, and `continue`. String-literal switch discriminants (input
+  handling) stay with the input-layer erasure lane.
+- [x] Generalize typed object and array literals into the plain-data
+  model: interface structs, `T | null` optionals with checker narrowing,
+  dynamic arrays, deep static numeric tables, tuple/struct destructuring
+  in for-of, swap destructuring, and object spread in declarations and
+  assignments.
+- [x] Add string-literal-union enum tags and null narrowing. Discriminated
+  unions and numeric-literal narrowing beyond checker null analysis remain.
+- [ ] Replace the conservative alias rules (path-bound locals are
+  read-only copies; owned locals reject writes after escaping by copy)
+  with real escape analysis when a reached scene needs shared mutable
+  objects.
+- [ ] Port fdlibm/V8 `Math.pow` (and `exp`) for bit-exact parity once a
+  gated scene reaches level 3+ gravity (non-trivial exponents); the
+  tetris-logic gate deliberately stays below 10 cleared lines so the
+  reached exponent is exact today.
+- [ ] Extend array coverage to `splice`, `shift`/`unshift`, `indexOf`,
+  and multi-argument `push` when the tetris renderer layer (particles)
+  integrates.
 
 ### Closures and async
 
@@ -216,6 +238,34 @@ CPU-side from GPU-side causes immediately.
 - [ ] Improve missing-tool and stale-output diagnostics.
 - [ ] Add `--explain-feature` and generated-code-to-upstream inspection.
 - [ ] Document adding a lowerer and curated scene fixture.
+
+## P1 — Demo integration (tetris)
+
+The pinned demo rules (`lab/lite/src/demos/tetris/{game,pieces}.ts`) are
+corpus evidence compiled by the tetris-logic parity gate: byte-identical
+to the browser reference on both backends under the pinned seeded
+`Math.random` contract (mulberry32, seed 1; the capture harness installs
+the identical generator, keyed off the generated manifest's
+`deterministic-seeded-random` adaptation). Remaining stages:
+
+- [ ] Stage 2 — renderer contracts for `tetris/renderer.ts`:
+  `createMeshFromData` (also scene 267), `loadTexture2D` (also scenes
+  62/81/83), public `setThinInstances`, a sanctioned dynamic
+  thin-instance update path replacing the demo's `engine._device`
+  escape hatch (native instancing is currently static), scene-local
+  shader variants from typed WGSL IR (also scenes 159/161/165) for the
+  particle material, `removeFromScene`, per-frame camera clamping, and
+  the class/closure subset for `TetrisParticles` and the renderer
+  record. Validate with a static-board gate before any game loop.
+- [ ] Stage 3 — wiring: a PAL keyboard contract beyond the camera keys,
+  `performance.now` as PAL frame time under fixed delta, erasure for the
+  DOM HUD/audio/progress modules, and a scripted-input-tape capture mode
+  for interactive goldens (seeded no-input goldens work today).
+- [ ] Audit the remaining demos against the same lanes: mosquito-amber
+  (≈ scene 176), bath-day/landing-bg/littlest-tokyo/torus-states
+  (single-file, near scene shape), then the 4-5k-line games
+  (minecraft/platformer/sandblox/freeciv) and the file-format loaders
+  (quake/doom/racer) last.
 
 ## P1 — Full Babylon Lite corpus audit
 

@@ -99,15 +99,36 @@ export function suiteBrowserModule(
     }).outputText;
 }
 
+/**
+ * The pinned deterministic Math.random contract: mulberry32 over seed 1,
+ * matching bbl::js::random_js in native/include/bblite/js_data.hpp. The
+ * stub runs in a plain script before the scene module loads.
+ */
+export const seededRandomScript =
+    "Math.random = (() => { let s = 1 >>> 0; return () => {" +
+    " s = (s + 0x6D2B79F5) | 0;" +
+    " let t = Math.imul(s ^ (s >>> 15), 1 | s);" +
+    " t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;" +
+    " return ((t ^ (t >>> 14)) >>> 0) / 4294967296;" +
+    " }; })();";
+
+export interface SuiteCaptureOptions {
+    seededRandom?: boolean;
+}
+
 export function createSuiteSceneServer(
     sourcePath: string,
     moduleSource: string,
+    options: SuiteCaptureOptions = {},
 ): ReturnType<typeof createServer> {
     const root = resolve(".");
+    const seedScript = options.seededRandom
+        ? `<script>${seededRandomScript}</script>\n`
+        : "";
     const html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:block}
 </style></head><body><canvas id="renderCanvas" width="1280" height="720"></canvas>
-<script type="module" src="/scene.js"></script></body></html>`;
+${seedScript}<script type="module" src="/scene.js"></script></body></html>`;
     const pinnedAssets = new Map<
         string,
         { bytes: Uint8Array; contentType: string }
@@ -126,6 +147,34 @@ html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:bloc
         }
         const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
         const path = resolve(root, relative);
+        // Local TypeScript modules referenced with ESM ".js" specifiers
+        // (corpus demo modules, example helpers) transpile on demand.
+        if (
+            url.pathname.endsWith(".js") &&
+            (!existsSync(path) || !statSync(path).isFile())
+        ) {
+            const typescriptPath = `${path.slice(0, -3)}.ts`;
+            if (
+                typescriptPath.startsWith(`${root}${sep}`) &&
+                existsSync(typescriptPath) &&
+                statSync(typescriptPath).isFile()
+            ) {
+                const moduleText = readFileSync(typescriptPath, "utf8")
+                    .replaceAll('"@babylonjs/lite"', '"/node_modules/@babylonjs/lite/lib/index.js"')
+                    .replaceAll('"babylon-lite"', '"/node_modules/@babylonjs/lite/lib/index.js"');
+                response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
+                response.end(
+                    ts.transpileModule(moduleText, {
+                        compilerOptions: {
+                            module: ts.ModuleKind.ES2022,
+                            target: ts.ScriptTarget.ES2022,
+                        },
+                        fileName: typescriptPath,
+                    }).outputText,
+                );
+                return;
+            }
+        }
         if (!path.startsWith(`${root}${sep}`) || !existsSync(path) || !statSync(path).isFile()) {
             if (
                 sourcePath
@@ -203,6 +252,7 @@ export async function captureSuiteReference(
     captureTimeSeconds?: number,
     captureFrameRate?: number,
     captureAnimationGroups?: string[],
+    options: SuiteCaptureOptions = {},
 ): Promise<void> {
     if (existsSync(referencePath) && !force) return;
     const moduleSource = suiteBrowserModule(
@@ -212,7 +262,7 @@ export async function captureSuiteReference(
         captureFrameRate,
         captureAnimationGroups,
     );
-    const server = createSuiteSceneServer(sourcePath, moduleSource);
+    const server = createSuiteSceneServer(sourcePath, moduleSource, options);
     await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Unable to start parity server.");

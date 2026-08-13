@@ -27,7 +27,12 @@ Generated scenes contain:
 Current intentional adaptations include browser-wrapper erasure, immediate AOT
 `await`, compile-time asset materialization, SDL input translation, native
 shader backends, disabled cross-backend position-seeded background dither, and
-opt-in ground composition.
+opt-in ground composition. Scenes reaching the plain-data language slice add
+the value-copy object model (`plain-data-value-model`: path-bound locals are
+read-only copies, object parameters alias by native reference, sparse arrays
+zero-initialize) and the pinned seeded `Math.random`
+(`deterministic-seeded-random`: mulberry32 over seed 1 on both the native
+runtime and the browser reference capture).
 
 New high-risk adaptations require an explicit record and a focused test.
 

@@ -8,6 +8,18 @@ import {
     type IntrinsicContext,
 } from "./compiler/intrinsics/registry.js";
 import {
+    DataLowerer,
+    type DataLoweringContext,
+} from "./compiler/data-lowering.js";
+import {
+    DataTypeRegistry,
+    type DataType,
+} from "./compiler/data-types.js";
+import {
+    NativeFunctionLowerer,
+    type NativeFunctionContext,
+} from "./compiler/native-functions.js";
+import {
     createCompilerProgram,
 } from "./compiler/program.js";
 import {
@@ -135,6 +147,8 @@ class Compiler
     implements
         IntrinsicContext,
         AssignmentContext,
+        DataLoweringContext,
+        NativeFunctionContext,
         PromiseLoweringContext,
         StatementLoweringContext,
         UserFunctionContext {
@@ -142,6 +156,18 @@ class Compiler
     private readonly evaluator: StaticEvaluator;
     private readonly statements = new StatementLowerer();
     private readonly userFunctions: UserFunctionLowerer;
+    public readonly dataTypes: DataTypeRegistry;
+    public readonly dataLowerer: DataLowerer;
+    private readonly nativeFunctions: NativeFunctionLowerer;
+    private readonly nativeFunctionPrototypes: string[] =
+        [];
+    private readonly nativeFunctionDefinitions: string[] =
+        [];
+    private readonly nativeReturnTypes: Array<
+        DataType | "void"
+    > = [];
+    private jsDataReached = false;
+    private jsRandomReached = false;
     private readonly staticConstants = new Map<
         ts.Symbol,
         ts.Expression
@@ -171,18 +197,30 @@ class Compiler
     public constructor(
         private readonly program: ts.Program,
         private readonly sourceFile: ts.SourceFile,
-        checker: ts.TypeChecker,
+        public readonly checker: ts.TypeChecker,
         private readonly options: ResolvedCompileOptions,
     ) {
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions =
             new UserFunctionLowerer(checker);
+        this.dataTypes = new DataTypeRegistry(
+            checker,
+            (node, message) => this.fail(node, message),
+        );
+        this.dataLowerer = new DataLowerer(this);
+        this.nativeFunctions =
+            new NativeFunctionLowerer(this);
         this.evaluator = new StaticEvaluator(
             this.staticConstants,
             (identifier) =>
                 this.symbols.valueSymbol(identifier),
             (expression) =>
-                this.lookupRecordProperty(expression),
+                this.lookupRecordProperty(expression) ??
+                this.dataLowerer.compileDataPath(
+                    expression,
+                    "read",
+                ),
+            (expression) => this.compileValue(expression),
             (expression) => this.compileValue(expression),
             (identifier) => this.lookup(identifier),
             (node, message) => this.fail(node, message),
@@ -457,6 +495,15 @@ class Compiler
             return;
         }
 
+        if (
+            this.emitAnnotatedDataDeclaration(
+                declaration,
+                cppName,
+            )
+        ) {
+            return;
+        }
+
         const value = this.compileValue(declaration.initializer);
         if (value.kind === "void" || value.kind === "browser") {
             this.fail(declaration.initializer, `Expression assigned to '${sourceName}' does not produce a native value.`);
@@ -466,6 +513,44 @@ class Compiler
             value.kind === "record"
         ) {
             this.defineVariable(declaration.name, value);
+            return;
+        }
+        if (value.kind === "data") {
+            const narrowed =
+                this.dataLowerer.narrowForDeclaration(
+                    value,
+                    declaration.name,
+                );
+            if (!narrowed.dataType) {
+                this.fail(
+                    declaration.initializer,
+                    "Data expression is missing its type.",
+                );
+            }
+            this.emit(
+                `${this.dataTypes.cppType(narrowed.dataType)} ${cppName} = ${narrowed.cpp};`,
+            );
+            const initializer = this.unwrap(
+                declaration.initializer,
+            );
+            this.dataLowerer.registerLocal(
+                cppName,
+                ts.isCallExpression(initializer) ||
+                    ts.isNewExpression(initializer) ||
+                    ts.isObjectLiteralExpression(
+                        initializer,
+                    ) ||
+                    ts.isArrayLiteralExpression(
+                        initializer,
+                    )
+                    ? "owned"
+                    : "copy",
+            );
+            this.defineVariable(declaration.name, {
+                kind: "data",
+                cpp: cppName,
+                dataType: narrowed.dataType,
+            });
             return;
         }
 
@@ -507,6 +592,83 @@ class Compiler
             }
             this.defaultEngineCpp = cppName;
         }
+    }
+
+    /**
+     * Emits a data-typed local when the declaration carries an explicit
+     * annotation mapping to a composite data type. Object literals compile
+     * against the annotated struct (including one leading spread); other
+     * initializers compile through the typed sink. Returns false when the
+     * annotation is absent or not a composite data type.
+     */
+    private emitAnnotatedDataDeclaration(
+        declaration: ts.VariableDeclaration,
+        cppName: string,
+    ): boolean {
+        if (!declaration.type || !declaration.initializer) {
+            return false;
+        }
+        const annotated = this.dataTypes.fromTsType(
+            this.checker.getTypeFromTypeNode(
+                declaration.type,
+            ),
+            declaration.type,
+        );
+        if (
+            !annotated ||
+            annotated.kind === "number" ||
+            annotated.kind === "boolean" ||
+            annotated.kind === "span" ||
+            annotated.kind === "tuple" ||
+            annotated.kind === "table"
+        ) {
+            // Readonly views keep the legacy static-tuple declaration
+            // semantics; only owning composites take the data path.
+            return false;
+        }
+        this.reachJsData();
+        const initializer = this.unwrap(
+            declaration.initializer,
+        );
+        const spreadTarget =
+            annotated.kind === "struct"
+                ? annotated
+                : annotated.kind === "optional" &&
+                    annotated.inner.kind === "struct"
+                  ? annotated.inner
+                  : undefined;
+        if (
+            spreadTarget &&
+            ts.isObjectLiteralExpression(initializer) &&
+            initializer.properties.some((property) =>
+                ts.isSpreadAssignment(property),
+            )
+        ) {
+            this.dataLowerer.emitSpreadStructDeclaration(
+                cppName,
+                initializer,
+                spreadTarget,
+            );
+        } else {
+            this.emit(
+                `${this.dataTypes.cppType(annotated)} ${cppName} = ${this.dataLowerer.compileForSink(declaration.initializer, annotated)};`,
+            );
+        }
+        this.dataLowerer.registerLocal(
+            cppName,
+            ts.isCallExpression(initializer) ||
+                ts.isNewExpression(initializer) ||
+                ts.isObjectLiteralExpression(initializer) ||
+                ts.isArrayLiteralExpression(initializer)
+                ? "owned"
+                : "copy",
+        );
+        this.defineVariable(declaration.name as ts.Identifier, {
+            kind: "data",
+            cpp: cppName,
+            dataType: annotated,
+        });
+        return true;
     }
 
     private emitObjectBindingDeclaration(
@@ -654,6 +816,9 @@ class Compiler
     }
 
     public emitAssignment(expression: ts.BinaryExpression): void {
+        if (this.dataLowerer.emitAssignment(expression)) {
+            return;
+        }
         emitPropertyAssignment(this, expression);
     }
 
@@ -673,9 +838,36 @@ class Compiler
             return this.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
+            const data = this.dataLowerer.compileDataPath(
+                unwrapped,
+                "read",
+            );
+            if (data) {
+                return data;
+            }
             return this.compilePropertyAccess(unwrapped);
         }
+        if (ts.isNewExpression(unwrapped)) {
+            const array =
+                this.dataLowerer.compileNewArray(
+                    unwrapped,
+                );
+            if (array) {
+                return array;
+            }
+            this.fail(
+                unwrapped,
+                "Unsupported constructor expression.",
+            );
+        }
         if (ts.isElementAccessExpression(unwrapped)) {
+            const data = this.dataLowerer.compileDataPath(
+                unwrapped,
+                "read",
+            );
+            if (data) {
+                return data;
+            }
             const owner = this.compileValue(
                 unwrapped.expression,
             );
@@ -1065,6 +1257,20 @@ class Compiler
             return promise;
         }
         const callee = this.unwrap(call.expression);
+        if (ts.isPropertyAccessExpression(callee)) {
+            const math =
+                this.dataLowerer.compileMathCall(call);
+            if (math) {
+                return math;
+            }
+            const method =
+                this.dataLowerer.compileDataMethodCall(
+                    call,
+                );
+            if (method) {
+                return method;
+            }
+        }
         if (!ts.isIdentifier(callee)) {
             this.fail(callee, `Unsupported call target '${callee.getText()}'.`);
         }
@@ -1084,6 +1290,14 @@ class Compiler
                 callee,
                 `Babylon Lite intrinsic '${importedName}' is not supported by this prototype. Supported scene APIs are documented in README.md.`,
             );
+        }
+        const nativeFunction =
+            this.nativeFunctions.tryCompileCall(
+                call,
+                callee,
+            );
+        if (nativeFunction) {
+            return nativeFunction;
         }
         const userFunction = this.userFunctions.compile(
             this,
@@ -2323,6 +2537,13 @@ class Compiler
             return `!(${this.compileCondition(unwrapped.operand)})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
+            const typed =
+                this.dataLowerer.equalityComparison(
+                    unwrapped,
+                );
+            if (typed) {
+                return typed;
+            }
             const operator = new Map<ts.SyntaxKind, string>([
                 [ts.SyntaxKind.EqualsEqualsEqualsToken, "=="],
                 [ts.SyntaxKind.ExclamationEqualsEqualsToken, "!="],
@@ -2346,6 +2567,35 @@ class Compiler
                 return `(${this.compileCondition(unwrapped.left)} ${operator} ${this.compileCondition(unwrapped.right)})`;
             }
             return `(${this.compileNumber(unwrapped.left, "double")} ${operator} ${this.compileNumber(unwrapped.right, "double")})`;
+        }
+        if (
+            ts.isIdentifier(unwrapped) ||
+            ts.isPropertyAccessExpression(unwrapped) ||
+            ts.isElementAccessExpression(unwrapped)
+        ) {
+            const data =
+                this.dataLowerer.conditionOperand(
+                    unwrapped,
+                );
+            if (data) {
+                return data;
+            }
+        }
+        if (ts.isCallExpression(unwrapped)) {
+            const value = this.compileValue(unwrapped);
+            if (value.kind === "boolean") {
+                return value.cpp;
+            }
+            if (
+                value.kind === "data" &&
+                value.dataType?.kind === "optional"
+            ) {
+                return `${value.cpp}.has_value()`;
+            }
+            this.fail(
+                unwrapped,
+                `Condition call must produce a boolean, received ${value.kind}.`,
+            );
         }
         if (
             unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
@@ -2606,13 +2856,173 @@ class Compiler
         return this.compileStringLiteral(expression);
     }
 
-    private resolveStaticExpression(
+    public resolveStaticExpression(
         expression: ts.Expression,
         resolving: ReadonlySet<ts.Symbol> = new Set(),
     ): ts.Expression {
         return this.evaluator.resolveStaticExpression(
             expression,
             resolving,
+        );
+    }
+
+    public lookupIdentifierValue(
+        identifier: ts.Identifier,
+    ): Value | undefined {
+        return this.lookupOptional(identifier);
+    }
+
+    public probeStaticArrayLiteral(
+        expression: ts.Expression,
+    ): ts.ArrayLiteralExpression | undefined {
+        const resolved =
+            this.resolveStaticExpression(expression);
+        return ts.isArrayLiteralExpression(resolved)
+            ? resolved
+            : undefined;
+    }
+
+    public cppLocalName(sourceName: string): string {
+        return this.cppIdentifier(sourceName);
+    }
+
+    public reachJsData(): void {
+        this.jsDataReached = true;
+    }
+
+    public reachJsRandom(): void {
+        this.jsRandomReached = true;
+    }
+
+    /**
+     * Runs an emission body with indentation reset to column zero and
+     * returns the produced lines, removing them from the main body stream.
+     * Native function definitions and for-headers use this.
+     */
+    public captureEmittedLines(
+        emitBody: () => void,
+    ): string[] {
+        const start = this.body.length;
+        const previousIndent = this.indentLevel;
+        this.indentLevel = 0;
+        try {
+            emitBody();
+        } finally {
+            this.indentLevel = previousIndent;
+        }
+        return this.body.splice(start);
+    }
+
+    public registerNativeFunction(
+        prototype: string,
+        definitionLines: string[],
+    ): void {
+        this.nativeFunctionPrototypes.push(prototype);
+        this.nativeFunctionDefinitions.push(
+            ...definitionLines,
+            "",
+        );
+    }
+
+    public beginNativeFunctionBody(
+        returnType: DataType | undefined,
+    ): void {
+        this.nativeReturnTypes.push(
+            returnType ?? "void",
+        );
+    }
+
+    public endNativeFunctionBody(): void {
+        this.nativeReturnTypes.pop();
+    }
+
+    public activeNativeReturnType():
+        | DataType
+        | "void"
+        | undefined {
+        return this.nativeReturnTypes.at(-1);
+    }
+
+    public emitNativeReturn(
+        statement: ts.ReturnStatement,
+    ): void {
+        const returnType = this.activeNativeReturnType();
+        if (returnType === undefined) {
+            this.fail(
+                statement,
+                "Return outside a native function.",
+            );
+        }
+        if (returnType === "void") {
+            if (statement.expression) {
+                this.fail(
+                    statement.expression,
+                    "Void functions cannot return a value.",
+                );
+            }
+            this.emit("return;");
+            return;
+        }
+        if (!statement.expression) {
+            this.fail(
+                statement,
+                "Non-void native functions must return a value.",
+            );
+        }
+        if (returnType.kind === "number") {
+            this.emit(
+                `return ${this.compileNumber(statement.expression, "double")};`,
+            );
+            return;
+        }
+        if (returnType.kind === "boolean") {
+            this.emit(
+                `return ${this.compileCondition(statement.expression)};`,
+            );
+            return;
+        }
+        this.emit(
+            `return ${this.dataLowerer.compileForSink(statement.expression, returnType)};`,
+        );
+    }
+
+    public emitDataAssignment(
+        expression: ts.BinaryExpression,
+    ): boolean {
+        return this.dataLowerer.emitAssignment(
+            expression,
+        );
+    }
+
+    public emitDataPostfix(
+        expression: ts.PostfixUnaryExpression,
+    ): boolean {
+        return this.dataLowerer.emitPostfixUnary(
+            expression,
+        );
+    }
+
+    public dataIterationTarget(
+        expression: ts.Expression,
+    ):
+        | { container: Value; element: DataType }
+        | undefined {
+        return this.dataLowerer.iterationTarget(
+            expression,
+        );
+    }
+
+    public bindDataIterationVariable(
+        name: ts.BindingName,
+        itemCpp: string,
+        element: DataType,
+    ): void {
+        this.dataLowerer.bindIterationVariable(
+            name,
+            itemCpp,
+            element,
+            (identifier, value) =>
+                this.defineVariable(identifier, value),
         );
     }
 
@@ -3176,6 +3586,26 @@ class Compiler
                 validation: ["typed Promise<T> runtime", "local asset manifest", "generated glTF loader tests"],
             });
         }
+        if (this.jsDataReached) {
+            adaptations.push({
+                id: "plain-data-value-model",
+                category: "language",
+                sourceSemantics: "JavaScript objects and arrays are heap references with garbage collection; sparse arrays read undefined.",
+                nativeSemantics: "Plain-data objects compile to value-semantic structs and vectors: locals bound from data paths are copies that reject writes, function object parameters pass by native reference, and new Array elements zero-initialize.",
+                risk: "medium",
+                validation: ["compiler data-model tests", "differential logic parity gates"],
+            });
+        }
+        if (this.jsRandomReached) {
+            adaptations.push({
+                id: "deterministic-seeded-random",
+                category: "determinism",
+                sourceSemantics: "Math.random draws from the host's nondeterministic generator.",
+                nativeSemantics: "Math.random lowers to a pinned mulberry32 sequence (seed 1); the browser reference capture installs the identical generator before module load.",
+                risk: "medium",
+                validation: ["seeded-random unit tests", "deterministic parity gates"],
+            });
+        }
         if (this.assets.size > 0) {
             adaptations.push({
                 id: "compile-time-asset-materialization",
@@ -3639,17 +4069,44 @@ class Compiler
             )
                 ? "#include <bblite/upstream/camera_math.hpp>\n"
                 : "";
+        const jsDataInclude = this.jsDataReached
+            ? "#include <bblite/js_data.hpp>\n"
+            : "";
+        const preambleSections: string[] = [];
+        const dataPreamble =
+            this.dataTypes.renderPreamble();
+        if (dataPreamble.length > 0) {
+            preambleSections.push(dataPreamble);
+        }
+        if (this.nativeFunctionPrototypes.length > 0) {
+            preambleSections.push(
+                [
+                    "namespace bblscene {",
+                    "",
+                    ...this.nativeFunctionPrototypes,
+                    "",
+                    ...this.nativeFunctionDefinitions,
+                    "}  // namespace bblscene",
+                ].join("\n"),
+            );
+        }
+        const preamble =
+            preambleSections.length > 0
+                ? `\n${preambleSections.join("\n\n")}\n`
+                : "";
+        const seedRandom = this.jsRandomReached
+            ? "        bbl::js::seed_random(1u);\n"
+            : "";
         return `// Generated by bblitec. Do not edit.
 #include <bblite/runtime.hpp>
-${cameraMathInclude}
-
+${jsDataInclude}${cameraMathInclude}
 #include <cmath>
 #include <exception>
 #include <iostream>
-
+${preamble}
 int main() {
     try {
-${this.body.join("\n")}
+${seedRandom}${this.body.join("\n")}
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "Babylon Lite native error: " << error.what() << '\\n';

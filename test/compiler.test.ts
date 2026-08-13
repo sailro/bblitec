@@ -353,7 +353,7 @@ test("uses TypeChecker types for local function arguments", () => {
     );
 });
 
-test("gives repeated user-function calls isolated native locals", () => {
+test("emits plain-data user functions once as native functions", () => {
     const result = compileSource(`
         function doubled(value: number): number {
             const result = value * 2;
@@ -363,13 +363,299 @@ test("gives repeated user-function calls isolated native locals", () => {
         const second = doubled(3);
     `);
 
-    assert.match(
-        result.cpp,
-        /double v_fn0_result = \(v_fn0_value \* 2\.0\)/,
+    assert.equal(
+        result.cpp.match(/double doubled\(double v_fn0_value\) \{/g)
+            ?.length,
+        1,
     );
     assert.match(
         result.cpp,
-        /double v_fn1_result = \(v_fn1_value \* 2\.0\)/,
+        /double v_first = bblscene::doubled\(2\.0\);/,
+    );
+    assert.match(
+        result.cpp,
+        /double v_second = bblscene::doubled\(3\.0\);/,
+    );
+    assert.match(
+        result.cpp,
+        /return v_fn0_result;/,
+    );
+});
+
+test("supports early returns in native data functions", () => {
+    const result = compileSource(`
+        function clamp01(value: number): number {
+            if (value < 0) {
+                return 0;
+            }
+            if (value > 1) {
+                return 1;
+            }
+            return value;
+        }
+        const low = clamp01(-2);
+        const high = clamp01(3);
+    `);
+
+    assert.equal(
+        result.cpp.match(/return 0\.0;/g)?.length,
+        1,
+    );
+    assert.match(result.cpp, /return 1\.0;/);
+    assert.match(result.cpp, /return v_fn0_value;/);
+});
+
+test("keeps closures over entry locals on the inline path", () => {
+    const result = compileSource(`
+        import {
+            createArcRotateCamera,
+            createEngine,
+            createSceneContext,
+            registerScene,
+            startEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const camera = createArcRotateCamera(1, 1, 5, { x: 0, y: 0, z: 0 });
+            scene.camera = camera;
+            const nudge = (): void => {
+                camera.alpha = camera.alpha + 0.5;
+            };
+            nudge();
+            nudge();
+            await registerScene(scene);
+            await startEngine(engine);
+        }
+    `);
+
+    assert.doesNotMatch(result.cpp, /bblscene::nudge/);
+    assert.equal(
+        result.cpp.match(/\.alpha = static_cast<float>/g)
+            ?.length,
+        2,
+    );
+});
+
+test("lowers interface-typed structs, optionals, and enums", () => {
+    const result = compileSource(`
+        type Tag = "idle" | "busy";
+        interface Item {
+            weight: number;
+            active: boolean;
+        }
+        interface Bucket {
+            items: Item[];
+            current: Item | null;
+            tags: Tag[];
+            total: number;
+        }
+        function makeBucket(): Bucket {
+            return {
+                items: [],
+                current: null,
+                tags: [],
+                total: 0,
+            };
+        }
+        function fill(bucket: Bucket): void {
+            bucket.items.push({ weight: 2, active: true });
+            bucket.current = { weight: 3, active: false };
+            bucket.tags.push("busy");
+            bucket.total += bucket.items.length;
+            if (bucket.current !== null) {
+                bucket.total += bucket.current.weight;
+            }
+            bucket.current = null;
+        }
+        const bucket = makeBucket();
+        fill(bucket);
+        const total = bucket.total;
+    `);
+
+    assert.match(result.cpp, /enum class Tag \{/);
+    assert.match(result.cpp, /struct Item \{/);
+    assert.match(
+        result.cpp,
+        /bbl::js::Nullable<bblscene::Item> current;/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<bblscene::Tag> tags;/,
+    );
+    assert.match(
+        result.cpp,
+        /push_back\(bblscene::Item\{2\.0, true\}\)/,
+    );
+    assert.match(
+        result.cpp,
+        /push_back\(bblscene::Tag::busy\)/,
+    );
+    assert.match(
+        result.cpp,
+        /current = std::nullopt;/,
+    );
+    assert.match(
+        result.cpp,
+        /\(\*v_fn\d+_bucket\.current\)\.weight/,
+    );
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "plain-data-value-model",
+        ),
+    );
+});
+
+test("lowers dynamic arrays with fill, pop, truncation, and index writes", () => {
+    const result = compileSource(`
+        const board: number[] = new Array<number>(6).fill(0);
+        board[2] = 5;
+        const popped = board.pop()!;
+        board.length = 3;
+        const scratch: number[] = new Array(4);
+        scratch[0] = board.length;
+        let sum = 0;
+        for (const value of board) {
+            sum += value;
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::array_filled<double>\(6\.0, 0\.0\)/,
+    );
+    assert.match(
+        result.cpp,
+        /v_board\[bbl::js::array_index\(2\.0\)\] = 5\.0;/,
+    );
+    assert.match(
+        result.cpp,
+        /double v_popped = bbl::js::array_pop\(v_board\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::array_truncate\(v_board, 3\.0\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<double>\(static_cast<std::size_t>\(4\.0\)\)/,
+    );
+    assert.match(
+        result.cpp,
+        /for \(const auto& v_bblite_item_\d+ : v_board\)/,
+    );
+});
+
+test("materializes static tables under runtime indices only", () => {
+    const result = compileSource(`
+        const WEIGHTS: readonly (readonly [number, number])[] = [
+            [1, 2],
+            [3, 4],
+            [5, 6],
+        ];
+        const staticRead = WEIGHTS[1][0];
+        function pick(index: number): number {
+            return WEIGHTS[index]![1];
+        }
+        let total = pick(2);
+        for (const [left, right] of WEIGHTS) {
+            total += left + right;
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /inline const std::array<std::array<double, 2>, 3> WEIGHTS = \{\{\{\{1\.0, 2\.0\}\}, \{\{3\.0, 4\.0\}\}, \{\{5\.0, 6\.0\}\}\}\};/,
+    );
+    assert.match(
+        result.cpp,
+        /double v_staticRead = 3\.0f;/,
+    );
+    assert.match(
+        result.cpp,
+        /bblscene::WEIGHTS\[bbl::js::array_index\(v_fn\d+_index\)\]\[bbl::js::array_index\(1\.0\)\]/,
+    );
+    assert.match(
+        result.cpp,
+        /v_total \+= \(v_bblite_item_\d+\[0\] \+ v_bblite_item_\d+\[1\]\);/,
+    );
+});
+
+test("rejects writes through data path copies", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                interface Holder {
+                    inner: { count: number };
+                }
+                function poke(holder: Holder): void {
+                    const alias = holder.inner;
+                    alias.count = 5;
+                }
+                const holder: Holder = {
+                    inner: { count: 1 },
+                };
+                poke(holder);
+            `),
+        /value copy of a data path; writes through aliases/,
+    );
+});
+
+test("seeds Math.random deterministically and records the adaptation", () => {
+    const result = compileSource(`
+        function roll(sides: number): number {
+            return Math.floor(Math.random() * sides);
+        }
+        const value = roll(6);
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::seed_random\(1u\);/,
+    );
+    assert.match(
+        result.cpp,
+        /std::floor\(\(bbl::js::random_js\(\) \* v_fn\d+_sides\)\)/,
+    );
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) =>
+                id === "deterministic-seeded-random",
+        ),
+    );
+});
+
+test("compiles the pinned tetris rules through the plain-data subset", () => {
+    const result = compileSource(
+        readFileSync(
+            resolve("examples/tetris-logic.ts"),
+            "utf8",
+        ),
+        { fileName: "examples/tetris-logic.ts" },
+    );
+
+    assert.match(result.cpp, /struct GameState \{/);
+    assert.match(
+        result.cpp,
+        /bool tryMove\(bblscene::GameState& v_fn\d+_g, double v_fn\d+_dCol, double v_fn\d+_dRow, double v_fn\d+_dRot\)/,
+    );
+    assert.match(
+        result.cpp,
+        /std::fmod\(\(\(\(\*v_fn\d+_g\.active\)\.rotation \+ v_fn\d+_dRot\) \+ 4\.0\), 4\.0\)/,
+    );
+    assert.match(result.cpp, /GameSound::gameOver/);
+    assert.match(result.cpp, /bbl::js::seed_random\(1u\);/);
+    const adaptationIds = result.manifest.adaptations.map(
+        ({ id }) => id,
+    );
+    assert.ok(
+        adaptationIds.includes("plain-data-value-model"),
+    );
+    assert.ok(
+        adaptationIds.includes(
+            "deterministic-seeded-random",
+        ),
     );
 });
 
@@ -453,17 +739,110 @@ test("lowers numeric for and while loops", () => {
     assert.match(result.cpp, /v_fn0_remaining--/);
 });
 
-test("rejects unsupported loop control explicitly", () => {
+test("lowers break and continue in runtime loops", () => {
+    const result = compileSource(`
+        let total = 0;
+        let index = 0;
+        while (index < 10) {
+            index++;
+            if (index === 3) {
+                continue;
+            }
+            if (index > 6) {
+                break;
+            }
+            total += index;
+        }
+    `);
+
+    assert.match(result.cpp, /continue;/);
+    assert.match(result.cpp, /break;/);
+    assert.match(result.cpp, /while \(\(v_index < 10\.0\)\)/);
+});
+
+test("keeps the for incrementor reachable from continue", () => {
+    const result = compileSource(`
+        let total = 0;
+        for (let index = 0; index < count(); index++) {
+            if (index === 1) {
+                continue;
+            }
+            total += index;
+        }
+        function count(): number {
+            return 4;
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /for \(; \(v_block\d+_index < bblscene::count\(\)\); v_block\d+_index\+\+\) \{/,
+    );
+    assert.match(result.cpp, /continue;/);
+});
+
+test("rejects labeled loop control explicitly", () => {
     assert.throws(
         () =>
             compileSource(`
                 let value = 0;
-                while (value < 2) {
+                outer: while (value < 2) {
                     value++;
-                    continue;
+                    continue outer;
                 }
             `),
-        /ContinueStatement is not supported in reached loops/,
+        /Unsupported statement: LabeledStatement/,
+    );
+});
+
+test("lowers numeric switch statements to native branches", () => {
+    const result = compileSource(`
+        function scoreFor(lines: number): number {
+            switch (lines) {
+                case 1:
+                    return 100;
+                case 2:
+                case 3:
+                    return 300;
+                default:
+                    return 0;
+            }
+        }
+        const score = scoreFor(2);
+    `);
+
+    assert.match(
+        result.cpp,
+        /const double v_bblite_switch_\d+ = v_fn0_lines;/,
+    );
+    assert.match(
+        result.cpp,
+        /if \(v_bblite_switch_\d+ == 1\.0\) \{/,
+    );
+    assert.match(
+        result.cpp,
+        /\} else if \(v_bblite_switch_\d+ == 2\.0 \|\| v_bblite_switch_\d+ == 3\.0\) \{/,
+    );
+    assert.match(result.cpp, /\} else \{/);
+});
+
+test("rejects switch cases that fall through with statements", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                function pick(value: number): number {
+                    switch (value) {
+                        case 1:
+                            value += 1;
+                        case 2:
+                            return value;
+                        default:
+                            return 0;
+                    }
+                }
+                const picked = pick(1);
+            `),
+        /Non-empty switch cases must end with break or return/,
     );
 });
 
@@ -495,15 +874,33 @@ test("unrolls for-of over static arrays", () => {
     );
 });
 
-test("rejects runtime for-of iterables", () => {
+test("iterates runtime data arrays with range-for", () => {
+    const result = compileSource(`
+        function values(): number[] {
+            return [1, 2, 3];
+        }
+        let total = 0;
+        for (const value of values()) {
+            total += value;
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /for \(const auto& v_bblite_item_\d+ : bblscene::values\(\)\) \{/,
+    );
+    assert.match(
+        result.cpp,
+        /v_total \+= v_bblite_item_\d+;/,
+    );
+});
+
+test("rejects non-array runtime iterables", () => {
     assert.throws(
         () =>
             compileSource(`
-                function values(): number[] {
-                    return [1, 2, 3];
-                }
-                for (const value of values()) {
-                    const doubled = value * 2;
+                for (const item of "abc") {
+                    const value = item;
                 }
             `),
         /Expected a static array literal/,
@@ -532,7 +929,7 @@ test("reports unsupported syntax in imported functions", () => {
                         "test/compiler-multi-file-entry.ts",
                 },
             ),
-        /test[\\/]fixtures[\\/]compiler-modules[\\/]bad-helper\.ts:\d+:\d+: Unsupported statement: SwitchStatement/,
+        /test[\\/]fixtures[\\/]compiler-modules[\\/]bad-helper\.ts:\d+:\d+: Unsupported statement: DoStatement/,
     );
 });
 

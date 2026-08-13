@@ -1,4 +1,5 @@
 import type { CompileAdaptation } from "../fidelity.js";
+import type { DataType } from "./data-types.js";
 
 export interface CompileOptions {
     fileName?: string;
@@ -74,6 +75,7 @@ export type ValueKind =
     | "camera"
     | "camera-world-matrix"
     | "color4"
+    | "data"
     | "engine"
     | "light"
     | "material"
@@ -93,6 +95,7 @@ export type ValueKind =
 export interface Value {
     kind: ValueKind;
     cpp: string;
+    dataType?: DataType;
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     lightKind?: LightKind;

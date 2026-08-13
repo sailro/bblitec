@@ -15,11 +15,18 @@ interface CorpusSceneEntry {
     sha256: string;
 }
 
+interface CorpusModuleEntry {
+    upstreamPath: string;
+    source: string;
+    sha256: string;
+}
+
 interface CorpusSceneManifest {
     package: string;
     version: string;
     sourceVersion: string;
     scenes: CorpusSceneEntry[];
+    modules?: CorpusModuleEntry[];
 }
 
 interface CorpusReferenceEntry {
@@ -105,6 +112,28 @@ test("keeps registered Babylon Lite scenes byte-identical to the pin", () => {
             digest,
             entry.sha256,
             `${scene.id} input differs from pinned upstream evidence.`,
+        );
+    }
+});
+
+test("keeps registered Babylon Lite demo modules byte-identical to the pin", () => {
+    const manifest = corpusManifest();
+    for (const module of manifest.modules ?? []) {
+        assert.match(
+            module.upstreamPath,
+            /^lab\/lite\/src\/demos\//,
+        );
+        assert.equal(
+            module.source,
+            `corpus/babylon-lite/${module.upstreamPath}`,
+        );
+        const digest = createHash("sha256")
+            .update(readFileSync(module.source))
+            .digest("hex");
+        assert.equal(
+            digest,
+            module.sha256,
+            `${module.upstreamPath} input differs from pinned upstream evidence.`,
         );
     }
 });

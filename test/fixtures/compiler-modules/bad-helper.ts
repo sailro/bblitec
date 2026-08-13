@@ -3,8 +3,7 @@ import type { EngineContext } from "@babylonjs/lite";
 export function unsupportedLoop(
     engine: EngineContext,
 ): void {
-    switch (engine) {
-        default:
-            return;
-    }
+    do {
+        void engine;
+    } while (false);
 }

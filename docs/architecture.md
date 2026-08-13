@@ -46,7 +46,10 @@ Primary source ownership:
 | `src/compiler/program.ts` | in-memory TypeScript `Program`/`TypeChecker` frontend |
 | `src/compiler/symbols.ts` | resolved Babylon import symbols and aliases |
 | `src/compiler/static-evaluator.ts` | typed static scalar/vector/color expression evaluation |
-| `src/compiler/user-functions.ts` | reachable typed local-function IR, calls, parameters, and returns |
+| `src/compiler/data-types.ts` | plain-data type mapping (structs, enums, optionals, arrays, tables) and generated definition emission |
+| `src/compiler/data-lowering.ts` | data paths, typed literals/sinks, container methods, runtime `Math`, aliasing contracts, destructuring |
+| `src/compiler/native-functions.ts` | once-emitted real C++ functions for fully data-typed user functions |
+| `src/compiler/user-functions.ts` | inline lowering for handle-touching local functions, calls, parameters, and returns |
 | `src/compiler/statements.ts` | statement dispatch, conditions, expression statements, and method calls |
 | `src/compiler/assignments.ts` | typed property-assignment validation and lowering |
 | `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, and material intrinsic lowerers |
@@ -89,11 +92,24 @@ lowered by focused modules while `compiler.ts` owns compilation state and
 output orchestration.
 
 Named local imports and re-exports resolve through the same `ts.Program`.
-Reached non-generic function declarations are type-checked at call sites and
-lowered with isolated symbol scopes, default parameters, and one final return.
-Recursive, generator, rest-parameter, and generic functions fail explicitly.
-Explicit blocks and `if`/`else` branches own nested symbol scopes and unique
-native names, so legal TypeScript shadowing does not leak or collide.
+Reached non-generic function declarations are type-checked at call sites.
+Functions whose parameters and return type map entirely into the plain-data
+model (numbers, booleans, interface structs, nullable objects, arrays,
+readonly views, string-literal-union enums) are emitted once as real C++
+functions with native early returns; object parameters pass by native
+reference, matching JavaScript object aliasing. All other reached functions
+are inlined per call site with isolated symbol scopes, default parameters,
+and one final return. Recursive, generator, rest-parameter, and generic
+functions fail explicitly. Explicit blocks and `if`/`else` branches own
+nested symbol scopes and unique native names, so legal TypeScript shadowing
+does not leak or collide.
+
+The plain-data model is value-semantic by contract: locals bound from data
+paths are copies that reject writes, owned locals reject writes after they
+escape by copy, sparse `new Array` slots zero-initialize, and `Math.random`
+lowers to the pinned mulberry32 sequence with the browser capture harness
+installing the identical generator. Every such divergence is recorded in the
+generated `fidelity.json`.
 
 Upstream semantic contracts use parsed declarations and expressions from the
 pinned reconstructed source. Entry behavior must not depend on scene names or

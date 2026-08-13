@@ -28,6 +28,47 @@ import {
     imageDimensions,
 } from "./parity.js";
 
+/**
+ * The generated manifest records the deterministic-seeded-random adaptation
+ * whenever the compiled scene reached Math.random; the browser reference
+ * must then install the pinned seeded generator before module load.
+ */
+function usesSeededRandom(scene: SceneDefinition): boolean {
+    const manifestPath = resolve(
+        scene.output,
+        "manifest.json",
+    );
+    if (!existsSync(manifestPath)) {
+        return false;
+    }
+    try {
+        const manifest: unknown = JSON.parse(
+            readFileSync(manifestPath, "utf8"),
+        );
+        if (
+            typeof manifest !== "object" ||
+            manifest === null
+        ) {
+            return false;
+        }
+        const adaptations = (
+            manifest as {
+                adaptations?: Array<{ id?: string }>;
+            }
+        ).adaptations;
+        return (
+            Array.isArray(adaptations) &&
+            adaptations.some(
+                (adaptation) =>
+                    adaptation.id ===
+                    "deterministic-seeded-random",
+            )
+        );
+    } catch {
+        return false;
+    }
+}
+
 interface RenderItemMetadata {
     drawId: number;
     nodeIndex: number;
@@ -288,6 +329,7 @@ export async function runSceneParity(
         config.referenceTimeSeconds,
         config.referenceFrameRate,
         config.referenceAnimationGroups,
+        { seededRandom: usesSeededRandom(scene) },
     );
     if (!arguments_.actual) {
         runNative(
