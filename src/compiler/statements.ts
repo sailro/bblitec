@@ -198,6 +198,11 @@ export class StatementLowerer {
             // sites (native data functions or the inline path).
             return;
         }
+        if (ts.isClassDeclaration(statement)) {
+            // Classes lower lazily too: construction expands the
+            // fields and each method inlines at its call site.
+            return;
+        }
         context.fail(
             statement,
             `Unsupported statement: ${ts.SyntaxKind[statement.kind]}.`,

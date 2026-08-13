@@ -592,6 +592,107 @@ test("materializes static tables under runtime indices only", () => {
     );
 });
 
+
+test("lowers a class instance into per-field bindings", () => {
+    const result = compileSource(`
+        class Stack {
+            private readonly heights: number[] = [];
+            private total = 0;
+            add(height: number, repeat = 2): void {
+                for (let i = 0; i < repeat; i++) {
+                    this.heights.push(height);
+                    this.total += height;
+                }
+            }
+        }
+        const stack = new Stack();
+        stack.add(1);
+        stack.add(2, 1);
+    `);
+
+    // No runtime object survives: fields are locals, methods inline.
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<double> v_\w*heights/,
+    );
+    assert.match(result.cpp, /double v_\w*total = 0\.0/);
+    assert.doesNotMatch(result.cpp, /struct Stack/);
+    // The default `repeat = 2` unrolls twice and the explicit `1` once,
+    // so the count is what proves the default was applied.
+    assert.equal(
+        (result.cpp.match(/push_back/g) ?? []).length,
+        3,
+    );
+});
+
+test("rejects value-returning class methods", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                class Counter {
+                    private n = 1;
+                    value(): number {
+                        return this.n;
+                    }
+                }
+                const counter = new Counter();
+                const total = counter.value();
+            `),
+        /lowers void methods only/,
+    );
+});
+
+test("rejects class inheritance", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                class Base {
+                    protected n = 1;
+                }
+                class Derived extends Base {
+                    bump(): void {
+                        this.n += 1;
+                    }
+                }
+                const derived = new Derived();
+                derived.bump();
+            `),
+        /inheritance is outside the supported subset/,
+    );
+});
+
+test("rejects reassigning a resource-holding class field", () => {
+    // A resource field is a compile-time binding, not storage, so a
+    // second write would be visible on every path rather than the one
+    // that took it.
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createStandardMaterial,
+                } from "@babylonjs/lite";
+                class Painter {
+                    private material: StandardMaterial;
+                    constructor(material: StandardMaterial) {
+                        this.material = material;
+                    }
+                    swap(other: StandardMaterial): void {
+                        this.material = other;
+                    }
+                }
+                async function main(): Promise<void> {
+                    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+                    const engine = await createEngine(canvas);
+                    const painter = new Painter(createStandardMaterial());
+                    painter.swap(createStandardMaterial());
+                }
+                main();
+            `),
+        /is already bound; a class field that holds a resource is wired once/,
+    );
+});
+
 test("binds const data-path locals as aliases", () => {
     const result = compileSource(`
         interface Holder {

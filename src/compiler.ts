@@ -65,6 +65,7 @@ export type {
     ShaderMaterialVariantName,
 } from "./compiler/types.js";
 import type { CompileAdaptation } from "./fidelity.js";
+import { ClassLowerer } from "./compiler/classes.js";
 import {
     lowerWgslShaderProgram,
     type ShaderIrProgram,
@@ -166,6 +167,7 @@ class Compiler
     private readonly userFunctions: UserFunctionLowerer;
     public readonly dataTypes: DataTypeRegistry;
     public readonly dataLowerer: DataLowerer;
+    private readonly classLowerer: ClassLowerer;
     private readonly nativeFunctions: NativeFunctionLowerer;
     private readonly nativeFunctionPrototypes: string[] =
         [];
@@ -192,6 +194,8 @@ class Compiler
     private readonly features = new Set<Feature>(["core"]);
     private readonly assets = new Map<string, CompileAsset>();
     private readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
+    private thisInstance: Value | undefined;
+    private readonly classInstances = new Map<Value, ts.ClassDeclaration>();
     private readonly body: string[] = [];
     private readonly erasedBrowserExpressions = new Set<number>();
     private readonly erasedBrowserInstrumentation = new Set<number>();
@@ -217,6 +221,7 @@ class Compiler
             (node, message) => this.fail(node, message),
         );
         this.dataLowerer = new DataLowerer(this);
+        this.classLowerer = new ClassLowerer(this);
         this.nativeFunctions =
             new NativeFunctionLowerer(this);
         this.evaluator = new StaticEvaluator(
@@ -471,6 +476,7 @@ class Compiler
 
         const sourceName = declaration.name.text;
         if (
+            declaration.parent !== undefined &&
             ts.isVariableDeclarationList(
                 declaration.parent,
             ) &&
@@ -570,6 +576,7 @@ class Compiler
             // `let` keeps the copy: a reference cannot be reseated.
             const aliases =
                 !constructs &&
+                declaration.parent !== undefined &&
                 ts.isVariableDeclarationList(
                     declaration.parent,
                 ) &&
@@ -635,6 +642,7 @@ class Compiler
             stored.animationDuration = `${cppName}.duration`;
         }
         if (
+            declaration.parent !== undefined &&
             ts.isVariableDeclarationList(
                 declaration.parent,
             ) &&
@@ -980,6 +988,18 @@ class Compiler
     public compileValue(expression: ts.Expression): Value {
         const unwrapped = this.unwrap(expression);
 
+        if (
+            unwrapped.kind === ts.SyntaxKind.ThisKeyword
+        ) {
+            const instance = this.activeThis();
+            if (!instance) {
+                this.fail(
+                    unwrapped,
+                    "'this' is only reached inside a class constructor or method.",
+                );
+            }
+            return instance;
+        }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookupOptional(unwrapped);
             if (value) {
@@ -1009,6 +1029,20 @@ class Compiler
                 );
             if (constructed) {
                 return constructed;
+            }
+            const classDeclaration =
+                this.classLowerer.resolveClass(unwrapped);
+            if (classDeclaration) {
+                const instance =
+                    this.classLowerer.construct(
+                        unwrapped,
+                        classDeclaration,
+                    );
+                this.registerClassInstance(
+                    instance,
+                    classDeclaration,
+                );
+                return instance;
             }
             this.fail(
                 unwrapped,
@@ -1222,6 +1256,25 @@ class Compiler
         const ownerExpression = this.unwrap(
             expression.expression,
         );
+        if (
+            ownerExpression.kind ===
+            ts.SyntaxKind.ThisKeyword
+        ) {
+            // Field reads resolve through the instance record the
+            // constructor built.
+            const instance = this.compileValue(ownerExpression);
+            const field =
+                instance.recordProperties?.[
+                    expression.name.text
+                ];
+            if (!field) {
+                this.fail(
+                    expression,
+                    `Field '${expression.name.text}' is not assigned before this read.`,
+                );
+            }
+            return field;
+        }
         if (!ts.isIdentifier(ownerExpression)) {
             this.fail(
                 expression,
@@ -1453,6 +1506,28 @@ class Compiler
                 );
             if (method) {
                 return method;
+            }
+            // A method on a constructed instance inlines with `this`
+            // bound to that instance's field record.
+            const receiver = this.unwrap(callee.expression);
+            if (
+                ts.isIdentifier(receiver) ||
+                receiver.kind === ts.SyntaxKind.ThisKeyword
+            ) {
+                const instance = ts.isIdentifier(receiver)
+                    ? this.lookupOptional(receiver)
+                    : this.activeThis();
+                const declaration = instance
+                    ? this.classOf(instance)
+                    : undefined;
+                if (instance && declaration) {
+                    return this.classLowerer.compileMethodCall(
+                        instance,
+                        callee.name.text,
+                        call,
+                        declaration,
+                    );
+                }
             }
         }
         if (!ts.isIdentifier(callee)) {
@@ -3384,6 +3459,78 @@ class Compiler
         snapshot: Map<string, string>,
     ): void {
         this.dataLowerer.restoreAliasState(snapshot);
+    }
+
+    public defineThis(instance: Value | undefined): void {
+        this.thisInstance = instance;
+    }
+
+    /**
+     * Binds a class field to storage. A field whose declared type is
+     * in the data model gets a real local of that type, so an array
+     * field is a vector rather than the static tuple its empty literal
+     * would otherwise fold to.
+     */
+    public bindClassField(
+        name: ts.Identifier,
+        initializer: ts.Expression,
+    ): void {
+        const dataType =
+            this.dataLowerer.dataTypeAt(name);
+        if (dataType) {
+            const cppName = this.cppIdentifier(name.text);
+            const cpp = this.dataLowerer.compileForSink(
+                initializer,
+                dataType,
+            );
+            this.emit(
+                `${this.dataTypes.cppType(dataType)} ${cppName} = ${cpp};`,
+            );
+            this.dataLowerer.registerLocal(
+                cppName,
+                "owned",
+            );
+            // Numeric and boolean leaves keep their scalar kinds so
+            // arithmetic and conditions treat them like any local.
+            this.defineVariable(name, {
+                kind:
+                    dataType.kind === "number"
+                        ? "number"
+                        : dataType.kind === "boolean"
+                          ? "boolean"
+                          : "data",
+                cpp: cppName,
+                dataType,
+            });
+            return;
+        }
+        this.bindLocalValue(
+            name,
+            this.compileValue(initializer),
+        );
+    }
+
+    public resolveThisField(
+        name: string,
+    ): Value | undefined {
+        return this.thisInstance?.recordProperties?.[name];
+    }
+
+    public activeThis(): Value | undefined {
+        return this.thisInstance;
+    }
+
+    public registerClassInstance(
+        instance: Value,
+        declaration: ts.ClassDeclaration,
+    ): void {
+        this.classInstances.set(instance, declaration);
+    }
+
+    public classOf(
+        instance: Value,
+    ): ts.ClassDeclaration | undefined {
+        return this.classInstances.get(instance);
     }
 
     public defaultEngine(): string | undefined {

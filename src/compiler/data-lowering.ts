@@ -24,6 +24,7 @@ export interface DataLoweringContext {
     lookupIdentifierValue(
         identifier: ts.Identifier,
     ): Value | undefined;
+    resolveThisField(name: string): Value | undefined;
     reachJsData(): void;
     reachJsRandom(): void;
     defaultEngine(): string | undefined;
@@ -200,6 +201,24 @@ export class DataLowerer {
                 }
             }
             return bound;
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.expression.kind ===
+                ts.SyntaxKind.ThisKeyword
+        ) {
+            // A class field resolves to the local it was bound to, so
+            // container methods and alias tracking see the same
+            // storage a field read outside the method sees.
+            const field = this.context.resolveThisField(
+                unwrapped.name.text,
+            );
+            return field &&
+                (field.kind === "data" ||
+                    field.kind === "number" ||
+                    field.kind === "boolean")
+                ? field
+                : undefined;
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const owner = this.compileDataPath(
