@@ -323,6 +323,30 @@ export function emitPropertyAssignment(
         );
         return;
     }
+    if (
+        ts.isPropertyAccessExpression(left.expression) &&
+        ts.isIdentifier(left.expression.expression) &&
+        context.lookup(left.expression.expression).kind ===
+            "camera" &&
+        left.expression.name.text === "target"
+    ) {
+        // Component writes into the camera target record (the demo
+        // renderer's camera shake). The record's properties already
+        // carry their native lvalues for reads.
+        const record = context.compileValue(left.expression);
+        const component =
+            record.recordProperties?.[left.name.text];
+        if (!component || component.kind !== "number") {
+            context.fail(
+                left.name,
+                `Unsupported camera target component '${left.name.text}'.`,
+            );
+        }
+        context.emit(
+            `${component.cpp} ${operator} ${context.compileNumber(expression.right)};`,
+        );
+        return;
+    }
     if (ts.isIdentifier(left.expression)) {
         const target = context.lookup(left.expression);
         const property = left.name.text;

@@ -1482,6 +1482,38 @@ export const scenes: readonly SceneDefinition[] = [
         },
     },
     {
+        id: "tetris-retire",
+        name: "Tetris Retire - Runtime Removal",
+        source: "examples/tetris-retire.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/tetris-retire",
+        title: "Babylon Lite Native - Tetris Retire",
+        buildDirectory:
+            "native/build-tetris-retire-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/tetris-retire/babylon-lite-golden.png",
+            },
+            actual:
+                "artifacts/parity/tetris-retire-native.png",
+            outputDirectory:
+                "artifacts/parity/tetris-retire",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [5, 6, 13],
+            backgroundThreshold: 30,
+            // The shake settles at frame 12 and the last retirement
+            // lands at frame 10; the scene flags readiness at 40, so
+            // both sides capture the same terminal state well past the
+            // final topology rebuild.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "44",
+            },
+        },
+    },
+    {
         id: "tetris-sparks",
         name: "Tetris Sparks - Particle Shader Variant",
         source: "examples/tetris-sparks.ts",

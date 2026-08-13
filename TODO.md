@@ -320,10 +320,19 @@ the identical generator, keyed off the generated manifest's
   the shader IR's color attribute location diverged from the shared
   GpuVertex table, and the Euler rotation bake applied X·Y·Z instead
   of the pinned eulerToQuat Z·Y·X order.
+- [x] `removeFromScene` and per-frame camera clamping — runtime mesh
+  removal drops the scene entry and marks the topology, both backends
+  rematch their uploaded mesh entries to the rebuilt render plan by
+  source identity (releasing only dropped entries; the SDL append-only
+  guard is gone and Dawn's full rebuild already covered it), and the
+  camera's target components accept per-frame writes alongside the
+  already-supported scalar clamping. Gated by tetris-retire.
 - [ ] Stage 2 (remaining) — renderer contracts for `tetris/renderer.ts`:
-  `removeFromScene`, per-frame camera clamping, and the class/closure
-  subset for `TetrisParticles` and the renderer record. Validate with a
-  static-board gate before any game loop.
+  the class/closure subset for `TetrisParticles` (private fields and
+  methods, a `Mesh[]` particle list with `splice` removal) and the
+  renderer record with methods, a getter, and `Record<mode, set>`
+  runtime-string indexing. Validate with a static-board gate before any
+  game loop.
 - [ ] Inlined value returns compile through the default float path in
   compound numeric contexts (a double-to-float-to-double round-trip);
   route inline return expressions through double precision. Parameter

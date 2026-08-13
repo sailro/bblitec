@@ -251,9 +251,16 @@ void set_scene_fog(
 }
 `
             : "";
+        // The emitted removal transcribes the pinned mesh branch of
+        // removeFromScene (scene-list removal plus the topology mark);
+        // assert the upstream helper still exists at its module.
+        this.context.functionDeclaration(
+            "src/scene/scene-remove.ts",
+            "removeFromScene",
+        );
         return {
             modulePath,
-            symbolName: `${createName},${addName},${beforeName},${registerName}${options.fog ? `,${fogName}` : ""}`,
+            symbolName: `${createName},${addName},removeFromScene,${beforeName},${registerName}${options.fog ? `,${fogName}` : ""}`,
             header: "",
             source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${registerName}`)}
 #include <bblite/runtime.hpp>
@@ -311,6 +318,24 @@ void add_to_scene(Scene& scene, MeshHandle mesh) {
     ++scene.mesh_membership_version;
     scene.material_family_mask |=
         material_family_bit(*scene.engine, mesh);
+}
+
+// src/scene/scene-remove.ts removeFromScene: drop the mesh from the
+// scene list and mark the topology dirty (the pinned helper is
+// idempotent — removing a mesh the scene never held is a no-op). The
+// material-family mask stays monotonic: it gates which pipelines the
+// backend created, and a removal never invalidates one.
+void remove_from_scene(Scene& scene, MeshHandle mesh) {
+    require_scene_engine(scene);
+    const auto found = std::find_if(
+        scene.meshes.begin(),
+        scene.meshes.end(),
+        [mesh](const MeshHandle candidate) {
+            return candidate.value == mesh.value;
+        });
+    if (found == scene.meshes.end()) return;
+    scene.meshes.erase(found);
+    ++scene.mesh_membership_version;
 }
 
 void add_to_scene(Scene& scene, LightHandle light) {

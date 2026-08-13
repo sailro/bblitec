@@ -1935,6 +1935,73 @@ void save_pbr_diagnostic_buffers(
     release_textures();
 }
 
+// Release every GPU resource a mesh entry owns. Used by shutdown and
+// by runtime scene removal, which drops entries mid-run (SDL defers the
+// actual destruction until the GPU is done with them).
+void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
+    SDL_ReleaseGPUBuffer(state.device, mesh.vertices);
+    SDL_ReleaseGPUBuffer(state.device, mesh.indices);
+    SDL_ReleaseGPUBuffer(state.device, mesh.instances);
+#if BBLITE_GPU_MORPH_STORAGE
+    if (mesh.owns_morph_buffers) {
+        SDL_ReleaseGPUBuffer(state.device, mesh.morph_deltas);
+        SDL_ReleaseGPUBuffer(state.device, mesh.morph_weights);
+    }
+#endif
+    SDL_ReleaseGPUTexture(state.device, mesh.base_color);
+    SDL_ReleaseGPUTexture(state.device, mesh.metallic_roughness);
+    SDL_ReleaseGPUTexture(state.device, mesh.normal);
+    SDL_ReleaseGPUTexture(state.device, mesh.emissive);
+    SDL_ReleaseGPUTexture(state.device, mesh.transmission);
+    SDL_ReleaseGPUTexture(state.device, mesh.thickness);
+#if BBLITE_MATERIAL_CLEARCOAT
+    SDL_ReleaseGPUTexture(state.device, mesh.clearcoat);
+    SDL_ReleaseGPUTexture(state.device, mesh.clearcoat_roughness);
+    SDL_ReleaseGPUTexture(state.device, mesh.clearcoat_normal);
+#endif
+#if BBLITE_MATERIAL_SHEEN
+    SDL_ReleaseGPUTexture(state.device, mesh.sheen_color);
+    SDL_ReleaseGPUTexture(state.device, mesh.sheen_roughness);
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+    SDL_ReleaseGPUTexture(state.device, mesh.iridescence);
+    SDL_ReleaseGPUTexture(state.device, mesh.iridescence_thickness);
+#endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+    SDL_ReleaseGPUTexture(state.device, mesh.occlusion);
+#endif
+    SDL_ReleaseGPUTexture(state.device, mesh.standard_emissive);
+    SDL_ReleaseGPUSampler(state.device, mesh.base_color_sampler);
+    SDL_ReleaseGPUSampler(state.device, mesh.metallic_roughness_sampler);
+    SDL_ReleaseGPUSampler(state.device, mesh.normal_sampler);
+    SDL_ReleaseGPUSampler(state.device, mesh.emissive_sampler);
+    SDL_ReleaseGPUSampler(state.device, mesh.transmission_sampler);
+    SDL_ReleaseGPUSampler(state.device, mesh.thickness_sampler);
+#if BBLITE_MATERIAL_CLEARCOAT
+    SDL_ReleaseGPUSampler(state.device, mesh.clearcoat_sampler);
+    SDL_ReleaseGPUSampler(
+        state.device,
+        mesh.clearcoat_roughness_sampler);
+    SDL_ReleaseGPUSampler(state.device, mesh.clearcoat_normal_sampler);
+#endif
+#if BBLITE_MATERIAL_SHEEN
+    SDL_ReleaseGPUSampler(state.device, mesh.sheen_color_sampler);
+    SDL_ReleaseGPUSampler(state.device, mesh.sheen_roughness_sampler);
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+    SDL_ReleaseGPUSampler(state.device, mesh.iridescence_sampler);
+    SDL_ReleaseGPUSampler(
+        state.device,
+        mesh.iridescence_thickness_sampler);
+#endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+    SDL_ReleaseGPUSampler(state.device, mesh.occlusion_sampler);
+#endif
+    SDL_ReleaseGPUSampler(
+        state.device,
+        mesh.standard_emissive_sampler);
+}
+
 void release(GpuState& state) {
     release_frame_graph_textures(state);
     for (GpuGeometryTask& task : state.geometry_tasks) {
@@ -1988,67 +2055,7 @@ void release(GpuState& state) {
         }
     }
     for (GpuMesh& mesh : state.meshes) {
-        SDL_ReleaseGPUBuffer(state.device, mesh.vertices);
-        SDL_ReleaseGPUBuffer(state.device, mesh.indices);
-        SDL_ReleaseGPUBuffer(state.device, mesh.instances);
-#if BBLITE_GPU_MORPH_STORAGE
-        if (mesh.owns_morph_buffers) {
-            SDL_ReleaseGPUBuffer(state.device, mesh.morph_deltas);
-            SDL_ReleaseGPUBuffer(state.device, mesh.morph_weights);
-        }
-#endif
-        SDL_ReleaseGPUTexture(state.device, mesh.base_color);
-        SDL_ReleaseGPUTexture(state.device, mesh.metallic_roughness);
-        SDL_ReleaseGPUTexture(state.device, mesh.normal);
-        SDL_ReleaseGPUTexture(state.device, mesh.emissive);
-        SDL_ReleaseGPUTexture(state.device, mesh.transmission);
-        SDL_ReleaseGPUTexture(state.device, mesh.thickness);
-#if BBLITE_MATERIAL_CLEARCOAT
-        SDL_ReleaseGPUTexture(state.device, mesh.clearcoat);
-        SDL_ReleaseGPUTexture(state.device, mesh.clearcoat_roughness);
-        SDL_ReleaseGPUTexture(state.device, mesh.clearcoat_normal);
-#endif
-#if BBLITE_MATERIAL_SHEEN
-        SDL_ReleaseGPUTexture(state.device, mesh.sheen_color);
-        SDL_ReleaseGPUTexture(state.device, mesh.sheen_roughness);
-#endif
-#if BBLITE_MATERIAL_IRIDESCENCE
-        SDL_ReleaseGPUTexture(state.device, mesh.iridescence);
-        SDL_ReleaseGPUTexture(state.device, mesh.iridescence_thickness);
-#endif
-#if BBLITE_MATERIAL_OCCLUSION_UV2
-        SDL_ReleaseGPUTexture(state.device, mesh.occlusion);
-#endif
-        SDL_ReleaseGPUTexture(state.device, mesh.standard_emissive);
-        SDL_ReleaseGPUSampler(state.device, mesh.base_color_sampler);
-        SDL_ReleaseGPUSampler(state.device, mesh.metallic_roughness_sampler);
-        SDL_ReleaseGPUSampler(state.device, mesh.normal_sampler);
-        SDL_ReleaseGPUSampler(state.device, mesh.emissive_sampler);
-        SDL_ReleaseGPUSampler(state.device, mesh.transmission_sampler);
-        SDL_ReleaseGPUSampler(state.device, mesh.thickness_sampler);
-#if BBLITE_MATERIAL_CLEARCOAT
-        SDL_ReleaseGPUSampler(state.device, mesh.clearcoat_sampler);
-        SDL_ReleaseGPUSampler(
-            state.device,
-            mesh.clearcoat_roughness_sampler);
-        SDL_ReleaseGPUSampler(state.device, mesh.clearcoat_normal_sampler);
-#endif
-#if BBLITE_MATERIAL_SHEEN
-        SDL_ReleaseGPUSampler(state.device, mesh.sheen_color_sampler);
-        SDL_ReleaseGPUSampler(state.device, mesh.sheen_roughness_sampler);
-#endif
-#if BBLITE_MATERIAL_IRIDESCENCE
-        SDL_ReleaseGPUSampler(state.device, mesh.iridescence_sampler);
-        SDL_ReleaseGPUSampler(
-            state.device,
-            mesh.iridescence_thickness_sampler);
-#endif
-#if BBLITE_MATERIAL_OCCLUSION_UV2
-        SDL_ReleaseGPUSampler(state.device, mesh.occlusion_sampler);
-#endif
-        SDL_ReleaseGPUSampler(
-            state.device,
-            mesh.standard_emissive_sampler);
+        release_gpu_mesh(state, mesh);
     }
 #if BBLITE_GPU_MORPH_STORAGE
     if (state.empty_morph_deltas) {
@@ -3677,7 +3684,7 @@ bool run_gpu_engine(Engine& engine) {
         upstream::RenderPlan render_plan =
             upstream::build_render_plan(scene, engine);
         const auto upload_render_item =
-            [&](const upstream::RenderItem& item) {
+            [&](const upstream::RenderItem& item) -> GpuMesh {
             const ModelGeometry& geometry = engine.geometries[item.geometry];
             const MeshRecord& mesh_record =
                 engine.meshes[item.mesh.value];
@@ -4076,10 +4083,10 @@ bool run_gpu_engine(Engine& engine) {
                     standard_emissive
                         ? standard_emissive->sampler
                         : TextureSamplerState{});
-            state.meshes.push_back(gpu_mesh);
+            return gpu_mesh;
         };
         for (const upstream::RenderItem& item : render_plan.items) {
-            upload_render_item(item);
+            state.meshes.push_back(upload_render_item(item));
         }
         std::vector<upstream::RenderDrawLists> task_draw_lists(
             engine.frame_tasks.size());
@@ -4311,29 +4318,56 @@ bool run_gpu_engine(Engine& engine) {
                 }
                 upstream::RenderPlan updated_plan =
                     upstream::build_render_plan(scene, engine);
-                if (
-                    updated_plan.items.size() <
-                    render_plan.items.size()) {
-                    throw std::runtime_error(
-                        "Post-registration mesh removal is unsupported.");
-                }
+                // Re-match the uploaded mesh entries to the updated
+                // plan: both plans walk the scene list in order, so a
+                // forward two-pointer pass keeps every surviving
+                // entry's GPU resources, releases the ones a removal
+                // dropped, and uploads newly added items.
+                std::vector<GpuMesh> updated_meshes;
+                updated_meshes.reserve(updated_plan.items.size());
+                const auto same_source = [](
+                                             const upstream::RenderItem& left,
+                                             const upstream::RenderItem& right) {
+                    return left.mesh.value == right.mesh.value &&
+                        left.geometry == right.geometry &&
+                        left.material.value == right.material.value;
+                };
+                std::size_t previous_index = 0;
                 for (
-                    std::size_t index = 0;
-                    index < render_plan.items.size();
-                    ++index) {
-                    if (
-                        updated_plan.items[index].mesh.value !=
-                        render_plan.items[index].mesh.value) {
-                        throw std::runtime_error(
-                            "Post-registration mesh insertion must append to the scene.");
+                    const upstream::RenderItem& item :
+                    updated_plan.items) {
+                    std::size_t scan = previous_index;
+                    while (
+                        scan < render_plan.items.size() &&
+                        !same_source(
+                            render_plan.items[scan],
+                            item)) {
+                        ++scan;
                     }
+                    if (scan < render_plan.items.size()) {
+                        for (
+                            std::size_t dropped = previous_index;
+                            dropped < scan;
+                            ++dropped) {
+                            release_gpu_mesh(
+                                state,
+                                state.meshes[dropped]);
+                        }
+                        updated_meshes.push_back(
+                            state.meshes[scan]);
+                        previous_index = scan + 1;
+                        continue;
+                    }
+                    updated_meshes.push_back(
+                        upload_render_item(item));
                 }
                 for (
-                    std::size_t index = render_plan.items.size();
-                    index < updated_plan.items.size();
-                    ++index) {
-                    upload_render_item(updated_plan.items[index]);
+                    std::size_t dropped = previous_index;
+                    dropped < state.meshes.size();
+                    ++dropped) {
+                    release_gpu_mesh(state, state.meshes[dropped]);
                 }
+                state.meshes = std::move(updated_meshes);
                 render_plan = std::move(updated_plan);
                 rebuild_task_draw_lists();
                 synced_mesh_membership_version =

@@ -77,6 +77,35 @@ export function compileSceneIntrinsic(
             };
         }
 
+        case "removeFromScene": {
+            context.expectArgumentCount(call, 2, 2);
+            const scene =
+                context.compileValue(call.arguments[0]!);
+            const resource =
+                context.compileValue(call.arguments[1]!);
+            context.expectKind(
+                scene,
+                "scene",
+                call.arguments[0]!,
+            );
+            // The pinned removal accepts the same union as addToScene;
+            // the reached subset removes meshes (the demo's particle
+            // retirement).
+            context.expectKind(
+                resource,
+                "mesh",
+                call.arguments[1]!,
+            );
+            context.expectSameEngine(scene, resource, call);
+            context.reachFeature("scene:remove");
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::remove_from_scene(` +
+                    `${scene.cpp}, ${resource.cpp})`,
+            };
+        }
+
         case "onBeforeRender": {
             context.expectArgumentCount(call, 2, 2);
             const scene =

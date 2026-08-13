@@ -106,6 +106,7 @@ const featureSources: Record<Feature, string[]> = {
     "mesh:thin-instances": [],
     "mesh:thin-instances-dynamic": [],
     "mesh:torus": [],
+    "scene:remove": [],
     "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],
     "renderer:fog": [],
