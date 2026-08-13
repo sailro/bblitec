@@ -11,7 +11,12 @@ and keeps handwritten C++ at the platform abstraction layer.
 **Status:** working research prototype, not a general JavaScript runtime.
 Unsupported syntax and APIs fail at compile time with source locations.
 
-![Babylon Lite, Babylon.js, and generated SDL_GPU BoomBox comparison](docs/images/boombox-comparison.png)
+| [<img src="docs/images/scenes/scene1.png" alt="Scene 1" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene5.png" alt="Scene 5" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene7.png" alt="Scene 7" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene14.png" alt="Scene 14" width="170">](docs/status.md#curated-parity-scenes) |
+| :-: | :-: | :-: | :-: |
+| [<img src="docs/images/scenes/scene24.png" alt="Scene 24" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene33.png" alt="Scene 33" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene176.png" alt="Scene 176" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene178.png" alt="Scene 178" width="170">](docs/status.md#curated-parity-scenes) |
+
+*A few of the 49 curated parity scenes, compiled to native C++ and rendered
+on both GPU backends — click any frame for the measured numbers.*
 
 ## Current proof points
 
