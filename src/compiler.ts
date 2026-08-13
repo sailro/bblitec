@@ -587,7 +587,11 @@ class Compiler
                     ts.isPropertyAccessExpression(
                         initializer,
                     )) &&
-                narrowed.dataType.kind !== "table";
+                narrowed.dataType.kind !== "table" &&
+                // A value read out of a span is const, so it cannot be
+                // bound by reference; the source language would not let
+                // it be written through either.
+                !narrowed.readOnly;
             this.emit(
                 `${this.dataTypes.cppType(narrowed.dataType)}${aliases ? "&" : ""} ${cppName} = ${narrowed.cpp};`,
             );

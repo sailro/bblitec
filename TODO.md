@@ -129,9 +129,9 @@ CPU-side from GPU-side causes immediately.
   below 10 cleared lines so the reached exponent is exact); `cos`/`sin`
   ULPs against V8 are the tetris-blocks six-pixel rotated-silhouette
   floor (0.002 foreground on both backends).
-- [ ] Extend array coverage to `splice`, `shift`/`unshift`, `indexOf`,
-  and multi-argument `push` when the tetris renderer layer (particles)
-  integrates.
+- [ ] Extend array coverage to `shift`/`unshift` and the `indexOf`
+  `fromIndex` form when a reached scene needs them (`splice`,
+  `indexOf`, and multi-argument `push` have landed).
 
 ### Closures and async
 
@@ -371,9 +371,13 @@ the identical generator, keyed off the generated manifest's
   ghost, per-colour thin-instance pools, at a board the pinned rules
   played. Gated by tetris-board. Building it found the
   `environmentIntensity` gate bug below.
-- [ ] Stage 2 (remaining) — `Array.indexOf`, which the demo's
-  `toggleMode` uses to cycle `MODE_CYCLE`. tetris-modes writes the same
-  cycle as a comparison chain. Needed before the game loop.
+- [x] `Array.indexOf`, so the demo's `toggleMode` cycles `MODE_CYCLE`
+  verbatim. A constant array is a compile-time tuple with nothing to
+  search, so searching one materializes it as a shared namespace
+  constant, exactly as a runtime index into it already did — one
+  mechanism serves both. Elements must compare by value (numbers,
+  booleans, tags, handles); a struct would compare by identity in
+  JavaScript and field by field here, so it is rejected.
 - [ ] The stone frame ring needs `loadGeometryFromUrl`, and the "pets"
   block style fetches its baked geometry at runtime; neither is in the
   subset, so tetris-board renders the arcade style without the frame.

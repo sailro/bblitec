@@ -56,6 +56,11 @@ struct EngineOptions {
 
 struct MeshHandle {
     std::uint32_t value = invalid_handle;
+
+    // A handle is an id, so comparing ids is exactly the object
+    // identity JavaScript compares meshes by.
+    [[nodiscard]] bool operator==(
+        const MeshHandle&) const = default;
 };
 
 struct MaterialHandle {
