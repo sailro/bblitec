@@ -95,9 +95,11 @@ const featureSources: Record<Feature, string[]> = {
     "material:shader": [],
     "material:standard": [],
     "mesh:box": [],
+    "mesh:from-data": [],
     "mesh:ground": [],
     "mesh:plane": [],
     "mesh:sphere": [],
+    "mesh:thin-instances": [],
     "mesh:torus": [],
     "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],
@@ -322,9 +324,11 @@ class Compiler
         }
         if (
             features.includes("mesh:box") ||
+            features.includes("mesh:from-data") ||
             features.includes("mesh:ground") ||
             features.includes("mesh:plane") ||
             features.includes("mesh:sphere") ||
+            features.includes("mesh:thin-instances") ||
             features.includes("mesh:torus")
         ) {
             generatedSources.push("upstream/src/mesh_factories.cpp");
@@ -848,12 +852,12 @@ class Compiler
             return this.compilePropertyAccess(unwrapped);
         }
         if (ts.isNewExpression(unwrapped)) {
-            const array =
-                this.dataLowerer.compileNewArray(
+            const constructed =
+                this.dataLowerer.compileNewExpression(
                     unwrapped,
                 );
-            if (array) {
-                return array;
+            if (constructed) {
+                return constructed;
             }
             this.fail(
                 unwrapped,
@@ -2870,6 +2874,16 @@ class Compiler
         identifier: ts.Identifier,
     ): Value | undefined {
         return this.lookupOptional(identifier);
+    }
+
+    public compileTypedArrayArgument(
+        expression: ts.Expression,
+        kind: "f32array" | "u32array",
+    ): string {
+        return this.dataLowerer.compileForSink(
+            expression,
+            { kind },
+        );
     }
 
     public probeStaticArrayLiteral(

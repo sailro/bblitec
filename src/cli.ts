@@ -271,7 +271,10 @@ async function main(): Promise<void> {
         imageBasedLighting:
             specializationFeatures.imageBasedLighting,
         gpuInstancing:
-            specializationFeatures.gpuInstancing,
+            specializationFeatures.gpuInstancing ||
+            result.manifest.features.includes(
+                "mesh:thin-instances",
+            ),
         multiLight:
             specializationFeatures.multiLight,
         clearcoat: specializationFeatures.clearcoat,

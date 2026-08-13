@@ -698,6 +698,20 @@ MeshHandle create_ground(Engine& engine, GroundOptions options = {});
 MeshHandle create_plane(Engine& engine, PlaneOptions options = {});
 MeshHandle create_sphere(Engine& engine, SphereOptions options = {});
 MeshHandle create_torus(Engine& engine, TorusOptions options = {});
+MeshHandle create_mesh_from_data(
+    Engine& engine,
+    const std::vector<float>& positions,
+    const std::vector<float>& normals,
+    const std::vector<std::uint32_t>& indices,
+    const std::vector<float>& uvs = {},
+    const std::vector<float>& uvs2 = {},
+    const std::vector<float>& tangents = {},
+    const std::vector<float>& colors = {});
+void set_thin_instances(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& matrices,
+    double count);
 AssetHandle load_gltf(Engine& engine, const std::string& path);
 AssetHandle load_babylon(Engine& engine, const std::string& path);
 void load_environment(Scene& scene, EnvironmentOptions options);

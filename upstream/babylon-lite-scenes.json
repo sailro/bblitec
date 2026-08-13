@@ -296,6 +296,11 @@
       "upstreamPath": "lab/lite/src/demos/tetris/pieces.ts",
       "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/pieces.ts",
       "sha256": "0826d2c172b292b9f7bb58c2b9bf53ac4f0904020e60147c5820fa087caa3df0"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/tetris/chamfered-box.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/chamfered-box.ts",
+      "sha256": "8a184d4c52be5d185e9a3649ef1637ed9031e9d82610680b73e6f77b14b3e454"
     }
   ]
 }

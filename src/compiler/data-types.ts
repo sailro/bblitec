@@ -17,7 +17,9 @@ export type DataType =
     | { kind: "vector"; element: DataType }
     | { kind: "span"; element: DataType }
     | { kind: "tuple"; arity: number }
-    | { kind: "table"; dimensions: number[] };
+    | { kind: "table"; dimensions: number[] }
+    | { kind: "f32array" }
+    | { kind: "u32array" };
 
 export interface DataStructField {
     name: string;
@@ -53,6 +55,8 @@ export function dataTypesEqual(
     switch (left.kind) {
         case "number":
         case "boolean":
+        case "f32array":
+        case "u32array":
             return true;
         case "struct":
         case "enum":
@@ -222,6 +226,12 @@ export class DataTypeRegistry {
         }
         if ((type.flags & ts.TypeFlags.Object) === 0) {
             return undefined;
+        }
+        if (type.symbol?.name === "Float32Array") {
+            return { kind: "f32array" };
+        }
+        if (type.symbol?.name === "Uint32Array") {
+            return { kind: "u32array" };
         }
         const objectType = type as ts.ObjectType;
         if (
@@ -650,6 +660,10 @@ export class DataTypeRegistry {
                 return `bbl::js::Tuple<${dataType.arity}>`;
             case "table":
                 return `const ${this.tableCppType(dataType.dimensions)}&`;
+            case "f32array":
+                return "bbl::js::F32Array";
+            case "u32array":
+                return "bbl::js::U32Array";
         }
     }
 
@@ -673,6 +687,10 @@ export class DataTypeRegistry {
                 return `t${dataType.arity}`;
             case "table":
                 return `g(${dataType.dimensions.join("x")})`;
+            case "f32array":
+                return "f32";
+            case "u32array":
+                return "u32";
         }
     }
 

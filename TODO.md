@@ -105,10 +105,11 @@ CPU-side from GPU-side causes immediately.
   read-only copies; owned locals reject writes after escaping by copy)
   with real escape analysis when a reached scene needs shared mutable
   objects.
-- [ ] Port fdlibm/V8 `Math.pow` (and `exp`) for bit-exact parity once a
-  gated scene reaches level 3+ gravity (non-trivial exponents); the
-  tetris-logic gate deliberately stays below 10 cleared lines so the
-  reached exponent is exact today.
+- [ ] Port fdlibm/V8 transcendentals (`pow`, `exp`, `cos`, `sin`) for
+  bit-exact parity. `pow` gates level 3+ gravity (tetris-logic stays
+  below 10 cleared lines so the reached exponent is exact); `cos`/`sin`
+  ULPs against V8 are the tetris-blocks six-pixel rotated-silhouette
+  floor (0.002 foreground on both backends).
 - [ ] Extend array coverage to `splice`, `shift`/`unshift`, `indexOf`,
   and multi-argument `push` when the tetris renderer layer (particles)
   integrates.
@@ -248,15 +249,23 @@ to the browser reference on both backends under the pinned seeded
 the identical generator, keyed off the generated manifest's
 `deterministic-seeded-random` adaptation). Remaining stages:
 
-- [ ] Stage 2 — renderer contracts for `tetris/renderer.ts`:
-  `createMeshFromData` (also scene 267), `loadTexture2D` (also scenes
-  62/81/83), public `setThinInstances`, a sanctioned dynamic
-  thin-instance update path replacing the demo's `engine._device`
-  escape hatch (native instancing is currently static), scene-local
-  shader variants from typed WGSL IR (also scenes 159/161/165) for the
-  particle material, `removeFromScene`, per-frame camera clamping, and
-  the class/closure subset for `TetrisParticles` and the renderer
-  record. Validate with a static-board gate before any game loop.
+- [x] Stage 2 (first slice) — `createMeshFromData` from typed arrays with
+  the pinned computeAabb bounds fold, static `setThinInstances` matrix
+  pools (record transforms stay identity like the demo prototypes), and
+  `Float32Array`/`Uint32Array` in the data model, gated by tetris-blocks
+  compiling the pinned chamfered-box generator (its inner quad/tri
+  closures inline inside the native data function).
+- [ ] Stage 2 (remaining) — renderer contracts for `tetris/renderer.ts`:
+  `loadTexture2D` (also scenes 62/81/83), function-valued parameters for
+  the rounded-box `addGrid` callback, a sanctioned dynamic thin-instance
+  update path replacing the demo's `engine._device` escape hatch
+  (`setThinInstanceCount` semantics; native instancing is build-once
+  today), composing the record transform with instance matrices,
+  scene-local shader variants from typed WGSL IR (also scenes
+  159/161/165) for the particle material, `removeFromScene`, per-frame
+  camera clamping, and the class/closure subset for `TetrisParticles`
+  and the renderer record. Validate with a static-board gate before any
+  game loop.
 - [ ] Stage 3 — wiring: a PAL keyboard contract beyond the camera keys,
   `performance.now` as PAL frame time under fixed delta, erasure for the
   DOM HUD/audio/progress modules, and a scripted-input-tape capture mode
@@ -359,7 +368,8 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 241: fold the reached query-derived camera alpha.
 - [ ] Scene 252: generalize the reached structured argument.
 - [ ] Scenes 262-264, 276, 277: support node-particle sources.
-- [ ] Scene 267: support `createMeshFromData`.
+- [ ] Scene 267: re-audit past the ported `createMeshFromData` for its
+  remaining blockers.
 - [ ] Scene 268: support orthographic cameras.
 - [ ] Scene 269: support transform nodes.
 - [ ] Scene 270: support the reached mesh scaling setter.

@@ -78,6 +78,47 @@ inline void array_truncate(Array<T>& values, double count) {
     return std::fmod(left, right);
 }
 
+// JavaScript typed arrays reached by the compiled subset.
+using F32Array = std::vector<float>;
+using U32Array = std::vector<std::uint32_t>;
+
+// ECMAScript ToUint32: modulo 2^32 with truncation toward zero.
+[[nodiscard]] inline std::uint32_t to_uint32(double value) {
+    if (!std::isfinite(value)) {
+        return 0u;
+    }
+    const double truncated = std::trunc(value);
+    const double wrapped = std::fmod(truncated, 4294967296.0);
+    return static_cast<std::uint32_t>(
+        wrapped < 0.0 ? wrapped + 4294967296.0 : wrapped);
+}
+
+[[nodiscard]] inline F32Array f32_array_sized(double count) {
+    return F32Array(static_cast<std::size_t>(count), 0.0f);
+}
+
+[[nodiscard]] inline U32Array u32_array_sized(double count) {
+    return U32Array(static_cast<std::size_t>(count), 0u);
+}
+
+[[nodiscard]] inline F32Array f32_array_from(const Array<double>& values) {
+    F32Array result;
+    result.reserve(values.size());
+    for (double value : values) {
+        result.push_back(static_cast<float>(value));
+    }
+    return result;
+}
+
+[[nodiscard]] inline U32Array u32_array_from(const Array<double>& values) {
+    U32Array result;
+    result.reserve(values.size());
+    for (double value : values) {
+        result.push_back(to_uint32(value));
+    }
+    return result;
+}
+
 // Deterministic Math.random: mulberry32 over a pinned seed. The browser
 // reference capture installs the identical generator before module load, so
 // both sides consume the same sequence (recorded as a fidelity adaptation).

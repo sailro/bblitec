@@ -96,6 +96,7 @@ export interface Value {
     kind: ValueKind;
     cpp: string;
     dataType?: DataType;
+    dataStore?: "f32" | "u32";
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     lightKind?: LightKind;
@@ -141,9 +142,11 @@ export type Feature =
     | "material:shader"
     | "material:standard"
     | "mesh:box"
+    | "mesh:from-data"
     | "mesh:ground"
     | "mesh:plane"
     | "mesh:sphere"
+    | "mesh:thin-instances"
     | "mesh:torus"
     | "renderer:pbr"
     | "renderer:transmission"

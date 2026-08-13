@@ -626,6 +626,88 @@ test("seeds Math.random deterministically and records the adaptation", () => {
     );
 });
 
+test("lowers typed arrays with storage-exact reads and writes", () => {
+    const result = compileSource(`
+        function build(): Float32Array {
+            const values: number[] = [];
+            values.push(0.25, 0.5, 0.75);
+            return new Float32Array(values);
+        }
+        const data = build();
+        const first = data[0]!;
+        data[1] = 2.5;
+        const count = data.length;
+        const indices = new Uint32Array([0, 1, 2]);
+        indices[0] = 7;
+        const zeros = new Float32Array(8);
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::f32_array_from\(v_fn\d+_values\)/,
+    );
+    assert.match(
+        result.cpp,
+        /\(v_fn\d+_values\.push_back\(0\.25\), v_fn\d+_values\.push_back\(0\.5\), v_fn\d+_values\.push_back\(0\.75\)\);/,
+    );
+    assert.match(
+        result.cpp,
+        /double v_first = static_cast<double>\(v_data\[bbl::js::array_index\(0\.0\)\]\);/,
+    );
+    assert.match(
+        result.cpp,
+        /v_data\[bbl::js::array_index\(1\.0\)\] = static_cast<float>\(2\.5\);/,
+    );
+    assert.match(
+        result.cpp,
+        /v_indices\[bbl::js::array_index\(0\.0\)\] = bbl::js::to_uint32\(7\.0\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::u32_array_from\(bbl::js::Array<double>\{0\.0, 1\.0, 2\.0\}\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::f32_array_sized\(8\.0\)/,
+    );
+});
+
+test("compiles the pinned chamfered-box generator into mesh data", () => {
+    const result = compileSource(
+        readFileSync(
+            resolve("examples/tetris-blocks.ts"),
+            "utf8",
+        ),
+        { fileName: "examples/tetris-blocks.ts" },
+    );
+
+    assert.ok(
+        result.manifest.features.includes(
+            "mesh:from-data",
+        ),
+    );
+    assert.ok(
+        result.manifest.features.includes(
+            "mesh:thin-instances",
+        ),
+    );
+    assert.match(
+        result.cpp,
+        /bbl::create_mesh_from_data\(v_engine, v_chamfer\.positions, v_chamfer\.normals, v_chamfer\.indices, v_chamfer\.uvs, \{\}, \{\}, \{\}\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::set_thin_instances\(v_engine, v_ring, v_matrices, 24\.0f\)/,
+    );
+    // The generator's inner quad/tri closures inline inside the native
+    // data function instead of hoisting to namespace scope.
+    assert.match(
+        result.cpp,
+        /bblscene::createChamferedBoxData\(1\.0, 0\.08\)/,
+    );
+    assert.doesNotMatch(result.cpp, /bblscene::quad/);
+});
+
 test("compiles the pinned tetris rules through the plain-data subset", () => {
     const result = compileSource(
         readFileSync(

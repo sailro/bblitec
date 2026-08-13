@@ -452,20 +452,47 @@ export class FactoryLowerer {
             torusTessellationExpression,
         );
         const modulePath = "src/mesh/mesh-factories.ts";
+        const { declaration: meshFromData } =
+            this.context.functionDeclaration(
+                modulePath,
+                "createMeshFromData",
+            );
+        const aabbCall = this.context.findNodes(
+            meshFromData,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                ts.isIdentifier(node.expression) &&
+                node.expression.text === "computeAabb",
+        )[0];
+        if (!aabbCall) {
+            this.context.contractError(
+                meshFromData,
+                "Expected createMeshFromData to fold bounds through computeAabb.",
+            );
+        }
+        this.context.functionDeclaration(
+            "src/math/compute-aabb.ts",
+            "computeAabb",
+        );
+        this.context.functionDeclaration(
+            "src/mesh/thin-instance.ts",
+            "setThinInstances",
+        );
         const value = (input: number): string => this.context.floatLiteral(input);
         return {
             modulePath,
-            symbolName: "createBox,createGround,createPlane,createSphere,createTorus",
+            symbolName: "createBox,createGround,createPlane,createSphere,createTorus,createMeshFromData",
             header: "",
             source: `// ${this.context.provenance(
                 modulePath,
-                "createBox, createGround, createPlane, createSphere, createTorus",
-                "src/mesh/create-box.ts, src/mesh/create-ground.ts, src/mesh/create-plane.ts, src/mesh/create-sphere.ts, and src/mesh/create-torus.ts defaults",
+                "createBox, createGround, createPlane, createSphere, createTorus, createMeshFromData",
+                "src/mesh/create-box.ts, src/mesh/create-ground.ts, src/mesh/create-plane.ts, src/mesh/create-sphere.ts, src/mesh/create-torus.ts defaults, and src/math/compute-aabb.ts bounds folding",
             )}
 #include <bblite/runtime.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace bbl {
@@ -828,6 +855,112 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
     engine.meshes.push_back(mesh);
     return MeshHandle{
         static_cast<std::uint32_t>(engine.meshes.size() - 1)};
+}
+
+MeshHandle create_mesh_from_data(
+    Engine& engine,
+    const std::vector<float>& positions,
+    const std::vector<float>& normals,
+    const std::vector<std::uint32_t>& indices,
+    const std::vector<float>& uvs,
+    const std::vector<float>& uvs2,
+    const std::vector<float>& tangents,
+    const std::vector<float>& colors) {
+    const std::size_t vertex_count = positions.size() / 3;
+    ModelGeometry geometry;
+    geometry.vertices.resize(vertex_count);
+    for (std::size_t index = 0; index < vertex_count; ++index) {
+        ModelVertex& vertex = geometry.vertices[index];
+        vertex.position = Vec3{
+            positions[index * 3],
+            positions[index * 3 + 1],
+            positions[index * 3 + 2]};
+        if (normals.size() >= index * 3 + 3) {
+            vertex.normal = Vec3{
+                normals[index * 3],
+                normals[index * 3 + 1],
+                normals[index * 3 + 2]};
+        }
+        if (uvs.size() >= index * 2 + 2) {
+            vertex.uv = Vec2{uvs[index * 2], uvs[index * 2 + 1]};
+        }
+        if (uvs2.size() >= index * 2 + 2) {
+            vertex.uv2 = Vec2{uvs2[index * 2], uvs2[index * 2 + 1]};
+        }
+        if (tangents.size() >= index * 4 + 4) {
+            vertex.tangent = Vec4{
+                tangents[index * 4],
+                tangents[index * 4 + 1],
+                tangents[index * 4 + 2],
+                tangents[index * 4 + 3]};
+        }
+        if (colors.size() >= index * 4 + 4) {
+            vertex.color = Vec4{
+                colors[index * 4],
+                colors[index * 4 + 1],
+                colors[index * 4 + 2],
+                colors[index * 4 + 3]};
+        }
+        vertex.local_position = vertex.position;
+    }
+    geometry.indices = indices;
+    geometry.has_tangents = !tangents.empty();
+    // computeAabb: fold XYZ min/max over the positions buffer; empty input
+    // keeps the record's default bounds (the pinned helper returns
+    // infinities that createMeshFromData filters through isFinite).
+    if (vertex_count > 0) {
+        Vec3 bounds_min{
+            std::numeric_limits<float>::infinity(),
+            std::numeric_limits<float>::infinity(),
+            std::numeric_limits<float>::infinity()};
+        Vec3 bounds_max{
+            -std::numeric_limits<float>::infinity(),
+            -std::numeric_limits<float>::infinity(),
+            -std::numeric_limits<float>::infinity()};
+        for (std::size_t index = 0; index < vertex_count; ++index) {
+            const Vec3 position = geometry.vertices[index].position;
+            bounds_min.x = std::min(bounds_min.x, position.x);
+            bounds_min.y = std::min(bounds_min.y, position.y);
+            bounds_min.z = std::min(bounds_min.z, position.z);
+            bounds_max.x = std::max(bounds_max.x, position.x);
+            bounds_max.y = std::max(bounds_max.y, position.y);
+            bounds_max.z = std::max(bounds_max.z, position.z);
+        }
+        geometry.bounds_min = bounds_min;
+        geometry.bounds_max = bounds_max;
+    }
+    engine.geometries.push_back(std::move(geometry));
+    MeshRecord mesh;
+    mesh.primitive = PrimitiveKind::gltf;
+    mesh.geometry =
+        static_cast<std::uint32_t>(engine.geometries.size() - 1);
+    engine.meshes.push_back(mesh);
+    return MeshHandle{
+        static_cast<std::uint32_t>(engine.meshes.size() - 1)};
+}
+
+// src/mesh/thin-instance.ts setThinInstances: adopt the caller's matrix
+// array and active count. The reached subset sets count == capacity; the
+// record's own transform stays identity like the demo prototypes.
+void set_thin_instances(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& matrices,
+    double count) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    const std::size_t available = matrices.size() / 16;
+    const std::size_t instance_count = std::min(
+        static_cast<std::size_t>(count),
+        available);
+    record.instance_matrices.assign(
+        instance_count,
+        std::array<float, 16>{});
+    for (std::size_t index = 0; index < instance_count; ++index) {
+        std::copy_n(
+            matrices.data() + index * 16,
+            16,
+            record.instance_matrices[index].data());
+    }
 }
 
 } // namespace bbl
