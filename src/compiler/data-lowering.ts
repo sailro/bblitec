@@ -1047,7 +1047,7 @@ export class DataLowerer {
         if (method === "indexOf") {
             // Readonly arrays and materialized constants reach this
             // too: the demo cycles its mode through a
-            // `readonly TetrisMode[]`, which is a span of tags, and a
+            // a `readonly` array of tags, which is a span of them, and a
             // constant numeric array is a one-dimensional table.
             const element =
                 dataType?.kind === "vector" ||

@@ -1187,13 +1187,13 @@ test("supports mutable tuple locals with runtime index writes", () => {
     );
 });
 
-test("compiles the pinned chamfered-box generator into mesh data", () => {
+test("compiles generated mesh data and the file-texture contract", () => {
     const result = compileSource(
         readFileSync(
-            resolve("examples/tetris-blocks.ts"),
+            resolve("examples/regression-runtime-sweep.ts"),
             "utf8",
         ),
-        { fileName: "examples/tetris-blocks.ts" },
+        { fileName: "examples/regression-runtime-sweep.ts" },
     );
 
     assert.ok(
@@ -1206,36 +1206,39 @@ test("compiles the pinned chamfered-box generator into mesh data", () => {
             "mesh:thin-instances",
         ),
     );
-    assert.match(
-        result.cpp,
-        /bbl::create_mesh_from_data\(v_engine, v_chamfer\.positions, v_chamfer\.normals, v_chamfer\.indices, v_chamfer\.uvs, \{\}, \{\}, \{\}\)/,
+    assert.ok(
+        result.manifest.features.includes(
+            "mesh:thin-instances-dynamic",
+        ),
+    );
+    assert.ok(
+        result.manifest.features.includes("scene:remove"),
     );
     assert.match(
         result.cpp,
-        /bbl::set_thin_instances\(v_engine, v_ring, v_matrices, 24\.0f\)/,
+        /bbl::create_mesh_from_data\(v_engine, v_cube\.positions, v_cube\.normals, v_cube\.indices, v_cube\.uvs, \{\}, \{\}, \{\}\)/,
     );
-    // The generator's inner quad/tri closures inline inside the native
-    // data function instead of hoisting to namespace scope.
+    // The pool is adopted by name; the capacity expression itself is not
+    // part of the contract.
     assert.match(
         result.cpp,
-        /bblscene::createChamferedBoxData\(1\.0, 0\.08\)/,
+        /bbl::set_thin_instances\(v_engine, v_latticeA, v_bufferA, /,
     );
-    assert.doesNotMatch(result.cpp, /bblscene::quad/);
-    // The frame colormap materializes as a compile-time asset and loads
-    // through the pinned sampler contract (nearest, unmipped, sRGB base
-    // color paired with the white factor texel).
+    // A file texture materializes as a compile-time asset and loads through
+    // the pinned sampler contract (nearest, unmipped, sRGB base color),
+    // attaching after the material exists.
     assert.match(
         result.cpp,
-        /bbl::load_file_texture\(v_engine, bbl::asset_path\("[0-9a-f]+-tetris-frame-colormap\.png"\), bbl::TextureSamplerState\{bbl::TextureFilter::nearest, bbl::TextureFilter::nearest, bbl::TextureMipmapMode::nearest, bbl::TextureAddressMode::repeat, bbl::TextureAddressMode::repeat, 1\.0f, 0\.0f\}, false, true\)/,
+        /bbl::load_file_texture\(v_engine, bbl::asset_path\("[0-9a-f]+-ebf71b300f43563f\.png"\), bbl::TextureSamplerState\{bbl::TextureFilter::nearest, bbl::TextureFilter::nearest, bbl::TextureMipmapMode::nearest, bbl::TextureAddressMode::repeat, bbl::TextureAddressMode::repeat, 1\.0f, 0\.0f\}, false, true\)/,
     );
     assert.match(
         result.cpp,
-        /bbl::set_material_base_color_file\(v_engine, v_bblite_material_\d+, v_frameColormap\);/,
+        /bbl::set_material_base_color_file\(v_engine, v_bblite_material_\d+, v_decalTexture\);/,
     );
     assert.ok(
         result.manifest.assets.some((asset) =>
             asset.output.endsWith(
-                "tetris-frame-colormap.png",
+                "ebf71b300f43563f.png",
             ),
         ),
     );
@@ -1254,7 +1257,7 @@ test("requires srgb base-color file textures", () => {
 
                 async function main() {
                     const engine = await createEngine({});
-                    const texture = await loadTexture2D(engine, "/tetris/tetris-frame-colormap.png");
+                    const texture = await loadTexture2D(engine, "/textures/nme/ebf71b300f43563f.png");
                     const material = createPbrMaterial({
                         baseColorTexture: texture,
                         ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
@@ -1262,39 +1265,6 @@ test("requires srgb base-color file textures", () => {
                 }
             `),
         /Base-color file textures require srgb: true/,
-    );
-});
-
-test("compiles the pinned tetris rules through the plain-data subset", () => {
-    const result = compileSource(
-        readFileSync(
-            resolve("examples/tetris-logic.ts"),
-            "utf8",
-        ),
-        { fileName: "examples/tetris-logic.ts" },
-    );
-
-    assert.match(result.cpp, /struct GameState \{/);
-    assert.match(
-        result.cpp,
-        /bool tryMove\(bblscene::GameState& v_fn\d+_g, double v_fn\d+_dCol, double v_fn\d+_dRow, double v_fn\d+_dRot\)/,
-    );
-    assert.match(
-        result.cpp,
-        /std::fmod\(\(\(\(\*v_fn\d+_g\.active\)\.rotation \+ v_fn\d+_dRot\) \+ 4\.0\), 4\.0\)/,
-    );
-    assert.match(result.cpp, /GameSound::gameOver/);
-    assert.match(result.cpp, /bbl::js::seed_random\(1u\);/);
-    const adaptationIds = result.manifest.adaptations.map(
-        ({ id }) => id,
-    );
-    assert.ok(
-        adaptationIds.includes("plain-data-value-model"),
-    );
-    assert.ok(
-        adaptationIds.includes(
-            "deterministic-seeded-random",
-        ),
     );
 });
 

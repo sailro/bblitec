@@ -789,6 +789,37 @@ export const scenes: readonly SceneDefinition[] = [
         },
     },
     {
+        id: "regression-runtime-sweep",
+        name: "Regression - Runtime Sweep",
+        source: "examples/regression-runtime-sweep.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/regression-runtime-sweep",
+        title: "Babylon Lite Native - Runtime Sweep",
+        buildDirectory:
+            "native/build-regression-runtime-sweep-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-runtime-sweep/babylon-lite-golden.png",
+            },
+            actual:
+                "artifacts/parity/regression-runtime-sweep-native.png",
+            outputDirectory:
+                "artifacts/parity/regression-runtime-sweep",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.004,
+            backgroundColor: [5, 6, 13],
+            backgroundThreshold: 30,
+            // The lattice, the preview count and the spark sweep all stop
+            // at frame 24 and readiness is flagged at 32, so both sides
+            // capture the same still state.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "36",
+            },
+        },
+    },
+    {
         id: "regression-instanced-ground",
         name: "Regression - Instanced Ground",
         source: "examples/regression-instanced-ground.ts",
@@ -1284,240 +1315,6 @@ export const scenes: readonly SceneDefinition[] = [
                 triangleClusters: false,
                 diagnostics: false,
             },
-        },
-    },
-    {
-        id: "tetris-blocks",
-        name: "Tetris Blocks",
-        source: "examples/tetris-blocks.ts",
-        sourceOrigin: "bblitec-regression",
-        output: "generated/tetris-blocks",
-        title: "Babylon Lite Native - Tetris Blocks",
-        buildDirectory:
-            "native/build-tetris-blocks-release",
-        parity: {
-            reference: {
-                kind: "source",
-                path:
-                    "reference/tetris-blocks/babylon-lite-golden.png",
-            },
-            actual:
-                "artifacts/parity/tetris-blocks-native.png",
-            outputDirectory:
-                "artifacts/parity/tetris-blocks",
-            // A handful of rotated-silhouette pixels differ by one
-            // shading step: unpinned std::cos/sin ULPs against V8 shift
-            // the instanced-edge raster sub-pixel (same class as the
-            // fdlibm Math.pow TODO). Measured 0.000 full / 0.001
-            // foreground on both backends.
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.004,
-            backgroundColor: [5, 6, 13],
-            backgroundThreshold: 30,
-        },
-    },
-    {
-        id: "tetris-logic",
-        name: "Tetris Logic - Compiled Game Rules",
-        source: "examples/tetris-logic.ts",
-        sourceOrigin: "bblitec-regression",
-        output: "generated/tetris-logic",
-        title: "Babylon Lite Native - Tetris Logic",
-        buildDirectory:
-            "native/build-tetris-logic-release",
-        parity: {
-            reference: {
-                kind: "source",
-                path:
-                    "reference/tetris-logic/babylon-lite-golden.png",
-            },
-            actual:
-                "artifacts/parity/tetris-logic-native.png",
-            outputDirectory:
-                "artifacts/parity/tetris-logic",
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.001,
-            backgroundColor: [5, 6, 13],
-            backgroundThreshold: 30,
-        },
-    },
-    {
-        id: "tetris-well",
-        name: "Tetris Well - Dynamic Thin Instances",
-        source: "examples/tetris-well.ts",
-        sourceOrigin: "bblitec-regression",
-        output: "generated/tetris-well",
-        title: "Babylon Lite Native - Tetris Well",
-        buildDirectory:
-            "native/build-tetris-well-release",
-        parity: {
-            reference: {
-                kind: "source",
-                path:
-                    "reference/tetris-well/babylon-lite-golden.png",
-            },
-            actual:
-                "artifacts/parity/tetris-well-native.png",
-            outputDirectory:
-                "artifacts/parity/tetris-well",
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.001,
-            backgroundColor: [5, 6, 13],
-            backgroundThreshold: 30,
-            // The scripted tape ends at frame 168 and the scene flags
-            // readiness at frame 176; capture past both so browser and
-            // native both see the terminal board while the per-frame
-            // pool rewrites keep exercising the dynamic upload path.
-            nativeEnvironment: {
-                BBLITE_SCREENSHOT_FRAME: "184",
-            },
-        },
-    },
-    {
-        id: "tetris-particles",
-        name: "Tetris Particles - Handle-Carrying Data",
-        source: "examples/tetris-particles.ts",
-        sourceOrigin: "bblitec-regression",
-        output: "generated/tetris-particles",
-        title: "Babylon Lite Native - Tetris Particles",
-        buildDirectory:
-            "native/build-tetris-particles-release",
-        parity: {
-            reference: {
-                kind: "source",
-                path:
-                    "reference/tetris-particles/babylon-lite-golden.png",
-            },
-            actual:
-                "artifacts/parity/tetris-particles-native.png",
-            outputDirectory:
-                "artifacts/parity/tetris-particles",
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.004,
-            backgroundColor: [5, 6, 13],
-            backgroundThreshold: 30,
-            // The sweep settles at frame 30 and the scene flags
-            // readiness at 40; capture past both so the measured image
-            // is the terminal state of the retired list.
-            nativeEnvironment: {
-                BBLITE_SCREENSHOT_FRAME: "44",
-            },
-        },
-    },
-    {
-        id: "tetris-board",
-        name: "Tetris Board - Demo Renderer Materials",
-        source: "examples/tetris-board.ts",
-        sourceOrigin: "bblitec-regression",
-        output: "generated/tetris-board",
-        title: "Babylon Lite Native - Tetris Board",
-        buildDirectory: "native/build-tetris-board-release",
-        parity: {
-            reference: {
-                kind: "source",
-                path:
-                    "reference/tetris-board/babylon-lite-golden.png",
-            },
-            actual:
-                "artifacts/parity/tetris-board-native.png",
-            outputDirectory: "artifacts/parity/tetris-board",
-            // An IBL scene carries the usual environment residual (every
-            // pixel is within one step; ~5% differ by exactly that),
-            // so it gates like the other IBL scenes rather than like the
-            // analytic-only tetris gates.
-            maxFullMad: 0.03,
-            maxForegroundMad: 0.03,
-            backgroundColor: [0, 0, 0],
-            backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_SCREENSHOT_FRAME: "10",
-            },
-        },
-    },
-    {
-        id: "tetris-modes",
-        name: "Tetris Modes - Record Indexing",
-        source: "examples/tetris-modes.ts",
-        sourceOrigin: "bblitec-regression",
-        output: "generated/tetris-modes",
-        title: "Babylon Lite Native - Tetris Modes",
-        buildDirectory: "native/build-tetris-modes-release",
-        parity: {
-            reference: {
-                kind: "source",
-                path:
-                    "reference/tetris-modes/babylon-lite-golden.png",
-            },
-            actual:
-                "artifacts/parity/tetris-modes-native.png",
-            outputDirectory: "artifacts/parity/tetris-modes",
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.004,
-            backgroundColor: [5, 6, 13],
-            backgroundThreshold: 30,
-            // The last style switch lands at frame 20 and the scene
-            // flags readiness at 30; capture past both so the measured
-            // image is the settled "smooth" set.
-            nativeEnvironment: {
-                BBLITE_SCREENSHOT_FRAME: "34",
-            },
-        },
-    },
-    {
-        id: "tetris-retire",
-        name: "Tetris Retire - Runtime Removal",
-        source: "examples/tetris-retire.ts",
-        sourceOrigin: "bblitec-regression",
-        output: "generated/tetris-retire",
-        title: "Babylon Lite Native - Tetris Retire",
-        buildDirectory:
-            "native/build-tetris-retire-release",
-        parity: {
-            reference: {
-                kind: "source",
-                path:
-                    "reference/tetris-retire/babylon-lite-golden.png",
-            },
-            actual:
-                "artifacts/parity/tetris-retire-native.png",
-            outputDirectory:
-                "artifacts/parity/tetris-retire",
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.001,
-            backgroundColor: [5, 6, 13],
-            backgroundThreshold: 30,
-            // The shake settles at frame 12 and the last retirement
-            // lands at frame 10; the scene flags readiness at 40, so
-            // both sides capture the same terminal state well past the
-            // final topology rebuild.
-            nativeEnvironment: {
-                BBLITE_SCREENSHOT_FRAME: "44",
-            },
-        },
-    },
-    {
-        id: "tetris-sparks",
-        name: "Tetris Sparks - Particle Shader Variant",
-        source: "examples/tetris-sparks.ts",
-        sourceOrigin: "bblitec-regression",
-        output: "generated/tetris-sparks",
-        title: "Babylon Lite Native - Tetris Sparks",
-        buildDirectory:
-            "native/build-tetris-sparks-release",
-        parity: {
-            reference: {
-                kind: "source",
-                path:
-                    "reference/tetris-sparks/babylon-lite-golden.png",
-            },
-            actual:
-                "artifacts/parity/tetris-sparks-native.png",
-            outputDirectory:
-                "artifacts/parity/tetris-sparks",
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.001,
-            backgroundColor: [5, 6, 13],
-            backgroundThreshold: 30,
         },
     },
 ] as const;
