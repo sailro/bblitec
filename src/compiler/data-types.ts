@@ -1,0 +1,788 @@
+import ts from "typescript";
+
+type Fail = (node: ts.Node, message: string) => never;
+
+/**
+ * Native representation for the plain-data TypeScript subset: numbers,
+ * booleans, interface-typed structs, string-literal-union enums, nullable
+ * objects, dynamic arrays, readonly views, and all-number tuples. Engine
+ * handles never enter this model; they keep their dedicated value kinds.
+ */
+export type DataType =
+    | { kind: "number" }
+    | { kind: "boolean" }
+    | { kind: "struct"; name: string }
+    | { kind: "enum"; name: string }
+    | { kind: "optional"; inner: DataType }
+    | { kind: "vector"; element: DataType }
+    | { kind: "span"; element: DataType }
+    | { kind: "tuple"; arity: number }
+    | { kind: "table"; dimensions: number[] };
+
+export interface DataStructField {
+    name: string;
+    type: DataType;
+}
+
+interface DataStructDefinition {
+    name: string;
+    fields: DataStructField[];
+}
+
+interface DataEnumDefinition {
+    name: string;
+    members: string[];
+}
+
+interface DataTableDefinition {
+    name: string;
+    dimensions: number[];
+    values: string;
+}
+
+const numberType: DataType = { kind: "number" };
+const booleanType: DataType = { kind: "boolean" };
+
+export function dataTypesEqual(
+    left: DataType,
+    right: DataType,
+): boolean {
+    if (left.kind !== right.kind) {
+        return false;
+    }
+    switch (left.kind) {
+        case "number":
+        case "boolean":
+            return true;
+        case "struct":
+        case "enum":
+            return (
+                left.name ===
+                (right as { name: string }).name
+            );
+        case "optional":
+            return dataTypesEqual(
+                left.inner,
+                (right as { inner: DataType }).inner,
+            );
+        case "vector":
+        case "span":
+            return dataTypesEqual(
+                left.element,
+                (right as { element: DataType }).element,
+            );
+        case "tuple":
+            return (
+                left.arity ===
+                (right as { arity: number }).arity
+            );
+        case "table":
+            return (
+                left.dimensions.join(",") ===
+                (
+                    right as { dimensions: number[] }
+                ).dimensions.join(",")
+            );
+    }
+}
+
+function sanitizeIdentifier(name: string): string {
+    const cleaned = name.replace(/[^A-Za-z0-9_]/g, "_");
+    const prefixed = /^[0-9]/.test(cleaned)
+        ? `_${cleaned}`
+        : cleaned;
+    const reserved = new Set([
+        "auto", "bool", "break", "case", "catch", "char",
+        "class", "const", "continue", "default", "delete",
+        "do", "double", "else", "enum", "explicit",
+        "export", "extern", "false", "float", "for",
+        "friend", "goto", "if", "inline", "int", "long",
+        "namespace", "new", "operator", "private",
+        "protected", "public", "register", "return",
+        "short", "signed", "sizeof", "static", "struct",
+        "switch", "template", "this", "throw", "true",
+        "try", "typedef", "typeid", "typename", "union",
+        "unsigned", "using", "virtual", "void", "volatile",
+        "while",
+    ]);
+    return reserved.has(prefixed)
+        ? `${prefixed}_`
+        : prefixed;
+}
+
+/**
+ * Maps checker types onto native data types and owns the generated struct,
+ * enum, and static-table definitions emitted ahead of `main`.
+ */
+export class DataTypeRegistry {
+    private readonly structsByKey = new Map<
+        string,
+        DataStructDefinition
+    >();
+    private readonly structNames = new Set<string>();
+    private readonly enumsByKey = new Map<
+        string,
+        DataEnumDefinition
+    >();
+    private readonly enumNames = new Set<string>();
+    private readonly tables = new Map<
+        ts.Node,
+        DataTableDefinition
+    >();
+    private readonly tableNames = new Set<string>();
+    private readonly mappingInProgress =
+        new Set<ts.Type>();
+    private anonymousStructIndex = 0;
+    private anonymousEnumIndex = 0;
+
+    public constructor(
+        private readonly checker: ts.TypeChecker,
+        private readonly fail: Fail,
+    ) {}
+
+    public get empty(): boolean {
+        return (
+            this.structsByKey.size === 0 &&
+            this.enumsByKey.size === 0 &&
+            this.tables.size === 0
+        );
+    }
+
+    /**
+     * Maps a checker type to a data type, or undefined when the type does
+     * not belong to the plain-data subset (engine handles, promises,
+     * functions, strings, ...).
+     */
+    public fromTsType(
+        type: ts.Type,
+        node: ts.Node,
+    ): DataType | undefined {
+        if (
+            (type.flags & ts.TypeFlags.Union) !== 0 &&
+            (type.flags & ts.TypeFlags.Boolean) === 0 &&
+            (type as ts.UnionType).types.some(
+                (member) =>
+                    (member.flags &
+                        (ts.TypeFlags.Null |
+                            ts.TypeFlags.Undefined)) !==
+                    0,
+            )
+        ) {
+            const inner = this.fromNonNullableType(
+                this.checker.getNonNullableType(type),
+                node,
+            );
+            if (!inner) {
+                return undefined;
+            }
+            return { kind: "optional", inner };
+        }
+        return this.fromNonNullableType(type, node);
+    }
+
+    public requireFromTsType(
+        type: ts.Type,
+        node: ts.Node,
+        role: string,
+    ): DataType {
+        const mapped = this.fromTsType(type, node);
+        if (!mapped) {
+            this.fail(
+                node,
+                `${role} type '${this.checker.typeToString(type)}' is outside the supported plain-data subset.`,
+            );
+        }
+        return mapped;
+    }
+
+    private fromNonNullableType(
+        type: ts.Type,
+        node: ts.Node,
+    ): DataType | undefined {
+        if (
+            (type.flags &
+                (ts.TypeFlags.Number |
+                    ts.TypeFlags.NumberLiteral)) !==
+            0
+        ) {
+            return numberType;
+        }
+        if (
+            (type.flags &
+                (ts.TypeFlags.Boolean |
+                    ts.TypeFlags.BooleanLiteral)) !==
+            0
+        ) {
+            return booleanType;
+        }
+        if ((type.flags & ts.TypeFlags.Union) !== 0) {
+            return this.fromUnionType(
+                type as ts.UnionType,
+            );
+        }
+        if ((type.flags & ts.TypeFlags.Object) === 0) {
+            return undefined;
+        }
+        const objectType = type as ts.ObjectType;
+        if (
+            (objectType.objectFlags &
+                ts.ObjectFlags.Reference) !==
+            0
+        ) {
+            const reference = type as ts.TypeReference;
+            const target = reference.target;
+            if (
+                (target.objectFlags &
+                    ts.ObjectFlags.Tuple) !==
+                0
+            ) {
+                return this.fromTupleType(
+                    reference,
+                    node,
+                );
+            }
+            const symbolName = type.symbol?.name;
+            if (
+                symbolName === "Array" ||
+                symbolName === "ReadonlyArray"
+            ) {
+                const [elementType] =
+                    this.checker.getTypeArguments(
+                        reference,
+                    );
+                if (!elementType) {
+                    return undefined;
+                }
+                const element = this.fromTsType(
+                    elementType,
+                    node,
+                );
+                if (!element) {
+                    return undefined;
+                }
+                return symbolName === "Array"
+                    ? { kind: "vector", element }
+                    : { kind: "span", element };
+            }
+        }
+        if (
+            type.getCallSignatures().length > 0 ||
+            type.getConstructSignatures().length > 0
+        ) {
+            return undefined;
+        }
+        return this.fromStructType(type, node);
+    }
+
+    private fromUnionType(
+        type: ts.UnionType,
+    ): DataType | undefined {
+        const members = type.types;
+        if (
+            members.every(
+                (member) =>
+                    (member.flags &
+                        (ts.TypeFlags.Number |
+                            ts.TypeFlags.NumberLiteral)) !==
+                    0,
+            )
+        ) {
+            return numberType;
+        }
+        if (
+            members.every(
+                (member) =>
+                    (member.flags &
+                        (ts.TypeFlags.Boolean |
+                            ts.TypeFlags.BooleanLiteral)) !==
+                    0,
+            )
+        ) {
+            return booleanType;
+        }
+        if (
+            members.every(
+                (member) =>
+                    (member.flags &
+                        ts.TypeFlags.StringLiteral) !==
+                    0,
+            )
+        ) {
+            return this.registerEnum(
+                type,
+                members.map(
+                    (member) =>
+                        (member as ts.StringLiteralType)
+                            .value,
+                ),
+            );
+        }
+        return undefined;
+    }
+
+    private fromTupleType(
+        reference: ts.TypeReference,
+        node: ts.Node,
+    ): DataType | undefined {
+        const elements =
+            this.checker.getTypeArguments(reference);
+        if (elements.length === 0) {
+            return undefined;
+        }
+        for (const element of elements) {
+            const mapped = this.fromTsType(element, node);
+            if (!mapped || mapped.kind !== "number") {
+                return undefined;
+            }
+        }
+        return {
+            kind: "tuple",
+            arity: elements.length,
+        };
+    }
+
+    private fromStructType(
+        type: ts.Type,
+        node: ts.Node,
+    ): DataType | undefined {
+        if (this.mappingInProgress.has(type)) {
+            return undefined;
+        }
+        this.mappingInProgress.add(type);
+        try {
+            return this.fromStructTypeInner(type, node);
+        } finally {
+            this.mappingInProgress.delete(type);
+        }
+    }
+
+    private fromStructTypeInner(
+        type: ts.Type,
+        node: ts.Node,
+    ): DataType | undefined {
+        const properties =
+            this.checker.getPropertiesOfType(type);
+        if (properties.length === 0) {
+            return undefined;
+        }
+        const fields: DataStructField[] = [];
+        for (const property of properties) {
+            const declaration =
+                property.valueDeclaration ??
+                property.declarations?.[0];
+            const propertyType =
+                this.checker.getTypeOfSymbolAtLocation(
+                    property,
+                    declaration ?? node,
+                );
+            const mapped = this.fromTsType(
+                propertyType,
+                declaration ?? node,
+            );
+            if (!mapped) {
+                return undefined;
+            }
+            fields.push({
+                name: sanitizeIdentifier(property.name),
+                type: mapped,
+            });
+        }
+        const preferredName =
+            type.aliasSymbol?.name ??
+            (type.symbol &&
+            type.symbol.name !== "__type" &&
+            type.symbol.name !== "__object"
+                ? type.symbol.name
+                : undefined);
+        const key = `${fields
+            .map(
+                (field) =>
+                    `${field.name}:${this.typeKey(field.type)}`,
+            )
+            .join(",")}`;
+        const existing = this.structsByKey.get(key);
+        if (existing) {
+            return {
+                kind: "struct",
+                name: existing.name,
+            };
+        }
+        const name = this.uniqueName(
+            preferredName
+                ? sanitizeIdentifier(preferredName)
+                : `Record${++this.anonymousStructIndex}`,
+            this.structNames,
+        );
+        this.structsByKey.set(key, { name, fields });
+        return { kind: "struct", name };
+    }
+
+    private registerEnum(
+        type: ts.UnionType,
+        literals: string[],
+    ): DataType {
+        const sorted = [...literals].sort();
+        const key = sorted.join("|");
+        const existing = this.enumsByKey.get(key);
+        if (existing) {
+            return {
+                kind: "enum",
+                name: existing.name,
+            };
+        }
+        const preferredName = type.aliasSymbol?.name;
+        const name = this.uniqueName(
+            preferredName
+                ? sanitizeIdentifier(preferredName)
+                : `Enum${++this.anonymousEnumIndex}`,
+            this.enumNames,
+        );
+        this.enumsByKey.set(key, {
+            name,
+            members: sorted,
+        });
+        return { kind: "enum", name };
+    }
+
+    /**
+     * Resolves a string literal against an enum data type, failing when the
+     * literal is not a member.
+     */
+    public enumMemberCpp(
+        dataType: DataType & { kind: "enum" },
+        literal: string,
+        node: ts.Node,
+    ): string {
+        const definition = [
+            ...this.enumsByKey.values(),
+        ].find((entry) => entry.name === dataType.name);
+        if (
+            !definition ||
+            !definition.members.includes(literal)
+        ) {
+            this.fail(
+                node,
+                `'${literal}' is not a member of ${dataType.name}.`,
+            );
+        }
+        return `bblscene::${dataType.name}::${sanitizeIdentifier(literal)}`;
+    }
+
+    public structFields(
+        name: string,
+        node: ts.Node,
+    ): DataStructField[] {
+        const definition = [
+            ...this.structsByKey.values(),
+        ].find((entry) => entry.name === name);
+        if (!definition) {
+            this.fail(
+                node,
+                `Unknown generated struct '${name}'.`,
+            );
+        }
+        return definition.fields;
+    }
+
+    public structField(
+        name: string,
+        field: string,
+        node: ts.Node,
+    ): DataStructField {
+        const found = this.structFields(name, node).find(
+            (candidate) => candidate.name === field,
+        );
+        if (!found) {
+            this.fail(
+                node,
+                `Struct ${name} has no field '${field}'.`,
+            );
+        }
+        return found;
+    }
+
+    /**
+     * Materializes a uniform static numeric table (nested readonly array
+     * literals with numeric leaves) as a namespace-scope constant. Returns
+     * the table name and dimensions.
+     */
+    public registerTable(
+        declaration: ts.Node,
+        preferredName: string,
+        literal: ts.ArrayLiteralExpression,
+        compileLeaf: (
+            expression: ts.Expression,
+        ) => number,
+    ): { name: string; dimensions: number[] } {
+        const existing = this.tables.get(declaration);
+        if (existing) {
+            return {
+                name: existing.name,
+                dimensions: existing.dimensions,
+            };
+        }
+        const dimensions = this.tableDimensions(
+            literal,
+            compileLeaf,
+        );
+        const name = this.uniqueName(
+            sanitizeIdentifier(preferredName),
+            this.tableNames,
+        );
+        const values = this.renderTableValues(
+            literal,
+            dimensions,
+            compileLeaf,
+        );
+        this.tables.set(declaration, {
+            name,
+            dimensions,
+            values,
+        });
+        return { name, dimensions };
+    }
+
+    private tableDimensions(
+        literal: ts.ArrayLiteralExpression,
+        compileLeaf: (
+            expression: ts.Expression,
+        ) => number,
+    ): number[] {
+        if (literal.elements.length === 0) {
+            this.fail(
+                literal,
+                "Static tables require non-empty array literals.",
+            );
+        }
+        const first = literal.elements[0]!;
+        if (ts.isArrayLiteralExpression(first)) {
+            const inner = this.tableDimensions(
+                first,
+                compileLeaf,
+            );
+            for (const element of literal.elements) {
+                if (
+                    !ts.isArrayLiteralExpression(element)
+                ) {
+                    this.fail(
+                        element,
+                        "Static tables require uniform nesting.",
+                    );
+                }
+                const elementDims = this.tableDimensions(
+                    element,
+                    compileLeaf,
+                );
+                if (
+                    elementDims.join(",") !==
+                    inner.join(",")
+                ) {
+                    this.fail(
+                        element,
+                        "Static tables require uniform dimensions.",
+                    );
+                }
+            }
+            return [literal.elements.length, ...inner];
+        }
+        for (const element of literal.elements) {
+            compileLeaf(element);
+        }
+        return [literal.elements.length];
+    }
+
+    private renderTableValues(
+        literal: ts.ArrayLiteralExpression,
+        dimensions: number[],
+        compileLeaf: (
+            expression: ts.Expression,
+        ) => number,
+    ): string {
+        // Every level is a std::array aggregate, so each level carries the
+        // double-brace form instead of relying on brace elision.
+        if (dimensions.length === 1) {
+            return `{{${literal.elements
+                .map((element) =>
+                    doubleLiteral(compileLeaf(element)),
+                )
+                .join(", ")}}}`;
+        }
+        return `{{${literal.elements
+            .map((element) =>
+                this.renderTableValues(
+                    element as ts.ArrayLiteralExpression,
+                    dimensions.slice(1),
+                    compileLeaf,
+                ),
+            )
+            .join(", ")}}}`;
+    }
+
+    public tableCppType(dimensions: number[]): string {
+        let cpp = "double";
+        for (
+            let index = dimensions.length - 1;
+            index >= 0;
+            index -= 1
+        ) {
+            cpp = `std::array<${cpp}, ${dimensions[index]}>`;
+        }
+        return cpp;
+    }
+
+    public cppType(dataType: DataType): string {
+        switch (dataType.kind) {
+            case "number":
+                return "double";
+            case "boolean":
+                return "bool";
+            case "struct":
+                return `bblscene::${dataType.name}`;
+            case "enum":
+                return `bblscene::${dataType.name}`;
+            case "optional":
+                return `bbl::js::Nullable<${this.cppType(dataType.inner)}>`;
+            case "vector":
+                return `bbl::js::Array<${this.cppType(dataType.element)}>`;
+            case "span":
+                return `bbl::js::Span<const ${this.cppType(dataType.element)}>`;
+            case "tuple":
+                return `bbl::js::Tuple<${dataType.arity}>`;
+            case "table":
+                return `const ${this.tableCppType(dataType.dimensions)}&`;
+        }
+    }
+
+    private typeKey(dataType: DataType): string {
+        switch (dataType.kind) {
+            case "number":
+                return "n";
+            case "boolean":
+                return "b";
+            case "struct":
+                return `s(${dataType.name})`;
+            case "enum":
+                return `e(${dataType.name})`;
+            case "optional":
+                return `o(${this.typeKey(dataType.inner)})`;
+            case "vector":
+                return `v(${this.typeKey(dataType.element)})`;
+            case "span":
+                return `r(${this.typeKey(dataType.element)})`;
+            case "tuple":
+                return `t${dataType.arity}`;
+            case "table":
+                return `g(${dataType.dimensions.join("x")})`;
+        }
+    }
+
+    private uniqueName(
+        preferred: string,
+        used: Set<string>,
+    ): string {
+        let name = preferred;
+        let suffix = 1;
+        while (
+            used.has(name) ||
+            this.structNames.has(name) ||
+            this.enumNames.has(name) ||
+            this.tableNames.has(name)
+        ) {
+            name = `${preferred}${++suffix}`;
+        }
+        used.add(name);
+        return name;
+    }
+
+    /**
+     * Renders the generated enum, struct, and table definitions in
+     * dependency order inside `namespace bblscene`.
+     */
+    public renderPreamble(): string {
+        if (this.empty) {
+            return "";
+        }
+        const lines: string[] = ["namespace bblscene {", ""];
+        for (const definition of this.enumsByKey.values()) {
+            lines.push(
+                `enum class ${definition.name} {`,
+                ...definition.members.map(
+                    (member) =>
+                        `    ${sanitizeIdentifier(member)},`,
+                ),
+                "};",
+                "",
+            );
+        }
+        const emitted = new Set<string>();
+        const structs = [...this.structsByKey.values()];
+        const emitStruct = (
+            definition: DataStructDefinition,
+        ): void => {
+            if (emitted.has(definition.name)) {
+                return;
+            }
+            emitted.add(definition.name);
+            for (const field of definition.fields) {
+                for (const dependency of this.structDependencies(
+                    field.type,
+                )) {
+                    const nested = structs.find(
+                        (candidate) =>
+                            candidate.name === dependency,
+                    );
+                    if (nested) {
+                        emitStruct(nested);
+                    }
+                }
+            }
+            lines.push(
+                `struct ${definition.name} {`,
+                ...definition.fields.map(
+                    (field) =>
+                        `    ${this.cppType(field.type)} ${field.name};`,
+                ),
+                "};",
+                "",
+            );
+        };
+        for (const definition of structs) {
+            emitStruct(definition);
+        }
+        for (const table of this.tables.values()) {
+            lines.push(
+                `inline const ${this.tableCppType(table.dimensions)} ${table.name} = ${table.values};`,
+                "",
+            );
+        }
+        lines.push("}  // namespace bblscene");
+        return lines.join("\n");
+    }
+
+    private structDependencies(
+        dataType: DataType,
+    ): string[] {
+        switch (dataType.kind) {
+            case "struct":
+                return [dataType.name];
+            case "optional":
+                return this.structDependencies(
+                    dataType.inner,
+                );
+            case "vector":
+            case "span":
+                return this.structDependencies(
+                    dataType.element,
+                );
+            default:
+                return [];
+        }
+    }
+}
+
+export function doubleLiteral(value: number): string {
+    if (Number.isInteger(value)) {
+        return `${value}.0`;
+    }
+    return `${value}`;
+}

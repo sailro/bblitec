@@ -7,7 +7,8 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 
 | Area | Current support |
 | --- | --- |
-| TypeScript modules/functions | named local imports and re-exports, module constants, typed non-generic function parameters/defaults, one final return, lexical scopes, if/else, numeric for/while, static-array for-of unrolling, recursion rejection |
+| TypeScript modules/functions | named local imports and re-exports, module constants, typed non-generic function parameters/defaults, lexical scopes, if/else, numeric for/while with native break/continue, switch over numeric discriminants, static-array for-of unrolling plus runtime range-for over data containers, recursion rejection; fully data-typed functions emit once as real C++ functions with early returns, while handle-touching helpers keep the inline path with one final return |
+| Plain-data model | interface-typed structs by value, `T \| null` optionals with checker narrowing, dynamic arrays (`new Array`, fill, push, pop, index writes, length truncation), string-literal-union enum tags, deep readonly numeric tables with runtime indexing, tuple/struct destructuring in for-of, object spread in declarations and assignments, runtime `Math` calls, and the pinned seeded `Math.random` contract |
 | Engine/scene | creation, registration, fixed delta, reached before-render callbacks, runtime material-family append, `setFog` linear/exp/exp2 fog on PBR, Standard, and image-skybox surfaces |
 | Cameras | ArcRotate, FreeCamera, default framing, native controls, target assignment and target record reads |
 | Lights | directional, hemispheric, and point with reached diffuse/specular colors; two reached Standard lights |
@@ -124,6 +125,7 @@ native differential fidelity; it does not represent upstream corpus coverage.
 | transmission-scene-color | <img src="images/scenes/transmission-scene-color.png" alt="Scene-color transmission" width="120"> | $\color{#1a7f37}{\textsf{0.024}}$ / $\color{#1a7f37}{\textsf{0.143}}$ | $\color{#1a7f37}{\textsf{0.001}}$ / $\color{#1a7f37}{\textsf{0.005}}$ | linear RGBA16F scene-color transmission |
 | transmission-skybox | <img src="images/scenes/transmission-skybox.png" alt="PBR skybox rendering" width="120"> | $\color{#1a7f37}{\textsf{0.013}}$ / $\color{#1a7f37}{\textsf{0.013}}$ | $\color{#1a7f37}{\textsf{0.013}}$ / $\color{#1a7f37}{\textsf{0.013}}$ | independent PBR skybox-mode gate |
 | transmission-volume | <img src="images/scenes/transmission-volume.png" alt="Transmission volume" width="120"> | $\color{#1a7f37}{\textsf{0.062}}$ / $\color{#1a7f37}{\textsf{0.166}}$ | $\color{#1a7f37}{\textsf{0.001}}$ / $\color{#1a7f37}{\textsf{0.002}}$ | Beer-Lambert volume and independent thickness-as-depth |
+| tetris-logic | <img src="images/scenes/tetris-logic.png" alt="Tetris logic rendering" width="120"> | $\color{#1a7f37}{\textsf{0.000}}$ / $\color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}}$ / $\color{#1a7f37}{\textsf{0.000}}$ | the pinned tetris demo rules (`lab/lite/src/demos/tetris/game.ts` + `pieces.ts`) compiled through the plain-data subset: native functions, structs, optionals, dynamic arrays, enums, switch, break/continue, destructuring, spread, and seeded `Math.random`, with a scripted 12-piece game rendered as Standard boxes<br><em>Byte-identical to the browser reference on both backends (maximum channel delta 0): the compiled rules play the identical seeded game as the pinned package.</em> |
 
 ## Diagnostics
 
@@ -165,8 +167,12 @@ in-process pinned Tint at startup, with no offline artifacts or shader cache.
 
 - one statically analyzable entry file and one engine
 - selected TypeScript expressions, assignments, callbacks, and intrinsics
-- no general modules/functions/control flow, arbitrary object graphs, or
-  runtime module loading
+- the plain-data model is value-semantic: locals bound from data paths are
+  copies that reject writes, object parameters pass by native reference,
+  `new Array` elements zero-initialize, and `Math.random` is the pinned
+  seeded sequence (each recorded in generated `fidelity.json`)
+- no arbitrary object graphs, classes, escaping closures, or runtime module
+  loading; recursion stays rejected
 - no physics, audio, or networking
 - property animation covers LINEAR/STEP scalar/vector tracks, quaternion
   slerp, group ranges/looping/speed, and deterministic seeking for reached

@@ -1,10 +1,36 @@
 import ts from "typescript";
+import type { DataType } from "./data-types.js";
 import type {
     Value,
     ValueKind,
 } from "./types.js";
 
 export interface StatementLoweringContext {
+    emitDataAssignment(
+        expression: ts.BinaryExpression,
+    ): boolean;
+    emitDataPostfix(
+        expression: ts.PostfixUnaryExpression,
+    ): boolean;
+    dataIterationTarget(
+        expression: ts.Expression,
+    ):
+        | { container: Value; element: DataType }
+        | undefined;
+    bindDataIterationVariable(
+        name: ts.BindingName,
+        itemCpp: string,
+        element: DataType,
+    ): void;
+    activeNativeReturnType():
+        | DataType
+        | "void"
+        | undefined;
+    emitNativeReturn(
+        statement: ts.ReturnStatement,
+    ): void;
+    captureEmittedLines(emitBody: () => void): string[];
+    allocateTemporaryCppName(label: string): string;
     emitVariableDeclaration(
         declaration: ts.VariableDeclaration,
     ): void;
@@ -18,6 +44,9 @@ export interface StatementLoweringContext {
     expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression;
+    probeStaticArrayLiteral(
+        expression: ts.Expression,
+    ): ts.ArrayLiteralExpression | undefined;
     bindLocalValue(
         identifier: ts.Identifier,
         value: Value,
@@ -105,14 +134,36 @@ export class StatementLowerer {
             this.emitForOf(context, statement);
             return;
         }
+        if (ts.isSwitchStatement(statement)) {
+            this.emitSwitch(context, statement);
+            return;
+        }
+        if (ts.isBreakStatement(statement)) {
+            if (statement.label) {
+                context.fail(
+                    statement,
+                    "Labeled break is not supported.",
+                );
+            }
+            context.emit("break;");
+            return;
+        }
+        if (ts.isContinueStatement(statement)) {
+            if (statement.label) {
+                context.fail(
+                    statement,
+                    "Labeled continue is not supported.",
+                );
+            }
+            context.emit("continue;");
+            return;
+        }
         if (
-            ts.isBreakStatement(statement) ||
-            ts.isContinueStatement(statement)
+            ts.isReturnStatement(statement) &&
+            context.activeNativeReturnType() !== undefined
         ) {
-            context.fail(
-                statement,
-                `${ts.SyntaxKind[statement.kind]} is not supported in reached loops.`,
-            );
+            context.emitNativeReturn(statement);
+            return;
         }
         if (
             ts.isReturnStatement(statement) &&
@@ -123,10 +174,221 @@ export class StatementLowerer {
         if (ts.isEmptyStatement(statement)) {
             return;
         }
+        if (
+            ts.isTypeAliasDeclaration(statement) ||
+            ts.isInterfaceDeclaration(statement)
+        ) {
+            return;
+        }
         context.fail(
             statement,
             `Unsupported statement: ${ts.SyntaxKind[statement.kind]}.`,
         );
+    }
+
+    /**
+     * True when the statement contains a break/continue that would bind to
+     * the enclosing loop (not to a nested loop, and for break, not to a
+     * nested switch). Such loops cannot be statically unrolled.
+     */
+    private bindsEnclosingLoop(
+        statement: ts.Statement,
+    ): boolean {
+        let found = false;
+        const visit = (
+            node: ts.Node,
+            insideSwitch: boolean,
+        ): void => {
+            if (found) {
+                return;
+            }
+            if (
+                ts.isForStatement(node) ||
+                ts.isWhileStatement(node) ||
+                ts.isForOfStatement(node) ||
+                ts.isForInStatement(node) ||
+                ts.isDoStatement(node) ||
+                ts.isFunctionLike(node)
+            ) {
+                return;
+            }
+            if (ts.isBreakStatement(node)) {
+                if (!insideSwitch) {
+                    found = true;
+                }
+                return;
+            }
+            if (ts.isContinueStatement(node)) {
+                found = true;
+                return;
+            }
+            const nestedSwitch =
+                insideSwitch || ts.isSwitchStatement(node);
+            ts.forEachChild(node, (child) =>
+                visit(child, nestedSwitch),
+            );
+        };
+        visit(statement, false);
+        return found;
+    }
+
+    private emitSwitch(
+        context: StatementLoweringContext,
+        statement: ts.SwitchStatement,
+    ): void {
+        const discriminant =
+            context.allocateTemporaryCppName("switch");
+        context.emit("{");
+        context.increaseIndent();
+        context.emit(
+            `const double ${discriminant} = ${context.compileNumber(statement.expression, "double")};`,
+        );
+        const clauses =
+            statement.caseBlock.clauses;
+        const defaultIndex = clauses.findIndex(
+            ts.isDefaultClause,
+        );
+        if (
+            defaultIndex !== -1 &&
+            defaultIndex !== clauses.length - 1
+        ) {
+            context.fail(
+                clauses[defaultIndex]!,
+                "A switch default clause must be last.",
+            );
+        }
+        let emittedBranch = false;
+        let pendingLabels: string[] = [];
+        for (const clause of clauses) {
+            if (ts.isDefaultClause(clause)) {
+                if (pendingLabels.length > 0) {
+                    context.fail(
+                        clause,
+                        "Case fallthrough into default is not supported.",
+                    );
+                }
+                context.emit(
+                    emittedBranch ? "} else {" : "{",
+                );
+                this.emitSwitchBody(
+                    context,
+                    clause,
+                );
+                emittedBranch = true;
+                continue;
+            }
+            pendingLabels.push(
+                context.compileNumber(
+                    clause.expression,
+                    "double",
+                ),
+            );
+            if (clause.statements.length === 0) {
+                continue;
+            }
+            const condition = pendingLabels
+                .map(
+                    (label) =>
+                        `${discriminant} == ${label}`,
+                )
+                .join(" || ");
+            context.emit(
+                `${emittedBranch ? "} else if" : "if"} (${condition}) {`,
+            );
+            this.emitSwitchBody(context, clause);
+            emittedBranch = true;
+            pendingLabels = [];
+        }
+        if (pendingLabels.length > 0) {
+            context.fail(
+                statement,
+                "Trailing case clauses without a body are not supported.",
+            );
+        }
+        if (emittedBranch) {
+            context.emit("}");
+        }
+        context.decreaseIndent();
+        context.emit("}");
+    }
+
+    private emitSwitchBody(
+        context: StatementLoweringContext,
+        clause: ts.CaseClause | ts.DefaultClause,
+    ): void {
+        const statements = [...clause.statements];
+        const last = statements.at(-1);
+        if (last && ts.isBreakStatement(last)) {
+            statements.pop();
+        } else if (
+            !last ||
+            (!ts.isReturnStatement(last) &&
+                !ts.isContinueStatement(last) &&
+                !ts.isThrowStatement(last))
+        ) {
+            context.fail(
+                clause,
+                "Non-empty switch cases must end with break or return.",
+            );
+        }
+        for (const statement of statements) {
+            const nested =
+                this.findSwitchBoundBreak(statement);
+            if (nested) {
+                context.fail(
+                    nested,
+                    "A switch break is only supported as the final case statement.",
+                );
+            }
+        }
+        context.increaseIndent();
+        context.pushScope(
+            context.allocateBlockPrefix(),
+        );
+        try {
+            for (const statement of statements) {
+                this.emit(context, statement);
+            }
+        } finally {
+            context.popScope();
+            context.decreaseIndent();
+        }
+    }
+
+    /**
+     * Finds a break that would bind to this switch (not to a nested loop or
+     * nested switch). The if/else lowering cannot express those.
+     */
+    private findSwitchBoundBreak(
+        statement: ts.Statement,
+    ): ts.Node | undefined {
+        let found: ts.Node | undefined;
+        const visit = (node: ts.Node): void => {
+            if (found) {
+                return;
+            }
+            if (
+                ts.isForStatement(node) ||
+                ts.isWhileStatement(node) ||
+                ts.isForOfStatement(node) ||
+                ts.isForInStatement(node) ||
+                ts.isDoStatement(node) ||
+                ts.isSwitchStatement(node) ||
+                ts.isFunctionLike(node)
+            ) {
+                return;
+            }
+            if (
+                ts.isBreakStatement(node) &&
+                !node.label
+            ) {
+                found = node;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(statement);
+        return found;
     }
 
     private emitIf(
@@ -194,7 +456,12 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.ForStatement,
     ): void {
-        if (this.emitStaticIndexFor(context, statement)) {
+        if (
+            !this.bindsEnclosingLoop(
+                statement.statement,
+            ) &&
+            this.emitStaticIndexFor(context, statement)
+        ) {
             return;
         }
         context.emit("{");
@@ -226,8 +493,32 @@ export class StatementLowerer {
                 ? context.compileCondition(
                       statement.condition,
                   )
-                : "true";
-            context.emit(`while (${condition}) {`);
+                : "";
+            // The incrementor belongs in the for-header so `continue`
+            // reaches it, matching JavaScript loop semantics.
+            let header = "";
+            if (statement.incrementor) {
+                const lines =
+                    context.captureEmittedLines(() => {
+                        this.emitExpression(
+                            context,
+                            statement.incrementor!,
+                        );
+                    });
+                if (
+                    lines.length !== 1 ||
+                    !lines[0]!.endsWith(";")
+                ) {
+                    context.fail(
+                        statement.incrementor,
+                        "Loop incrementors must lower to one native statement.",
+                    );
+                }
+                header = lines[0]!.slice(0, -1);
+            }
+            context.emit(
+                `for (; ${condition}; ${header}) {`,
+            );
             context.increaseIndent();
             context.pushScope(
                 context.allocateBlockPrefix(),
@@ -243,12 +534,6 @@ export class StatementLowerer {
                 }
             } finally {
                 context.popScope();
-            }
-            if (statement.incrementor) {
-                this.emitExpression(
-                    context,
-                    statement.incrementor,
-                );
             }
             context.decreaseIndent();
             context.emit("}");
@@ -427,13 +712,41 @@ export class StatementLowerer {
         }
         const declaration =
             statement.initializer.declarations[0]!;
-        if (
-            !ts.isIdentifier(declaration.name) ||
-            declaration.initializer
-        ) {
+        if (declaration.initializer) {
             context.fail(
                 declaration,
-                "for...of requires an identifier without an initializer.",
+                "for...of bindings cannot carry initializers.",
+            );
+        }
+        const staticLiteral =
+            ts.isIdentifier(declaration.name) &&
+            !this.bindsEnclosingLoop(statement.statement)
+                ? context.probeStaticArrayLiteral(
+                      statement.expression,
+                  )
+                : undefined;
+        if (
+            !staticLiteral &&
+            this.emitRuntimeForOf(
+                context,
+                statement,
+                declaration,
+            )
+        ) {
+            return;
+        }
+        if (
+            this.bindsEnclosingLoop(statement.statement)
+        ) {
+            context.fail(
+                statement,
+                "break/continue in for...of requires a runtime data container.",
+            );
+        }
+        if (!ts.isIdentifier(declaration.name)) {
+            context.fail(
+                declaration,
+                "Static for...of requires an identifier binding.",
             );
         }
         const values = context.expectStaticArrayLiteral(
@@ -464,6 +777,53 @@ export class StatementLowerer {
             }
             context.emit("}");
         }
+    }
+
+    /**
+     * Emits a range-for over a runtime data container (vector, span, or
+     * static-table rows). Returns false when the iterated expression is not
+     * a data container, so the static-literal unroll can proceed.
+     */
+    private emitRuntimeForOf(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        const target = context.dataIterationTarget(
+            statement.expression,
+        );
+        if (!target) {
+            return false;
+        }
+        const item =
+            context.allocateTemporaryCppName("item");
+        context.emit(
+            `for (const auto& ${item} : ${target.container.cpp}) {`,
+        );
+        context.increaseIndent();
+        context.pushScope(
+            context.allocateBlockPrefix(),
+        );
+        try {
+            context.bindDataIterationVariable(
+                declaration.name,
+                item,
+                target.element,
+            );
+            const statements = ts.isBlock(
+                statement.statement,
+            )
+                ? statement.statement.statements
+                : [statement.statement];
+            for (const nested of statements) {
+                this.emit(context, nested);
+            }
+        } finally {
+            context.popScope();
+            context.decreaseIndent();
+        }
+        context.emit("}");
+        return true;
     }
 
     private emitScopedBody(
@@ -498,6 +858,8 @@ export class StatementLowerer {
                 ts.SyntaxKind.EqualsToken,
                 ts.SyntaxKind.PlusEqualsToken,
                 ts.SyntaxKind.MinusEqualsToken,
+                ts.SyntaxKind.AsteriskEqualsToken,
+                ts.SyntaxKind.SlashEqualsToken,
             ].includes(unwrapped.operatorToken.kind)
         ) {
             if (ts.isIdentifier(unwrapped.left)) {
@@ -511,6 +873,14 @@ export class StatementLowerer {
                     [ts.SyntaxKind.EqualsToken, "="],
                     [ts.SyntaxKind.PlusEqualsToken, "+="],
                     [ts.SyntaxKind.MinusEqualsToken, "-="],
+                    [
+                        ts.SyntaxKind.AsteriskEqualsToken,
+                        "*=",
+                    ],
+                    [
+                        ts.SyntaxKind.SlashEqualsToken,
+                        "/=",
+                    ],
                 ]).get(unwrapped.operatorToken.kind)!;
                 if (target.kind === "number") {
                     context.emit(
@@ -521,8 +891,14 @@ export class StatementLowerer {
                     operator === "="
                 ) {
                     context.emit(
-                        `${target.cpp} = ${context.compileValue(unwrapped.right).cpp};`,
+                        `${target.cpp} = ${context.compileCondition(unwrapped.right)};`,
                     );
+                } else if (
+                    target.kind === "data" &&
+                    operator === "=" &&
+                    context.emitDataAssignment(unwrapped)
+                ) {
+                    return;
                 } else {
                     context.fail(
                         unwrapped.left,
@@ -539,19 +915,25 @@ export class StatementLowerer {
             [
                 ts.SyntaxKind.PlusPlusToken,
                 ts.SyntaxKind.MinusMinusToken,
-            ].includes(unwrapped.operator) &&
-            ts.isIdentifier(unwrapped.operand)
+            ].includes(unwrapped.operator)
         ) {
-            const target = context.lookup(unwrapped.operand);
-            context.expectKind(
-                target,
-                "number",
-                unwrapped.operand,
-            );
-            context.emit(
-                `${target.cpp}${unwrapped.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"};`,
-            );
-            return;
+            if (ts.isIdentifier(unwrapped.operand)) {
+                const target = context.lookup(
+                    unwrapped.operand,
+                );
+                context.expectKind(
+                    target,
+                    "number",
+                    unwrapped.operand,
+                );
+                context.emit(
+                    `${target.cpp}${unwrapped.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"};`,
+                );
+                return;
+            }
+            if (context.emitDataPostfix(unwrapped)) {
+                return;
+            }
         }
         if (
             ts.isCallExpression(unwrapped) &&

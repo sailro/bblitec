@@ -21,6 +21,10 @@ Unsupported syntax and APIs fail at compile time with source locations.
   primitives and project-owned differential regression gates.
 - External glTF/GLB and a reached `.babylon` slice.
 - Named local TypeScript modules plus typed non-recursive helper functions.
+- A plain-data language slice — structs, nullable objects, dynamic arrays,
+  enums, switch/break/continue, destructuring, spread, runtime Math, and
+  seeded deterministic `Math.random` — validated by compiling the pinned
+  tetris demo rules byte-identically against the browser reference.
 - Generated Standard/PBR/Grid rendering, ordered draw lists, custom alpha
   variants, frame-graph MRT/depth passes, negative transforms, runtime scene
   mutation, property animation, and tree-shaken GPU deformation.

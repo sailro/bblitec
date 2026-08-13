@@ -341,6 +341,13 @@ Controls: left-drag orbit, right/middle-drag pan, wheel zoom; arrows and
 
 Corpus reference capture serves a minimal local page containing only the
 render canvas; it does not include Babylon Lite's showcase loading overlay.
+Relative local imports in the entry resolve against the repository root
+(the entry is served at the root, so `examples/` entries import corpus
+modules as `../corpus/...`); requested `.js` modules transpile on demand
+from their sibling `.ts` sources. When the generated manifest records the
+`deterministic-seeded-random` adaptation, the page installs the pinned
+mulberry32 (seed 1) `Math.random` before the scene module loads, matching
+`bbl::js::random_js` in the native runtime.
 The gate waits for `canvas.dataset.ready`, which is set only after awaited
 asset loads, scene registration, and `startEngine`, then captures the canvas
 alone. A slow or failed load therefore times out instead of recording the

@@ -13,6 +13,9 @@ type ResolveProperty = (
 type ResolveElement = (
     expression: ts.ElementAccessExpression,
 ) => Value | undefined;
+type ResolveCall = (
+    expression: ts.CallExpression,
+) => Value;
 
 export class StaticEvaluator {
     public constructor(
@@ -23,6 +26,7 @@ export class StaticEvaluator {
         private readonly resolveSymbol: ResolveSymbol,
         private readonly resolveProperty: ResolveProperty,
         private readonly resolveElement: ResolveElement,
+        private readonly resolveCall: ResolveCall,
         private readonly lookup: Lookup,
         private readonly fail: Fail,
         private readonly onAwait: OnAwait,
@@ -257,6 +261,22 @@ export class StaticEvaluator {
             )})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
+            if (
+                unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.PercentToken
+            ) {
+                // JavaScript % keeps the dividend sign, exactly like fmod.
+                const compiled = `std::fmod(${this.compileNumber(
+                    unwrapped.left,
+                    "double",
+                )}, ${this.compileNumber(
+                    unwrapped.right,
+                    "double",
+                )})`;
+                return precision === "float"
+                    ? `static_cast<float>(${compiled})`
+                    : compiled;
+            }
             const operator = new Map<ts.SyntaxKind, string>([
                 [ts.SyntaxKind.PlusToken, "+"],
                 [ts.SyntaxKind.MinusToken, "-"],
@@ -266,7 +286,7 @@ export class StaticEvaluator {
             if (!operator) {
                 this.fail(
                     unwrapped.operatorToken,
-                    "Only +, -, *, and / are supported in numeric expressions.",
+                    "Only +, -, *, /, and % are supported in numeric expressions.",
                 );
             }
             const compiled = `(${this.compileNumber(
@@ -331,14 +351,26 @@ export class StaticEvaluator {
                         value.staticNumber,
                     );
                 }
-                return value.cpp;
+                return this.castNumber(value, precision);
             }
         }
         if (ts.isElementAccessExpression(unwrapped)) {
             const value = this.resolveElement(unwrapped);
             if (value?.kind === "number") {
-                return value.cpp;
+                return this.castNumber(value, precision);
             }
+        }
+        if (ts.isCallExpression(unwrapped)) {
+            const value = this.resolveCall(unwrapped);
+            if (value.kind !== "number") {
+                this.fail(
+                    unwrapped,
+                    `Expected number, received ${value.kind}.`,
+                );
+            }
+            return precision === "float"
+                ? `static_cast<float>(${value.cpp})`
+                : value.cpp;
         }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookup(unwrapped);
@@ -356,6 +388,24 @@ export class StaticEvaluator {
             unwrapped,
             `Expected a compileable number, received '${unwrapped.getText()}'.`,
         );
+    }
+
+    /**
+     * Data-model numbers are native doubles; float contexts insert an
+     * explicit cast. Legacy engine-record numbers keep their own float
+     * expressions untouched.
+     */
+    private castNumber(
+        value: Value,
+        precision: "float" | "double",
+    ): string {
+        if (
+            precision === "float" &&
+            value.dataType?.kind === "number"
+        ) {
+            return `static_cast<float>(${value.cpp})`;
+        }
+        return value.cpp;
     }
 
     public isNumberExpression(

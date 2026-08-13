@@ -6,6 +6,8 @@ export interface CompileAdaptation {
         | "asset-materialization"
         | "async"
         | "browser-erasure"
+        | "determinism"
+        | "language"
         | "platform"
         | "rendering";
     sourceSemantics: string;

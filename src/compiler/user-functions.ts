@@ -2,10 +2,84 @@ import ts from "typescript";
 import type { Value } from "./types.js";
 
 type Fail = (node: ts.Node, message: string) => never;
-type SupportedFunction =
+export type SupportedFunction =
     | ts.FunctionDeclaration
     | ts.FunctionExpression
     | ts.ArrowFunction;
+
+/**
+ * Resolves an identifier to a reachable local function declaration and
+ * validates the shared structural constraints (no generators, generics, or
+ * rest parameters). Both the inline lowerer and the native data-function
+ * lowerer resolve through this helper.
+ */
+export function resolveFunctionDeclaration(
+    checker: ts.TypeChecker,
+    identifier: ts.Identifier,
+    fail: Fail,
+): SupportedFunction | undefined {
+    const symbol =
+        checker.getSymbolAtLocation(identifier);
+    if (!symbol) {
+        return undefined;
+    }
+    const target =
+        (symbol.flags & ts.SymbolFlags.Alias) !== 0
+            ? checker.getAliasedSymbol(symbol)
+            : symbol;
+    let declaration: SupportedFunction | undefined;
+    for (const candidate of target.declarations ?? []) {
+        if (
+            ts.isFunctionDeclaration(candidate) &&
+            candidate.body
+        ) {
+            declaration = candidate;
+            break;
+        }
+        if (
+            ts.isVariableDeclaration(candidate) &&
+            candidate.initializer &&
+            (ts.isArrowFunction(candidate.initializer) ||
+                ts.isFunctionExpression(
+                    candidate.initializer,
+                ))
+        ) {
+            declaration = candidate.initializer;
+            break;
+        }
+    }
+    if (!declaration) {
+        return undefined;
+    }
+    if (
+        (ts.isFunctionExpression(declaration) ||
+            ts.isFunctionDeclaration(declaration)) &&
+        declaration.asteriskToken
+    ) {
+        fail(
+            declaration.asteriskToken,
+            "Generator functions are not supported.",
+        );
+    }
+    if (declaration.typeParameters?.length) {
+        fail(
+            declaration.typeParameters[0]!,
+            "Generic user functions are not supported.",
+        );
+    }
+    for (const parameter of declaration.parameters) {
+        if (
+            !ts.isIdentifier(parameter.name) ||
+            parameter.dotDotDotToken
+        ) {
+            fail(
+                parameter,
+                "User-function parameters must be non-rest identifiers.",
+            );
+        }
+    }
+    return declaration;
+}
 
 export interface UserFunctionParameterIr {
     declaration: ts.ParameterDeclaration;
@@ -157,38 +231,11 @@ export class UserFunctionLowerer {
         identifier: ts.Identifier,
         fail: Fail,
     ): UserFunctionIr | undefined {
-        const symbol =
-            this.checker.getSymbolAtLocation(identifier);
-        if (!symbol) {
-            return undefined;
-        }
-        const target =
-            (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                ? this.checker.getAliasedSymbol(symbol)
-                : symbol;
-        let declaration: SupportedFunction | undefined;
-        for (const candidate of target.declarations ?? []) {
-            if (
-                ts.isFunctionDeclaration(candidate) &&
-                candidate.body
-            ) {
-                declaration = candidate;
-                break;
-            }
-            if (
-                ts.isVariableDeclaration(candidate) &&
-                candidate.initializer &&
-                (ts.isArrowFunction(
-                    candidate.initializer,
-                ) ||
-                    ts.isFunctionExpression(
-                        candidate.initializer,
-                    ))
-            ) {
-                declaration = candidate.initializer;
-                break;
-            }
-        }
+        const declaration = resolveFunctionDeclaration(
+            this.checker,
+            identifier,
+            fail,
+        );
         if (!declaration) {
             return undefined;
         }
@@ -196,28 +243,9 @@ export class UserFunctionLowerer {
         if (cached) {
             return cached;
         }
-        if (
-            (ts.isFunctionExpression(declaration) ||
-                ts.isFunctionDeclaration(declaration)) &&
-            declaration.asteriskToken
-        ) {
-            fail(
-                declaration.asteriskToken,
-                "Generator functions are not supported.",
-            );
-        }
-        if (declaration.typeParameters?.length) {
-            fail(
-                declaration.typeParameters[0]!,
-                "Generic user functions are not supported.",
-            );
-        }
         const parameters = declaration.parameters.map(
             (parameter): UserFunctionParameterIr => {
-                if (
-                    !ts.isIdentifier(parameter.name) ||
-                    parameter.dotDotDotToken
-                ) {
+                if (!ts.isIdentifier(parameter.name)) {
                     fail(
                         parameter,
                         "User-function parameters must be non-rest identifiers.",
@@ -267,7 +295,7 @@ export class UserFunctionLowerer {
                 (ts.isFunctionDeclaration(declaration) ||
                 ts.isFunctionExpression(declaration)
                     ? declaration.name?.text
-                    : undefined) ?? target.getName(),
+                    : undefined) ?? identifier.text,
             parameters,
             statements: returned
                 ? body.statements.slice(0, -1)

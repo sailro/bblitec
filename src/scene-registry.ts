@@ -1354,6 +1354,31 @@ export const scenes: readonly SceneDefinition[] = [
             },
         },
     },
+    {
+        id: "tetris-logic",
+        name: "Tetris Logic - Compiled Game Rules",
+        source: "examples/tetris-logic.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/tetris-logic",
+        title: "Babylon Lite Native - Tetris Logic",
+        buildDirectory:
+            "native/build-tetris-logic-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/tetris-logic/babylon-lite-golden.png",
+            },
+            actual:
+                "artifacts/parity/tetris-logic-native.png",
+            outputDirectory:
+                "artifacts/parity/tetris-logic",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [5, 6, 13],
+            backgroundThreshold: 30,
+        },
+    },
 ] as const;
 
 export function getScene(id: string): SceneDefinition {
