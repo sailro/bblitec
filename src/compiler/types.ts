@@ -182,6 +182,7 @@ export type Feature =
     | "mesh:thin-instances"
     | "mesh:thin-instances-dynamic"
     | "mesh:torus"
+    | "scene:remove"
     | "renderer:pbr"
     | "renderer:transmission"
     | "renderer:fog"

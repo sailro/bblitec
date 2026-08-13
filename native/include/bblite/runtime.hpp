@@ -846,6 +846,7 @@ void add_render_task_mesh(
 void add_to_scene(Scene& scene, MeshHandle mesh);
 void add_to_scene(Scene& scene, LightHandle light);
 void add_to_scene(Scene& scene, AssetHandle asset);
+void remove_from_scene(Scene& scene, MeshHandle mesh);
 void on_before_render(
     Scene& scene,
     std::function<void(float)> callback);

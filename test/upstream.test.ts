@@ -81,6 +81,16 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     assert.match(lowered.source, /scene\.material_family_mask/);
     assert.match(lowered.source, /void on_before_render/);
     assert.match(lowered.source, /registered_scenes\.end\(\)/);
+    // Runtime removal drops the mesh and marks the topology; the
+    // material-family mask stays monotonic so built pipelines survive.
+    assert.match(
+        lowered.source,
+        /void remove_from_scene\(Scene& scene, MeshHandle mesh\)/,
+    );
+    assert.match(
+        lowered.source,
+        /scene\.meshes\.erase\(found\);\s*\r?\n\s*\+\+scene\.mesh_membership_version;/,
+    );
 });
 
 test("generates property animation evaluation and seeking", () => {
