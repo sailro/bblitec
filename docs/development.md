@@ -76,20 +76,80 @@ Post-pin commits are relevant only to an explicit upstream-version evaluation.
 
 ## Updating Babylon Lite
 
-The repository supports one pinned upstream version. To evaluate an update:
+The repository supports one pinned upstream version. Source-located semantic
+contract failures are the compatibility report; the project intentionally does
+not maintain simultaneous support for multiple Babylon Lite versions, so a bump
+is always "move the pin, then fix what the assertions catch".
 
-1. Update `upstream\babylon-lite.json`, the package dependency, and lock file
-   together.
-2. Run `npm ci`, then `npm run test:upstream` to expose moved symbols and
-   changed AST contracts across all lowerers.
-3. Review changed formulas, defaults, module paths, curated source URLs, and
-   generated provenance; do not add version branches to preserve the old pin.
-4. Regenerate all scenes and complete the relevant compiler, native, shader,
-   and parity matrix before accepting the new pin.
+### 1. Read the upstream delta first
 
-Source-located semantic contract failures are the compatibility report. The
-project intentionally does not maintain simultaneous support for multiple
-Babylon Lite versions.
+Clone the upstream repository (see `upstream\babylon-lite.json` for the current
+pin) and diff the pinned commit against the target release tag before changing
+anything:
+
+```powershell
+git log --oneline <pinned-sha>..<tag>
+git diff --name-status <pinned-sha>..<tag> -- lab/lite/src/lite lab/lite/src/demos
+```
+
+A commit subject marked `!` is a breaking API change and predicts most of the
+work. The scene diff tells you which registered corpus scenes must be
+re-synced: cross-check the changed file list against `src\scene-registry.ts`.
+
+### 2. Move the pin
+
+Update `upstream\babylon-lite.json` (both `version` and `sourceVersion`), the
+`package.json` dependency, and the lock file together, then `npm install`.
+Copy every changed `lab/lite` file into `corpus\babylon-lite\` — the corpus is
+read-only evidence of the pinned tree — and refresh the `sha256` values in
+`upstream\babylon-lite-scenes.json`.
+
+### 3. Fix the compatibility report
+
+`npm run test:upstream` reports the failures. They sort into three kinds:
+
+- **Moved contracts.** A lowerer asserts an expression the upstream refactor
+  relocated. Check whether the *semantics* moved or only the shape: if the
+  formula is unchanged, retarget the assertion at the new path. Do not weaken
+  an assertion to make it pass.
+- **New or relocated API.** Options that became functions need intrinsics.
+  Mirror the pinned setter exactly, and check what the *old* form reached:
+  an option that gated a feature must have its setter reach the same feature
+  (see the skybox note below).
+- **Provenance and pin churn.** Assertions embedding the version or commit sha
+  should derive them from `readUpstreamPin()` rather than hardcoding, so the
+  next bump does not touch them at all.
+
+### 4. Prove the bump is behavior-neutral
+
+An API refactor should not move a single pixel. Keep the previous goldens,
+recapture the affected scenes' browser references, and compare byte for byte:
+
+```powershell
+node dist\src\scene-command.js parity scene<N> --recapture-reference
+```
+
+A golden that changes means upstream changed behavior, not just shape — treat
+that as a finding to investigate and record, not as a golden to accept. A
+golden that stays identical while native parity moves means the bump broke
+something on the native side.
+
+Then run the full validation sequence. Regenerate everything: a feature that
+silently stops being reached only shows up as a parity regression.
+
+### Recorded findings
+
+- **1.18.0 → 1.20.0.** `feat(pbr)!` moved the optional PBR material features
+  from `createPbrMaterial` options to opt-in setters (`unlit: true` →
+  `setPbrUnlit(material)`, `skyboxMode: true` → `setPbrSkybox(material)`), and
+  scenes read the material back off the mesh to call them. The four affected
+  corpus scenes rendered byte-identically in the browser, confirming the
+  refactor was shape-only. The one native regression was second-order: the
+  `skyboxMode` option had also been what reached the `renderer:transmission`
+  feature that emits the skybox uniform, so `setPbrSkybox` has to reach it too.
+  Scene 178 caught it because it is the only skybox scene with no actual
+  transmission — 176 and 212 reached the feature through their own transmissive
+  materials and hid the gap.
 
 ## Ad-hoc scenes
 

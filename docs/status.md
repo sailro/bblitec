@@ -14,7 +14,7 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 | Lights | directional, hemispheric, and point with reached diffuse/specular colors; two reached Standard lights; two reached PBR analytic lights (hemispheric, directional, and range-falloff point kinds in either slot, derived from the pinned single-light blocks; both slots fold material `directIntensity` like the pinned terms) |
 | Geometry | axis-sized box/sphere, subdivided ground with UV scale, plane, torus, `createMeshFromData` raw typed-array meshes with the pinned computeAabb bounds fold, fixed-capacity `setThinInstances` pools with per-frame `flushThinInstances`/`setThinInstanceCount` updates and the pinned mesh.world × instanceWorld record-transform composition, indexed triangle glTF/GLB, generated/flat normals, negative transforms, reached `.babylon` geometry |
 | Assets | external glTF packaging, embedded PNG/JPEG, `.env`, exact compile-time RGBE HDR/GGX cubemaps, glTF image-based lights, DDS, `loadSkybox` six-face image cubemaps, `loadTexture2D` file textures with the pinned sampler defaults, reached `.babylon` textures |
-| Materials | Standard, PBR, GridMaterial, unlit, vertex colors, no-color views, scene-local custom shader variants compiled from the entry file's own WGSL through the typed shader IR (worldViewProjection system uniform, typed custom uniforms with declared defaults, generic `setShaderUniform`/`setShaderFloat` writes resolved to reflected offsets at compile time) |
+| Materials | Standard, PBR, GridMaterial, vertex colors, no-color views, the opt-in PBR feature setters `setPbrUnlit` and `setPbrSkybox`, scene-local custom shader variants compiled from the entry file's own WGSL through the typed shader IR (worldViewProjection system uniform, typed custom uniforms with declared defaults, generic `setShaderUniform`/`setShaderFloat` writes resolved to reflected offsets at compile time) |
 | Material state | alpha mask/blend/coverage, reflectance, emissive strength, lighting intensities, double-sided, normal scale, shared texture scaling, transmission, IOR, volume, dispersion, clearcoat, sheen, iridescence |
 | Animation | deterministic seeking; property-animation groups for reached mesh position/scaling/quaternion paths with LINEAR/STEP tracks; glTF LINEAR/CUBICSPLINE rotation/translation/scale and LINEAR morph weights |
 | Deformation | recursive skeleton hierarchies, inverse bind matrices, four-weight GPU skinning, GPU position/normal/tangent morph targets, uncapped storage-buffer morphing beyond two targets, static GPU instancing, post-deformation flat normals |
@@ -23,8 +23,8 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 | Shaders | generated WGSL through pinned Tint; DXIL/SPIR-V via normalized Tint HLSL and DXC; MSL via Tint; the Dawn backend consumes the WGSL directly |
 | Native renderer | generated ordered draw lists over two peer GPU backends (SDL_GPU and Dawn/WebGPU), linear RGBA16F transmission with per-sample image processing on Dawn, deterministic SDL_Renderer fallback |
 
-Generated behavior is tied to `@babylonjs/lite@1.18.0` at commit
-`7184feda683072980735f9a180e6f567ee5717ba`.
+Generated behavior is tied to `@babylonjs/lite@1.20.0` at commit
+`95ed3029cc43e479ec924741aea4024e9bf33527`.
 
 ## Scene 1 (BoomBox) baseline
 

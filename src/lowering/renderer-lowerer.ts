@@ -2304,7 +2304,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                 ],
                 [
                     dielectric,
-                    "dispersion: 20.0 / eDisp.dispersion",
+                    "20.0 / dispersion",
                     "glTF dispersion Abbe mapping",
                 ],
             );

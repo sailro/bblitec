@@ -239,7 +239,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 this.context
                     .propertyPath(node.left)
                     ?.join(".") ===
-                    "out.metallicF0Factor",
+                    "reflOpts.f0Factor",
         )[0];
         if (!reflectance) {
             this.context.contractError(
