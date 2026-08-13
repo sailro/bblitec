@@ -70,6 +70,8 @@ export class NativeFunctionLowerer {
         new Set<SupportedFunction>();
     private readonly active =
         new Set<SupportedFunction>();
+    private readonly rejected =
+        new Set<SupportedFunction>();
     private readonly usedNames = new Set<string>();
 
     public constructor(
@@ -214,11 +216,21 @@ export class NativeFunctionLowerer {
         if (cached) {
             return cached;
         }
+        if (this.rejected.has(declaration)) {
+            return undefined;
+        }
         const checkerSignature =
             this.context.checker.getSignatureFromDeclaration(
                 declaration,
             );
         if (!checkerSignature) {
+            return undefined;
+        }
+        if (this.capturesEnclosingBindings(declaration)) {
+            // A closure over another function's locals (typically entry
+            // engine handles) cannot become a namespace-scope function;
+            // the inline lowerer keeps handling it.
+            this.rejected.add(declaration);
             return undefined;
         }
         const returnTsType =
@@ -275,6 +287,76 @@ export class NativeFunctionLowerer {
         };
         this.signatures.set(declaration, signature);
         return signature;
+    }
+
+    /**
+     * True when the function body references a binding declared inside
+     * another function (a captured closure variable). Module-scope
+     * constants, functions, imports, and the function's own parameters and
+     * locals are fine; captured bindings force the inline path.
+     */
+    private capturesEnclosingBindings(
+        declaration: SupportedFunction,
+    ): boolean {
+        let captured = false;
+        const classify = (
+            bindingDeclaration: ts.Node,
+        ): "internal" | "module" | "captured" => {
+            let node: ts.Node | undefined =
+                bindingDeclaration.parent;
+            let sawFunction = false;
+            while (node) {
+                if (node === declaration) {
+                    return "internal";
+                }
+                if (ts.isFunctionLike(node)) {
+                    sawFunction = true;
+                }
+                if (ts.isSourceFile(node)) {
+                    return sawFunction
+                        ? "captured"
+                        : "module";
+                }
+                node = node.parent;
+            }
+            return "module";
+        };
+        const visit = (node: ts.Node): void => {
+            if (captured) {
+                return;
+            }
+            if (ts.isIdentifier(node)) {
+                const symbol =
+                    this.context.checker.getSymbolAtLocation(
+                        node,
+                    );
+                const target =
+                    symbol &&
+                    (symbol.flags &
+                        ts.SymbolFlags.Alias) !==
+                        0
+                        ? this.context.checker.getAliasedSymbol(
+                              symbol,
+                          )
+                        : symbol;
+                const bindingDeclaration =
+                    target?.valueDeclaration ??
+                    target?.declarations?.[0];
+                if (
+                    bindingDeclaration &&
+                    classify(bindingDeclaration) ===
+                        "captured"
+                ) {
+                    captured = true;
+                    return;
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        if (declaration.body) {
+            visit(declaration.body);
+        }
+        return captured;
     }
 
     private uniqueName(preferred: string): string {

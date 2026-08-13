@@ -405,6 +405,39 @@ test("supports early returns in native data functions", () => {
     assert.match(result.cpp, /return v_fn0_value;/);
 });
 
+test("keeps closures over entry locals on the inline path", () => {
+    const result = compileSource(`
+        import {
+            createArcRotateCamera,
+            createEngine,
+            createSceneContext,
+            registerScene,
+            startEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const camera = createArcRotateCamera(1, 1, 5, { x: 0, y: 0, z: 0 });
+            scene.camera = camera;
+            const nudge = (): void => {
+                camera.alpha = camera.alpha + 0.5;
+            };
+            nudge();
+            nudge();
+            await registerScene(scene);
+            await startEngine(engine);
+        }
+    `);
+
+    assert.doesNotMatch(result.cpp, /bblscene::nudge/);
+    assert.equal(
+        result.cpp.match(/\.alpha = static_cast<float>/g)
+            ?.length,
+        2,
+    );
+});
+
 test("lowers interface-typed structs, optionals, and enums", () => {
     const result = compileSource(`
         type Tag = "idle" | "busy";
