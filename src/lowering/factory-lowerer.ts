@@ -1329,6 +1329,10 @@ void set_alpha_to_coverage(
             "src/material/pbr/set-skybox.ts",
             "setPbrSkybox",
         );
+        this.context.functionDeclaration(
+            "src/material/pbr/set-emissive.ts",
+            "setPbrEmissive",
+        );
         const { declaration: createPbrMaterial } =
             this.context.functionDeclaration(
                 pbrModule,
@@ -1368,7 +1372,7 @@ void set_alpha_to_coverage(
         );
         return {
             modulePath: pbrModule,
-            symbolName: "createPbrMaterial,setPbrUnlit,setPbrSkybox,createSolidTexture2D,loadTexture2D",
+            symbolName: "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,createSolidTexture2D,loadTexture2D",
             header: "",
             source: `// ${this.context.provenance(
                 pbrModule,
@@ -1436,6 +1440,13 @@ SolidTexture create_solid_texture(
 // register their fragment extension.
 void set_pbr_unlit(Engine& engine, MaterialHandle material) {
     engine.materials[material.value].unlit = true;
+}
+
+void set_pbr_emissive(
+    Engine& engine,
+    MaterialHandle material,
+    Color3 color) {
+    engine.materials[material.value].emissive_factor = color;
 }
 
 void set_pbr_skybox(Engine& engine, MaterialHandle material) {

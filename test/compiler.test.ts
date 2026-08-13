@@ -592,7 +592,41 @@ test("materializes static tables under runtime indices only", () => {
     );
 });
 
-test("rejects writes through data path copies", () => {
+test("binds const data-path locals as aliases", () => {
+    const result = compileSource(`
+        interface Holder {
+            inner: { count: number };
+        }
+        function poke(holder: Holder): void {
+            const alias = holder.inner;
+            alias.count = 5;
+        }
+        const holder: Holder = {
+            inner: { count: 1 },
+        };
+        poke(holder);
+    `);
+
+    // The local binds a reference, so the write reaches the holder the
+    // way a JavaScript object binding does.
+    assert.match(result.cpp, /&\s+v_\w*alias = /);
+});
+
+test("rejects using an alias after its container is resized", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                interface Entry { value: number; }
+                const list: Entry[] = [{ value: 1 }];
+                const entry = list[0]!;
+                list.push({ value: 2 });
+                entry.value = 5;
+            `),
+        /resized after the binding/,
+    );
+});
+
+test("keeps mutable data-path locals value copies", () => {
     assert.throws(
         () =>
             compileSource(`
@@ -600,7 +634,7 @@ test("rejects writes through data path copies", () => {
                     inner: { count: number };
                 }
                 function poke(holder: Holder): void {
-                    const alias = holder.inner;
+                    let alias = holder.inner;
                     alias.count = 5;
                 }
                 const holder: Holder = {

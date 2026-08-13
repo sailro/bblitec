@@ -131,44 +131,31 @@ async function main(): Promise<void> {
     onBeforeRender(scene, () => {
         // The demo's reverse sweep: integrate, then retire expired
         // particles by removing the mesh and splicing the entry out.
-        // The entries are addressed through the list rather than through
-        // an aliasing local: the pinned value model makes a local bound
-        // from a data path a copy that rejects writes, so the demo's
-        // `const p = this.live[i]!` shape waits on escape analysis.
+        // The demo's own shape: the entry binds as an alias, so writes
+        // through it reach the list (TetrisParticles.update()). The
+        // splice poisons the alias, and the `continue` right after it
+        // is what keeps that legal.
         if (frame < SETTLE_FRAME) {
             for (let index = live.length - 1; index >= 0; index--) {
-                live[index]!.life -= STEP;
-                if (live[index]!.life <= 0) {
-                    removeFromScene(scene, live[index]!.mesh);
+                const p = live[index]!;
+                p.life -= STEP;
+                if (p.life <= 0) {
+                    removeFromScene(scene, p.mesh);
                     live.splice(index, 1);
                     continue;
                 }
-                live[index]!.vy -= GRAVITY * STEP;
-                live[index]!.px += live[index]!.vx * STEP;
-                live[index]!.py += live[index]!.vy * STEP;
-                live[index]!.pz += live[index]!.vz * STEP;
-                live[index]!.angle += live[index]!.spin * STEP;
+                p.vy -= GRAVITY * STEP;
+                p.px += p.vx * STEP;
+                p.py += p.vy * STEP;
+                p.pz += p.vz * STEP;
+                p.angle += p.spin * STEP;
                 // Transform writes through the handle stored in the
                 // struct, like TetrisParticles.update().
-                live[index]!.mesh.position.set(
-                    live[index]!.px,
-                    live[index]!.py,
-                    live[index]!.pz,
-                );
-                live[index]!.mesh.rotation.set(
-                    live[index]!.angle,
-                    0,
-                    live[index]!.angle,
-                );
-                const remaining =
-                    live[index]!.life / live[index]!.maxLife;
-                const scale =
-                    live[index]!.size * (0.55 + 0.45 * remaining);
-                live[index]!.mesh.scaling.set(
-                    scale,
-                    scale,
-                    scale,
-                );
+                p.mesh.position.set(p.px, p.py, p.pz);
+                p.mesh.rotation.set(p.angle, 0, p.angle);
+                const remaining = p.life / p.maxLife;
+                const scale = p.size * (0.55 + 0.45 * remaining);
+                p.mesh.scaling.set(scale, scale, scale);
             }
         }
 

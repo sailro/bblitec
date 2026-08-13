@@ -30,7 +30,21 @@ export interface DataLoweringContext {
     fail(node: ts.Node, message: string): never;
 }
 
-type LocalOwnership = "owned" | "copy" | "escaped";
+/**
+ * `owned` — the local holds a value it constructed.
+ * `copy` — bound from a data path by value; writes are rejected.
+ * `escaped` — an owned local that was copied into another data location.
+ * `alias` — a const local bound to a data path as a native reference, so
+ *   writes reach the container exactly like a JavaScript object binding.
+ * `poisoned` — an alias whose container was structurally mutated; any
+ *   later use would read through a dangling reference.
+ */
+type LocalOwnership =
+    | "owned"
+    | "copy"
+    | "escaped"
+    | "alias"
+    | "poisoned";
 
 /**
  * Lowers the plain-data subset: struct paths, dynamic arrays, static tables,
@@ -48,11 +62,71 @@ export class DataLowerer {
         private readonly context: DataLoweringContext,
     ) {}
 
+    /** Container root each live alias refers into, for invalidation. */
+    private readonly aliasRoots = new Map<string, string>();
+
     public registerLocal(
         cppName: string,
         ownership: "owned" | "copy",
     ): void {
         this.ownership.set(cppName, ownership);
+    }
+
+    /**
+     * Registers a const local bound to a data path as a reference into
+     * `containerCpp`. Writes through it reach the container; a later
+     * structural mutation of that container poisons it.
+     */
+    public registerAlias(
+        cppName: string,
+        containerCpp: string,
+    ): void {
+        this.ownership.set(cppName, "alias");
+        this.aliasRoots.set(
+            cppName,
+            this.rootName(containerCpp),
+        );
+    }
+
+    /**
+     * Marks every alias into `containerCpp` unusable: growing or
+     * shrinking the backing vector can move its elements, so a
+     * reference taken before the mutation no longer denotes the same
+     * element (or any element at all).
+     */
+    public invalidateAliases(containerCpp: string): void {
+        const root = this.rootName(containerCpp);
+        for (const [name, aliasRoot] of this.aliasRoots) {
+            if (
+                aliasRoot === root &&
+                this.ownership.get(name) === "alias"
+            ) {
+                this.ownership.set(name, "poisoned");
+            }
+        }
+    }
+
+    /** Captures alias states so a terminating branch can roll back. */
+    public snapshotAliasState(): Map<string, string> {
+        const snapshot = new Map<string, string>();
+        for (const name of this.aliasRoots.keys()) {
+            const state = this.ownership.get(name);
+            if (state) {
+                snapshot.set(name, state);
+            }
+        }
+        return snapshot;
+    }
+
+    public restoreAliasState(
+        snapshot: Map<string, string>,
+    ): void {
+        for (const [name, state] of snapshot) {
+            this.ownership.set(
+                name,
+                state as LocalOwnership,
+            );
+        }
     }
 
     private rootName(cpp: string): string {
@@ -99,10 +173,19 @@ export class DataLowerer {
             if (bound?.kind !== "data") {
                 return undefined;
             }
-            if (mode === "write") {
-                const state = this.ownership.get(
-                    this.rootName(bound.cpp),
+            const state = this.ownership.get(
+                this.rootName(bound.cpp),
+            );
+            // A poisoned alias is unusable in either direction: its
+            // container was structurally mutated after the binding, so
+            // the reference no longer denotes the same element.
+            if (state === "poisoned") {
+                this.context.fail(
+                    unwrapped,
+                    `'${unwrapped.text}' refers into a container that was resized after the binding; re-read the element instead of using the stale reference.`,
                 );
+            }
+            if (mode === "write") {
                 if (state === "copy") {
                     this.context.fail(
                         unwrapped,
@@ -743,6 +826,7 @@ export class DataLowerer {
                     "Array push requires at least one element.",
                 );
             }
+            this.invalidateAliases(narrowed.cpp);
             const pushes = call.arguments.map(
                 (argument) =>
                     `${narrowed.cpp}.push_back(${this.compileForSink(argument, dataType.element)})`,
@@ -762,6 +846,7 @@ export class DataLowerer {
                     "Array.pop expects no arguments.",
                 );
             }
+            this.invalidateAliases(narrowed.cpp);
             const popped = `bbl::js::array_pop(${narrowed.cpp})`;
             return this.leafValue(
                 popped,
@@ -803,6 +888,7 @@ export class DataLowerer {
                     "Array.splice supports removing exactly one element.",
                 );
             }
+            this.invalidateAliases(narrowed.cpp);
             return {
                 kind: "void",
                 cpp: `bbl::js::array_splice_one(${narrowed.cpp}, ${this.context.compileNumber(call.arguments[0]!, "double")})`,
@@ -1514,7 +1600,7 @@ export class DataLowerer {
                     }
                     this.context.reachJsData();
                     this.context.emit(
-                        `bbl::js::array_truncate(${narrowed.cpp}, ${this.context.compileNumber(expression.right, "double")});`,
+                        (this.invalidateAliases(narrowed.cpp), `bbl::js::array_truncate(${narrowed.cpp}, ${this.context.compileNumber(expression.right, "double")});`),
                     );
                     return true;
                 }

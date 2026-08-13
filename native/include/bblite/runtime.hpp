@@ -785,6 +785,10 @@ void set_alpha_to_coverage(
     bool enabled);
 void set_pbr_unlit(Engine& engine, MaterialHandle material);
 void set_pbr_skybox(Engine& engine, MaterialHandle material);
+void set_pbr_emissive(
+    Engine& engine,
+    MaterialHandle material,
+    Color3 color);
 SolidTexture create_solid_texture(Engine& engine, float r, float g, float b, float a = 1.0f);
 FileTexture load_file_texture(
     Engine& engine,

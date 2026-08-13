@@ -334,13 +334,15 @@ the identical generator, keyed off the generated manifest's
   functions. The gate also fixed a latent bug: direct mesh transform
   writes never bumped the transform version the backends gate their
   baked-vertex re-upload on.
-- [ ] Bind a local from a data path as an alias rather than a copy, so
-  the demo's `const p = this.live[i]!; p.life -= dt;` shape compiles.
-  The pinned value model makes such locals read-only copies today
-  (tetris-particles indexes through the list instead). This is the
-  narrow, reached half of the escape-analysis entry above; the hazard
-  to settle first is invalidation — a `push` can reallocate the backing
-  vector while an alias is live.
+- [x] Bind a const local from a data path as an alias rather than a copy, so
+  the demo's `const p = this.live[i]!; p.life -= dt;` shape compiles: the
+  local binds a native reference and writes reach the container. The
+  invalidation hazard is handled by poisoning — a structural mutation of
+  the container makes references into it unusable and any later use is a
+  compile error — and the poisoning is path-sensitive, so a branch that
+  always leaves the iteration (the demo's splice-then-continue) does not
+  poison the code after it. Mutable locals stay copies, since a reference
+  cannot be reseated.
 - [ ] Stage 2 (remaining) — the class/closure subset for
   `TetrisParticles` (private fields and methods over the now-supported
   particle data) and the renderer record with methods, a getter, and
