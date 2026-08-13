@@ -1405,6 +1405,35 @@ export const scenes: readonly SceneDefinition[] = [
         },
     },
     {
+        id: "tetris-modes",
+        name: "Tetris Modes - Record Indexing",
+        source: "examples/tetris-modes.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/tetris-modes",
+        title: "Babylon Lite Native - Tetris Modes",
+        buildDirectory: "native/build-tetris-modes-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/tetris-modes/babylon-lite-golden.png",
+            },
+            actual:
+                "artifacts/parity/tetris-modes-native.png",
+            outputDirectory: "artifacts/parity/tetris-modes",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.004,
+            backgroundColor: [5, 6, 13],
+            backgroundThreshold: 30,
+            // The last style switch lands at frame 20 and the scene
+            // flags readiness at 30; capture past both so the measured
+            // image is the settled "smooth" set.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "34",
+            },
+        },
+    },
+    {
         id: "tetris-retire",
         name: "Tetris Retire - Runtime Removal",
         source: "examples/tetris-retire.ts",

@@ -28,6 +28,30 @@ using Span = std::span<T>;
 template <std::size_t N>
 using Tuple = std::array<double, N>;
 
+// `Record<Union, T>` — one fixed slot per member of a string-literal
+// union. The compiler lays the slots out in the union's own member
+// order, which is the order its enum tags are numbered in, so a tag
+// indexes its slot directly. Unlike an Array it never grows: the key
+// space is closed at compile time.
+template <typename T, std::size_t N>
+using EnumMap = std::array<T, N>;
+
+template <typename T, std::size_t N, typename Tag>
+[[nodiscard]] inline const T& enum_map_at(
+    const EnumMap<T, N>& slots, Tag tag) {
+    const auto index = static_cast<std::size_t>(tag);
+    assert(index < N);
+    return slots[index];
+}
+
+template <typename T, std::size_t N, typename Tag>
+[[nodiscard]] inline T& enum_map_at(
+    EnumMap<T, N>& slots, Tag tag) {
+    const auto index = static_cast<std::size_t>(tag);
+    assert(index < N);
+    return slots[index];
+}
+
 template <typename T>
 [[nodiscard]] inline double array_length(const Array<T>& values) {
     return static_cast<double>(values.size());

@@ -23,6 +23,11 @@ export type DataType =
     | { kind: "vector"; element: DataType }
     | { kind: "span"; element: DataType }
     | { kind: "tuple"; arity: number }
+    // `Record<Union, T>`: one slot per member of a string-literal
+    // union, indexed at runtime by the union's own enum tag. The key
+    // space is closed at compile time, so this is a fixed table rather
+    // than a growable array.
+    | { kind: "enummap"; enumName: string; element: DataType }
     | { kind: "table"; dimensions: number[] }
     | { kind: "f32array" }
     | { kind: "u32array" };
@@ -105,6 +110,16 @@ export function dataTypesEqual(
                 left.arity ===
                 (right as { arity: number }).arity
             );
+        case "enummap": {
+            const other = right as {
+                enumName: string;
+                element: DataType;
+            };
+            return (
+                left.enumName === other.enumName &&
+                dataTypesEqual(left.element, other.element)
+            );
+        }
         case "table":
             return (
                 left.dimensions.join(",") ===
@@ -251,6 +266,10 @@ export class DataTypeRegistry {
         }
         if ((type.flags & ts.TypeFlags.Object) === 0) {
             return undefined;
+        }
+        const recordMap = this.fromRecordType(type, node);
+        if (recordMap) {
+            return recordMap;
         }
         if (type.symbol?.name === "Float32Array") {
             return { kind: "f32array" };
@@ -458,6 +477,52 @@ export class DataTypeRegistry {
         return { kind: "struct", name };
     }
 
+    /**
+     * Recognizes `Record<Union, T>` where the key is a string-literal
+     * union, and lowers it to a fixed slot per union member.
+     *
+     * The check is on the `Record` alias itself, so an interface that
+     * happens to declare the same property names stays the struct it
+     * already was.
+     */
+    private fromRecordType(
+        type: ts.Type,
+        node: ts.Node,
+    ): DataType | undefined {
+        if (type.aliasSymbol?.name !== "Record") {
+            return undefined;
+        }
+        const [keyType, valueType] =
+            type.aliasTypeArguments ?? [];
+        if (!keyType || !valueType) {
+            return undefined;
+        }
+        const key = this.fromTsType(keyType, node);
+        if (key?.kind !== "enum") {
+            return undefined;
+        }
+        const element = this.fromTsType(valueType, node);
+        if (!element) {
+            return undefined;
+        }
+        return {
+            kind: "enummap",
+            enumName: key.name,
+            element,
+        };
+    }
+
+    /**
+     * The union's members in tag order, which is the order the slots of
+     * a `Record` keyed by it are laid out in.
+     */
+    public enumMembers(name: string): string[] {
+        const definition = [
+            ...this.enumsByKey.values(),
+        ].find((entry) => entry.name === name);
+        return definition ? [...definition.members] : [];
+    }
+
     private registerEnum(
         type: ts.UnionType,
         literals: string[],
@@ -507,6 +572,20 @@ export class DataTypeRegistry {
             );
         }
         return `bblscene::${dataType.name}::${sanitizeIdentifier(literal)}`;
+    }
+
+    /**
+     * A struct's field types, or an empty list when the struct is not
+     * registered. Unlike `structFields` this asks a question rather
+     * than asserting an answer, so it needs no node to blame.
+     */
+    public structFieldTypes(name: string): DataType[] {
+        const definition = [
+            ...this.structsByKey.values(),
+        ].find((entry) => entry.name === name);
+        return (definition?.fields ?? []).map(
+            (field) => field.type,
+        );
     }
 
     public structFields(
@@ -691,6 +770,8 @@ export class DataTypeRegistry {
                 return `bbl::js::Span<const ${this.cppType(dataType.element)}>`;
             case "tuple":
                 return `bbl::js::Tuple<${dataType.arity}>`;
+            case "enummap":
+                return `bbl::js::EnumMap<${this.cppType(dataType.element)}, ${this.enumMembers(dataType.enumName).length}>`;
             case "table":
                 return `const ${this.tableCppType(dataType.dimensions)}&`;
             case "f32array":
@@ -720,6 +801,8 @@ export class DataTypeRegistry {
                 return `r(${this.typeKey(dataType.element)})`;
             case "tuple":
                 return `t${dataType.arity}`;
+            case "enummap":
+                return `m(${dataType.enumName},${this.typeKey(dataType.element)})`;
             case "table":
                 return `g(${dataType.dimensions.join("x")})`;
             case "f32array":

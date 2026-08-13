@@ -693,6 +693,132 @@ test("rejects reassigning a resource-holding class field", () => {
     );
 });
 
+test("lowers a Record keyed by a string union into tag-ordered slots", () => {
+    const result = compileSource(`
+        type Mode = "pets" | "arcade" | "smooth";
+        interface RenderSet { scale: number; }
+        const sets: Record<Mode, RenderSet> = {
+            pets: { scale: 1 },
+            arcade: { scale: 2 },
+            smooth: { scale: 3 },
+        };
+        let mode: Mode = "smooth";
+        const active = sets[mode];
+        const picked = active.scale + sets["arcade"].scale;
+    `);
+    // Enum members are numbered in sorted order, so the slots emit as
+    // arcade, pets, smooth regardless of how the literal was written.
+    assert.match(
+        result.cpp,
+        /enum class Mode \{\s*arcade,\s*pets,\s*smooth,/,
+    );
+    // pets/arcade/smooth were written in that order and pinned to
+    // temporaries in it; the map then takes them in tag order.
+    assert.match(
+        result.cpp,
+        /RenderSet v_bblite_slot_0 = bblscene::RenderSet\{1\.0\};/,
+    );
+    assert.match(
+        result.cpp,
+        /RenderSet v_bblite_slot_1 = bblscene::RenderSet\{2\.0\};/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::EnumMap<bblscene::RenderSet, 3>\{v_bblite_slot_1, v_bblite_slot_0, v_bblite_slot_2\}/,
+    );
+    // Both a runtime tag and a literal key index the same way.
+    assert.match(result.cpp, /enum_map_at\(v_sets, v_mode\)/);
+    assert.match(
+        result.cpp,
+        /enum_map_at\(v_sets, bblscene::Mode::arcade\)/,
+    );
+});
+
+test("evaluates Record slots in source order, places them in tag order", () => {
+    // A slot initializer can emit statements, and JavaScript runs those
+    // in the order the properties were written. Compiling in tag order
+    // instead would reorder the side effects.
+    const result = compileSource(`
+        type Mode = "pets" | "arcade";
+        function count(n: number): number[] {
+            const out: number[] = [];
+            for (let i = 0; i < n; i++) { out.push(i); }
+            return out;
+        }
+        const sets: Record<Mode, number[]> = {
+            pets: count(2),
+            arcade: count(3),
+        };
+        let mode: Mode = "pets";
+        const picked = sets[mode].length;
+    `);
+    // `pets` is written first, so its call runs first...
+    const first = result.cpp.indexOf("count(2.0)");
+    const second = result.cpp.indexOf("count(3.0)");
+    assert.ok(first > 0 && second > first);
+    // ...into a temporary, because `arcade` sorts first and therefore
+    // takes slot 0. Without the temporaries the braced initializer
+    // would run the calls in slot order instead.
+    assert.match(
+        result.cpp,
+        /(\w+) = bblscene::count\(2\.0\);/,
+    );
+    assert.match(
+        result.cpp,
+        /EnumMap<bbl::js::Array<double>, 2>\{v_bblite_slot_4, v_bblite_slot_3\}/,
+    );
+});
+
+test("skips Record slot temporaries when the orders already agree", () => {
+    // Written in tag order, the braces already evaluate left to right
+    // in source order, so no temporary is needed.
+    const result = compileSource(`
+        type Mode = "pets" | "arcade";
+        function count(n: number): number[] {
+            const out: number[] = [];
+            for (let i = 0; i < n; i++) { out.push(i); }
+            return out;
+        }
+        const sets: Record<Mode, number[]> = {
+            arcade: count(3),
+            pets: count(2),
+        };
+        let mode: Mode = "pets";
+        const picked = sets[mode].length;
+    `);
+    assert.doesNotMatch(result.cpp, /v_bblite_slot/);
+    assert.match(
+        result.cpp,
+        /EnumMap<bbl::js::Array<double>, 2>\{bblscene::count\(3\.0\), bblscene::count\(2\.0\)\}/,
+    );
+});
+
+test("rejects a Record literal missing a slot", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                type Mode = "pets" | "arcade" | "smooth";
+                const sets: Record<Mode, number> = { pets: 1, arcade: 2 };
+                let mode: Mode = "pets";
+                const picked = sets[mode];
+            `),
+        /Record literal is missing the 'smooth' slot/,
+    );
+});
+
+test("keeps an interface with the same keys a struct", () => {
+    // Only the `Record` alias becomes a tag-indexed map; an ordinary
+    // interface that happens to share the key names stays a struct, so
+    // existing scenes keep the representation they had.
+    const result = compileSource(`
+        interface Plain { pets: number; arcade: number; smooth: number; }
+        const plain: Plain = { pets: 1, arcade: 2, smooth: 3 };
+        const picked = plain.arcade;
+    `);
+    assert.match(result.cpp, /struct Plain/);
+    assert.doesNotMatch(result.cpp, /EnumMap/);
+});
+
 test("binds const data-path locals as aliases", () => {
     const result = compileSource(`
         interface Holder {
