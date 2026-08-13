@@ -26,6 +26,7 @@ export interface DataLoweringContext {
     ): Value | undefined;
     reachJsData(): void;
     reachJsRandom(): void;
+    defaultEngine(): string | undefined;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -254,6 +255,11 @@ export class DataLowerer {
         if (!dataType) {
             return undefined;
         }
+        if (dataType.kind === "handle") {
+            // The path left the data model at a resource handle; the
+            // engine's own property lowering owns everything past it.
+            return undefined;
+        }
         if (dataType.kind === "optional") {
             this.context.fail(
                 access,
@@ -407,6 +413,23 @@ export class DataLowerer {
         }
         if (dataType.kind === "boolean") {
             return { kind: "boolean", cpp, dataType };
+        }
+        if (dataType.kind === "handle") {
+            // Handle leaves surface as ordinary resource values, so
+            // every mesh intrinsic and property assignment works on a
+            // mesh read out of a struct or array exactly as it does on
+            // a mesh local. The reached subset has one engine.
+            return {
+                kind: dataType.handle,
+                cpp,
+                dataType,
+                ...(this.context.defaultEngine()
+                    ? {
+                          engineCpp:
+                              this.context.defaultEngine()!,
+                      }
+                    : {}),
+            };
         }
         return { kind: "data", cpp, dataType };
     }
@@ -696,7 +719,8 @@ export class DataLowerer {
             callee.expression,
             method === "pop" ||
                 method === "push" ||
-                method === "fill"
+                method === "fill" ||
+                method === "splice"
                 ? "write"
                 : "read",
         );
@@ -758,6 +782,30 @@ export class DataLowerer {
             return {
                 kind: "void",
                 cpp: `bbl::js::array_fill(${narrowed.cpp}, ${value})`,
+            };
+        }
+        if (method === "splice") {
+            // The reached removal form: splice(index, 1). Insertions
+            // and multi-element removals stay unreached.
+            const removalCount =
+                call.arguments.length === 2
+                    ? this.context.resolveStaticExpression(
+                          call.arguments[1]!,
+                      )
+                    : undefined;
+            if (
+                !removalCount ||
+                !ts.isNumericLiteral(removalCount) ||
+                Number(removalCount.text) !== 1
+            ) {
+                this.context.fail(
+                    call,
+                    "Array.splice supports removing exactly one element.",
+                );
+            }
+            return {
+                kind: "void",
+                cpp: `bbl::js::array_splice_one(${narrowed.cpp}, ${this.context.compileNumber(call.arguments[0]!, "double")})`,
             };
         }
         this.context.fail(
@@ -1074,6 +1122,20 @@ export class DataLowerer {
                     dataType,
                 );
                 this.markEscaped(value);
+                return value.cpp;
+            }
+            case "handle": {
+                // Storing a resource into plain data: the sink takes
+                // the handle value produced by the intrinsic that
+                // created it (or read back out of another container).
+                const value =
+                    this.context.compileValue(unwrapped);
+                if (value.kind !== dataType.handle) {
+                    this.context.fail(
+                        unwrapped,
+                        `Expected a ${dataType.handle} value, received ${value.kind}.`,
+                    );
+                }
                 return value.cpp;
             }
             case "f32array":

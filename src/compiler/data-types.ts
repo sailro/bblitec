@@ -11,6 +11,12 @@ type Fail = (node: ts.Node, message: string) => never;
 export type DataType =
     | { kind: "number" }
     | { kind: "boolean" }
+    // A resource handle stored inside plain data (the demo particle
+    // list keeps its meshes this way). Handles are trivially copyable
+    // ids, so the value-copy model carries them unchanged: copying a
+    // struct copies the id and both refer to the same resource, which
+    // is exactly the JavaScript object-reference behavior.
+    | { kind: "handle"; handle: "mesh" }
     | { kind: "struct"; name: string }
     | { kind: "enum"; name: string }
     | { kind: "optional"; inner: DataType }
@@ -45,6 +51,20 @@ interface DataTableDefinition {
 const numberType: DataType = { kind: "number" };
 const booleanType: DataType = { kind: "boolean" };
 
+/**
+ * True when a symbol is declared by the pinned Babylon Lite typings, so
+ * a scene's own interface named `Mesh` is never mistaken for the engine
+ * resource type.
+ */
+function declaredInBabylonLite(symbol: ts.Symbol): boolean {
+    return (symbol.declarations ?? []).some((declaration) =>
+        declaration
+            .getSourceFile()
+            .fileName.replace(/\\/g, "/")
+            .includes("@babylonjs/lite/"),
+    );
+}
+
 export function dataTypesEqual(
     left: DataType,
     right: DataType,
@@ -58,6 +78,11 @@ export function dataTypesEqual(
         case "f32array":
         case "u32array":
             return true;
+        case "handle":
+            return (
+                left.handle ===
+                (right as { handle: string }).handle
+            );
         case "struct":
         case "enum":
             return (
@@ -232,6 +257,12 @@ export class DataTypeRegistry {
         }
         if (type.symbol?.name === "Uint32Array") {
             return { kind: "u32array" };
+        }
+        if (
+            type.symbol?.name === "Mesh" &&
+            declaredInBabylonLite(type.symbol)
+        ) {
+            return { kind: "handle", handle: "mesh" };
         }
         const objectType = type as ts.ObjectType;
         if (
@@ -646,6 +677,8 @@ export class DataTypeRegistry {
                 return "double";
             case "boolean":
                 return "bool";
+            case "handle":
+                return "bbl::MeshHandle";
             case "struct":
                 return `bblscene::${dataType.name}`;
             case "enum":
@@ -673,6 +706,8 @@ export class DataTypeRegistry {
                 return "n";
             case "boolean":
                 return "b";
+            case "handle":
+                return `h(${dataType.handle})`;
             case "struct":
                 return `s(${dataType.name})`;
             case "enum":

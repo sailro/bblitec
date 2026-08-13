@@ -250,7 +250,10 @@ export class NativeFunctionLowerer {
                 returnTsType,
                 declaration,
             );
-            if (!returnType) {
+            // A helper that hands back a resource handle touches the
+            // engine to produce it, so it stays on the inline path
+            // where the engine binding is in scope.
+            if (!returnType || returnType.kind === "handle") {
                 return undefined;
             }
         }
@@ -267,7 +270,10 @@ export class NativeFunctionLowerer {
                     ),
                     parameter,
                 );
-            if (!parameterType) {
+            if (
+                !parameterType ||
+                parameterType.kind === "handle"
+            ) {
                 return undefined;
             }
             parameters.push({

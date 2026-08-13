@@ -1,0 +1,185 @@
+// Project-owned differential gate: the tetris demo's particle-list
+// update loop (lab/lite/src/demos/tetris/particles.ts TetrisParticles)
+// expressed with plain functions instead of class syntax. Each live
+// particle is a struct holding its MESH HANDLE alongside its velocity,
+// spin, size, and remaining life; the list is a dynamic array of those
+// structs. Every frame the sweep integrates gravity, writes the mesh
+// transforms through the struct's handle, and retires expired particles
+// by removing the mesh from the scene and splicing the entry out of the
+// list — the demo's exact reverse-iteration removal.
+
+import {
+    addToScene,
+    attachControl,
+    createArcRotateCamera,
+    createBox,
+    createDirectionalLight,
+    createEngine,
+    createHemisphericLight,
+    createSceneContext,
+    createStandardMaterial,
+    onBeforeRender,
+    registerScene,
+    removeFromScene,
+    startEngine,
+} from "babylon-lite";
+import type { ArcRotateCamera, Mesh } from "babylon-lite";
+import {
+    PIECE_COLORS,
+} from "../corpus/babylon-lite/lab/lite/src/demos/tetris/pieces.js";
+
+// The demo's particle record, mesh handle included.
+interface Particle {
+    mesh: Mesh;
+    px: number;
+    py: number;
+    pz: number;
+    vx: number;
+    vy: number;
+    vz: number;
+    spin: number;
+    angle: number;
+    life: number;
+    maxLife: number;
+    size: number;
+}
+
+const GRAVITY = 2.0;
+const STEP = 1 / 60;
+const SETTLE_FRAME = 30;
+const READY_FRAME = 40;
+
+async function main(): Promise<void> {
+    const canvas = document.getElementById(
+        "renderCanvas",
+    ) as HTMLCanvasElement;
+    const engine = await createEngine(canvas);
+    const scene = createSceneContext(engine);
+
+    scene.camera = createArcRotateCamera(
+        -Math.PI / 2,
+        Math.PI / 2.3,
+        14,
+        { x: 0, y: 1, z: 0 },
+    );
+    attachControl(
+        scene.camera as ArcRotateCamera,
+        canvas,
+        scene,
+    );
+    scene.clearColor = { r: 0.02, g: 0.024, b: 0.05, a: 1 };
+
+    addToScene(
+        scene,
+        createHemisphericLight([0, 1, 0.25], 0.75),
+    );
+    addToScene(
+        scene,
+        createDirectionalLight([0.22, -0.5, -0.84], 1.4),
+    );
+
+    // One burst per piece color, spawned at scene build under the
+    // pinned seeded Math.random so both sides draw the same particles.
+    const live: Particle[] = [];
+    for (let color = 0; color < 7; color++) {
+        for (let index = 0; index < 4; index++) {
+            const mesh = createBox(engine, 1);
+            const size = 0.35 + Math.random() * 0.25;
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 0.5 + Math.random() * 0.8;
+            mesh.position.set(
+                color - 3,
+                1.5,
+                0,
+            );
+            mesh.scaling.set(size, size, size);
+            const material = createStandardMaterial();
+            const tint = PIECE_COLORS[color]!;
+            material.diffuseColor = [
+                tint[0],
+                tint[1],
+                tint[2],
+            ];
+            mesh.material = material;
+            addToScene(scene, mesh);
+            // The mesh handle travels into the data model here.
+            live.push({
+                mesh,
+                // The integrated state lives in the struct (doubles on
+                // both sides); the mesh transform is SET from it each
+                // frame rather than accumulated into the native float
+                // record.
+                px: color - 3,
+                py: 1.5,
+                pz: 0,
+                angle: 0,
+                vx: Math.cos(angle) * speed,
+                vy: 0.4 + Math.random() * 0.9,
+                vz: Math.sin(angle) * speed * 0.3,
+                spin: (Math.random() - 0.5) * 2.5,
+                // Lifetimes straddle the sweep window (30 frames at the
+                // fixed step, i.e. 0.5s), so roughly half the list is
+                // spliced out and half survives into the capture.
+                life: 0.15 + Math.random() * 0.9,
+                maxLife: 1.05,
+                size,
+            });
+        }
+    }
+
+    let frame = 0;
+    onBeforeRender(scene, () => {
+        // The demo's reverse sweep: integrate, then retire expired
+        // particles by removing the mesh and splicing the entry out.
+        // The entries are addressed through the list rather than through
+        // an aliasing local: the pinned value model makes a local bound
+        // from a data path a copy that rejects writes, so the demo's
+        // `const p = this.live[i]!` shape waits on escape analysis.
+        if (frame < SETTLE_FRAME) {
+            for (let index = live.length - 1; index >= 0; index--) {
+                live[index]!.life -= STEP;
+                if (live[index]!.life <= 0) {
+                    removeFromScene(scene, live[index]!.mesh);
+                    live.splice(index, 1);
+                    continue;
+                }
+                live[index]!.vy -= GRAVITY * STEP;
+                live[index]!.px += live[index]!.vx * STEP;
+                live[index]!.py += live[index]!.vy * STEP;
+                live[index]!.pz += live[index]!.vz * STEP;
+                live[index]!.angle += live[index]!.spin * STEP;
+                // Transform writes through the handle stored in the
+                // struct, like TetrisParticles.update().
+                live[index]!.mesh.position.set(
+                    live[index]!.px,
+                    live[index]!.py,
+                    live[index]!.pz,
+                );
+                live[index]!.mesh.rotation.set(
+                    live[index]!.angle,
+                    0,
+                    live[index]!.angle,
+                );
+                const remaining =
+                    live[index]!.life / live[index]!.maxLife;
+                const scale =
+                    live[index]!.size * (0.55 + 0.45 * remaining);
+                live[index]!.mesh.scaling.set(
+                    scale,
+                    scale,
+                    scale,
+                );
+            }
+        }
+
+        frame++;
+        if (frame === READY_FRAME) {
+            canvas.dataset.ready = "true";
+        }
+    });
+
+    await registerScene(scene);
+    await startEngine(engine);
+}
+
+main().catch((error) => console.error(error));

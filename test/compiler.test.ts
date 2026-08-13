@@ -1213,6 +1213,13 @@ test("compiles the flat-entry compiler state regression scene", () => {
         /\.position\.x = static_cast<float>\(v_offset\)/,
     );
     assert.match(result.cpp, /\.rotation\.y \+= 0\.3f/);
+    // Transform writes mark the mesh dirty so the backends re-upload
+    // its baked vertices, exactly like the property-animation
+    // evaluator's bump.
+    assert.match(
+        result.cpp,
+        /\+\+v_engine\.meshes\[[^\]]+\]\.transform_version;/,
+    );
     assert.ok(
         !result.manifest.adaptations.some(
             ({ id }) => id === "entry-main-wrapper-erasure",

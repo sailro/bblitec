@@ -1482,6 +1482,37 @@ export const scenes: readonly SceneDefinition[] = [
         },
     },
     {
+        id: "tetris-particles",
+        name: "Tetris Particles - Handle-Carrying Data",
+        source: "examples/tetris-particles.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/tetris-particles",
+        title: "Babylon Lite Native - Tetris Particles",
+        buildDirectory:
+            "native/build-tetris-particles-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/tetris-particles/babylon-lite-golden.png",
+            },
+            actual:
+                "artifacts/parity/tetris-particles-native.png",
+            outputDirectory:
+                "artifacts/parity/tetris-particles",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.004,
+            backgroundColor: [5, 6, 13],
+            backgroundThreshold: 30,
+            // The sweep settles at frame 30 and the scene flags
+            // readiness at 40; capture past both so the measured image
+            // is the terminal state of the retired list.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "44",
+            },
+        },
+    },
+    {
         id: "tetris-retire",
         name: "Tetris Retire - Runtime Removal",
         source: "examples/tetris-retire.ts",

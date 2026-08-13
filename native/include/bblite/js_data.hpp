@@ -61,6 +61,15 @@ template <typename T>
     return Array<T>(static_cast<std::size_t>(count), value);
 }
 
+// `array.splice(index, 1)` — remove one element and shift the tail down,
+// the removal form the reached subset compiles (the particle sweep).
+template <typename T>
+inline void array_splice_one(Array<T>& values, double index) {
+    const auto position = static_cast<std::size_t>(index);
+    assert(position < values.size());
+    values.erase(values.begin() + static_cast<std::ptrdiff_t>(position));
+}
+
 // `array.length = count` — the reached subset only shrinks (truncation).
 template <typename T>
 inline void array_truncate(Array<T>& values, double count) {
