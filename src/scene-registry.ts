@@ -1405,6 +1405,36 @@ export const scenes: readonly SceneDefinition[] = [
         },
     },
     {
+        id: "tetris-board",
+        name: "Tetris Board - Demo Renderer Materials",
+        source: "examples/tetris-board.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/tetris-board",
+        title: "Babylon Lite Native - Tetris Board",
+        buildDirectory: "native/build-tetris-board-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/tetris-board/babylon-lite-golden.png",
+            },
+            actual:
+                "artifacts/parity/tetris-board-native.png",
+            outputDirectory: "artifacts/parity/tetris-board",
+            // An IBL scene carries the usual environment residual (every
+            // pixel is within one step; ~5% differ by exactly that),
+            // so it gates like the other IBL scenes rather than like the
+            // analytic-only tetris gates.
+            maxFullMad: 0.03,
+            maxForegroundMad: 0.03,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "10",
+            },
+        },
+    },
+    {
         id: "tetris-modes",
         name: "Tetris Modes - Record Indexing",
         source: "examples/tetris-modes.ts",
