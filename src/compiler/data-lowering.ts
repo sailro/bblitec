@@ -434,6 +434,19 @@ export class DataLowerer {
         if (!dataType) {
             return undefined;
         }
+        if (dataType.kind === "enummap") {
+            // A `Record` is keyed by the union's tag, not by a number,
+            // so the index compiles as that enum and selects its slot.
+            const tag = this.compileEnumIndex(
+                access.argumentExpression,
+                dataType.enumName,
+            );
+            this.context.reachJsData();
+            return this.leafValue(
+                `bbl::js::enum_map_at(${owner.cpp}, ${tag})`,
+                dataType.element,
+            );
+        }
         const index = this.context.compileNumber(
             access.argumentExpression,
             "double",
@@ -502,6 +515,21 @@ export class DataLowerer {
                     `Element access is not supported on data ${dataType.kind}.`,
                 );
         }
+    }
+
+    /**
+     * Compiles a `Record` index: the key is a member of the union the
+     * map is keyed by, written either as a literal or as a value of
+     * that union's type.
+     */
+    private compileEnumIndex(
+        expression: ts.Expression,
+        enumName: string,
+    ): string {
+        return this.compileForSink(expression, {
+            kind: "enum",
+            name: enumName,
+        });
     }
 
     private leafValue(
@@ -1143,6 +1171,25 @@ export class DataLowerer {
                 ) {
                     return value.cpp;
                 }
+                // An inlined function's tag parameter carries the
+                // literal it was called with, so a name bound to a
+                // known string names its member just as the literal
+                // written in place would.
+                if (ts.isIdentifier(unwrapped)) {
+                    const bound =
+                        this.context.lookupIdentifierValue(
+                            unwrapped,
+                        );
+                    if (
+                        bound?.staticString !== undefined
+                    ) {
+                        return this.context.dataTypes.enumMemberCpp(
+                            dataType,
+                            bound.staticString,
+                            unwrapped,
+                        );
+                    }
+                }
                 this.context.fail(
                     unwrapped,
                     `Expected a ${dataType.name} literal or value.`,
@@ -1168,6 +1215,22 @@ export class DataLowerer {
                     )
                 ) {
                     return this.structLiteral(
+                        unwrapped,
+                        dataType,
+                    );
+                }
+                const value = this.requireDataValue(
+                    unwrapped,
+                    dataType,
+                );
+                this.markEscaped(value);
+                return value.cpp;
+            }
+            case "enummap": {
+                if (
+                    ts.isObjectLiteralExpression(unwrapped)
+                ) {
+                    return this.enumMapLiteral(
                         unwrapped,
                         dataType,
                     );
@@ -1415,6 +1478,115 @@ export class DataLowerer {
      * aggregate in field order. Spread properties are rejected here; the
      * statement-level helper handles them.
      */
+    /**
+     * Builds a `Record` literal.
+     *
+     * Slots are laid out in the union's tag order so an index by tag
+     * lands on the value the source wrote under that key, but the
+     * initializers are EVALUATED in the order they were written, which
+     * is the order JavaScript runs them in. A slot initializer can
+     * create meshes or call a helper that mutates what it is handed,
+     * so the order is observable.
+     *
+     * Two things could reorder it. Compiling in tag order would move
+     * the statements an inlined initializer emits, so the loop below
+     * compiles in written order. Placing those expressions into the
+     * braces in tag order would then move any evaluation that stayed
+     * inside the expression -- a call to a native helper, say -- since
+     * a braced initializer list evaluates left to right. So when the
+     * two orders differ, each slot is pinned to a temporary first.
+     */
+    private enumMapLiteral(
+        literal: ts.ObjectLiteralExpression,
+        dataType: DataType & { kind: "enummap" },
+    ): string {
+        const members =
+            this.context.dataTypes.enumMembers(
+                dataType.enumName,
+            );
+        const compiled = new Map<string, string>();
+        for (const property of literal.properties) {
+            if (!ts.isPropertyAssignment(property)) {
+                this.context.fail(
+                    property,
+                    "Record literals support plain property assignments.",
+                );
+            }
+            const name =
+                ts.isIdentifier(property.name) ||
+                ts.isStringLiteral(property.name)
+                    ? property.name.text
+                    : undefined;
+            if (name === undefined) {
+                this.context.fail(
+                    property.name,
+                    "Record keys must be literal names.",
+                );
+            }
+            if (!members.includes(name)) {
+                this.context.fail(
+                    property.name,
+                    `'${name}' is not a member of ${dataType.enumName}.`,
+                );
+            }
+            compiled.set(
+                name,
+                this.compileForSink(
+                    property.initializer,
+                    dataType.element,
+                ),
+            );
+        }
+        const written = this.literalKeyOrder(literal);
+        const reordered = members.some(
+            (member, index) => written[index] !== member,
+        );
+        if (reordered) {
+            for (const key of written) {
+                const slot = compiled.get(key);
+                if (slot === undefined) {
+                    continue;
+                }
+                const temporary =
+                    this.context.allocateTemporaryCppName(
+                        "slot",
+                    );
+                this.context.emit(
+                    `${this.context.dataTypes.cppType(dataType.element)} ${temporary} = ${slot};`,
+                );
+                this.registerLocal(temporary, "owned");
+                compiled.set(key, temporary);
+            }
+        }
+        const slots = members.map((member) => {
+            const slot = compiled.get(member);
+            if (slot === undefined) {
+                this.context.fail(
+                    literal,
+                    `Record literal is missing the '${member}' slot.`,
+                );
+            }
+            return slot;
+        });
+        this.context.reachJsData();
+        return `${this.context.dataTypes.cppType(dataType)}{${slots.join(", ")}}`;
+    }
+
+    /**
+     * The keys of a literal, in the order they were written.
+     */
+    private literalKeyOrder(
+        literal: ts.ObjectLiteralExpression,
+    ): string[] {
+        return literal.properties.flatMap((property) =>
+            ts.isPropertyAssignment(property) &&
+            (ts.isIdentifier(property.name) ||
+                ts.isStringLiteral(property.name))
+                ? [property.name.text]
+                : [],
+        );
+    }
+
     public structLiteral(
         literal: ts.ObjectLiteralExpression,
         dataType: DataType & { kind: "struct" },
@@ -1569,6 +1741,45 @@ export class DataLowerer {
      * Emits assignments whose target is a data path. Returns false when the
      * left side is not a data path.
      */
+    /**
+     * Assigns to a data-typed local by name (`currentMode = mode`).
+     *
+     * Only the scalar data kinds are reachable this way. A tag or a
+     * handle is a value in both languages, so a C++ assignment says
+     * exactly what the JavaScript said. Rebinding a name that holds a
+     * struct or an array does NOT: JavaScript would leave both names
+     * pointing at one object while C++ would copy, so those keep their
+     * rejection rather than compiling into a different program.
+     */
+    private emitLocalDataAssignment(
+        expression: ts.BinaryExpression,
+        left: ts.Identifier,
+    ): boolean {
+        // Resolved as a read: the write-mode ownership rules guard
+        // against a write through a copy reaching its container, which
+        // is a question only aggregates raise. A `let` holding a tag or
+        // a handle is a plain copy in both languages, and the scalar
+        // check below is what keeps aggregates out.
+        const target = this.compileDataPath(left, "read");
+        if (
+            target?.kind !== "data" ||
+            !target.dataType
+        ) {
+            return false;
+        }
+        const kind = target.dataType.kind;
+        if (kind !== "enum" && kind !== "handle") {
+            this.context.fail(
+                expression,
+                `'${left.text}' holds a ${kind}; rebinding it would copy in native code where JavaScript would alias, so assign through a field or element instead.`,
+            );
+        }
+        this.context.emit(
+            `${target.cpp} = ${this.compileForSink(expression.right, target.dataType)};`,
+        );
+        return true;
+    }
+
     public emitAssignment(
         expression: ts.BinaryExpression,
     ): boolean {
@@ -1588,6 +1799,12 @@ export class DataLowerer {
             operator === "="
         ) {
             return this.emitSwapAssignment(expression);
+        }
+        if (ts.isIdentifier(left) && operator === "=") {
+            return this.emitLocalDataAssignment(
+                expression,
+                left,
+            );
         }
         if (
             !ts.isPropertyAccessExpression(left) &&

@@ -253,7 +253,10 @@ export class NativeFunctionLowerer {
             // A helper that hands back a resource handle touches the
             // engine to produce it, so it stays on the inline path
             // where the engine binding is in scope.
-            if (!returnType || returnType.kind === "handle") {
+            if (
+                !returnType ||
+                this.carriesHandle(returnType)
+            ) {
                 return undefined;
             }
         }
@@ -272,7 +275,7 @@ export class NativeFunctionLowerer {
                 );
             if (
                 !parameterType ||
-                parameterType.kind === "handle"
+                this.carriesHandle(parameterType)
             ) {
                 return undefined;
             }
@@ -307,6 +310,49 @@ export class NativeFunctionLowerer {
      * constants, functions, imports, and the function's own parameters and
      * locals are fine; captured bindings force the inline path.
      */
+    /**
+     * True when a type holds a resource handle anywhere inside it.
+     *
+     * A namespace-scope function has no engine binding in scope, and
+     * touching a handle always needs one. Checking only the outermost
+     * type would miss a struct or array of meshes, which reads as
+     * plain data here but still drives the engine at every use.
+     */
+    private carriesHandle(
+        dataType: DataType,
+        seen = new Set<string>(),
+    ): boolean {
+        switch (dataType.kind) {
+            case "handle":
+                return true;
+            case "optional":
+                return this.carriesHandle(
+                    dataType.inner,
+                    seen,
+                );
+            case "vector":
+            case "span":
+            case "enummap":
+                return this.carriesHandle(
+                    dataType.element,
+                    seen,
+                );
+            case "struct": {
+                if (seen.has(dataType.name)) {
+                    return false;
+                }
+                seen.add(dataType.name);
+                return this.context.dataTypes
+                    .structFieldTypes(dataType.name)
+                    .some((field) =>
+                        this.carriesHandle(field, seen),
+                    );
+            }
+            default:
+                return false;
+        }
+    }
+
     private capturesEnclosingBindings(
         declaration: SupportedFunction,
     ): boolean {

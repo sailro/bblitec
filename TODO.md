@@ -350,9 +350,22 @@ the identical generator, keyed off the generated manifest's
   Inheritance, accessors, statics, and value-returning methods are
   rejected explicitly. Gated by tetris-particles, which renders the class
   shape byte-identically to the plain-function version it replaced.
-- [ ] Stage 2 (remaining) — the renderer record with methods, a getter, and
-  `Record<mode, set>` runtime-string indexing. Validate with a
-  static-board gate before any game loop.
+- [x] `Record<Union, T>` runtime indexing: a `Record` keyed by a
+  string-literal union lowers to one slot per member, indexed by the
+  union's own enum tag. Slots sit in tag order; their initializers
+  evaluate in written order, through temporaries when the two orders
+  differ, because a slot initializer can create meshes or call a helper
+  that mutates what it is handed. A `let` holding a tag can also be
+  reassigned now. Gated by tetris-modes.
+- [ ] Stage 2 (remaining) — the renderer record's methods and its `mode`
+  getter. Object-literal method declarations and get-accessors are both
+  rejected today; a shorthand property naming a local function does not
+  resolve either. Validate with a static-board gate before any game loop.
+- [ ] An inline-path helper that returns an object literal folds it to a
+  compile-time record rather than a data struct, so its result cannot be
+  stored into plain data (`const s = buildSet(); sets.pets = s;`). The
+  demo's `buildRenderSet` has this shape; tetris-modes works around it by
+  returning the `Mesh[]` and building the struct at the literal.
 - [ ] Inlined value returns compile through the default float path in
   compound numeric contexts (a double-to-float-to-double round-trip);
   route inline return expressions through double precision. Parameter
