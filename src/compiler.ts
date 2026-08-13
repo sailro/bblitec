@@ -3346,6 +3346,10 @@ class Compiler
         this.jsDataReached = true;
     }
 
+    public defaultEngine(): string | undefined {
+        return this.defaultEngineCpp;
+    }
+
     public reachJsRandom(): void {
         this.jsRandomReached = true;
     }

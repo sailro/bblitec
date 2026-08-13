@@ -613,12 +613,14 @@ export function emitPropertyAssignment(
 
     if (
         ts.isPropertyAccessExpression(left.expression) &&
-        ts.isIdentifier(left.expression.expression) &&
         ["position", "rotation", "scaling"].includes(
             left.expression.name.text,
         )
     ) {
-        const mesh = context.lookup(
+        // The owner is compiled rather than looked up, so a mesh read
+        // out of the data model (a handle stored in a struct or array)
+        // writes its transform exactly like a mesh local.
+        const mesh = context.compileValue(
             left.expression.expression,
         );
         context.expectKind(
@@ -636,8 +638,19 @@ export function emitPropertyAssignment(
             );
         }
         const component = ["x", "y", "z"][axis]!;
+        const engine = context.requireEngine(
+            mesh,
+            expression,
+        );
         context.emit(
-            `${context.requireEngine(mesh, expression)}.meshes[${mesh.cpp}.value].${left.expression.name.text}.${component} ${operator} ${context.compileNumber(expression.right)};`,
+            `${engine}.meshes[${mesh.cpp}.value].${left.expression.name.text}.${component} ${operator} ${context.compileNumber(expression.right)};`,
+        );
+        // The transform version is what the backends gate their baked
+        // vertex re-upload on (the pinned property-animation evaluator
+        // bumps it the same way), so a transform written outside the
+        // animation path has to mark itself dirty too.
+        context.emit(
+            `++${engine}.meshes[${mesh.cpp}.value].transform_version;`,
         );
         return;
     }

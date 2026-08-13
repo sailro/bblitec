@@ -999,13 +999,15 @@ export class StatementLowerer {
             return false;
         }
         const owner = call.expression.expression;
-        if (
-            !ts.isPropertyAccessExpression(owner) ||
-            !ts.isIdentifier(owner.expression)
-        ) {
+        if (!ts.isPropertyAccessExpression(owner)) {
             return false;
         }
-        const target = context.lookup(owner.expression);
+        // Identifier owners look up directly; anything else compiles as
+        // a value so a mesh read out of the data model (a handle in a
+        // struct or array) sets its transform like a mesh local.
+        const target = ts.isIdentifier(owner.expression)
+            ? context.lookup(owner.expression)
+            : context.compileValue(owner.expression);
         if (
             target.kind === "camera" &&
             ["position", "target"].includes(
@@ -1049,8 +1051,15 @@ export class StatementLowerer {
                 context.compileNumber(argument),
             )
             .join(", ")}}`;
+        const engine = context.requireEngine(target, call);
         context.emit(
-            `${context.requireEngine(target, call)}.meshes[${target.cpp}.value].${owner.name.text} = ${vector};`,
+            `${engine}.meshes[${target.cpp}.value].${owner.name.text} = ${vector};`,
+        );
+        // Mark the baked vertex data dirty the way the pinned
+        // property-animation evaluator does; the backends re-upload a
+        // mesh's transformed vertices only when this version moves.
+        context.emit(
+            `++${engine}.meshes[${target.cpp}.value].transform_version;`,
         );
         return true;
     }

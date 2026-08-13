@@ -327,12 +327,25 @@ the identical generator, keyed off the generated manifest's
   guard is gone and Dawn's full rebuild already covered it), and the
   camera's target components accept per-frame writes alongside the
   already-supported scalar clamping. Gated by tetris-retire.
-- [ ] Stage 2 (remaining) — renderer contracts for `tetris/renderer.ts`:
-  the class/closure subset for `TetrisParticles` (private fields and
-  methods, a `Mesh[]` particle list with `splice` removal) and the
-  renderer record with methods, a getter, and `Record<mode, set>`
-  runtime-string indexing. Validate with a static-board gate before any
-  game loop.
+- [x] Handle-carrying plain data — a mesh handle stored in a struct or
+  array drives its transforms, materials, and scene membership exactly
+  like a mesh local, and `splice(index, 1)` removes an entry. Gated by
+  tetris-particles, which runs the demo's particle sweep with plain
+  functions. The gate also fixed a latent bug: direct mesh transform
+  writes never bumped the transform version the backends gate their
+  baked-vertex re-upload on.
+- [ ] Bind a local from a data path as an alias rather than a copy, so
+  the demo's `const p = this.live[i]!; p.life -= dt;` shape compiles.
+  The pinned value model makes such locals read-only copies today
+  (tetris-particles indexes through the list instead). This is the
+  narrow, reached half of the escape-analysis entry above; the hazard
+  to settle first is invalidation — a `push` can reallocate the backing
+  vector while an alias is live.
+- [ ] Stage 2 (remaining) — the class/closure subset for
+  `TetrisParticles` (private fields and methods over the now-supported
+  particle data) and the renderer record with methods, a getter, and
+  `Record<mode, set>` runtime-string indexing. Validate with a
+  static-board gate before any game loop.
 - [ ] Inlined value returns compile through the default float path in
   compound numeric contexts (a double-to-float-to-double round-trip);
   route inline return expressions through double precision. Parameter
