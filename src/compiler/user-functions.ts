@@ -18,8 +18,17 @@ export function resolveFunctionDeclaration(
     identifier: ts.Identifier,
     fail: Fail,
 ): SupportedFunction | undefined {
+    // A record property written in shorthand (`{ sync }`) resolves at
+    // its own identifier to the literal's property symbol, so the
+    // shorthand's value symbol is what names the function it refers to.
     const symbol =
-        checker.getSymbolAtLocation(identifier);
+        ts.isShorthandPropertyAssignment(
+            identifier.parent,
+        ) && identifier.parent.name === identifier
+            ? checker.getShorthandAssignmentValueSymbol(
+                  identifier.parent,
+              )
+            : checker.getSymbolAtLocation(identifier);
     if (!symbol) {
         return undefined;
     }
@@ -130,10 +139,18 @@ export class UserFunctionLowerer {
         private readonly checker: ts.TypeChecker,
     ) {}
 
+    /**
+     * `inBodyScope` wraps only the body lowering. A record method
+     * closes over the scope that built the record, but its arguments
+     * are written at the call site and belong to the scope there, so
+     * they are evaluated before the wrapper takes effect.
+     */
     public compile(
         context: UserFunctionContext,
         call: ts.CallExpression,
         identifier: ts.Identifier,
+        inBodyScope: <T>(work: () => T) => T = (work) =>
+            work(),
     ): Value | undefined {
         const ir = this.resolve(
             identifier,
@@ -149,13 +166,12 @@ export class UserFunctionLowerer {
             (node, message) =>
                 context.fail(node, message),
         );
-        return this.lower(
-            context,
-            ir,
-            call.arguments.map((argument) =>
+        const argumentValues = call.arguments.map(
+            (argument) =>
                 this.argumentValue(context, argument),
-            ),
-            call,
+        );
+        return inBodyScope(() =>
+            this.lower(context, ir, argumentValues, call),
         );
     }
 

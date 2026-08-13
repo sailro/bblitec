@@ -1171,7 +1171,28 @@ class Compiler
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
             const properties: Record<string, Value> = {};
+            const methods: Record<string, ts.Identifier> =
+                {};
+            const getters: Record<
+                string,
+                ts.GetAccessorDeclaration
+            > = {};
             for (const property of unwrapped.properties) {
+                if (
+                    ts.isGetAccessorDeclaration(property)
+                ) {
+                    const name = this.propertyName(
+                        property.name,
+                    );
+                    if (!name) {
+                        this.fail(
+                            property.name,
+                            "Static record properties require literal names.",
+                        );
+                    }
+                    getters[name] = property;
+                    continue;
+                }
                 if (ts.isPropertyAssignment(property)) {
                     const name = this.propertyName(
                         property.name,
@@ -1182,6 +1203,16 @@ class Compiler
                             "Static record properties require literal names.",
                         );
                     }
+                    const initializer = this.unwrap(
+                        property.initializer,
+                    );
+                    if (
+                        ts.isIdentifier(initializer) &&
+                        this.namesLocalFunction(initializer)
+                    ) {
+                        methods[name] = initializer;
+                        continue;
+                    }
                     properties[name] = this.compileValue(
                         property.initializer,
                     );
@@ -1190,19 +1221,42 @@ class Compiler
                         property,
                     )
                 ) {
+                    if (
+                        this.namesLocalFunction(
+                            property.name,
+                        )
+                    ) {
+                        methods[property.name.text] =
+                            property.name;
+                        continue;
+                    }
                     properties[property.name.text] =
                         this.compileValue(property.name);
                 } else {
                     this.fail(
                         property,
-                        "Static records support property assignments only.",
+                        "Static records support property assignments, getters, and properties naming a local function.",
                     );
                 }
             }
+            const closes =
+                Object.keys(methods).length > 0 ||
+                Object.keys(getters).length > 0;
             return {
                 kind: "record",
                 cpp: "",
                 recordProperties: properties,
+                recordMethods: methods,
+                recordGetters: getters,
+                // Only a record with code in it needs its scope: a
+                // plain property already holds a resolved value.
+                ...(closes
+                    ? {
+                          recordScopes: [
+                              ...this.variableScopes,
+                          ],
+                      }
+                    : {}),
             };
         }
         if (
@@ -1376,9 +1430,22 @@ class Compiler
             };
         }
         if (owner.kind === "record") {
+            const accessor = owner.recordGetters?.[property];
+            if (accessor) {
+                return this.compileRecordGetter(
+                    owner,
+                    accessor,
+                );
+            }
             const value =
                 owner.recordProperties?.[property];
             if (!value) {
+                if (owner.recordMethods?.[property]) {
+                    this.fail(
+                        expression,
+                        `Property '${property}' is a method; it can be called but not read as a value.`,
+                    );
+                }
                 this.fail(
                     expression,
                     `Static record has no property '${property}'.`,
@@ -1520,6 +1587,35 @@ class Compiler
                 const declaration = instance
                     ? this.classOf(instance)
                     : undefined;
+                // A record property naming a local function inlines at
+                // the call site exactly as a direct call to that
+                // function does, by handing the identifier the literal
+                // wrote to the same resolver.
+                const recordMethod =
+                    instance?.kind === "record"
+                        ? instance.recordMethods?.[
+                              callee.name.text
+                          ]
+                        : undefined;
+                if (instance && recordMethod) {
+                    const method =
+                        this.userFunctions.compile(
+                            this,
+                            call,
+                            recordMethod,
+                            // Only the body runs in the record's
+                            // scope; the arguments were written at
+                            // the call site and resolve there.
+                            (work) =>
+                                this.withRecordScopes(
+                                    instance,
+                                    work,
+                                ),
+                        );
+                    if (method) {
+                        return method;
+                    }
+                }
                 if (instance && declaration) {
                     return this.classLowerer.compileMethodCall(
                         instance,
@@ -3463,6 +3559,115 @@ class Compiler
 
     public defineThis(instance: Value | undefined): void {
         this.thisInstance = instance;
+    }
+
+    /**
+     * True when an identifier names a local function declaration, so a
+     * record property holding it is a method rather than a value.
+     */
+    public namesLocalFunction(
+        identifier: ts.Identifier,
+    ): boolean {
+        if (this.lookupOptional(identifier)) {
+            // A bound value wins: a local shadowing a function name is
+            // that local.
+            return false;
+        }
+        // A shorthand property's own identifier resolves to the
+        // literal's property symbol, so the value symbol is what says
+        // which declaration the name actually refers to.
+        const symbol = this.symbols.valueSymbol(identifier);
+        return (symbol?.declarations ?? []).some(
+            (declaration) =>
+                ts.isFunctionDeclaration(declaration) &&
+                declaration.body !== undefined,
+        );
+    }
+
+    /**
+     * The value a property access reads out of a compile-time record,
+     * or undefined when the owner is not one. Asking rather than
+     * asserting, so the data lowerer can probe a path it may not own.
+     */
+    public resolveRecordMember(
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const ownerExpression = this.unwrap(
+            expression.expression,
+        );
+        const owner = ts.isIdentifier(ownerExpression)
+            ? this.lookupOptional(ownerExpression)
+            : ownerExpression.kind ===
+                ts.SyntaxKind.ThisKeyword
+              ? this.activeThis()
+              : undefined;
+        if (owner?.kind !== "record") {
+            return undefined;
+        }
+        const accessor =
+            owner.recordGetters?.[expression.name.text];
+        if (accessor) {
+            return this.compileRecordGetter(
+                owner,
+                accessor,
+            );
+        }
+        return owner.recordProperties?.[
+            expression.name.text
+        ];
+    }
+
+    /**
+     * Runs `work` with a record's captured scope chain in force, so a
+     * method or getter of that record sees the state it closed over
+     * even when the scope that built it has since been left.
+     */
+    private withRecordScopes<T>(
+        owner: Value,
+        work: () => T,
+    ): T {
+        if (!owner.recordScopes) {
+            return work();
+        }
+        const saved = [...this.variableScopes];
+        this.variableScopes.length = 0;
+        this.variableScopes.push(...owner.recordScopes);
+        try {
+            return work();
+        } finally {
+            this.variableScopes.length = 0;
+            this.variableScopes.push(...saved);
+        }
+    }
+
+    /**
+     * Reads a record getter by evaluating its accessor at the read
+     * site, with the record's own scope restored. The subset covers
+     * the shape the reached records use: a single `return` of an
+     * expression over the state the record closed over.
+     */
+    private compileRecordGetter(
+        owner: Value,
+        accessor: ts.GetAccessorDeclaration,
+    ): Value {
+        const statements =
+            accessor.body?.statements ?? [];
+        const [only] = statements;
+        if (
+            statements.length !== 1 ||
+            !only ||
+            !ts.isReturnStatement(only) ||
+            !only.expression
+        ) {
+            this.fail(
+                accessor,
+                `Getter '${accessor.name.getText()}' must be a single return statement.`,
+            );
+        }
+        const expression = only.expression;
+        return this.withRecordScopes(owner, () =>
+            this.compileValue(expression),
+        );
     }
 
     /**

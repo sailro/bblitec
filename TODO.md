@@ -357,10 +357,21 @@ the identical generator, keyed off the generated manifest's
   differ, because a slot initializer can create meshes or call a helper
   that mutates what it is handed. A `let` holding a tag can also be
   reassigned now. Gated by tetris-modes.
-- [ ] Stage 2 (remaining) — the renderer record's methods and its `mode`
-  getter. Object-literal method declarations and get-accessors are both
-  rejected today; a shorthand property naming a local function does not
-  resolve either. Validate with a static-board gate before any game loop.
+- [x] The renderer record's methods and its `mode` getter: a record
+  property naming a local function is a method that inlines at its call
+  site, and a `get` accessor with a single return re-reads its state at
+  each read. A record carrying either captures the scope chain that
+  built it, so a factory can return it and the frame loop can drive it
+  long after that scope is left; only the body runs in the captured
+  scope, since the arguments were written at the call site. Gated by
+  tetris-modes.
+- [ ] Stage 2 (remaining) — `Array.indexOf`, which the demo's
+  `toggleMode` uses to cycle `MODE_CYCLE`. tetris-modes writes the same
+  cycle as a comparison chain. Validate with a static-board gate before
+  any game loop.
+- [ ] An object-literal method DECLARATION (`{ sync(g, d) { ... } }`) is
+  still rejected; only a property naming a local function is a method.
+  The demo writes the shorthand form, so this is unreached.
 - [ ] An inline-path helper that returns an object literal folds it to a
   compile-time record rather than a data struct, so its result cannot be
   stored into plain data (`const s = buildSet(); sets.pets = s;`). The

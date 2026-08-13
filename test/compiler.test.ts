@@ -819,6 +819,84 @@ test("keeps an interface with the same keys a struct", () => {
     assert.doesNotMatch(result.cpp, /EnumMap/);
 });
 
+test("a record's methods and getter reach the scope it closed over", () => {
+    // The factory's scope is left before the record is used, so the
+    // record has to carry it: both the inlined method and the getter
+    // must still resolve `currentMode` to the factory's local.
+    const result = compileSource(`
+        type Mode = "pets" | "arcade";
+        function createRenderer() {
+            let currentMode: Mode = "pets";
+            function setMode(mode: Mode): void {
+                currentMode = mode;
+            }
+            return {
+                setMode,
+                get mode() { return currentMode; },
+            };
+        }
+        const sets: Record<Mode, number> = { pets: 1, arcade: 2 };
+        const renderer = createRenderer();
+        renderer.setMode("arcade");
+        const picked = sets[renderer.mode];
+    `);
+    const state = result.cpp.match(
+        /Mode (v_\w*currentMode) = bblscene::Mode::pets;/,
+    );
+    assert.ok(state);
+    const local = state[1]!;
+    // The method writes the captured local...
+    assert.match(
+        result.cpp,
+        new RegExp(`${local} = bblscene::Mode::arcade;`),
+    );
+    // ...and the getter reads it, rather than a snapshot of it.
+    assert.match(
+        result.cpp,
+        new RegExp(`enum_map_at\\(v_sets, ${local}\\)`),
+    );
+});
+
+test("a record getter must be a single return", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                const api = {
+                    get total() {
+                        let sum = 0;
+                        return sum;
+                    },
+                };
+                const read = api.total;
+            `),
+        /must be a single return statement/,
+    );
+});
+
+test("compiles record method arguments in the caller's scope", () => {
+    // `chosen` belongs to the call site, not to the record's captured
+    // scope, so it must resolve there.
+    const result = compileSource(`
+        type Mode = "pets" | "arcade";
+        function createRenderer() {
+            let currentMode: Mode = "pets";
+            function setMode(mode: Mode): void {
+                currentMode = mode;
+            }
+            return { setMode, get mode() { return currentMode; } };
+        }
+        const sets: Record<Mode, number> = { pets: 1, arcade: 2 };
+        const renderer = createRenderer();
+        const chosen: Mode = "arcade";
+        renderer.setMode(chosen);
+        const picked = sets[renderer.mode];
+    `);
+    assert.match(
+        result.cpp,
+        /Mode v_chosen = bblscene::Mode::arcade;/,
+    );
+});
+
 test("binds const data-path locals as aliases", () => {
     const result = compileSource(`
         interface Holder {

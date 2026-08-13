@@ -127,25 +127,73 @@ async function main(): Promise<void> {
         }
     }
 
-    let currentMode: TetrisMode = "pets";
-    showSet(sets[currentMode]);
+    // The marker reports what the renderer says its mode is: its height
+    // comes from the getter, so a getter reading the wrong mode moves it.
+    const marker = createBox(engine, 1);
+    const markerMaterial = createStandardMaterial();
+    markerMaterial.diffuseColor = [0.9, 0.9, 0.95];
+    marker.material = markerMaterial;
+    marker.scaling.set(0.25, 0.25, 0.25);
+    addToScene(scene, marker);
 
-    function setMode(mode: TetrisMode): void {
-        hideSet(sets[currentMode]);
-        currentMode = mode;
-        showSet(sets[currentMode]);
+    /** The demo renderer's public shape (renderer.ts `TetrisRenderer`). */
+    interface TetrisRenderer {
+        setMode(mode: TetrisMode): void;
+        toggleMode(): void;
+        readonly mode: TetrisMode;
     }
+
+    function createRenderer(): TetrisRenderer {
+        let currentMode: TetrisMode = "pets";
+        showSet(sets[currentMode]);
+
+        function setMode(mode: TetrisMode): void {
+            hideSet(sets[currentMode]);
+            currentMode = mode;
+            showSet(sets[currentMode]);
+        }
+
+        // pets → arcade → smooth → pets, the demo's MODE_CYCLE order.
+        // Written as a chain because `Array.indexOf` is not in the
+        // subset yet.
+        function toggleMode(): void {
+            if (currentMode === "pets") {
+                setMode("arcade");
+                return;
+            }
+            if (currentMode === "arcade") {
+                setMode("smooth");
+                return;
+            }
+            setMode("pets");
+        }
+
+        return {
+            setMode,
+            toggleMode,
+            get mode() {
+                return currentMode;
+            },
+        };
+    }
+
+    const renderer = createRenderer();
 
     let frame = 0;
     onBeforeRender(scene, () => {
         // The style changes mid-flight, so the index is a value the
         // frame loop moves rather than anything foldable at compile time.
         if (frame === SWITCH_TO_ARCADE) {
-            setMode("arcade");
+            renderer.toggleMode();
         }
         if (frame === SWITCH_TO_SMOOTH) {
-            setMode("smooth");
+            renderer.toggleMode();
         }
+        marker.position.set(
+            0,
+            2 + sets[renderer.mode].scale,
+            0,
+        );
 
         frame++;
         if (frame === READY_FRAME) {
