@@ -1,3 +1,4 @@
+import type ts from "typescript";
 import type { CompileAdaptation } from "../fidelity.js";
 import type { DataType } from "./data-types.js";
 
@@ -72,6 +73,7 @@ export type ValueKind =
     | "asset"
     | "boolean"
     | "browser"
+    | "callback"
     | "camera"
     | "camera-world-matrix"
     | "color4"
@@ -97,6 +99,9 @@ export interface Value {
     cpp: string;
     dataType?: DataType;
     dataStore?: "f32" | "u32";
+    callbackDeclaration?:
+        | ts.ArrowFunction
+        | ts.FunctionExpression;
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     lightKind?: LightKind;

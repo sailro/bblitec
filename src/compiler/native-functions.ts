@@ -14,6 +14,10 @@ export interface NativeFunctionContext {
     readonly checker: ts.TypeChecker;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
+    isEntrySourceFile(file: ts.SourceFile): boolean;
+    lookupIdentifierValue(
+        identifier: ts.Identifier,
+    ): Value | undefined;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -344,13 +348,35 @@ export class NativeFunctionLowerer {
                 const bindingDeclaration =
                     target?.valueDeclaration ??
                     target?.declarations?.[0];
-                if (
-                    bindingDeclaration &&
-                    classify(bindingDeclaration) ===
-                        "captured"
-                ) {
-                    captured = true;
-                    return;
+                if (bindingDeclaration) {
+                    const shape = classify(
+                        bindingDeclaration,
+                    );
+                    if (shape === "captured") {
+                        captured = true;
+                        return;
+                    }
+                    if (shape === "module") {
+                        // Entry-file top-level bindings live as locals
+                        // of the generated main. Compile-time bindings
+                        // (static tuples, records, strings) still fold
+                        // on any path; runtime bindings capture.
+                        const bound =
+                            this.context.lookupIdentifierValue(
+                                node,
+                            );
+                        if (
+                            bound &&
+                            bound.kind !== "tuple" &&
+                            bound.kind !== "record" &&
+                            bound.kind !== "string" &&
+                            bound.kind !== "browser" &&
+                            bound.kind !== "callback"
+                        ) {
+                            captured = true;
+                            return;
+                        }
+                    }
                 }
             }
             ts.forEachChild(node, visit);

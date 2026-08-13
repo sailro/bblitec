@@ -672,6 +672,96 @@ test("lowers typed arrays with storage-exact reads and writes", () => {
     );
 });
 
+test("inlines function-valued parameters at their call sites", () => {
+    const result = compileSource(`
+        function apply(count: number, producer: (index: number) => number): number {
+            let total = 0;
+            for (let index = 0; index < count; index++) {
+                total += producer(index);
+            }
+            return total;
+        }
+        const doubled = apply(3, (index) => {
+            return index * 2;
+        });
+    `);
+
+    assert.equal(
+        result.cpp.match(
+            /double v_fn\d+_index = \d\.0;/g,
+        )?.length,
+        3,
+    );
+    assert.equal(
+        result.cpp.match(
+            /v_fn0_total \+= static_cast<float>\(\(v_fn\d+_index \* 2\.0\)\);/g,
+        )?.length,
+        3,
+    );
+});
+
+test("keeps mutable locals unfolded when bound as arguments", () => {
+    const result = compileSource(`
+        function twice(value: number): number {
+            return value * 2;
+        }
+        let counter = 0;
+        counter++;
+        const result = twice(counter);
+    `);
+
+    assert.match(
+        result.cpp,
+        /bblscene::twice\(v_counter\)/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /bblscene::twice\(0\.0\)/,
+    );
+});
+
+test("lowers early bare returns of inlined closures through a wrapper", () => {
+    const result = compileSource(`
+        const values: number[] = [];
+        function record(value: number): void {
+            if (value < 0) {
+                return;
+            }
+            values.push(value);
+        }
+        record(-1);
+        record(2);
+    `);
+
+    assert.match(result.cpp, /do \{/);
+    assert.match(result.cpp, /\} while \(false\);/);
+    assert.match(result.cpp, /break;/);
+});
+
+test("supports mutable tuple locals with runtime index writes", () => {
+    const result = compileSource(`
+        function axisVector(axis: number, sign: number): number {
+            const p: [number, number, number] = [0, 0, 0];
+            p[axis] = sign;
+            return p[0] + p[1] + p[2];
+        }
+        const total = axisVector(1, 5) || 1;
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::Tuple<3> v_fn\d+_p = bbl::js::Tuple<3>\{0\.0, 0\.0, 0\.0\};/,
+    );
+    assert.match(
+        result.cpp,
+        /v_fn\d+_p\[bbl::js::array_index\(v_fn\d+_axis\)\] = v_fn\d+_sign;/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::or_number\(bblscene::axisVector\(1\.0, 5\.0\), 1\.0\)/,
+    );
+});
+
 test("compiles the pinned chamfered-box generator into mesh data", () => {
     const result = compileSource(
         readFileSync(

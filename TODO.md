@@ -255,17 +255,29 @@ the identical generator, keyed off the generated manifest's
   `Float32Array`/`Uint32Array` in the data model, gated by tetris-blocks
   compiling the pinned chamfered-box generator (its inner quad/tri
   closures inline inside the native data function).
+- [x] Function-valued parameters: inline function-literal arguments bind
+  as callback values and inline at their call sites; early bare returns
+  of inlined bodies lower through breakable do/while wrappers (value
+  returns stay final-only); mutable tuple locals and numeric fallbacks
+  round out the pinned rounded-box generator, which joined the corpus
+  and the tetris-blocks gate. Mutable locals also stopped folding to
+  their initial static values when bound as inline arguments.
 - [ ] Stage 2 (remaining) — renderer contracts for `tetris/renderer.ts`:
-  `loadTexture2D` (also scenes 62/81/83), function-valued parameters for
-  the rounded-box `addGrid` callback, a sanctioned dynamic thin-instance
-  update path replacing the demo's `engine._device` escape hatch
-  (`setThinInstanceCount` semantics; native instancing is build-once
-  today), composing the record transform with instance matrices,
-  scene-local shader variants from typed WGSL IR (also scenes
+  `loadTexture2D` (also scenes 62/81/83), a sanctioned dynamic
+  thin-instance update path replacing the demo's `engine._device`
+  escape hatch (`setThinInstanceCount` semantics; native instancing is
+  build-once today), composing the record transform with instance
+  matrices, scene-local shader variants from typed WGSL IR (also scenes
   159/161/165) for the particle material, `removeFromScene`, per-frame
   camera clamping, and the class/closure subset for `TetrisParticles`
   and the renderer record. Validate with a static-board gate before any
   game loop.
+- [ ] Inlined value returns compile through the default float path in
+  compound numeric contexts (a double-to-float-to-double round-trip);
+  route inline return expressions through double precision. Parameter
+  reassignment inside inlined functions can also still fold a static
+  argument; strip static metadata from parameter bindings that are
+  reassigned.
 - [ ] Stage 3 — wiring: a PAL keyboard contract beyond the camera keys,
   `performance.now` as PAL frame time under fixed delta, erasure for the
   DOM HUD/audio/progress modules, and a scripted-input-tape capture mode
