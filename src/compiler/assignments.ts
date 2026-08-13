@@ -324,6 +324,38 @@ export function emitPropertyAssignment(
         return;
     }
     if (
+        left.expression.kind === ts.SyntaxKind.ThisKeyword
+    ) {
+        // A resource field write — the engine, the scene, a material.
+        // Data fields never reach here: they resolve as data paths
+        // above and assign through the local that holds them.
+        //
+        // A resource field has no storage to assign through, only a
+        // compile-time binding, so it may be written exactly once. A
+        // second write inside a branch would otherwise make the new
+        // value visible on every path, which is a different program.
+        const instance = context.compileValue(
+            left.expression,
+        );
+        const fields = instance.recordProperties;
+        if (!fields) {
+            context.fail(
+                left,
+                "'this' does not resolve to a class instance here.",
+            );
+        }
+        if (fields[left.name.text]) {
+            context.fail(
+                expression,
+                `Field '${left.name.text}' is already bound; a class field that holds a resource is wired once and cannot be reassigned.`,
+            );
+        }
+        fields[left.name.text] = context.compileValue(
+            expression.right,
+        );
+        return;
+    }
+    if (
         ts.isPropertyAccessExpression(left.expression) &&
         ts.isIdentifier(left.expression.expression) &&
         context.lookup(left.expression.expression).kind ===

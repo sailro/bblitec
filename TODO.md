@@ -343,9 +343,14 @@ the identical generator, keyed off the generated manifest's
   always leaves the iteration (the demo's splice-then-continue) does not
   poison the code after it. Mutable locals stay copies, since a reference
   cannot be reseated.
-- [ ] Stage 2 (remaining) — the class/closure subset for
-  `TetrisParticles` (private fields and methods over the now-supported
-  particle data) and the renderer record with methods, a getter, and
+- [x] Class subset for `TetrisParticles`: a class lowers to a compile-time
+  instance whose private fields become locals and whose constructor and
+  void command methods inline with `this` bound to those fields, so no
+  runtime object exists and no ownership or collection question arises.
+  Inheritance, accessors, statics, and value-returning methods are
+  rejected explicitly. Gated by tetris-particles, which renders the class
+  shape byte-identically to the plain-function version it replaced.
+- [ ] Stage 2 (remaining) — the renderer record with methods, a getter, and
   `Record<mode, set>` runtime-string indexing. Validate with a
   static-board gate before any game loop.
 - [ ] Inlined value returns compile through the default float path in
