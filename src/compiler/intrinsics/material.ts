@@ -420,6 +420,43 @@ export function compileMaterialIntrinsic(
             );
         }
 
+        case "setPbrUnlit":
+        case "setPbrSkybox": {
+            // src/material/pbr/set-unlit.ts and set-skybox.ts: the
+            // optional PBR features are opt-in setters that flag the
+            // material after creation and register their fragment
+            // extension. The reached subset takes the material alone
+            // (setPbrUnlit's optional unlitColor tint is unreached).
+            context.expectArgumentCount(call, 1, 1);
+            const material =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                material,
+                "material",
+                call.arguments[0]!,
+            );
+            if (importedName === "setPbrSkybox") {
+                // Skybox mode is composed by the transmission-capable
+                // renderer (its uniform block carries the skybox
+                // option), which the createPbrMaterial `skyboxMode`
+                // option used to reach before it became a setter.
+                context.reachFeature("renderer:transmission");
+            }
+            const nativeSetter =
+                importedName === "setPbrUnlit"
+                    ? "set_pbr_unlit"
+                    : "set_pbr_skybox";
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::${nativeSetter}(` +
+                    `${context.requireEngine(
+                        material,
+                        call,
+                    )}, ${material.cpp})`,
+            };
+        }
+
         case "setAlphaToCoverage": {
             context.expectArgumentCount(call, 2, 2);
             const material =

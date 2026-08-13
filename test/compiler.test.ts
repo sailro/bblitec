@@ -10,7 +10,17 @@ import {
     resolve,
 } from "node:path";
 import test from "node:test";
+import { readUpstreamPin } from "../src/upstream-source.js";
 import { CompileError, compileSource } from "../src/compiler.js";
+
+/** A curated asset URL served from the pinned upstream tree; derived from
+ *  the pin so a version bump does not churn these assertions. */
+function pinnedAssetUrl(path: string): string {
+    return (
+        "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/" +
+        `${readUpstreamPin().sourceVersion}/${path}`
+    );
+}
 
 test("compiles the Babylon Lite primitives example", () => {
     const source = readFileSync(resolve("examples/primitives.ts"), "utf8");
@@ -1675,7 +1685,7 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
                 kind: "texture",
             },
             {
-                source: "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/7184feda683072980735f9a180e6f567ee5717ba/packages/babylon-lite/assets/brdf-lut.png",
+                source: pinnedAssetUrl("packages/babylon-lite/assets/brdf-lut.png"),
                 kind: "texture",
             },
         ],
@@ -1929,7 +1939,7 @@ test("compiles Babylon Lite scene 13 PBR spheres grid", () => {
                 kind: "texture",
             },
             {
-                source: "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/7184feda683072980735f9a180e6f567ee5717ba/packages/babylon-lite/assets/brdf-lut.png",
+                source: pinnedAssetUrl("packages/babylon-lite/assets/brdf-lut.png"),
                 kind: "texture",
             },
         ],

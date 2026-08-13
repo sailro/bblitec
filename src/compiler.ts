@@ -1288,6 +1288,20 @@ class Compiler
                 };
             }
         }
+        if (
+            owner.kind === "mesh" &&
+            property === "material"
+        ) {
+            // The opt-in PBR setters take the material back off the
+            // mesh it was assigned to (`setPbrSkybox(box.material)`).
+            return {
+                kind: "material",
+                cpp: `${this.requireEngine(owner, expression)}.meshes[${owner.cpp}.value].material`,
+                ...(owner.engineCpp
+                    ? { engineCpp: owner.engineCpp }
+                    : {}),
+            };
+        }
         if (owner.kind === "record") {
             const value =
                 owner.recordProperties?.[property];
@@ -1918,9 +1932,7 @@ class Compiler
             "environmentIntensity",
             "alpha",
             "reflectance",
-            "unlit",
             "doubleSided",
-            "skyboxMode",
             "transmissive",
             "subsurface",
         ]);
@@ -1958,9 +1970,7 @@ class Compiler
         );
         const alpha = this.objectProperty(object, "alpha");
         const reflectance = this.objectProperty(object, "reflectance");
-        const unlit = this.objectProperty(object, "unlit");
         const doubleSided = this.objectProperty(object, "doubleSided");
-        const skyboxMode = this.objectProperty(object, "skyboxMode");
         const transmissive = this.objectProperty(object, "transmissive");
         const subsurfaceExpression = this.objectProperty(object, "subsurface");
         let transmission = "0.0f";
@@ -2032,9 +2042,9 @@ class Compiler
             environment ? this.compileNumber(environment) : "1.0f",
             alpha ? this.compileNumber(alpha) : "1.0f",
             reflectance ? this.compileNumber(reflectance) : "0.04f",
-            unlit ? this.compileBoolean(unlit) : "false",
+            "false",
             doubleSided ? this.compileBoolean(doubleSided) : "false",
-            skyboxMode ? this.compileBoolean(skyboxMode) : "false",
+            "false",
             transmission,
             ior,
             thickness,

@@ -15,8 +15,8 @@ Unsupported syntax and APIs fail at compile time with source locations.
 
 ## Current proof points
 
-- Pinned upstream: `@babylonjs/lite@1.18.0`,
-  commit `7184feda683072980735f9a180e6f567ee5717ba`.
+- Pinned upstream: `@babylonjs/lite@1.20.0`,
+  commit `95ed3029cc43e479ec924741aea4024e9bf33527`.
 - 47 curated Babylon Lite parity scenes, including Scene 1 (BoomBox), plus
   primitives and project-owned differential regression gates.
 - External glTF/GLB and a reached `.babylon` slice.

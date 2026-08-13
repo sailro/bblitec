@@ -1,7 +1,7 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.18.0",
-  "sourceVersion": "7184feda683072980735f9a180e6f567ee5717ba",
+  "version": "1.20.0",
+  "sourceVersion": "95ed3029cc43e479ec924741aea4024e9bf33527",
   "scenes": [
     {
       "id": "scene1",
@@ -109,7 +109,7 @@
       "id": "scene116",
       "upstreamPath": "lab/lite/src/lite/scene116.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene116.ts",
-      "sha256": "42dced89d1f8910737c6b77040bd9614b67c05a184c25456f5525f35cebd2d38"
+      "sha256": "a6cdd56aa5b4046db3163be6b397cf34b2737791ceec3ab85795c9904df3e890"
     },
     {
       "id": "scene145",
@@ -169,13 +169,13 @@
       "id": "scene176",
       "upstreamPath": "lab/lite/src/lite/scene176.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene176.ts",
-      "sha256": "9fd7401a75c51fd831c9a440f9ec1314780696d92a865c37f1e7fcc176704da0"
+      "sha256": "1882839a79cec1353c4c7d2d618d94f6f346057a1fd0f61748950957bd61feea"
     },
     {
       "id": "scene178",
       "upstreamPath": "lab/lite/src/lite/scene178.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene178.ts",
-      "sha256": "137c22d18cffafd3cc8a5293719ab35514eefd0c6f938e816488b4afc8adb9eb"
+      "sha256": "c19079e05a2dcfca015ad1b01ac01dd47509456e3929b65deece6484560bb155"
     },
     {
       "id": "scene210",
@@ -187,7 +187,7 @@
       "id": "scene212",
       "upstreamPath": "lab/lite/src/lite/scene212.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene212.ts",
-      "sha256": "7db01e950173c3bd97b49f48cc9dd49a9df43fbae5d2777dd89b6b2359732613"
+      "sha256": "913e802b63191520df2a2d5df09e758fbc55e5730f0c3fbe8003d9480b8a30f3"
     },
     {
       "id": "scene213",

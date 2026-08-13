@@ -24,6 +24,16 @@ import type {
 } from "../src/compiler.js";
 import { shaderMaterialPrograms } from "../src/shader-material-programs.js";
 
+/** The provenance banner every generated source carries, derived from the
+ *  pin so a version bump does not churn these assertions. */
+function pinnedProvenance(): RegExp {
+    const pin = readUpstreamPin();
+    const literal = `Generated from ${pin.package}@${pin.version}`;
+    return new RegExp(
+        literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    );
+}
+
 function reachedPrograms(
     names: string[],
 ): CompiledShaderProgram[] {
@@ -377,7 +387,7 @@ test("generates the public hemispheric light factory from upstream defaults", ()
     const lowered = lowerer.lowerFactory();
     const point = lowerer.lowerPointFactory();
     const directional = lowerer.lowerDirectionalFactory();
-    assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
+    assert.match(lowered.source, pinnedProvenance());
     assert.match(lowered.source, /light\.diffuse_color = Color3\{1\.0f, 1\.0f, 1\.0f\}/);
     assert.match(lowered.source, /light\.ground_color = Color3\{0\.0f, 0\.0f, 0\.0f\}/);
     assert.match(point.source, /light\.kind = LightKind::point/);
@@ -435,7 +445,7 @@ test("lowers the reachable upstream light matrix implementation", () => {
     assert.equal(lowered.modulePath, "src/light/light-matrix.ts");
     assert.match(lowered.source, /std::sqrt/);
     assert.match(lowered.source, /m\[15\] = 1\.0f/);
-    assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
+    assert.match(lowered.source, pinnedProvenance());
 });
 
 test("generates the render plan from upstream frame-graph binding semantics", () => {
@@ -563,7 +573,7 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /preferred_sample_count\(\).*return 4u/s);
     assert.match(lowered.header, /struct PbrUniforms/);
     assert.match(lowered.source, /mesh\.geometry >= engine\.geometries\.size\(\)/);
-    assert.match(lowered.source, /Generated from @babylonjs\/lite@1\.18\.0/);
+    assert.match(lowered.source, pinnedProvenance());
     assert.ok(
         shaders.some((shader) =>
             shader.output.endsWith("pbr.frag.native.wgsl"),
@@ -954,7 +964,7 @@ test("generates portable GridMaterial shaders from pinned formulas", () => {
     assert.match(String(wgsl?.data), /gridDynamicVisibility/);
     assert.match(
         String(wgsl?.data),
-        /Generated from @babylonjs\/lite@1\.18\.0/,
+        pinnedProvenance(),
     );
     assert.match(String(wgsl?.data), /cos\(fraction \* PI\)/);
     assert.match(String(wgsl?.data), /SQRT2 \/ 4\.0/);

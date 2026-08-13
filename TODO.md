@@ -365,7 +365,7 @@ the identical generator, keyed off the generated manifest's
 ## P1 — Full Babylon Lite corpus audit
 
 The exploratory audit uses the pinned
-`7184feda683072980735f9a180e6f567ee5717ba` corpus. These entries cover every
+`95ed3029cc43e479ec924741aea4024e9bf33527` corpus. These entries cover every
 scene that did not reach a MAD measurement; measured scenes are dashboarded in
 [status](docs/status.md).
 
@@ -381,6 +381,10 @@ Capture-inert demo controls and fixed-coordinate picking stay in the first
 lane when they can be erased or lowered inside the compiler, asset pipeline,
 or renderer. A scene is deferred when its covered behavior needs a new
 platform, user-input, or external-service contract.
+
+Scenes 256 and 280 arrived with the 1.20.0 pin and are unaudited: 256 is the
+Khronos NormalTangentTest glTF (likely close to the reached PBR slice), 280 is a
+node-particle flow-map editor scene (node-particle sources, deferred lane).
 
 **Integrate first (150 scenes):** 4, 9, 11, 12, 15-23, 25-27, 30,
 34, 36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
