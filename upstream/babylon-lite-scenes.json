@@ -298,26 +298,5 @@
       "sha256": "2bd13833f1f32013fdd29087ea426242f6fc96671c0f690852ee62b0384465f9"
     }
   ],
-  "modules": [
-    {
-      "upstreamPath": "lab/lite/src/demos/tetris/game.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/game.ts",
-      "sha256": "9137cfdb08e7a7fe44257a90145e49e153e7dcf1234bcb746262284bdd28187f"
-    },
-    {
-      "upstreamPath": "lab/lite/src/demos/tetris/pieces.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/pieces.ts",
-      "sha256": "0826d2c172b292b9f7bb58c2b9bf53ac4f0904020e60147c5820fa087caa3df0"
-    },
-    {
-      "upstreamPath": "lab/lite/src/demos/tetris/chamfered-box.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/chamfered-box.ts",
-      "sha256": "8a184d4c52be5d185e9a3649ef1637ed9031e9d82610680b73e6f77b14b3e454"
-    },
-    {
-      "upstreamPath": "lab/lite/src/demos/tetris/rounded-box.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/rounded-box.ts",
-      "sha256": "ded79d209fe097933ec28021da503d113c3f1e613e14031ca39ed8eacdcecc91"
-    }
-  ]
+  "modules": []
 }

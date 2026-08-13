@@ -117,18 +117,22 @@ CPU-side from GPU-side causes immediately.
   directional light in the FIRST analytic slot under mid/low roughness
   renders its specular highlight a few percent dim (probe measurement
   2026-08-13: sphere, roughness 0.35, max channel delta 10-15 at the
-  highlight, independent of `directIntensity`). No gated scene and no
-  demo reaches this combination — the tetris rig adds the hemispheric
-  first, so its directional key runs in the second slot, which is
-  byte-effectively exact (tetris-well) — but the primary directional
+  highlight, independent of `directIntensity`). No gated scene reaches
+  this combination, because a hemispheric light is added first and the
+  directional key then runs in the second slot, which is
+  byte-effectively exact — but the primary directional
   block should be diffed against the pinned
   `singlelight-directional-wgsl.ts` term by term before a scene needs
   it.
 - [ ] Port fdlibm/V8 transcendentals (`pow`, `exp`, `cos`, `sin`) for
-  bit-exact parity. `pow` gates level 3+ gravity (tetris-logic stays
-  below 10 cleared lines so the reached exponent is exact); `cos`/`sin`
-  ULPs against V8 are the tetris-blocks six-pixel rotated-silhouette
-  floor (0.002 foreground on both backends).
+  bit-exact parity. `cos`/`sin` ULPs against V8 were the measured
+  floor on rotated silhouettes (0.002 foreground on both backends).
+- [ ] Inlined value returns compile through the default float path in
+  compound numeric contexts (a double-to-float-to-double round-trip);
+  route inline return expressions through double precision. Parameter
+  reassignment inside inlined functions can also still fold a static
+  argument; strip static metadata from parameter bindings that are
+  reassigned.
 - [ ] Extend array coverage to `shift`/`unshift` and the `indexOf`
   `fromIndex` form when a reached scene needs them (`splice`,
   `indexOf`, and multi-argument `push` have landed).
@@ -258,156 +262,6 @@ CPU-side from GPU-side causes immediately.
 - [ ] Improve missing-tool and stale-output diagnostics.
 - [ ] Add `--explain-feature` and generated-code-to-upstream inspection.
 - [ ] Document adding a lowerer and curated scene fixture.
-
-## P1 — Demo integration (tetris)
-
-The pinned demo rules (`lab/lite/src/demos/tetris/{game,pieces}.ts`) are
-corpus evidence compiled by the tetris-logic parity gate: byte-identical
-to the browser reference on both backends under the pinned seeded
-`Math.random` contract (mulberry32, seed 1; the capture harness installs
-the identical generator, keyed off the generated manifest's
-`deterministic-seeded-random` adaptation). Remaining stages:
-
-- [x] Stage 2 (first slice) — `createMeshFromData` from typed arrays with
-  the pinned computeAabb bounds fold, static `setThinInstances` matrix
-  pools (record transforms stay identity like the demo prototypes), and
-  `Float32Array`/`Uint32Array` in the data model, gated by tetris-blocks
-  compiling the pinned chamfered-box generator (its inner quad/tri
-  closures inline inside the native data function).
-- [x] Function-valued parameters: inline function-literal arguments bind
-  as callback values and inline at their call sites; early bare returns
-  of inlined bodies lower through breakable do/while wrappers (value
-  returns stay final-only); mutable tuple locals and numeric fallbacks
-  round out the pinned rounded-box generator, which joined the corpus
-  and the tetris-blocks gate. Mutable locals also stopped folding to
-  their initial static values when bound as inline arguments.
-- [x] `loadTexture2D` file textures: compile-time asset materialization,
-  the pinned sampler defaults (linear/repeat, invertY true, srgb false,
-  mip clamp when mipMaps is false), and base-color attachment onto
-  created PBR materials paired with the white factor texel (base color
-  requires srgb: true, matching the native slot). The tetris-blocks
-  ring wears the demo frame colormap through the demo-exact nearest
-  options. Scenes 62/81/83 keep their later blockers (node materials).
-- [x] PBR under scene-level directional lights and a second analytic
-  slot, derived from the pinned single-light and multi-light blocks
-  (`src/material/pbr/fragments/`): the primary slot discriminates
-  hemispheric/point/directional at runtime, the second slot accumulates
-  through the shared extra-light terms (disabled under glTF multi-light,
-  which owns lights past the primary), and the tetris-blocks gate runs
-  the demo rig byte-effectively-exactly. Layered (clearcoat/sheen)
-  scenes keep the second slot's terms additive outside the layer
-  composition; composing them properly stays with the layered
-  multi-light TODO.
-- [x] Dynamic thin instances — the sanctioned per-frame update path
-  replacing the demo's `engine._device` escape hatch (which the
-  compiler now recognizes and rejects with a pointer at the sanctioned
-  helpers): `setThinInstances` adopts the caller's named array as a
-  fixed-capacity pool, `flushThinInstances`/`setThinInstanceCount`
-  re-upload the pinned `[0, count)` dirty range through a version-gated
-  PAL sync on both backends, and thin-instanced records compose
-  mesh.world × instanceWorld through the pinned double-precision
-  TRS/parent composition instead of the baked-vertex transform. Gated
-  by tetris-well: the scripted rules play one action per frame inside
-  `onBeforeRender`, seven fixed-capacity color pools rewrite and flush
-  every frame with degenerate hidden slots, the ghost preview varies
-  its count, and every pool mesh carries a non-identity record
-  transform.
-- [x] Particle shader through typed WGSL IR — the demo's line-clear
-  particle program compiles verbatim as a scene-local variant
-  (tetris-sparks gate: unlit vertex colors, brightness default +
-  setShaderFloat, seeded three-axis-rotated burst, byte-identical on
-  both backends). The gate exposed and fixed two latent native bugs:
-  the shader IR's color attribute location diverged from the shared
-  GpuVertex table, and the Euler rotation bake applied X·Y·Z instead
-  of the pinned eulerToQuat Z·Y·X order.
-- [x] `removeFromScene` and per-frame camera clamping — runtime mesh
-  removal drops the scene entry and marks the topology, both backends
-  rematch their uploaded mesh entries to the rebuilt render plan by
-  source identity (releasing only dropped entries; the SDL append-only
-  guard is gone and Dawn's full rebuild already covered it), and the
-  camera's target components accept per-frame writes alongside the
-  already-supported scalar clamping. Gated by tetris-retire.
-- [x] Handle-carrying plain data — a mesh handle stored in a struct or
-  array drives its transforms, materials, and scene membership exactly
-  like a mesh local, and `splice(index, 1)` removes an entry. Gated by
-  tetris-particles, which runs the demo's particle sweep with plain
-  functions. The gate also fixed a latent bug: direct mesh transform
-  writes never bumped the transform version the backends gate their
-  baked-vertex re-upload on.
-- [x] Bind a const local from a data path as an alias rather than a copy, so
-  the demo's `const p = this.live[i]!; p.life -= dt;` shape compiles: the
-  local binds a native reference and writes reach the container. The
-  invalidation hazard is handled by poisoning — a structural mutation of
-  the container makes references into it unusable and any later use is a
-  compile error — and the poisoning is path-sensitive, so a branch that
-  always leaves the iteration (the demo's splice-then-continue) does not
-  poison the code after it. Mutable locals stay copies, since a reference
-  cannot be reseated.
-- [x] Class subset for `TetrisParticles`: a class lowers to a compile-time
-  instance whose private fields become locals and whose constructor and
-  void command methods inline with `this` bound to those fields, so no
-  runtime object exists and no ownership or collection question arises.
-  Inheritance, accessors, statics, and value-returning methods are
-  rejected explicitly. Gated by tetris-particles, which renders the class
-  shape byte-identically to the plain-function version it replaced.
-- [x] `Record<Union, T>` runtime indexing: a `Record` keyed by a
-  string-literal union lowers to one slot per member, indexed by the
-  union's own enum tag. Slots sit in tag order; their initializers
-  evaluate in written order, through temporaries when the two orders
-  differ, because a slot initializer can create meshes or call a helper
-  that mutates what it is handed. A `let` holding a tag can also be
-  reassigned now. Gated by tetris-modes.
-- [x] The renderer record's methods and its `mode` getter: a record
-  property naming a local function is a method that inlines at its call
-  site, and a `get` accessor with a single return re-reads its state at
-  each read. A record carrying either captures the scope chain that
-  built it, so a factory can return it and the frame loop can drive it
-  long after that scope is left; only the body runs in the captured
-  scope, since the arguments were written at the call site. Gated by
-  tetris-modes.
-- [x] Stage-2 capstone: the demo board drawn the way the demo's own
-  renderer draws it — studio IBL, blurred skybox box, dark backboard,
-  glossy emissive chips over the pinned chamfered generator, translucent
-  ghost, per-colour thin-instance pools, at a board the pinned rules
-  played. Gated by tetris-board. Building it found the
-  `environmentIntensity` gate bug below.
-- [x] `Array.indexOf`, so the demo's `toggleMode` cycles `MODE_CYCLE`
-  verbatim. A constant array is a compile-time tuple with nothing to
-  search, so searching one materializes it as a shared namespace
-  constant, exactly as a runtime index into it already did — one
-  mechanism serves both. Elements must compare by value (numbers,
-  booleans, tags, handles); a struct would compare by identity in
-  JavaScript and field by field here, so it is rejected.
-- [ ] The stone frame ring needs `loadGeometryFromUrl`, and the "pets"
-  block style fetches its baked geometry at runtime; neither is in the
-  subset, so tetris-board renders the arcade style without the frame.
-- [ ] `createPbrMaterial` is missing `baseColorFactor`, `alphaBlend`,
-  and `enableSpecularAA`, all of which the demo renderer uses. A solid
-  colour texture substitutes for the first; the other two have no
-  substitute.
-- [ ] An object-literal method DECLARATION (`{ sync(g, d) { ... } }`) is
-  still rejected; only a property naming a local function is a method.
-  The demo writes the shorthand form, so this is unreached.
-- [ ] An inline-path helper that returns an object literal folds it to a
-  compile-time record rather than a data struct, so its result cannot be
-  stored into plain data (`const s = buildSet(); sets.pets = s;`). The
-  demo's `buildRenderSet` has this shape; tetris-modes works around it by
-  returning the `Mesh[]` and building the struct at the literal.
-- [ ] Inlined value returns compile through the default float path in
-  compound numeric contexts (a double-to-float-to-double round-trip);
-  route inline return expressions through double precision. Parameter
-  reassignment inside inlined functions can also still fold a static
-  argument; strip static metadata from parameter bindings that are
-  reassigned.
-- [ ] Stage 3 — wiring: a PAL keyboard contract beyond the camera keys,
-  `performance.now` as PAL frame time under fixed delta, erasure for the
-  DOM HUD/audio/progress modules, and a scripted-input-tape capture mode
-  for interactive goldens (seeded no-input goldens work today).
-- [ ] Audit the remaining demos against the same lanes: mosquito-amber
-  (≈ scene 176), bath-day/landing-bg/littlest-tokyo/torus-states
-  (single-file, near scene shape), then the 4-5k-line games
-  (minecraft/platformer/sandblox/freeciv) and the file-format loaders
-  (quake/doom/racer) last.
 
 ## P1 — Full Babylon Lite corpus audit
 
