@@ -23,12 +23,9 @@ on both GPU backends — click any frame for the measured numbers.*
 - Pinned upstream: `@babylonjs/lite@1.20.0`,
   commit `95ed3029cc43e479ec924741aea4024e9bf33527`.
 - 49 curated Babylon Lite parity scenes, plus primitives and project-owned differential regression gates.
-- External glTF/GLB and a reached `.babylon` slice.
-- Named local TypeScript modules plus typed non-recursive helper functions.
-- A plain-data language slice — structs, nullable objects, dynamic arrays,
-  enums, switch/break/continue, destructuring, spread, runtime Math, and
-  seeded deterministic `Math.random` — validated by compiling the pinned
-  tetris demo rules byte-identically against the browser reference.
+- External glTF/GLB support.
+- Support for Typescript structs, nullable objects, dynamic arrays,
+  enums, switch/break/continue, destructuring, spread, runtime Math.
 - Generated Standard/PBR/Grid rendering, ordered draw lists, custom alpha
   variants, frame-graph MRT/depth passes, negative transforms, runtime scene
   mutation, property animation, and tree-shaken GPU deformation.
