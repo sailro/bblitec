@@ -314,6 +314,11 @@ struct TextureData {
     bool invert_y = false;
 };
 
+struct FileTexture {
+    TextureData data{};
+    bool srgb = false;
+};
+
 struct ModelVertex {
     Vec3 position{};
     Vec3 normal{0.0f, 1.0f, 0.0f};
@@ -739,6 +744,16 @@ void set_alpha_to_coverage(
     MaterialHandle material,
     bool enabled);
 SolidTexture create_solid_texture(Engine& engine, float r, float g, float b, float a = 1.0f);
+FileTexture load_file_texture(
+    Engine& engine,
+    const std::string& path,
+    TextureSamplerState sampler,
+    bool invert_y,
+    bool srgb);
+void set_material_base_color_file(
+    Engine& engine,
+    MaterialHandle material,
+    FileTexture texture);
 MaterialHandle create_pbr_material(
     Engine& engine,
     PbrMaterialOptions options);

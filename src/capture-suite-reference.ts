@@ -117,7 +117,6 @@ export interface SuiteCaptureOptions {
 }
 
 export function createSuiteSceneServer(
-    sourcePath: string,
     moduleSource: string,
     options: SuiteCaptureOptions = {},
 ): ReturnType<typeof createServer> {
@@ -176,13 +175,9 @@ ${seedScript}<script type="module" src="/scene.js"></script></body></html>`;
             }
         }
         if (!path.startsWith(`${root}${sep}`) || !existsSync(path) || !statSync(path).isFile()) {
-            if (
-                sourcePath
-                    .replace(/\\/g, "/")
-                    .includes(
-                        "corpus/babylon-lite/lab/lite/src/lite/",
-                    )
-            ) {
+            // Pinned lab/public assets back every scene source: corpus
+            // scenes and project-owned gates share the demo asset roots.
+            {
                 const cached = pinnedAssets.get(
                     url.pathname,
                 );
@@ -262,7 +257,7 @@ export async function captureSuiteReference(
         captureFrameRate,
         captureAnimationGroups,
     );
-    const server = createSuiteSceneServer(sourcePath, moduleSource, options);
+    const server = createSuiteSceneServer(moduleSource, options);
     await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Unable to start parity server.");

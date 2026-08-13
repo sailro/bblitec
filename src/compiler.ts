@@ -3235,14 +3235,11 @@ class Compiler
             const pin = readUpstreamPin();
             return `https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${pin.sourceVersion}/packages/babylon-lite/assets/brdf-lut.png`;
         }
-        if (
-            source.startsWith("/") &&
-            this.options.fileName
-                .replace(/\\/g, "/")
-                .includes(
-                    "corpus/babylon-lite/lab/lite/src/lite/",
-                )
-        ) {
+        if (source.startsWith("/")) {
+            // Root-relative asset paths always mean the pinned lab/public
+            // root: corpus scenes and project-owned gates share the demo
+            // asset conventions, and repository-local fixtures use
+            // relative paths instead.
             const pin = readUpstreamPin();
             return (
                 "https://raw.githubusercontent.com/" +

@@ -102,6 +102,7 @@ export interface Value {
     callbackDeclaration?:
         | ts.ArrowFunction
         | ts.FunctionExpression;
+    textureFile?: { srgb: boolean };
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     lightKind?: LightKind;
