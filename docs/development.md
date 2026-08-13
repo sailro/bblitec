@@ -514,6 +514,15 @@ the README embeds the scene's current parity numbers when
 
 ## Windows troubleshooting
 
+- Shader-step failures do not say `error C`: when filtering `process`
+  output, also match `Tint HLSL generation failed` and `exited with
+  status`, or a scene keeps its stale shaders and executable and parity
+  silently validates the previous build. When a validation result looks
+  surprisingly unchanged after a shader edit, rerun `process` with full
+  output before trusting it.
+- `scene -- build` never regenerates: hand-instrumented files under
+  `generated\` survive a build (useful for disposable printf debugging)
+  but are wiped by the next `compile`/`process`.
 - `LNK1168`: stop the specific running executable that locks the output.
 - `ucrtd.lib` missing: ensure `LIB` contains the MSVC x64, Windows UCRT x64,
   and Windows UM x64 library directories.
