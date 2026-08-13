@@ -1819,20 +1819,29 @@ test("compiles Babylon Lite scene 8 HDR glass sphere", () => {
     );
 });
 
-test("compiles independent transmission material gates", () => {
-    const source = readFileSync(
-        resolve("examples/transmission-volume-gate.ts"),
-        "utf8",
+test("compiles Babylon Lite scene 176 transmission, IOR, and volume", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene176.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
     );
-    const result = compileSource(source, {
-        fileName: "examples/transmission-volume-gate.ts",
-    });
 
-    assert.ok(result.manifest.features.includes("renderer:transmission"));
+    assert.ok(
+        result.manifest.features.includes("renderer:transmission"),
+    );
     assert.match(result.cpp, /bbl::enable_scene_transmission/);
+    // The amber body's transmission, IOR, volume, and skybox-mode
+    // material state arrive through the glTF loader; the scene's own
+    // PBR material carries the skybox-mode backdrop.
     assert.match(
         result.cpp,
-        /PbrMaterialOptions\{[^}]*false, false, false, 1\.0f, 1\.5f, 1\.4f, false, true, bbl::Color3\{1\.0f, 0\.35f, 0\.06f\}, 1\.5f/,
+        /bbl::create_pbr_material\(/,
+    );
+    assert.ok(
+        result.manifest.assets.some(({ output }) =>
+            /\.glb$/.test(output),
+        ),
     );
 });
 

@@ -369,6 +369,12 @@ The exploratory audit uses the pinned
 scene that did not reach a MAD measurement; measured scenes are dashboarded in
 [status](docs/status.md).
 
+Corpus scenes are the preferred validation: a feature is proven by the pinned
+Babylon Lite scenes that reach it, not by a project-owned gate. Author a gate
+only for a contract no corpus scene exercises (a feature combination the corpus
+never composes, or a slice being built ahead of the scene that will use it),
+and delete it once corpus scenes cover the contract.
+
 The 188 unmeasured scenes are partitioned by the boundary required to reproduce
 their deterministic reference behavior, not by incidental browser helpers.
 Capture-inert demo controls and fixed-coordinate picking stay in the first
