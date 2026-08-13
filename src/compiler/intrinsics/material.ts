@@ -56,6 +56,8 @@ export interface MaterialIntrinsicContext {
     compilePbrMaterialOptions(
         expression: ts.Expression,
     ): CompiledPbrMaterialOptions;
+    allocateTemporaryCppName(label: string): string;
+    emit(line: string): void;
     compileGridMaterialOptions(
         expression: ts.Expression,
     ): string[];
@@ -150,18 +152,58 @@ export function compileMaterialIntrinsic(
                     "renderer:transmission",
                 );
             }
+            if (orm.textureFile) {
+                context.fail(
+                    call,
+                    "Reached file textures support the base color slot only.",
+                );
+            }
+            // A loaded base-color image pairs with the neutral white
+            // factor texel and attaches after creation; the base color
+            // slot always samples sRGB natively, so the load must have
+            // requested srgb: true.
+            const baseColorCpp = baseColor.textureFile
+                ? "bbl::SolidTexture{bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}}"
+                : baseColor.cpp;
+            if (
+                baseColor.textureFile &&
+                !baseColor.textureFile.srgb
+            ) {
+                context.fail(
+                    call,
+                    "Base-color file textures require srgb: true (the native base color slot always samples sRGB).",
+                );
+            }
+            const creation =
+                `bbl::create_pbr_material(${engine}, ` +
+                `bbl::PbrMaterialOptions{${baseColorCpp}, ` +
+                `${orm.cpp}, ${metallic}, ${roughness}, ` +
+                `${direct}, ${environment}, ${alpha}, ` +
+                `${reflectance}, ${unlit}, ${doubleSided}, ` +
+                `${skyboxMode}, ${transmission}, ${ior}, ` +
+                `${thickness}, ${useThicknessAsDepth}, ` +
+                `${hasVolume}, ${attenuationColor}, ` +
+                `${attenuationDistance}})`;
+            if (baseColor.textureFile) {
+                const temporary =
+                    context.allocateTemporaryCppName(
+                        "material",
+                    );
+                context.emit(
+                    `auto ${temporary} = ${creation};`,
+                );
+                context.emit(
+                    `bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColor.cpp});`,
+                );
+                return {
+                    kind: "material",
+                    cpp: temporary,
+                    engineCpp: engine,
+                };
+            }
             return {
                 kind: "material",
-                cpp:
-                    `bbl::create_pbr_material(${engine}, ` +
-                    `bbl::PbrMaterialOptions{${baseColor.cpp}, ` +
-                    `${orm.cpp}, ${metallic}, ${roughness}, ` +
-                    `${direct}, ${environment}, ${alpha}, ` +
-                    `${reflectance}, ${unlit}, ${doubleSided}, ` +
-                    `${skyboxMode}, ${transmission}, ${ior}, ` +
-                    `${thickness}, ${useThicknessAsDepth}, ` +
-                    `${hasVolume}, ${attenuationColor}, ` +
-                    `${attenuationDistance}})`,
+                cpp: creation,
                 engineCpp: engine,
             };
         }

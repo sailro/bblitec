@@ -796,6 +796,48 @@ test("compiles the pinned chamfered-box generator into mesh data", () => {
         /bblscene::createChamferedBoxData\(1\.0, 0\.08\)/,
     );
     assert.doesNotMatch(result.cpp, /bblscene::quad/);
+    // The frame colormap materializes as a compile-time asset and loads
+    // through the pinned sampler contract (nearest, unmipped, sRGB base
+    // color paired with the white factor texel).
+    assert.match(
+        result.cpp,
+        /bbl::load_file_texture\(v_engine, bbl::asset_path\("[0-9a-f]+-tetris-frame-colormap\.png"\), bbl::TextureSamplerState\{bbl::TextureFilter::nearest, bbl::TextureFilter::nearest, bbl::TextureMipmapMode::nearest, bbl::TextureAddressMode::repeat, bbl::TextureAddressMode::repeat, 1\.0f, 0\.0f\}, false, true\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::set_material_base_color_file\(v_engine, v_bblite_material_\d+, v_frameColormap\);/,
+    );
+    assert.ok(
+        result.manifest.assets.some((asset) =>
+            asset.output.endsWith(
+                "tetris-frame-colormap.png",
+            ),
+        ),
+    );
+});
+
+test("requires srgb base-color file textures", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createPbrMaterial,
+                    createSolidTexture2D,
+                    loadTexture2D,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const texture = await loadTexture2D(engine, "/tetris/tetris-frame-colormap.png");
+                    const material = createPbrMaterial({
+                        baseColorTexture: texture,
+                        ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+                    });
+                }
+            `),
+        /Base-color file textures require srgb: true/,
+    );
 });
 
 test("compiles the pinned tetris rules through the plain-data subset", () => {
@@ -1551,18 +1593,18 @@ test("reports unsupported Babylon Lite APIs with source locations", () => {
     assert.throws(
         () =>
             compileSource(
-                `import { createEngine, loadTexture2D } from "@babylonjs/lite";
+                `import { createCylinder, createEngine } from "@babylonjs/lite";
 async function main() {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
     const engine = await createEngine(canvas);
-    await loadTexture2D(engine, "texture.png");
+    createCylinder(engine);
 }`,
                 { fileName: "unsupported.ts" },
             ),
         (error: unknown) => {
             assert.ok(error instanceof CompileError);
-            assert.match(error.message, /^unsupported\.ts:5:11:/);
-            assert.match(error.message, /loadTexture2D/);
+            assert.match(error.message, /^unsupported\.ts:5:5:/);
+            assert.match(error.message, /createCylinder/);
             return true;
         },
     );

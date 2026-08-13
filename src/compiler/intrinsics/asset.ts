@@ -47,6 +47,11 @@ export interface AssetIntrinsicContext {
     resolveBundledAsset(source: string): string;
     reachFeature(feature: Feature): void;
     cppString(value: string): string;
+    objectProperty(
+        object: ts.ObjectLiteralExpression,
+        name: string,
+    ): ts.Expression | undefined;
+    compileBoolean(expression: ts.Expression): string;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -118,6 +123,149 @@ export function compileAssetIntrinsic(
                     `bbl::load_babylon(${engine.cpp}, ` +
                     `bbl::asset_path(` +
                     `${context.cppString(asset.output)}))`,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
+            };
+        }
+
+        case "loadTexture2D": {
+            context.expectArgumentCount(call, 2, 3);
+            const engine =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                engine,
+                "engine",
+                call.arguments[0]!,
+            );
+            const url = context.compileStringLiteral(
+                call.arguments[1]!,
+            );
+            const asset = context.registerAsset(
+                url,
+                "texture",
+            );
+            // Pinned defaults from src/texture/texture-2d.ts: linear
+            // filters, repeat addressing, mipMaps true, invertY true,
+            // srgb false. Mip sampling clamps to the base level when
+            // mipMaps is false, matching the pinned nearest mip filter.
+            let minFilter = "linear";
+            let magFilter = "linear";
+            let mipMaps = true;
+            let invertY = true;
+            let srgb = false;
+            if (call.arguments[2]) {
+                const options =
+                    context.expectObjectLiteral(
+                        call.arguments[2],
+                    );
+                for (const property of options.properties) {
+                    const name =
+                        property.name &&
+                        (ts.isIdentifier(property.name) ||
+                            ts.isStringLiteral(
+                                property.name,
+                            ))
+                            ? property.name.text
+                            : undefined;
+                    if (
+                        ![
+                            "invertY",
+                            "magFilter",
+                            "minFilter",
+                            "mipMaps",
+                            "srgb",
+                        ].includes(name ?? "")
+                    ) {
+                        context.fail(
+                            property,
+                            "Reached loadTexture2D options support srgb, invertY, mipMaps, minFilter, and magFilter.",
+                        );
+                    }
+                }
+                const filterName = (
+                    expression: ts.Expression,
+                ): string => {
+                    const filter =
+                        context.compileStringLiteral(
+                            expression,
+                        );
+                    if (
+                        filter !== "nearest" &&
+                        filter !== "linear"
+                    ) {
+                        context.fail(
+                            expression,
+                            "Reached texture filters support nearest and linear.",
+                        );
+                    }
+                    return filter;
+                };
+                const minExpression =
+                    context.objectProperty(
+                        options,
+                        "minFilter",
+                    );
+                if (minExpression) {
+                    minFilter = filterName(minExpression);
+                }
+                const magExpression =
+                    context.objectProperty(
+                        options,
+                        "magFilter",
+                    );
+                if (magExpression) {
+                    magFilter = filterName(magExpression);
+                }
+                const mipExpression =
+                    context.objectProperty(
+                        options,
+                        "mipMaps",
+                    );
+                if (mipExpression) {
+                    mipMaps =
+                        context.compileBoolean(
+                            mipExpression,
+                        ) === "true";
+                }
+                const invertExpression =
+                    context.objectProperty(
+                        options,
+                        "invertY",
+                    );
+                if (invertExpression) {
+                    invertY =
+                        context.compileBoolean(
+                            invertExpression,
+                        ) === "true";
+                }
+                const srgbExpression =
+                    context.objectProperty(
+                        options,
+                        "srgb",
+                    );
+                if (srgbExpression) {
+                    srgb =
+                        context.compileBoolean(
+                            srgbExpression,
+                        ) === "true";
+                }
+            }
+            const sampler =
+                `bbl::TextureSamplerState{` +
+                `bbl::TextureFilter::${minFilter}, ` +
+                `bbl::TextureFilter::${magFilter}, ` +
+                `bbl::TextureMipmapMode::${mipMaps ? "linear" : "nearest"}, ` +
+                `bbl::TextureAddressMode::repeat, ` +
+                `bbl::TextureAddressMode::repeat, ` +
+                `1.0f, ${mipMaps ? "1000.0f" : "0.0f"}}`;
+            return {
+                kind: "texture",
+                cpp:
+                    `bbl::load_file_texture(${engine.cpp}, ` +
+                    `bbl::asset_path(${context.cppString(asset.output)}), ` +
+                    `${sampler}, ${invertY ? "true" : "false"}, ` +
+                    `${srgb ? "true" : "false"})`,
+                textureFile: { srgb },
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
             };

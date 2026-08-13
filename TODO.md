@@ -262,16 +262,28 @@ the identical generator, keyed off the generated manifest's
   round out the pinned rounded-box generator, which joined the corpus
   and the tetris-blocks gate. Mutable locals also stopped folding to
   their initial static values when bound as inline arguments.
+- [x] `loadTexture2D` file textures: compile-time asset materialization,
+  the pinned sampler defaults (linear/repeat, invertY true, srgb false,
+  mip clamp when mipMaps is false), and base-color attachment onto
+  created PBR materials paired with the white factor texel (base color
+  requires srgb: true, matching the native slot). The tetris-blocks
+  ring wears the demo frame colormap through the demo-exact nearest
+  options. Scenes 62/81/83 keep their later blockers (node materials).
+- [ ] Port PBR shading under scene-level directional (and second
+  analytic) lights from the pinned fragment: the corpus reaches PBR
+  with hemispheric only (scenes 1/10) or KHR punctual lights (scene
+  33), so a scene directional on PBR mis-lights natively today — the
+  tetris demo's key light needs it composed with IBL for the full
+  renderer port.
 - [ ] Stage 2 (remaining) — renderer contracts for `tetris/renderer.ts`:
-  `loadTexture2D` (also scenes 62/81/83), a sanctioned dynamic
-  thin-instance update path replacing the demo's `engine._device`
-  escape hatch (`setThinInstanceCount` semantics; native instancing is
-  build-once today), composing the record transform with instance
-  matrices, scene-local shader variants from typed WGSL IR (also scenes
-  159/161/165) for the particle material, `removeFromScene`, per-frame
-  camera clamping, and the class/closure subset for `TetrisParticles`
-  and the renderer record. Validate with a static-board gate before any
-  game loop.
+  a sanctioned dynamic thin-instance update path replacing the demo's
+  `engine._device` escape hatch (`setThinInstanceCount` semantics;
+  native instancing is build-once today), composing the record
+  transform with instance matrices, scene-local shader variants from
+  typed WGSL IR (also scenes 159/161/165) for the particle material,
+  `removeFromScene`, per-frame camera clamping, and the class/closure
+  subset for `TetrisParticles` and the renderer record. Validate with a
+  static-board gate before any game loop.
 - [ ] Inlined value returns compile through the default float path in
   compound numeric contexts (a double-to-float-to-double round-trip);
   route inline return expressions through double precision. Parameter

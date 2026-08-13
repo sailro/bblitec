@@ -11,11 +11,13 @@ import {
     attachControl,
     createArcRotateCamera,
     createEngine,
-    createDirectionalLight,
     createHemisphericLight,
     createMeshFromData,
+    createPbrMaterial,
     createSceneContext,
+    createSolidTexture2D,
     createStandardMaterial,
+    loadTexture2D,
     registerScene,
     setThinInstances,
     startEngine,
@@ -86,13 +88,12 @@ async function main(): Promise<void> {
         scene,
     );
     scene.clearColor = { r: 0.02, g: 0.024, b: 0.05, a: 1 };
+    // Hemispheric lighting only: the PBR ring stays inside the reached
+    // analytic-light slice (scene 10 shape). PBR under a scene-level
+    // directional light is an unreached upstream port tracked in TODO.
     addToScene(
         scene,
-        createHemisphericLight([0, 1, 0.25], 0.6),
-    );
-    addToScene(
-        scene,
-        createDirectionalLight([0.25, -0.7, -0.6], 1.0),
+        createHemisphericLight([0, 1, 0.25], 0.95),
     );
 
     const chamfer = createChamferedBoxData(1, 0.08);
@@ -141,7 +142,9 @@ async function main(): Promise<void> {
         addToScene(scene, block);
     }
 
-    // A thin-instanced ring of 24 rotated segments below, one draw call.
+    // A thin-instanced ring of 24 rotated segments below, one draw call,
+    // wearing the demo frame's stone colormap through the pinned
+    // loadTexture2D contract (sRGB base color, no mips, nearest filters).
     const ring = createMeshFromData(
         engine,
         "tetris_ring",
@@ -150,8 +153,28 @@ async function main(): Promise<void> {
         chamfer.indices,
         chamfer.uvs,
     );
-    const ringMaterial = createStandardMaterial();
-    ringMaterial.diffuseColor = [0.62, 0.66, 0.74];
+    const frameColormap = await loadTexture2D(
+        engine,
+        "/tetris/tetris-frame-colormap.png",
+        {
+            srgb: true,
+            invertY: false,
+            mipMaps: false,
+            minFilter: "nearest",
+            magFilter: "nearest",
+        },
+    );
+    const ringMaterial = createPbrMaterial({
+        baseColorTexture: frameColormap,
+        ormTexture: createSolidTexture2D(
+            engine,
+            1.0,
+            0.85,
+            0.0,
+        ),
+        environmentIntensity: 0.9,
+        directIntensity: 1.0,
+    });
     ring.material = ringMaterial;
     const matrices = new Float32Array(24 * 16);
     for (let index = 0; index < 24; index++) {

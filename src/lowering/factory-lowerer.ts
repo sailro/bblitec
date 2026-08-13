@@ -1239,21 +1239,56 @@ void set_alpha_to_coverage(
                 "Expected initial PBR UBO version 0.",
             );
         }
+        this.context.functionDeclaration(
+            "src/texture/texture-2d.ts",
+            "loadTexture2D",
+        );
         return {
             modulePath: pbrModule,
-            symbolName: "createPbrMaterial,createSolidTexture2D",
+            symbolName: "createPbrMaterial,createSolidTexture2D,loadTexture2D",
             header: "",
             source: `// ${this.context.provenance(
                 pbrModule,
                 "createPbrMaterial",
-                `${solidModule}#createSolidTexture2D`,
+                `${solidModule}#createSolidTexture2D, src/texture/texture-2d.ts#loadTexture2D`,
             )}
 #include <bblite/runtime.hpp>
+#include <bblite/pal.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace bbl {
+
+// src/texture/texture-2d.ts loadTexture2D: the encoded image bytes load at
+// startup (the compiler materialized the asset), and the sampler mirrors the
+// pinned defaults (linear filters, repeat addressing, invertY true, srgb
+// false; mip sampling clamps to the base level when mipMaps is false).
+FileTexture load_file_texture(
+    Engine&,
+    const std::string& path,
+    TextureSamplerState sampler,
+    bool invert_y,
+    bool srgb) {
+    FileTexture texture;
+    texture.data.bytes = pal::read_binary_file(path);
+    texture.data.sampler = sampler;
+    texture.data.invert_y = invert_y;
+    texture.srgb = srgb;
+    return texture;
+}
+
+// Attaches a loaded base-color image to a created PBR material. The base
+// color slot always samples sRGB natively, matching the srgb: true contract
+// the compiler validated at the call site.
+void set_material_base_color_file(
+    Engine& engine,
+    MaterialHandle material,
+    FileTexture texture) {
+    engine.materials[material.value].base_color_texture =
+        std::move(texture.data);
+}
 
 SolidTexture create_solid_texture(
     Engine&,
