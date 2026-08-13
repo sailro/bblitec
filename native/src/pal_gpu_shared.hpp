@@ -160,6 +160,15 @@ inline Vec3 normalize_vec3(Vec3 value) {
 inline std::vector<GpuVertex> transformed_vertices(
     const ModelGeometry& geometry,
     const MeshRecord& mesh) {
+    // Thin-instanced meshes keep local-space vertices: the pinned vertex
+    // stage composes mesh.world * instanceWorld, so the record transform
+    // reaches the shader through the instance parent-world uniform
+    // instead of the baked vertex positions. Baking through an identity
+    // transform keeps the exact byte path older instanced scenes
+    // validated (including the normal renormalization).
+    static const MeshRecord identity_transform{};
+    const MeshRecord& trs =
+        mesh.thin_instanced ? identity_transform : mesh;
     const std::vector<ModelVertex>& source_vertices =
         mesh.gpu_deformation &&
                 geometry.bind_vertices.size() ==
@@ -179,36 +188,36 @@ inline std::vector<GpuVertex> transformed_vertices(
                 ? geometry.vertices[vertex_index]
                 : vertex;
         Vec3 position{
-            vertex.position.x * mesh.scaling.x,
-            vertex.position.y * mesh.scaling.y,
-            vertex.position.z * mesh.scaling.z,
+            vertex.position.x * trs.scaling.x,
+            vertex.position.y * trs.scaling.y,
+            vertex.position.z * trs.scaling.z,
         };
-        position = rotate_mesh(position, mesh);
-        position.x += mesh.position.x;
-        position.y += mesh.position.y;
-        position.z += mesh.position.z;
+        position = rotate_mesh(position, trs);
+        position.x += trs.position.x;
+        position.y += trs.position.y;
+        position.z += trs.position.z;
         const Vec3 normal = normalize_vec3(
             rotate_mesh(
                 Vec3{
-                    mesh.scaling.x != 0.0f
-                        ? normal_vertex.normal.x / mesh.scaling.x
+                    trs.scaling.x != 0.0f
+                        ? normal_vertex.normal.x / trs.scaling.x
                         : 0.0f,
-                    mesh.scaling.y != 0.0f
-                        ? normal_vertex.normal.y / mesh.scaling.y
+                    trs.scaling.y != 0.0f
+                        ? normal_vertex.normal.y / trs.scaling.y
                         : 0.0f,
-                    mesh.scaling.z != 0.0f
-                        ? normal_vertex.normal.z / mesh.scaling.z
+                    trs.scaling.z != 0.0f
+                        ? normal_vertex.normal.z / trs.scaling.z
                         : 0.0f,
                 },
-                mesh));
+                trs));
         const Vec3 tangent = normalize_vec3(
             rotate_mesh(
                 Vec3{
-                    vertex.tangent.x * mesh.scaling.x,
-                    vertex.tangent.y * mesh.scaling.y,
-                    vertex.tangent.z * mesh.scaling.z,
+                    vertex.tangent.x * trs.scaling.x,
+                    vertex.tangent.y * trs.scaling.y,
+                    vertex.tangent.z * trs.scaling.z,
                 },
-                mesh));
+                trs));
         result.push_back(GpuVertex{
             {position.x, position.y, position.z},
             {normal.x, normal.y, normal.z},

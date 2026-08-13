@@ -1409,6 +1409,38 @@ export const scenes: readonly SceneDefinition[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "tetris-well",
+        name: "Tetris Well - Dynamic Thin Instances",
+        source: "examples/tetris-well.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/tetris-well",
+        title: "Babylon Lite Native - Tetris Well",
+        buildDirectory:
+            "native/build-tetris-well-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/tetris-well/babylon-lite-golden.png",
+            },
+            actual:
+                "artifacts/parity/tetris-well-native.png",
+            outputDirectory:
+                "artifacts/parity/tetris-well",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [5, 6, 13],
+            backgroundThreshold: 30,
+            // The scripted tape ends at frame 168 and the scene flags
+            // readiness at frame 176; capture past both so browser and
+            // native both see the terminal board while the per-frame
+            // pool rewrites keep exercising the dynamic upload path.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "184",
+            },
+        },
+    },
 ] as const;
 
 export function getScene(id: string): SceneDefinition {

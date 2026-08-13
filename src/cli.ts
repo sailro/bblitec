@@ -274,6 +274,9 @@ async function main(): Promise<void> {
             specializationFeatures.gpuInstancing ||
             result.manifest.features.includes(
                 "mesh:thin-instances",
+            ) ||
+            result.manifest.features.includes(
+                "mesh:thin-instances-dynamic",
             ),
         multiLight:
             specializationFeatures.multiLight,

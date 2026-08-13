@@ -2393,6 +2393,14 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 instance_parent_matrix;
             record.instance_matrices =
                 std::move(instance_matrices);
+            // Loader-built pools are static: the thin-instance flag routes
+            // the draw through the shared parent-world composition and the
+            // record count, while the version/source fields stay unused so
+            // the PAL never re-uploads them.
+            record.thin_instanced =
+                !record.instance_matrices.empty();
+            record.instance_count = static_cast<std::uint32_t>(
+                record.instance_matrices.size());
             engine.meshes.push_back(std::move(record));
             const std::uint32_t mesh_record_index =
                 static_cast<std::uint32_t>(engine.meshes.size() - 1);

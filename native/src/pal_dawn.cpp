@@ -142,6 +142,7 @@ struct DawnMesh {
     WGPUBuffer instances = nullptr;
     WGPUBuffer instance_uniform = nullptr;
     std::uint32_t instance_count = 1;
+    std::uint64_t instance_version = 0;
 #endif
 #if BBLITE_GPU_MORPH_STORAGE
     // Owned when the mesh has storage morphs; otherwise these alias
@@ -4058,14 +4059,22 @@ bool run_dawn_engine(Engine& engine) {
                 identity[15] = 1.0f;
                 instance_matrices.push_back(identity);
             }
+            // The buffer holds the full capacity pool; dynamic pools
+            // draw the record count and re-upload through the
+            // version-gated per-frame sync in the encode loop.
             mesh.instances = create_buffer(
                 state,
                 WGPUBufferUsage_Vertex,
                 instance_matrices.data(),
                 instance_matrices.size() *
                     sizeof(instance_matrices.front()));
-            mesh.instance_count = static_cast<std::uint32_t>(
-                instance_matrices.size());
+            mesh.instance_count =
+                mesh_record.thin_instanced
+                    ? mesh_record.instance_count
+                    : static_cast<std::uint32_t>(
+                          instance_matrices.size());
+            mesh.instance_version =
+                mesh_record.instance_version;
             mesh.instance_uniform = create_buffer(
                 state,
                 WGPUBufferUsage_Uniform,
@@ -5083,12 +5092,47 @@ bool run_dawn_engine(Engine& engine) {
 #endif
 #if BBLITE_GPU_INSTANCING
                     if (mesh_uniform_draw) {
+                        const std::array<float, 16> parent_world =
+                            upstream::build_instance_parent_world(
+                                draw_record);
                         wgpuQueueWriteBuffer(
                             state.queue,
                             draw_mesh.instance_uniform,
                             0,
-                            draw_record.instance_parent_matrix.data(),
+                            parent_world.data(),
                             64);
+                        if (
+                            draw_record.thin_instanced &&
+                            draw_mesh.instance_version !=
+                                draw_record.instance_version) {
+                            // Re-upload the pinned dirty range
+                            // [0, count) from the record pool; slots
+                            // past the active count keep their previous
+                            // contents and are never drawn.
+                            const std::size_t active_count = std::min(
+                                static_cast<std::size_t>(
+                                    draw_record.instance_count),
+                                draw_record.instance_matrices
+                                    .size());
+                            if (active_count > 0) {
+                                wgpuQueueWriteBuffer(
+                                    state.queue,
+                                    draw_mesh.instances,
+                                    0,
+                                    draw_record.instance_matrices
+                                        .data(),
+                                    active_count *
+                                        sizeof(
+                                            draw_record
+                                                .instance_matrices
+                                                .front()));
+                            }
+                            draw_mesh.instance_count =
+                                static_cast<std::uint32_t>(
+                                    active_count);
+                            draw_mesh.instance_version =
+                                draw_record.instance_version;
+                        }
                     }
 #endif
 #if BBLITE_GPU_MORPH_STORAGE

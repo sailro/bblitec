@@ -42,6 +42,8 @@ export interface MeshIntrinsicContext {
     compileNumber(expression: ts.Expression): string;
     requireEngine(value: Value, node: ts.Node): string;
     reachFeature(feature: Feature): void;
+    unwrap(expression: ts.Expression): ts.Expression;
+    fail(node: ts.Node, message: string): never;
 }
 
 export function compileMeshIntrinsic(
@@ -111,6 +113,20 @@ export function compileMeshIntrinsic(
                 "mesh",
                 call.arguments[0]!,
             );
+            // The pinned setThinInstances adopts the caller's array by
+            // reference so setThinInstanceCount/flushThinInstances can
+            // re-read it later; the native record keeps the same alias,
+            // which requires a named binding rather than a temporary.
+            if (
+                ts.isNewExpression(
+                    context.unwrap(call.arguments[1]!),
+                )
+            ) {
+                context.fail(
+                    call.arguments[1]!,
+                    "setThinInstances requires a named Float32Array binding; the mesh keeps referencing it for per-frame updates.",
+                );
+            }
             const matrices =
                 context.compileTypedArrayArgument(
                     call.arguments[1]!,
@@ -125,6 +141,51 @@ export function compileMeshIntrinsic(
                 cpp:
                     `bbl::set_thin_instances(${context.requireEngine(mesh, call)}, ` +
                     `${mesh.cpp}, ${matrices}, ${count})`,
+            };
+        }
+
+        case "setThinInstanceCount": {
+            context.expectArgumentCount(call, 2, 2);
+            const mesh =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                mesh,
+                "mesh",
+                call.arguments[0]!,
+            );
+            const count = context.compileNumber(
+                call.arguments[1]!,
+            );
+            context.reachFeature("mesh:thin-instances");
+            context.reachFeature(
+                "mesh:thin-instances-dynamic",
+            );
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_thin_instance_count(${context.requireEngine(mesh, call)}, ` +
+                    `${mesh.cpp}, ${count})`,
+            };
+        }
+
+        case "flushThinInstances": {
+            context.expectArgumentCount(call, 1, 1);
+            const mesh =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                mesh,
+                "mesh",
+                call.arguments[0]!,
+            );
+            context.reachFeature("mesh:thin-instances");
+            context.reachFeature(
+                "mesh:thin-instances-dynamic",
+            );
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::flush_thin_instances(${context.requireEngine(mesh, call)}, ` +
+                    `${mesh.cpp})`,
             };
         }
 

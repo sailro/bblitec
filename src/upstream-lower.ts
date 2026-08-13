@@ -406,6 +406,7 @@ class GeneratedSourceWriter {
             features.includes("mesh:plane") ||
             features.includes("mesh:sphere") ||
             features.includes("mesh:thin-instances") ||
+            features.includes("mesh:thin-instances-dynamic") ||
             features.includes("mesh:torus")
         ) {
             this.writeSource(
