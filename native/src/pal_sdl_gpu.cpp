@@ -260,14 +260,6 @@ struct ClusterUniforms {
     float alpha_options[4];
 };
 
-struct CardVertexUniforms {
-    float center_angle_depth[4];
-};
-
-struct CardFragmentUniforms {
-    float color_opacity[4];
-};
-
 struct GpuRenderTarget {
     SDL_GPUTexture* color = nullptr;
     SDL_GPUTexture* sampled_color = nullptr;
@@ -316,9 +308,11 @@ struct GpuState {
     SDL_GPUGraphicsPipeline* grid_transparent_pipeline = nullptr;
     SDL_GPUGraphicsPipeline*
         grid_transparent_double_sided_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* shader_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* shader_alpha_to_coverage_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* shader_circular_cutout_pipeline = nullptr;
+    // One pipeline (plus an alpha-to-coverage twin) per generated
+    // shader variant, indexed by the variant id from the emitted table.
+    std::vector<SDL_GPUGraphicsPipeline*> shader_pipelines;
+    std::vector<SDL_GPUGraphicsPipeline*>
+        shader_a2c_pipelines;
     SDL_GPUGraphicsPipeline* background_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* skybox_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* id_pipeline = nullptr;
@@ -2243,14 +2237,15 @@ void release(GpuState& state) {
             state.device,
             state.grid_transparent_double_sided_pipeline);
     }
-    if (state.shader_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.shader_pipeline);
-    if (state.shader_alpha_to_coverage_pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(state.device, state.shader_alpha_to_coverage_pipeline);
+    for (SDL_GPUGraphicsPipeline* pipeline : state.shader_pipelines) {
+        if (pipeline) {
+            SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
+        }
     }
-    if (state.shader_circular_cutout_pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(
-            state.device,
-            state.shader_circular_cutout_pipeline);
+    for (SDL_GPUGraphicsPipeline* pipeline : state.shader_a2c_pipelines) {
+        if (pipeline) {
+            SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
+        }
     }
     if (state.pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.pipeline);
     if (state.window && state.device) SDL_ReleaseWindowFromGPUDevice(state.device, state.window);
@@ -2483,54 +2478,49 @@ bool run_gpu_engine(Engine& engine) {
                       0,
                       "mainFragment")
                 : nullptr;
-        const bool use_alpha_card =
-            render_features.shader_alpha_card;
-        const bool use_circular_cutout =
-            render_features.shader_circular_cutout;
-        SDL_GPUShader* card_vertex_shader = use_alpha_card
-            ? load_shader(
-                  state.device,
-                  "alpha-card.vert",
-                  SDL_GPU_SHADERSTAGE_VERTEX,
-                  0,
-                  upstream::shader_uniform_buffer_count(
-                      ShaderMaterialVariant::alpha_card,
-                      false),
-                  "mainVertex")
-            : nullptr;
-        SDL_GPUShader* card_fragment_shader = use_alpha_card
-            ? load_shader(
-                  state.device,
-                  "alpha-card.frag",
-                  SDL_GPU_SHADERSTAGE_FRAGMENT,
-                  0,
-                  upstream::shader_uniform_buffer_count(
-                      ShaderMaterialVariant::alpha_card,
-                      true),
-                  "mainFragment")
-            : nullptr;
-        SDL_GPUShader* circular_cutout_vertex_shader = use_circular_cutout
-            ? load_shader(
-                  state.device,
-                  "circular-cutout.vert",
-                  SDL_GPU_SHADERSTAGE_VERTEX,
-                  0,
-                  upstream::shader_uniform_buffer_count(
-                      ShaderMaterialVariant::circular_cutout,
-                      false),
-                  "mainVertex")
-            : nullptr;
-        SDL_GPUShader* circular_cutout_fragment_shader = use_circular_cutout
-            ? load_shader(
-                  state.device,
-                  "circular-cutout.frag",
-                  SDL_GPU_SHADERSTAGE_FRAGMENT,
-                  0,
-                  upstream::shader_uniform_buffer_count(
-                      ShaderMaterialVariant::circular_cutout,
-                      true),
-                  "mainFragment")
-            : nullptr;
+        const bool use_shader_materials =
+            render_features.shader_material;
+        std::vector<SDL_GPUShader*> shader_vertex_shaders;
+        std::vector<SDL_GPUShader*> shader_fragment_shaders;
+        if (use_shader_materials) {
+            const std::uint32_t shader_variant_total =
+                upstream::shader_variant_count();
+            shader_vertex_shaders.resize(
+                shader_variant_total,
+                nullptr);
+            shader_fragment_shaders.resize(
+                shader_variant_total,
+                nullptr);
+            for (
+                std::uint32_t variant = 0;
+                variant < shader_variant_total;
+                ++variant) {
+                const upstream::ShaderVariantInfo& info =
+                    upstream::shader_variant_info(variant);
+                const std::string vertex_name =
+                    std::string(info.name) + ".vert";
+                const std::string fragment_name =
+                    std::string(info.name) + ".frag";
+                shader_vertex_shaders[variant] = load_shader(
+                    state.device,
+                    vertex_name.c_str(),
+                    SDL_GPU_SHADERSTAGE_VERTEX,
+                    0,
+                    upstream::shader_uniform_buffer_count(
+                        variant,
+                        false),
+                    "mainVertex");
+                shader_fragment_shaders[variant] = load_shader(
+                    state.device,
+                    fragment_name.c_str(),
+                    SDL_GPU_SHADERSTAGE_FRAGMENT,
+                    0,
+                    upstream::shader_uniform_buffer_count(
+                        variant,
+                        true),
+                    "mainFragment");
+            }
+        }
         SDL_GPUShader* background_fragment_shader = use_ground
             ? load_shader(
                   state.device,
@@ -2842,59 +2832,87 @@ bool run_gpu_engine(Engine& engine) {
                     "SDL_CreateGPUGraphicsPipeline depth-only double-sided");
             }
         }
-        if (card_vertex_shader && card_fragment_shader) {
-            SDL_GPUGraphicsPipelineCreateInfo card_pipeline_info = pipeline_info;
-            card_pipeline_info.vertex_shader = card_vertex_shader;
-            card_pipeline_info.fragment_shader = card_fragment_shader;
-            card_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-            state.shader_pipeline =
-                SDL_CreateGPUGraphicsPipeline(state.device, &card_pipeline_info);
-            if (!state.shader_pipeline) {
-                gpu_error("SDL_CreateGPUGraphicsPipeline shader material");
-            }
-            card_pipeline_info.multisample_state.enable_alpha_to_coverage = true;
-            state.shader_alpha_to_coverage_pipeline =
-                SDL_CreateGPUGraphicsPipeline(state.device, &card_pipeline_info);
-            if (!state.shader_alpha_to_coverage_pipeline) {
-                gpu_error("SDL_CreateGPUGraphicsPipeline alpha to coverage");
-            }
-        }
-        if (circular_cutout_vertex_shader && circular_cutout_fragment_shader) {
-            SDL_GPUColorTargetDescription circular_cutout_target = color_target;
-            circular_cutout_target.blend_state.src_color_blendfactor =
-                SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-            circular_cutout_target.blend_state.dst_color_blendfactor =
-                SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-            circular_cutout_target.blend_state.color_blend_op =
-                SDL_GPU_BLENDOP_ADD;
-            circular_cutout_target.blend_state.src_alpha_blendfactor =
-                SDL_GPU_BLENDFACTOR_ONE;
-            circular_cutout_target.blend_state.dst_alpha_blendfactor =
-                SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-            circular_cutout_target.blend_state.alpha_blend_op =
-                SDL_GPU_BLENDOP_ADD;
-            circular_cutout_target.blend_state.enable_blend = true;
-            SDL_GPUGraphicsPipelineCreateInfo circular_cutout_pipeline_info =
-                pipeline_info;
-            circular_cutout_pipeline_info.vertex_shader =
-                circular_cutout_vertex_shader;
-            circular_cutout_pipeline_info.fragment_shader =
-                circular_cutout_fragment_shader;
-            circular_cutout_pipeline_info.rasterizer_state.cull_mode =
-                SDL_GPU_CULLMODE_NONE;
-            circular_cutout_pipeline_info.depth_stencil_state.compare_op =
-                SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
-            circular_cutout_pipeline_info.depth_stencil_state
-                .enable_depth_write = false;
-            circular_cutout_pipeline_info.target_info
-                .color_target_descriptions = &circular_cutout_target;
-            state.shader_circular_cutout_pipeline =
-                SDL_CreateGPUGraphicsPipeline(
-                    state.device,
-                    &circular_cutout_pipeline_info);
-            if (!state.shader_circular_cutout_pipeline) {
-                gpu_error(
-                    "SDL_CreateGPUGraphicsPipeline circular cutout");
+        if (use_shader_materials) {
+            const std::uint32_t shader_variant_total =
+                upstream::shader_variant_count();
+            state.shader_pipelines.resize(
+                shader_variant_total,
+                nullptr);
+            state.shader_a2c_pipelines.resize(
+                shader_variant_total,
+                nullptr);
+            for (
+                std::uint32_t variant = 0;
+                variant < shader_variant_total;
+                ++variant) {
+                SDL_GPUShader* variant_vertex_shader =
+                    shader_vertex_shaders[variant];
+                SDL_GPUShader* variant_fragment_shader =
+                    shader_fragment_shaders[variant];
+                if (!variant_vertex_shader ||
+                    !variant_fragment_shader) {
+                    continue;
+                }
+                const upstream::ShaderVariantInfo& info =
+                    upstream::shader_variant_info(variant);
+                // The pinned shader-pipeline mapping: needAlphaBlending
+                // selects the src-alpha/one-minus-src-alpha blend,
+                // backFaceCulling selects the cull mode, and
+                // depthWrite=false pairs with the less-equal compare.
+                SDL_GPUColorTargetDescription shader_target =
+                    color_target;
+                if (info.alpha_blending) {
+                    shader_target.blend_state.src_color_blendfactor =
+                        SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+                    shader_target.blend_state.dst_color_blendfactor =
+                        SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+                    shader_target.blend_state.color_blend_op =
+                        SDL_GPU_BLENDOP_ADD;
+                    shader_target.blend_state.src_alpha_blendfactor =
+                        SDL_GPU_BLENDFACTOR_ONE;
+                    shader_target.blend_state.dst_alpha_blendfactor =
+                        SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+                    shader_target.blend_state.alpha_blend_op =
+                        SDL_GPU_BLENDOP_ADD;
+                    shader_target.blend_state.enable_blend = true;
+                }
+                SDL_GPUGraphicsPipelineCreateInfo shader_pipeline_info =
+                    pipeline_info;
+                shader_pipeline_info.vertex_shader =
+                    variant_vertex_shader;
+                shader_pipeline_info.fragment_shader =
+                    variant_fragment_shader;
+                shader_pipeline_info.rasterizer_state.cull_mode =
+                    info.back_face_culling
+                        ? SDL_GPU_CULLMODE_BACK
+                        : SDL_GPU_CULLMODE_NONE;
+                if (!info.depth_write) {
+                    shader_pipeline_info.depth_stencil_state
+                        .compare_op =
+                        SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+                    shader_pipeline_info.depth_stencil_state
+                        .enable_depth_write = false;
+                }
+                shader_pipeline_info.target_info
+                    .color_target_descriptions = &shader_target;
+                state.shader_pipelines[variant] =
+                    SDL_CreateGPUGraphicsPipeline(
+                        state.device,
+                        &shader_pipeline_info);
+                if (!state.shader_pipelines[variant]) {
+                    gpu_error(
+                        "SDL_CreateGPUGraphicsPipeline shader material");
+                }
+                shader_pipeline_info.multisample_state
+                    .enable_alpha_to_coverage = true;
+                state.shader_a2c_pipelines[variant] =
+                    SDL_CreateGPUGraphicsPipeline(
+                        state.device,
+                        &shader_pipeline_info);
+                if (!state.shader_a2c_pipelines[variant]) {
+                    gpu_error(
+                        "SDL_CreateGPUGraphicsPipeline alpha to coverage");
+                }
             }
         }
         state.geometry_tasks.resize(engine.frame_tasks.size());
@@ -3416,17 +3434,11 @@ bool run_gpu_engine(Engine& engine) {
                 state.device,
                 depth_only_fragment_shader);
         }
-        if (card_vertex_shader) SDL_ReleaseGPUShader(state.device, card_vertex_shader);
-        if (card_fragment_shader) SDL_ReleaseGPUShader(state.device, card_fragment_shader);
-        if (circular_cutout_vertex_shader) {
-            SDL_ReleaseGPUShader(
-                state.device,
-                circular_cutout_vertex_shader);
+        for (SDL_GPUShader* shader : shader_vertex_shaders) {
+            if (shader) SDL_ReleaseGPUShader(state.device, shader);
         }
-        if (circular_cutout_fragment_shader) {
-            SDL_ReleaseGPUShader(
-                state.device,
-                circular_cutout_fragment_shader);
+        for (SDL_GPUShader* shader : shader_fragment_shaders) {
+            if (shader) SDL_ReleaseGPUShader(state.device, shader);
         }
         if (background_fragment_shader) {
             SDL_ReleaseGPUShader(state.device, background_fragment_shader);
@@ -4287,8 +4299,7 @@ bool run_gpu_engine(Engine& engine) {
                 }
                 if (
                     (added_families & material_family_shader) != 0 &&
-                    !state.shader_pipeline &&
-                    !state.shader_circular_cutout_pipeline) {
+                    state.shader_pipelines.empty()) {
                     throw std::runtime_error(
                         "Post-registration shader material family has no reached pipeline.");
                 }
@@ -4481,15 +4492,16 @@ bool run_gpu_engine(Engine& engine) {
                                           SDL_GPUGraphicsPipeline* grid_double_sided,
                                           SDL_GPUGraphicsPipeline* grid_transparent,
                                           SDL_GPUGraphicsPipeline* grid_transparent_double_sided,
-                                          SDL_GPUGraphicsPipeline* shader_alpha_card,
-                                          SDL_GPUGraphicsPipeline* shader_alpha_card_a2c,
-                                          SDL_GPUGraphicsPipeline* shader_circular_cutout,
+                                          const std::vector<SDL_GPUGraphicsPipeline*>& shader_variant_pipelines,
+                                          const std::vector<SDL_GPUGraphicsPipeline*>& shader_variant_a2c_pipelines,
                                           const std::array<float, 16>& draw_matrix,
                                           const CameraRecord& draw_camera,
                                           const upstream::RenderDrawLists& draw_lists) {
                     bool scene_matrix_bound = true;
                     const auto pipeline_for =
-                        [&](upstream::RenderPipelineKind kind) {
+                        [&](
+                            upstream::RenderPipelineKind kind,
+                            std::uint32_t shader_variant) {
                         switch (kind) {
                             case upstream::RenderPipelineKind::pbr_opaque_back:
                                 return opaque;
@@ -4519,12 +4531,19 @@ bool run_gpu_engine(Engine& engine) {
                                 return grid_transparent;
                             case upstream::RenderPipelineKind::grid_transparent_none:
                                 return grid_transparent_double_sided;
-                            case upstream::RenderPipelineKind::shader_alpha_card:
-                                return shader_alpha_card;
-                            case upstream::RenderPipelineKind::shader_alpha_card_a2c:
-                                return shader_alpha_card_a2c;
-                            case upstream::RenderPipelineKind::shader_circular_cutout:
-                                return shader_circular_cutout;
+                            case upstream::RenderPipelineKind::shader:
+                                return shader_variant <
+                                        shader_variant_pipelines.size()
+                                    ? shader_variant_pipelines[
+                                          shader_variant]
+                                    : nullptr;
+                            case upstream::RenderPipelineKind::shader_a2c:
+                                return shader_variant <
+                                        shader_variant_a2c_pipelines
+                                            .size()
+                                    ? shader_variant_a2c_pipelines[
+                                          shader_variant]
+                                    : nullptr;
                         }
                         return static_cast<
                             SDL_GPUGraphicsPipeline*>(nullptr);
@@ -4542,7 +4561,7 @@ bool run_gpu_engine(Engine& engine) {
                                 continue;
                             }
                             SDL_GPUGraphicsPipeline* pipeline =
-                                pipeline_for(draw.pipeline);
+                                pipeline_for(draw.pipeline, draw.item.shader_variant);
                             if (!pipeline) {
                                 throw std::runtime_error(
                                     "Reached secondary render pipeline was not created.");
@@ -4577,40 +4596,83 @@ bool run_gpu_engine(Engine& engine) {
                                     throw std::runtime_error(
                                         "Shader draw has an invalid material.");
                                 }
-                                if (
-                                    draw_item.shader_variant ==
-                                    ShaderMaterialVariant::alpha_card) {
-                                    const CardVertexUniforms vertex_uniforms{{
-                                        material->shader_center.x,
-                                        material->shader_center.y,
-                                        material->shader_angle,
-                                        material->shader_depth,
-                                    }};
-                                    const CardFragmentUniforms
-                                        fragment_uniforms{{
-                                            material->shader_color.r,
-                                            material->shader_color.g,
-                                            material->shader_color.b,
-                                            material->shader_opacity,
-                                        }};
-                                    SDL_PushGPUVertexUniformData(
-                                        command,
-                                        0,
-                                        &vertex_uniforms,
-                                        sizeof(vertex_uniforms));
-                                    SDL_PushGPUFragmentUniformData(
-                                        command,
-                                        0,
-                                        &fragment_uniforms,
-                                        sizeof(fragment_uniforms));
-                                    scene_matrix_bound = false;
-                                } else if (!scene_matrix_bound) {
-                                    SDL_PushGPUVertexUniformData(
-                                        command,
-                                        0,
-                                        draw_matrix.data(),
-                                        sizeof(draw_matrix));
-                                    scene_matrix_bound = true;
+                                // Per-stage blocks from the generated
+                                // variant table: [optional scene
+                                // worldViewProjection][custom floats
+                                // gathered from the material's flat
+                                // value storage].
+                                const upstream::ShaderVariantInfo&
+                                    shader_info =
+                                        upstream::shader_variant_info(
+                                            draw_item.shader_variant);
+                                const auto push_stage_block =
+                                    [&](
+                                        const upstream::
+                                            ShaderVariantStageBlock&
+                                                block,
+                                        bool fragment_stage) {
+                                    if (!block.present) return;
+                                    std::vector<float> block_floats(
+                                        block.float_size,
+                                        0.0f);
+                                    if (block.system_matrix) {
+                                        std::copy_n(
+                                            draw_matrix.data(),
+                                            16,
+                                            block_floats.begin());
+                                    }
+                                    for (const std::array<
+                                             std::uint32_t,
+                                             3>& gather :
+                                         block.gather) {
+                                        for (
+                                            std::uint32_t index = 0;
+                                            index < gather[2];
+                                            ++index) {
+                                            block_floats[
+                                                gather[0] + index] =
+                                                material
+                                                    ->shader_uniform_values[
+                                                        gather[1] +
+                                                        index];
+                                        }
+                                    }
+                                    if (fragment_stage) {
+                                        SDL_PushGPUFragmentUniformData(
+                                            command,
+                                            0,
+                                            block_floats.data(),
+                                            static_cast<Uint32>(
+                                                block_floats.size() *
+                                                sizeof(float)));
+                                    } else {
+                                        SDL_PushGPUVertexUniformData(
+                                            command,
+                                            0,
+                                            block_floats.data(),
+                                            static_cast<Uint32>(
+                                                block_floats.size() *
+                                                sizeof(float)));
+                                    }
+                                };
+                                push_stage_block(
+                                    shader_info.vertex,
+                                    false);
+                                push_stage_block(
+                                    shader_info.fragment,
+                                    true);
+                                if (shader_info.vertex.present) {
+                                    // A pure scene-matrix vertex block
+                                    // leaves the shared binding valid;
+                                    // custom vertex floats invalidate
+                                    // it for the next draw.
+                                    scene_matrix_bound =
+                                        shader_info.vertex
+                                            .system_matrix &&
+                                        shader_info.vertex.gather
+                                            .empty() &&
+                                        shader_info.vertex
+                                            .float_size == 16;
                                 }
                             } else {
                                 if (!scene_matrix_bound) {
@@ -4982,9 +5044,8 @@ bool run_gpu_engine(Engine& engine) {
                             state.grid_transparent_pipeline,
                             state
                                 .grid_transparent_double_sided_pipeline,
-                            state.shader_pipeline,
-                            state.shader_alpha_to_coverage_pipeline,
-                            state.shader_circular_cutout_pipeline,
+                            state.shader_pipelines,
+                            state.shader_a2c_pipelines,
                             task_matrix,
                             task_camera,
                             task_draw_lists[handle.value]);
@@ -5094,9 +5155,8 @@ bool run_gpu_engine(Engine& engine) {
                             nullptr,
                             nullptr,
                             nullptr,
-                            nullptr,
-                            nullptr,
-                            nullptr,
+                            {},
+                            {},
                             matrix,
                             camera,
                             task_draw_lists[handle.value]);
@@ -5470,7 +5530,9 @@ bool run_gpu_engine(Engine& engine) {
             };
 #endif
             const auto pipeline_for =
-                [&](upstream::RenderPipelineKind kind) {
+                [&](
+                    upstream::RenderPipelineKind kind,
+                    std::uint32_t shader_variant) {
                 switch (kind) {
                     case upstream::RenderPipelineKind::pbr_opaque_back:
                         return state.pipeline;
@@ -5503,12 +5565,17 @@ bool run_gpu_engine(Engine& engine) {
                     case upstream::RenderPipelineKind::grid_transparent_none:
                         return state
                             .grid_transparent_double_sided_pipeline;
-                    case upstream::RenderPipelineKind::shader_alpha_card:
-                        return state.shader_pipeline;
-                    case upstream::RenderPipelineKind::shader_alpha_card_a2c:
-                        return state.shader_alpha_to_coverage_pipeline;
-                    case upstream::RenderPipelineKind::shader_circular_cutout:
-                        return state.shader_circular_cutout_pipeline;
+                    case upstream::RenderPipelineKind::shader:
+                        return shader_variant <
+                                state.shader_pipelines.size()
+                            ? state.shader_pipelines[shader_variant]
+                            : nullptr;
+                    case upstream::RenderPipelineKind::shader_a2c:
+                        return shader_variant <
+                                state.shader_a2c_pipelines.size()
+                            ? state.shader_a2c_pipelines[
+                                  shader_variant]
+                            : nullptr;
                 }
                 return static_cast<
                     SDL_GPUGraphicsPipeline*>(nullptr);
@@ -5525,7 +5592,7 @@ bool run_gpu_engine(Engine& engine) {
                         continue;
                     }
                     SDL_GPUGraphicsPipeline* pipeline =
-                        pipeline_for(draw.pipeline);
+                        pipeline_for(draw.pipeline, draw.item.shader_variant);
                     if (!pipeline) {
                         throw std::runtime_error(
                             "Reached render pipeline was not created.");
@@ -5601,39 +5668,65 @@ bool run_gpu_engine(Engine& engine) {
                             throw std::runtime_error(
                                 "Shader draw has an invalid material.");
                         }
-                        if (
-                            item.shader_variant ==
-                            ShaderMaterialVariant::alpha_card) {
-                            const CardVertexUniforms vertex_uniforms{{
-                                material->shader_center.x,
-                                material->shader_center.y,
-                                material->shader_angle,
-                                material->shader_depth,
-                            }};
-                            const CardFragmentUniforms fragment_uniforms{{
-                                material->shader_color.r,
-                                material->shader_color.g,
-                                material->shader_color.b,
-                                material->shader_opacity,
-                            }};
-                            SDL_PushGPUVertexUniformData(
-                                command,
-                                0,
-                                &vertex_uniforms,
-                                sizeof(vertex_uniforms));
-                            SDL_PushGPUFragmentUniformData(
-                                command,
-                                0,
-                                &fragment_uniforms,
-                                sizeof(fragment_uniforms));
-                            scene_matrix_bound = false;
-                        } else if (!scene_matrix_bound) {
-                            SDL_PushGPUVertexUniformData(
-                                command,
-                                0,
-                                matrix.data(),
-                                sizeof(matrix));
-                            scene_matrix_bound = true;
+                        // Per-stage blocks from the generated variant
+                        // table: [optional scene worldViewProjection]
+                        // [custom floats gathered from the material's
+                        // flat value storage].
+                        const upstream::ShaderVariantInfo& shader_info =
+                            upstream::shader_variant_info(
+                                item.shader_variant);
+                        const auto push_stage_block =
+                            [&](
+                                const upstream::ShaderVariantStageBlock&
+                                    block,
+                                bool fragment_stage) {
+                            if (!block.present) return;
+                            std::vector<float> block_floats(
+                                block.float_size,
+                                0.0f);
+                            if (block.system_matrix) {
+                                std::copy_n(
+                                    matrix.data(),
+                                    16,
+                                    block_floats.begin());
+                            }
+                            for (const std::array<std::uint32_t, 3>&
+                                     gather : block.gather) {
+                                for (
+                                    std::uint32_t index = 0;
+                                    index < gather[2];
+                                    ++index) {
+                                    block_floats[gather[0] + index] =
+                                        material
+                                            ->shader_uniform_values[
+                                                gather[1] + index];
+                                }
+                            }
+                            if (fragment_stage) {
+                                SDL_PushGPUFragmentUniformData(
+                                    command,
+                                    0,
+                                    block_floats.data(),
+                                    static_cast<Uint32>(
+                                        block_floats.size() *
+                                        sizeof(float)));
+                            } else {
+                                SDL_PushGPUVertexUniformData(
+                                    command,
+                                    0,
+                                    block_floats.data(),
+                                    static_cast<Uint32>(
+                                        block_floats.size() *
+                                        sizeof(float)));
+                            }
+                        };
+                        push_stage_block(shader_info.vertex, false);
+                        push_stage_block(shader_info.fragment, true);
+                        if (shader_info.vertex.present) {
+                            scene_matrix_bound =
+                                shader_info.vertex.system_matrix &&
+                                shader_info.vertex.gather.empty() &&
+                                shader_info.vertex.float_size == 16;
                         }
                     } else {
                         if (!scene_matrix_bound) {

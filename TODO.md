@@ -79,8 +79,16 @@ CPU-side from GPU-side causes immediately.
 - [ ] Build a typed user-code IR from `ts.Program`/`TypeChecker` symbols.
 - [ ] Move statement, expression, intrinsic, and property lowering into
   focused compiler modules instead of extending the entry compiler monolith.
-- [ ] Generate scene-local custom shader variants from supported WGSL IR
-  instead of limiting native emission to predeclared variant names.
+- [x] Generate scene-local custom shader variants from supported WGSL
+  IR instead of limiting native emission to predeclared variant names:
+  createShaderMaterial compiles the entry file's own WGSL through the
+  typed shader IR into a generated per-scene variant table (pipeline
+  state from the pinned shader-pipeline mapping, reflected per-stage
+  uniform blocks, declared uniform defaults), both PALs build their
+  shader pipelines from the table, and uniform writes resolve to
+  reflected value offsets at compile time. The reached surface keeps
+  the worldViewProjection-only system block; wider system-uniform sets
+  (viewProjection + world) stay with scene 165.
 - [ ] Extend shader IR to composed PBR/Grid/background fragments, then replace
   the remaining renderer-lowerer source-text contracts with parsed shader IR.
 - [x] Lower non-generic typed user functions, defaults, and one final return.
@@ -304,12 +312,18 @@ the identical generator, keyed off the generated manifest's
   every frame with degenerate hidden slots, the ghost preview varies
   its count, and every pool mesh carries a non-identity record
   transform.
+- [x] Particle shader through typed WGSL IR — the demo's line-clear
+  particle program compiles verbatim as a scene-local variant
+  (tetris-sparks gate: unlit vertex colors, brightness default +
+  setShaderFloat, seeded three-axis-rotated burst, byte-identical on
+  both backends). The gate exposed and fixed two latent native bugs:
+  the shader IR's color attribute location diverged from the shared
+  GpuVertex table, and the Euler rotation bake applied X·Y·Z instead
+  of the pinned eulerToQuat Z·Y·X order.
 - [ ] Stage 2 (remaining) — renderer contracts for `tetris/renderer.ts`:
-  scene-local shader variants from typed WGSL IR (also scenes
-  159/161/165) for the particle material, `removeFromScene`, per-frame
-  camera clamping, and the class/closure subset for `TetrisParticles`
-  and the renderer record. Validate with a static-board gate before any
-  game loop.
+  `removeFromScene`, per-frame camera clamping, and the class/closure
+  subset for `TetrisParticles` and the renderer record. Validate with a
+  static-board gate before any game loop.
 - [ ] Inlined value returns compile through the default float path in
   compound numeric contexts (a double-to-float-to-double round-trip);
   route inline return expressions through double precision. Parameter
@@ -408,7 +422,12 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 143: support `createBlurPostProcessTask`.
 - [ ] Scene 147: support `createCircleOfConfusionPostProcessTask`.
 - [ ] Scenes 155, 156: support property-animation blending.
-- [ ] Scenes 159, 161, 165: generate the reached shader-material variants from typed shader IR.
+- [ ] Scene 165: beyond the graduated scene-local shader variants
+  (scenes 159/161 are measured gates now), it needs the
+  viewProjection + world system-uniform pair, per-instance thin-instance
+  colors (`setThinInstanceColors` + the instance color vertex stream),
+  and an explicit image-neutral lowering decision for
+  `enableThinInstanceGpuCulling`.
 - [ ] Scenes 160, 162: extend reached shader-material options.
 - [ ] Scenes 177, 217: extend reached PBR material options.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.

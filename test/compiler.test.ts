@@ -1989,9 +1989,10 @@ test("compiles Babylon Lite scene 274 alpha to coverage", () => {
     assert.match(result.cpp, /bbl::set_alpha_to_coverage/);
     assert.match(result.cpp, /bbl::create_plane/);
     assert.deepEqual(result.manifest.shaderVariants, ["alpha-card"]);
+    assert.deepEqual(result.manifest.customShaderPrograms, []);
     assert.match(
         result.cpp,
-        /bbl::ShaderMaterialVariant::alpha_card/,
+        /bbl::create_shader_material\(v_engine, 0u\)/,
     );
     assert.ok(result.manifest.generatedSources.includes("upstream/src/material_shader.cpp"));
 });
@@ -2010,9 +2011,10 @@ test("compiles Babylon Lite scene 163 shader alpha cutout", () => {
     assert.ok(result.manifest.features.includes("mesh:plane"));
     assert.ok(result.manifest.features.includes("renderer:pbr"));
     assert.deepEqual(result.manifest.shaderVariants, ["circular-cutout"]);
+    assert.deepEqual(result.manifest.customShaderPrograms, []);
     assert.match(
         result.cpp,
-        /bbl::ShaderMaterialVariant::circular_cutout/,
+        /bbl::create_shader_material\(v_engine, 0u\)/,
     );
     assert.match(
         result.cpp,

@@ -85,12 +85,16 @@ inline DeformationUniforms build_deformation_uniforms(
 #endif
 
 inline Vec3 rotate_euler(Vec3 value, const Vec3& rotation) {
-    const float sin_x = std::sin(rotation.x);
-    const float cos_x = std::cos(rotation.x);
+    // The pinned Euler proxy converts through eulerToQuat's intrinsic
+    // XYZ order (src/math/quat-euler.ts), which applies Z, then Y,
+    // then X to a vector; single-axis rotations are unaffected by the
+    // ordering.
+    const float sin_z = std::sin(rotation.z);
+    const float cos_z = std::cos(rotation.z);
     value = Vec3{
-        value.x,
-        value.y * cos_x - value.z * sin_x,
-        value.y * sin_x + value.z * cos_x,
+        value.x * cos_z - value.y * sin_z,
+        value.x * sin_z + value.y * cos_z,
+        value.z,
     };
     const float sin_y = std::sin(rotation.y);
     const float cos_y = std::cos(rotation.y);
@@ -99,12 +103,12 @@ inline Vec3 rotate_euler(Vec3 value, const Vec3& rotation) {
         value.y,
         -value.x * sin_y + value.z * cos_y,
     };
-    const float sin_z = std::sin(rotation.z);
-    const float cos_z = std::cos(rotation.z);
+    const float sin_x = std::sin(rotation.x);
+    const float cos_x = std::cos(rotation.x);
     return Vec3{
-        value.x * cos_z - value.y * sin_z,
-        value.x * sin_z + value.y * cos_z,
-        value.z,
+        value.x,
+        value.y * cos_x - value.z * sin_x,
+        value.y * sin_x + value.z * cos_x,
     };
 }
 

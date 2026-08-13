@@ -120,11 +120,6 @@ enum class PropertyAnimationInterpolation {
     step,
 };
 
-enum class ShaderMaterialVariant {
-    alpha_card,
-    circular_cutout,
-};
-
 enum class GeometryTextureType {
     irradiance,
     world_position,
@@ -488,12 +483,14 @@ struct MaterialRecord {
     bool alpha_to_coverage = false;
     bool shader_alpha_testing = false;
     bool shader_depth_write = true;
-    ShaderMaterialVariant shader_variant = ShaderMaterialVariant::alpha_card;
-    Vec2 shader_center{};
-    float shader_angle = 0.0f;
-    float shader_depth = 0.5f;
-    Color3 shader_color{};
-    float shader_opacity = 1.0f;
+    // Index into the generated shader-variant table (see the emitted
+    // upstream::shader_variant_info); ids are assigned in reach order by
+    // the compiler and drive pipeline selection and uniform layout.
+    std::uint32_t shader_variant = 0;
+    // Flat custom-uniform storage laid out by the variant's reflected
+    // member offsets; created (and defaults-applied) by the emitted
+    // create_shader_material, written by the emitted offset setters.
+    std::vector<float> shader_uniform_values;
     Color3 grid_main_color{0.0f, 0.0f, 0.0f};
     Color3 grid_line_color{0.0f, 0.5f, 0.5f};
     Vec4 grid_control{1.0f, 10.0f, 0.33f, 1.0f};
@@ -749,18 +746,39 @@ MaterialHandle create_grid_material(
     GridMaterialOptions options = {});
 MaterialHandle create_shader_material(
     Engine& engine,
-    ShaderMaterialVariant variant);
-void set_shader_center(Engine& engine, MaterialHandle material, Vec2 value);
-void set_shader_float(
+    std::uint32_t variant);
+void set_shader_uniform_values(
     Engine& engine,
     MaterialHandle material,
-    const std::string& name,
-    float value);
-void set_shader_vector3(
+    std::uint32_t offset,
+    std::uint32_t count,
+    const float* values);
+void set_shader_uniform_value(
     Engine& engine,
     MaterialHandle material,
-    const std::string& name,
-    Color3 value);
+    std::uint32_t offset,
+    float v0);
+void set_shader_uniform_value(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t offset,
+    float v0,
+    float v1);
+void set_shader_uniform_value(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t offset,
+    float v0,
+    float v1,
+    float v2);
+void set_shader_uniform_value(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t offset,
+    float v0,
+    float v1,
+    float v2,
+    float v3);
 void set_alpha_to_coverage(
     Engine& engine,
     MaterialHandle material,

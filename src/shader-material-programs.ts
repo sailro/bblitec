@@ -1,11 +1,14 @@
 import type { ShaderMaterialVariantName } from "./compiler.js";
 
 export interface ShaderMaterialProgramSource {
-    name: ShaderMaterialVariantName;
+    name: string;
     vertexSource: string;
     fragmentSource: string;
     attributes: string[];
     uniforms: string[];
+    /** Native uniform defaults applied at material creation; pinned
+     *  predeclared values carry the historical record initializers. */
+    uniformDefaults?: Array<{ name: string; values: number[] }>;
     needAlphaBlending: boolean;
     needAlphaTesting: boolean;
     backFaceCulling: boolean;
@@ -15,6 +18,39 @@ export interface ShaderMaterialProgramSource {
 
 export function normalizeShaderSource(source: string): string {
     return source.replace(/\s+/g, "").replace(/,([)}])/g, "$1");
+}
+
+/**
+ * The canonical flat value layout for a program's custom uniforms:
+ * declaration order, sized by component count. Both the generated
+ * variant table's gathers and the compiled uniform setters resolve
+ * offsets through this single definition.
+ */
+export function shaderUniformValueLayout(
+    uniforms: string[],
+): Map<string, { offset: number; count: number }> {
+    const layout = new Map<string, { offset: number; count: number }>();
+    let offset = 0;
+    for (const signature of uniforms) {
+        const separator = signature.indexOf(":");
+        if (separator < 1) continue;
+        const name = signature.slice(0, separator);
+        const type = signature.slice(separator + 1);
+        const count =
+            type === "f32"
+                ? 1
+                : type === "vec2<f32>"
+                    ? 2
+                    : type === "vec3<f32>"
+                        ? 3
+                        : type === "vec4<f32>"
+                            ? 4
+                            : 0;
+        if (count === 0) continue;
+        layout.set(name, { offset, count });
+        offset += count;
+    }
+    return layout;
 }
 
 export const shaderMaterialPrograms: ShaderMaterialProgramSource[] = [
@@ -54,6 +90,12 @@ fn mainFragment() -> @location(0) vec4<f32> {
             "depth:f32",
             "color:vec3<f32>",
             "opacity:f32",
+        ],
+        // The historical native record initializers (shader_depth 0.5,
+        // shader_opacity 1.0) carry over as variant defaults.
+        uniformDefaults: [
+            { name: "depth", values: [0.5] },
+            { name: "opacity", values: [1] },
         ],
         needAlphaBlending: false,
         needAlphaTesting: false,

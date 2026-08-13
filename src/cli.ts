@@ -3,6 +3,8 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { CompileAsset, CompileError, compileSource } from "./compiler.js";
+import type { CompiledShaderProgram } from "./compiler.js";
+import { shaderMaterialPrograms } from "./shader-material-programs.js";
 import { emitUpstreamGenerated } from "./upstream-lower.js";
 import { emitAssetSpecializations } from "./asset-specializer.js";
 import { packageBabylon } from "./babylon-packager.js";
@@ -259,10 +261,36 @@ async function main(): Promise<void> {
         );
         result.manifest.assets.push(brdfAsset);
     }
+    // Resolve reached variant slugs to full program records: predeclared
+    // names come from the pinned registry (no defaults), scene-local
+    // programs travel in the manifest.
+    const shaderPrograms: CompiledShaderProgram[] =
+        result.manifest.shaderVariants.map((name) => {
+            const custom =
+                result.manifest.customShaderPrograms.find(
+                    (program) => program.name === name,
+                );
+            if (custom) {
+                return custom;
+            }
+            const predeclared = shaderMaterialPrograms.find(
+                (program) => program.name === name,
+            );
+            if (!predeclared) {
+                throw new Error(
+                    `Unknown shader variant '${name}'.`,
+                );
+            }
+            return {
+                ...predeclared,
+                uniformDefaults:
+                    predeclared.uniformDefaults ?? [],
+            };
+        });
     emitUpstreamGenerated(outputPath, result.manifest.features, {
         idDiagnostics: options.idDiagnostics,
         pbrDiagnostics: options.pbrDiagnostics,
-        shaderVariants: result.manifest.shaderVariants,
+        shaderPrograms,
         geometryOutputTasks: result.manifest.geometryOutputTasks,
         gpuDeformation: specializationFeatures.gpuDeformation,
         morphStorage: specializationFeatures.morphStorage,

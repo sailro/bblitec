@@ -4,15 +4,14 @@ import { resolve } from "node:path";
 import ts from "typescript";
 import { RendererFidelityManifest } from "../fidelity.js";
 import type {
+    CompiledShaderProgram,
     GeometryOutputTaskManifest,
-    ShaderMaterialVariantName,
 } from "../compiler.js";
 import { emitNativeWgslProgram } from "../shader-wgsl-emitter.js";
 import { lowerWgslShaderProgram } from "../shader-ir.js";
 import type { ShaderProgramReflection } from "../shader-ir.js";
 import {
     composeStandaloneWgsl,
-    getShaderMaterialProgram,
     shaderMaterialPrograms,
 } from "../shader-material-programs.js";
 import {
@@ -92,6 +91,7 @@ export class RendererLowerer {
         sheen?: boolean;
         iridescence?: boolean;
         dispersion?: boolean;
+        shaderPrograms?: CompiledShaderProgram[];
     } = {}): LoweredSource {
         for (const symbol of ["buildBindings", "sortTransparentBindings", "drawList"]) {
             this.context.functionDeclaration(
@@ -198,17 +198,113 @@ export class RendererLowerer {
             msaaExpression.whenFalse,
             surfaceFile,
         );
-        const shaderBindingCases = shaderMaterialPrograms.map((source) => {
-            const reflection = lowerWgslShaderProgram(source).reflection;
-            const vertex = reflection.uniformBlocks.some(
-                ({ stage }) => stage === "vertex",
-            ) ? 1 : 0;
-            const fragment = reflection.uniformBlocks.some(
-                ({ stage }) => stage === "fragment",
-            ) ? 1 : 0;
-            return `        case ShaderMaterialVariant::${source.name.replaceAll("-", "_")}:
-            return fragment_stage ? ${fragment}u : ${vertex}u;`;
-        }).join("\n");
+        const reachedShaderPrograms =
+            options.shaderPrograms ?? [];
+        const uniformComponentCount = (type: string): number =>
+            type === "f32"
+                ? 1
+                : type === "vec2<f32>"
+                    ? 2
+                    : type === "vec3<f32>"
+                        ? 3
+                        : type === "vec4<f32>"
+                            ? 4
+                            : 0;
+        const shaderVariantTable = reachedShaderPrograms.map(
+            (program) => {
+                const reflection =
+                    lowerWgslShaderProgram(program).reflection;
+                // Canonical custom-uniform value layout: declaration
+                // order, sized by component count. The material record
+                // stores this flat vector; per-stage gathers map it into
+                // the reflected vec4-slot block layout.
+                const valueOffsets = new Map<string, number>();
+                let valueCount = 0;
+                for (const signature of program.uniforms) {
+                    const separator = signature.indexOf(":");
+                    if (separator < 1) continue;
+                    const memberName = signature.slice(0, separator);
+                    const componentCount = uniformComponentCount(
+                        signature.slice(separator + 1),
+                    );
+                    valueOffsets.set(memberName, valueCount);
+                    valueCount += componentCount;
+                }
+                const defaults = new Array<number>(valueCount).fill(0);
+                for (const entry of program.uniformDefaults) {
+                    const offset = valueOffsets.get(entry.name);
+                    if (offset === undefined) continue;
+                    entry.values.forEach((value, index) => {
+                        defaults[offset + index] = value;
+                    });
+                }
+                const stageBlock = (stage: "vertex" | "fragment") => {
+                    const block = reflection.uniformBlocks.find(
+                        (candidate) => candidate.stage === stage,
+                    );
+                    if (!block) {
+                        return { present: false, systemMatrix: false, floatSize: 0, gather: [] as number[][] };
+                    }
+                    return {
+                        present: true,
+                        systemMatrix: block.systemMatrix,
+                        floatSize: block.size / 4,
+                        gather: block.members.map((member) => [
+                            member.offset / 4,
+                            valueOffsets.get(member.name) ?? 0,
+                            member.size / 4,
+                        ]),
+                    };
+                };
+                return {
+                    name: program.name,
+                    alphaBlending: program.needAlphaBlending,
+                    alphaTesting: program.needAlphaTesting,
+                    backFaceCulling: program.backFaceCulling,
+                    depthWrite: program.depthWrite,
+                    clipMatrix: program.clipDepth === "matrix",
+                    valueCount,
+                    defaults,
+                    vertex: stageBlock("vertex"),
+                    fragment: stageBlock("fragment"),
+                };
+            },
+        );
+        const shaderBindingCases = shaderVariantTable.map((info, id) =>
+            `        case ${id}u:
+            return fragment_stage ? ${info.fragment.present ? 1 : 0}u : ${info.vertex.present ? 1 : 0}u;`,
+        ).join("\n");
+        const floatLiteral = (value: number): string =>
+            Number.isInteger(value)
+                ? `${value}.0f`
+                : `${value}f`;
+        const stageBlockLiteral = (block: {
+            present: boolean;
+            systemMatrix: boolean;
+            floatSize: number;
+            gather: number[][];
+        }): string =>
+            `ShaderVariantStageBlock{${block.present}, ${block.systemMatrix}, ${block.floatSize}u, {${block.gather
+                .map(
+                    ([blockOffset, valueOffset, count]) =>
+                        `{${blockOffset}u, ${valueOffset}u, ${count}u}`,
+                )
+                .join(", ")}}}`;
+        const shaderVariantEntries = shaderVariantTable.map(
+            (info) =>
+                `    ShaderVariantInfo{
+        "${info.name}",
+        ${info.alphaBlending},
+        ${info.alphaTesting},
+        ${info.backFaceCulling},
+        ${info.depthWrite},
+        ${info.clipMatrix},
+        ${info.valueCount}u,
+        {${info.defaults.map(floatLiteral).join(", ")}},
+        ${stageBlockLiteral(info.vertex)},
+        ${stageBlockLiteral(info.fragment)},
+    },`,
+        ).join("\n");
         const transmissionUniformFields = options.transmission
             ? `    std::array<float, 4> refraction_params{};
     std::array<float, 4> volume_params{};
@@ -455,9 +551,8 @@ enum class RenderPipelineKind {
     grid_opaque_none,
     grid_transparent_back,
     grid_transparent_none,
-    shader_alpha_card,
-    shader_alpha_card_a2c,
-    shader_circular_cutout,
+    shader,
+    shader_a2c,
 };
 
 enum class RenderStage {
@@ -474,7 +569,7 @@ struct RenderItem {
     RenderMaterialKind material_kind = RenderMaterialKind::pbr;
     RenderBucket bucket = RenderBucket::opaque;
     RenderCullMode cull_mode = RenderCullMode::back;
-    ShaderMaterialVariant shader_variant = ShaderMaterialVariant::alpha_card;
+    std::uint32_t shader_variant = 0;
     bool clockwise_front_face = false;
     bool alpha_to_coverage = false;
     bool transmissive = false;
@@ -514,9 +609,36 @@ struct RenderFeatures {
     bool standard_material = false;
     bool grid_material = false;
     bool no_color_material = false;
-    bool shader_alpha_card = false;
-    bool shader_circular_cutout = false;
+    bool shader_material = false;
 };
+
+// Generated per-scene shader-variant metadata: pipeline state from the
+// pinned shader-pipeline mapping and the reflected per-stage uniform
+// blocks ([optional 16-float worldViewProjection][vec4-slot-packed
+// custom members]) with gathers from the material's flat value storage.
+struct ShaderVariantStageBlock {
+    bool present = false;
+    bool system_matrix = false;
+    std::uint32_t float_size = 0;
+    // {block float offset, value float offset, float count}
+    std::vector<std::array<std::uint32_t, 3>> gather;
+};
+
+struct ShaderVariantInfo {
+    const char* name = "";
+    bool alpha_blending = false;
+    bool alpha_testing = false;
+    bool back_face_culling = true;
+    bool depth_write = true;
+    bool clip_matrix = false;
+    std::uint32_t value_count = 0;
+    std::vector<float> defaults;
+    ShaderVariantStageBlock vertex;
+    ShaderVariantStageBlock fragment;
+};
+
+std::uint32_t shader_variant_count();
+const ShaderVariantInfo& shader_variant_info(std::uint32_t variant);
 
 struct PbrUniforms {
     std::array<float, 4> light_direction{};
@@ -623,7 +745,7 @@ RenderFeatures build_render_features(
     const Scene& scene,
     const Engine& engine);
 std::uint32_t shader_uniform_buffer_count(
-    ShaderMaterialVariant variant,
+    std::uint32_t variant,
     bool fragment_stage);
 RenderDrawLists build_render_draw_lists(
     const std::vector<RenderItem>& items,
@@ -837,14 +959,9 @@ RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
                 ? RenderPipelineKind::grid_opaque_none
                 : RenderPipelineKind::grid_opaque_back;
         case RenderMaterialKind::shader:
-            switch (item.shader_variant) {
-                case ShaderMaterialVariant::alpha_card:
-                    return item.alpha_to_coverage
-                        ? RenderPipelineKind::shader_alpha_card_a2c
-                        : RenderPipelineKind::shader_alpha_card;
-                case ShaderMaterialVariant::circular_cutout:
-                    return RenderPipelineKind::shader_circular_cutout;
-            }
+            return item.alpha_to_coverage
+                ? RenderPipelineKind::shader_a2c
+                : RenderPipelineKind::shader;
     }
     return RenderPipelineKind::pbr_opaque_back;
 }
@@ -885,9 +1002,8 @@ std::uint32_t pipeline_order(RenderPipelineKind kind) {
         case RenderPipelineKind::grid_opaque_none:
         case RenderPipelineKind::grid_transparent_none:
             return 5;
-        case RenderPipelineKind::shader_alpha_card:
-        case RenderPipelineKind::shader_alpha_card_a2c:
-        case RenderPipelineKind::shader_circular_cutout:
+        case RenderPipelineKind::shader:
+        case RenderPipelineKind::shader_a2c:
             return 6;
     }
     return 7;
@@ -917,12 +1033,7 @@ void include_material_features(
     features.standard_material |= material.standard_material;
     features.grid_material |= material.grid_material;
     features.no_color_material |= material.no_color;
-    features.shader_alpha_card |=
-        material.shader_material &&
-        material.shader_variant == ShaderMaterialVariant::alpha_card;
-    features.shader_circular_cutout |=
-        material.shader_material &&
-        material.shader_variant == ShaderMaterialVariant::circular_cutout;
+    features.shader_material |= material.shader_material;
 }
 
 RenderFeatures build_render_features(
@@ -945,13 +1056,33 @@ RenderFeatures build_render_features(
     return result;
 }
 
+namespace {
+
+const std::array<ShaderVariantInfo, ${shaderVariantTable.length}> shader_variants{{
+${shaderVariantEntries}
+}};
+
+} // namespace
+
+std::uint32_t shader_variant_count() {
+    return ${shaderVariantTable.length}u;
+}
+
+const ShaderVariantInfo& shader_variant_info(std::uint32_t variant) {
+    if (variant >= shader_variants.size()) {
+        throw std::runtime_error("Unknown shader variant id.");
+    }
+    return shader_variants[variant];
+}
+
 std::uint32_t shader_uniform_buffer_count(
-    ShaderMaterialVariant variant,
+    std::uint32_t variant,
     bool fragment_stage) {
     switch (variant) {
 ${shaderBindingCases}
+        default:
+            return 0u;
     }
-    return 0u;
 }
 
 RenderDrawLists build_render_draw_lists(
@@ -1876,7 +2007,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         transmission?: boolean;
         fog?: boolean;
         normalTextureScale?: boolean;
-        shaderVariants: ShaderMaterialVariantName[];
+        shaderPrograms: CompiledShaderProgram[];
         standardMaterial: boolean;
         gridMaterial?: boolean;
         idDiagnostics: boolean;
@@ -1899,7 +2030,10 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         skybox: true,
         transmission: true,
         normalTextureScale: true,
-        shaderVariants: ["alpha-card", "circular-cutout"],
+        shaderPrograms: shaderMaterialPrograms.map((program) => ({
+            ...program,
+            uniformDefaults: program.uniformDefaults ?? [],
+        })),
         standardMaterial: false,
         gridMaterial: false,
         idDiagnostics: true,
@@ -2179,7 +2313,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             if (!source.includes(formula)) {
                 throw new Error(`Pinned Babylon Lite source is missing ${label}: ${formula}.`);
             }
-            if (options.shaderVariants.length > 0) {
+            if (options.shaderPrograms.length > 0) {
                 for (const marker of [
                     "function buildShaderPrelude",
                     "@group(1) @binding(0) var<uniform> shaderSystem",
@@ -2270,7 +2404,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                 ],
                 [options.pbrDiagnostics, "PBR diagnostics"],
                 [
-                    options.shaderVariants.length > 0,
+                    options.shaderPrograms.length > 0,
                     "custom shader materials",
                 ],
             ];
@@ -2842,11 +2976,11 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
                 },
             );
         }
-        const sceneUniformsWgsl = options.shaderVariants.length > 0
+        const sceneUniformsWgsl = options.shaderPrograms.length > 0
             ? this.compiledSceneUniformsWgsl()
             : "";
-        for (const name of options.shaderVariants) {
-            const source = getShaderMaterialProgram(name);
+        for (const source of options.shaderPrograms) {
+            const name = source.name;
             const program = lowerWgslShaderProgram(source);
             result.push(
                 {
@@ -2964,12 +3098,11 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
     }
 
     public shaderMaterialReflections(
-        variants: ShaderMaterialVariantName[],
+        programs: CompiledShaderProgram[],
     ): ShaderProgramReflection[] {
-        return variants.map(
-            (name) =>
-                lowerWgslShaderProgram(getShaderMaterialProgram(name))
-                    .reflection,
+        return programs.map(
+            (program) =>
+                lowerWgslShaderProgram(program).reflection,
         );
     }
 

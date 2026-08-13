@@ -698,6 +698,46 @@ export const scenes: readonly SceneDefinition[] = [
         },
     },
     {
+        id: "scene159",
+        name: "Scene 159 - Shader Flat Color",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene159.ts",
+        output: "generated/scene159",
+        title: "Babylon Lite Native - Shader Flat Color",
+        buildDirectory: "native/build-scene159-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/scene159/babylon-lite-golden.png",
+            },
+            actual: "artifacts/parity/scene159-native.png",
+            outputDirectory: "artifacts/parity/scene159",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene161",
+        name: "Scene 161 - Shader Custom Uniforms",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene161.ts",
+        output: "generated/scene161",
+        title: "Babylon Lite Native - Shader Custom Uniforms",
+        buildDirectory: "native/build-scene161-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/scene161/babylon-lite-golden.png",
+            },
+            actual: "artifacts/parity/scene161-native.png",
+            outputDirectory: "artifacts/parity/scene161",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene163",
         name: "Scene 163 - Shader Alpha Cutout",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene163.ts",
@@ -1439,6 +1479,31 @@ export const scenes: readonly SceneDefinition[] = [
             nativeEnvironment: {
                 BBLITE_SCREENSHOT_FRAME: "184",
             },
+        },
+    },
+    {
+        id: "tetris-sparks",
+        name: "Tetris Sparks - Particle Shader Variant",
+        source: "examples/tetris-sparks.ts",
+        sourceOrigin: "bblitec-regression",
+        output: "generated/tetris-sparks",
+        title: "Babylon Lite Native - Tetris Sparks",
+        buildDirectory:
+            "native/build-tetris-sparks-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/tetris-sparks/babylon-lite-golden.png",
+            },
+            actual:
+                "artifacts/parity/tetris-sparks-native.png",
+            outputDirectory:
+                "artifacts/parity/tetris-sparks",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [5, 6, 13],
+            backgroundThreshold: 30,
         },
     },
 ] as const;
