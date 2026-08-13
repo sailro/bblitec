@@ -683,7 +683,10 @@ test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", ()
     );
     assert.match(clearcoat, /bblBaseIrradiance \* ccConservation_ibl/);
     assert.match(clearcoat, /v_102 \* ccDirectAttenuation/);
-    assert.match(clearcoat, /select\(\(bblLayeredColor\), v_31/);
+    assert.match(
+        clearcoat,
+        /select\(\(bblLayeredColor \+ \(bblExtraDiffuse \+ bblExtraSpecular\)\), v_31/,
+    );
 
     const sheen = fragmentOf(
         new RendererLowerer(new LoweringContext()).lowerShaders({

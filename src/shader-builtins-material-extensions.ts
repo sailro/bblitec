@@ -14,8 +14,9 @@ interface ExtensionBinding {
 }
 
 const baseCompositionExpression =
-    "(((((v_89 * v_52) * v_34) + v_101) + v_102) + " +
-    "((((v_70 * v_52) * v_71) * v_81) * v_69)) + v_40";
+    "((((((v_89 * v_52) * v_34) + v_101) + v_102) + " +
+    "((((v_70 * v_52) * v_71) * v_81) * v_69)) + " +
+    "(bblExtraDiffuse + bblExtraSpecular)) + v_40";
 
 const uniformFieldMarker = "  sphericalHarmonics : array<vec4<f32>, 9u>,";
 const moduleHelperMarker = "var<private> v : vec4<f32>;";
@@ -664,10 +665,13 @@ export function applyMaterialExtensionWgsl(
             `${layer}${layerMarker}`,
             "material layer insertion point",
         );
+        // The second analytic light's terms stay additive outside the
+        // layered composition; every reached layered scene leaves them
+        // zero (layered multi-light composition remains tracked in TODO).
         result = replaceOnce(
             result,
             baseCompositionExpression,
-            "bblLayeredColor",
+            "bblLayeredColor + (bblExtraDiffuse + bblExtraSpecular)",
             "base lighting composition",
         );
     }

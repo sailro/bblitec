@@ -42,6 +42,9 @@ struct S {
   lightDirection : vec4<f32>,
   lightColor : vec4<f32>,
   groundColor : vec4<f32>,
+  lightDirection2 : vec4<f32>,
+  lightColor2 : vec4<f32>,
+  groundColor2 : vec4<f32>,
   cameraPosition : vec4<f32>,
   cameraForwardNear : vec4<f32>,
   viewRight : vec4<f32>,
@@ -172,7 +175,15 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
   var v_55 : f32;
   var v_56 : f32;
   var v_57 : vec3<f32>;
-  if ((FragmentUniforms.lightDirection.w > 0.5f)) {
+  if ((FragmentUniforms.lightDirection.w > 1.5f)) {
+    let bblDirectionalL = normalize(-(FragmentUniforms.lightDirection.xyz));
+    let bblDirectionalNdotL = max(dot(v_28, bblDirectionalL), 0.0f);
+    v_53 = (bblDirectionalNdotL * 0.31830987334251403809f);
+    v_54 = FragmentUniforms.lightColor.xyz;
+    v_55 = 1.0f;
+    v_56 = bblDirectionalNdotL;
+    v_57 = bblDirectionalL;
+  } else if ((FragmentUniforms.lightDirection.w > 0.5f)) {
     let v_58 = (FragmentUniforms.lightDirection.xyz - v_1);
     let v_59 = dot(v_58, v_58);
     let v_60 = normalize(v_58);
@@ -241,9 +252,50 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
   let v_99 = select(1.0f, v_99_horizon, FragmentUniforms.normalOptions.y > 0.5f);
   let v_100 = (vec3<f32>(1.0f) + (v_75 * ((1.0f / max(v_96, 0.00100000004749745131f)) - 1.0f)));
   let v_101 = ((v_94 * (((((v_76 * v_95.x) + (v_75 * v_96)) * v_98) * v_99) * v_99)) * v_100);
+  var bblExtraDiffuse = vec3<f32>(0.0f);
+  var bblExtraSpecular = vec3<f32>(0.0f);
+  if ((FragmentUniforms.lightColor2.w > 0.0f)) {
+    var bblSecondL : vec3<f32>;
+    var bblSecondNdotL : f32;
+    var bblSecondAttenuation : f32;
+    var bblSecondColor : vec3<f32>;
+    var bblSecondDiffuseFactor : f32;
+    if ((FragmentUniforms.lightDirection2.w > 1.5f)) {
+      bblSecondL = normalize(-(FragmentUniforms.lightDirection2.xyz));
+      bblSecondNdotL = max(dot(v_28, bblSecondL), 0.0f);
+      bblSecondAttenuation = 1.0f;
+      bblSecondColor = FragmentUniforms.lightColor2.xyz;
+      bblSecondDiffuseFactor = (bblSecondNdotL * 0.31830987334251403809f);
+    } else if ((FragmentUniforms.lightDirection2.w > 0.5f)) {
+      let bblSecondDelta = (FragmentUniforms.lightDirection2.xyz - v_1);
+      let bblSecondDistanceSquared = dot(bblSecondDelta, bblSecondDelta);
+      bblSecondL = normalize(bblSecondDelta);
+      bblSecondNdotL = max(dot(v_28, bblSecondL), 0.0f);
+      bblSecondAttenuation = max(0.0f, (1.0f - (sqrt(bblSecondDistanceSquared) / max(FragmentUniforms.groundColor2.w, 0.00009999999747378752f))));
+      bblSecondColor = FragmentUniforms.lightColor2.xyz;
+      bblSecondDiffuseFactor = (bblSecondNdotL * 0.31830987334251403809f);
+    } else {
+      bblSecondL = normalize(FragmentUniforms.lightDirection2.xyz);
+      let bblSecondHalfLambert = clamp(((dot(v_28, bblSecondL) * 0.5f) + 0.5f), 0.00000010000000116861f, 1.0f);
+      bblSecondColor = mix(FragmentUniforms.groundColor2.xyz, FragmentUniforms.lightColor2.xyz, vec3<f32>(bblSecondHalfLambert, bblSecondHalfLambert, bblSecondHalfLambert));
+      bblSecondNdotL = bblSecondHalfLambert;
+      bblSecondAttenuation = 1.0f;
+      bblSecondDiffuseFactor = 1.0f;
+    }
+    let bblSecondHalf = normalize((v_41 + bblSecondL));
+    let bblSecondNdotH = clamp(dot(v_28, bblSecondHalf), 0.00000010000000116861f, 1.0f);
+    let bblSecondVdotH = clamp(dot(v_41, bblSecondHalf), 0.0f, 1.0f);
+    let bblSecondFresnel = (v_75 + (v_76 * pow((1.0f - bblSecondVdotH), 5.0f)));
+    let bblSecondDistributionDenominator = (((bblSecondNdotH * bblSecondNdotH) * (v_78 - 1.0f)) + 1.0f);
+    let bblSecondDistribution = (v_78 / ((3.14159274101257324219f * bblSecondDistributionDenominator) * bblSecondDistributionDenominator));
+    let bblSecondVisibility = (0.5f / ((bblSecondNdotL * sqrt(((v_43 * (v_43 - (v_78 * v_43))) + v_78))) + (v_43 * sqrt(((bblSecondNdotL * (bblSecondNdotL - (v_78 * bblSecondNdotL))) + v_78)))));
+    let bblSecondSpecularTerm = (((bblSecondFresnel * bblSecondDistribution) * bblSecondVisibility) * bblSecondNdotL) * bblSecondColor;
+    bblExtraSpecular += (((bblSecondSpecularTerm * FragmentUniforms.lightColor2.w) * bblSecondAttenuation) * mix(vec3<f32>(1.0f), v_100, vec3<f32>(v_88, v_88, v_88)));
+    bblExtraDiffuse += ((((bblSecondColor * v_52) * bblSecondDiffuseFactor) * FragmentUniforms.lightColor2.w) * bblSecondAttenuation);
+  }
   let v_102 = (((v_80 * v_81) * v_69) * mix(vec3<f32>(1.0f), v_100, vec3<f32>(v_88, v_88, v_88)));
   let v_103 = (FragmentUniforms.materialOptions.z > 0.5f);
-  var shadedColor = (((((v_89 * v_52) * v_34) + v_101) + v_102) + ((((v_70 * v_52) * v_71) * v_81) * v_69)) + v_40;
+  var shadedColor = ((((((v_89 * v_52) * v_34) + v_101) + v_102) + ((((v_70 * v_52) * v_71) * v_81) * v_69)) + (bblExtraDiffuse + bblExtraSpecular)) + v_40;
   if (FragmentUniforms.transmissionOptions.x > 0.5f) {
     let skyDirection = normalize(v_1 - FragmentUniforms.cameraPosition.xyz);
     let skyboxAlphaG = max((v_35 * v_35), 0.00000099999999747524f);
@@ -300,8 +352,8 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
     let transmitted = sceneTransmission * v_52 * transmissionIntensity *
       absorption * (vec3<f32>(1.0f) - environmentReflectance);
     let opaqueRatio = 1.0f - transmissionIntensity;
-    shadedColor = ((v_89 * v_52) * v_34) * opaqueRatio + v_101 + v_102 +
-      ((((v_70 * v_52) * v_71) * v_81) * v_69) * opaqueRatio +
+    shadedColor = ((v_89 * v_52) * v_34) * opaqueRatio + v_101 + v_102 + bblExtraSpecular +
+      ((((v_70 * v_52) * v_71) * v_81) * v_69) * opaqueRatio + bblExtraDiffuse * opaqueRatio +
       transmitted + v_40;
   }
   let linearColor = select(shadedColor, v_31, vec3<bool>(v_103, v_103, v_103));

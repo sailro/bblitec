@@ -165,6 +165,33 @@ test("generates Tint background WGSL for 2D and cube textures", () => {
     assert.match(skybox, /imageParameters\.w < 0\.5/);
 });
 
+test("carries the three-kind analytic light contract in the PBR template", () => {
+    const template = readFileSync(
+        resolve(
+            "src/lowering/templates/renderer/pbr.frag.wgsl",
+        ),
+        "utf8",
+    );
+    // Primary slot: directional (w = 2), point (w = 1), hemispheric.
+    assert.match(
+        template,
+        /if \(\(FragmentUniforms\.lightDirection\.w > 1\.5f\)\) \{/,
+    );
+    assert.match(
+        template,
+        /let bblDirectionalL = normalize\(-\(FragmentUniforms\.lightDirection\.xyz\)\);/,
+    );
+    // Second analytic slot accumulates through the shared extra terms.
+    assert.match(
+        template,
+        /if \(\(FragmentUniforms\.lightColor2\.w > 0\.0f\)\) \{/,
+    );
+    assert.match(
+        template,
+        /\+ \(bblExtraDiffuse \+ bblExtraSpecular\)\) \+ v_40;/,
+    );
+});
+
 test("generates the shared Tint material vertex interface", () => {
     const staticVertex = materialVertexWgsl();
     const vertex = materialVertexWgsl(true);
