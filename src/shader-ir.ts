@@ -105,12 +105,18 @@ const shaderTypes = new Set<ShaderType>([
     "vec4<f32>",
 ]);
 
+// Native attribute locations follow the GpuVertex layout shared by both
+// render backends (position, normal, tangent, uv, local_position, uv2,
+// color, local_normal); the browser-composed twin assigns locations by
+// declaration order against its own buffers, so only the native map has
+// to match the native vertex table.
 const attributeTypes: Record<string, { location: number; type: ShaderType }> = {
     position: { location: 0, type: "vec3<f32>" },
     normal: { location: 1, type: "vec3<f32>" },
     tangent: { location: 2, type: "vec4<f32>" },
     uv: { location: 3, type: "vec2<f32>" },
-    color: { location: 4, type: "vec4<f32>" },
+    uv2: { location: 5, type: "vec2<f32>" },
+    color: { location: 6, type: "vec4<f32>" },
 };
 
 function tokenize(source: string): Token[] {

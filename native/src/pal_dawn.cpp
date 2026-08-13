@@ -230,10 +230,9 @@ struct DawnState {
     WGPUShaderModule pbr_module = nullptr;
     WGPUShaderModule grid_vertex_module = nullptr;
     WGPUShaderModule grid_fragment_module = nullptr;
-    WGPUShaderModule card_vertex_module = nullptr;
-    WGPUShaderModule card_fragment_module = nullptr;
-    WGPUShaderModule cutout_vertex_module = nullptr;
-    WGPUShaderModule cutout_fragment_module = nullptr;
+    // Lazily loaded per generated shader variant, indexed by variant id.
+    std::vector<WGPUShaderModule> shader_vertex_modules;
+    std::vector<WGPUShaderModule> shader_fragment_modules;
     WGPUBuffer view_projection = nullptr;
     WGPUTexture white_texture = nullptr;
     WGPUTextureView white_view = nullptr;
@@ -273,7 +272,13 @@ struct DawnState {
     // main pass, keyed by [multisampled][has depth]; the main 4x set
     // stays in `pipelines`.
     std::array<
-        std::array<std::map<upstream::RenderPipelineKind, DawnPipeline>, 2>,
+        std::array<
+            std::map<
+                std::pair<
+                    upstream::RenderPipelineKind,
+                    std::uint32_t>,
+                DawnPipeline>,
+            2>,
         2>
         task_pipelines{};
     std::uint32_t frame_graph_width = 0;
@@ -351,7 +356,12 @@ struct DawnState {
     WGPUBuffer empty_morph_weights = nullptr;
 #endif
     std::map<WGPUTextureFormat, WGPURenderPipeline> mip_pipelines;
-    std::map<upstream::RenderPipelineKind, DawnPipeline> pipelines;
+    // Mesh pipelines keyed by (kind, shader variant id); the variant is
+    // zero for every non-shader kind.
+    std::map<
+        std::pair<upstream::RenderPipelineKind, std::uint32_t>,
+        DawnPipeline>
+        pipelines;
     // Attribution capture resources (scene-1 diagnostics tooling),
     // created lazily on the first requested capture. Pipelines are
     // keyed by [double_sided]; the PBR diagnostic set adds the MRT
@@ -712,17 +722,11 @@ struct DawnState {
         if (white_view) wgpuTextureViewRelease(white_view);
         if (white_texture) wgpuTextureRelease(white_texture);
         if (view_projection) wgpuBufferRelease(view_projection);
-        if (cutout_fragment_module) {
-            wgpuShaderModuleRelease(cutout_fragment_module);
+        for (WGPUShaderModule module : shader_fragment_modules) {
+            if (module) wgpuShaderModuleRelease(module);
         }
-        if (cutout_vertex_module) {
-            wgpuShaderModuleRelease(cutout_vertex_module);
-        }
-        if (card_fragment_module) {
-            wgpuShaderModuleRelease(card_fragment_module);
-        }
-        if (card_vertex_module) {
-            wgpuShaderModuleRelease(card_vertex_module);
+        for (WGPUShaderModule module : shader_vertex_modules) {
+            if (module) wgpuShaderModuleRelease(module);
         }
         if (grid_fragment_module) {
             wgpuShaderModuleRelease(grid_fragment_module);
@@ -1631,9 +1635,10 @@ struct PipelineKindTraits {
     WGPUCullMode cull = WGPUCullMode_Back;
     WGPUFrontFace front = WGPUFrontFace_CCW;
     bool grid = false;
-    bool card = false;
-    bool card_a2c = false;
-    bool cutout = false;
+    // Generated shader-variant kinds: the concrete modules and
+    // fixed-function state come from the emitted variant table.
+    bool shader = false;
+    bool shader_a2c = false;
 };
 
 PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
@@ -1675,25 +1680,15 @@ PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
             return {
                 false, true, WGPUCullMode_None, WGPUFrontFace_CCW,
                 true};
-        case Kind::shader_alpha_card: {
+        case Kind::shader: {
             PipelineKindTraits traits;
-            traits.cull = WGPUCullMode_None;
-            traits.card = true;
+            traits.shader = true;
             return traits;
         }
-        case Kind::shader_alpha_card_a2c: {
+        case Kind::shader_a2c: {
             PipelineKindTraits traits;
-            traits.cull = WGPUCullMode_None;
-            traits.card = true;
-            traits.card_a2c = true;
-            return traits;
-        }
-        case Kind::shader_circular_cutout: {
-            // Blends like a transparent draw but keeps the opaque
-            // stage ordering: LESS_EQUAL depth without writes.
-            PipelineKindTraits traits;
-            traits.cull = WGPUCullMode_None;
-            traits.cutout = true;
+            traits.shader = true;
+            traits.shader_a2c = true;
             return traits;
         }
         default:
@@ -1816,15 +1811,20 @@ WGPUPipelineLayout mesh_pipeline_layout_for(DawnState& state) {
 DawnPipeline& pipeline_for(
     DawnState& state,
     upstream::RenderPipelineKind kind,
+    std::uint32_t shader_variant = 0,
     std::uint32_t samples = 4,
     bool has_depth = true) {
     auto& pipeline_map = samples == 4 && has_depth
         ? state.pipelines
         : state.task_pipelines[samples == 4 ? 1 : 0]
                               [has_depth ? 1 : 0];
-    const auto existing = pipeline_map.find(kind);
+    const auto pipeline_key = std::make_pair(kind, shader_variant);
+    const auto existing = pipeline_map.find(pipeline_key);
     if (existing != pipeline_map.end()) return existing->second;
     const PipelineKindTraits traits = pipeline_traits(kind);
+    const upstream::ShaderVariantInfo* shader_info = traits.shader
+        ? &upstream::shader_variant_info(shader_variant)
+        : nullptr;
 
     std::array<WGPUVertexAttribute, base_vertex_attribute_count>
         attributes{};
@@ -1857,28 +1857,36 @@ DawnPipeline& pipeline_for(
         state.grid_fragment_module =
             load_wgsl_module(state, "grid.frag");
     }
-    if (traits.card && !state.card_vertex_module) {
-        state.card_vertex_module =
-            load_wgsl_module(state, "alpha-card.vert");
-        state.card_fragment_module =
-            load_wgsl_module(state, "alpha-card.frag");
-    }
-    if (traits.cutout && !state.cutout_vertex_module) {
-        state.cutout_vertex_module =
-            load_wgsl_module(state, "circular-cutout.vert");
-        state.cutout_fragment_module =
-            load_wgsl_module(state, "circular-cutout.frag");
+    if (shader_info) {
+        if (state.shader_vertex_modules.size() <
+            upstream::shader_variant_count()) {
+            state.shader_vertex_modules.resize(
+                upstream::shader_variant_count(),
+                nullptr);
+            state.shader_fragment_modules.resize(
+                upstream::shader_variant_count(),
+                nullptr);
+        }
+        if (!state.shader_vertex_modules[shader_variant]) {
+            const std::string base_name = shader_info->name;
+            state.shader_vertex_modules[shader_variant] =
+                load_wgsl_module(
+                    state,
+                    (base_name + ".vert").c_str());
+            state.shader_fragment_modules[shader_variant] =
+                load_wgsl_module(
+                    state,
+                    (base_name + ".frag").c_str());
+        }
     }
     WGPURenderPipelineDescriptor descriptor =
         WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = mesh_pipeline_layout_for(state);
     descriptor.vertex.module = traits.grid
         ? state.grid_vertex_module
-        : traits.card
-            ? state.card_vertex_module
-            : traits.cutout
-                ? state.cutout_vertex_module
-                : state.vertex_module;
+        : shader_info
+            ? state.shader_vertex_modules[shader_variant]
+            : state.vertex_module;
     descriptor.vertex.entryPoint = string_view("mainVertex");
     descriptor.vertex.bufferCount = vertex_buffer_count;
     descriptor.vertex.buffers = vertex_layouts.data();
@@ -1886,16 +1894,25 @@ DawnPipeline& pipeline_for(
     descriptor.primitive.topology =
         WGPUPrimitiveTopology_TriangleList;
     descriptor.primitive.frontFace = traits.front;
-    descriptor.primitive.cullMode = traits.cull;
+    // The pinned shader-pipeline mapping drives variant state:
+    // backFaceCulling selects the cull mode and depthWrite=false pairs
+    // with the less-equal compare (like transparent draws).
+    descriptor.primitive.cullMode = shader_info
+        ? (shader_info->back_face_culling
+               ? WGPUCullMode_Back
+               : WGPUCullMode_None)
+        : traits.cull;
 
+    const bool relaxed_depth =
+        traits.transparent ||
+        (shader_info && !shader_info->depth_write);
     WGPUDepthStencilState depth_stencil =
         WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
-    depth_stencil.depthWriteEnabled =
-        traits.transparent || traits.cutout
-            ? WGPUOptionalBool_False
-            : WGPUOptionalBool_True;
-    depth_stencil.depthCompare = traits.transparent || traits.cutout
+    depth_stencil.depthWriteEnabled = relaxed_depth
+        ? WGPUOptionalBool_False
+        : WGPUOptionalBool_True;
+    depth_stencil.depthCompare = relaxed_depth
         ? WGPUCompareFunction_LessEqual
         : WGPUCompareFunction_Less;
     // Depth-less render-task targets need attachment-compatible
@@ -1905,12 +1922,14 @@ DawnPipeline& pipeline_for(
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
     descriptor.multisample.alphaToCoverageEnabled =
-        traits.card_a2c && samples == 4;
+        traits.shader_a2c && samples == 4;
 
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = state.frame_color_format;
     WGPUBlendState blend{};
-    if (traits.transparent || traits.cutout) {
+    if (
+        traits.transparent ||
+        (shader_info && shader_info->alpha_blending)) {
         blend.color.operation = WGPUBlendOperation_Add;
         blend.color.srcFactor = WGPUBlendFactor_SrcAlpha;
         blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
@@ -1922,11 +1941,9 @@ DawnPipeline& pipeline_for(
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
     fragment.module = traits.grid
         ? state.grid_fragment_module
-        : traits.card
-            ? state.card_fragment_module
-            : traits.cutout
-                ? state.cutout_fragment_module
-                : fragment_module_for(state, traits.standard);
+        : shader_info
+            ? state.shader_fragment_modules[shader_variant]
+            : fragment_module_for(state, traits.standard);
     fragment.entryPoint = string_view("mainFragment");
     fragment.targetCount = 1;
     fragment.targets = &color_target;
@@ -1935,7 +1952,7 @@ DawnPipeline& pipeline_for(
     WGPURenderPipeline pipeline =
         wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
     if (!pipeline) dawn_error("wgpuDeviceCreateRenderPipeline");
-    DawnPipeline& slot = pipeline_map[kind];
+    DawnPipeline& slot = pipeline_map[pipeline_key];
     slot.pipeline = pipeline;
     return slot;
 }
@@ -2003,7 +2020,7 @@ WGPURenderPipeline geometry_pipeline_for(
     const auto existing = geometry.pipelines.find(kind);
     if (existing != geometry.pipelines.end()) return existing->second;
     const PipelineKindTraits traits = pipeline_traits(kind);
-    if (traits.grid || traits.card || traits.cutout) {
+    if (traits.grid || traits.shader) {
         dawn_error("geometry tasks reached a non-mesh pipeline kind.");
     }
     if (!geometry.pbr_fragment) {
@@ -2463,25 +2480,35 @@ WGPURenderPipeline blit_pipeline_for(
 DawnMeshBindings& bindings_for(
     DawnState& state,
     DawnMesh& mesh,
-    upstream::RenderPipelineKind kind) {
+    upstream::RenderPipelineKind kind,
+    std::uint32_t shader_variant = 0) {
     const auto existing = mesh.bindings.find(kind);
     if (existing != mesh.bindings.end()) return existing->second;
-    DawnPipeline& pipeline = pipeline_for(state, kind);
+    DawnPipeline& pipeline =
+        pipeline_for(state, kind, shader_variant);
     DawnMeshBindings bindings;
 
     const PipelineKindTraits binding_traits = pipeline_traits(kind);
     mesh_pipeline_layout_for(state);
     // The explicit superset layout requires every binding; kinds whose
-    // shader ignores a slot still supply the mesh's resource (the
-    // alpha card swaps the scene matrix for its own uniform block).
+    // shader ignores a slot still supply the mesh's resource (custom
+    // vertex uniform blocks swap the scene matrix for the mesh's own
+    // buffer, sized by the variant's reflected block).
     std::array<WGPUBindGroupEntry, 3> scene_entries{};
     std::uint32_t scene_entry_count = 0;
     scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
     scene_entries[scene_entry_count].binding = 0;
-    if (binding_traits.card) {
+    const upstream::ShaderVariantInfo* binding_shader_info =
+        binding_traits.shader
+            ? &upstream::shader_variant_info(shader_variant)
+            : nullptr;
+    if (
+        binding_shader_info &&
+        !binding_shader_info->vertex.gather.empty()) {
         scene_entries[scene_entry_count].buffer =
             mesh.shader_vertex_uniforms;
-        scene_entries[scene_entry_count].size = 16;
+        scene_entries[scene_entry_count].size =
+            binding_shader_info->vertex.float_size * 4;
     } else {
         scene_entries[scene_entry_count].buffer = state.view_projection;
         scene_entries[scene_entry_count].size = 64;
@@ -3919,10 +3946,8 @@ bool run_dawn_engine(Engine& engine) {
             item.material_kind ==
             upstream::RenderMaterialKind::shader) {
             if (
-                item.shader_variant !=
-                    ShaderMaterialVariant::alpha_card &&
-                item.shader_variant !=
-                    ShaderMaterialVariant::circular_cutout) {
+                item.shader_variant >=
+                upstream::shader_variant_count()) {
                 dawn_error(
                     "this shader material variant is not implemented "
                     "yet.");
@@ -4082,6 +4107,12 @@ bool run_dawn_engine(Engine& engine) {
                 64);
         }
 #endif
+        const upstream::ShaderVariantInfo* mesh_shader_info =
+            item.material_kind ==
+                upstream::RenderMaterialKind::shader
+                ? &upstream::shader_variant_info(
+                      item.shader_variant)
+                : nullptr;
         mesh.material_uniform_size =
             ((item.material_kind ==
                       upstream::RenderMaterialKind::standard
@@ -4089,9 +4120,12 @@ bool run_dawn_engine(Engine& engine) {
                   : item.material_kind ==
                           upstream::RenderMaterialKind::grid
                       ? sizeof(upstream::GridUniforms)
-                      : item.material_kind ==
-                              upstream::RenderMaterialKind::shader
-                          ? 16
+                      : mesh_shader_info
+                          ? std::max<std::uint64_t>(
+                                mesh_shader_info->fragment
+                                        .float_size *
+                                    4ull,
+                                16ull)
                           : sizeof(upstream::PbrUniforms)) +
              15) &
             ~15ull;
@@ -4100,14 +4134,14 @@ bool run_dawn_engine(Engine& engine) {
             WGPUBufferUsage_Uniform,
             nullptr,
             mesh.material_uniform_size);
-        if (
-            item.material_kind ==
-            upstream::RenderMaterialKind::shader) {
+        if (mesh_shader_info) {
             mesh.shader_vertex_uniforms = create_buffer(
                 state,
                 WGPUBufferUsage_Uniform,
                 nullptr,
-                16);
+                std::max<std::uint64_t>(
+                    mesh_shader_info->vertex.float_size * 4ull,
+                    16ull));
         }
         mesh.transform_version =
             mesh_record.transform_version;
@@ -5195,40 +5229,71 @@ bool run_dawn_engine(Engine& engine) {
                             sizeof(fragment));
                     } else if (shader_draw) {
                         if (
-                            draw.item.shader_variant ==
-                                ShaderMaterialVariant::alpha_card &&
                             draw.item.material.value <
-                                engine.materials.size()) {
+                            engine.materials.size()) {
                             const MaterialRecord& material =
                                 engine.materials[
                                     draw.item.material.value];
-                            const std::array<float, 4> vertex_block{
-                                material.shader_center.x,
-                                material.shader_center.y,
-                                material.shader_angle,
-                                material.shader_depth,
+                            const upstream::ShaderVariantInfo&
+                                shader_info =
+                                    upstream::shader_variant_info(
+                                        draw.item.shader_variant);
+                            // Custom stage blocks gather from the
+                            // material's flat value storage; a pure
+                            // system-matrix vertex block binds the
+                            // shared scene matrix instead. Combined
+                            // matrix-plus-custom blocks are not
+                            // reached on this backend.
+                            const auto write_stage_block =
+                                [&](
+                                    const upstream::
+                                        ShaderVariantStageBlock&
+                                            block,
+                                    WGPUBuffer buffer) {
+                                if (
+                                    !block.present ||
+                                    block.gather.empty()) {
+                                    return;
+                                }
+                                if (block.system_matrix) {
+                                    dawn_error(
+                                        "combined system and custom "
+                                        "shader uniform blocks are "
+                                        "not implemented yet.");
+                                }
+                                std::vector<float> block_floats(
+                                    block.float_size,
+                                    0.0f);
+                                for (const std::array<
+                                         std::uint32_t,
+                                         3>& gather : block.gather) {
+                                    for (
+                                        std::uint32_t index = 0;
+                                        index < gather[2];
+                                        ++index) {
+                                        block_floats[
+                                            gather[0] + index] =
+                                            material
+                                                .shader_uniform_values[
+                                                    gather[1] +
+                                                    index];
+                                    }
+                                }
+                                wgpuQueueWriteBuffer(
+                                    state.queue,
+                                    buffer,
+                                    0,
+                                    block_floats.data(),
+                                    block_floats.size() *
+                                        sizeof(float));
                             };
-                            const std::array<float, 4> fragment_block{
-                                material.shader_color.r,
-                                material.shader_color.g,
-                                material.shader_color.b,
-                                material.shader_opacity,
-                            };
-                            wgpuQueueWriteBuffer(
-                                state.queue,
-                                draw_mesh.shader_vertex_uniforms,
-                                0,
-                                vertex_block.data(),
-                                sizeof(vertex_block));
-                            wgpuQueueWriteBuffer(
-                                state.queue,
-                                draw_mesh.material_uniforms,
-                                0,
-                                fragment_block.data(),
-                                sizeof(fragment_block));
+                            write_stage_block(
+                                shader_info.vertex,
+                                draw_mesh.shader_vertex_uniforms);
+                            write_stage_block(
+                                shader_info.fragment,
+                                draw_mesh.material_uniforms);
                         }
-                        // The circular cutout has no uniforms beyond
-                        // the shared scene matrix.
                     } else {
                         const upstream::PbrUniforms fragment =
                             upstream::build_pbr_uniforms(
@@ -5434,10 +5499,14 @@ bool run_dawn_engine(Engine& engine) {
                 DawnPipeline& pipeline = pipeline_for(
                     state,
                     draw.pipeline,
+                    draw.item.shader_variant,
                     samples,
                     pass_has_depth);
-                DawnMeshBindings& bindings =
-                    bindings_for(state, mesh, draw.pipeline);
+                DawnMeshBindings& bindings = bindings_for(
+                    state,
+                    mesh,
+                    draw.pipeline,
+                    draw.item.shader_variant);
                 if (pipeline.pipeline != bound_pipeline) {
                     wgpuRenderPassEncoderSetPipeline(
                         list_pass, pipeline.pipeline);

@@ -15,8 +15,8 @@ import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
 import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 import type {
+    CompiledShaderProgram,
     GeometryOutputTaskManifest,
-    ShaderMaterialVariantName,
 } from "./compiler.js";
 
 class GeneratedSourceWriter {
@@ -30,7 +30,7 @@ class GeneratedSourceWriter {
         options: {
             idDiagnostics: boolean;
             pbrDiagnostics: boolean;
-            shaderVariants: ShaderMaterialVariantName[];
+            shaderPrograms: CompiledShaderProgram[];
             geometryOutputTasks: GeometryOutputTaskManifest[];
             gpuDeformation: boolean;
             morphStorage: boolean;
@@ -236,6 +236,7 @@ class GeneratedSourceWriter {
                     sheen: options.sheen,
                     iridescence: options.iridescence,
                     dispersion: options.dispersion,
+                    shaderPrograms: options.shaderPrograms,
                 }),
                 generated,
                 "upstream/include/bblite/upstream/renderer_plan.hpp",
@@ -249,7 +250,7 @@ class GeneratedSourceWriter {
                 transmission: features.includes("renderer:transmission"),
                 fog: features.includes("renderer:fog"),
                 normalTextureScale: features.includes("loader:gltf"),
-                shaderVariants: options.shaderVariants,
+                shaderPrograms: options.shaderPrograms,
                 standardMaterial:
                     features.includes("material:standard") &&
                     features.includes("renderer:pbr"),
@@ -300,7 +301,7 @@ class GeneratedSourceWriter {
                     2,
                 )}\n`,
             );
-            if (options.shaderVariants.length > 0) {
+            if (options.shaderPrograms.length > 0) {
                 writeFileSync(
                     resolve(
                         this.outputRoot,
@@ -308,7 +309,7 @@ class GeneratedSourceWriter {
                     ),
                     `${JSON.stringify(
                         renderer.shaderMaterialReflections(
-                            options.shaderVariants,
+                            options.shaderPrograms,
                         ),
                         null,
                         2,
@@ -448,7 +449,7 @@ export function emitUpstreamGenerated(
     options: {
         idDiagnostics: boolean;
         pbrDiagnostics: boolean;
-        shaderVariants: ShaderMaterialVariantName[];
+        shaderPrograms: CompiledShaderProgram[];
         geometryOutputTasks: GeometryOutputTaskManifest[];
         gpuDeformation: boolean;
         morphStorage: boolean;
@@ -464,7 +465,7 @@ export function emitUpstreamGenerated(
     } = {
         idDiagnostics: false,
         pbrDiagnostics: false,
-        shaderVariants: [],
+        shaderPrograms: [],
         geometryOutputTasks: [],
         gpuDeformation: false,
         morphStorage: false,

@@ -1,7 +1,6 @@
 import ts from "typescript";
 import type {
     Feature,
-    ShaderMaterialVariantName,
     Value,
     ValueKind,
 } from "../types.js";
@@ -63,18 +62,55 @@ export interface MaterialIntrinsicContext {
     ): string[];
     compileShaderMaterialOptions(
         expression: ts.Expression,
-    ): ShaderMaterialVariantName;
+    ): { name: string; id: number };
     expectShaderVariant(
         material: Value,
-        variant: ShaderMaterialVariantName,
+        variant: string,
         node: ts.Node,
     ): void;
-    reachShaderVariant(
-        variant: ShaderMaterialVariantName,
-    ): void;
+    resolveShaderUniform(
+        material: Value,
+        nameExpression: ts.Expression,
+        expectedCounts: number[],
+    ): { offset: number; count: number };
+    compileShaderUniformComponents(
+        expression: ts.Expression,
+        count: number,
+    ): string[];
     reachFeature(feature: Feature): void;
     cppString(value: string): string;
     fail(node: ts.Node, message: string): never;
+}
+
+/**
+ * Shared lowering for setShaderUniform/setShaderFloat/setShaderVector3:
+ * the uniform name resolves through the variant's reflected value layout
+ * at compile time and the write emits the generic offset setter.
+ */
+function compileShaderUniformWrite(
+    context: MaterialIntrinsicContext,
+    material: Value,
+    call: ts.CallExpression,
+    expectedCounts: number[],
+): Value {
+    const { offset, count } = context.resolveShaderUniform(
+        material,
+        call.arguments[1]!,
+        expectedCounts,
+    );
+    const components =
+        context.compileShaderUniformComponents(
+            call.arguments[2]!,
+            count,
+        );
+    return {
+        kind: "void",
+        cpp:
+            `bbl::set_shader_uniform_value(` +
+            `${context.requireEngine(material, call)}, ` +
+            `${material.cpp}, ${offset}u, ` +
+            `${components.join(", ")})`,
+    };
 }
 
 export function compileMaterialIntrinsic(
@@ -321,17 +357,15 @@ export function compileMaterialIntrinsic(
                 context.compileShaderMaterialOptions(
                     call.arguments[0]!,
                 );
-            context.reachShaderVariant(variant);
             context.reachFeature("material:shader");
             context.reachFeature("renderer:pbr");
             return {
                 kind: "material",
                 cpp:
                     `bbl::create_shader_material(${engine}, ` +
-                    `bbl::ShaderMaterialVariant::` +
-                    `${variant.replaceAll("-", "_")})`,
+                    `${variant.id}u)`,
                 engineCpp: engine,
-                shaderVariant: variant,
+                shaderVariant: variant.name,
             };
         }
 
@@ -344,32 +378,12 @@ export function compileMaterialIntrinsic(
                 "material",
                 call.arguments[0]!,
             );
-            context.expectShaderVariant(
+            return compileShaderUniformWrite(
+                context,
                 material,
-                "alpha-card",
-                call.arguments[0]!,
+                call,
+                [1, 2, 3, 4],
             );
-            const name =
-                context.compileStringLiteral(
-                    call.arguments[1]!,
-                );
-            if (name !== "center") {
-                context.fail(
-                    call.arguments[1]!,
-                    `Unsupported shader vec2 uniform '${name}'.`,
-                );
-            }
-            const value =
-                context.compileVec2(call.arguments[2]!);
-            return {
-                kind: "void",
-                cpp:
-                    `bbl::set_shader_center(` +
-                    `${context.requireEngine(
-                        material,
-                        call,
-                    )}, ${material.cpp}, ${value})`,
-            };
         }
 
         case "setShaderFloat": {
@@ -381,34 +395,12 @@ export function compileMaterialIntrinsic(
                 "material",
                 call.arguments[0]!,
             );
-            context.expectShaderVariant(
+            return compileShaderUniformWrite(
+                context,
                 material,
-                "alpha-card",
-                call.arguments[0]!,
+                call,
+                [1],
             );
-            const name =
-                context.compileStringLiteral(
-                    call.arguments[1]!,
-                );
-            if (!["angle", "depth", "opacity"].includes(name)) {
-                context.fail(
-                    call.arguments[1]!,
-                    `Unsupported shader float uniform '${name}'.`,
-                );
-            }
-            return {
-                kind: "void",
-                cpp:
-                    `bbl::set_shader_float(` +
-                    `${context.requireEngine(
-                        material,
-                        call,
-                    )}, ${material.cpp}, ` +
-                    `${context.cppString(name)}, ` +
-                    `${context.compileNumber(
-                        call.arguments[2]!,
-                    )})`,
-            };
         }
 
         case "setShaderVector3": {
@@ -420,34 +412,12 @@ export function compileMaterialIntrinsic(
                 "material",
                 call.arguments[0]!,
             );
-            context.expectShaderVariant(
+            return compileShaderUniformWrite(
+                context,
                 material,
-                "alpha-card",
-                call.arguments[0]!,
+                call,
+                [3],
             );
-            const name =
-                context.compileStringLiteral(
-                    call.arguments[1]!,
-                );
-            if (name !== "color") {
-                context.fail(
-                    call.arguments[1]!,
-                    `Unsupported shader vec3 uniform '${name}'.`,
-                );
-            }
-            return {
-                kind: "void",
-                cpp:
-                    `bbl::set_shader_vector3(` +
-                    `${context.requireEngine(
-                        material,
-                        call,
-                    )}, ${material.cpp}, ` +
-                    `${context.cppString(name)}, ` +
-                    `${context.compileColor3(
-                        call.arguments[2]!,
-                    )})`,
-            };
         }
 
         case "setAlphaToCoverage": {

@@ -19,9 +19,27 @@ import {
     UpstreamSourceStore,
 } from "../src/upstream-source.js";
 import type {
+    CompiledShaderProgram,
     GeometryOutputTaskManifest,
-    ShaderMaterialVariantName,
 } from "../src/compiler.js";
+import { shaderMaterialPrograms } from "../src/shader-material-programs.js";
+
+function reachedPrograms(
+    names: string[],
+): CompiledShaderProgram[] {
+    return names.map((name) => {
+        const program = shaderMaterialPrograms.find(
+            (candidate) => candidate.name === name,
+        );
+        if (!program) {
+            throw new Error(`Unknown predeclared shader program '${name}'.`);
+        }
+        return {
+            ...program,
+            uniformDefaults: program.uniformDefaults ?? [],
+        };
+    });
+}
 
 test("loads pinned Babylon Lite TypeScript from published source maps", () => {
     const store = new UpstreamSourceStore();
@@ -297,9 +315,22 @@ test("generates mesh and standard-material factories from upstream defaults", ()
     assert.match(grid.source, /std::round\(options\.major_unit_frequency\)/);
     assert.match(grid.source, /options\.opacity < 1\.0f/);
     assert.match(grid.source, /material\.grid_use_max_line/);
-    assert.match(shader.source, /ShaderMaterialVariant::circular_cutout/);
-    assert.match(shader.source, /material\.alpha_mode = MaterialAlphaMode::blend/);
-    assert.match(shader.source, /material\.shader_depth_write = false/);
+    assert.match(
+        shader.source,
+        /upstream::shader_variant_info\(variant\)/,
+    );
+    assert.match(
+        shader.source,
+        /material\.double_sided = !info\.back_face_culling/,
+    );
+    assert.match(
+        shader.source,
+        /material\.shader_uniform_values = info\.defaults/,
+    );
+    assert.match(
+        shader.source,
+        /void set_shader_uniform_values\(/,
+    );
     assert.match(shader.source, /set_alpha_to_coverage/);
 });
 
@@ -399,7 +430,13 @@ test("lowers the reachable upstream light matrix implementation", () => {
 
 test("generates the render plan from upstream frame-graph binding semantics", () => {
     const lowerer = new RendererLowerer(new LoweringContext());
-    const lowered = lowerer.lowerRenderPlan({ transmission: true });
+    const lowered = lowerer.lowerRenderPlan({
+        transmission: true,
+        shaderPrograms: reachedPrograms([
+            "alpha-card",
+            "circular-cutout",
+        ]),
+    });
     const specialized = lowerer.lowerRenderPlan({
         transmission: true,
         gpuInstancing: true,
@@ -442,9 +479,22 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     );
     assert.match(lowered.source, /build_render_features/);
     assert.match(lowered.source, /shader_uniform_buffer_count/);
+    // Variant ids index the generated table in reach order; the cutout
+    // (id 1) reflects a vertex-only system block.
     assert.match(
         lowered.source,
-        /ShaderMaterialVariant::circular_cutout:[\s\S]*fragment_stage \? 0u : 1u/,
+        /case 1u:\s*\r?\n\s*return fragment_stage \? 0u : 1u;/,
+    );
+    // The alpha-card entry carries the historical native defaults
+    // (depth 0.5, opacity 1.0) at their declaration-order value offsets
+    // and gathers both stage blocks from the flat storage.
+    assert.match(
+        lowered.source,
+        /"alpha-card"[\s\S]*?\{0\.0f, 0\.0f, 0\.0f, 0\.5f, 0\.0f, 0\.0f, 0\.0f, 1\.0f\}/,
+    );
+    assert.match(
+        lowered.source,
+        /const ShaderVariantInfo& shader_variant_info\(std::uint32_t variant\)/,
     );
     assert.match(lowered.source, /features\.grid_material/);
     assert.match(lowered.source, /features\.no_color_material/);
@@ -660,7 +710,7 @@ test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", ()
     const options = {
         ground: false,
         skybox: false,
-        shaderVariants: [] as ShaderMaterialVariantName[],
+        shaderPrograms: [] as CompiledShaderProgram[],
         standardMaterial: false,
         idDiagnostics: false,
         pbrDiagnostics: false,
@@ -832,7 +882,7 @@ test("rejects unlowered punctual multi-light and layered material composition", 
                 ground: false,
                 skybox: false,
                 transmission: false,
-                shaderVariants: [],
+                shaderPrograms: [],
                 standardMaterial: false,
                 idDiagnostics: false,
                 pbrDiagnostics: false,
@@ -857,7 +907,7 @@ test("emits only reached WGSL composition modules", () => {
     const shaders = lowerer.lowerShaders({
         ground: false,
         skybox: false,
-        shaderVariants: [],
+        shaderPrograms: [],
         standardMaterial: false,
         gridMaterial: true,
         idDiagnostics: false,
@@ -881,7 +931,7 @@ test("generates portable GridMaterial shaders from pinned formulas", () => {
     ).lowerShaders({
         ground: false,
         skybox: false,
-        shaderVariants: [],
+        shaderPrograms: [],
         standardMaterial: false,
         gridMaterial: true,
         idDiagnostics: false,
@@ -917,7 +967,7 @@ test("generates typed geometry task records and PBR MRT shaders", () => {
     const shaders = new RendererLowerer(new LoweringContext()).lowerShaders({
         ground: false,
         skybox: false,
-        shaderVariants: [],
+        shaderPrograms: [],
         standardMaterial: false,
         idDiagnostics: false,
         pbrDiagnostics: false,
@@ -979,7 +1029,7 @@ test("generates standard-material geometry output shaders", () => {
     ).lowerShaders({
         ground: false,
         skybox: false,
-        shaderVariants: [],
+        shaderPrograms: [],
         standardMaterial: true,
         idDiagnostics: false,
         pbrDiagnostics: false,
@@ -1022,7 +1072,7 @@ test("emits only reached custom shader variants", () => {
     const alphaCard = lowerer.lowerShaders({
         ground: false,
         skybox: false,
-        shaderVariants: ["alpha-card"],
+        shaderPrograms: reachedPrograms(["alpha-card"]),
         standardMaterial: false,
         idDiagnostics: false,
         pbrDiagnostics: false,
@@ -1047,7 +1097,7 @@ test("emits only reached custom shader variants", () => {
     const circularCutout = lowerer.lowerShaders({
         ground: false,
         skybox: false,
-        shaderVariants: ["circular-cutout"],
+        shaderPrograms: reachedPrograms(["circular-cutout"]),
         standardMaterial: false,
         idDiagnostics: false,
         pbrDiagnostics: false,

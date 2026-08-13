@@ -1154,29 +1154,33 @@ void flush_thin_instances(Engine& engine, MeshHandle mesh) {
             header: "",
             source: `// ${this.context.provenance(modulePath, "createShaderMaterial")}
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/renderer_plan.hpp>
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace bbl {
 
+// The generated shader-variant table carries the pinned fixed-function
+// mapping (needAlphaBlending -> blend alpha mode, backFaceCulling ->
+// double-sided, needAlphaTesting, depthWrite) and the reflected uniform
+// layout with the createShaderMaterial defaultValue floats.
 MaterialHandle create_shader_material(
     Engine& engine,
-    ShaderMaterialVariant variant) {
+    std::uint32_t variant) {
+    const upstream::ShaderVariantInfo& info =
+        upstream::shader_variant_info(variant);
     MaterialRecord material;
     material.shader_material = true;
     material.shader_variant = variant;
-    switch (variant) {
-        case ShaderMaterialVariant::alpha_card:
-            material.double_sided = true;
-            material.shader_depth_write = true;
-            break;
-        case ShaderMaterialVariant::circular_cutout:
-            material.alpha_mode = MaterialAlphaMode::blend;
-            material.double_sided = true;
-            material.shader_alpha_testing = true;
-            material.shader_depth_write = false;
-            break;
+    material.double_sided = !info.back_face_culling;
+    material.shader_alpha_testing = info.alpha_testing;
+    material.shader_depth_write = info.depth_write;
+    if (info.alpha_blending) {
+        material.alpha_mode = MaterialAlphaMode::blend;
     }
+    material.shader_uniform_values = info.defaults;
+    material.shader_uniform_values.resize(info.value_count, 0.0f);
     engine.materials.push_back(material);
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }
@@ -1189,38 +1193,68 @@ MaterialRecord& shader_material(Engine& engine, MaterialHandle handle) {
     if (!material.shader_material) {
         throw std::runtime_error("Material is not a shader material.");
     }
-    if (material.shader_variant != ShaderMaterialVariant::alpha_card) {
-        throw std::runtime_error(
-            "Shader uniforms are unsupported for this reached shader variant.");
-    }
     return material;
 }
 
-void set_shader_center(Engine& engine, MaterialHandle material, Vec2 value) {
-    shader_material(engine, material).shader_center = value;
-}
-
-void set_shader_float(
+// Offset setter shared by setShaderUniform/setShaderFloat/
+// setShaderVector3: the compiler resolves (variant, uniform name) to the
+// flat value offset through the reflected layout at compile time.
+void set_shader_uniform_values(
     Engine& engine,
     MaterialHandle material,
-    const std::string& name,
-    float value) {
+    std::uint32_t offset,
+    std::uint32_t count,
+    const float* values) {
     MaterialRecord& record = shader_material(engine, material);
-    if (name == "angle") record.shader_angle = value;
-    else if (name == "depth") record.shader_depth = value;
-    else if (name == "opacity") record.shader_opacity = value;
-    else throw std::runtime_error("Unsupported shader float uniform: " + name);
+    if (offset + count > record.shader_uniform_values.size()) {
+        throw std::runtime_error("Shader uniform write out of range.");
+    }
+    std::copy_n(
+        values,
+        count,
+        record.shader_uniform_values.begin() + offset);
 }
 
-void set_shader_vector3(
+void set_shader_uniform_value(
     Engine& engine,
     MaterialHandle material,
-    const std::string& name,
-    Color3 value) {
-    if (name != "color") {
-        throw std::runtime_error("Unsupported shader vec3 uniform: " + name);
-    }
-    shader_material(engine, material).shader_color = value;
+    std::uint32_t offset,
+    float v0) {
+    const float values[1] = {v0};
+    set_shader_uniform_values(engine, material, offset, 1u, values);
+}
+
+void set_shader_uniform_value(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t offset,
+    float v0,
+    float v1) {
+    const float values[2] = {v0, v1};
+    set_shader_uniform_values(engine, material, offset, 2u, values);
+}
+
+void set_shader_uniform_value(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t offset,
+    float v0,
+    float v1,
+    float v2) {
+    const float values[3] = {v0, v1, v2};
+    set_shader_uniform_values(engine, material, offset, 3u, values);
+}
+
+void set_shader_uniform_value(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t offset,
+    float v0,
+    float v1,
+    float v2,
+    float v3) {
+    const float values[4] = {v0, v1, v2, v3};
+    set_shader_uniform_values(engine, material, offset, 4u, values);
 }
 
 void set_alpha_to_coverage(

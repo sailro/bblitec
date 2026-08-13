@@ -82,10 +82,18 @@ export function compileMeshIntrinsic(
                     call.arguments[4]!,
                     "u32array",
                 );
+            // The demo modules skip optional slots with literal
+            // `undefined`, which parses as an identifier expression.
+            const isUndefinedArgument = (
+                argument: ts.Expression | undefined,
+            ): boolean =>
+                !argument ||
+                argument.kind ===
+                    ts.SyntaxKind.UndefinedKeyword ||
+                (ts.isIdentifier(argument) &&
+                    argument.text === "undefined");
             const optional = [5, 6, 7, 8].map((index) =>
-                call.arguments[index] &&
-                call.arguments[index]!.kind !==
-                    ts.SyntaxKind.UndefinedKeyword
+                !isUndefinedArgument(call.arguments[index])
                     ? context.compileTypedArrayArgument(
                           call.arguments[index]!,
                           "f32array",

@@ -44,11 +44,12 @@ import type {
     CompileAsset,
     CompileOptions,
     CompileResult,
+    CompiledShaderProgram,
+    CompiledShaderUniformDefault,
     Feature,
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
     ResolvedCompileOptions,
-    ShaderMaterialVariantName,
     Value,
     ValueKind,
 } from "./compiler/types.js";
@@ -57,6 +58,8 @@ export type {
     CompileManifest,
     CompileOptions,
     CompileResult,
+    CompiledShaderProgram,
+    CompiledShaderUniformDefault,
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
     ShaderMaterialVariantName,
@@ -68,6 +71,7 @@ import {
 } from "./shader-ir.js";
 import {
     shaderMaterialPrograms,
+    shaderUniformValueLayout,
 } from "./shader-material-programs.js";
 import { readUpstreamPin } from "./upstream-source.js";
 
@@ -186,7 +190,7 @@ class Compiler
     private readonly cppNamePrefixes: string[] = [""];
     private readonly features = new Set<Feature>(["core"]);
     private readonly assets = new Map<string, CompileAsset>();
-    private readonly shaderVariants = new Set<ShaderMaterialVariantName>();
+    private readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
     private readonly body: string[] = [];
     private readonly erasedBrowserExpressions = new Set<number>();
     private readonly erasedBrowserInstrumentation = new Set<number>();
@@ -348,7 +352,17 @@ class Compiler
                 runtimeSources,
                 generatedSources,
                 assets: [...this.assets.values()],
-                shaderVariants: [...this.shaderVariants],
+                shaderVariants: this.reachedShaderPrograms.map(
+                    ({ name }) => name,
+                ),
+                customShaderPrograms:
+                    this.reachedShaderPrograms.filter(
+                        ({ name }) =>
+                            !shaderMaterialPrograms.some(
+                                (predeclared) =>
+                                    predeclared.name === name,
+                            ),
+                    ),
                 geometryOutputTasks: this.geometryOutputTasks,
                 adaptations: this.compileAdaptations(features),
             },
@@ -2114,7 +2128,7 @@ class Compiler
 
     public compileShaderMaterialOptions(
         expression: ts.Expression,
-    ): ShaderMaterialVariantName {
+    ): { name: string; id: number } {
         const object = this.expectObjectLiteral(expression);
         const supportedProperties = new Set([
             "name",
@@ -2162,7 +2176,8 @@ class Compiler
         const fragmentSource =
             this.compileStaticString(fragmentExpression);
         const attributes = this.compileStaticStringArray(attributesExpression);
-        const uniforms = this.compileShaderUniformSignatures(uniformsExpression);
+        const { signatures: uniforms, defaults: uniformDefaults } =
+            this.compileShaderUniformSignatures(uniformsExpression);
         const needAlphaBlending = this.compileOptionalStaticBoolean(
             this.objectProperty(object, "needAlphaBlending"),
             false,
@@ -2218,20 +2233,143 @@ class Compiler
                     JSON.stringify(candidate) ===
                     JSON.stringify(expected)
                 ) {
-                    return program.name;
+                    return this.reachShaderProgram({
+                        name: program.name,
+                        vertexSource: program.vertexSource,
+                        fragmentSource: program.fragmentSource,
+                        attributes: program.attributes,
+                        uniforms: program.uniforms,
+                        uniformDefaults: [],
+                        needAlphaBlending: program.needAlphaBlending,
+                        needAlphaTesting: program.needAlphaTesting,
+                        backFaceCulling: program.backFaceCulling,
+                        depthWrite: program.depthWrite,
+                        clipDepth: program.clipDepth,
+                    });
                 }
             }
         }
 
-        this.fail(
-            object,
-            "Unsupported reached shader material variant. Add a typed shader variant instead of selecting by scene or material name.",
-        );
+        // Scene-local variant: the entry file's own WGSL compiles through
+        // the typed shader IR instead of matching a predeclared program.
+        const nameExpression = this.objectProperty(object, "name");
+        if (!nameExpression) {
+            this.fail(
+                object,
+                "Scene-local shader materials require a name (it becomes the generated variant identity).",
+            );
+        }
+        const slug = this.compileStaticString(nameExpression)
+            .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+            .replace(/[^A-Za-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "")
+            .toLowerCase();
+        if (slug.length === 0) {
+            this.fail(
+                nameExpression,
+                "Scene-local shader material names must contain letters or digits.",
+            );
+        }
+        if (
+            shaderMaterialPrograms.some(
+                ({ name }) => name === slug,
+            )
+        ) {
+            this.fail(
+                nameExpression,
+                `Shader material name '${slug}' collides with a predeclared variant.`,
+            );
+        }
+        // The reached subset composes the system block from
+        // worldViewProjection alone (or none); other system uniforms
+        // (view, world, projection splits) stay unreached.
+        for (const signature of uniforms) {
+            if (
+                !signature.includes(":") &&
+                signature !== "worldViewProjection"
+            ) {
+                this.fail(
+                    uniformsExpression,
+                    `Reached scene-local shader materials support the worldViewProjection system uniform only, received '${signature}'.`,
+                );
+            }
+        }
+        const sceneProgram: CompiledShaderProgram = {
+            name: slug,
+            vertexSource,
+            fragmentSource,
+            attributes,
+            uniforms,
+            uniformDefaults,
+            needAlphaBlending,
+            needAlphaTesting,
+            backFaceCulling,
+            depthWrite,
+            // The pinned prelude clips through the composed matrix when
+            // one is requested; matrix-free programs write clip
+            // positions directly like the pinned alpha-card.
+            clipDepth: uniforms.includes("worldViewProjection")
+                ? "matrix"
+                : "direct-webgpu",
+        };
+        try {
+            lowerWgslShaderProgram(sceneProgram);
+        } catch (error: unknown) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : String(error);
+            this.fail(
+                object,
+                `Invalid reached shader material WGSL: ${message}`,
+            );
+        }
+        const reflection =
+            lowerWgslShaderProgram(sceneProgram).reflection;
+        for (const entry of uniformDefaults) {
+            const declared = uniforms.find((signature) =>
+                signature.startsWith(`${entry.name}:`),
+            );
+            if (!declared) {
+                this.fail(
+                    uniformsExpression,
+                    `Shader uniform default '${entry.name}' has no typed declaration.`,
+                );
+            }
+            const componentCount =
+                declared.endsWith(":f32")
+                    ? 1
+                    : declared.endsWith(":vec2<f32>")
+                        ? 2
+                        : declared.endsWith(":vec3<f32>")
+                            ? 3
+                            : declared.endsWith(":vec4<f32>")
+                                ? 4
+                                : 0;
+            if (componentCount === 0) {
+                this.fail(
+                    uniformsExpression,
+                    `Shader uniform default '${entry.name}' has an unsupported type.`,
+                );
+            }
+            if (entry.values.length !== componentCount) {
+                this.fail(
+                    uniformsExpression,
+                    `Shader uniform default '${entry.name}' expects ${componentCount} component(s).`,
+                );
+            }
+        }
+        void reflection;
+        return this.reachShaderProgram(sceneProgram);
     }
 
-    private compileShaderUniformSignatures(expression: ts.Expression): string[] {
+    private compileShaderUniformSignatures(expression: ts.Expression): {
+        signatures: string[];
+        defaults: CompiledShaderUniformDefault[];
+    } {
         const array = this.expectStaticArrayLiteral(expression);
-        return array.elements.map((element) => {
+        const defaults: CompiledShaderUniformDefault[] = [];
+        const signatures = array.elements.map((element) => {
             const resolved = this.resolveStaticExpression(element);
             if (
                 ts.isStringLiteral(resolved) ||
@@ -2245,6 +2383,22 @@ class Compiler
                     "Shader uniforms must be string or typed object literals.",
                 );
             }
+            for (const property of resolved.properties) {
+                const propertyName =
+                    ts.isPropertyAssignment(property) ||
+                    ts.isShorthandPropertyAssignment(property)
+                        ? this.propertyName(property.name)
+                        : undefined;
+                if (
+                    !propertyName ||
+                    !["name", "type", "defaultValue"].includes(propertyName)
+                ) {
+                    this.fail(
+                        property,
+                        "Typed shader uniforms support name, type, and defaultValue.",
+                    );
+                }
+            }
             const name = this.objectProperty(resolved, "name");
             const type = this.objectProperty(resolved, "type");
             if (!name || !type) {
@@ -2253,8 +2407,128 @@ class Compiler
                     "Typed shader uniforms require name and type.",
                 );
             }
-            return `${this.compileStaticString(name)}:${this.compileStaticString(type)}`;
+            const uniformName = this.compileStaticString(name);
+            const defaultExpression = this.objectProperty(
+                resolved,
+                "defaultValue",
+            );
+            if (defaultExpression) {
+                const resolvedDefault =
+                    this.resolveStaticExpression(defaultExpression);
+                const values = ts.isArrayLiteralExpression(resolvedDefault)
+                    ? resolvedDefault.elements.map((entry) =>
+                          this.expectStaticNumber(entry),
+                      )
+                    : [this.expectStaticNumber(resolvedDefault)];
+                defaults.push({ name: uniformName, values });
+            }
+            return `${uniformName}:${this.compileStaticString(type)}`;
         });
+        return { signatures, defaults };
+    }
+
+    /**
+     * Registers a reached shader program (predeclared or scene-local)
+     * and returns its stable generated variant identity: the id indexes
+     * the emitted variant table in reach order.
+     */
+    private reachShaderProgram(
+        program: CompiledShaderProgram,
+    ): { name: string; id: number } {
+        const existing = this.reachedShaderPrograms.findIndex(
+            ({ name }) => name === program.name,
+        );
+        if (existing >= 0) {
+            return { name: program.name, id: existing };
+        }
+        this.reachedShaderPrograms.push(program);
+        return {
+            name: program.name,
+            id: this.reachedShaderPrograms.length - 1,
+        };
+    }
+
+    public reachedShaderProgram(
+        name: string,
+        node: ts.Node,
+    ): CompiledShaderProgram {
+        const program = this.reachedShaderPrograms.find(
+            (candidate) => candidate.name === name,
+        );
+        if (!program) {
+            this.fail(
+                node,
+                `Shader variant '${name}' was not created in this scene.`,
+            );
+        }
+        return program;
+    }
+
+    public resolveShaderUniform(
+        material: Value,
+        nameExpression: ts.Expression,
+        expectedCounts: number[],
+    ): { offset: number; count: number } {
+        if (!material.shaderVariant) {
+            this.fail(
+                nameExpression,
+                "Shader uniform writes require a shader material.",
+            );
+        }
+        const program = this.reachedShaderProgram(
+            material.shaderVariant,
+            nameExpression,
+        );
+        const name =
+            this.compileStringLiteral(nameExpression);
+        const entry = shaderUniformValueLayout(
+            program.uniforms,
+        ).get(name);
+        if (!entry) {
+            this.fail(
+                nameExpression,
+                `Shader variant '${program.name}' declares no custom uniform '${name}'.`,
+            );
+        }
+        if (!expectedCounts.includes(entry.count)) {
+            this.fail(
+                nameExpression,
+                `Shader uniform '${name}' has ${entry.count} component(s); this setter expects ${expectedCounts.join(" or ")}.`,
+            );
+        }
+        return entry;
+    }
+
+    public compileShaderUniformComponents(
+        expression: ts.Expression,
+        count: number,
+    ): string[] {
+        if (count === 1) {
+            return [this.compileNumber(expression)];
+        }
+        const resolved =
+            this.resolveStaticExpression(expression);
+        if (
+            ts.isArrayLiteralExpression(resolved) &&
+            resolved.elements.length === count
+        ) {
+            return resolved.elements.map((element) =>
+                this.compileNumber(element),
+            );
+        }
+        const value = this.compileValue(expression);
+        if (
+            value.kind === "tuple" &&
+            value.tupleElements?.length === count
+        ) {
+            return value.tupleElements.map(
+                (element) => element.cpp,
+            );
+        }
+        this.fail(
+            expression,
+            `Expected a ${count}-component array value.`,
+        );
     }
 
     public compilePropertyAnimationClip(
@@ -2520,6 +2794,21 @@ class Compiler
         if (!expression) return fallback;
         return this.compileBoolean(this.resolveStaticExpression(expression)) ===
             "true";
+    }
+
+    private expectStaticNumber(expression: ts.Expression): number {
+        const resolved = this.resolveStaticExpression(expression);
+        if (ts.isNumericLiteral(resolved)) {
+            return Number(resolved.text);
+        }
+        if (
+            ts.isPrefixUnaryExpression(resolved) &&
+            resolved.operator === ts.SyntaxKind.MinusToken &&
+            ts.isNumericLiteral(resolved.operand)
+        ) {
+            return -Number(resolved.operand.text);
+        }
+        this.fail(resolved, "Expected a static numeric literal.");
     }
 
     private stringArraysEqual(left: string[], right: string[]): boolean {
@@ -3861,11 +4150,11 @@ class Compiler
                 ],
             });
         }
-        if (this.shaderVariants.size > 0) {
+        if (this.reachedShaderPrograms.length > 0) {
             adaptations.push({
                 id: "typed-reached-shader-variants",
                 category: "rendering",
-                sourceSemantics: `Babylon Lite composes the reached custom WGSL shader variant(s): ${[...this.shaderVariants].join(", ")}.`,
+                sourceSemantics: `Babylon Lite composes the reached custom WGSL shader variant(s): ${this.reachedShaderPrograms.map(({ name }) => name).join(", ")}.`,
                 nativeSemantics: "The compiler validates reached WGSL, attributes, uniforms, and fixed-function state, lowers the supported WGSL subset into typed shader IR, reflects interfaces and uniform layouts, and emits native-specialized WGSL. Pinned Tint emits HLSL/MSL; register normalization and DXC emit SDL-compatible DXIL/SPIR-V.",
                 risk: "high",
                 validation: [
@@ -4116,7 +4405,7 @@ class Compiler
 
     public expectShaderVariant(
         value: Value,
-        variant: ShaderMaterialVariantName,
+        variant: string,
         node: ts.Node,
     ): void {
         if (value.shaderVariant !== variant) {
@@ -4217,12 +4506,6 @@ class Compiler
         identifier: ts.Identifier,
     ): string | undefined {
         return this.symbols.importedName(identifier);
-    }
-
-    public reachShaderVariant(
-        variant: ShaderMaterialVariantName,
-    ): void {
-        this.shaderVariants.add(variant);
     }
 
     public eraseBrowserInstrumentation(

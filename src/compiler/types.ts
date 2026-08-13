@@ -15,9 +15,36 @@ export interface CompileManifest {
     runtimeSources: string[];
     generatedSources: string[];
     assets: CompileAsset[];
-    shaderVariants: ShaderMaterialVariantName[];
+    shaderVariants: string[];
+    customShaderPrograms: CompiledShaderProgram[];
     geometryOutputTasks: GeometryOutputTaskManifest[];
     adaptations: CompileAdaptation[];
+}
+
+/**
+ * A scene-local shader-material program compiled from the entry file's
+ * own WGSL sources through the typed shader IR. Predeclared variants
+ * (the ShaderMaterialVariantName registry) keep their pinned records;
+ * scene-local programs carry the equivalent fields plus the typed
+ * uniform defaults the pinned createShaderMaterial applies at creation.
+ */
+export interface CompiledShaderProgram {
+    name: string;
+    vertexSource: string;
+    fragmentSource: string;
+    attributes: string[];
+    uniforms: string[];
+    uniformDefaults: CompiledShaderUniformDefault[];
+    needAlphaBlending: boolean;
+    needAlphaTesting: boolean;
+    backFaceCulling: boolean;
+    depthWrite: boolean;
+    clipDepth: "matrix" | "direct-webgpu";
+}
+
+export interface CompiledShaderUniformDefault {
+    name: string;
+    values: number[];
 }
 
 export interface CompileAsset {
@@ -106,7 +133,7 @@ export interface Value {
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     lightKind?: LightKind;
-    shaderVariant?: ShaderMaterialVariantName;
+    shaderVariant?: string;
     animationFrameRate?: string;
     animationDuration?: string;
     staticNumber?: number;
