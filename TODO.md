@@ -365,10 +365,22 @@ the identical generator, keyed off the generated manifest's
   long after that scope is left; only the body runs in the captured
   scope, since the arguments were written at the call site. Gated by
   tetris-modes.
+- [x] Stage-2 capstone: the demo board drawn the way the demo's own
+  renderer draws it — studio IBL, blurred skybox box, dark backboard,
+  glossy emissive chips over the pinned chamfered generator, translucent
+  ghost, per-colour thin-instance pools, at a board the pinned rules
+  played. Gated by tetris-board. Building it found the
+  `environmentIntensity` gate bug below.
 - [ ] Stage 2 (remaining) — `Array.indexOf`, which the demo's
   `toggleMode` uses to cycle `MODE_CYCLE`. tetris-modes writes the same
-  cycle as a comparison chain. Validate with a static-board gate before
-  any game loop.
+  cycle as a comparison chain. Needed before the game loop.
+- [ ] The stone frame ring needs `loadGeometryFromUrl`, and the "pets"
+  block style fetches its baked geometry at runtime; neither is in the
+  subset, so tetris-board renders the arcade style without the frame.
+- [ ] `createPbrMaterial` is missing `baseColorFactor`, `alphaBlend`,
+  and `enableSpecularAA`, all of which the demo renderer uses. A solid
+  colour texture substitutes for the first; the other two have no
+  substitute.
 - [ ] An object-literal method DECLARATION (`{ sync(g, d) { ... } }`) is
   still rejected; only a property naming a local function is a method.
   The demo writes the shorthand form, so this is unreached.

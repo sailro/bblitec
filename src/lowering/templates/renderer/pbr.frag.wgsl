@@ -224,8 +224,16 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
   var v_83 : f32;
   switch(0u) {
     default: {
+      // materialFactors.w is the material's environmentIntensity, and
+      // is exactly 0 when the scene has no irradiance. The pinned
+      // shader has no runtime gate here at all -- it multiplies the
+      // harmonics by environmentIntensity and decides at build time
+      // whether the block exists (ibl-fragment.ts) -- so this early
+      // out may only catch the no-environment case. Testing it against
+      // 0.5 instead silently dropped the environment from every
+      // material that asked for less than half intensity.
       let v_84 = FragmentUniforms.materialFactors.w;
-      if ((v_84 < 0.5f)) {
+      if ((v_84 <= 0.0f)) {
         v_82 = vec3<f32>();
         v_83 = v_84;
         break;
