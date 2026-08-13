@@ -25,6 +25,9 @@ export interface DataLoweringContext {
         identifier: ts.Identifier,
     ): Value | undefined;
     resolveThisField(name: string): Value | undefined;
+    resolveRecordMember(
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined;
     reachJsData(): void;
     reachJsRandom(): void;
     defaultEngine(): string | undefined;
@@ -219,6 +222,20 @@ export class DataLowerer {
                     field.kind === "boolean")
                 ? field
                 : undefined;
+        }
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            // A member of a compile-time record — including a getter,
+            // which re-reads its state here — is a data path when the
+            // member it yields is data.
+            const member =
+                this.context.resolveRecordMember(unwrapped);
+            if (member) {
+                return member.kind === "data" ||
+                    member.kind === "number" ||
+                    member.kind === "boolean"
+                    ? member
+                    : undefined;
+            }
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const owner = this.compileDataPath(

@@ -140,6 +140,30 @@ export interface Value {
     staticString?: string;
     tupleElements?: Value[];
     recordProperties?: Record<string, Value>;
+    /**
+     * Record properties that name a local function. The identifier the
+     * literal wrote is kept so a call through the property resolves and
+     * inlines exactly as a direct call to that function does.
+     */
+    recordMethods?: Record<string, ts.Identifier>;
+    /**
+     * Record properties declared with `get`. The accessor is kept
+     * rather than its value, so each read re-evaluates it.
+     */
+    recordGetters?: Record<
+        string,
+        ts.GetAccessorDeclaration
+    >;
+    /**
+     * The scope chain in force where a record carrying methods or
+     * getters was built. A record can outlive the scope its state
+     * lives in -- a factory returns it, and the frame loop calls it --
+     * so that scope travels with it and is restored while a method or
+     * getter of the record runs. This is the closure the source wrote.
+     */
+    recordScopes?: ReadonlyArray<
+        Map<ts.Symbol, { name: string; value: Value }>
+    >;
     defaultRenderTask?: boolean;
     defaultRenderTaskEmitted?: boolean;
     browserValue?:
