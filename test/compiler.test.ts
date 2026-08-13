@@ -897,6 +897,82 @@ test("compiles record method arguments in the caller's scope", () => {
     );
 });
 
+test("cycles a constant tag array with indexOf and a runtime index", () => {
+    // The demo's `toggleMode`. The array folds to a compile-time tuple
+    // on its own, so a computed index needs it materialized.
+    const result = compileSource(`
+        type Mode = "pets" | "arcade" | "smooth";
+        const MODE_CYCLE: readonly Mode[] = ["pets", "arcade", "smooth"];
+        let currentMode: Mode = "arcade";
+        const next = MODE_CYCLE[(MODE_CYCLE.indexOf(currentMode) + 1) % MODE_CYCLE.length]!;
+        currentMode = next;
+    `);
+    assert.match(
+        result.cpp,
+        /inline const std::array<bblscene::Mode, 3> MODE_CYCLE\{bblscene::Mode::pets, bblscene::Mode::arcade, bblscene::Mode::smooth\}/,
+    );
+    // Both the search and the index read that one constant...
+    assert.match(
+        result.cpp,
+        /array_index_of\(bblscene::MODE_CYCLE, v_currentMode\)/,
+    );
+    assert.equal(
+        (
+            result.cpp.match(
+                /inline const std::array<bblscene::Mode/g,
+            ) ?? []
+        ).length,
+        1,
+    );
+    // ...and the element copies, since a span's elements are const.
+    assert.match(
+        result.cpp,
+        /bblscene::Mode v_next = bblscene::MODE_CYCLE\[/,
+    );
+});
+
+test("searches a runtime array with indexOf", () => {
+    const result = compileSource(`
+        const ys: number[] = [3, 5, 7];
+        let needle = 5;
+        const found = ys.indexOf(needle);
+    `);
+    assert.match(
+        result.cpp,
+        /array_index_of\(v_ys, v_needle\)/,
+    );
+});
+
+test("materializes a constant number array with double elements", () => {
+    // The tuple's own element text is a float literal; widening one
+    // back to double does not always give the value the needle holds.
+    const result = compileSource(`
+        const xs = [0.1, 0.2];
+        let needle = 0.2;
+        const found = xs.indexOf(needle);
+    `);
+    assert.match(
+        result.cpp,
+        /inline const std::array<double, 2> xs\{0\.1, 0\.2\}/,
+    );
+    assert.match(
+        result.cpp,
+        /array_index_of\(bblscene::xs, v_needle\)/,
+    );
+});
+
+test("rejects indexOf where JavaScript would compare by identity", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                interface Point { x: number; }
+                const points: Point[] = [{ x: 1 }];
+                const found = points.indexOf(points[0]!);
+            `),
+        /JavaScript would compare by identity here/,
+    );
+});
+
 test("binds const data-path locals as aliases", () => {
     const result = compileSource(`
         interface Holder {

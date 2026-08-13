@@ -126,6 +126,13 @@ export interface Value {
     cpp: string;
     dataType?: DataType;
     dataStore?: "f32" | "u32";
+    /**
+     * Set on a value read out of a container of const elements (a span,
+     * including a materialized constant table). It cannot be bound by
+     * reference, and the source language would not let it be written
+     * through either.
+     */
+    readOnly?: boolean;
     callbackDeclaration?:
         | ts.ArrowFunction
         | ts.FunctionExpression;

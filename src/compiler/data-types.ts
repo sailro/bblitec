@@ -174,6 +174,19 @@ export class DataTypeRegistry {
         DataTableDefinition
     >();
     private readonly tableNames = new Set<string>();
+    /**
+     * One-dimensional constant arrays, materialized so a runtime index
+     * can reach them. The numeric tables above are doubles all the way
+     * down and may nest; these are flat and hold any scalar element.
+     */
+    private readonly tagTables = new Map<
+        ts.Node,
+        {
+            name: string;
+            elementCppType: string;
+            elements: string[];
+        }
+    >();
     private readonly mappingInProgress =
         new Set<ts.Type>();
     private anonymousStructIndex = 0;
@@ -188,7 +201,8 @@ export class DataTypeRegistry {
         return (
             this.structsByKey.size === 0 &&
             this.enumsByKey.size === 0 &&
-            this.tables.size === 0
+            this.tables.size === 0 &&
+            this.tagTables.size === 0
         );
     }
 
@@ -662,6 +676,34 @@ export class DataTypeRegistry {
         return { name, dimensions };
     }
 
+    /**
+     * Materializes a one-dimensional constant array as a
+     * namespace-scope constant, so an index computed at runtime can
+     * read it. Keyed by the array's declaration, so every use site
+     * shares one constant. Returns the constant's name.
+     */
+    public registerConstantArray(
+        declaration: ts.Node,
+        preferredName: string,
+        elementCppType: string,
+        elements: string[],
+    ): string {
+        const existing = this.tagTables.get(declaration);
+        if (existing) {
+            return existing.name;
+        }
+        const name = this.uniqueName(
+            sanitizeIdentifier(preferredName),
+            this.tableNames,
+        );
+        this.tagTables.set(declaration, {
+            name,
+            elementCppType,
+            elements,
+        });
+        return name;
+    }
+
     private tableDimensions(
         literal: ts.ArrayLiteralExpression,
         compileLeaf: (
@@ -888,6 +930,12 @@ export class DataTypeRegistry {
         for (const table of this.tables.values()) {
             lines.push(
                 `inline const ${this.tableCppType(table.dimensions)} ${table.name} = ${table.values};`,
+                "",
+            );
+        }
+        for (const table of this.tagTables.values()) {
+            lines.push(
+                `inline const std::array<${table.elementCppType}, ${table.elements.length}> ${table.name}{${table.elements.join(", ")}};`,
                 "",
             );
         }

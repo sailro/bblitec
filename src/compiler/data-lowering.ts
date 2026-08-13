@@ -2,6 +2,7 @@ import ts from "typescript";
 import {
     DataTypeRegistry,
     dataTypesEqual,
+    doubleLiteral,
     type DataType,
 } from "./data-types.js";
 import type { Value } from "./types.js";
@@ -263,9 +264,12 @@ export class DataLowerer {
                     unwrapped.argumentExpression,
                 )
                     ? undefined
-                    : this.materializeStaticTable(
+                    : (this.materializeStaticTable(
                           unwrapped.expression,
-                      ));
+                      ) ??
+                      this.materializeConstantArray(
+                          unwrapped.expression,
+                      )));
             if (!owner) {
                 return undefined;
             }
@@ -496,11 +500,18 @@ export class DataLowerer {
         }
         switch (dataType.kind) {
             case "vector":
-            case "span":
                 return this.leafValue(
                     indexed,
                     dataType.element,
                 );
+            case "span":
+                return {
+                    ...this.leafValue(
+                        indexed,
+                        dataType.element,
+                    ),
+                    readOnly: true,
+                };
             case "tuple":
                 return {
                     kind: "number",
@@ -585,6 +596,107 @@ export class DataLowerer {
      * Materializes a static module-constant numeric table referenced by an
      * identifier, returning a table-typed value.
      */
+    /**
+     * Materializes a constant array as a namespace-scope constant so a
+     * runtime index can read it (the demo cycles its block style
+     * through one). Such an array folds to a compile-time tuple
+     * otherwise, and a computed index cannot reach a tuple.
+     */
+    public materializeConstantArray(
+        expression: ts.Expression,
+    ): Value | undefined {
+        const unwrapped = this.context.unwrap(expression);
+        if (!ts.isIdentifier(unwrapped)) {
+            return undefined;
+        }
+        // A local constant binds as a compile-time tuple; a module-level
+        // one is not bound at all and resolves through its initializer.
+        const bound =
+            this.context.lookupIdentifierValue(unwrapped);
+        if (bound && bound.kind !== "tuple") {
+            return undefined;
+        }
+        const literal = bound
+            ? undefined
+            : (() => {
+                  const resolved =
+                      this.context.resolveStaticExpression(
+                          unwrapped,
+                      );
+                  return resolved !== unwrapped &&
+                      ts.isArrayLiteralExpression(resolved)
+                      ? resolved
+                      : undefined;
+              })();
+        if (!bound?.tupleElements && !literal) {
+            return undefined;
+        }
+        const container =
+            this.context.dataTypes.fromTsType(
+                this.context.checker.getTypeAtLocation(
+                    unwrapped,
+                ),
+                unwrapped,
+            );
+        const element =
+            container?.kind === "vector" ||
+            container?.kind === "span"
+                ? container.element
+                : undefined;
+        if (!element) {
+            return undefined;
+        }
+        const elements = literal
+            ? literal.elements.map((entry) =>
+                  this.compileForSink(entry, element),
+              )
+            : bound!.tupleElements!.map((entry) =>
+                  element.kind === "enum"
+                      ? entry.staticString !== undefined
+                          ? this.context.dataTypes.enumMemberCpp(
+                                element,
+                                entry.staticString,
+                                unwrapped,
+                            )
+                          : undefined
+                      : element.kind === "number"
+                        ? entry.staticNumber !== undefined
+                            ? // Re-formatted as a double: the
+                              // element's own text is a float
+                              // literal, and widening one back does
+                              // not always give the same value.
+                              doubleLiteral(
+                                  entry.staticNumber,
+                              )
+                            : undefined
+                        : undefined,
+              );
+        if (elements.some((entry) => entry === undefined)) {
+            return undefined;
+        }
+        // Keyed by the declaration so every use site shares one
+        // constant rather than emitting a copy each time.
+        const symbol =
+            this.context.checker.getSymbolAtLocation(
+                unwrapped,
+            );
+        const declaration =
+            symbol?.declarations?.[0] ?? unwrapped;
+        const name =
+            this.context.dataTypes.registerConstantArray(
+                declaration,
+                unwrapped.text,
+                this.context.dataTypes.cppType(element),
+                elements as string[],
+            );
+        this.context.reachJsData();
+        return {
+            kind: "data",
+            cpp: `bblscene::${name}`,
+            dataType: { kind: "span", element },
+        };
+    }
+
     public materializeStaticTable(
         expression: ts.Expression,
     ): Value | undefined {
@@ -817,6 +929,50 @@ export class DataLowerer {
     }
 
     /**
+     * Compiles `array.indexOf(value)`.
+     *
+     * Only element types JavaScript compares the way native code does
+     * are reached: numbers, booleans, and tags compare by value in both,
+     * and a handle is an id, which is what makes two references the same
+     * object. A struct or a nested container would compare by identity
+     * in JavaScript and field by field here, so those are rejected
+     * rather than answered differently.
+     */
+    private compileIndexOf(
+        call: ts.CallExpression,
+        owner: Value,
+        element: DataType,
+    ): Value {
+        if (call.arguments.length !== 1) {
+            this.context.fail(
+                call,
+                "Array.indexOf expects one argument; the fromIndex form is outside the supported subset.",
+            );
+        }
+        if (
+            element.kind !== "number" &&
+            element.kind !== "boolean" &&
+            element.kind !== "enum" &&
+            element.kind !== "handle"
+        ) {
+            this.context.fail(
+                call,
+                `Array.indexOf is supported for numbers, booleans, tags, and handles, not ${element.kind}: JavaScript would compare by identity here.`,
+            );
+        }
+        this.context.reachJsData();
+        const value = this.compileForSink(
+            call.arguments[0]!,
+            element,
+        );
+        return {
+            kind: "number",
+            cpp: `bbl::js::array_index_of(${owner.cpp}, ${value})`,
+            dataType: { kind: "number" },
+        };
+    }
+
+    /**
      * Compiles data-container method calls (`push`, `pop`, `fill`) and the
      * `new Array(n).fill(v)` chain.
      */
@@ -862,15 +1018,24 @@ export class DataLowerer {
                 };
             }
         }
-        const owner = this.compileDataPath(
-            callee.expression,
-            method === "pop" ||
-                method === "push" ||
-                method === "fill" ||
-                method === "splice"
-                ? "write"
-                : "read",
-        );
+        const owner =
+            this.compileDataPath(
+                callee.expression,
+                method === "pop" ||
+                    method === "push" ||
+                    method === "fill" ||
+                    method === "splice"
+                    ? "write"
+                    : "read",
+            ) ??
+            // A constant array is a compile-time tuple with nothing to
+            // search, so searching one materializes it exactly as a
+            // runtime index into it does.
+            (method === "indexOf"
+                ? this.materializeConstantArray(
+                      callee.expression,
+                  )
+                : undefined);
         if (!owner || owner.kind !== "data") {
             return undefined;
         }
@@ -879,6 +1044,27 @@ export class DataLowerer {
             callee.expression,
         );
         const dataType = narrowed.dataType;
+        if (method === "indexOf") {
+            // Readonly arrays and materialized constants reach this
+            // too: the demo cycles its mode through a
+            // `readonly TetrisMode[]`, which is a span of tags, and a
+            // constant numeric array is a one-dimensional table.
+            const element =
+                dataType?.kind === "vector" ||
+                dataType?.kind === "span"
+                    ? dataType.element
+                    : dataType?.kind === "table" &&
+                        dataType.dimensions.length === 1
+                      ? ({ kind: "number" } as DataType)
+                      : undefined;
+            if (element) {
+                return this.compileIndexOf(
+                    call,
+                    narrowed,
+                    element,
+                );
+            }
+        }
         if (dataType?.kind !== "vector") {
             return undefined;
         }

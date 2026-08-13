@@ -34,6 +34,13 @@ interface RenderSet {
     scale: number;
 }
 
+/** The demo's cycle order (renderer.ts `MODE_CYCLE`). */
+const MODE_CYCLE: readonly TetrisMode[] = [
+    "pets",
+    "arcade",
+    "smooth",
+];
+
 const COLORS = 7;
 const SWITCH_TO_ARCADE = 10;
 const SWITCH_TO_SMOOTH = 20;
@@ -153,19 +160,14 @@ async function main(): Promise<void> {
             showSet(sets[currentMode]);
         }
 
-        // pets → arcade → smooth → pets, the demo's MODE_CYCLE order.
-        // Written as a chain because `Array.indexOf` is not in the
-        // subset yet.
+        // pets → arcade → smooth → pets, verbatim from the demo.
         function toggleMode(): void {
-            if (currentMode === "pets") {
-                setMode("arcade");
-                return;
-            }
-            if (currentMode === "arcade") {
-                setMode("smooth");
-                return;
-            }
-            setMode("pets");
+            setMode(
+                MODE_CYCLE[
+                    (MODE_CYCLE.indexOf(currentMode) + 1) %
+                        MODE_CYCLE.length
+                ]!,
+            );
         }
 
         return {

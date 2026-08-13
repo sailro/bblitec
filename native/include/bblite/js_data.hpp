@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 namespace bbl::js {
@@ -60,6 +61,54 @@ template <typename T>
 template <typename T>
 [[nodiscard]] inline double array_length(Span<const T> values) {
     return static_cast<double>(values.size());
+}
+
+// `array.indexOf(value)` — the first strictly-equal element, or -1.
+// JavaScript compares primitives by value and objects by identity, and
+// every element type reaching here is a scalar or a handle id, so a
+// plain `==` is that comparison. NaN matches nothing in either
+// language, for the same reason.
+// The needle is non-deduced so the element type always comes from the
+// container: a literal argument then converts to it instead of
+// deducing a second, conflicting T.
+template <typename T>
+[[nodiscard]] inline double array_index_of(
+    const Array<T>& values,
+    const std::type_identity_t<T>& value) {
+    for (std::size_t index = 0; index < values.size();
+         ++index) {
+        if (values[index] == value) {
+            return static_cast<double>(index);
+        }
+    }
+    return -1.0;
+}
+
+template <typename T>
+[[nodiscard]] inline double array_index_of(
+    Span<const T> values,
+    const std::type_identity_t<T>& value) {
+    for (std::size_t index = 0; index < values.size();
+         ++index) {
+        if (values[index] == value) {
+            return static_cast<double>(index);
+        }
+    }
+    return -1.0;
+}
+
+// Constant arrays materialize as `std::array`, so searching one needs
+// no conversion at the call site.
+template <typename T, std::size_t N>
+[[nodiscard]] inline double array_index_of(
+    const std::array<T, N>& values,
+    const std::type_identity_t<T>& value) {
+    for (std::size_t index = 0; index < N; ++index) {
+        if (values[index] == value) {
+            return static_cast<double>(index);
+        }
+    }
+    return -1.0;
 }
 
 // `array.pop()!` — the compiled subset asserts the array is non-empty.
