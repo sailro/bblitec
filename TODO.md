@@ -265,10 +265,44 @@ CPU-side from GPU-side causes immediately.
 
 ## P1 — Full Babylon Lite corpus audit
 
-The exploratory audit uses the pinned
+The audit uses the pinned
 `95ed3029cc43e479ec924741aea4024e9bf33527` corpus. These entries cover every
 scene that did not reach a MAD measurement; measured scenes are dashboarded in
 [status](docs/status.md).
+
+Refresh it by building `dist` once and then compiling each unregistered scene
+directly, which skips the per-invocation rebuild:
+`node dist/src/scene-command.js compile corpus/babylon-lite/lab/lite/src/lite/sceneNNN.ts`.
+The command accepts an unregistered path, so nothing has to be added to the
+registry to measure it.
+
+**Swept 2026-08-13:** 184 unregistered scenes compiled, 8 clean and 176
+blocked across 80 distinct first blockers. The lane partition below was
+written from reading and holds up: no scene in the compiler-contract lane
+compiles, so the compiler has not silently outgrown its inventory. Each
+scene's entry is its FIRST blocker; clearing one may expose another.
+
+**Compile clean (8):** 9, 30, 34, 242, 244, 253, 256, 260. Seven were already
+recorded as past the compiler and blocked downstream in the loader/runtime
+lane, so only 256 is newly placed — it was the unaudited NormalTangentTest
+glTF and reaches the compiler cleanly.
+
+**Largest first-blocker clusters:** `loadSpriteAtlas` 16, browser-dependent
+condition 17 (15 of them deferred-lane physics), `parseNodeMaterialFromSnippet`
+12, `createSpotLight` 8, engine options beyond msaaSamples/requiredLimits 7,
+static array literal 6, `parseNodeParticleSource` 6, numeric operators 6,
+`loadSplat` 5. Missing intrinsics account for 45% of all failures across 30
+distinct names. Several families are split across entries because the message
+carries the identifier: Standard diffuse-texture assignment blocks 5 scenes
+(18, 25, 90, 110, 272), mesh name/id setters block 4 (111, 113, 129, 221), and
+vector `.set()` on node properties blocks 5 (4, 22, 65, 141, 142).
+
+**No corpus scene can currently retire the runtime-sweep gate.** Of the scenes
+reaching `createMeshFromData` (86, 114, 170-175, 231, 267), `setThinInstances`
+(16, 17, 43, 103, 165, 204, 219, 279) or `removeFromScene` (129, 173, 271,
+272), none compiles yet. `flushThinInstances` and `setThinInstanceCount` are
+not referenced anywhere under `corpus/` at this pin, so a project-owned gate is
+the only possible validation for those two contracts.
 
 Corpus scenes are the preferred validation: a feature is proven by the pinned
 Babylon Lite scenes that reach it, not by a project-owned gate. Author a gate
@@ -276,16 +310,15 @@ only for a contract no corpus scene exercises (a feature combination the corpus
 never composes, or a slice being built ahead of the scene that will use it),
 and delete it once corpus scenes cover the contract.
 
-The 188 unmeasured scenes are partitioned by the boundary required to reproduce
+The 184 unmeasured scenes are partitioned by the boundary required to reproduce
 their deterministic reference behavior, not by incidental browser helpers.
 Capture-inert demo controls and fixed-coordinate picking stay in the first
 lane when they can be erased or lowered inside the compiler, asset pipeline,
 or renderer. A scene is deferred when its covered behavior needs a new
 platform, user-input, or external-service contract.
 
-Scenes 256 and 280 arrived with the 1.20.0 pin and are unaudited: 256 is the
-Khronos NormalTangentTest glTF (likely close to the reached PBR slice), 280 is a
-node-particle flow-map editor scene (node-particle sources, deferred lane).
+Scenes 256 and 280 arrived with the 1.20.0 pin and are now measured: 256
+compiles clean, 280 blocks on `parseNodeParticleSource` as expected.
 
 **Integrate first (150 scenes):** 4, 9, 11, 12, 15-23, 25-27, 30,
 34, 36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
@@ -311,8 +344,8 @@ runtime gaps may remain hidden behind it.
 ### Integration-first compiler contract gaps
 
 - [ ] Scenes 4, 22, 65, 141: support light position setters.
-- [ ] Scene 115: re-audit past the ported camera-target assignment for
-  its remaining deterministic-picking blockers.
+- [ ] Scene 115: support `Number.isFinite`, which is now its first
+  blocker, then re-audit for deterministic picking.
 - [ ] Scenes 11, 144, 152, 157, 158, 179, 229: generalize static array resolution.
 - [ ] Scenes 12, 43: fold or explicitly lower the reached browser-dependent conditions.
 - [ ] Scenes 15, 67-72, 223: support `createSpotLight`.
@@ -332,7 +365,9 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 51: lower the reached browser-derived numeric value.
 - [ ] Scenes 57, 59: support the `CAMERA_POSITION` shader binding.
 - [ ] Scenes 60, 61, 64, 77-80, 82, 84, 85, 88, 89: support node-material snippets.
-- [ ] Scenes 62, 81, 83: support `loadTexture2D`.
+- [ ] Scenes 62, 81, 83: resolve the module-level texture-URL
+  constants they read. `loadTexture2D` itself landed; the blocker moved to
+  `SCENE62_TEXTURE_URL` and its siblings.
 - [ ] Scene 63: support reached scene-light insertion.
 - [ ] Scenes 66, 214, 215, 271: support `receiveShadows`.
 - [ ] Scene 73: support camera viewports.
@@ -370,7 +405,8 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 241: fold the reached query-derived camera alpha.
 - [ ] Scene 252: generalize the reached structured argument.
 - [ ] Scenes 262-264, 276, 277: support node-particle sources.
-- [ ] Scene 267: re-audit past the ported `createMeshFromData` for its
+- [ ] Scene 267: support `material.backFaceCulling`, now its first
+  blocker, then re-audit for its
   remaining blockers.
 - [ ] Scene 268: support orthographic cameras.
 - [ ] Scene 269: support transform nodes.
@@ -395,7 +431,10 @@ runtime gaps may remain hidden behind it.
 - [ ] Scenes 34, 242, 244, 253: extend native glTF animation channel
   coverage (LINEAR/CUBICSPLINE scale landed with Scene 7; STEP channels
   and the remaining audited gaps stay).
-- [ ] Scene 37: support the reached glTF data without an image `source`.
+- [ ] Scene 37: it now fails during generation on `PBR material-extension
+  marker changed: occlusion uv2 inner signature`, before the loader gap it
+  was recorded under. That reads as marker drift rather than a missing
+  feature, and it is the one scene whose position moved backwards.
 - [ ] Scene 260: support the reached non-triangle-list glTF primitive mode.
 
 ### Deferred external and platform-feature scenes
