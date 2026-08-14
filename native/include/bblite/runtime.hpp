@@ -342,6 +342,13 @@ struct ModelGeometry {
     bool flat_normals = false;
     Vec3 bounds_min{};
     Vec3 bounds_max{};
+    // Where the box above sits in the world. A static primitive bakes its
+    // node transform into its vertices, so the two agree; an animated one
+    // keeps local vertices and receives its node matrix per frame, which
+    // leaves `bounds_*` local. Camera framing needs the world box either
+    // way, so the loader records it separately.
+    Vec3 world_bounds_min{};
+    Vec3 world_bounds_max{};
 };
 
 struct MeshRecord {
@@ -358,6 +365,11 @@ struct MeshRecord {
     bool has_rotation_quaternion = false;
     bool gpu_deformation = false;
     bool clockwise_front_face = false;
+    // glTF KHR_node_visibility, materialized per mesh the way the pinned
+    // `setSubtreeVisible` materializes it per node: the extension cascades
+    // through the subtree at set time so the render path and the camera
+    // bounds only test one boolean.
+    bool visible = true;
     std::vector<std::array<float, 16>> bone_matrices;
     std::array<float, 16> instance_parent_matrix{
         1.0f, 0.0f, 0.0f, 0.0f,

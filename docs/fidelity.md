@@ -319,6 +319,23 @@ specialization flag, which is the predicate behind Babylon Lite's own
 dynamically imported `gltf-feature-primitive.js`: a scene whose assets are all
 triangle lists emits a loader that carries no topology handling at all, which
 is where upstream keeps it too.
+`KHR_node_visibility` is materialized per mesh rather than tested per draw.
+The pinned `setSubtreeVisible` writes the flag on a node and every descendant
+at set time, so the loader bakes the ancestor cascade into each mesh record
+and the render path and default-camera framing each test one boolean.
+`KHR_animation_pointer` reaches one target, `/nodes/N/extensions/`
+`KHR_node_visibility/visible`, which the pinned base module resolves without
+its material, light, or camera companions; the sampler must be STEP, because
+the animated value is a boolean and interpolating one has no meaning. Every
+other pointer fails at load naming the pointer it could not resolve.
+An animated primitive keeps local vertices and receives its node matrix each
+frame, so the box the loader accumulates while reading it is local, while a
+static primitive bakes that matrix into its vertices and accumulates a world
+box. The loader records the world box separately, transforming the local one
+through the node matrix the way the pinned `expandWorldAabbForMesh` does, so
+that framing an animated asset with the default camera sizes it where the
+geometry actually is. Scene 7, the other scene composing the two, frames
+identically either way because its animated root sits at the origin.
 Orthographic cameras write the pinned reverse-Z off-center projection term by
 term, with the four planes derived from the half-extent and the render target's
 aspect ratio. The pinned writer runs in JavaScript doubles into a

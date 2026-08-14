@@ -11,6 +11,9 @@
 export function gltfLoaderCpp(
     provenance: string,
     nonTrianglePrimitives = false,
+    nodeVisibility = false,
+    animationPointer = false,
+    animatedWorldBounds = false,
 ): string {
     return `// ${provenance}
 #include <bblite/pal_gltf.hpp>
@@ -130,7 +133,18 @@ struct WeightTrack {
     std::size_t target_count = 0;
     std::vector<float> times;
     std::vector<float> values;
-};
+};${animationPointer ? `
+
+struct VisibilityTrack {
+    std::size_t node = 0;
+    // The target node and every descendant, resolved once at load. The
+    // pinned writer calls setSubtreeVisible on each evaluation, which
+    // materializes the KHR_node_visibility cascade rather than testing
+    // ancestors while drawing.
+    std::vector<std::size_t> subtree;
+    std::vector<float> times;
+    std::vector<bool> values;
+};` : ""}
 
 struct AnimatedNode {
     Vec3 translation{};
@@ -162,7 +176,8 @@ struct AnimationRuntime {
     std::vector<RotationTrack> rotation_tracks;
     std::vector<TranslationTrack> translation_tracks;
     std::vector<TranslationTrack> scale_tracks;
-    std::vector<WeightTrack> weight_tracks;
+    std::vector<WeightTrack> weight_tracks;${animationPointer ? `
+    std::vector<VisibilityTrack> visibility_tracks;` : ""}
     std::vector<std::vector<std::uint32_t>> node_meshes;
     std::vector<AnimatedNode> nodes;
     std::vector<SkinRuntime> skins;
@@ -1628,7 +1643,34 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             }
             parents[child_index] = static_cast<int>(index);
         }
+    }${nodeVisibility ? `
+    // KHR_node_visibility. The pinned extension cascades \`visible: false\`
+    // through the subtree at load, so a node draws only when it and every
+    // ancestor are visible, and the render path tests one boolean.
+    std::vector<bool> node_visible(node_json.size(), true);
+    for (std::size_t index = 0; index < node_json.size(); ++index) {
+        const ts::JsonValue* extensions =
+            optional(node_json[index].as_object(), "extensions");
+        if (!extensions) continue;
+        const ts::JsonValue* visibility =
+            optional(extensions->as_object(), "KHR_node_visibility");
+        if (
+            visibility &&
+            !bool_or(visibility->as_object(), "visible", true)) {
+            node_visible[index] = false;
+        }
     }
+    for (std::size_t index = 0; index < node_json.size(); ++index) {
+        for (
+            int ancestor = parents[index];
+            ancestor >= 0;
+            ancestor = parents[static_cast<std::size_t>(ancestor)]) {
+            if (!node_visible[static_cast<std::size_t>(ancestor)]) {
+                node_visible[index] = false;
+                break;
+            }
+        }
+    }` : ""}
     std::vector<Matrix> world(node_json.size());
     std::vector<bool> computed(node_json.size(), false);
     std::vector<bool> computing(node_json.size(), false);
@@ -2434,7 +2476,51 @@ ${nonTrianglePrimitives
                     }
                 }
             }
-            engine.geometries.push_back(std::move(geometry));
+${animatedWorldBounds ? `            // A static primitive bakes its node matrix into its vertices, so
+            // the box just accumulated is already the world one. An animated
+            // primitive keeps local vertices and receives that matrix per
+            // frame, so its world box is the local box through the node
+            // matrix -- the transform the pinned expandWorldAabbForMesh
+            // applies while framing the default camera.
+            geometry.world_bounds_min = geometry.bounds_min;
+            geometry.world_bounds_max = geometry.bounds_max;
+            // An instanced primitive already had its box rebuilt from the
+            // instance matrices, which carry the node matrix, so applying
+            // that matrix again here would double it.
+            if (animated && !instanced) {
+                const Matrix& node_world = compute_world(node_index);
+                bool has_world_bounds = false;
+                for (const Vec3& corner : std::array<Vec3, 8>{
+                         Vec3{geometry.bounds_min.x, geometry.bounds_min.y, geometry.bounds_min.z},
+                         Vec3{geometry.bounds_min.x, geometry.bounds_min.y, geometry.bounds_max.z},
+                         Vec3{geometry.bounds_min.x, geometry.bounds_max.y, geometry.bounds_min.z},
+                         Vec3{geometry.bounds_min.x, geometry.bounds_max.y, geometry.bounds_max.z},
+                         Vec3{geometry.bounds_max.x, geometry.bounds_min.y, geometry.bounds_min.z},
+                         Vec3{geometry.bounds_max.x, geometry.bounds_min.y, geometry.bounds_max.z},
+                         Vec3{geometry.bounds_max.x, geometry.bounds_max.y, geometry.bounds_min.z},
+                         Vec3{geometry.bounds_max.x, geometry.bounds_max.y, geometry.bounds_max.z},
+                     }) {
+                    // The stored vertices already carry the mirror the
+                    // native convention applies, so undo it before the node
+                    // matrix and re-apply it after.
+                    const Vec3 world = transform_point(
+                        node_world,
+                        Vec3{-corner.x, corner.y, corner.z});
+                    if (!has_world_bounds) {
+                        geometry.world_bounds_min = world;
+                        geometry.world_bounds_max = world;
+                        has_world_bounds = true;
+                        continue;
+                    }
+                    geometry.world_bounds_min.x = std::min(geometry.world_bounds_min.x, world.x);
+                    geometry.world_bounds_min.y = std::min(geometry.world_bounds_min.y, world.y);
+                    geometry.world_bounds_min.z = std::min(geometry.world_bounds_min.z, world.z);
+                    geometry.world_bounds_max.x = std::max(geometry.world_bounds_max.x, world.x);
+                    geometry.world_bounds_max.y = std::max(geometry.world_bounds_max.y, world.y);
+                    geometry.world_bounds_max.z = std::max(geometry.world_bounds_max.z, world.z);
+                }
+            }
+` : ""}            engine.geometries.push_back(std::move(geometry));
             MeshRecord record;
             record.primitive = PrimitiveKind::gltf;
             record.geometry = static_cast<std::uint32_t>(engine.geometries.size() - 1);
@@ -2454,7 +2540,8 @@ ${nonTrianglePrimitives
             });
             if (material_index < materials.size()) record.material = materials[material_index];
             record.clockwise_front_face =
-                clockwise_front_face;
+                clockwise_front_face;${nodeVisibility ? `
+            record.visible = node_visible[node_index];` : ""}
             record.instance_parent_matrix =
                 instance_parent_matrix;
             record.instance_matrices =
@@ -2518,7 +2605,142 @@ ${nonTrianglePrimitives
                 const JsonObject& target =
                     required(channel, "target").as_object();
                 const std::string path_name =
-                    required(target, "path").as_string();
+                    required(target, "path").as_string();${animationPointer ? `
+                if (path_name == "pointer") {
+                    // KHR_animation_pointer. The pinned base module resolves
+                    // node-visibility and node-TRS pointers itself and pulls
+                    // separate modules for material, light and camera
+                    // targets; only the visibility pointer is reached.
+                    const ts::JsonValue* target_extensions =
+                        optional(target, "extensions");
+                    const ts::JsonValue* pointer_extension =
+                        target_extensions
+                            ? optional(
+                                  target_extensions->as_object(),
+                                  "KHR_animation_pointer")
+                            : nullptr;
+                    if (!pointer_extension) {
+                        throw std::runtime_error(
+                            "glTF pointer channel is missing its KHR_animation_pointer target.");
+                    }
+                    const std::string pointer =
+                        required(
+                            pointer_extension->as_object(),
+                            "pointer")
+                            .as_string();
+                    const std::string pointer_prefix = "/nodes/";
+                    const std::string pointer_suffix =
+                        "/extensions/KHR_node_visibility/visible";
+                    const bool visibility_pointer =
+                        pointer.size() >
+                            pointer_prefix.size() + pointer_suffix.size() &&
+                        pointer.compare(
+                            0,
+                            pointer_prefix.size(),
+                            pointer_prefix) == 0 &&
+                        pointer.compare(
+                            pointer.size() - pointer_suffix.size(),
+                            pointer_suffix.size(),
+                            pointer_suffix) == 0;
+                    const std::string pointer_node_text =
+                        visibility_pointer
+                            ? pointer.substr(
+                                  pointer_prefix.size(),
+                                  pointer.size() -
+                                      pointer_prefix.size() -
+                                      pointer_suffix.size())
+                            : std::string();
+                    if (
+                        !visibility_pointer ||
+                        pointer_node_text.find_first_not_of("0123456789") !=
+                            std::string::npos) {
+                        throw std::runtime_error(
+                            "Reached KHR_animation_pointer lowering supports node visibility targets only: " +
+                            pointer + ".");
+                    }
+                    const std::size_t visibility_node =
+                        static_cast<std::size_t>(
+                            std::stoull(pointer_node_text));
+                    if (visibility_node >= node_json.size()) {
+                        throw std::runtime_error(
+                            "glTF animation pointer targets a node that does not exist.");
+                    }
+                    const JsonObject& pointer_sampler =
+                        animation_samplers
+                            .at(unsigned_value(
+                                required(channel, "sampler")))
+                            .as_object();
+                    if (
+                        string_or(
+                            pointer_sampler,
+                            "interpolation",
+                            "LINEAR") != "STEP") {
+                        // Visibility is a boolean; the pin authors it STEP
+                        // and interpolating one would have no meaning.
+                        throw std::runtime_error(
+                            "glTF node-visibility animation requires STEP interpolation.");
+                    }
+                    const AccessorInfo& pointer_input =
+                        accessors.at(unsigned_value(
+                            required(pointer_sampler, "input")));
+                    const AccessorInfo& pointer_output =
+                        accessors.at(unsigned_value(
+                            required(pointer_sampler, "output")));
+                    if (
+                        pointer_input.type != "SCALAR" ||
+                        pointer_output.type != "SCALAR" ||
+                        pointer_output.count != pointer_input.count) {
+                        throw std::runtime_error(
+                            "glTF node-visibility animation accessor layout is invalid.");
+                    }
+                    VisibilityTrack track;
+                    track.node = visibility_node;
+                    track.subtree.push_back(visibility_node);
+                    for (
+                        std::size_t index = 0;
+                        index < parents.size();
+                        ++index) {
+                        for (
+                            int ancestor = parents[index];
+                            ancestor >= 0;
+                            ancestor =
+                                parents[static_cast<std::size_t>(ancestor)]) {
+                            if (
+                                static_cast<std::size_t>(ancestor) ==
+                                visibility_node) {
+                                track.subtree.push_back(index);
+                                break;
+                            }
+                        }
+                    }
+                    for (
+                        std::size_t index = 0;
+                        index < pointer_input.count;
+                        ++index) {
+                        const float time = read_component(
+                            buffer,
+                            container,
+                            views,
+                            pointer_input,
+                            index,
+                            0);
+                        track.times.push_back(time);
+                        animation_runtime->duration =
+                            std::max(animation_runtime->duration, time);
+                        track.values.push_back(
+                            read_component(
+                                buffer,
+                                container,
+                                views,
+                                pointer_output,
+                                index,
+                                0) != 0.0f);
+                    }
+                    animation_runtime
+                        ->visibility_tracks
+                        .push_back(std::move(track));
+                    continue;
+                }` : ""}
                 if (
                     path_name != "rotation" &&
                     path_name != "translation" &&
@@ -2702,7 +2924,36 @@ ${nonTrianglePrimitives
                     ? std::fmod(
                           std::max(time, 0.0f),
                           animation_runtime->duration)
-                    : 0.0f;
+                    : 0.0f;${animationPointer ? `
+            for (const VisibilityTrack& track :
+                 animation_runtime->visibility_tracks) {
+                if (track.times.empty()) continue;
+                // STEP holds each output until the next keyframe, so the
+                // key in effect is the last one at or before the current
+                // time and the first key holds before that.
+                std::size_t key = 0;
+                while (
+                    key + 1 < track.times.size() &&
+                    track.times[key + 1] <=
+                        animation_runtime->time) {
+                    ++key;
+                }
+                const bool visible = track.values[key];
+                for (const std::size_t node : track.subtree) {
+                    if (
+                        node >=
+                        animation_runtime->node_meshes.size()) {
+                        continue;
+                    }
+                    for (
+                        const std::uint32_t mesh :
+                        animation_runtime->node_meshes[node]) {
+                        if (mesh < engine.meshes.size()) {
+                            engine.meshes[mesh].visible = visible;
+                        }
+                    }
+                }
+            }` : ""}
             for (const RotationTrack& track :
                  animation_runtime->rotation_tracks) {
                 if (

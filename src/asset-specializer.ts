@@ -237,6 +237,8 @@ export interface AssetSpecializationFeatures {
     gpuDeformation: boolean;
     morphStorage: boolean;
     nonTrianglePrimitives: boolean;
+    nodeVisibility: boolean;
+    animationPointer: boolean;
     imageBasedLighting: boolean;
     textureTransform: boolean;
     gpuInstancing: boolean;
@@ -258,6 +260,8 @@ export function emitAssetSpecializations(
             gpuDeformation: false,
             morphStorage: false,
             nonTrianglePrimitives: false,
+            nodeVisibility: false,
+            animationPointer: false,
             imageBasedLighting: false,
             textureTransform: false,
             gpuInstancing: false,
@@ -312,6 +316,8 @@ export function emitAssetSpecializations(
             (specialization) =>
                 specialization.features.nonTrianglePrimitives,
         ),
+        nodeVisibility: usesExtension("KHR_node_visibility"),
+        animationPointer: usesExtension("KHR_animation_pointer"),
         imageBasedLighting: usesExtension("EXT_lights_image_based"),
         textureTransform: usesExtension("KHR_texture_transform"),
         gpuInstancing: usesExtension("EXT_mesh_gpu_instancing"),
