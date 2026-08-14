@@ -74,6 +74,42 @@ inspection prevents repeating Babylon Lite's own parity debugging and helps
 separate a known WebGPU/raster floor from a missing compiler or PAL contract.
 Post-pin commits are relevant only to an explicit upstream-version evaluation.
 
+### Sizing a capability before implementing it
+
+A blocker names a capability; it does not size one. Compile-probe the scene
+first, because the first blocker a scene reports is the first line of its
+chain rather than its length. Then answer two questions before choosing a
+shape, and let the answers decide it rather than deciding first and checking
+after.
+
+1. **Sweep the whole corpus for every usage.** Grep the scene sources, and
+   read the *assets* as well whenever the capability is asset-borne — a glTF
+   primitive mode or accessor layout appears in no scene source and is still
+   reached by a packaged `.glb`. What the sweep is really measuring is
+   whether the capability can arrive by more than one route, because that
+   decides where an answer is allowed to live: a glTF primitive mode is
+   settled entirely by the asset, while a topology that `createLineSystem`
+   assigns to geometry built from plain arrays can never be settled at
+   packaging time. One scene through one route is a slice; several scenes
+   through several routes is an axis, and the two deserve different shapes.
+2. **Ask whether Babylon Lite implements it on the core path or behind an
+   opt-in boundary.** Upstream splits deliberately and says so in comments:
+   `gltf-feature-*.ts` modules are dynamically imported behind a document
+   predicate, the Draco decoder is fetched at run time, and
+   `pbr-primitive-topology.ts` is a module of its own so that ordinary PBR
+   scenes never carry the topology names. A capability upstream keeps off its
+   core path must not become unconditional here. The generated loader, plan,
+   and shaders are where this project expresses the same boundary, and
+   `asset-specializer.ts` already records upstream's own predicates per
+   asset, so the gate usually exists before the feature does.
+
+Then arbitrate, and record the arbitration. An exact fold that covers every
+reached usage beats a general mechanism, but only while the sweep says the
+general form is unreached — so write down in `TODO.md` which usages the fold
+does not cover and what would force the general shape. A capability that
+compiles away entirely still owes a `docs/fidelity.md` contract explaining why
+the folded form and the pinned form agree.
+
 ## Updating Babylon Lite
 
 The repository supports one pinned upstream version. Source-located semantic

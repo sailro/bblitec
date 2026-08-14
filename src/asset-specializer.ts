@@ -236,6 +236,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
 export interface AssetSpecializationFeatures {
     gpuDeformation: boolean;
     morphStorage: boolean;
+    nonTrianglePrimitives: boolean;
     imageBasedLighting: boolean;
     textureTransform: boolean;
     gpuInstancing: boolean;
@@ -256,6 +257,7 @@ export function emitAssetSpecializations(
         return {
             gpuDeformation: false,
             morphStorage: false,
+            nonTrianglePrimitives: false,
             imageBasedLighting: false,
             textureTransform: false,
             gpuInstancing: false,
@@ -301,6 +303,14 @@ export function emitAssetSpecializations(
         morphStorage: specializations.some(
             (specialization) =>
                 specialization.features.maxMorphTargets > 2,
+        ),
+        // The same predicate that pulls Babylon Lite's dynamically
+        // imported `gltf-feature-primitive.js`: a primitive whose mode is
+        // not the triangle-list default. Off, the generated loader carries
+        // no topology handling at all, which is where upstream keeps it.
+        nonTrianglePrimitives: specializations.some(
+            (specialization) =>
+                specialization.features.nonTrianglePrimitives,
         ),
         imageBasedLighting: usesExtension("EXT_lights_image_based"),
         textureTransform: usesExtension("KHR_texture_transform"),

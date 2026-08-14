@@ -31,6 +31,7 @@ export interface UpstreamEmitOptions {
     geometryOutputTasks: GeometryOutputTaskManifest[];
     gpuDeformation: boolean;
     morphStorage: boolean;
+    nonTrianglePrimitives: boolean;
     textureTransform: boolean;
     imageBasedLighting: boolean;
     gpuInstancing: boolean;
@@ -211,7 +212,9 @@ class GeneratedSourceWriter {
             );
             this.writeSource(
                 "upstream/src/gltf_loader.cpp",
-                gltf.lowerLoaderAdapter(),
+                gltf.lowerLoaderAdapter(
+                    options.nonTrianglePrimitives,
+                ),
                 generated,
             );
             generated.push({
@@ -496,6 +499,7 @@ export function emitUpstreamGenerated(
         geometryOutputTasks: [],
         gpuDeformation: false,
         morphStorage: false,
+        nonTrianglePrimitives: false,
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,
