@@ -211,7 +211,10 @@ export async function runInstrumentedCapture(
         frameRate,
         animationGroups,
     );
-    const server = createSuiteSceneServer(moduleSource);
+    const server = createSuiteSceneServer(
+        moduleSource,
+        { sourcePath: scene.source },
+    );
     await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
     const address = server.address();
     if (!address || typeof address === "string") {

@@ -109,6 +109,7 @@ const featureSources: Record<Feature, string[]> = {
     "mesh:box": [],
     "mesh:from-data": [],
     "mesh:ground": [],
+    "mesh:morph-targets": [],
     "mesh:plane": [],
     "mesh:sphere": [],
     "mesh:thin-instances": [],
@@ -466,7 +467,8 @@ class Compiler
         }
         if (
             value.kind === "tuple" ||
-            value.kind === "record"
+            value.kind === "record" ||
+            value.kind === "morph-targets"
         ) {
             this.defineVariable(declaration.name, value);
             return;
@@ -1739,7 +1741,82 @@ class Compiler
     public compileSphereOptions(
         expression: ts.Expression,
     ): [string, string, string, string] {
-        const object = this.expectObjectLiteral(expression);
+        const unwrapped = this.unwrap(expression);
+        if (!ts.isObjectLiteralExpression(unwrapped)) {
+            const record = this.compileValue(unwrapped);
+            if (
+                record.kind !== "record" ||
+                !record.recordProperties
+            ) {
+                this.fail(
+                    unwrapped,
+                    "Expected sphere options as an object literal or static record.",
+                );
+            }
+            const supported = new Set([
+                "segments",
+                "diameter",
+                "diameterX",
+                "diameterY",
+                "diameterZ",
+            ]);
+            for (const name of Object.keys(
+                record.recordProperties,
+            )) {
+                if (!supported.has(name)) {
+                    this.fail(
+                        unwrapped,
+                        "Sphere options support segments, diameter, diameterX, diameterY, and diameterZ.",
+                    );
+                }
+            }
+            const number = (
+                name: string,
+                fallback: string,
+            ): string => {
+                const value =
+                    record.recordProperties?.[name];
+                if (!value) {
+                    return fallback;
+                }
+                if (value.kind !== "number") {
+                    this.fail(
+                        unwrapped,
+                        `Sphere option '${name}' must be numeric.`,
+                    );
+                }
+                return value.cpp;
+            };
+            const diameter = number(
+                "diameter",
+                "1.0f",
+            );
+            const segments =
+                record.recordProperties.segments;
+            if (
+                segments &&
+                (segments.kind !== "number" ||
+                    segments.staticNumber === undefined ||
+                    !Number.isInteger(
+                        segments.staticNumber,
+                    ) ||
+                    segments.staticNumber <= 0)
+            ) {
+                this.fail(
+                    unwrapped,
+                    "Sphere segments must be a positive static integer.",
+                );
+            }
+            return [
+                segments
+                    ? `${segments.staticNumber}u`
+                    : "32u",
+                number("diameterX", diameter),
+                number("diameterY", diameter),
+                number("diameterZ", diameter),
+            ];
+        }
+        const object = unwrapped;
         this.validateObjectProperties(
             object,
             [

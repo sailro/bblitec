@@ -110,6 +110,7 @@ export type ValueKind =
     | "light"
     | "material"
     | "mesh"
+    | "morph-targets"
     | "number"
     | "render-target"
     | "render-target-texture"
@@ -182,6 +183,14 @@ export interface Value {
         | { kind: "string"; value: string };
     cameraKind?: "arc-rotate" | "free";
     msaaSamples?: 1 | 4;
+    directMorphCompatible?: boolean;
+    morphTarget?: {
+        positionsCpp: string;
+        normalsCpp: string;
+        vertexCountCpp: string;
+        weightCpp: string;
+        meshCpp?: string;
+    };
 }
 
 export type Feature =
@@ -211,6 +220,7 @@ export type Feature =
     | "mesh:box"
     | "mesh:from-data"
     | "mesh:ground"
+    | "mesh:morph-targets"
     | "mesh:plane"
     | "mesh:sphere"
     | "mesh:thin-instances"

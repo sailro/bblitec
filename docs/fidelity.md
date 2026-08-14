@@ -222,6 +222,13 @@ records. LINEAR scalar/vector interpolation, quaternion slerp, STEP holds,
 frame/time ranges, looping, speed ratios, and deterministic group seeking are
 generated from the reached Babylon Lite APIs.
 
+Direct `createMorphTargets` accepts one position target, nullable normal
+deltas, one initial weight, and one mesh attachment. It uses the same
+deformation vertex layout as glTF. `createSphereData` returns arrays derived
+from the generated sphere geometry, so procedural delta functions consume the
+same base positions the renderer draws. Scene 252 is the StandardMaterial
+parity gate for this contract.
+
 Scene 151 gates directional-plus-hemispheric Standard lighting and is
 pixel-exact. The supported light-count boundary is recorded in
 [Status](status.md).

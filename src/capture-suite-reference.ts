@@ -1,6 +1,11 @@
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { extname, resolve, sep } from "node:path";
+import {
+    extname,
+    relative,
+    resolve,
+    sep,
+} from "node:path";
 import ts from "typescript";
 import { chromium } from "playwright-core";
 import { readUpstreamPin } from "./upstream-source.js";
@@ -94,6 +99,7 @@ export const seededRandomScript =
 
 export interface SuiteCaptureOptions {
     seededRandom?: boolean;
+    sourcePath?: string;
 }
 
 export function createSuiteSceneServer(
@@ -101,13 +107,19 @@ export function createSuiteSceneServer(
     options: SuiteCaptureOptions = {},
 ): ReturnType<typeof createServer> {
     const root = resolve(".");
+    const entryPath = options.sourcePath
+        ? `/${relative(root, resolve(options.sourcePath))
+              .split(sep)
+              .join("/")
+              .replace(/\.ts$/, ".js")}`
+        : "/scene.js";
     const seedScript = options.seededRandom
         ? `<script>${seededRandomScript}</script>\n`
         : "";
     const html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:block}
 </style></head><body><canvas id="renderCanvas" width="1280" height="720"></canvas>
-${seedScript}<script type="module" src="/scene.js"></script></body></html>`;
+${seedScript}<script type="module" src="${entryPath}"></script></body></html>`;
     const pinnedAssets = new Map<
         string,
         { bytes: Uint8Array; contentType: string }
@@ -119,7 +131,7 @@ ${seedScript}<script type="module" src="/scene.js"></script></body></html>`;
             response.end(html);
             return;
         }
-        if (url.pathname === "/scene.js") {
+        if (url.pathname === entryPath) {
             response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
             response.end(moduleSource);
             return;
@@ -237,7 +249,10 @@ export async function captureSuiteReference(
         captureFrameRate,
         captureAnimationGroups,
     );
-    const server = createSuiteSceneServer(moduleSource, options);
+    const server = createSuiteSceneServer(moduleSource, {
+        ...options,
+        sourcePath,
+    });
     await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Unable to start parity server.");

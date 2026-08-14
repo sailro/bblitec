@@ -541,6 +541,64 @@ export function emitPropertyAssignment(
             return;
         }
 
+        if (
+            target.kind === "mesh" &&
+            property === "morphTargets"
+        ) {
+            requireSimpleAssignment(
+                context,
+                expression,
+                "mesh morphTargets",
+            );
+            if (!target.directMorphCompatible) {
+                context.fail(
+                    left.expression,
+                    "Direct morph targets require a compiler-created mesh.",
+                );
+            }
+            const morph = context.compileValue(
+                expression.right,
+            );
+            context.expectKind(
+                morph,
+                "morph-targets",
+                expression.right,
+            );
+            context.expectSameEngine(
+                target,
+                morph,
+                expression,
+            );
+            if (!morph.morphTarget) {
+                context.fail(
+                    expression.right,
+                    "Morph target data is incomplete.",
+                );
+            }
+            if (morph.morphTarget.meshCpp) {
+                context.fail(
+                    expression.right,
+                    "Direct morph target data can be attached to one mesh.",
+                );
+            }
+            const engine = context.requireEngine(
+                target,
+                expression,
+            );
+            context.emit(
+                `bbl::attach_morph_target(${engine}, ${target.cpp}, ` +
+                    `${morph.morphTarget.positionsCpp}, ` +
+                    `${morph.morphTarget.normalsCpp}, ` +
+                    `${morph.morphTarget.vertexCountCpp}, ` +
+                    `${morph.morphTarget.weightCpp});`,
+            );
+            morph.morphTarget.meshCpp = target.cpp;
+            context.reachFeature(
+                "mesh:morph-targets",
+            );
+            return;
+        }
+
         const recordField = recordFieldAssignments.find(
             (candidate) =>
                 candidate.kind === target.kind &&

@@ -482,10 +482,9 @@ Controls: left-drag orbit, right/middle-drag pan, wheel zoom; arrows and
 
 Corpus reference capture serves a minimal local page containing only the
 render canvas; it does not include Babylon Lite's showcase loading overlay.
-Relative local imports in the entry resolve against the repository root
-(the entry is served at the root, so `examples/` entries import corpus
-modules as `../corpus/...`); requested `.js` modules transpile on demand
-from their sibling `.ts` sources. When the generated manifest records the
+Relative local imports resolve from the entry source's repository path;
+requested `.js` modules transpile on demand from their sibling `.ts`
+sources. When the generated manifest records the
 `deterministic-seeded-random` adaptation, the page installs the pinned
 mulberry32 (seed 1) `Math.random` before the scene module loads, matching
 `bbl::js::random_js` in the native runtime.

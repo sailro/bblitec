@@ -308,6 +308,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene252",
+        name: "Scene 252 - Standard Morph Target",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene252.ts",
+        title: "Babylon Lite Native - Standard Morph Target",
+        parity: {
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.02,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene254",
         name: "Scene 254 - Animation Sampler Type",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene254.ts",

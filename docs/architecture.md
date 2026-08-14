@@ -163,6 +163,8 @@ The current generated slice includes:
   tracks, quaternion slerp, ranges, looping, and deterministic seeking
 - glTF LINEAR/CUBICSPLINE transform animation, recursive skeleton hierarchies,
   inverse bind matrices, and animated position/normal/tangent morph targets
+- direct single-target morph attachment for generated meshes through the same
+  tree-shaken deformation vertex layout
 - tree-shaken vertex-shader morphing and four-weight skinning with per-mesh
   palettes and weights
 - a narrow CPU fallback for post-deformation flat normals and deformation
@@ -240,10 +242,11 @@ but have separate generated runtimes:
 - primitives without source normals are deindexed; CPU recomputes their face
   normals after deformation while positions remain GPU-skinned
 
-Asset specialization enables the deformation vertex variant only when a
-materialized glTF contains animation. Static scenes retain the compact
-96-byte/8-attribute vertex layout and one vertex uniform block. Reached
-animated scenes use the 200-byte/16-attribute layout and a second vertex
+Asset specialization enables the deformation vertex variant when a
+materialized glTF contains animation; direct `createMorphTargets` reachability
+enables the same variant for generated meshes. Other static scenes retain the
+compact 96-byte/8-attribute vertex layout and one vertex uniform block. Reached
+deformation scenes use the 200-byte/16-attribute layout and a second vertex
 uniform block containing up to 64 matrices and two morph targets. Assets
 with more than two morph targets additionally enable Babylon Lite's
 uncapped storage-buffer morph path: a flat 6-float delta buffer and a

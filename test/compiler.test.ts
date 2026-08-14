@@ -170,6 +170,105 @@ test("preserves reached box, ground, and sphere options", () => {
     );
 });
 
+test("compiles pinned Standard material morph targets", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene252.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+
+    assert.deepEqual(result.manifest.features, [
+        "core",
+        "backend:sdl",
+        "camera:arc-rotate",
+        "light:directional",
+        "material:standard",
+        "mesh:morph-targets",
+        "mesh:sphere",
+        "renderer:pbr",
+    ]);
+    assert.match(
+        result.cpp,
+        /create_sphere_data\(bbl::SphereOptions\{32u, 1\.0f, 1\.0f, 1\.0f\}\)/,
+    );
+    assert.match(
+        result.cpp,
+        /attach_morph_target\([^;]*v_deltas, \{\}, static_cast<float>\(static_cast<double>\([^)]*vertex_count\)\), 1\.0f\)/,
+    );
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/mesh_factories.cpp",
+        ),
+    );
+});
+
+test("rejects multiple direct morph targets", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createMorphTargets,
+                } from "@babylonjs/lite";
+                async function main(): Promise<void> {
+                    const engine = await createEngine({});
+                    const positions = new Float32Array(9);
+                    createMorphTargets(
+                        engine,
+                        [
+                            { positions, normals: null },
+                            { positions, normals: null },
+                        ],
+                        3,
+                        [1, 0],
+                    );
+                }
+            `),
+        /Direct createMorphTargets currently supports exactly one target/,
+    );
+});
+
+test("updates weights through a named direct morph binding", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createMorphTargets,
+            createSphere,
+            setMorphTargetWeights,
+        } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const sphere = createSphere(engine, {
+                segments: 3,
+            });
+            const positions = new Float32Array(198);
+            const morph = createMorphTargets(
+                engine,
+                [{ positions, normals: null }],
+                66,
+                [0],
+            );
+            sphere.morphTargets = morph;
+            const weights = new Float32Array([1]);
+            setMorphTargetWeights(engine, morph, weights);
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /attach_morph_target\([^;]*v_sphere[^;]*v_positions[^;]*66\.0f, 0\.0f\)/,
+    );
+    assert.match(
+        result.cpp,
+        /set_morph_target_weights\([^;]*v_sphere, v_weights\)/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /auto v_morph =\s*;/,
+    );
+});
+
 test("rejects unknown or unsupported mesh factory options", () => {
     for (const [call, message] of [
         [
