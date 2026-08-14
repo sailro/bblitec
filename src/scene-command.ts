@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import { cpus, totalmem } from "node:os";
+import { availableParallelism, totalmem } from "node:os";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -200,7 +200,7 @@ async function compile(idOrSource: string): Promise<void> {
     // lighter than MSVC, so this is bounded by threads alone.
     const inFlight =
         concurrencyOverride("BBLITE_PARALLEL_COMPILES") ??
-        cpus().length;
+        availableParallelism();
     console.log(
         `Compiling ${selected.length} scenes, ${inFlight} at a time.`,
     );
@@ -244,8 +244,22 @@ async function parity(
         // backend twice, writing plausible numbers for a comparison that
         // never happened. Separate processes each own their environment,
         // and a scene that loses its GPU device takes only itself down.
+        // A flat eight, and unlike the other stages it is not derived
+        // from the machine -- because the resource it was expected to
+        // bind on turned out not to bind at all. Sampling dedicated GPU
+        // memory through a whole registry sweep: 0.28 GB per concurrent
+        // scene, 2.25 GB attributable at eight at a time, and 2.09 GB at
+        // sixteen (scenes finish sooner, so fewer overlap). That fits a
+        // 4 GB card beside a desktop, so scaling it to the adapter would
+        // add a platform probe to guard a limit nothing reaches.
+        //
+        // What does bind is GPU throughput. Measuring all 57 scenes:
+        // 195.5s at one, 100.0s at two, 52.8s at four, 33.6s at eight,
+        // 26.0s at sixteen -- doubling past eight buys 23%. Eight takes
+        // the knee of that curve without assuming a workstation GPU;
+        // every level produced byte-identical differential reports.
         const inFlight =
-            concurrencyOverride("BBLITE_PARALLEL_PARITY") ?? 4;
+            concurrencyOverride("BBLITE_PARALLEL_PARITY") ?? 8;
         if (inFlight > 1) {
             console.log(
                 `Measuring ${measured.length} scenes, ${inFlight} at a time.`,
@@ -415,7 +429,7 @@ function buildConcurrency(): {
     // heaviest translation unit here. Free memory never moved on the
     // host above, so the memory term is there for smaller machines.
     const compilerBudget = Math.min(
-        cpus().length,
+        availableParallelism(),
         Math.floor(totalmem() / 2e9),
     );
     const scenesInFlight =

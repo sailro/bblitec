@@ -245,12 +245,8 @@ unreliable — it shares a download and binary cache between otherwise
 independent build directories. Compiling and linking touch nothing shared. A
 warm tree skips configure entirely, so the lock is normally uncontended.
 
-`BBLITE_PARALLEL_SCENES` and `BBLITE_SCENE_BUILD_JOBS` override how many scenes
-build at once and how many jobs each gets; `BBLITE_PARALLEL_COMPILES` and
-`BBLITE_PARALLEL_PARITY` do the same for generation and measurement. The
-defaults are one job per scene with as many scenes as the machine has hardware
-threads (measured better than any other split — see `buildConcurrency`), all
-scenes generating at once, and four measured at once.
+How many scenes run at once is configurable per stage; see
+[Build switches](#build-switches).
 
 Set `VCPKG_ROOT` before configuring a new build directory. If a directory was
 first configured without the toolchain, delete that specific
@@ -337,6 +333,43 @@ reach). The build maps it onto vcpkg manifest features before
 `project()`, so JPEG support is compiled and deployed only for scenes
 that actually carry JPEG content; generated directories predating the
 list keep the historical png+jpeg set.
+
+### Concurrency
+
+Environment variables read by `scene -- <stage> all`, not CMake cache
+variables. Each stage runs several scenes at once; these decide how many. A
+single-scene invocation ignores them and takes the whole machine.
+
+| Variable | Default | Bound by |
+| --- | --- | --- |
+| `BBLITE_PARALLEL_COMPILES` | hardware threads | threads alone — a generating Node process is small |
+| `BBLITE_PARALLEL_SCENES` | `min(threads, RAM / 2GB) / jobs` | threads and memory, at roughly 2 GB per MSVC process for the heaviest translation unit |
+| `BBLITE_SCENE_BUILD_JOBS` | `1` | measured: see below |
+| `BBLITE_PARALLEL_PARITY` | `8` | GPU throughput; a flat number because GPU memory measured too small to bind |
+
+Thread counts come from `availableParallelism()`, which respects CPU affinity
+and container limits, rather than the host's processor count.
+
+One job per scene is not an arbitrary choice. Rebuilding all 58 scenes after a
+`pal_dawn.cpp` edit, on a 24-core/32-thread host: 246.7s sequential, then
+`32x1` 25.9s, `24x1` 28.4s, `16x2` 30.6s, `12x2` 33.6s, `8x3` 42.3s. Splitting
+the same budget the other way costs 15-33%, because an incremental rebuild
+leaves most scenes with one or two dirty translation units — a second job per
+scene has nothing to do while a second scene always does.
+
+Measurement is the one stage whose default is a flat number rather than a
+function of the machine, and the reason is that the resource it looks like it
+should bind on does not. Each scene creates a GPU device, a swapchain and its
+own textures; sampling dedicated GPU memory across a whole sweep puts that at
+0.28 GB per concurrent scene — 2.25 GB attributable at eight at a time, 2.09 GB
+at sixteen, since scenes finish sooner and fewer overlap. That fits a 4 GB card
+beside a desktop, so scaling the default to the adapter would add a platform
+probe to guard a limit nothing reaches.
+
+GPU throughput binds instead. All 57 scenes: 195.5s at one, 100.0s at two,
+52.8s at four, 33.6s at eight, 26.0s at sixteen — doubling past eight buys 23%.
+Eight sits at the knee without assuming a workstation GPU. Every level produced
+byte-identical differential reports, so raising it on a known machine is safe.
 
 ## Minimal-size builds
 
