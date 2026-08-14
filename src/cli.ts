@@ -321,6 +321,8 @@ async function main(): Promise<void> {
         geometryOutputTasks: result.manifest.geometryOutputTasks,
         gpuDeformation: specializationFeatures.gpuDeformation,
         morphStorage: specializationFeatures.morphStorage,
+        nonTrianglePrimitives:
+            specializationFeatures.nonTrianglePrimitives,
         textureTransform:
             specializationFeatures.textureTransform,
         imageBasedLighting:

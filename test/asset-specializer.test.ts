@@ -53,6 +53,10 @@ test("specializes glTF dynamic feature imports without any-typed JSON", () => {
         assert.ok(specialization.staticModules.includes("./gltf-feature-sparse.js"));
         assert.ok(specialization.staticModules.includes("./gltf-feature-primitive.js"));
         assert.equal(specialization.features.animations, true);
+        // The same predicate gates the generated loader's topology
+        // handling, so a document that pulls upstream's primitive feature
+        // must also report the flag the emitter reads.
+        assert.equal(specialization.features.nonTrianglePrimitives, true);
         assert.deepEqual(specialization.renderItems, [
             {
                 drawId: 1,

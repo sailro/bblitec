@@ -177,7 +177,8 @@ CPU-side from GPU-side causes immediately.
 - [ ] Generalize texture transforms beyond one shared scale to per-slot
   offsets, rotations, and independent transforms.
 - [ ] Vertex colors beyond the reached alpha/mask slice.
-- [ ] Sparse accessors and additional primitive modes.
+- [ ] Sparse accessors, and the point/line/line-strip primitive modes beyond
+  the reached triangle-list and triangle-strip pair.
 - [ ] Complete glTF animation coverage: scale and STEP channels, multiple
   clips, and richer animation-group controls.
 - [ ] glTF cameras and spot lights.
@@ -356,24 +357,26 @@ The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
 **Swept 2026-08-13:** 184 unregistered scenes compiled, 8 clean and 176
-blocked across 80 distinct first blockers. Scenes 267, 268, 256 and 30 have
-since graduated to measured gates, leaving 180 unregistered, re-swept unchanged
-on 2026-08-14 (the same clean set, same clusters). The lane partition
+blocked across 80 distinct first blockers. Scenes 267, 268, 256, 30 and 260
+have since graduated to measured gates, leaving 179 unregistered, re-swept
+unchanged on 2026-08-14 (the same clean set, same clusters). The lane partition
 below was written from reading and holds up: no scene in the compiler-contract
 lane compiles, so the compiler has not silently outgrown its inventory. Each
 scene's entry is its FIRST blocker; clearing one may expose another.
 
-**Compile clean (6):** 9, 34, 242, 244, 253, 260. All six are past the compiler
-and blocked downstream in the loader/runtime lane. Two of the original eight
+**Compile clean (5):** 9, 34, 242, 244, 253. All five are past the compiler
+and blocked downstream in the loader/runtime lane. Three of the original eight
 graduated on 2026-08-14: scene 256, the only one with no downstream blocker at
-all, and scene 30 once generation-time Draco decoding, texture-transform
-offsets and the undeclared-tangent decision landed.
+all; scene 30 once generation-time Draco decoding, texture-transform offsets
+and the undeclared-tangent decision landed; and scene 260 once the loader read
+the glTF primitive mode.
 
-Each of the six was **run**, not just read, and three carried misleading
-labels — scene 30 was Draco rather than "an accessor without a `bufferView`",
-and 34/242/244/253 are four distinct `KHR_animation_pointer` contracts rather
-than one animation-channel gap. Run a candidate before scoping it; the first
-blocker a scene reports is the first line of its chain, not its size.
+Each of the original eight was **run**, not just read, and three carried
+misleading labels — scene 30 was Draco rather than "an accessor without a
+`bufferView`", and 34/242/244/253 are four distinct `KHR_animation_pointer`
+contracts rather than one animation-channel gap. Run a candidate before scoping
+it; the first blocker a scene reports is the first line of its chain, not its
+size.
 
 **Largest first-blocker clusters:** `loadSpriteAtlas` 16, browser-dependent
 condition 17 (15 of them deferred-lane physics), `parseNodeMaterialFromSnippet`
@@ -400,7 +403,7 @@ only for a contract no corpus scene exercises (a feature combination the corpus
 never composes, or a slice being built ahead of the scene that will use it),
 and delete it once corpus scenes cover the contract.
 
-The 182 unmeasured scenes are partitioned by the boundary required to reproduce
+The 181 unmeasured scenes are partitioned by the boundary required to reproduce
 their deterministic reference behavior, not by incidental browser helpers.
 Capture-inert demo controls and fixed-coordinate picking stay in the first
 lane when they can be erased or lowered inside the compiler, asset pipeline,
@@ -410,12 +413,12 @@ platform, user-input, or external-service contract.
 Scenes 256 and 280 arrived with the 1.20.0 pin: 256 is a measured gate as of
 2026-08-14, and 280 blocks on `parseNodeParticleSource` as expected.
 
-**Integrate first (147 scenes):** 4, 9, 11, 12, 15-23, 25-27,
+**Integrate first (146 scenes):** 4, 9, 11, 12, 15-23, 25-27,
 34, 36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229,
-231, 241, 242, 244, 251-253, 260-264, 269-271, 275-279. Scenes 3, 7,
+231, 241, 242, 244, 251-253, 261-264, 269-271, 275-279. Scenes 3, 7,
 35, and 216 graduated to measured parity gates on 2026-08-12, and Scenes
-267, 268, 256 and 30 on 2026-08-14.
+267, 268, 256, 30 and 260 on 2026-08-14.
 
 This lane includes static CSG/CSG2, compressed assets and splats,
 deterministic picking in Scenes 113-115, 117, 118, and 129, and the
@@ -548,18 +551,24 @@ runtime gaps may remain hidden behind it.
   marker changed: occlusion uv2 inner signature`, before the loader gap it
   was recorded under. That reads as marker drift rather than a missing
   feature, and it is the one scene whose position moved backwards.
-- [ ] Scene 260: support the reached non-triangle-list glTF primitive mode
-  (mode 5, TRIANGLE_STRIP, uint32 indices, and no extensions at all — the
-  smallest unmeasured scene in the corpus). The pin does not convert strips
-  to lists: `load-gltf.ts` records a `_topology` index (1=points, 2=lines,
-  3=line-strip, 4=triangle-strip; LINE_LOOP and TRIANGLE_FAN unsupported,
-  as in BJS) and threads it into the pipeline through the opt-in
-  `_stdPrimitiveResolver`. So the native shape is a topology suffix on the
-  generated `RenderPipelineKind` — which already encodes cull mode and
-  winding — plus a field on each PAL's `PipelineKindTraits` and WebGPU's
-  `stripIndexFormat`. The glTF spec forbids index values equal to the
-  component type's maximum precisely so clients need not handle primitive
-  restart, so a strip is one contiguous run.
+- [ ] Carry primitive topology to the pipeline for the modes a triangle list
+  cannot express: points, lines, and line strips. Scene 260 measured the
+  triangle strip by expanding it to its triangle list in the loader, which
+  works only because both describe the same triangles; a line list
+  rasterizes differently and has no such rewrite. The pin keeps the
+  authored topology instead — `load-gltf.ts` records a `_topology` index
+  (1=points, 2=lines, 3=line-strip, 4=triangle-strip; LINE_LOOP and
+  TRIANGLE_FAN unsupported, as in BJS) and `gltf-feature-primitive.ts`
+  builds the `GPUPrimitiveState` — so the native shape is a topology suffix
+  on the generated `RenderPipelineKind`, which already encodes cull mode and
+  winding, plus a field on each PAL's `PipelineKindTraits` and WebGPU's
+  `stripIndexFormat`. Topology also arrives without an asset: `createLineSystem`
+  sets `mesh._topology = 2` on geometry built from plain arrays and
+  `createLineMaterial` sets `_topology: "line-list"` on the material, so this
+  is the same axis Scenes 278 and 279 need behind their own intrinsics. The
+  generated loader rejects those modes by number today, behind the
+  `nonTrianglePrimitives` specialization flag that already mirrors upstream's
+  own dynamic-import predicate.
 
 ### Deferred external and platform-feature scenes
 

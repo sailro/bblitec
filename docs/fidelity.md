@@ -295,6 +295,30 @@ view/world-normal MAD from `1.459`/`1.446` to `0.002`/`0.003`.
 Mirrored double-sided PBR meshes retain their authored index order and select
 a clockwise front-face pipeline, preserving Babylon Lite's
 `front_facing`-driven normal flip in Scenes 168 and 266.
+A glTF primitive with no `NORMAL` accessor takes the pinned `_flatNormal`
+path, which composes `normalize(cross(dpdx(worldPos), dpdy(worldPos)))` into
+the fragment. World position interpolates linearly across a triangle, so that
+expression is constant over the face; the native loader folds it by
+un-indexing the primitive and baking the face normal into the three vertices
+each triangle then owns. Scenes 240, 246, 255, 259 and the track-clamp gate
+measure the fold byte-exact on both backends.
+Triangle-strip primitives (glTF mode 5) expand to the triangle list they
+describe as the loader builds the index run: primitive `i` is
+`(i, i+1, i+2)` with odd `i` swapped, the expansion every WebGPU, Vulkan and
+D3D rasterizer performs, so the triangles, their winding and their submission
+order match what the pinned engine hands to `topology: "triangle-strip"`.
+glTF forbids an index equal to the component type's maximum precisely so
+clients need not handle primitive restart, which makes the run contiguous.
+The expansion belongs to the loader rather than the pipeline because a face
+normal needs each triangle to own its vertices, and Scene 260 — a strip with
+no `NORMAL` — needs both. Dawn, which compiles and rasterizes through the
+browser's own stack, renders it byte-identical to the golden. Point, line and
+line-strip modes describe primitives no triangle list can express and fail at
+load by mode number. All of it is gated on the `nonTrianglePrimitives`
+specialization flag, which is the predicate behind Babylon Lite's own
+dynamically imported `gltf-feature-primitive.js`: a scene whose assets are all
+triangle lists emits a loader that carries no topology handling at all, which
+is where upstream keeps it too.
 Orthographic cameras write the pinned reverse-Z off-center projection term by
 term, with the four planes derived from the half-extent and the render target's
 aspect ratio. The pinned writer runs in JavaScript doubles into a

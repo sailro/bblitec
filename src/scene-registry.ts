@@ -961,6 +961,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene260",
+        name: "Scene 260 - Triangle Strip Primitive",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene260.ts",
+        title: "Babylon Lite Native - Triangle Strip Primitive",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene273",
         name: "Scene 273 - Runtime Material Family",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene273.ts",

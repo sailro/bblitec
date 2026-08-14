@@ -1,4 +1,17 @@
-export function gltfLoaderCpp(provenance: string): string {
+/**
+ * The generated glTF loader.
+ *
+ * `nonTrianglePrimitives` mirrors the predicate behind Babylon Lite's
+ * dynamically imported `gltf-feature-primitive.js`: a primitive whose mode
+ * is not the triangle-list default. Upstream keeps topology off its core
+ * path deliberately (`pbr-primitive-topology.ts` is a module of its own so
+ * ordinary PBR scenes never carry the topology names), so a scene whose
+ * assets are all triangle lists emits this loader without any of it.
+ */
+export function gltfLoaderCpp(
+    provenance: string,
+    nonTrianglePrimitives = false,
+): string {
     return `// ${provenance}
 #include <bblite/pal_gltf.hpp>
 #include <bblite/runtime.hpp>
@@ -1852,9 +1865,25 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
         const JsonObject& mesh = mesh_json.at(unsigned_value(*mesh_value)).as_object();
         for (const ts::JsonValue& primitive_value : array_or_empty(mesh, "primitives")) {
             const JsonObject& primitive = primitive_value.as_object();
-            if (unsigned_or(primitive, "mode", 4) != 4) {
+${nonTrianglePrimitives
+            ? `            // The pinned loader keeps the authored topology and hands it to
+            // WebGPU: load-gltf.ts records a _topology index and
+            // gltf-feature-primitive.ts turns it into a GPUPrimitiveState.
+            // A triangle strip is the one non-default mode that describes
+            // the same triangles a triangle list can, so it is expanded
+            // below; point, line, and line-strip topologies rasterize
+            // differently and stay unsupported.
+            const std::size_t primitive_mode =
+                unsigned_or(primitive, "mode", 4);
+            if (primitive_mode != 4 && primitive_mode != 5) {
+                throw std::runtime_error(
+                    "Only triangle-list and triangle-strip glTF primitives "
+                    "are supported (mode " +
+                    std::to_string(primitive_mode) + ").");
+            }`
+            : `            if (unsigned_or(primitive, "mode", 4) != 4) {
                 throw std::runtime_error("Only triangle-list glTF primitives are supported.");
-            }
+            }`}
             const JsonObject& attributes = required(primitive, "attributes").as_object();
             const AccessorInfo& positions = accessors.at(unsigned_value(required(attributes, "POSITION")));
             const AccessorInfo* normals = optional(attributes, "NORMAL")
@@ -2244,7 +2273,38 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 for (std::size_t index = 0; index < geometry.indices.size(); ++index) {
                     geometry.indices[index] = static_cast<std::uint32_t>(index);
                 }
-            }
+            }${nonTrianglePrimitives
+            ? `
+            if (primitive_mode == 5) {
+                // Walk the strip into the triangle list it stands for:
+                // primitive i is (i, i+1, i+2) with odd i swapped, the
+                // expansion every WebGPU/Vulkan/D3D rasterizer performs, so
+                // the triangles, their winding, and their order all match
+                // what the pinned engine submits as a strip. glTF forbids an
+                // index equal to the component type's maximum precisely so
+                // clients need not handle primitive restart, which makes the
+                // run contiguous. The expansion happens here rather than at
+                // the pipeline because the flat-normal path below bakes one
+                // normal per face, and a face normal needs each triangle to
+                // own its vertices.
+                std::vector<std::uint32_t> expanded;
+                if (geometry.indices.size() >= 3) {
+                    expanded.reserve((geometry.indices.size() - 2) * 3);
+                    for (
+                        std::size_t index = 0;
+                        index + 2 < geometry.indices.size();
+                        ++index) {
+                        const bool even = index % 2 == 0;
+                        expanded.push_back(
+                            geometry.indices[even ? index : index + 1]);
+                        expanded.push_back(
+                            geometry.indices[even ? index + 1 : index]);
+                        expanded.push_back(geometry.indices[index + 2]);
+                    }
+                }
+                geometry.indices = std::move(expanded);
+            }`
+            : ""}
             if (geometry.indices.size() % 3 != 0) {
                 throw std::runtime_error("Triangle-list glTF indices must be divisible by three.");
             }
