@@ -113,8 +113,15 @@ constexpr std::size_t material_extension_slots =
     (BBLITE_MATERIAL_OCCLUSION_UV2 ? 1 : 0);
 constexpr std::size_t material_extension_slot_base =
     5 + transmission_texture_slots;
-constexpr std::size_t mesh_texture_slots =
+// The Standard bump pair appends after everything the PBR path owns, so a
+// scene that compiles it shifts no existing slot or binding index.
+constexpr std::size_t standard_bump_slots =
+    BBLITE_MATERIAL_STANDARD_BUMP ? 1 : 0;
+constexpr std::size_t standard_bump_slot =
     5 + transmission_texture_slots + material_extension_slots;
+constexpr std::size_t mesh_texture_slots =
+    5 + transmission_texture_slots + material_extension_slots +
+    standard_bump_slots;
 
 struct DawnMesh {
     WGPUBuffer vertices = nullptr;
@@ -1756,7 +1763,8 @@ WGPUPipelineLayout mesh_pipeline_layout_for(DawnState& state) {
     // binding 8 is the cube slot.
     {
         constexpr std::size_t pair_count =
-            6 + transmission_texture_pairs + material_extension_slots;
+            6 + transmission_texture_pairs + material_extension_slots +
+            standard_bump_slots;
         std::array<WGPUBindGroupLayoutEntry, pair_count * 2> entries{};
         for (std::uint32_t pair = 0; pair < pair_count; ++pair) {
             entries[pair * 2] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
@@ -2615,7 +2623,8 @@ DawnMeshBindings& bindings_for(
     // standard emissive. PBR: base color, metallic-roughness, normal,
     // emissive, environment cube, BRDF LUT.
     constexpr std::size_t max_texture_pairs =
-        6 + transmission_texture_pairs + material_extension_slots;
+        6 + transmission_texture_pairs + material_extension_slots +
+        standard_bump_slots;
     std::array<WGPUTextureView, max_texture_pairs> views{
         mesh.views[0],
         mesh.views[1],
@@ -2674,6 +2683,14 @@ DawnMeshBindings& bindings_for(
             mesh.samplers[material_extension_slot_base + slot];
         ++pair;
     }
+#if BBLITE_MATERIAL_STANDARD_BUMP
+    // Last pair, so the indexes above are exactly what they were before
+    // this slot existed. A PBR material binds its flat-normal fallback
+    // here and never samples it.
+    views[pair] = mesh.views[standard_bump_slot];
+    samplers[pair] = mesh.samplers[standard_bump_slot];
+    ++pair;
+#endif
     const std::uint32_t pair_count =
         static_cast<std::uint32_t>(pair);
     std::array<WGPUBindGroupEntry, max_texture_pairs * 2>
@@ -4150,6 +4167,11 @@ bool run_dawn_engine(Engine& engine) {
             slot_data[4] = standard_material
                 ? &material.emissive_texture
                 : nullptr;
+#if BBLITE_MATERIAL_STANDARD_BUMP
+            slot_data[standard_bump_slot] = standard_material
+                ? &material.bump_texture
+                : nullptr;
+#endif
             has_pbr_emissive_factor =
                 material.emissive_factor.r != 0.0f ||
                 material.emissive_factor.g != 0.0f ||
@@ -4192,6 +4214,11 @@ bool run_dawn_engine(Engine& engine) {
         }
         slot_srgb[0] = !standard_material;
         slot_srgb[3] = !standard_material;
+#if BBLITE_MATERIAL_STANDARD_BUMP
+        // A flat tangent-space normal, so a material with no bump map reads
+        // (0, 0, 1) out of the sample and keeps its interpolated normal.
+        slot_fallback[standard_bump_slot] = {128, 128, 255, 255};
+#endif
         slot_fallback[0] = base_color_fallback;
         slot_fallback[1] = {255, 255, 255, 255};
         slot_fallback[2] = standard_material

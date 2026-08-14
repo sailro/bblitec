@@ -994,6 +994,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene9",
+        name: "Scene 9 - Sponza",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene9.ts",
+        title: "Babylon Lite Native - Sponza",
+        parity: {
+            maxFullMad: 0.35,
+            maxForegroundMad: 0.35,
+            backgroundColor: [79, 170, 255],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene273",
         name: "Scene 273 - Runtime Material Family",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene273.ts",
