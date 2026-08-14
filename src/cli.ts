@@ -239,11 +239,17 @@ function reachedImageCodecs(
  * knowable here because the loader only accepts point lights (`type: 0`) and
  * the asset is on disk before the emitters run.
  */
-function reachedStandardLights(
+interface BabylonLight {
+    type?: number;
+    includedOnlyMeshesIds?: unknown[];
+    excludedMeshesIds?: unknown[];
+}
+
+function babylonLights(
     outputPath: string,
     assets: CompileAsset[],
-): number {
-    let count = 0;
+): BabylonLight[] {
+    const result: BabylonLight[] = [];
     for (const asset of assets) {
         if (asset.kind !== "babylon") {
             continue;
@@ -254,15 +260,30 @@ function reachedStandardLights(
         }
         const document = JSON.parse(
             readFileSync(materialized, "utf8"),
-        ) as { lights?: { type?: number }[] };
-        count = Math.max(
-            count,
-            (document.lights ?? []).filter(
-                (light) => light.type === 0,
-            ).length,
-        );
+        ) as { lights?: BabylonLight[] };
+        result.push(...(document.lights ?? []));
     }
-    return count;
+    return result;
+}
+
+function reachedStandardLights(lights: BabylonLight[]): number {
+    return lights.filter((light) => light.type === 0).length;
+}
+
+/**
+ * Whether any reached light names the meshes it applies to. The pinned
+ * engine keeps that as a per-mesh light set, which the Standard uniform
+ * block only has to express for a scene whose assets declare one.
+ */
+function reachedStandardLightLists(
+    lights: BabylonLight[],
+): boolean {
+    return lights.some(
+        (light) =>
+            light.type === 0 &&
+            ((light.includedOnlyMeshesIds ?? []).length > 0 ||
+                (light.excludedMeshesIds ?? []).length > 0),
+    );
 }
 
 function materializedAssetSource(
@@ -347,6 +368,10 @@ async function main(): Promise<void> {
                     predeclared.uniformDefaults ?? [],
             };
         });
+    const reachedBabylonLights = babylonLights(
+        outputPath,
+        result.manifest.assets,
+    );
     emitUpstreamGenerated(outputPath, result.manifest.features, {
         idDiagnostics: options.idDiagnostics,
         pbrDiagnostics: options.pbrDiagnostics,
@@ -357,9 +382,9 @@ async function main(): Promise<void> {
         nonTrianglePrimitives:
             specializationFeatures.nonTrianglePrimitives,
         nodeVisibility: specializationFeatures.nodeVisibility,
-        standardLights: reachedStandardLights(
-            outputPath,
-            result.manifest.assets,
+        standardLights: reachedStandardLights(reachedBabylonLights),
+        standardLightLists: reachedStandardLightLists(
+            reachedBabylonLights,
         ),
         animationPointer:
             specializationFeatures.animationPointer,

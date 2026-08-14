@@ -560,6 +560,12 @@ struct LightRecord {
     Color3 specular_color{};
     Color3 ground_color{0.0f, 0.0f, 0.0f};
     std::array<float, 16> local_matrix{};
+    // The meshes this light applies to, as the pinned engine keeps them: an
+    // inclusion list wins outright when it is non-empty, otherwise the
+    // exclusion list filters. Empty on both means every mesh, which is what
+    // a light created in scene code gets.
+    std::vector<std::uint32_t> included_meshes;
+    std::vector<std::uint32_t> excluded_meshes;
 };
 
 struct CameraRecord {

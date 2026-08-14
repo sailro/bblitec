@@ -5,7 +5,9 @@ import { babylonLoaderCpp } from "./templates/babylon-loader-cpp.js";
 export class BabylonLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerLoaderAdapter(): LoweredSource {
+    public lowerLoaderAdapter(
+        lightMeshLists = false,
+    ): LoweredSource {
         const modulePath = "src/loader-babylon/load-babylon.ts";
         const symbolName = "loadBabylon";
         const { declaration } =
@@ -75,6 +77,7 @@ export class BabylonLowerer {
             header: "",
             source: babylonLoaderCpp(
                 this.context.provenance(modulePath, symbolName),
+                lightMeshLists,
             ),
         };
     }

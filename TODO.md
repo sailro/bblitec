@@ -549,17 +549,15 @@ runtime gaps may remain hidden behind it.
      the fragment now carry one slot per light a scene's `.babylon` assets
      declare, counted at generation. Sponza draws at region MAD 2.836 with
      67.8% of its pixels already exact.
-  2. Per-mesh light lists, which is what the residual actually is. Sponza's
-     two orange lights carry `includedOnlyMeshesIds` naming three meshes,
-     and its white light carries a 32-entry `excludedMeshesIds`; native
-     applies every light to every mesh, so the orange spills onto columns
-     the pin leaves neutral. A lit column reads `[123, 50, 31]` against the
-     golden's `[29, 29, 28]` while unlit stone, the ornament and the ceiling
-     are all delta 0 — the base pass and its textures already agree. This is
-     the same per-mesh light set the pinned template's `min(mesh.lc,
-     MAX_LIGHTS)` loop exists for, so it also decides the shape of the light
-     uniforms: a scene-global slot list cannot express it.
-  3. Standard normal mapping for the 13 `bumpTexture` materials.
+  2. ~~Per-mesh light lists~~ done: a light resolves its
+     `includedOnlyMeshesIds` and `excludedMeshesIds` against the records the
+     loader creates, and the Standard slots hold the mesh's light set rather
+     than the scene's. Region MAD 2.836 → 1.340, interior 2.089 → 0.585,
+     78.1% of the frame exact.
+  3. Standard normal mapping for the 13 `bumpTexture` materials. The
+     residual is concentrated there now: edges measure 5.208 against an
+     interior of 0.585, which is the silhouette-and-shading signature of a
+     missing normal map rather than anything in the base pass.
   Its parented and geometry-less nodes are NOT on this path: all 16 parented
   meshes and all 29 geometry-less ones are bones and camera targets carrying
   no geometry, and native already draws all 32 of the scene's visible meshes.

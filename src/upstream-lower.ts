@@ -35,6 +35,7 @@ export interface UpstreamEmitOptions {
     nodeVisibility: boolean;
     animationPointer: boolean;
     standardLights: number;
+    standardLightLists: boolean;
     textureTransform: boolean;
     imageBasedLighting: boolean;
     gpuInstancing: boolean;
@@ -234,7 +235,9 @@ class GeneratedSourceWriter {
         if (features.includes("loader:babylon")) {
             this.writeSource(
                 "upstream/src/babylon_loader.cpp",
-                new BabylonLowerer(context).lowerLoaderAdapter(),
+                new BabylonLowerer(context).lowerLoaderAdapter(
+                    options.standardLightLists,
+                ),
                 generated,
             );
         }
@@ -262,6 +265,7 @@ class GeneratedSourceWriter {
                     dispersion: options.dispersion,
                     nodeVisibility: options.nodeVisibility,
                     standardLights: options.standardLights,
+                    standardLightLists: options.standardLightLists,
                     orthographicCamera: features.includes(
                         "camera:orthographic",
                     ),
@@ -515,6 +519,7 @@ export function emitUpstreamGenerated(
         nodeVisibility: false,
         animationPointer: false,
         standardLights: 0,
+        standardLightLists: false,
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,
