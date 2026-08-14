@@ -1,5 +1,6 @@
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/build_stamp.hpp>
 
 #include <chrono>
 #include <cstdlib>
@@ -15,7 +16,28 @@
 
 namespace bbl::pal {
 
+std::string environment_variable(const char* name);
+
+// Every scene reaches the engine through here, so this is where the
+// executable reports which sources it was built from. bblitec sets
+// BBLITE_BUILD_STAMP_OUT before a measured run and refuses the result
+// when the stamp no longer matches the generated tree on disk.
+static void report_build_stamp() {
+    const std::string path =
+        environment_variable("BBLITE_BUILD_STAMP_OUT");
+    if (path.empty()) {
+        return;
+    }
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        throw std::runtime_error(
+            "Unable to write the build stamp to '" + path + "'.");
+    }
+    stream << BBLITE_BUILD_STAMP;
+}
+
 Engine create_engine(EngineOptions options) {
+    report_build_stamp();
     Engine engine;
     engine.options = std::move(options);
     return engine;

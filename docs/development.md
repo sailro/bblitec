@@ -393,6 +393,7 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_ASSET_DIR=<path>` | override asset directory |
 | `BBLITE_GPU_SHADER_DIR=<path>` | override shader directory |
 | `BBLITE_DEFORMATION_DUMP=<path>` | append first-frame bone palettes and morph weights as hexfloats (SDL_GPU deformation scenes) |
+| `BBLITE_BUILD_STAMP_OUT=<path>` | write the digest of the sources this executable was built from |
 
 Controls: left-drag orbit, right/middle-drag pan, wheel zoom; arrows and
 `W`/`S` are keyboard fallbacks.
@@ -508,6 +509,33 @@ texels. This workflow resolved the scene 243 occlusion gap and the
 scene 247 shading contracts recorded in
 [backends](backends.md#empirical-findings) and
 [fidelity](fidelity.md).
+
+## Build identity
+
+A measurement is only worth its number if the executable was built from the
+inputs currently on disk. Three things decide what a run renders, and each is
+checked separately because each goes stale differently:
+
+- **Compiled inputs.** Generation digests the generated C++ and the tracked
+  native sources into `generated\<scene>\build-inputs.json` and embeds the
+  digest through `build_stamp.hpp`. The executable writes it to
+  `BBLITE_BUILD_STAMP_OUT` when asked, and `scene -- parity` refuses a binary
+  whose stamp no longer matches the tree.
+- **Deployed payload.** The shader and asset directories beside the executable
+  are compared file by file against the generated tree before a run starts, so
+  a shader step that failed without stopping the build cannot be measured.
+- **Build configuration.** The CMake cache values are read from the build
+  directory rather than embedded, so one generated tree serves the release
+  build and a minimal-size build without either looking stale.
+
+The stamp deliberately covers the whole tracked native source set rather than
+the subset a configuration compiles: `BBLITE_CPU_FALLBACK=OFF` drops a
+translation unit, and the same sources must digest identically either way.
+
+Generation rewrites a file only when its bytes change and prunes what a run no
+longer emits, so an unchanged scene rebuilds nothing. `scene -- process`
+reconfigures only when the CMake cache differs from the values it would pass;
+`--cold` forces the configure regardless.
 
 There is no hosted CI. During iteration, run only the smallest relevant tests,
 generation steps, affected native builds, and scene parity gates. Do not repeat
