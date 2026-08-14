@@ -34,6 +34,7 @@ export interface UpstreamEmitOptions {
     nonTrianglePrimitives: boolean;
     nodeVisibility: boolean;
     animationPointer: boolean;
+    animationPointerMaterials: boolean;
     standardLights: number;
     standardLightLists: boolean;
     standardDiffuseUv2: boolean;
@@ -227,6 +228,7 @@ class GeneratedSourceWriter {
                     options.nodeVisibility,
                     options.animationPointer,
                     options.gpuDeformation,
+                    options.animationPointerMaterials,
                 ),
                 generated,
             );
@@ -527,6 +529,7 @@ export function emitUpstreamGenerated(
         nonTrianglePrimitives: false,
         nodeVisibility: false,
         animationPointer: false,
+        animationPointerMaterials: false,
         standardLights: 0,
         standardLightLists: false,
         standardDiffuseUv2: false,

@@ -14,6 +14,7 @@ export function gltfLoaderCpp(
     nodeVisibility = false,
     animationPointer = false,
     animatedWorldBounds = false,
+    animationPointerMaterials = false,
 ): string {
     return `// ${provenance}
 #include <bblite/pal_gltf.hpp>
@@ -144,6 +145,19 @@ struct VisibilityTrack {
     std::vector<std::size_t> subtree;
     std::vector<float> times;
     std::vector<bool> values;
+};` : ""}${animationPointerMaterials ? `
+
+enum class MaterialTrackKind {
+    base_color_factor,
+    emissive_factor,
+    emissive_strength,
+};
+
+struct MaterialTrack {
+    std::size_t material = 0;
+    MaterialTrackKind kind = MaterialTrackKind::base_color_factor;
+    std::vector<float> times;
+    std::vector<Vec4> values;
 };` : ""}
 
 struct AnimatedNode {
@@ -177,7 +191,8 @@ struct AnimationRuntime {
     std::vector<TranslationTrack> translation_tracks;
     std::vector<TranslationTrack> scale_tracks;
     std::vector<WeightTrack> weight_tracks;${animationPointer ? `
-    std::vector<VisibilityTrack> visibility_tracks;` : ""}
+    std::vector<VisibilityTrack> visibility_tracks;` : ""}${animationPointerMaterials ? `
+    std::vector<MaterialTrack> material_tracks;` : ""}
     std::vector<std::vector<std::uint32_t>> node_meshes;
     std::vector<AnimatedNode> nodes;
     std::vector<SkinRuntime> skins;
@@ -1529,7 +1544,8 @@ MaterialHandle load_material(
         material,
         optional(material_json, "occlusionTexture"));
     const std::vector<float> emissive = float_array(optional(material_json, "emissiveFactor"));
-    if (emissive.size() == 3) material.emissive_factor = Color3{emissive[0], emissive[1], emissive[2]};
+    if (emissive.size() == 3) material.emissive_factor = Color3{emissive[0], emissive[1], emissive[2]};${animationPointerMaterials ? `
+    material.emissive_base_factor = material.emissive_factor;` : ""}
     if (const ts::JsonValue* extensions_value =
             optional(material_json, "extensions")) {
         const JsonObject& extensions =
@@ -1541,7 +1557,8 @@ MaterialHandle load_material(
             const float strength = float_or(
                 strength_value->as_object(),
                 "emissiveStrength",
-                1.0f);
+                1.0f);${animationPointerMaterials ? `
+            material.emissive_strength = strength;` : ""}
             material.emissive_factor.r *= strength;
             material.emissive_factor.g *= strength;
             material.emissive_factor.b *= strength;
@@ -2628,7 +2645,133 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                             pointer_extension->as_object(),
                             "pointer")
                             .as_string();
-                    const std::string pointer_prefix = "/nodes/";
+${animationPointerMaterials ? `                    // Material targets. The pinned base module hands these to
+                    // animation-pointer-basecolor and -ext; the three the
+                    // asset reaches all write a PBR factor the fragment
+                    // reads back out of the material record every frame.
+                    const std::string material_prefix = "/materials/";
+                    if (
+                        pointer.compare(
+                            0,
+                            material_prefix.size(),
+                            material_prefix) == 0) {
+                        const std::size_t suffix_start =
+                            pointer.find('/', material_prefix.size());
+                        if (suffix_start == std::string::npos) {
+                            throw std::runtime_error(
+                                "glTF animation pointer names no material property: " +
+                                pointer + ".");
+                        }
+                        const std::string material_index_text =
+                            pointer.substr(
+                                material_prefix.size(),
+                                suffix_start - material_prefix.size());
+                        const std::string property =
+                            pointer.substr(suffix_start);
+                        if (
+                            material_index_text.find_first_not_of(
+                                "0123456789") != std::string::npos) {
+                            throw std::runtime_error(
+                                "glTF animation pointer has a non-numeric material index: " +
+                                pointer + ".");
+                        }
+                        const std::size_t material_index =
+                            static_cast<std::size_t>(
+                                std::stoull(material_index_text));
+                        MaterialTrack track;
+                        std::size_t components = 0;
+                        if (property == "/pbrMetallicRoughness/baseColorFactor") {
+                            track.kind =
+                                MaterialTrackKind::base_color_factor;
+                            components = 4;
+                        } else if (property == "/emissiveFactor") {
+                            track.kind =
+                                MaterialTrackKind::emissive_factor;
+                            components = 3;
+                        } else if (
+                            property ==
+                            "/extensions/KHR_materials_emissive_strength/emissiveStrength") {
+                            track.kind =
+                                MaterialTrackKind::emissive_strength;
+                            components = 1;
+                        } else {
+                            throw std::runtime_error(
+                                "Reached KHR_animation_pointer lowering supports base color, emissive factor and emissive strength material targets only: " +
+                                pointer + ".");
+                        }
+                        if (material_index >= materials.size()) {
+                            throw std::runtime_error(
+                                "glTF animation pointer targets a material that does not exist.");
+                        }
+                        track.material = materials[material_index].value;
+                        const JsonObject& material_sampler =
+                            animation_samplers
+                                .at(unsigned_value(
+                                    required(channel, "sampler")))
+                                .as_object();
+                        if (
+                            string_or(
+                                material_sampler,
+                                "interpolation",
+                                "LINEAR") != "LINEAR") {
+                            throw std::runtime_error(
+                                "glTF material animation supports LINEAR interpolation.");
+                        }
+                        const AccessorInfo& material_input =
+                            accessors.at(unsigned_value(
+                                required(material_sampler, "input")));
+                        const AccessorInfo& material_output =
+                            accessors.at(unsigned_value(
+                                required(material_sampler, "output")));
+                        if (
+                            material_input.type != "SCALAR" ||
+                            component_count(material_output.type) !=
+                                components ||
+                            material_output.count != material_input.count) {
+                            throw std::runtime_error(
+                                "glTF material animation accessor layout is invalid.");
+                        }
+                        for (
+                            std::size_t index = 0;
+                            index < material_input.count;
+                            ++index) {
+                            const float time = read_component(
+                                buffer,
+                                container,
+                                views,
+                                material_input,
+                                index,
+                                0);
+                            track.times.push_back(time);
+                            animation_runtime->duration = std::max(
+                                animation_runtime->duration,
+                                time);
+                            Vec4 value{};
+                            float* channels[4] = {
+                                &value.x,
+                                &value.y,
+                                &value.z,
+                                &value.w,
+                            };
+                            for (
+                                std::size_t component = 0;
+                                component < components;
+                                ++component) {
+                                *channels[component] = read_component(
+                                    buffer,
+                                    container,
+                                    views,
+                                    material_output,
+                                    index,
+                                    component);
+                            }
+                            track.values.push_back(value);
+                        }
+                        animation_runtime->material_tracks.push_back(
+                            std::move(track));
+                        continue;
+                    }
+` : ""}                    const std::string pointer_prefix = "/nodes/";
                     const std::string pointer_suffix =
                         "/extensions/KHR_node_visibility/visible";
                     const bool visibility_pointer =
@@ -2954,7 +3097,74 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                     }
                 }
             }` : ""}
-            for (const RotationTrack& track :
+${animationPointerMaterials ? `            for (const MaterialTrack& track :
+                 animation_runtime->material_tracks) {
+                if (
+                    track.times.empty() ||
+                    track.material >= engine.materials.size()) {
+                    continue;
+                }
+                std::size_t right = 1;
+                while (
+                    right < track.times.size() &&
+                    track.times[right] < animation_runtime->time) {
+                    ++right;
+                }
+                if (right >= track.times.size()) {
+                    right = track.times.size() - 1;
+                }
+                const std::size_t left = right > 0 ? right - 1 : 0;
+                const double span =
+                    static_cast<double>(track.times[right]) -
+                    track.times[left];
+                const double amount = span > 0.0
+                    ? std::clamp(
+                          (static_cast<double>(
+                               animation_runtime->time) -
+                           track.times[left]) /
+                              span,
+                          0.0,
+                          1.0)
+                    : 0.0;
+                const Vec4& a = track.values[left];
+                const Vec4& b = track.values[right];
+                const auto mix = [&](float from, float to) {
+                    return static_cast<float>(
+                        from + (to - from) * amount);
+                };
+                MaterialRecord& material =
+                    engine.materials[track.material];
+                switch (track.kind) {
+                    case MaterialTrackKind::base_color_factor:
+                        material.base_color_factor = Color4{
+                            mix(a.x, b.x),
+                            mix(a.y, b.y),
+                            mix(a.z, b.z),
+                            mix(a.w, b.w),
+                        };
+                        break;
+                    case MaterialTrackKind::emissive_factor:
+                        material.emissive_base_factor = Color3{
+                            mix(a.x, b.x),
+                            mix(a.y, b.y),
+                            mix(a.z, b.z),
+                        };
+                        break;
+                    case MaterialTrackKind::emissive_strength:
+                        material.emissive_strength = mix(a.x, b.x);
+                        break;
+                }
+                // The load-time fold, redone from whichever half moved.
+                material.emissive_factor = Color3{
+                    material.emissive_base_factor.r *
+                        material.emissive_strength,
+                    material.emissive_base_factor.g *
+                        material.emissive_strength,
+                    material.emissive_base_factor.b *
+                        material.emissive_strength,
+                };
+            }
+` : ""}            for (const RotationTrack& track :
                  animation_runtime->rotation_tracks) {
                 if (
                     track.times.empty() ||

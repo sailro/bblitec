@@ -337,7 +337,15 @@ light set of the mesh being drawn, which is the set the pinned template's
 The pinned `setSubtreeVisible` writes the flag on a node and every descendant
 at set time, so the loader bakes the ancestor cascade into each mesh record
 and the render path and default-camera framing each test one boolean.
-`KHR_animation_pointer` reaches one target, `/nodes/N/extensions/`
+`KHR_animation_pointer` material targets write the record the fragment reads
+back every frame: base color factor, emissive factor, and the
+`KHR_materials_emissive_strength` scalar. That strength folds into the
+emissive factor at load, so animating either half keeps both apart and redoes
+the product whenever one moves. Their samplers are LINEAR, and the writers are
+gated on a scene whose animations actually name a material, matching the
+pinned split where the base pointer module resolves node targets and material
+targets pull their own.
+`KHR_animation_pointer` also reaches `/nodes/N/extensions/`
 `KHR_node_visibility/visible`, which the pinned base module resolves without
 its material, light, or camera companions; the sampler must be STEP, because
 the animated value is a boolean and interpolating one has no meaning. Every

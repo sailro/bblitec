@@ -450,6 +450,11 @@ struct MaterialRecord {
     Color3 diffuse_color{};
     Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
     Color3 emissive_factor{0.0f, 0.0f, 0.0f};
+    // `KHR_materials_emissive_strength` folds into the factor above at load,
+    // so animating either one needs both kept apart: the fragment reads the
+    // product, and a pointer track rewrites whichever half it targets.
+    Color3 emissive_base_factor{0.0f, 0.0f, 0.0f};
+    float emissive_strength = 1.0f;
     Color3 specular_color{1.0f, 1.0f, 1.0f};
     Color3 ambient_color{};
     float specular_power = 64.0f;

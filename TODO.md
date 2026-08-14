@@ -370,13 +370,13 @@ registry to measure it.
 
 **Swept 2026-08-13:** 184 unregistered scenes compiled, 8 clean and 176
 blocked across 80 distinct first blockers. Scenes 267, 268, 256, 30, 260 and
-34 and 9 have since graduated to measured gates, leaving 177 unregistered, re-swept
+34, 9 and 242 have since graduated to measured gates, leaving 176 unregistered, re-swept
 unchanged on 2026-08-14 (the same clean set, same clusters). The lane partition
 below was written from reading and holds up: no scene in the compiler-contract
 lane compiles, so the compiler has not silently outgrown its inventory. Each
 scene's entry is its FIRST blocker; clearing one may expose another.
 
-**Compile clean (3):** 242, 244, 253. All three are past the compiler
+**Compile clean (2):** 244, 253. Both are past the compiler
 and blocked downstream in the loader/runtime lane. Four of the original eight
 graduated on 2026-08-14: scene 256, the only one with no downstream blocker at
 all; scene 30 once generation-time Draco decoding, texture-transform offsets
@@ -415,7 +415,7 @@ only for a contract no corpus scene exercises (a feature combination the corpus
 never composes, or a slice being built ahead of the scene that will use it),
 and delete it once corpus scenes cover the contract.
 
-The 179 unmeasured scenes are partitioned by the boundary required to reproduce
+The 178 unmeasured scenes are partitioned by the boundary required to reproduce
 their deterministic reference behavior, not by incidental browser helpers.
 Capture-inert demo controls and fixed-coordinate picking stay in the first
 lane when they can be erased or lowered inside the compiler, asset pipeline,
@@ -425,12 +425,12 @@ platform, user-input, or external-service contract.
 Scenes 256 and 280 arrived with the 1.20.0 pin: 256 is a measured gate as of
 2026-08-14, and 280 blocks on `parseNodeParticleSource` as expected.
 
-**Integrate first (144 scenes):** 4, 11, 12, 15-23, 25-27,
+**Integrate first (143 scenes):** 4, 11, 12, 15-23, 25-27,
 36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229,
-231, 241, 242, 244, 251-253, 261-264, 269-271, 275-279. Scenes 3, 7,
+231, 241, 244, 251-253, 261-264, 269-271, 275-279. Scenes 3, 7,
 35, and 216 graduated to measured parity gates on 2026-08-12, and Scenes
-267, 268, 256, 30, 260, 34 and 9 on 2026-08-14.
+267, 268, 256, 30, 260, 34, 9 and 242 on 2026-08-14.
 
 This lane includes static CSG/CSG2, compressed assets and splats,
 deterministic picking in Scenes 113-115, 117, 118, and 129, and the
@@ -569,7 +569,7 @@ runtime gaps may remain hidden behind it.
   Then register it and measure. Nothing before rung 3 can be gated on this
   scene, so each rung lands proved byte-neutral for the scenes already
   measured rather than by a number of its own.
-- [ ] Scenes 242, 244, 253: extend `KHR_animation_pointer` beyond the node
+- [ ] Scenes 244, 253: extend `KHR_animation_pointer` beyond the node
   visibility target Scene 34 measures. The channel `path` is `pointer` and
   the target is a JSON pointer into the document rather than a node TRS
   field; the pinned base module resolves node-visibility and node-TRS
@@ -577,9 +577,6 @@ runtime gaps may remain hidden behind it.
   `animation-pointer-ext` and `animation-pointer-lights` for the rest, which
   is the same split these three scenes need. Counted by pointer shape rather
   than by channel, smallest first:
-  - Scene 242, nine channels of three shapes — material `emissiveFactor`, `baseColorFactor`
-    and `KHR_materials_emissive_strength/emissiveStrength`: animated material
-    uniforms.
   - Scene 244, two channels of two shapes — `KHR_texture_transform/rotation`
     on a normal texture and on a volume thickness texture, so it needs
     animated UV transforms plus clearcoat/specular/transmission/volume.
