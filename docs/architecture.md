@@ -52,6 +52,7 @@ Primary source ownership:
 | `src/compiler/user-functions.ts` | inline lowering for handle-touching local functions, calls, parameters, and returns |
 | `src/compiler/statements.ts` | statement dispatch, conditions, expression statements, and method calls |
 | `src/compiler/assignments.ts` | typed property-assignment validation and lowering |
+| `src/compiler/properties.ts` | the declared property reads: which native expression names a handle's property, and which properties are refused |
 | `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, and material intrinsic lowerers |
 | `src/compiler/types.ts` | compiler public result types and internal typed values/features |
 | `src/upstream-source.ts` | pinned source-map reconstruction |

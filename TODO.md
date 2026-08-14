@@ -77,8 +77,12 @@ CPU-side from GPU-side causes immediately.
 - [x] Resolve named local multi-file imports and re-exports.
 - [ ] Add namespace/default imports and non-static module initialization.
 - [ ] Build a typed user-code IR from `ts.Program`/`TypeChecker` symbols.
-- [ ] Move statement, expression, intrinsic, and property lowering into
-  focused compiler modules instead of extending the entry compiler monolith.
+- [ ] Move statement, expression, and intrinsic lowering into focused
+  compiler modules instead of extending the entry compiler monolith.
+  Property lowering has moved out: the declared reads live in
+  `compiler/properties.ts` and the declared writes in
+  `compiler/assignments.ts`, each a table the entry compiler consults
+  rather than a chain it extends.
 - [x] Generate scene-local custom shader variants from supported WGSL
   IR instead of limiting native emission to predeclared variant names:
   createShaderMaterial compiles the entry file's own WGSL through the
@@ -288,18 +292,12 @@ CPU-side from GPU-side causes immediately.
   than ignoring it, and the per-sample image-processing pass on the
   multisampled transmission target has to degrade with it, which is why
   it did not come along with the rest of the frame conductor.
-- [ ] Emit one `camera_basis()` helper in the generated render plan: seven
-  emitted functions in the renderer lowerer construct the same
-  eye/forward/right/up basis, which is why the orthographic projection
-  lives in `build_view_projection` alone and composes with backgrounds
-  only through an explicit generation error. Neutrality is proven by
-  unchanged MADs across the differential matrix, not by byte-diffing.
-- [ ] Table-drive the repeated property lowering: the 20 near-identical
-  assignment blocks in `compiler/assignments.ts` and the
-  `compilePropertyAccess` matrix in `compiler.ts` (273 lines, the file's
-  hottest growth point) differ in ~3 tokens per case; the camera-read
-  `Map` in `compiler.ts` is the pattern to extend. Part of the
-  focused-compiler-modules item above.
+- [ ] Read a nested property path directly: `compilePropertyAccess` and
+  `lookupRecordProperty` both require the owner to be an identifier, so
+  `camera.ortho.halfHeight` fails while binding `camera.ortho` first and
+  reading through the binding works. The declared reads in
+  `compiler/properties.ts` compose fine; what is missing is recursing on a
+  property-access owner instead of rejecting it.
 - [ ] Improve missing-tool and stale-output diagnostics.
 - [ ] Repair `scene -- geometry`: its copy-task scan matches
   `name: "..."`, but the pinned scenes 145/146/149 name their tasks with a
@@ -324,9 +322,10 @@ registry to measure it.
 
 **Swept 2026-08-13:** 184 unregistered scenes compiled, 8 clean and 176
 blocked across 80 distinct first blockers. Scenes 267 and 268 have since
-graduated to measured gates, leaving 182 unregistered. The lane partition below was
-written from reading and holds up: no scene in the compiler-contract lane
-compiles, so the compiler has not silently outgrown its inventory. Each
+graduated to measured gates, leaving 182 unregistered, re-swept unchanged on
+2026-08-14 (the same 8 clean, 174 blocked, same clusters). The lane partition
+below was written from reading and holds up: no scene in the compiler-contract
+lane compiles, so the compiler has not silently outgrown its inventory. Each
 scene's entry is its FIRST blocker; clearing one may expose another.
 
 **Compile clean (8):** 9, 30, 34, 242, 244, 253, 256, 260. Seven were already

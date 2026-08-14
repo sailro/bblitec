@@ -23,6 +23,10 @@ import {
     createCompilerProgram,
 } from "./compiler/program.js";
 import {
+    readProperty,
+    type PropertyContext,
+} from "./compiler/properties.js";
+import {
     compileImmediatePromise,
     type PromiseLoweringContext,
 } from "./compiler/promises.js";
@@ -162,6 +166,7 @@ class Compiler
         DataLoweringContext,
         NativeFunctionContext,
         PromiseLoweringContext,
+        PropertyContext,
         StatementLoweringContext,
         UserFunctionContext {
     private readonly symbols: CompilerSymbols;
@@ -1262,17 +1267,14 @@ class Compiler
         // in lookup at the end of that chain.
         const owner = this.compileValue(ownerExpression);
         const property = expression.name.text;
-        if (
-            owner.kind === "engine" &&
-            property === "_device"
-        ) {
-            // The lab demos reach the raw GPUDevice to writeBuffer
-            // thin-instance pools each frame; the compiled surface has a
-            // sanctioned equivalent instead of a device escape hatch.
-            this.fail(
-                expression,
-                "engine._device is not part of the compiled surface; update thin-instance pools through flushThinInstances or setThinInstanceCount instead of writing GPU buffers directly.",
-            );
+        const declared = readProperty(
+            this,
+            owner,
+            property,
+            expression,
+        );
+        if (declared) {
+            return declared;
         }
         if (
             owner.kind === "engine" &&
@@ -1285,24 +1287,6 @@ class Compiler
             };
         }
         if (owner.kind === "camera") {
-            const nativeProperty = new Map([
-                ["alpha", "alpha"],
-                ["beta", "beta"],
-                ["radius", "radius"],
-                ["fov", "fov"],
-                ["nearPlane", "near_plane"],
-                ["farPlane", "far_plane"],
-                ["speed", "speed"],
-            ]).get(property);
-            if (nativeProperty) {
-                return {
-                    kind: "number",
-                    cpp: `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value].${nativeProperty}`,
-                    ...(owner.engineCpp
-                        ? { engineCpp: owner.engineCpp }
-                        : {}),
-                };
-            }
             if (property === "target") {
                 const cameraRecord = `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value]`;
                 const component = (
@@ -1324,55 +1308,6 @@ class Compiler
                     },
                 };
             }
-            if (property === "ortho") {
-                // The pinned bounds object is also reachable as
-                // `camera.ortho` after the opt-in.
-                return {
-                    kind: "camera-ortho",
-                    cpp: owner.cpp,
-                    ...(owner.engineCpp
-                        ? { engineCpp: owner.engineCpp }
-                        : {}),
-                };
-            }
-            if (property === "worldMatrix") {
-                if (owner.cameraKind !== "arc-rotate") {
-                    this.fail(
-                        expression,
-                        "Reached camera worldMatrix access currently requires an ArcRotateCamera.",
-                    );
-                }
-                return {
-                    kind: "camera-world-matrix",
-                    cpp: owner.cpp,
-                    ...(owner.engineCpp
-                        ? { engineCpp: owner.engineCpp }
-                        : {}),
-                };
-            }
-        }
-        if (
-            owner.kind === "camera-ortho" &&
-            property === "halfHeight"
-        ) {
-            return {
-                kind: "number",
-                cpp: `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value].ortho_half_height`,
-            };
-        }
-        if (
-            owner.kind === "mesh" &&
-            property === "material"
-        ) {
-            // The opt-in PBR setters take the material back off the
-            // mesh it was assigned to (`setPbrSkybox(box.material)`).
-            return {
-                kind: "material",
-                cpp: `${this.requireEngine(owner, expression)}.meshes[${owner.cpp}.value].material`,
-                ...(owner.engineCpp
-                    ? { engineCpp: owner.engineCpp }
-                    : {}),
-            };
         }
         if (owner.kind === "record") {
             const accessor = owner.recordGetters?.[property];
@@ -1399,18 +1334,6 @@ class Compiler
             return value;
         }
         if (
-            owner.kind === "scene" &&
-            property === "clearColor"
-        ) {
-            return {
-                kind: "color4",
-                cpp: `${owner.cpp}.clear_color`,
-                ...(owner.engineCpp
-                    ? { engineCpp: owner.engineCpp }
-                    : {}),
-            };
-        }
-        if (
             owner.kind === "tuple" &&
             property === "length"
         ) {
@@ -1421,36 +1344,6 @@ class Compiler
                 cpp: `${length}.0f`,
                 staticNumber: length,
             };
-        }
-        if (owner.kind === "engine" && property === "scRT") {
-            return {
-                kind: "render-target",
-                cpp: `bbl::swapchain_render_target(${owner.cpp})`,
-                engineCpp: owner.cpp,
-            };
-        }
-        if (owner.kind === "scene" && property === "camera") {
-            return {
-                kind: "camera",
-                cpp: `${owner.cpp}.camera`,
-                ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
-            };
-        }
-        if (owner.kind === "render-target-texture") {
-            if (property === "rt") {
-                return {
-                    kind: "render-target",
-                    cpp: `${owner.cpp}.rt`,
-                    ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
-                };
-            }
-            if (property === "texture") {
-                return {
-                    kind: "render-texture",
-                    cpp: `${owner.cpp}.texture`,
-                    ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
-                };
-            }
         }
         if (owner.kind === "task" && owner.geometryTask) {
             if (property === "outputTexture") {
@@ -4292,17 +4185,20 @@ class Compiler
                 expression.name.text
             ];
         }
-        if (
-            owner?.kind === "scene" &&
-            expression.name.text === "clearColor"
-        ) {
-            return {
-                kind: "color4",
-                cpp: `${owner.cpp}.clear_color`,
-                ...(owner.engineCpp
-                    ? { engineCpp: owner.engineCpp }
-                    : {}),
-            };
+        if (owner) {
+            // The same table the general property path reads. Keeping a
+            // second copy here is what made `camera.ortho.halfHeight`
+            // resolve in an expression but not in a numeric context: the
+            // copy was never told about the orthographic bounds.
+            const declared = readProperty(
+                this,
+                owner,
+                expression.name.text,
+                expression,
+            );
+            if (declared) {
+                return declared;
+            }
         }
         if (
             owner?.kind === "tuple" &&
@@ -4325,26 +4221,6 @@ class Compiler
                 cpp: `${owner.msaaSamples ?? 4}.0f`,
                 staticNumber: owner.msaaSamples ?? 4,
             };
-        }
-        if (owner?.kind === "camera") {
-            const nativeProperty = new Map([
-                ["alpha", "alpha"],
-                ["beta", "beta"],
-                ["radius", "radius"],
-                ["fov", "fov"],
-                ["nearPlane", "near_plane"],
-                ["farPlane", "far_plane"],
-                ["speed", "speed"],
-            ]).get(expression.name.text);
-            if (nativeProperty) {
-                return {
-                    kind: "number",
-                    cpp: `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value].${nativeProperty}`,
-                    ...(owner.engineCpp
-                        ? { engineCpp: owner.engineCpp }
-                        : {}),
-                };
-            }
         }
         return undefined;
     }
