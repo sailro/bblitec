@@ -113,7 +113,21 @@ export function standardFragmentWgsl(
     task?: GeometryOutputTaskManifest,
     fog = false,
     vertexColors = false,
+    lightSlots = 2,
 ): string {
+    // The pinned template declares `array<LightEntry, MAX_LIGHTS>` and loops
+    // `min(mesh.lc, MAX_LIGHTS)` entries. Native unrolls the same terms into
+    // one uniform slot per light the scene reaches, so a scene keeps the two
+    // slots this shader has always emitted unless its assets carry more.
+    const extraLights = Array.from(
+        { length: Math.max(0, lightSlots - 2) },
+        (_, index) => index + 3,
+    );
+    if (extraLights.length > 0 && task) {
+        throw new Error(
+            "Standard lighting beyond two slots is lowered only for the color fragment variant.",
+        );
+    }
     if (fog && task) {
         throw new Error(
             "Standard fog is lowered only for the color fragment variant.",
@@ -190,7 +204,11 @@ struct FragmentUniforms {
     lightData2: vec4<f32>,
     lightDiffuse2: vec4<f32>,
     lightSpecular2: vec4<f32>,
-    lightDirection2: vec4<f32>,
+    lightDirection2: vec4<f32>,${extraLights.map((slot) => `
+    lightData${slot}: vec4<f32>,
+    lightDiffuse${slot}: vec4<f32>,
+    lightSpecular${slot}: vec4<f32>,
+    lightDirection${slot}: vec4<f32>,`).join("")}
     diffuseAlpha: vec4<f32>,
     specularPower: vec4<f32>,
     emissiveLevel: vec4<f32>,
@@ -384,8 +402,18 @@ fn mainFragment(input: FragmentInput) -> ${returnType} {
         viewDirectionW,
         uniforms.specularPower.w,
     );
-    let diffuseBase = light1.diffuse + light2.diffuse;
-    let specularBase = light1.specular + light2.specular;
+${extraLights.map((slot) => `    let light${slot} = evaluateLight(
+        uniforms.lightData${slot},
+        uniforms.lightDiffuse${slot},
+        uniforms.lightSpecular${slot},
+        uniforms.lightDirection${slot},
+        input.worldPosition,
+        normalW,
+        viewDirectionW,
+        uniforms.specularPower.w,
+    );
+`).join("")}    let diffuseBase = light1.diffuse + light2.diffuse${extraLights.map((slot) => ` + light${slot}.diffuse`).join("")};
+    let specularBase = light1.specular + light2.specular${extraLights.map((slot) => ` + light${slot}.specular`).join("")};
 
     let finalDiffuse = clamp(
         diffuseBase * uniforms.diffuseAlpha.rgb +
