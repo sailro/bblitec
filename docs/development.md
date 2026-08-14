@@ -551,7 +551,18 @@ npm run shaders:build
 npm run scenes:process
 npm run scenes:parity
 npm run parity:diagnostics
+npm run status:verify
 ```
+
+`scenes:parity` runs both backends (`parity all --differential`) because
+[status](status.md) publishes an SDL_GPU and a Dawn number for every scene; a
+single-backend sweep leaves the second column unverified between manual runs.
+On a machine without the pinned Dawn library, run `npm run scene -- parity all`
+instead and treat the Dawn column as unmeasured.
+
+`status:verify` compares every published pair, and its severity colour, against
+the reports the parity run wrote. The table is checked data, not prose: two rows
+had drifted from measurement before this check existed.
 
 Do not run generation and native builds concurrently. Do not build multiple
 CMake trees concurrently against the same vcpkg installation.

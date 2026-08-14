@@ -118,7 +118,17 @@ test("keeps package scene commands registry-driven", () => {
     assert.equal(packageJson.scripts["scenes:compile"], "npm run scene -- compile all");
     assert.equal(packageJson.scripts["scenes:build"], "npm run scene -- build all");
     assert.equal(packageJson.scripts["scenes:process"], "npm run scene -- process all");
-    assert.equal(packageJson.scripts["scenes:parity"], "npm run scene -- parity all");
+    // Both published columns are measured every run: the table carries an
+    // SDL_GPU and a Dawn number per scene, and a single-backend sweep
+    // leaves the second one unverified between manual differential runs.
+    assert.equal(
+        packageJson.scripts["scenes:parity"],
+        "npm run scene -- parity all --differential",
+    );
+    assert.equal(
+        packageJson.scripts["status:verify"],
+        "npm run build && node dist/src/verify-status.js",
+    );
     const sceneCommand = readFileSync("src/scene-command.ts", "utf8");
     assert.match(
         sceneCommand,
