@@ -22,7 +22,13 @@ interface GltfSpecialization {
     };
 }
 
-interface RenderItemSpecialization {
+/**
+ * One draw the specializer records for a glTF asset, and the shape the
+ * parity attribution reads back out of the emitted JSON. Both ends of
+ * that file used to declare it, so a field added to the writer was
+ * simply absent from the reader's view.
+ */
+export interface RenderItemSpecialization {
     drawId: number;
     nodeIndex: number;
     nodeName?: string;

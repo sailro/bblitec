@@ -1,10 +1,9 @@
 import ts from "typescript";
 import type {
     CompileAsset,
-    Feature,
     Value,
-    ValueKind,
 } from "../types.js";
+import type { IntrinsicCallContext } from "./context.js";
 
 interface CompiledHdrEnvironmentOptions {
     faceSize: number;
@@ -14,18 +13,8 @@ interface CompiledHdrEnvironmentOptions {
     skyboxPosition: string;
 }
 
-export interface AssetIntrinsicContext {
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    compileValue(expression: ts.Expression): Value;
-    expectKind(
-        value: Value,
-        kind: ValueKind,
-        node: ts.Node,
-    ): void;
+export interface AssetIntrinsicContext
+    extends IntrinsicCallContext {
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -45,7 +34,6 @@ export interface AssetIntrinsicContext {
         faceSize?: number,
     ): CompileAsset;
     resolveBundledAsset(source: string): string;
-    reachFeature(feature: Feature): void;
     cppString(value: string): string;
     objectProperty(
         object: ts.ObjectLiteralExpression,

@@ -1,9 +1,6 @@
 import ts from "typescript";
-import type {
-    Feature,
-    Value,
-    ValueKind,
-} from "../types.js";
+import type { Value } from "../types.js";
+import type { IntrinsicCallContext } from "./context.js";
 
 interface CompiledAnimationClip {
     cpp: string;
@@ -11,18 +8,8 @@ interface CompiledAnimationClip {
     duration: string;
 }
 
-export interface AnimationIntrinsicContext {
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    compileValue(expression: ts.Expression): Value;
-    expectKind(
-        value: Value,
-        kind: ValueKind,
-        node: ts.Node,
-    ): void;
+export interface AnimationIntrinsicContext
+    extends IntrinsicCallContext {
     compilePropertyAnimationClip(
         nameExpression: ts.Expression,
         tracksExpression: ts.Expression,
@@ -35,7 +22,6 @@ export interface AnimationIntrinsicContext {
     compileNumber(expression: ts.Expression): string;
     requireDefaultScene(node: ts.Node): Value;
     requireEngine(value: Value, node: ts.Node): string;
-    reachFeature(feature: Feature): void;
 }
 
 export function compileAnimationIntrinsic(

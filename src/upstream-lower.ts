@@ -19,6 +19,29 @@ import type {
     GeometryOutputTaskManifest,
 } from "./compiler.js";
 
+/**
+ * What a scene reached, as the emitters need to see it. Named once
+ * because the entry function only forwards it: restating the shape at
+ * both ends meant every new capability was declared twice.
+ */
+export interface UpstreamEmitOptions {
+    idDiagnostics: boolean;
+    pbrDiagnostics: boolean;
+    shaderPrograms: CompiledShaderProgram[];
+    geometryOutputTasks: GeometryOutputTaskManifest[];
+    gpuDeformation: boolean;
+    morphStorage: boolean;
+    textureTransform: boolean;
+    imageBasedLighting: boolean;
+    gpuInstancing: boolean;
+    multiLight: boolean;
+    clearcoat: boolean;
+    sheen: boolean;
+    iridescence: boolean;
+    dispersion: boolean;
+    occlusionUv2: boolean;
+}
+
 class GeneratedSourceWriter {
     /** Native sources this run wrote, checked against the reached table. */
     private readonly emitted = new Set<string>();
@@ -30,23 +53,7 @@ class GeneratedSourceWriter {
 
     public emit(
         features: string[],
-        options: {
-            idDiagnostics: boolean;
-            pbrDiagnostics: boolean;
-            shaderPrograms: CompiledShaderProgram[];
-            geometryOutputTasks: GeometryOutputTaskManifest[];
-            gpuDeformation: boolean;
-            morphStorage: boolean;
-            textureTransform: boolean;
-            imageBasedLighting: boolean;
-            gpuInstancing: boolean;
-            multiLight: boolean;
-            clearcoat: boolean;
-            sheen: boolean;
-            iridescence: boolean;
-            dispersion: boolean;
-            occlusionUv2: boolean;
-        },
+        options: UpstreamEmitOptions,
     ): void {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
@@ -482,23 +489,7 @@ class GeneratedSourceWriter {
 export function emitUpstreamGenerated(
     outputRoot: string,
     features: string[],
-    options: {
-        idDiagnostics: boolean;
-        pbrDiagnostics: boolean;
-        shaderPrograms: CompiledShaderProgram[];
-        geometryOutputTasks: GeometryOutputTaskManifest[];
-        gpuDeformation: boolean;
-        morphStorage: boolean;
-        textureTransform: boolean;
-        imageBasedLighting: boolean;
-        gpuInstancing: boolean;
-        multiLight: boolean;
-        clearcoat: boolean;
-        sheen: boolean;
-        iridescence: boolean;
-        dispersion: boolean;
-        occlusionUv2: boolean;
-    } = {
+    options: UpstreamEmitOptions = {
         idDiagnostics: false,
         pbrDiagnostics: false,
         shaderPrograms: [],

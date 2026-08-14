@@ -1,22 +1,9 @@
 import ts from "typescript";
-import type {
-    Feature,
-    Value,
-    ValueKind,
-} from "../types.js";
+import type { Value } from "../types.js";
+import type { IntrinsicCallContext } from "./context.js";
 
-export interface CameraIntrinsicContext {
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    compileValue(expression: ts.Expression): Value;
-    expectKind(
-        value: Value,
-        kind: ValueKind,
-        node: ts.Node,
-    ): void;
+export interface CameraIntrinsicContext
+    extends IntrinsicCallContext {
     compileVec3(expression: ts.Expression): string;
     compileNumber(expression: ts.Expression): string;
     expectObjectLiteral(
@@ -28,7 +15,6 @@ export interface CameraIntrinsicContext {
     ): ts.Expression | undefined;
     requireEngine(value: Value, node: ts.Node): string;
     requireDefaultEngine(node: ts.Node): string;
-    reachFeature(feature: Feature): void;
     fail(node: ts.Node, message: string): never;
 }
 

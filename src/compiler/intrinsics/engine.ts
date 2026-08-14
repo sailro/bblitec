@@ -1,28 +1,17 @@
 import ts from "typescript";
 import type {
-    Feature,
     GeometryOutputTaskManifest,
     Value,
-    ValueKind,
 } from "../types.js";
+import type { IntrinsicCallContext } from "./context.js";
 
 interface CompiledGeometryTask {
     cpp: string;
     manifest: GeometryOutputTaskManifest;
 }
 
-export interface EngineIntrinsicContext {
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    compileValue(expression: ts.Expression): Value;
-    expectKind(
-        value: Value,
-        kind: ValueKind,
-        node: ts.Node,
-    ): void;
+export interface EngineIntrinsicContext
+    extends IntrinsicCallContext {
     expectSameEngine(
         left: Value,
         right: Value,
@@ -52,7 +41,6 @@ export interface EngineIntrinsicContext {
     compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean;
-    reachFeature(feature: Feature): void;
 }
 
 function reachRenderer(

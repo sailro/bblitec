@@ -24,6 +24,7 @@ import {
     depthOnlyFragmentWgsl,
     diagnosticClusterFragmentWgsl,
     diagnosticIdFragmentWgsl,
+    fogFactorWgsl,
     imageProcessingFragmentWgsl,
 } from "../shader-builtins-utility.js";
 import {
@@ -2983,26 +2984,7 @@ struct FragmentUniforms {
 }
 @group(3) @binding(0) var<uniform> uniforms: FragmentUniforms;
 
-const bblFogE: f32 = 2.71828;
-
-fn bblCalcFogFactor(fogDistance: vec3<f32>) -> f32 {
-    var fogCoeff = 1.0;
-    let fogMode = uniforms.fogInfos.x;
-    let fogStart = uniforms.fogInfos.y;
-    let fogEnd = uniforms.fogInfos.z;
-    let fogDensity = uniforms.fogInfos.w;
-    let dist = length(fogDistance);
-    if (fogMode == 3.0) {
-        fogCoeff = (fogEnd - dist) / (fogEnd - fogStart);
-    } else if (fogMode == 1.0) {
-        fogCoeff = 1.0 / pow(bblFogE, dist * fogDensity);
-    } else if (fogMode == 2.0) {
-        fogCoeff =
-            1.0 / pow(bblFogE, dist * dist * fogDensity * fogDensity);
-    }
-    return clamp(fogCoeff, 0.0, 1.0);
-}
-
+${fogFactorWgsl()}
 struct FragmentInput {
     // D3D12 links vertex and fragment signatures by hardware register,
     // so the fragment must consume the position builtin to keep the

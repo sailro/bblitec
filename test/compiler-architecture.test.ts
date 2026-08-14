@@ -104,6 +104,39 @@ test("lowers property assignments outside the entry orchestrator", () => {
     );
 });
 
+test("resolves property reads from one declared table", () => {
+    const compiler = source("src/compiler.ts");
+    const assignments = source(
+        "src/compiler/assignments.ts",
+    );
+    const properties = source(
+        "src/compiler/properties.ts",
+    );
+    assert.match(compiler, /readProperty/);
+    assert.match(properties, /propertyRules/);
+    // All three read sites -- the general property path, the one the
+    // static evaluator calls, and destructuring, which names the same
+    // properties -- consult the table rather than restating it, and the
+    // writes take their field names from it too. Each of those was a
+    // separate copy, and they had drifted apart.
+    assert.equal(
+        (compiler.match(/readProperty\(/g) ?? []).length,
+        3,
+    );
+    assert.match(assignments, /cameraRecordField/);
+    for (const field of [
+        "near_plane",
+        "angular_sensibility",
+        "ortho_half_height",
+    ]) {
+        assert.doesNotMatch(compiler, new RegExp(field));
+    }
+    assert.doesNotMatch(
+        assignments,
+        /angular_sensibility/,
+    );
+});
+
 test("matches custom shaders through typed WGSL IR", () => {
     const compiler = source("src/compiler.ts");
     assert.match(compiler, /lowerWgslShaderProgram/);

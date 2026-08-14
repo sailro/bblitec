@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { chromium } from "playwright-core";
+import { resolveBrowserPath } from "./browser-path.js";
 
 interface CompileAsset {
     source: string;
@@ -23,31 +24,6 @@ const diagnosticTypes = [
     "normalized-depth",
 ] as const;
 
-function browserCandidates(): string[] {
-    if (process.platform === "win32") {
-        return [
-            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-            "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-            "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-            "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-        ];
-    }
-    if (process.platform === "darwin") {
-        return [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        ];
-    }
-    return ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium"];
-}
-
-function resolveBrowserPath(): string {
-    const candidates = [process.env.CHROME_PATH, ...browserCandidates()]
-        .filter((value): value is string => !!value);
-    const found = candidates.find((candidate) => existsSync(candidate));
-    if (!found) throw new Error("No Chromium browser found. Set CHROME_PATH.");
-    return found;
-}
 
 function mimeType(path: string): string {
     switch (extname(path).toLowerCase()) {

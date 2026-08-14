@@ -23,6 +23,10 @@ import {
     createCompilerProgram,
 } from "./compiler/program.js";
 import {
+    readProperty,
+    type PropertyContext,
+} from "./compiler/properties.js";
+import {
     compileImmediatePromise,
     type PromiseLoweringContext,
 } from "./compiler/promises.js";
@@ -162,6 +166,7 @@ class Compiler
         DataLoweringContext,
         NativeFunctionContext,
         PromiseLoweringContext,
+        PropertyContext,
         StatementLoweringContext,
         UserFunctionContext {
     private readonly symbols: CompilerSymbols;
@@ -790,59 +795,60 @@ class Compiler
             );
         this.emit(`auto ${temporary} = ${value.cpp};`);
         for (const element of declaration.name.elements) {
-            if (
-                element.dotDotDotToken ||
-                !ts.isIdentifier(element.name)
-            ) {
+            const { name, property } =
+                this.bindingProperty(element);
+            const cppName = this.cppIdentifier(name.text);
+            // The same properties `rtt.rt` and `rtt.texture` name, read
+            // off the temporary the destructuring bound.
+            const propertyValue =
+                readProperty(
+                    this,
+                    { ...value, cpp: temporary },
+                    property,
+                    element,
+                ) ??
                 this.fail(
                     element,
-                    "Object destructuring supports identifier properties only.",
+                    `Unsupported render-target texture property '${property}'.`,
                 );
-            }
-            const property =
-                element.propertyName &&
-                (ts.isIdentifier(element.propertyName) ||
-                    ts.isStringLiteral(element.propertyName))
-                    ? element.propertyName.text
-                    : element.name.text;
-            const cppName = this.cppIdentifier(
-                element.name.text,
-            );
-            const propertyValue: Value =
-                property === "rt"
-                    ? {
-                          kind: "render-target",
-                          cpp: `${temporary}.rt`,
-                          ...(value.engineCpp
-                              ? {
-                                    engineCpp:
-                                        value.engineCpp,
-                                }
-                              : {}),
-                      }
-                    : property === "texture"
-                      ? {
-                            kind: "render-texture",
-                            cpp: `${temporary}.texture`,
-                            ...(value.engineCpp
-                                ? {
-                                      engineCpp:
-                                          value.engineCpp,
-                                  }
-                                : {}),
-                        }
-                      : this.fail(
-                            element,
-                            `Unsupported render-target texture property '${property}'.`,
-                        );
             this.emit(
                 `auto ${cppName} = ${propertyValue.cpp};`,
             );
-            this.defineVariable(element.name, {
+            this.defineVariable(name, {
                 ...propertyValue,
                 cpp: cppName,
             });
         }
+    }
+
+    /**
+     * The source property a destructuring element reads, with the
+     * binding forms the compiler does not lower rejected first. The
+     * record and render-target paths share this and then diverge on
+     * where the value comes from.
+     */
+    private bindingProperty(element: ts.BindingElement): {
+        name: ts.Identifier;
+        property: string;
+    } {
+        if (
+            element.dotDotDotToken ||
+            !ts.isIdentifier(element.name)
+        ) {
+            this.fail(
+                element,
+                "Object destructuring supports identifier properties only.",
+            );
+        }
+        return {
+            name: element.name,
+            property:
+                element.propertyName &&
+                (ts.isIdentifier(element.propertyName) ||
+                    ts.isStringLiteral(element.propertyName))
+                    ? element.propertyName.text
+                    : element.name.text,
+        };
     }
 
     private emitRecordBindingDeclaration(
@@ -850,21 +856,8 @@ class Compiler
         value: Value,
     ): void {
         for (const element of pattern.elements) {
-            if (
-                element.dotDotDotToken ||
-                !ts.isIdentifier(element.name)
-            ) {
-                this.fail(
-                    element,
-                    "Object destructuring supports identifier properties only.",
-                );
-            }
-            const property =
-                element.propertyName &&
-                (ts.isIdentifier(element.propertyName) ||
-                    ts.isStringLiteral(element.propertyName))
-                    ? element.propertyName.text
-                    : element.name.text;
+            const { name, property } =
+                this.bindingProperty(element);
             const propertyValue =
                 value.recordProperties?.[property];
             if (!propertyValue) {
@@ -879,13 +872,11 @@ class Compiler
                     `Record destructuring supports numeric properties only, received ${propertyValue.kind}.`,
                 );
             }
-            const cppName = this.cppIdentifier(
-                element.name.text,
-            );
+            const cppName = this.cppIdentifier(name.text);
             this.emit(
                 `[[maybe_unused]] double ${cppName} = ${propertyValue.cpp};`,
             );
-            this.defineVariable(element.name, {
+            this.defineVariable(name, {
                 kind: "number",
                 cpp: cppName,
                 ...(propertyValue.staticNumber === undefined
@@ -1262,17 +1253,14 @@ class Compiler
         // in lookup at the end of that chain.
         const owner = this.compileValue(ownerExpression);
         const property = expression.name.text;
-        if (
-            owner.kind === "engine" &&
-            property === "_device"
-        ) {
-            // The lab demos reach the raw GPUDevice to writeBuffer
-            // thin-instance pools each frame; the compiled surface has a
-            // sanctioned equivalent instead of a device escape hatch.
-            this.fail(
-                expression,
-                "engine._device is not part of the compiled surface; update thin-instance pools through flushThinInstances or setThinInstanceCount instead of writing GPU buffers directly.",
-            );
+        const declared = readProperty(
+            this,
+            owner,
+            property,
+            expression,
+        );
+        if (declared) {
+            return declared;
         }
         if (
             owner.kind === "engine" &&
@@ -1285,24 +1273,6 @@ class Compiler
             };
         }
         if (owner.kind === "camera") {
-            const nativeProperty = new Map([
-                ["alpha", "alpha"],
-                ["beta", "beta"],
-                ["radius", "radius"],
-                ["fov", "fov"],
-                ["nearPlane", "near_plane"],
-                ["farPlane", "far_plane"],
-                ["speed", "speed"],
-            ]).get(property);
-            if (nativeProperty) {
-                return {
-                    kind: "number",
-                    cpp: `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value].${nativeProperty}`,
-                    ...(owner.engineCpp
-                        ? { engineCpp: owner.engineCpp }
-                        : {}),
-                };
-            }
             if (property === "target") {
                 const cameraRecord = `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value]`;
                 const component = (
@@ -1324,55 +1294,6 @@ class Compiler
                     },
                 };
             }
-            if (property === "ortho") {
-                // The pinned bounds object is also reachable as
-                // `camera.ortho` after the opt-in.
-                return {
-                    kind: "camera-ortho",
-                    cpp: owner.cpp,
-                    ...(owner.engineCpp
-                        ? { engineCpp: owner.engineCpp }
-                        : {}),
-                };
-            }
-            if (property === "worldMatrix") {
-                if (owner.cameraKind !== "arc-rotate") {
-                    this.fail(
-                        expression,
-                        "Reached camera worldMatrix access currently requires an ArcRotateCamera.",
-                    );
-                }
-                return {
-                    kind: "camera-world-matrix",
-                    cpp: owner.cpp,
-                    ...(owner.engineCpp
-                        ? { engineCpp: owner.engineCpp }
-                        : {}),
-                };
-            }
-        }
-        if (
-            owner.kind === "camera-ortho" &&
-            property === "halfHeight"
-        ) {
-            return {
-                kind: "number",
-                cpp: `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value].ortho_half_height`,
-            };
-        }
-        if (
-            owner.kind === "mesh" &&
-            property === "material"
-        ) {
-            // The opt-in PBR setters take the material back off the
-            // mesh it was assigned to (`setPbrSkybox(box.material)`).
-            return {
-                kind: "material",
-                cpp: `${this.requireEngine(owner, expression)}.meshes[${owner.cpp}.value].material`,
-                ...(owner.engineCpp
-                    ? { engineCpp: owner.engineCpp }
-                    : {}),
-            };
         }
         if (owner.kind === "record") {
             const accessor = owner.recordGetters?.[property];
@@ -1399,18 +1320,6 @@ class Compiler
             return value;
         }
         if (
-            owner.kind === "scene" &&
-            property === "clearColor"
-        ) {
-            return {
-                kind: "color4",
-                cpp: `${owner.cpp}.clear_color`,
-                ...(owner.engineCpp
-                    ? { engineCpp: owner.engineCpp }
-                    : {}),
-            };
-        }
-        if (
             owner.kind === "tuple" &&
             property === "length"
         ) {
@@ -1421,36 +1330,6 @@ class Compiler
                 cpp: `${length}.0f`,
                 staticNumber: length,
             };
-        }
-        if (owner.kind === "engine" && property === "scRT") {
-            return {
-                kind: "render-target",
-                cpp: `bbl::swapchain_render_target(${owner.cpp})`,
-                engineCpp: owner.cpp,
-            };
-        }
-        if (owner.kind === "scene" && property === "camera") {
-            return {
-                kind: "camera",
-                cpp: `${owner.cpp}.camera`,
-                ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
-            };
-        }
-        if (owner.kind === "render-target-texture") {
-            if (property === "rt") {
-                return {
-                    kind: "render-target",
-                    cpp: `${owner.cpp}.rt`,
-                    ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
-                };
-            }
-            if (property === "texture") {
-                return {
-                    kind: "render-texture",
-                    cpp: `${owner.cpp}.texture`,
-                    ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
-                };
-            }
         }
         if (owner.kind === "task" && owner.geometryTask) {
             if (property === "outputTexture") {
@@ -1926,19 +1805,11 @@ class Compiler
 
     public compilePlaneOptions(expression: ts.Expression): [string, string] {
         const object = this.expectObjectLiteral(expression);
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.propertyName(property.name)
-                    : undefined;
-            if (!name || !["size", "width", "height"].includes(name)) {
-                this.fail(
-                    property,
-                    "Plane options support only size, width, and height.",
-                );
-            }
-        }
+        this.validateObjectProperties(
+            object,
+            ["size", "width", "height"],
+            "Plane options support only size, width, and height.",
+        );
         const size = this.objectProperty(object, "size");
         const width = this.objectProperty(object, "width");
         const height = this.objectProperty(object, "height");
@@ -2008,22 +1879,11 @@ class Compiler
         expression: ts.Expression,
     ): [string, string, string] {
         const object = this.expectObjectLiteral(expression);
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.propertyName(property.name)
-                    : undefined;
-            if (
-                !name ||
-                !["diameter", "thickness", "tessellation"].includes(name)
-            ) {
-                this.fail(
-                    property,
-                    "Torus options support diameter, thickness, and tessellation.",
-                );
-            }
-        }
+        this.validateObjectProperties(
+            object,
+            ["diameter", "thickness", "tessellation"],
+            "Torus options support diameter, thickness, and tessellation.",
+        );
         const diameter = this.objectProperty(object, "diameter");
         const thickness = this.objectProperty(object, "thickness");
         const tessellation = this.objectProperty(object, "tessellation");
@@ -2059,35 +1919,23 @@ class Compiler
         string,
     ] {
         const object = this.expectObjectLiteral(expression);
-        const supported = new Set([
-            "baseColorTexture",
-            "ormTexture",
-            "metallicFactor",
-            "roughnessFactor",
-            "directIntensity",
-            "environmentIntensity",
-            "alpha",
-            "reflectance",
-            "doubleSided",
-            "transmissive",
-            "subsurface",
-        ]);
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.propertyName(property.name)
-                    : undefined;
-            if (
-                !name ||
-                !supported.has(name)
-            ) {
-                this.fail(
-                    property,
-                    "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, lighting intensities, skybox mode, and transmission subsurface fields.",
-                );
-            }
-        }
+        this.validateObjectProperties(
+            object,
+            [
+                "baseColorTexture",
+                "ormTexture",
+                "metallicFactor",
+                "roughnessFactor",
+                "directIntensity",
+                "environmentIntensity",
+                "alpha",
+                "reflectance",
+                "doubleSided",
+                "transmissive",
+                "subsurface",
+            ],
+            "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, lighting intensities, skybox mode, and transmission subsurface fields.",
+        );
         const baseColorExpression = this.objectProperty(object, "baseColorTexture");
         const ormExpression = this.objectProperty(object, "ormTexture");
         if (!baseColorExpression || !ormExpression) {
@@ -2193,34 +2041,25 @@ class Compiler
 
     public compileGridMaterialOptions(expression: ts.Expression): string[] {
         const object = this.expectObjectLiteral(expression);
-        const supported = new Set([
-            "name",
-            "mainColor",
-            "lineColor",
-            "gridRatio",
-            "gridOffset",
-            "majorUnitFrequency",
-            "minorUnitVisibility",
-            "opacity",
-            "antialias",
-            "preMultiplyAlpha",
-            "useMaxLine",
-            "visibility",
-            "backFaceCulling",
-        ]);
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.propertyName(property.name)
-                    : undefined;
-            if (!name || !supported.has(name)) {
-                this.fail(
-                    property,
-                    "Grid material options support colors, object-space spacing/offset, line frequency/visibility, opacity, antialiasing, premultiplication, max-line composition, visibility, and culling.",
-                );
-            }
-        }
+        this.validateObjectProperties(
+            object,
+            [
+                "name",
+                "mainColor",
+                "lineColor",
+                "gridRatio",
+                "gridOffset",
+                "majorUnitFrequency",
+                "minorUnitVisibility",
+                "opacity",
+                "antialias",
+                "preMultiplyAlpha",
+                "useMaxLine",
+                "visibility",
+                "backFaceCulling",
+            ],
+            "Grid material options support colors, object-space spacing/offset, line frequency/visibility, opacity, antialiasing, premultiplication, max-line composition, visibility, and culling.",
+        );
         const mainColor = this.objectProperty(object, "mainColor");
         const lineColor = this.objectProperty(object, "lineColor");
         const gridRatio = this.objectProperty(object, "gridRatio");
@@ -2277,30 +2116,21 @@ class Compiler
         expression: ts.Expression,
     ): { name: string; id: number } {
         const object = this.expectObjectLiteral(expression);
-        const supportedProperties = new Set([
-            "name",
-            "vertexSource",
-            "fragmentSource",
-            "attributes",
-            "uniforms",
-            "needAlphaBlending",
-            "needAlphaTesting",
-            "backFaceCulling",
-            "depthWrite",
-        ]);
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.propertyName(property.name)
-                    : undefined;
-            if (!name || !supportedProperties.has(name)) {
-                this.fail(
-                    property,
-                    "Reached shader materials support source, attributes, uniforms, alpha state, culling, and depthWrite only.",
-                );
-            }
-        }
+        this.validateObjectProperties(
+            object,
+            [
+                "name",
+                "vertexSource",
+                "fragmentSource",
+                "attributes",
+                "uniforms",
+                "needAlphaBlending",
+                "needAlphaTesting",
+                "backFaceCulling",
+                "depthWrite",
+            ],
+            "Reached shader materials support source, attributes, uniforms, alpha state, culling, and depthWrite only.",
+        );
 
         const vertexExpression = this.objectProperty(object, "vertexSource");
         const fragmentExpression = this.objectProperty(object, "fragmentSource");
@@ -3048,26 +2878,17 @@ class Compiler
         skyboxPosition: string;
     } {
         const object = this.expectObjectLiteral(expression);
-        const supported = new Set([
-            "faceSize",
-            "useCubemapSkybox",
-            "skipGround",
-            "skyboxSize",
-            "skyboxPosition",
-        ]);
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.propertyName(property.name)
-                    : undefined;
-            if (!name || !supported.has(name)) {
-                this.fail(
-                    property,
-                    "HDR environment options support faceSize, cubemap skybox, ground skipping, skybox size, and skybox position.",
-                );
-            }
-        }
+        this.validateObjectProperties(
+            object,
+            [
+                "faceSize",
+                "useCubemapSkybox",
+                "skipGround",
+                "skyboxSize",
+                "skyboxPosition",
+            ],
+            "HDR environment options support faceSize, cubemap skybox, ground skipping, skybox size, and skybox position.",
+        );
         const faceSizeExpression = this.objectProperty(object, "faceSize");
         const faceSize = faceSizeExpression
             ? Number(this.compilePositiveInteger(faceSizeExpression).slice(0, -1))
@@ -4292,17 +4113,20 @@ class Compiler
                 expression.name.text
             ];
         }
-        if (
-            owner?.kind === "scene" &&
-            expression.name.text === "clearColor"
-        ) {
-            return {
-                kind: "color4",
-                cpp: `${owner.cpp}.clear_color`,
-                ...(owner.engineCpp
-                    ? { engineCpp: owner.engineCpp }
-                    : {}),
-            };
+        if (owner) {
+            // The same table the general property path reads. Keeping a
+            // second copy here is what made `camera.ortho.halfHeight`
+            // resolve in an expression but not in a numeric context: the
+            // copy was never told about the orthographic bounds.
+            const declared = readProperty(
+                this,
+                owner,
+                expression.name.text,
+                expression,
+            );
+            if (declared) {
+                return declared;
+            }
         }
         if (
             owner?.kind === "tuple" &&
@@ -4325,26 +4149,6 @@ class Compiler
                 cpp: `${owner.msaaSamples ?? 4}.0f`,
                 staticNumber: owner.msaaSamples ?? 4,
             };
-        }
-        if (owner?.kind === "camera") {
-            const nativeProperty = new Map([
-                ["alpha", "alpha"],
-                ["beta", "beta"],
-                ["radius", "radius"],
-                ["fov", "fov"],
-                ["nearPlane", "near_plane"],
-                ["farPlane", "far_plane"],
-                ["speed", "speed"],
-            ]).get(expression.name.text);
-            if (nativeProperty) {
-                return {
-                    kind: "number",
-                    cpp: `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value].${nativeProperty}`,
-                    ...(owner.engineCpp
-                        ? { engineCpp: owner.engineCpp }
-                        : {}),
-                };
-            }
         }
         return undefined;
     }

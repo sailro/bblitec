@@ -4,28 +4,8 @@ import { extname, resolve, sep } from "node:path";
 import ts from "typescript";
 import { chromium } from "playwright-core";
 import { readUpstreamPin } from "./upstream-source.js";
+import { resolveBrowserPath } from "./browser-path.js";
 
-function browserCandidates(): string[] {
-    if (process.platform === "win32") {
-        return [
-            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-            "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-            "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-        ];
-    }
-    if (process.platform === "darwin") {
-        return ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"];
-    }
-    return ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium"];
-}
-
-export function resolveBrowserPath(): string {
-    const candidates = [process.env.CHROME_PATH, ...browserCandidates()]
-        .filter((value): value is string => !!value);
-    const found = candidates.find((candidate) => existsSync(candidate));
-    if (!found) throw new Error("No Chromium browser found. Set CHROME_PATH.");
-    return found;
-}
 
 function mimeType(path: string): string {
     switch (extname(path).toLowerCase()) {

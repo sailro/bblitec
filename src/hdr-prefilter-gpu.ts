@@ -1,11 +1,12 @@
 import { createServer } from "node:http";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import {
     dirname,
     resolve,
 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+import { resolveBrowserPath } from "./browser-path.js";
 import {
     findRepositoryRoot,
     readUpstreamPin,
@@ -170,33 +171,6 @@ function loadPinnedHdrShaders(): {
     return { equirectToCube, prefilterCube };
 }
 
-function browserCandidates(): string[] {
-    if (process.platform === "win32") {
-        return [
-            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-            "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-            "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-            "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-        ];
-    }
-    if (process.platform === "darwin") {
-        return [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        ];
-    }
-    return ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium"];
-}
-
-function resolveBrowserPath(): string {
-    const candidates = [process.env.CHROME_PATH, ...browserCandidates()]
-        .filter((value): value is string => !!value);
-    const result = candidates.find((candidate) => existsSync(candidate));
-    if (!result) {
-        throw new Error("Exact HDR GGX prefiltering requires Chrome or Edge. Set CHROME_PATH.");
-    }
-    return result;
-}
 
 function concatenateFaces(faces: Uint16Array[]): Uint8Array {
     const faceBytes = faces[0]?.byteLength ?? 0;
@@ -246,7 +220,9 @@ export async function prefilterCubemapGgx(
     let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
     try {
         browser = await chromium.launch({
-            executablePath: resolveBrowserPath(),
+            executablePath: resolveBrowserPath(
+                "Exact HDR GGX prefiltering requires Chrome or Edge.",
+            ),
             headless: true,
             args: ["--enable-unsafe-webgpu"],
         });

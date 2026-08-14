@@ -1,22 +1,9 @@
 import ts from "typescript";
-import type {
-    Feature,
-    Value,
-    ValueKind,
-} from "../types.js";
+import type { Value } from "../types.js";
+import type { IntrinsicCallContext } from "./context.js";
 
-export interface MeshIntrinsicContext {
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    compileValue(expression: ts.Expression): Value;
-    expectKind(
-        value: Value,
-        kind: ValueKind,
-        node: ts.Node,
-    ): void;
+export interface MeshIntrinsicContext
+    extends IntrinsicCallContext {
     compileBoxOptions(
         expression: ts.Expression,
     ): [string, string, string];
@@ -41,7 +28,6 @@ export interface MeshIntrinsicContext {
     ): string;
     compileNumber(expression: ts.Expression): string;
     requireEngine(value: Value, node: ts.Node): string;
-    reachFeature(feature: Feature): void;
     unwrap(expression: ts.Expression): ts.Expression;
     fail(node: ts.Node, message: string): never;
 }

@@ -392,27 +392,14 @@ export function emitPropertyAssignment(
             left.expression.expression,
         );
         const property = left.name.text;
-        if (
-            ![
-                "alpha",
-                "beta",
-                "radius",
-                "fov",
-                "nearPlane",
-                "farPlane",
-            ].includes(property)
-        ) {
+        const nativeProperty =
+            cameraRecordField(property);
+        if (!nativeProperty) {
             context.fail(
                 left.name,
                 `Unsupported camera property '${property}'.`,
             );
         }
-        const nativeProperty =
-            property === "nearPlane"
-                ? "near_plane"
-                : property === "farPlane"
-                  ? "far_plane"
-                  : property;
         context.emit(
             `${context.requireEngine(scene, expression)}.cameras[${scene.cpp}.camera.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right)};`,
         );
@@ -633,31 +620,15 @@ export function emitPropertyAssignment(
             return;
         }
 
-        if (
-            target.kind === "camera" &&
-            [
-                "alpha",
-                "angularSensitivity",
-                "beta",
-                "radius",
-                "fov",
-                "nearPlane",
-                "farPlane",
-                "speed",
-            ].includes(property)
-        ) {
+        if (target.kind === "camera") {
             const nativeProperty =
-                property === "nearPlane"
-                    ? "near_plane"
-                    : property === "farPlane"
-                      ? "far_plane"
-                      : property === "angularSensitivity"
-                        ? "angular_sensibility"
-                      : property;
-            context.emit(
-                `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right)};`,
-            );
-            return;
+                cameraRecordField(property);
+            if (nativeProperty) {
+                context.emit(
+                    `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right)};`,
+                );
+                return;
+            }
         }
 
         const direct = directPropertyAssignment(
@@ -772,6 +743,7 @@ function requireSimpleAssignment(
     }
 }
 import ts from "typescript";
+import { cameraRecordField } from "./properties.js";
 import type {
     Feature,
     LightKind,

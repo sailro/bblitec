@@ -1,17 +1,9 @@
 import ts from "typescript";
-import type {
-    Feature,
-    Value,
-    ValueKind,
-} from "../types.js";
+import type { Value } from "../types.js";
+import type { IntrinsicCallContext } from "./context.js";
 
-export interface SceneIntrinsicContext {
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    compileValue(expression: ts.Expression): Value;
+export interface SceneIntrinsicContext
+    extends IntrinsicCallContext {
     compileNumber(expression: ts.Expression): string;
     compileColor3(expression: ts.Expression): string;
     expectObjectLiteral(
@@ -21,11 +13,6 @@ export interface SceneIntrinsicContext {
         object: ts.ObjectLiteralExpression,
         name: string,
     ): ts.Expression | undefined;
-    expectKind(
-        value: Value,
-        kind: ValueKind,
-        node: ts.Node,
-    ): void;
     expectSameEngine(
         left: Value,
         right: Value,
@@ -33,7 +20,6 @@ export interface SceneIntrinsicContext {
     ): void;
     compileFrameCallback(expression: ts.Expression): string;
     requireEngine(value: Value, node: ts.Node): string;
-    reachFeature(feature: Feature): void;
     ensureDefaultRenderTask(
         scene: Value,
         node: ts.Node,
