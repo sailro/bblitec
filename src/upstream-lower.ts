@@ -454,6 +454,7 @@ class GeneratedSourceWriter {
             features.includes("mesh:box") ||
             features.includes("mesh:from-data") ||
             features.includes("mesh:ground") ||
+            features.includes("mesh:morph-targets") ||
             features.includes("mesh:plane") ||
             features.includes("mesh:sphere") ||
             features.includes("mesh:thin-instances") ||

@@ -17,7 +17,7 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 | Materials | Standard, PBR, GridMaterial, Standard cotangent-frame normal maps, PBR vertex colors and the Standard RGB ones behind `enableStandardVertexColors`; the opt-in setters `setPbrUnlit`, `setPbrSkybox` and `setPbrEmissive`; scene-local shader variants compiled from the entry file's own WGSL, with typed uniforms resolved to reflected offsets |
 | Material state | alpha mask/blend/coverage, reflectance, emissive strength, lighting intensities, double-sided, normal scale, shared texture scaling, transmission, IOR, volume, dispersion, clearcoat, sheen, iridescence |
 | Animation | deterministic seeking; property-animation groups over position/scaling/quaternion with LINEAR/STEP tracks; glTF LINEAR/CUBICSPLINE transforms and LINEAR morph weights; `KHR_animation_pointer` node-visibility targets on STEP samplers |
-| Deformation | recursive skeleton hierarchies, inverse bind matrices, four-weight GPU skinning, GPU position/normal/tangent morph targets, uncapped storage-buffer morphing, static GPU instancing, post-deformation flat normals |
+| Deformation | recursive skeleton hierarchies, inverse bind matrices, four-weight GPU skinning, GPU position/normal/tangent morph targets, direct single-target morph attachment on generated meshes, uncapped storage-buffer morphing, static GPU instancing, post-deformation flat normals |
 | Frame graph | render targets/tasks, material overrides, depth-only passes, 7+4 geometry MRTs, blits, MSAA resolve |
 | Runtime | typed handles/records, immediate AOT promises, typed JSON/binary views, tree-shaken GPU deformation and cyclic flat-normal uploads |
 | Shaders | WGSL through pinned Tint; DXIL/SPIR-V via normalized Tint HLSL and DXC; MSL via Tint; Dawn consumes the WGSL directly |
@@ -108,6 +108,7 @@ semantics side by side, with its risk and validation.
 | 247 | <img src="images/scenes/scene247.png" alt="Scene 247 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.001}} / \color{#1a7f37}{\textsf{0.014}}$ | $\color{#1a7f37}{\textsf{0.001}} / \color{#1a7f37}{\textsf{0.014}}$ | `EXT_mesh_gpu_instancing` T/R/S, one native instanced draw |
 | 248 | <img src="images/scenes/scene248.png" alt="Scene 248 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | external glTF and sampler modes |
 | 249 | <img src="images/scenes/scene249.png" alt="Scene 249 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.004}}$ | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.004}}$ | vertex-color alpha and mask cutoff |
+| 252 | <img src="images/scenes/scene252.png" alt="Scene 252 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | direct single-target morph deformation on a generated Standard sphere |
 | 254 | <img src="images/scenes/scene254.png" alt="Scene 254 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.001}} / \color{#1a7f37}{\textsf{0.004}}$ | $\color{#1a7f37}{\textsf{0.001}} / \color{#1a7f37}{\textsf{0.003}}$ | signed animation sampler accessors, quaternion slerp |
 | 255 | <img src="images/scenes/scene255.png" alt="Scene 255 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | normalized integer skin-weight accessors |
 | 256 | <img src="images/scenes/scene256.png" alt="Scene 256 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.008}} / \color{#1a7f37}{\textsf{0.077}}$ | $\color{#1a7f37}{\textsf{0.008}} / \color{#1a7f37}{\textsf{0.077}}$ | cotangent-frame normal mapping on a mesh with no TANGENT accessor |
@@ -207,6 +208,8 @@ in-process pinned Tint at startup, with no offline artifacts or shader cache.
   normals
 - glTF STEP channels, multiple-clip controls, broader property targets,
   and Standard scenes beyond two simultaneous lights remain unsupported
+- direct `createMorphTargets` covers one target attached to one mesh; broader
+  target sets and reusable target objects remain unsupported
 - scene fog is ported for PBR, Standard, and image-skybox surfaces; fog
   composed with Grid, custom-shader, environment-ground/DDS-skybox
   background, transmission, geometry-output, or diagnostic surfaces

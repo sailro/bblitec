@@ -27,6 +27,18 @@ export interface MeshIntrinsicContext
         expression: ts.Expression,
     ): string;
     compileNumber(expression: ts.Expression): string;
+    expectObjectLiteral(
+        expression: ts.Expression,
+    ): ts.ObjectLiteralExpression;
+    expectStaticArrayLiteral(
+        expression: ts.Expression,
+    ): ts.ArrayLiteralExpression;
+    objectProperty(
+        object: ts.ObjectLiteralExpression,
+        name: string,
+    ): ts.Expression | undefined;
+    allocateTemporaryCppName(label: string): string;
+    emit(line: string): void;
     requireEngine(value: Value, node: ts.Node): string;
     unwrap(expression: ts.Expression): ts.Expression;
     fail(node: ts.Node, message: string): never;
@@ -95,6 +107,7 @@ export function compileMeshIntrinsic(
                     `${optional.join(", ")})`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+                directMorphCompatible: true,
             };
         }
 
@@ -203,6 +216,7 @@ export function compileMeshIntrinsic(
                     `bbl::BoxOptions{${options.join(", ")}})`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+                directMorphCompatible: true,
             };
         }
 
@@ -234,6 +248,7 @@ export function compileMeshIntrinsic(
                     `bbl::Vec2{${options[3]}, ${options[4]}}})`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+                directMorphCompatible: true,
             };
         }
 
@@ -257,6 +272,7 @@ export function compileMeshIntrinsic(
                     `bbl::PlaneOptions{${options.join(", ")}})`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+                directMorphCompatible: true,
             };
         }
 
@@ -280,6 +296,219 @@ export function compileMeshIntrinsic(
                     `bbl::SphereOptions{${options.join(", ")}})`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+                directMorphCompatible: true,
+            };
+        }
+
+        case "createSphereData": {
+            context.expectArgumentCount(call, 0, 1);
+            const options = call.arguments[0]
+                ? context.compileSphereOptions(
+                      call.arguments[0],
+                  )
+                : ["32u", "1.0f", "1.0f", "1.0f"];
+            const temporary =
+                context.allocateTemporaryCppName(
+                    "sphere_data",
+                );
+            context.emit(
+                `bbl::SphereMeshData ${temporary} = bbl::create_sphere_data(` +
+                    `bbl::SphereOptions{${options.join(", ")}});`,
+            );
+            context.reachFeature("mesh:sphere");
+            return {
+                kind: "record",
+                cpp: "",
+                recordProperties: {
+                    positions: {
+                        kind: "data",
+                        cpp: `${temporary}.positions`,
+                        dataType: { kind: "f32array" },
+                    },
+                    normals: {
+                        kind: "data",
+                        cpp: `${temporary}.normals`,
+                        dataType: { kind: "f32array" },
+                    },
+                    uvs: {
+                        kind: "data",
+                        cpp: `${temporary}.uvs`,
+                        dataType: { kind: "f32array" },
+                    },
+                    indices: {
+                        kind: "data",
+                        cpp: `${temporary}.indices`,
+                        dataType: { kind: "u32array" },
+                    },
+                    vertexCount: {
+                        kind: "number",
+                        cpp: `static_cast<double>(${temporary}.vertex_count)`,
+                        dataType: { kind: "number" },
+                    },
+                    indexCount: {
+                        kind: "number",
+                        cpp: `static_cast<double>(${temporary}.index_count)`,
+                        dataType: { kind: "number" },
+                    },
+                },
+            };
+        }
+
+        case "createMorphTargets": {
+            context.expectArgumentCount(call, 4, 4);
+            const engine =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                engine,
+                "engine",
+                call.arguments[0]!,
+            );
+            const targets =
+                context.expectStaticArrayLiteral(
+                    call.arguments[1]!,
+                );
+            if (targets.elements.length !== 1) {
+                context.fail(
+                    targets,
+                    "Direct createMorphTargets currently supports exactly one target.",
+                );
+            }
+            const target = context.expectObjectLiteral(
+                targets.elements[0]!,
+            );
+            for (const property of target.properties) {
+                const name =
+                    (ts.isPropertyAssignment(property) ||
+                        ts.isShorthandPropertyAssignment(
+                            property,
+                        )) &&
+                    (ts.isIdentifier(property.name) ||
+                        ts.isStringLiteral(property.name))
+                        ? property.name.text
+                        : undefined;
+                if (
+                    name !== "positions" &&
+                    name !== "normals"
+                ) {
+                    context.fail(
+                        property,
+                        "Morph targets support positions and normals.",
+                    );
+                }
+            }
+            const positions = context.objectProperty(
+                target,
+                "positions",
+            );
+            const normals = context.objectProperty(
+                target,
+                "normals",
+            );
+            if (!positions || !normals) {
+                context.fail(
+                    target,
+                    "Morph targets require positions and normals.",
+                );
+            }
+            const normalValue =
+                context.unwrap(normals).kind ===
+                ts.SyntaxKind.NullKeyword
+                    ? "{}"
+                    : context.compileTypedArrayArgument(
+                          normals,
+                          "f32array",
+                      );
+            const weights = context.unwrap(
+                call.arguments[3]!,
+            );
+            let weight = "0.0f";
+            if (
+                weights.kind !==
+                ts.SyntaxKind.NullKeyword
+            ) {
+                const values =
+                    context.expectStaticArrayLiteral(
+                        weights,
+                    );
+                if (values.elements.length !== 1) {
+                    context.fail(
+                        values,
+                        "Direct createMorphTargets requires one initial weight.",
+                    );
+                }
+                weight = context.compileNumber(
+                    values.elements[0]!,
+                );
+            }
+            context.reachFeature(
+                "mesh:morph-targets",
+            );
+            return {
+                kind: "morph-targets",
+                cpp: "",
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
+                morphTarget: {
+                    positionsCpp:
+                        context.compileTypedArrayArgument(
+                            positions,
+                            "f32array",
+                        ),
+                    normalsCpp: normalValue,
+                    vertexCountCpp:
+                        context.compileNumber(
+                            call.arguments[2]!,
+                        ),
+                    weightCpp: weight,
+                },
+            };
+        }
+
+        case "setMorphTargetWeights": {
+            context.expectArgumentCount(call, 3, 3);
+            const engine =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                engine,
+                "engine",
+                call.arguments[0]!,
+            );
+            const morph =
+                context.compileValue(call.arguments[1]!);
+            context.expectKind(
+                morph,
+                "morph-targets",
+                call.arguments[1]!,
+            );
+            if (
+                morph.engineCpp !==
+                (engine.engineCpp ?? engine.cpp)
+            ) {
+                context.fail(
+                    call,
+                    "Morph targets and engine must belong to the same engine.",
+                );
+            }
+            const mesh = morph.morphTarget?.meshCpp;
+            if (!mesh) {
+                context.fail(
+                    call.arguments[1]!,
+                    "Morph targets must be attached to a mesh before their weights are updated.",
+                );
+            }
+            const weights =
+                context.compileTypedArrayArgument(
+                    call.arguments[2]!,
+                    "f32array",
+                );
+            context.reachFeature(
+                "mesh:morph-targets",
+            );
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_morph_target_weights(${engine.cpp}, ` +
+                    `${mesh}, ${weights})`,
             };
         }
 
@@ -303,6 +532,7 @@ export function compileMeshIntrinsic(
                     `bbl::TorusOptions{${options.join(", ")}})`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+                directMorphCompatible: true,
             };
         }
 

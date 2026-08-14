@@ -116,12 +116,12 @@ test("keeps registered Babylon Lite scenes byte-identical to the pin", () => {
     }
 });
 
-test("keeps registered Babylon Lite demo modules byte-identical to the pin", () => {
+test("keeps registered Babylon Lite support modules byte-identical to the pin", () => {
     const manifest = corpusManifest();
     for (const module of manifest.modules ?? []) {
         assert.match(
             module.upstreamPath,
-            /^lab\/lite\/src\/demos\//,
+            /^lab\/lite\/src\/(?:demos|shared)\//,
         );
         assert.equal(
             module.source,

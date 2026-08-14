@@ -444,7 +444,11 @@ async function main(): Promise<void> {
         pbrDiagnostics: options.pbrDiagnostics,
         shaderPrograms,
         geometryOutputTasks: result.manifest.geometryOutputTasks,
-        gpuDeformation: specializationFeatures.gpuDeformation,
+        gpuDeformation:
+            specializationFeatures.gpuDeformation ||
+            result.manifest.features.includes(
+                "mesh:morph-targets",
+            ),
         morphStorage: specializationFeatures.morphStorage,
         nonTrianglePrimitives:
             specializationFeatures.nonTrianglePrimitives,

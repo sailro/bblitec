@@ -724,6 +724,15 @@ struct SphereOptions {
     float diameter_z = 1.0f;
 };
 
+struct SphereMeshData {
+    std::vector<float> positions;
+    std::vector<float> normals;
+    std::vector<float> uvs;
+    std::vector<std::uint32_t> indices;
+    std::uint32_t vertex_count = 0;
+    std::uint32_t index_count = 0;
+};
+
 struct TorusOptions {
     float diameter = 1.0f;
     float thickness = 0.5f;
@@ -754,6 +763,18 @@ MeshHandle create_box(Engine& engine, BoxOptions options = {});
 MeshHandle create_ground(Engine& engine, GroundOptions options = {});
 MeshHandle create_plane(Engine& engine, PlaneOptions options = {});
 MeshHandle create_sphere(Engine& engine, SphereOptions options = {});
+SphereMeshData create_sphere_data(SphereOptions options = {});
+void attach_morph_target(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& positions,
+    const std::vector<float>& normals,
+    double vertex_count,
+    float weight);
+void set_morph_target_weights(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& weights);
 MeshHandle create_torus(Engine& engine, TorusOptions options = {});
 MeshHandle create_mesh_from_data(
     Engine& engine,

@@ -31,6 +31,19 @@ export class FactoryLowerer {
                 sphereModule,
                 "createSphereData",
             );
+        const morphModule =
+            "src/morph/create-morph-targets.ts";
+        const morphFile =
+            this.context.sourceFile(morphModule);
+        const { declaration: morphTargets } =
+            this.context.functionDeclaration(
+                morphModule,
+                "createMorphTargets",
+            );
+        this.context.functionDeclaration(
+            morphModule,
+            "setMorphTargetWeights",
+        );
         const { file: torusFile, declaration: torus } =
             this.context.functionDeclaration(
                 torusModule,
@@ -130,6 +143,25 @@ export class FactoryLowerer {
                 );
             }
         };
+
+        assertVariable(
+            morphFile,
+            "MORPH_WEIGHTS_HEADER_BYTES",
+            "16",
+            "Morph weights header bytes",
+        );
+        assertVariable(
+            morphFile,
+            "MORPH_FLOATS_PER_VERTEX",
+            "6",
+            "Morph floats per vertex",
+        );
+        assertVariable(
+            morphTargets,
+            "targetCount",
+            "targets.length",
+            "Morph target count",
+        );
 
         assertVariable(
             boxFile,
@@ -489,12 +521,12 @@ export class FactoryLowerer {
         const value = (input: number): string => this.context.floatLiteral(input);
         return {
             modulePath,
-            symbolName: "createBox,createGround,createPlane,createSphere,createTorus,createMeshFromData",
+            symbolName: "createBox,createGround,createPlane,createSphere,createSphereData,createMorphTargets,setMorphTargetWeights,createTorus,createMeshFromData",
             header: "",
             source: `// ${this.context.provenance(
                 modulePath,
-                "createBox, createGround, createPlane, createSphere, createTorus, createMeshFromData",
-                "src/mesh/create-box.ts, src/mesh/create-ground.ts, src/mesh/create-plane.ts, src/mesh/create-sphere.ts, src/mesh/create-torus.ts defaults, and src/math/compute-aabb.ts bounds folding",
+                "createBox, createGround, createPlane, createSphere, createSphereData, createMorphTargets, setMorphTargetWeights, createTorus, createMeshFromData",
+                "src/mesh/create-box.ts, src/mesh/create-ground.ts, src/mesh/create-plane.ts, src/mesh/create-sphere.ts, src/morph/create-morph-targets.ts, src/mesh/create-torus.ts defaults, and src/math/compute-aabb.ts bounds folding",
             )}
 #include <bblite/runtime.hpp>
 
@@ -709,7 +741,7 @@ MeshHandle create_plane(Engine& engine, PlaneOptions options) {
     return MeshHandle{static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
 
-MeshHandle create_sphere(Engine& engine, SphereOptions options) {
+static ModelGeometry build_sphere_geometry(SphereOptions options) {
     const std::uint32_t segments =
         std::max<std::uint32_t>(3, options.segments);
     const Vec3 radius{
@@ -766,6 +798,49 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
     for (ModelVertex& vertex : geometry.vertices) {
         vertex.local_position = vertex.position;
     }
+    return geometry;
+}
+
+SphereMeshData create_sphere_data(SphereOptions options) {
+    const ModelGeometry geometry =
+        build_sphere_geometry(options);
+    SphereMeshData result;
+    result.positions.reserve(
+        geometry.vertices.size() * 3);
+    result.normals.reserve(
+        geometry.vertices.size() * 3);
+    result.uvs.reserve(
+        geometry.vertices.size() * 2);
+    for (const ModelVertex& vertex : geometry.vertices) {
+        result.positions.insert(
+            result.positions.end(),
+            {
+                vertex.position.x,
+                vertex.position.y,
+                vertex.position.z,
+            });
+        result.normals.insert(
+            result.normals.end(),
+            {
+                vertex.normal.x,
+                vertex.normal.y,
+                vertex.normal.z,
+            });
+        result.uvs.insert(
+            result.uvs.end(),
+            {vertex.uv.x, vertex.uv.y});
+    }
+    result.indices = geometry.indices;
+    result.vertex_count = static_cast<std::uint32_t>(
+        geometry.vertices.size());
+    result.index_count = static_cast<std::uint32_t>(
+        geometry.indices.size());
+    return result;
+}
+
+MeshHandle create_sphere(Engine& engine, SphereOptions options) {
+    ModelGeometry geometry =
+        build_sphere_geometry(options);
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::sphere;
@@ -777,6 +852,105 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
     mesh.geometry = static_cast<std::uint32_t>(engine.geometries.size() - 1);
     engine.meshes.push_back(mesh);
     return MeshHandle{static_cast<std::uint32_t>(engine.meshes.size() - 1)};
+}
+
+void attach_morph_target(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& positions,
+    const std::vector<float>& normals,
+    double vertex_count,
+    float weight) {
+    if (
+        mesh.value >= engine.meshes.size() ||
+        !std::isfinite(vertex_count) ||
+        vertex_count < 0.0 ||
+        std::floor(vertex_count) != vertex_count) {
+        throw std::runtime_error(
+            "Invalid direct morph target mesh or vertex count.");
+    }
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (
+        record.geometry == invalid_handle ||
+        record.geometry >= engine.geometries.size()) {
+        throw std::runtime_error(
+            "Direct morph targets require mesh geometry.");
+    }
+    ModelGeometry& geometry =
+        engine.geometries[record.geometry];
+    const std::size_t count =
+        static_cast<std::size_t>(vertex_count);
+    if (
+        count != geometry.vertices.size() ||
+        positions.size() != count * 3 ||
+        (!normals.empty() &&
+         normals.size() != count * 3)) {
+        throw std::runtime_error(
+            "Direct morph target data does not match the mesh vertex count.");
+    }
+    std::vector<Vec3> position_deltas(
+        count,
+        Vec3{});
+    std::vector<Vec3> normal_deltas(
+        count,
+        Vec3{});
+    for (
+        std::size_t index = 0;
+        index < count;
+        ++index) {
+        // The shared GPU upload mirrors glTF source-space deltas on X.
+        // Primitive data is already in native space, so store the inverse
+        // mirror here and let that one upload contract restore the source
+        // delta for both paths.
+        position_deltas[index] = Vec3{
+            -positions[index * 3],
+            positions[index * 3 + 1],
+            positions[index * 3 + 2],
+        };
+        if (!normals.empty()) {
+            normal_deltas[index] = Vec3{
+                -normals[index * 3],
+                normals[index * 3 + 1],
+                normals[index * 3 + 2],
+            };
+        }
+    }
+    geometry.morph_positions.clear();
+    geometry.morph_positions.push_back(
+        std::move(position_deltas));
+    geometry.morph_normals.clear();
+    geometry.morph_normals.push_back(
+        std::move(normal_deltas));
+    geometry.morph_tangents.assign(
+        1,
+        std::vector<Vec3>(count, Vec3{}));
+    record.gpu_deformation = true;
+    record.morph_weights = {};
+    record.morph_weights[0] = weight;
+    record.morph_storage_weights = {weight};
+    ++record.morph_weights_version;
+    ++record.transform_version;
+}
+
+void set_morph_target_weights(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& weights) {
+    if (mesh.value >= engine.meshes.size()) {
+        throw std::runtime_error(
+            "Invalid direct morph target mesh.");
+    }
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (!record.gpu_deformation) {
+        throw std::runtime_error(
+            "Morph target weights require an attached morph target.");
+    }
+    const float weight =
+        weights.empty() ? 0.0f : weights[0];
+    record.morph_weights = {};
+    record.morph_weights[0] = weight;
+    record.morph_storage_weights = {weight};
+    ++record.morph_weights_version;
 }
 
 MeshHandle create_torus(Engine& engine, TorusOptions options) {
