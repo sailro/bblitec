@@ -4029,35 +4029,15 @@ bool run_gpu_engine(Engine& engine) {
         CameraPointerState pointer_state;
         const std::string screenshot_path = frame_options.screenshot_path;
         const long screenshot_frame = frame_options.screenshot_frame;
-        bool screenshot_saved = false;
-        bool id_buffer_saved = false;
-        bool cluster_buffer_saved = false;
-        bool diagnostics_saved = false;
-        const long configured = frame_options.benchmark_frames;
-        const bool benchmark = configured > 0;
-        const long warmup = benchmark ? 30 : 0;
+        const bool benchmark = frame_options.benchmarking();
+        const long warmup = frame_options.benchmark_warmup();
         const long limit = frame_options.frame_budget();
+        CaptureGate captures(frame_options, limit);
         std::vector<double> samples;
         bool running = true;
         long frame = 0;
         double previous_frame_time = 0.0;
-        // Topology updates defer captures by one frame, and null
-        // swapchain acquisitions advance scene callbacks without
-        // consuming a frame, so a requested capture may still be
-        // pending at the configured frame limit. Extend the loop by a
-        // bounded grace period until every requested capture lands.
-        const auto pending_capture = [&] {
-            return (!screenshot_path.empty() && !screenshot_saved) ||
-                (!id_buffer_path.empty() && !id_buffer_saved) ||
-                (!cluster_buffer_path.empty() &&
-                 !cluster_buffer_saved) ||
-                (!diagnostic_directory.empty() && !diagnostics_saved);
-        };
-        constexpr long capture_grace_frames = 8;
-        while (running &&
-               (limit <= 0 || frame < limit ||
-                (pending_capture() &&
-                 frame < limit + capture_grace_frames))) {
+        while (captures.keep_running(running, frame)) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
@@ -4305,19 +4285,19 @@ bool run_gpu_engine(Engine& engine) {
                 !topology_updated;
             const bool capture_frame =
                 capture_ready &&
-                !screenshot_saved &&
+                !captures.screenshot_saved &&
                 !screenshot_path.empty();
             const bool capture_ids =
                 capture_ready &&
-                !id_buffer_saved &&
+                !captures.id_buffer_saved &&
                 !id_buffer_path.empty();
             const bool capture_clusters =
                 capture_ready &&
-                !cluster_buffer_saved &&
+                !captures.cluster_buffer_saved &&
                 !cluster_buffer_path.empty();
             const bool capture_diagnostics =
                 capture_ready &&
-                !diagnostics_saved &&
+                !captures.diagnostics_saved &&
                 !diagnostic_directory.empty();
             const std::array<float, 16> matrix =
                 upstream::build_view_projection(
@@ -5224,7 +5204,7 @@ bool run_gpu_engine(Engine& engine) {
                         width,
                         height,
                         screenshot_path);
-                    screenshot_saved = true;
+                    captures.screenshot_saved = true;
                 } else if (!SDL_SubmitGPUCommandBuffer(command)) {
                     gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
                 }
@@ -6011,7 +5991,7 @@ bool run_gpu_engine(Engine& engine) {
                     width,
                     height,
                     screenshot_path);
-                screenshot_saved = true;
+                captures.screenshot_saved = true;
             } else if (!SDL_SubmitGPUCommandBuffer(command)) {
                 gpu_error("SDL_SubmitGPUCommandBuffer");
             }
@@ -6026,7 +6006,7 @@ bool run_gpu_engine(Engine& engine) {
                     engine,
                     id_buffer_path,
                     false);
-                id_buffer_saved = true;
+                captures.id_buffer_saved = true;
             }
             if (capture_clusters) {
                 save_geometry_id_buffer_png(
@@ -6038,7 +6018,7 @@ bool run_gpu_engine(Engine& engine) {
                     engine,
                     cluster_buffer_path,
                     true);
-                cluster_buffer_saved = true;
+                captures.cluster_buffer_saved = true;
             }
             if (capture_diagnostics) {
                 save_pbr_diagnostic_buffers(
@@ -6051,7 +6031,7 @@ bool run_gpu_engine(Engine& engine) {
                     engine,
                     camera,
                     diagnostic_directory);
-                diagnostics_saved = true;
+                captures.diagnostics_saved = true;
             }
             const double end = monotonic_milliseconds();
             if (benchmark && frame >= warmup) {

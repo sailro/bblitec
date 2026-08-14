@@ -4895,28 +4895,11 @@ bool run_dawn_engine(Engine& engine) {
             static_cast<std::size_t>(benchmark_frames));
     }
 
-    bool screenshot_saved = false;
-    bool id_buffer_saved = false;
-    bool cluster_buffer_saved = false;
-    bool diagnostics_saved = false;
+    CaptureGate captures(frame_options, limit);
     bool running = true;
     long frame = 0;
-    // Topology updates defer captures by one frame, so a requested
-    // capture may still be pending at the configured frame limit;
-    // extend the loop by a bounded grace period exactly like the SDL
-    // backend.
-    const auto pending_capture = [&] {
-        return (!screenshot_path.empty() && !screenshot_saved) ||
-            (!id_buffer_path.empty() && !id_buffer_saved) ||
-            (!cluster_buffer_path.empty() && !cluster_buffer_saved) ||
-            (!diagnostic_directory.empty() && !diagnostics_saved);
-    };
-    constexpr long capture_grace_frames = 8;
     CameraPointerState pointer_state;
-    while (running &&
-           (limit <= 0 || frame < limit ||
-            (pending_capture() &&
-             frame < limit + capture_grace_frames))) {
+    while (captures.keep_running(running, frame)) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) running = false;
@@ -6240,7 +6223,7 @@ bool run_dawn_engine(Engine& engine) {
 
         const bool capture_frame =
             frame >= screenshot_frame &&
-            !screenshot_saved &&
+            !captures.screenshot_saved &&
             !screenshot_path.empty() &&
             !topology_updated;
         WGPUBuffer readback = nullptr;
@@ -6316,14 +6299,14 @@ bool run_dawn_engine(Engine& engine) {
                 bytes_per_row,
                 state.surface_format == WGPUTextureFormat_BGRA8Unorm,
                 screenshot_path);
-            screenshot_saved = true;
+            captures.screenshot_saved = true;
         }
         if (readback) wgpuBufferRelease(readback);
 
         const bool capture_ready =
             frame >= screenshot_frame && !topology_updated;
         if (
-            capture_ready && !id_buffer_saved &&
+            capture_ready && !captures.id_buffer_saved &&
             !id_buffer_path.empty()) {
             save_dawn_geometry_id_buffer(
                 state,
@@ -6333,10 +6316,10 @@ bool run_dawn_engine(Engine& engine) {
                 engine,
                 id_buffer_path,
                 false);
-            id_buffer_saved = true;
+            captures.id_buffer_saved = true;
         }
         if (
-            capture_ready && !cluster_buffer_saved &&
+            capture_ready && !captures.cluster_buffer_saved &&
             !cluster_buffer_path.empty()) {
             save_dawn_geometry_id_buffer(
                 state,
@@ -6346,10 +6329,10 @@ bool run_dawn_engine(Engine& engine) {
                 engine,
                 cluster_buffer_path,
                 true);
-            cluster_buffer_saved = true;
+            captures.cluster_buffer_saved = true;
         }
         if (
-            capture_ready && !diagnostics_saved &&
+            capture_ready && !captures.diagnostics_saved &&
             !diagnostic_directory.empty()) {
             save_dawn_pbr_diagnostics(
                 state,
@@ -6360,7 +6343,7 @@ bool run_dawn_engine(Engine& engine) {
                 engine,
                 camera,
                 diagnostic_directory);
-            diagnostics_saved = true;
+            captures.diagnostics_saved = true;
         }
 
         wgpuSurfacePresent(state.surface);

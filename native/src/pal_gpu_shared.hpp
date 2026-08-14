@@ -584,6 +584,51 @@ inline FrameOptions read_frame_options() {
 }
 
 /**
+ * Which requested captures have landed, and whether the loop may stop.
+ *
+ * A measured run ends when the frame budget is spent, except that a
+ * capture can still be outstanding: a topology update defers it by a
+ * frame, and a null swapchain acquisition advances scene callbacks
+ * without consuming one. Both backends therefore extend the loop by a
+ * bounded grace period, and both used to carry their own copy of the
+ * rule -- including the comment saying it matched the other one.
+ */
+class CaptureGate {
+public:
+    CaptureGate(const FrameOptions& options, long limit)
+        : options_(&options), limit_(limit) {}
+
+    bool screenshot_saved = false;
+    bool id_buffer_saved = false;
+    bool cluster_buffer_saved = false;
+    bool diagnostics_saved = false;
+
+    [[nodiscard]] bool pending() const {
+        return (!options_->screenshot_path.empty() &&
+                !screenshot_saved) ||
+            (!options_->id_buffer_path.empty() &&
+             !id_buffer_saved) ||
+            (!options_->cluster_buffer_path.empty() &&
+             !cluster_buffer_saved) ||
+            (!options_->diagnostic_directory.empty() &&
+             !diagnostics_saved);
+    }
+
+    /** Whether the loop should run another frame. */
+    [[nodiscard]] bool keep_running(bool running, long frame) const {
+        return running &&
+            (limit_ <= 0 || frame < limit_ ||
+             (pending() && frame < limit_ + grace_frames));
+    }
+
+    static constexpr long grace_frames = 8;
+
+private:
+    const FrameOptions* options_;
+    long limit_;
+};
+
+/**
  * The benchmark summary both backends print. The numbers are compared
  * across backends, so the shape of the line and the statistics behind it
  * have to be produced the same way.
