@@ -344,18 +344,24 @@ The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
 **Swept 2026-08-13:** 184 unregistered scenes compiled, 8 clean and 176
-blocked across 80 distinct first blockers. Scenes 267, 268 and 256 have since
-graduated to measured gates, leaving 181 unregistered, re-swept unchanged on
-2026-08-14 (the same clean set, same clusters). The lane partition
+blocked across 80 distinct first blockers. Scenes 267, 268, 256 and 30 have
+since graduated to measured gates, leaving 180 unregistered, re-swept unchanged
+on 2026-08-14 (the same clean set, same clusters). The lane partition
 below was written from reading and holds up: no scene in the compiler-contract
 lane compiles, so the compiler has not silently outgrown its inventory. Each
 scene's entry is its FIRST blocker; clearing one may expose another.
 
-**Compile clean (7):** 9, 30, 34, 242, 244, 253, 260. All seven are past the
-compiler and blocked downstream in the loader/runtime lane. Scene 256 was the
-eighth and graduated to a measured gate on 2026-08-14 — it was the only one of
-the clean set with no downstream blocker, which is what made it the next
-integration rather than the loader work the others need.
+**Compile clean (6):** 9, 34, 242, 244, 253, 260. All six are past the compiler
+and blocked downstream in the loader/runtime lane. Two of the original eight
+graduated on 2026-08-14: scene 256, the only one with no downstream blocker at
+all, and scene 30 once generation-time Draco decoding, texture-transform
+offsets and the undeclared-tangent decision landed.
+
+Each of the six was **run**, not just read, and three carried misleading
+labels — scene 30 was Draco rather than "an accessor without a `bufferView`",
+and 34/242/244/253 are four distinct `KHR_animation_pointer` contracts rather
+than one animation-channel gap. Run a candidate before scoping it; the first
+blocker a scene reports is the first line of its chain, not its size.
 
 **Largest first-blocker clusters:** `loadSpriteAtlas` 16, browser-dependent
 condition 17 (15 of them deferred-lane physics), `parseNodeMaterialFromSnippet`
@@ -392,12 +398,12 @@ platform, user-input, or external-service contract.
 Scenes 256 and 280 arrived with the 1.20.0 pin: 256 is a measured gate as of
 2026-08-14, and 280 blocks on `parseNodeParticleSource` as expected.
 
-**Integrate first (148 scenes):** 4, 9, 11, 12, 15-23, 25-27, 30,
+**Integrate first (147 scenes):** 4, 9, 11, 12, 15-23, 25-27,
 34, 36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229,
 231, 241, 242, 244, 251-253, 260-264, 269-271, 275-279. Scenes 3, 7,
 35, and 216 graduated to measured parity gates on 2026-08-12, and Scenes
-267, 268 and 256 on 2026-08-14.
+267, 268, 256 and 30 on 2026-08-14.
 
 This lane includes static CSG/CSG2, compressed assets and splats,
 deterministic picking in Scenes 113-115, 117, 118, and 129, and the
@@ -505,15 +511,43 @@ runtime gaps may remain hidden behind it.
   effect on gated Scenes 24/145 (HillValley has neither); reached by ungated
   Scenes 9 and 143 (Sponza `.babylon`).
 - [ ] Scene 9: support nullable glTF fields currently read as strings.
-- [ ] Scene 30: support the reached glTF data without a `bufferView`.
-- [ ] Scenes 34, 242, 244, 253: extend native glTF animation channel
-  coverage (LINEAR/CUBICSPLINE scale landed with Scene 7; STEP channels
-  and the remaining audited gaps stay).
+- [ ] Scenes 34, 242, 244, 253: support `KHR_animation_pointer`, whose
+  channel `path` is `pointer` and whose target is a JSON pointer into the
+  document rather than a node TRS field. These were filed as one
+  animation-channel gap; running them showed four different contracts
+  behind the same message, smallest first:
+  - Scene 34, one target — `/nodes/N/extensions/KHR_node_visibility/visible`.
+    Also needs `KHR_node_visibility` itself: the pinned extension cascades
+    `visible=false` through the subtree (`setSubtreeVisible`) and the render
+    path *and camera-AABB filter* skip those nodes, so it couples to camera
+    framing, not just to draw submission.
+  - Scene 242, nine targets — material `emissiveFactor`, `baseColorFactor`
+    and `KHR_materials_emissive_strength/emissiveStrength`: animated material
+    uniforms.
+  - Scene 244, two targets — `KHR_texture_transform/rotation` on a normal
+    texture and on a volume thickness texture, so it needs animated UV
+    transforms plus clearcoat/specular/transmission/volume.
+  - Scene 253, sixty-nine targets across cameras, `KHR_lights_punctual` and
+    about ten material extensions. Last, not first.
+  All four seek to a fixed frame and pause for capture, so a gate needs the
+  value each pointer resolves to at that frame rather than a live animation
+  system.
 - [ ] Scene 37: it now fails during generation on `PBR material-extension
   marker changed: occlusion uv2 inner signature`, before the loader gap it
   was recorded under. That reads as marker drift rather than a missing
   feature, and it is the one scene whose position moved backwards.
-- [ ] Scene 260: support the reached non-triangle-list glTF primitive mode.
+- [ ] Scene 260: support the reached non-triangle-list glTF primitive mode
+  (mode 5, TRIANGLE_STRIP, uint32 indices, and no extensions at all — the
+  smallest unmeasured scene in the corpus). The pin does not convert strips
+  to lists: `load-gltf.ts` records a `_topology` index (1=points, 2=lines,
+  3=line-strip, 4=triangle-strip; LINE_LOOP and TRIANGLE_FAN unsupported,
+  as in BJS) and threads it into the pipeline through the opt-in
+  `_stdPrimitiveResolver`. So the native shape is a topology suffix on the
+  generated `RenderPipelineKind` — which already encodes cull mode and
+  winding — plus a field on each PAL's `PipelineKindTraits` and WebGPU's
+  `stripIndexFormat`. The glTF spec forbids index values equal to the
+  component type's maximum precisely so clients need not handle primitive
+  restart, so a strip is one contiguous run.
 
 ### Deferred external and platform-feature scenes
 
