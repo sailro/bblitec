@@ -1289,6 +1289,26 @@ export const scenes: readonly SceneDefinition[] = [
         },
     },
     {
+        id: "scene268",
+        name: "Scene 268 - Orthographic Camera",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene268.ts",
+        output: "generated/scene268",
+        title: "Babylon Lite Native - Orthographic Camera",
+        buildDirectory: "native/build-scene268-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/scene268/babylon-lite-golden.png",
+            },
+            actual: "artifacts/parity/scene268-native.png",
+            outputDirectory: "artifacts/parity/scene268",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [15, 18, 26],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene273",
         name: "Scene 273 - Runtime Material Family",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene273.ts",

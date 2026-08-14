@@ -136,6 +136,15 @@ CPU-side from GPU-side causes immediately.
 - [ ] Extend array coverage to `shift`/`unshift` and the `indexOf`
   `fromIndex` form when a reached scene needs them (`splice`,
   `indexOf`, and multi-argument `push` have landed).
+- [ ] Support off-center orthographic planes: `enableOrthographicCamera`
+  accepts explicit `left`/`right`/`bottom`/`top` bounds that replace the
+  half-extent derivation, and `disableOrthographicCamera` restores the
+  perspective projection. Scene 268 reaches neither, so the compiler
+  rejects those planes instead of deriving them silently and the native
+  camera record carries one extent. The orthographic branch also lives in
+  `build_view_projection` alone, so composing it with an environment
+  skybox or ground — which build their own perspective view-projection —
+  fails explicitly at generation.
 
 ### Closures and async
 
@@ -284,8 +293,8 @@ The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
 **Swept 2026-08-13:** 184 unregistered scenes compiled, 8 clean and 176
-blocked across 80 distinct first blockers. Scene 267 has since graduated to a
-measured gate, leaving 183 unregistered. The lane partition below was
+blocked across 80 distinct first blockers. Scenes 267 and 268 have since
+graduated to measured gates, leaving 182 unregistered. The lane partition below was
 written from reading and holds up: no scene in the compiler-contract lane
 compiles, so the compiler has not silently outgrown its inventory. Each
 scene's entry is its FIRST blocker; clearing one may expose another.
@@ -320,7 +329,7 @@ only for a contract no corpus scene exercises (a feature combination the corpus
 never composes, or a slice being built ahead of the scene that will use it),
 and delete it once corpus scenes cover the contract.
 
-The 183 unmeasured scenes are partitioned by the boundary required to reproduce
+The 182 unmeasured scenes are partitioned by the boundary required to reproduce
 their deterministic reference behavior, not by incidental browser helpers.
 Capture-inert demo controls and fixed-coordinate picking stay in the first
 lane when they can be erased or lowered inside the compiler, asset pipeline,
@@ -330,12 +339,12 @@ platform, user-input, or external-service contract.
 Scenes 256 and 280 arrived with the 1.20.0 pin and are now measured: 256
 compiles clean, 280 blocks on `parseNodeParticleSource` as expected.
 
-**Integrate first (149 scenes):** 4, 9, 11, 12, 15-23, 25-27, 30,
+**Integrate first (148 scenes):** 4, 9, 11, 12, 15-23, 25-27, 30,
 34, 36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229,
-231, 241, 242, 244, 251-253, 260-264, 268-271, 275-279. Scenes 3, 7,
-35, and 216 graduated to measured parity gates on 2026-08-12, and Scene
-267 on 2026-08-14.
+231, 241, 242, 244, 251-253, 260-264, 269-271, 275-279. Scenes 3, 7,
+35, and 216 graduated to measured parity gates on 2026-08-12, and Scenes
+267 and 268 on 2026-08-14.
 
 This lane includes static CSG/CSG2, compressed assets and splats,
 deterministic picking in Scenes 113-115, 117, 118, and 129, and the
@@ -357,7 +366,12 @@ runtime gaps may remain hidden behind it.
 - [ ] Scenes 4, 22, 65, 141: support light position setters.
 - [ ] Scene 115: support `Number.isFinite`, which is now its first
   blocker, then re-audit for deterministic picking.
-- [ ] Scenes 11, 144, 152, 157, 158, 179, 229: generalize static array resolution.
+- [ ] Scenes 11, 144, 152, 157, 158, 179: generalize static array
+  resolution. Module-level constant arrays now resolve through their own
+  initializers (Scene 268 reads one in a loop bound and indexes a color
+  table); these scenes reach array shapes that are not static literals.
+- [ ] Scene 229: lower the reached spread element, which is its first
+  blocker now that module-level constants resolve.
 - [ ] Scenes 12, 43: fold or explicitly lower the reached browser-dependent conditions.
 - [ ] Scenes 15, 67-72, 223: support `createSpotLight`.
 - [ ] Scenes 16, 226, 251, 261: extend numeric expression operators.
@@ -420,7 +434,6 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 241: fold the reached query-derived camera alpha.
 - [ ] Scene 252: generalize the reached structured argument.
 - [ ] Scenes 262-264, 276, 277: support node-particle sources.
-- [ ] Scene 268: support orthographic cameras.
 - [ ] Scene 269: support transform nodes.
 - [ ] Scene 270: support the reached mesh scaling setter.
 - [ ] Scene 275: support `loadFont`.

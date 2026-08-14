@@ -19,9 +19,17 @@ export interface CameraIntrinsicContext {
     ): void;
     compileVec3(expression: ts.Expression): string;
     compileNumber(expression: ts.Expression): string;
+    expectObjectLiteral(
+        expression: ts.Expression,
+    ): ts.ObjectLiteralExpression;
+    objectProperty(
+        object: ts.ObjectLiteralExpression,
+        name: string,
+    ): ts.Expression | undefined;
     requireEngine(value: Value, node: ts.Node): string;
     requireDefaultEngine(node: ts.Node): string;
     reachFeature(feature: Feature): void;
+    fail(node: ts.Node, message: string): never;
 }
 
 export function compileCameraIntrinsic(
@@ -83,6 +91,67 @@ export function compileCameraIntrinsic(
                     `${context.compileVec3(call.arguments[1]!)})`,
                 engineCpp: engine,
                 cameraKind: "free",
+            };
+        }
+
+        case "enableOrthographicCamera": {
+            // src/camera/orthographic.ts: the opt-in installs the
+            // projector and hands back live bounds that stay reachable
+            // as `camera.ortho`. The reached surface derives every plane
+            // from `halfHeight`; an explicit off-center plane would need
+            // its own record state, so it is rejected rather than
+            // silently derived.
+            context.expectArgumentCount(call, 1, 2);
+            const camera =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                camera,
+                "camera",
+                call.arguments[0]!,
+            );
+            let halfHeight = "1.0f";
+            const options = call.arguments[1];
+            if (options) {
+                const object =
+                    context.expectObjectLiteral(options);
+                for (const plane of [
+                    "left",
+                    "right",
+                    "bottom",
+                    "top",
+                ]) {
+                    if (
+                        context.objectProperty(
+                            object,
+                            plane,
+                        )
+                    ) {
+                        context.fail(
+                            options,
+                            `Orthographic '${plane}' planes are not lowered; the reached scenes derive every plane from halfHeight.`,
+                        );
+                    }
+                }
+                const value = context.objectProperty(
+                    object,
+                    "halfHeight",
+                );
+                if (value) {
+                    halfHeight =
+                        context.compileNumber(value);
+                }
+            }
+            context.reachFeature("camera:orthographic");
+            const engine = context.requireEngine(
+                camera,
+                call,
+            );
+            return {
+                kind: "camera-ortho",
+                cpp:
+                    `bbl::enable_orthographic_camera(` +
+                    `${engine}, ${camera.cpp}, ${halfHeight})`,
+                engineCpp: engine,
             };
         }
 

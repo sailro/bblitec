@@ -83,6 +83,7 @@ const featureSources: Record<Feature, string[]> = {
     "camera:arc-rotate": [],
     "camera:default": [],
     "camera:free": [],
+    "camera:orthographic": [],
     "environment:ibl": [],
     "environment:env": [],
     "environment:hdr": [],
@@ -237,6 +238,7 @@ class Compiler
                 ),
             (expression) => this.compileValue(expression),
             (expression) => this.compileValue(expression),
+            (expression) => this.compileValue(expression),
             (expression) =>
                 this.compileCondition(expression),
             (identifier) => this.lookup(identifier),
@@ -280,6 +282,11 @@ class Compiler
         }
         if (features.includes("camera:default")) {
             generatedSources.push("upstream/src/camera_default.cpp");
+        }
+        if (features.includes("camera:orthographic")) {
+            generatedSources.push(
+                "upstream/src/camera_orthographic.cpp",
+            );
         }
         if (features.includes("environment:env")) {
             generatedSources.push(
@@ -1340,7 +1347,12 @@ class Compiler
                 `Unsupported property value '${expression.getText()}'.`,
             );
         }
-        const owner = this.lookup(ownerExpression);
+        // Through compileValue rather than lookup: a module-level
+        // constant is never bound in a variable scope, so it resolves
+        // through its own initializer the way an entry-scope constant
+        // resolves through its binding. Unknown identifiers still fail
+        // in lookup at the end of that chain.
+        const owner = this.compileValue(ownerExpression);
         const property = expression.name.text;
         if (
             owner.kind === "engine" &&
@@ -1404,6 +1416,28 @@ class Compiler
                     },
                 };
             }
+            if (property === "ortho") {
+                // The pinned bounds object is also reachable as
+                // `camera.ortho` after the opt-in.
+                return {
+                    kind: "camera-ortho",
+                    cpp: owner.cpp,
+                    ...(owner.engineCpp
+                        ? { engineCpp: owner.engineCpp }
+                        : {}),
+                };
+            }
+        }
+        if (
+            owner.kind === "camera-ortho" &&
+            property === "halfHeight"
+        ) {
+            return {
+                kind: "number",
+                cpp: `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value].ortho_half_height`,
+            };
+        }
+        if (owner.kind === "camera") {
             if (property === "worldMatrix") {
                 if (owner.cameraKind !== "arc-rotate") {
                     this.fail(

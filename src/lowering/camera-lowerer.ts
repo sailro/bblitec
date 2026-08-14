@@ -104,6 +104,128 @@ CameraHandle create_arc_rotate_camera(
         };
     }
 
+    public lowerOrthographic(): LoweredSource {
+        const modulePath = "src/camera/orthographic.ts";
+        const symbolName = "enableOrthographicCamera";
+        // The reached surface stores one extent and derives the four
+        // planes from it, so the pinned default and that derivation are
+        // the contract this lowering depends on.
+        const { declaration: enable } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        const orthoAssignment = this.context
+            .findNodes(
+                enable,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node),
+            )
+            .find(
+                (expression) =>
+                    expression.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken &&
+                    this.context
+                        .propertyPath(expression.left)
+                        ?.join(".") === "camera.ortho",
+            );
+        if (!orthoAssignment) {
+            this.context.contractError(
+                enable,
+                "Expected the orthographic bounds to be published on the camera.",
+            );
+        }
+        const { declaration: bounds } =
+            this.context.functionDeclaration(
+                modulePath,
+                "createOrthographicBounds",
+            );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                bounds,
+                "halfHeight",
+            ),
+            "options.halfHeight ?? 1",
+            "Orthographic half-extent default",
+        );
+        const { declaration: writer } =
+            this.context.functionDeclaration(
+                modulePath,
+                "writeOrthoProjection",
+            );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                writer,
+                "halfWidth",
+            ),
+            "halfHeight * aspectRatio",
+            "Orthographic horizontal extent",
+        );
+        const projection = this.context
+            .findNodes(
+                writer,
+                (node): node is ts.CallExpression =>
+                    ts.isCallExpression(node),
+            )
+            .find(
+                (call) =>
+                    this.context
+                        .propertyPath(call.expression)
+                        ?.join(".") ===
+                    "mat4OrthoOffCenterLHToRef",
+            );
+        if (!projection) {
+            this.context.contractError(
+                writer,
+                "Expected the orthographic writer to call mat4OrthoOffCenterLHToRef.",
+            );
+        }
+        const planes = [
+            "out",
+            "b.left ?? -halfWidth",
+            "b.right ?? halfWidth",
+            "b.bottom ?? -halfHeight",
+            "b.top ?? halfHeight",
+            "camera.nearPlane",
+            "camera.farPlane",
+        ];
+        if (projection.arguments.length !== planes.length) {
+            this.context.contractError(
+                projection,
+                `Expected ${planes.length} orthographic projection arguments.`,
+            );
+        }
+        planes.forEach((expected, index) => {
+            this.context.assertExpressionShape(
+                projection.arguments[index]!,
+                expected,
+                `Orthographic projection argument ${index}`,
+            );
+        });
+        return {
+            modulePath,
+            symbolName,
+            header: "",
+            source: `// ${this.context.provenance(modulePath, symbolName)}
+#include <bblite/runtime.hpp>
+
+namespace bbl {
+
+CameraHandle enable_orthographic_camera(
+    Engine& engine,
+    CameraHandle camera,
+    float half_height) {
+    CameraRecord& record = engine.cameras[camera.value];
+    record.orthographic = true;
+    record.ortho_half_height = half_height;
+    return camera;
+}
+
+} // namespace bbl
+`,
+        };
+    }
+
     public lowerFreeFactory(): LoweredSource {
         const modulePath = "src/camera/free-camera.ts";
         const symbolName = "createFreeCamera";

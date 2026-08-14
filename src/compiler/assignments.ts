@@ -540,6 +540,20 @@ export function emitPropertyAssignment(
         }
 
         if (
+            target.kind === "camera-ortho" &&
+            property === "halfHeight"
+        ) {
+            // src/camera/orthographic.ts: the bounds stay live, and its
+            // setter only stores the extent and invalidates the
+            // projection cache. The native projection is rebuilt from the
+            // record every frame, so storing it is the whole contract.
+            context.emit(
+                `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].ortho_half_height ${operator} ${context.compileNumber(expression.right)};`,
+            );
+            return;
+        }
+
+        if (
             target.kind === "material" &&
             property === "backFaceCulling"
         ) {

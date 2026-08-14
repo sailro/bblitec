@@ -114,6 +114,13 @@ class GeneratedSourceWriter {
                 generated,
             );
         }
+        if (features.includes("camera:orthographic")) {
+            this.writeSource(
+                "upstream/src/camera_orthographic.cpp",
+                new CameraLowerer(context).lowerOrthographic(),
+                generated,
+            );
+        }
         if (features.includes("background:image-skybox")) {
             this.writeSource(
                 "upstream/src/image_skybox.cpp",
@@ -236,6 +243,19 @@ class GeneratedSourceWriter {
                     sheen: options.sheen,
                     iridescence: options.iridescence,
                     dispersion: options.dispersion,
+                    orthographicCamera: features.includes(
+                        "camera:orthographic",
+                    ),
+                    background:
+                        features.includes(
+                            "background:ground",
+                        ) ||
+                        features.includes(
+                            "background:skybox",
+                        ) ||
+                        features.includes(
+                            "background:image-skybox",
+                        ),
                     shaderPrograms: options.shaderPrograms,
                 }),
                 generated,

@@ -62,6 +62,7 @@ const fogWgslModule = "src/shader/wgsl-fog.ts";
 const pbrFogWgslModule = "src/material/pbr/pbr-fog-wgsl.ts";
 const skyboxCubemapModule =
     "src/material/standard/skybox-cubemap.ts";
+const orthoMatrixModule = "src/math/mat4-ortho-lh-to-ref.ts";
 const standardVertexColorFragmentModule =
     "src/material/standard/fragments/std-vertex-color-fragment.ts";
 const standardRenderableModule =
@@ -95,6 +96,8 @@ export class RendererLowerer {
         sheen?: boolean;
         iridescence?: boolean;
         dispersion?: boolean;
+        orthographicCamera?: boolean;
+        background?: boolean;
         shaderPrograms?: CompiledShaderProgram[];
     } = {}): LoweredSource {
         for (const symbol of ["buildBindings", "sortTransparentBindings", "drawList"]) {
@@ -122,6 +125,37 @@ export class RendererLowerer {
                 "src/scene/world-matrix-state.ts",
                 "composeTrsLocalMatrix",
             );
+        }
+        if (options.orthographicCamera && options.background) {
+            // Environment backgrounds build their own view-projection,
+            // which still writes the perspective form; an orthographic
+            // scene would draw its skybox or ground through a different
+            // projection than its meshes.
+            throw new Error(
+                "Orthographic cameras are lowered for the scene projection only; environment skyboxes and grounds still build a perspective view-projection.",
+            );
+        }
+        if (options.orthographicCamera) {
+            // The reverse-Z off-center writer the projection branch
+            // transcribes term by term.
+            const orthoSource = this.context.store.getSource(
+                orthoMatrixModule,
+            );
+            for (const marker of [
+                "out[0] = 2 / (right - left);",
+                "out[5] = 2 / (top - bottom);",
+                "out[10] = -1 / range;",
+                "out[12] = (left + right) / (left - right);",
+                "out[13] = (top + bottom) / (bottom - top);",
+                "out[14] = far / range;",
+                "out[15] = 1;",
+            ]) {
+                if (!orthoSource.includes(marker)) {
+                    throw new Error(
+                        `Pinned Babylon Lite orthographic projection changed: ${marker}`,
+                    );
+                }
+            }
         }
         const { declaration: sortTransparentBindings } =
             this.context.functionDeclaration(
@@ -1272,6 +1306,46 @@ std::array<float, 16> build_view_projection(
     view[14] = -dot(forward, eye);
     view[15] = 1.0f;
 
+${options.orthographicCamera
+    ? `    if (camera.orthographic) {
+        // src/camera/orthographic.ts writeOrthoProjection derives every
+        // plane from the half-extent, then writes
+        // src/math/mat4-ortho-lh-to-ref.ts mat4OrthoOffCenterLHToRef.
+        // The pinned writer runs in JavaScript doubles into a
+        // Float32Array cache, so the terms are computed in double here
+        // and stored as float, and the reverse-Z form (near -> 1,
+        // far -> 0) is the pinned one; the native main pass keeps the
+        // near -> 0 convention its perspective branch already uses.
+        const double half_height =
+            static_cast<double>(camera.ortho_half_height);
+        const double half_width =
+            half_height * static_cast<double>(aspect);
+        const double left = -half_width;
+        const double right = half_width;
+        const double bottom = -half_height;
+        const double top = half_height;
+        const double near_plane =
+            static_cast<double>(camera.near_plane);
+        const double far_plane =
+            static_cast<double>(camera.far_plane);
+        const double range = far_plane - near_plane;
+        std::array<float, 16> projection{};
+        projection[0] = static_cast<float>(2.0 / (right - left));
+        projection[5] = static_cast<float>(2.0 / (top - bottom));
+        projection[10] = static_cast<float>(
+            reverse_depth ? -1.0 / range : 1.0 / range);
+        projection[12] =
+            static_cast<float>((left + right) / (left - right));
+        projection[13] =
+            static_cast<float>((top + bottom) / (bottom - top));
+        projection[14] = static_cast<float>(
+            reverse_depth ? far_plane / range
+                          : -near_plane / range);
+        projection[15] = 1.0f;
+        return multiply(projection, view);
+    }
+`
+    : ""}\
     const float focal = 1.0f / std::tan(camera.fov * 0.5f);
     std::array<float, 16> projection{};
     projection[0] = focal / aspect;

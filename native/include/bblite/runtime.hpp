@@ -575,6 +575,12 @@ struct CameraRecord {
     float inertial_panning_x = 0.0f;
     float inertial_panning_y = 0.0f;
     bool controls_enabled = false;
+    // Orthographic projection state (src/camera/orthographic.ts). The
+    // four clip planes stay derived from the half-extent, which is the
+    // reached surface: vertically +/-half_height, horizontally scaled by
+    // the render target's aspect ratio.
+    bool orthographic = false;
+    float ortho_half_height = 1.0f;
 };
 
 struct Scene;
@@ -821,6 +827,12 @@ LightHandle create_point_light(Engine& engine, Vec3 position, float intensity = 
 CameraHandle create_arc_rotate_camera(Engine& engine, float alpha, float beta, float radius, Vec3 target);
 CameraHandle create_free_camera(Engine& engine, Vec3 position, Vec3 target);
 CameraHandle create_default_camera(Engine& engine, Scene& scene);
+// Returns the same camera so the caller can keep using it as the live
+// orthographic bounds object the pinned entry point hands back.
+CameraHandle enable_orthographic_camera(
+    Engine& engine,
+    CameraHandle camera,
+    float half_height);
 
 RenderTargetHandle create_render_target(
     Engine& engine,

@@ -16,6 +16,7 @@ type ResolveElement = (
 type ResolveCall = (
     expression: ts.CallExpression,
 ) => Value;
+type ResolveValue = (expression: ts.Expression) => Value;
 type CompileCondition = (
     expression: ts.Expression,
 ) => string;
@@ -30,6 +31,7 @@ export class StaticEvaluator {
         private readonly resolveProperty: ResolveProperty,
         private readonly resolveElement: ResolveElement,
         private readonly resolveCall: ResolveCall,
+        private readonly resolveValue: ResolveValue,
         private readonly compileCondition: CompileCondition,
         private readonly lookup: Lookup,
         private readonly fail: Fail,
@@ -595,11 +597,18 @@ export class StaticEvaluator {
         expression: ts.Expression,
         length: number,
     ): Value[] | undefined {
-        if (!ts.isIdentifier(expression)) {
-            return undefined;
-        }
-        const value = this.lookup(expression);
-        if (value.kind !== "tuple") {
+        // An identifier binds, or resolves through a module-level
+        // initializer; an element or property access reaches an entry of
+        // a static table, which is how an indexed color table feeds a
+        // Color3 sink. A non-tuple result leaves the caller's remaining
+        // literal branches to run.
+        const value =
+            ts.isIdentifier(expression) ||
+            ts.isElementAccessExpression(expression) ||
+            ts.isPropertyAccessExpression(expression)
+                ? this.resolveValue(expression)
+                : undefined;
+        if (value?.kind !== "tuple") {
             return undefined;
         }
         if (value.tupleElements?.length !== length) {

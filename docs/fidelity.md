@@ -295,6 +295,13 @@ view/world-normal MAD from `1.459`/`1.446` to `0.002`/`0.003`.
 Mirrored double-sided PBR meshes retain their authored index order and select
 a clockwise front-face pipeline, preserving Babylon Lite's
 `front_facing`-driven normal flip in Scenes 168 and 266.
+Orthographic cameras write the pinned reverse-Z off-center projection term by
+term, with the four planes derived from the half-extent and the render target's
+aspect ratio. The pinned writer runs in JavaScript doubles into a
+`Float32Array` cache, so the native branch computes in double and stores float,
+which reproduces Scene 268 exactly on both backends. Only the scene projection
+takes that branch: environment skyboxes and grounds build their own perspective
+view-projection, and generation fails on the combination.
 Standard vertex colors follow the pinned `enableStandardVertexColors` opt-in:
 the generated Standard fragment declares the `color` attribute and multiplies
 the base color by its RGB only for a scene that reaches the call, so every

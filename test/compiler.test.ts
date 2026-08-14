@@ -2330,6 +2330,56 @@ test("compiles Babylon Lite scene 267 Standard vertex colors", () => {
     ]);
 });
 
+test("compiles Babylon Lite scene 268 orthographic camera", () => {
+    const source = readFileSync(
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene268.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene268.ts",
+    });
+
+    assert.deepEqual(result.manifest.features, [
+        "core",
+        "backend:sdl",
+        "camera:arc-rotate",
+        "camera:orthographic",
+        "light:hemispheric",
+        "material:standard",
+        "mesh:box",
+        "renderer:pbr",
+    ]);
+    assert.match(
+        result.cpp,
+        /bbl::enable_orthographic_camera\(v_engine, v_camera, 6\.0f\)/,
+    );
+    // Module-level constant arrays resolve through their initializers:
+    // the loop bound folds and the color table indexes at compile time.
+    assert.match(
+        result.cpp,
+        /diffuse_color = bbl::Color3\{0\.85f, 0\.25f, 0\.25f\}/,
+    );
+    assert.match(
+        result.cpp,
+        /diffuse_color = bbl::Color3\{0\.65f, 0\.35f, 0\.85f\}/,
+    );
+    // The URL override folds away: no query string reaches a native
+    // build, so `Number.isFinite(NaN)` drops the branch.
+    assert.doesNotMatch(result.cpp, /ortho_half_height/);
+    assert.deepEqual(result.manifest.generatedSources, [
+        "upstream/src/engine.cpp",
+        "upstream/src/scene_core.cpp",
+        "upstream/src/camera_arc_rotate.cpp",
+        "upstream/src/camera_controls.cpp",
+        "upstream/src/camera_orthographic.cpp",
+        "upstream/src/light_matrix.cpp",
+        "upstream/src/light_hemispheric.cpp",
+        "upstream/src/renderer_plan.cpp",
+        "upstream/src/material_standard.cpp",
+        "upstream/src/mesh_factories.cpp",
+    ]);
+});
+
 test("compiles Babylon Lite scene 13 PBR spheres grid", () => {
     const source = readFileSync(resolve("corpus/babylon-lite/lab/lite/src/lite/scene13.ts"), "utf8");
     const result = compileSource(source, {

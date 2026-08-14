@@ -438,6 +438,53 @@ test("generates ArcRotate and default camera factories from upstream constants",
         controls.source,
         /if \(has_movement \|\| has_rotation\) \{\s*camera\.target = Vec3/,
     );
+    const ortho = lowerer.lowerOrthographic();
+    assert.equal(ortho.modulePath, "src/camera/orthographic.ts");
+    assert.match(ortho.source, /record\.orthographic = true/);
+    assert.match(
+        ortho.source,
+        /record\.ortho_half_height = half_height/,
+    );
+    // The bounds object the pinned entry point returns stays reachable
+    // as the camera it was enabled on.
+    assert.match(ortho.source, /return camera;/);
+});
+
+test("lowers the reverse-Z orthographic projection from its pinned writer", () => {
+    const plan = new RendererLowerer(
+        new LoweringContext(),
+    ).lowerRenderPlan({ orthographicCamera: true });
+    // src/math/mat4-ortho-lh-to-ref.ts term by term, with the planes
+    // src/camera/orthographic.ts derives from the half-extent.
+    assert.match(plan.source, /if \(camera\.orthographic\) \{/);
+    assert.match(
+        plan.source,
+        /const double half_width =\s*half_height \* static_cast<double>\(aspect\);/,
+    );
+    assert.match(
+        plan.source,
+        /projection\[0\] = static_cast<float>\(2\.0 \/ \(right - left\)\);/,
+    );
+    assert.match(
+        plan.source,
+        /projection\[12\] =\s*static_cast<float>\(\(left \+ right\) \/ \(left - right\)\);/,
+    );
+    assert.match(
+        plan.source,
+        /reverse_depth \? -1\.0 \/ range : 1\.0 \/ range/,
+    );
+    assert.match(
+        plan.source,
+        /reverse_depth \? far_plane \/ range\s*: -near_plane \/ range/,
+    );
+    // A perspective-only scene keeps the branch out of its plan.
+    const perspective = new RendererLowerer(
+        new LoweringContext(),
+    ).lowerRenderPlan();
+    assert.doesNotMatch(
+        perspective.source,
+        /camera\.orthographic/,
+    );
 });
 
 test("lowers the reachable upstream light matrix implementation", () => {
