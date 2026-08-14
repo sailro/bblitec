@@ -27,6 +27,20 @@ float number_at(const Json& values, std::size_t index, float fallback) {
         : fallback;
 }
 
+// A .babylon export commonly writes an unused optional field as JSON null
+// rather than omitting it -- Sponza writes every unset id, texture slot and
+// parent that way -- so reading one has to treat null as absent instead of
+// asking nlohmann to convert it.
+std::string string_or(
+    const Json& object,
+    const char* name,
+    std::string fallback = std::string{}) {
+    const auto found = object.find(name);
+    return found != object.end() && found->is_string()
+        ? found->get<std::string>()
+        : fallback;
+}
+
 Vec3 vec3_or(const Json& object, const char* name, Vec3 fallback) {
     const auto found = object.find(name);
     if (found == object.end()) return fallback;
@@ -325,7 +339,7 @@ AssetHandle load_babylon(Engine& engine, const std::string& path) {
         values != document.end() && values->is_array()) {
         for (const Json& value : *values) {
             if (!value.is_object()) continue;
-            const std::string id = value.value("id", std::string{});
+            const std::string id = string_or(value, "id");
             if (!id.empty()) {
                 materials.emplace(
                     id,
@@ -345,7 +359,7 @@ AssetHandle load_babylon(Engine& engine, const std::string& path) {
         values != document.end() && values->is_array()) {
         for (const Json& value : *values) {
             if (!value.is_object()) continue;
-            const std::string id = value.value("id", std::string{});
+            const std::string id = string_or(value, "id");
             if (id.empty()) continue;
             std::vector<std::string> entries;
             if (const auto source = value.find("materials");
@@ -377,7 +391,7 @@ AssetHandle load_babylon(Engine& engine, const std::string& path) {
             if (
                 !source.is_object() ||
                 !source.value("isVisible", true) ||
-                !source.value("parentId", std::string{}).empty()) {
+                !string_or(source, "parentId").empty()) {
                 continue;
             }
             const auto positions_it = source.find("positions");
@@ -437,7 +451,7 @@ AssetHandle load_babylon(Engine& engine, const std::string& path) {
             }
 
             const std::string material_id =
-                source.value("materialId", std::string{});
+                string_or(source, "materialId");
             const auto multi = multi_materials.find(material_id);
             for (const SubMesh& submesh : submeshes) {
                 if (
@@ -591,10 +605,10 @@ AssetHandle load_babylon(Engine& engine, const std::string& path) {
         cameras->is_array() &&
         !cameras->empty()) {
         const std::string active =
-            document.value("activeCameraID", std::string{});
+            string_or(document, "activeCameraID");
         const Json* selected = &cameras->front();
         for (const Json& candidate : *cameras) {
-            if (candidate.value("id", std::string{}) == active) {
+            if (string_or(candidate, "id") == active) {
                 selected = &candidate;
                 break;
             }
