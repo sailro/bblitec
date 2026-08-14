@@ -5,6 +5,32 @@ import test from "node:test";
 import { getScene, resolveScene, scenes } from "../src/scene-registry.js";
 import { validateReferenceCapture } from "../src/parity-scene.js";
 
+test("states the curated scene count the registry actually holds", () => {
+    // The README advertises the count in prose, which drifts silently:
+    // scene 256 graduated and left it reading 51. A curated scene is a
+    // pinned corpus scene (`sceneNNN`); primitives and the
+    // project-owned regression gates are counted separately there, and
+    // deliberately not here.
+    const curated = scenes.filter(({ id }) =>
+        /^scene\d+$/.test(id),
+    ).length;
+    const readme = readFileSync(resolve("README.md"), "utf8");
+    const stated = [
+        ...readme.matchAll(/(\d+) curated/g),
+    ].map((match) => Number(match[1]));
+    assert.ok(
+        stated.length > 0,
+        "README no longer states a curated scene count.",
+    );
+    for (const count of stated) {
+        assert.equal(
+            count,
+            curated,
+            `README says ${count} curated scenes; the registry holds ${curated}.`,
+        );
+    }
+});
+
 test("registers unique generated scene targets", () => {
     assert.deepEqual(
         scenes.map(({ id }) => id),
