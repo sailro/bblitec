@@ -266,6 +266,41 @@ function babylonLights(
     return result;
 }
 
+/**
+ * Whether any reached `.babylon` material authors its diffuse texture
+ * against the second UV set. The specular and ambient slots always carried
+ * that selection; a scene needs it on the diffuse slot only when its assets
+ * ask for it, which Sponza's upper walls do.
+ */
+function reachedDiffuseUv2(
+    outputPath: string,
+    assets: CompileAsset[],
+): boolean {
+    for (const asset of assets) {
+        if (asset.kind !== "babylon") {
+            continue;
+        }
+        const materialized = resolve(outputPath, "assets", asset.output);
+        if (!existsSync(materialized)) {
+            continue;
+        }
+        const document = JSON.parse(
+            readFileSync(materialized, "utf8"),
+        ) as {
+            materials?: { diffuseTexture?: { coordinatesIndex?: number } }[];
+        };
+        if (
+            (document.materials ?? []).some(
+                (material) =>
+                    material.diffuseTexture?.coordinatesIndex === 1,
+            )
+        ) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function reachedStandardLights(lights: BabylonLight[]): number {
     return lights.filter((light) => light.type === 0).length;
 }
@@ -385,6 +420,10 @@ async function main(): Promise<void> {
         standardLights: reachedStandardLights(reachedBabylonLights),
         standardLightLists: reachedStandardLightLists(
             reachedBabylonLights,
+        ),
+        standardDiffuseUv2: reachedDiffuseUv2(
+            outputPath,
+            result.manifest.assets,
         ),
         animationPointer:
             specializationFeatures.animationPointer,

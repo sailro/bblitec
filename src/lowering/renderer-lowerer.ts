@@ -100,6 +100,7 @@ export class RendererLowerer {
         nodeVisibility?: boolean;
         standardLights?: number;
         standardLightLists?: boolean;
+        standardDiffuseUv2?: boolean;
         orthographicCamera?: boolean;
         background?: boolean;
         shaderPrograms?: CompiledShaderProgram[];
@@ -744,7 +745,8 @@ struct StandardUniforms {
     std::array<float, 4> texture_options{};
     std::array<float, 4> uv_options{};
     std::array<float, 4> material_options{};
-    std::array<float, 4> reflection_options{};
+    std::array<float, 4> reflection_options{};${options.standardDiffuseUv2 ? `
+    std::array<float, 4> diffuse_uv_options{};` : ""}
 ${fogUniformFields}\
 };
 
@@ -1932,7 +1934,13 @@ ${options.standardLightLists ? `    // A light can name the meshes it applies to
             material.alpha_cutoff,
             material.opacity_level,
             material.disable_lighting ? 1.0f : 0.0f,
-        };
+        };${options.standardDiffuseUv2 ? `
+        result.diffuse_uv_options = {
+            static_cast<float>(material.diffuse_coord_index),
+            0.0f,
+            0.0f,
+            0.0f,
+        };` : ""}
         result.reflection_options = {
             material.reflection_cube == invalid_handle ? 0.0f : 1.0f,
             material.reflection_level,
@@ -2173,6 +2181,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         standardMaterial: boolean;
         standardVertexColors?: boolean;
         standardLights?: number;
+        standardDiffuseUv2?: boolean;
         gridMaterial?: boolean;
         idDiagnostics: boolean;
         pbrDiagnostics: boolean;
@@ -2945,6 +2954,7 @@ ${directMarker}`,
                     options.fog === true,
                     options.standardVertexColors === true,
                     Math.max(2, options.standardLights ?? 2),
+                    options.standardDiffuseUv2 === true,
                 ),
             });
         }

@@ -460,6 +460,7 @@ struct MaterialRecord {
     float diffuse_v_scale = 1.0f;
     float diffuse_u_offset = 0.0f;
     float diffuse_v_offset = 0.0f;
+    std::uint32_t diffuse_coord_index = 0;
     std::uint32_t specular_coord_index = 0;
     std::uint32_t ambient_coord_index = 0;
     float metallic_factor = 1.0f;

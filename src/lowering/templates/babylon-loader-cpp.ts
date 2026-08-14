@@ -9,6 +9,7 @@
 export function babylonLoaderCpp(
     provenance: string,
     lightMeshLists = false,
+    diffuseUv2 = false,
 ): string {
     return `// ${provenance}
 #include <bblite/pal.hpp>
@@ -289,7 +290,12 @@ MaterialHandle load_material(
         texture != source.end() && texture->is_object()) {
         material.diffuse_level = texture->value("level", 1.0f);
         material.diffuse_u_scale = texture->value("uScale", 1.0f);
-        material.diffuse_v_scale = texture->value("vScale", 1.0f);
+        material.diffuse_v_scale = texture->value("vScale", 1.0f);${diffuseUv2 ? `
+        // A diffuse texture selects a UV set the same way the specular and
+        // ambient slots below do. Sponza's upper walls are the reached case:
+        // their base texture is authored against the second set.
+        material.diffuse_coord_index =
+            texture->value("coordinatesIndex", 0) == 1 ? 1u : 0u;` : ""}
         if (texture->value("hasAlpha", false)) {
             material.alpha_cutoff = 0.4f;
         }
