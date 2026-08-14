@@ -240,6 +240,17 @@ Regression guards from the migration; each was measured, not assumed:
   the dominant term). 0.405 → 0.014 foreground MAD on both backends;
   the old float32-versus-float64 world-composition attribution was
   wrong, and the same contracts took scene 255 from 0.101 to 0.000.
+- **Scene 33's backend delta is the image-processing pass, measured
+  rather than argued.** `BBLITE_MSAA=1` now runs on both backends, and
+  at one sample the scene-33 delta collapses from 0.058/1.365 to
+  0.000/0.002 — with nothing to average, the per-sample-versus-resolved
+  distinction disappears and so does the entire difference. That is the
+  whole delta accounted for, and it is the SDL_GPU side that owes the
+  work (the P1 entry below). Scene 1 answers the complementary
+  question: its delta is 0.000/0.001 at *both* sample counts, so what
+  remains there is not multisampling. Each backend's own 4x-versus-1x
+  difference agrees with the other's to 0.0001, which is the check that
+  the two resolve paths behave alike.
 
 ## Dawn backend architecture (`native/src/pal_dawn.cpp`)
 

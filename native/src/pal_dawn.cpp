@@ -211,6 +211,23 @@ struct DawnState {
     // apply image processing at the end; everything else targets the
     // surface format directly.
     WGPUTextureFormat frame_color_format = WGPUTextureFormat_BGRA8Unorm;
+    /**
+     * Samples every frame attachment and every pipeline agrees on: 4
+     * normally, 1 under `BBLITE_MSAA=1`. The single-sample run is a
+     * diagnostic -- it isolates whether a difference comes from
+     * multisampling -- so it has to reach every pipeline, or the device
+     * rejects the pass for an attachment/pipeline sample mismatch.
+     *
+     * At one sample there is nothing to resolve: the pass renders
+     * straight to its target, and the two fullscreen passes that read
+     * the frame back (the transmission grab and the pinned per-sample
+     * image processing) bind an ordinary texture instead of a
+     * multisampled one.
+     */
+    std::uint32_t sample_count = 4;
+    [[nodiscard]] bool multisampled() const {
+        return sample_count > 1;
+    }
     WGPUTexture msaa_color = nullptr;
     WGPUTextureView msaa_color_view = nullptr;
     WGPUSampler transmission_sampler = nullptr;
@@ -1368,8 +1385,10 @@ WGPUShaderModule& fragment_module_for(
     return module;
 }
 
-std::uint32_t task_sample_count(std::uint32_t requested) {
-    return requested == 4 ? 4u : 1u;
+std::uint32_t task_sample_count(
+    const DawnState& state,
+    std::uint32_t requested) {
+    return requested == 4 ? state.sample_count : 1u;
 }
 
 WGPUTextureFormat geometry_texture_format(
@@ -1442,7 +1461,7 @@ void create_frame_graph_textures(
         target.width = record.width > 0 ? record.width : width;
         target.height = record.height > 0 ? record.height : height;
         if (record.swapchain) continue;
-        const std::uint32_t samples = task_sample_count(record.samples);
+        const std::uint32_t samples = task_sample_count(state, record.samples);
         if (record.has_color) {
             target.color = create_frame_texture(
                 state,
@@ -1451,9 +1470,14 @@ void create_frame_graph_textures(
                 target.width,
                 target.height,
                 samples == 1
+                    // A single-sample frame turns the graph's resolve
+                    // step into a copy, and the target of one is a
+                    // colour target of another, so both ends of that
+                    // copy are the same kind of texture.
                     ? WGPUTextureUsage_RenderAttachment |
                         WGPUTextureUsage_TextureBinding |
-                        WGPUTextureUsage_CopySrc
+                        WGPUTextureUsage_CopySrc |
+                        WGPUTextureUsage_CopyDst
                     : WGPUTextureUsage_RenderAttachment);
             target.color_view =
                 wgpuTextureCreateView(target.color, nullptr);
@@ -1521,7 +1545,7 @@ void create_frame_graph_textures(
         if (record.kind != FrameTaskKind::geometry) continue;
         DawnGeometryTask& task = state.geometry_tasks[index];
         const std::uint32_t samples =
-            task_sample_count(record.geometry.samples);
+            task_sample_count(state, record.geometry.samples);
         task.colors.reserve(record.geometry.attachments.size());
         for (const GeometryTextureDescription& description :
              record.geometry.attachments) {
@@ -1790,11 +1814,20 @@ DawnPipeline& pipeline_for(
     DawnState& state,
     upstream::RenderPipelineKind kind,
     std::uint32_t shader_variant = 0,
-    std::uint32_t samples = 4,
+    /** Zero asks for the frame's own sample count. */
+    std::uint32_t requested_samples = 0,
     bool has_depth = true) {
-    auto& pipeline_map = samples == 4 && has_depth
+    // The main set is whatever matches the frame; a render-task target
+    // that differs gets its own. Written as "matches the frame" rather
+    // than "is 4x" so a single-sample run keeps one main set instead of
+    // filing every pipeline under the task buckets.
+    const std::uint32_t samples = requested_samples == 0
+        ? state.sample_count
+        : requested_samples;
+    const bool frame_samples = samples == state.sample_count;
+    auto& pipeline_map = frame_samples && has_depth
         ? state.pipelines
-        : state.task_pipelines[samples == 4 ? 1 : 0]
+        : state.task_pipelines[frame_samples ? 1 : 0]
                               [has_depth ? 1 : 0];
     const auto pipeline_key = std::make_pair(kind, shader_variant);
     const auto existing = pipeline_map.find(pipeline_key);
@@ -1899,8 +1932,10 @@ DawnPipeline& pipeline_for(
 
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
+    // Alpha-to-coverage needs samples to spread coverage across; at one
+    // sample WebGPU rejects the pipeline outright.
     descriptor.multisample.alphaToCoverageEnabled =
-        traits.shader_a2c && samples == 4;
+        traits.shader_a2c && samples > 1;
 
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = state.frame_color_format;
@@ -1944,7 +1979,8 @@ WGPURenderPipeline depth_only_pipeline_for(
     std::uint32_t samples) {
     WGPURenderPipeline& slot =
         state.depth_only_pipelines[double_sided ? 1 : 0]
-                                  [samples == 4 ? 1 : 0];
+                                  [samples == state.sample_count ? 1
+                                                                 : 0];
     if (slot) return slot;
     if (!state.depth_only_module) {
         state.depth_only_module =
@@ -2037,7 +2073,7 @@ WGPURenderPipeline geometry_pipeline_for(
     constexpr std::uint32_t vertex_buffer_count = 1;
 #endif
     const std::uint32_t samples =
-        task_sample_count(task.geometry.samples);
+        task_sample_count(state, task.geometry.samples);
     std::vector<WGPUColorTargetState> color_targets;
     color_targets.reserve(task.geometry.attachments.size() + 1);
     WGPUBlendState blend{};
@@ -2100,49 +2136,85 @@ WGPURenderPipeline geometry_pipeline_for(
 // multisampled attachment) and the pinned per-sample image processing
 // (frame-graph/image-processing-task.ts: exposure, optional tonemap,
 // gamma, contrast applied per MSAA sample, then averaged).
-constexpr const char* transmission_grab_wgsl =
-    "@group(0)@binding(0)var t:texture_multisampled_2d<f32>;struct "
-    "V{@builtin(position)p:vec4f,@location(0)u:vec2f};@vertex fn "
-    "vs(@builtin(vertex_index)i:u32)->V{var "
-    "p=array<vec2f,3>(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3));var "
-    "u=array<vec2f,3>(vec2f(0,1),vec2f(2,1),vec2f(0,-1));return "
-    "V(vec4f(p[i],0,1),u[i]);}fn l(p:vec2i)->vec4f{let "
-    "n=textureNumSamples(t);var c=vec4f(0);for(var "
-    "i=0u;i<n;i++){c+=textureLoad(t,p,i);}return c/f32(n);}@fragment "
-    "fn fs(v:V)->@location(0)vec4f{let "
-    "d=vec2i(textureDimensions(t));let "
-    "q=clamp(v.u*vec2f(d)-.5,vec2f(0),vec2f(d-vec2i(1)));let "
-    "p=vec2i(floor(q));let f=fract(q);let "
-    "p1=min(p+vec2i(1),d-vec2i(1));return "
-    "mix(mix(l(p),l(vec2i(p1.x,p.y)),f.x),mix(l(vec2i(p.x,p1.y)),l(p1)"
-    ",f.x),f.y);}";
+// The frame texture the two fullscreen passes read back, and how one
+// texel is fetched from it. Under `BBLITE_MSAA=1` there is one sample
+// and nothing to average, so the binding is an ordinary texture and the
+// fetch is a plain load. Everything downstream -- the manual bilinear
+// filtering, the pinned image-processing math -- is the same text either
+// way, because it is the same contract.
+std::string frame_texture_binding(
+    const DawnState& state,
+    const char* binding,
+    const char* name) {
+    return std::string("@group(0)@binding(") + binding + ")var " +
+        name + ":" +
+        (state.multisampled() ? "texture_multisampled_2d<f32>"
+                              : "texture_2d<f32>") +
+        ";";
+}
 
-constexpr const char* image_processing_wgsl =
-    "struct P{e:f32,c:f32,t:f32,p:f32}\n"
-    "@group(0)@binding(0)var<uniform> p:P;\n"
-    "@vertex fn vs(@builtin(vertex_index)i:u32)->@builtin(position) "
-    "vec4f{var "
-    "a=array<vec2f,3>(vec2f(-1,-3),vec2f(3,1),vec2f(-1,1));return "
-    "vec4f(a[i],0,1);}\n"
-    "fn ip(r:vec4f)->vec4f{var c=r.rgb*p.e;\n"
-    "if(p.t>0.5){c=1.0-exp2(-1.590579*c);}\n"
-    "c=clamp(pow(max(c,vec3f(0)),vec3f(1/2.2)),vec3f(0),vec3f(1));\n"
-    "let h=c*c*(3.0-2.0*c);\n"
-    "if(p.c<1.0){c=mix(vec3f(0.5),c,p.c);}else{c=mix(c,h,p.c-1.0);}\n"
-    "return vec4f(max(c,vec3f(0)),r.a);}\n"
-    "@group(0)@binding(1)var s:texture_multisampled_2d<f32>;\n"
-    "@fragment fn fs(@builtin(position) q:vec4f)->@location(0) "
-    "vec4f{let d=textureDimensions(s);let "
-    "px=clamp(vec2i(q.xy),vec2i(0),vec2i(d)-1);let "
-    "n=textureNumSamples(s);var c=vec4f(0);for(var "
-    "i=0u;i<n;i++){c+=ip(textureLoad(s,px,i));}return c/f32(n);}";
+std::string frame_texel_average(
+    const DawnState& state,
+    const std::string& name) {
+    return state.multisampled()
+        ? "fn l(p:vec2i)->vec4f{let n=textureNumSamples(" + name +
+            ");var c=vec4f(0);for(var i=0u;i<n;i++){c+=textureLoad(" +
+            name + ",p,i);}return c/f32(n);}"
+        : "fn l(p:vec2i)->vec4f{return textureLoad(" + name + ",p,0);}";
+}
+
+std::string transmission_grab_wgsl(const DawnState& state) {
+    return frame_texture_binding(state, "0", "t") +
+        "struct "
+        "V{@builtin(position)p:vec4f,@location(0)u:vec2f};@vertex fn "
+        "vs(@builtin(vertex_index)i:u32)->V{var "
+        "p=array<vec2f,3>(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3));var "
+        "u=array<vec2f,3>(vec2f(0,1),vec2f(2,1),vec2f(0,-1));return "
+        "V(vec4f(p[i],0,1),u[i]);}" +
+        frame_texel_average(state, "t") +
+        "@fragment "
+        "fn fs(v:V)->@location(0)vec4f{let "
+        "d=vec2i(textureDimensions(t));let "
+        "q=clamp(v.u*vec2f(d)-.5,vec2f(0),vec2f(d-vec2i(1)));let "
+        "p=vec2i(floor(q));let f=fract(q);let "
+        "p1=min(p+vec2i(1),d-vec2i(1));return "
+        "mix(mix(l(p),l(vec2i(p1.x,p.y)),f.x),mix(l(vec2i(p.x,p1.y)),"
+        "l(p1),f.x),f.y);}";
+}
+
+std::string image_processing_wgsl(const DawnState& state) {
+    return std::string(
+               "struct P{e:f32,c:f32,t:f32,p:f32}\n"
+               "@group(0)@binding(0)var<uniform> p:P;\n"
+               "@vertex fn vs(@builtin(vertex_index)i:u32)->"
+               "@builtin(position) vec4f{var "
+               "a=array<vec2f,3>(vec2f(-1,-3),vec2f(3,1),vec2f(-1,1));"
+               "return vec4f(a[i],0,1);}\n"
+               "fn ip(r:vec4f)->vec4f{var c=r.rgb*p.e;\n"
+               "if(p.t>0.5){c=1.0-exp2(-1.590579*c);}\n"
+               "c=clamp(pow(max(c,vec3f(0)),vec3f(1/2.2)),vec3f(0),"
+               "vec3f(1));\n"
+               "let h=c*c*(3.0-2.0*c);\n"
+               "if(p.c<1.0){c=mix(vec3f(0.5),c,p.c);}else{c=mix(c,h,"
+               "p.c-1.0);}\n"
+               "return vec4f(max(c,vec3f(0)),r.a);}\n") +
+        frame_texture_binding(state, "1", "s") + "\n" +
+        "@fragment fn fs(@builtin(position) q:vec4f)->@location(0) "
+        "vec4f{let d=textureDimensions(s);let "
+        "px=clamp(vec2i(q.xy),vec2i(0),vec2i(d)-1);" +
+        (state.multisampled()
+             ? "let n=textureNumSamples(s);var c=vec4f(0);for(var "
+               "i=0u;i<n;i++){c+=ip(textureLoad(s,px,i));}return "
+               "c/f32(n);}"
+             : "return ip(textureLoad(s,px,0));}");
+}
 
 WGPUShaderModule create_inline_module(
     DawnState& state,
-    const char* source,
+    const std::string& source,
     const char* label) {
     WGPUShaderSourceWGSL wgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
-    wgsl.code = string_view(source);
+    wgsl.code = string_view(source.c_str());
     WGPUShaderModuleDescriptor descriptor{};
     descriptor.nextInChain = &wgsl.chain;
     descriptor.label = string_view(label);
@@ -2161,7 +2233,7 @@ void encode_transmission_grab(
     if (!state.transmission_grab_pipeline) {
         state.transmission_grab_module = create_inline_module(
             state,
-            transmission_grab_wgsl,
+            transmission_grab_wgsl(state),
             "transmission-grab");
         WGPURenderPipelineDescriptor descriptor =
             WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
@@ -2244,7 +2316,7 @@ void encode_image_processing(
     if (!state.image_processing_pipeline) {
         state.image_processing_module = create_inline_module(
             state,
-            image_processing_wgsl,
+            image_processing_wgsl(state),
             "image-processing");
         WGPURenderPipelineDescriptor descriptor =
             WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
@@ -3145,7 +3217,7 @@ void save_dawn_pbr_diagnostics(
     // a, [4,7) from module b, [7,9) from module c.
     constexpr std::array<std::pair<std::size_t, std::size_t>, 3>
         pass_ranges{{{0, 4}, {4, 3}, {7, 2}}};
-    constexpr std::uint32_t samples = 4;
+    const std::uint32_t samples = state.sample_count;
     for (std::size_t index = 0; index < module_names.size(); ++index) {
         if (!state.diagnostics_modules[index]) {
             state.diagnostics_modules[index] =
@@ -3263,12 +3335,18 @@ void save_dawn_pbr_diagnostics(
         std::array<WGPURenderPassColorAttachment, 4> targets{};
         for (std::size_t index = 0; index < output_count; ++index) {
             targets[index] = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-            targets[index].view =
-                multisample_views[output_offset + index];
-            targets[index].resolveTarget =
-                views[output_offset + index];
+            if (state.multisampled()) {
+                targets[index].view =
+                    multisample_views[output_offset + index];
+                targets[index].resolveTarget =
+                    views[output_offset + index];
+                targets[index].storeOp = WGPUStoreOp_Discard;
+            } else {
+                targets[index].view =
+                    views[output_offset + index];
+                targets[index].storeOp = WGPUStoreOp_Store;
+            }
             targets[index].loadOp = WGPULoadOp_Clear;
-            targets[index].storeOp = WGPUStoreOp_Discard;
             targets[index].clearValue = output_offset + index == 4
                 ? WGPUColor{1.0, 0.0, 0.0, 1.0}
                 : WGPUColor{0.0, 0.0, 0.0, 0.0};
@@ -3385,7 +3463,7 @@ bool run_dawn_engine(Engine& engine) {
     reject_unsupported_frame_options(
         frame_options,
         "Dawn",
-        /*supports_single_sample=*/false,
+        /*supports_single_sample=*/true,
         /*supports_copy_task=*/false);
     Scene& scene = *engine.registered_scenes.front();
     if (scene.transmission_enabled && !scene.tasks.empty()) {
@@ -3437,6 +3515,9 @@ bool run_dawn_engine(Engine& engine) {
     }
 
     DawnState state;
+    // Every attachment and pipeline reads this, so it is settled before
+    // any of them is created.
+    state.sample_count = frame_options.single_sample ? 1u : 4u;
     const bool hidden_test_pass =
         frame_options.test_pass;
     state.window = SDL_CreateWindow(
@@ -3712,7 +3793,7 @@ bool run_dawn_engine(Engine& engine) {
             : WGPUTextureUsage_RenderAttachment;
         color_descriptor.size = {width, height, 1};
         color_descriptor.format = state.frame_color_format;
-        color_descriptor.sampleCount = 4;
+        color_descriptor.sampleCount = state.sample_count;
         state.msaa_color =
             wgpuDeviceCreateTexture(state.device, &color_descriptor);
         state.msaa_color_view =
@@ -3754,7 +3835,7 @@ bool run_dawn_engine(Engine& engine) {
         depth_descriptor.size = {width, height, 1};
         depth_descriptor.format =
             WGPUTextureFormat_Depth24PlusStencil8;
-        depth_descriptor.sampleCount = 4;
+        depth_descriptor.sampleCount = state.sample_count;
         state.depth =
             wgpuDeviceCreateTexture(state.device, &depth_descriptor);
         state.depth_view = wgpuTextureCreateView(state.depth, nullptr);
@@ -4356,7 +4437,7 @@ bool run_dawn_engine(Engine& engine) {
         depth_stencil.depthWriteEnabled = WGPUOptionalBool_False;
         depth_stencil.depthCompare = WGPUCompareFunction_Less;
         descriptor.depthStencil = &depth_stencil;
-        descriptor.multisample.count = 4;
+        descriptor.multisample.count = state.sample_count;
         descriptor.multisample.mask = ~0u;
         WGPUColorTargetState color_target =
             WGPU_COLOR_TARGET_STATE_INIT;
@@ -4547,7 +4628,7 @@ bool run_dawn_engine(Engine& engine) {
         depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
         depth_stencil.depthCompare = WGPUCompareFunction_Less;
         descriptor.depthStencil = &depth_stencil;
-        descriptor.multisample.count = 4;
+        descriptor.multisample.count = state.sample_count;
         descriptor.multisample.mask = ~0u;
         WGPUColorTargetState color_target =
             WGPU_COLOR_TARGET_STATE_INIT;
@@ -4712,7 +4793,7 @@ bool run_dawn_engine(Engine& engine) {
         depth_stencil.depthWriteEnabled = WGPUOptionalBool_False;
         depth_stencil.depthCompare = WGPUCompareFunction_Less;
         descriptor.depthStencil = &depth_stencil;
-        descriptor.multisample.count = 4;
+        descriptor.multisample.count = state.sample_count;
         descriptor.multisample.mask = ~0u;
         WGPUColorTargetState color_target =
             WGPU_COLOR_TARGET_STATE_INIT;
@@ -5433,9 +5514,20 @@ bool run_dawn_engine(Engine& engine) {
                     scene.environment.tone_mapping_enabled),
                 scene.clear_color.a,
             };
-        } else {
+        } else if (state.multisampled()) {
             color_attachment.resolveTarget = surface_view;
             color_attachment.storeOp = WGPUStoreOp_Discard;
+            color_attachment.clearValue = WGPUColor{
+                scene.clear_color.r,
+                scene.clear_color.g,
+                scene.clear_color.b,
+                scene.clear_color.a,
+            };
+        } else {
+            // One sample has nothing to average, so the pass draws
+            // into the surface instead of resolving into it.
+            color_attachment.view = surface_view;
+            color_attachment.storeOp = WGPUStoreOp_Store;
             color_attachment.clearValue = WGPUColor{
                 scene.clear_color.r,
                 scene.clear_color.g,
@@ -5465,7 +5557,11 @@ bool run_dawn_engine(Engine& engine) {
         const auto draw_render_list =
             [&](const upstream::RenderDrawList& list) {
                 if (!transmission) {
-                    draw_list_into(pass, list, 4, bound_pipeline);
+                    draw_list_into(
+                        pass,
+                        list,
+                        state.sample_count,
+                        bound_pipeline);
                     return;
                 }
                 for (const upstream::RenderDrawCommand& draw :
@@ -5503,7 +5599,11 @@ bool run_dawn_engine(Engine& engine) {
                     }
                     upstream::RenderDrawList single;
                     single.commands.push_back(draw);
-                    draw_list_into(pass, single, 4, bound_pipeline);
+                    draw_list_into(
+                        pass,
+                        single,
+                        state.sample_count,
+                        bound_pipeline);
                 }
             };
         const auto draw_ground = [&] {
@@ -5708,7 +5808,7 @@ bool run_dawn_engine(Engine& engine) {
                     state.render_tasks[handle.value];
                 const std::uint32_t samples = target_record.swapchain
                     ? 1u
-                    : task_sample_count(target_record.samples);
+                    : task_sample_count(state, target_record.samples);
                 if (!target_record.has_color) {
                     if (!target_record.has_depth || !target.depth) {
                         throw std::runtime_error(
@@ -5924,7 +6024,7 @@ bool run_dawn_engine(Engine& engine) {
                 DawnRenderTask& render_task =
                     state.render_tasks[handle.value];
                 const std::uint32_t samples =
-                    task_sample_count(task.geometry.samples);
+                    task_sample_count(state, task.geometry.samples);
                 std::vector<WGPURenderPassColorAttachment>
                     color_attachments;
                 color_attachments.reserve(
@@ -6081,6 +6181,25 @@ bool run_dawn_engine(Engine& engine) {
                     state.render_targets[copy.source.target.value];
                 DawnRenderTarget& resolve_target =
                     state.render_targets[copy.resolve_target.value];
+                if (!state.multisampled()) {
+                    // Nothing to average: the pinned resolve of a
+                    // single-sample source is the source, so the frame
+                    // graph's resolve step is a texture copy.
+                    WGPUTexelCopyTextureInfo copy_source{};
+                    copy_source.texture = resolve_source.color;
+                    WGPUTexelCopyTextureInfo copy_destination{};
+                    copy_destination.texture = resolve_target.color;
+                    const WGPUExtent3D extent{
+                        resolve_source.width,
+                        resolve_source.height,
+                        1};
+                    wgpuCommandEncoderCopyTextureToTexture(
+                        encoder,
+                        &copy_source,
+                        &copy_destination,
+                        &extent);
+                    continue;
+                }
                 WGPURenderPassColorAttachment resolve_attachment =
                     WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
                 resolve_attachment.view = resolve_source.color_view;
@@ -6125,7 +6244,7 @@ bool run_dawn_engine(Engine& engine) {
                     &pass_descriptor);
             const std::uint32_t blit_samples = target_record.swapchain
                 ? 1u
-                : task_sample_count(target_record.samples);
+                : task_sample_count(state, target_record.samples);
             WGPURenderPipeline blit_pipeline = blit_pipeline_for(
                 state,
                 state.surface_format,
