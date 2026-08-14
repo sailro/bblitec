@@ -168,6 +168,25 @@ cache machinery. Dawn compiles WGSL at startup through the in-process
 Tint+DXC — no offline step, no cache, no register normalization, at
 the cost of first-frame compile time.
 
+## Shared frame conductor
+
+Everything that decides *what* a measured run does is written once in
+`native/src/pal_gpu_shared.hpp` and consumed by both backends: `FrameOptions`
+parses the runtime flag matrix, `CaptureGate` decides when the run may stop
+(including the bounded grace period a deferred capture needs), `FrameClock`
+produces the delta scene callbacks advance by, and `report_benchmark` prints the
+comparison numbers. A backend that does not implement a flag refuses it rather
+than rendering something else, because a silent no-op reads as a backend delta
+and the differential would attribute it to the GPU stack.
+
+The vertex, deformation, texture and diagnostic payloads live there too: vertex
+packing, morph deltas and weights, image decode with the pinned `invertY` flip,
+RGBD decode, half-float conversion in both directions, cluster numbering, and
+the alpha packing the diagnostic shaders read. Pipeline construction, bind
+groups, pass encoding and swapchain handling stay per backend — those API
+sequences are the mutually validating surface, and merging them would remove the
+diagnostic value of having two.
+
 ## Empirical findings
 
 Regression guards from the migration; each was measured, not assumed:

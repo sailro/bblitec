@@ -1335,17 +1335,6 @@ class Compiler
                         : {}),
                 };
             }
-        }
-        if (
-            owner.kind === "camera-ortho" &&
-            property === "halfHeight"
-        ) {
-            return {
-                kind: "number",
-                cpp: `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value].ortho_half_height`,
-            };
-        }
-        if (owner.kind === "camera") {
             if (property === "worldMatrix") {
                 if (owner.cameraKind !== "arc-rotate") {
                     this.fail(
@@ -1361,6 +1350,15 @@ class Compiler
                         : {}),
                 };
             }
+        }
+        if (
+            owner.kind === "camera-ortho" &&
+            property === "halfHeight"
+        ) {
+            return {
+                kind: "number",
+                cpp: `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value].ortho_half_height`,
+            };
         }
         if (
             owner.kind === "mesh" &&

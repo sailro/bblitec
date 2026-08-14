@@ -1027,30 +1027,8 @@ WGPUTexture upload_material_texture(
     bool srgb,
     const std::array<std::uint8_t, 4>& fallback,
     std::uint32_t& out_mip_count) {
-    DecodedImage image;
-    if (texture_data.bytes.empty()) {
-        image.width = image.height = 1;
-        image.rgba.assign(fallback.begin(), fallback.end());
-    } else {
-        image = decode_image(ts::ArrayBuffer(texture_data.bytes));
-    }
-    if (texture_data.invert_y && image.height > 1) {
-        const std::size_t row_bytes =
-            static_cast<std::size_t>(image.width) * 4;
-        std::vector<std::uint8_t> row(row_bytes);
-        for (int y = 0; y < image.height / 2; ++y) {
-            std::uint8_t* top =
-                image.rgba.data() +
-                static_cast<std::size_t>(y) * row_bytes;
-            std::uint8_t* bottom =
-                image.rgba.data() +
-                static_cast<std::size_t>(image.height - 1 - y) *
-                    row_bytes;
-            std::memcpy(row.data(), top, row_bytes);
-            std::memcpy(top, bottom, row_bytes);
-            std::memcpy(bottom, row.data(), row_bytes);
-        }
-    }
+    const DecodedImage image =
+        decode_uploadable_image(texture_data, fallback);
     const std::uint32_t mip_count =
         1u + static_cast<std::uint32_t>(
                  std::floor(
@@ -2998,9 +2976,10 @@ void save_dawn_geometry_id_buffer(
             mesh_index < render_plan.size();
             ++mesh_index) {
             DawnMesh& mesh = state.meshes[mesh_index];
-            const std::uint32_t triangle_count = mesh.index_count / 3;
-            const std::uint32_t current_cluster_base = cluster_id_base;
-            cluster_id_base += (triangle_count + 127u) / 128u;
+            const ClusterRange cluster =
+                advance_cluster_range(mesh.index_count, cluster_id_base);
+            const std::uint32_t triangle_count = cluster.triangle_count;
+            const std::uint32_t current_cluster_base = cluster.id_start;
             const upstream::RenderItem& item = render_plan[mesh_index];
             const MaterialRecord* material =
                 item.material.value < engine.materials.size()
@@ -3010,20 +2989,8 @@ void save_dawn_geometry_id_buffer(
                 item.cull_mode == upstream::RenderCullMode::none;
             if (double_sided != (sided_mode == 1)) continue;
 
-            float alpha_options[4]{};
-            if (material) {
-                alpha_options[0] =
-                    item.bucket == upstream::RenderBucket::alpha_blend
-                        ? 2.0f
-                        : item.bucket ==
-                                upstream::RenderBucket::alpha_mask
-                            ? 1.0f
-                            : 0.0f;
-                alpha_options[1] = material->alpha_cutoff;
-                alpha_options[2] = material->base_color_factor.a;
-            } else {
-                alpha_options[2] = 1.0f;
-            }
+            const std::array<float, 4> alpha_options =
+                diagnostic_alpha_options(item, material);
             WGPUBufferDescriptor uniform_descriptor =
                 WGPU_BUFFER_DESCRIPTOR_INIT;
             uniform_descriptor.usage =
@@ -3036,7 +3003,10 @@ void save_dawn_geometry_id_buffer(
                 DiagnosticClusterUniforms uniforms{};
                 uniforms.cluster_options[0] = current_cluster_base;
                 uniforms.cluster_options[1] = 128;
-                std::copy_n(alpha_options, 4, uniforms.alpha_options);
+                std::copy_n(
+                    alpha_options.begin(),
+                    4,
+                    uniforms.alpha_options);
                 wgpuQueueWriteBuffer(
                     state.queue,
                     uniform_buffer,
@@ -3055,7 +3025,10 @@ void save_dawn_geometry_id_buffer(
                     static_cast<float>((draw_id >> 16) & 0xffu) /
                     255.0f;
                 uniforms.id_color[3] = 1.0f;
-                std::copy_n(alpha_options, 4, uniforms.alpha_options);
+                std::copy_n(
+                    alpha_options.begin(),
+                    4,
+                    uniforms.alpha_options);
                 wgpuQueueWriteBuffer(
                     state.queue,
                     uniform_buffer,
@@ -4895,28 +4868,12 @@ bool run_dawn_engine(Engine& engine) {
             static_cast<std::size_t>(benchmark_frames));
     }
 
-    bool screenshot_saved = false;
-    bool id_buffer_saved = false;
-    bool cluster_buffer_saved = false;
-    bool diagnostics_saved = false;
+    CaptureGate captures(frame_options, limit);
+    FrameClock frame_clock;
     bool running = true;
     long frame = 0;
-    // Topology updates defer captures by one frame, so a requested
-    // capture may still be pending at the configured frame limit;
-    // extend the loop by a bounded grace period exactly like the SDL
-    // backend.
-    const auto pending_capture = [&] {
-        return (!screenshot_path.empty() && !screenshot_saved) ||
-            (!id_buffer_path.empty() && !id_buffer_saved) ||
-            (!cluster_buffer_path.empty() && !cluster_buffer_saved) ||
-            (!diagnostic_directory.empty() && !diagnostics_saved);
-    };
-    constexpr long capture_grace_frames = 8;
     CameraPointerState pointer_state;
-    while (running &&
-           (limit <= 0 || frame < limit ||
-            (pending_capture() &&
-             frame < limit + capture_grace_frames))) {
+    while (captures.keep_running(running, frame)) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) running = false;
@@ -4928,7 +4885,7 @@ bool run_dawn_engine(Engine& engine) {
             }
         }
         const float delta_ms =
-            scene.fixed_delta_ms > 0.0f ? scene.fixed_delta_ms : 16.0f;
+            frame_clock.advance(scene.fixed_delta_ms);
         for (const auto& callback : scene.before_render) {
             callback(delta_ms);
         }
@@ -6240,7 +6197,7 @@ bool run_dawn_engine(Engine& engine) {
 
         const bool capture_frame =
             frame >= screenshot_frame &&
-            !screenshot_saved &&
+            !captures.screenshot_saved &&
             !screenshot_path.empty() &&
             !topology_updated;
         WGPUBuffer readback = nullptr;
@@ -6316,14 +6273,14 @@ bool run_dawn_engine(Engine& engine) {
                 bytes_per_row,
                 state.surface_format == WGPUTextureFormat_BGRA8Unorm,
                 screenshot_path);
-            screenshot_saved = true;
+            captures.screenshot_saved = true;
         }
         if (readback) wgpuBufferRelease(readback);
 
         const bool capture_ready =
             frame >= screenshot_frame && !topology_updated;
         if (
-            capture_ready && !id_buffer_saved &&
+            capture_ready && !captures.id_buffer_saved &&
             !id_buffer_path.empty()) {
             save_dawn_geometry_id_buffer(
                 state,
@@ -6333,10 +6290,10 @@ bool run_dawn_engine(Engine& engine) {
                 engine,
                 id_buffer_path,
                 false);
-            id_buffer_saved = true;
+            captures.id_buffer_saved = true;
         }
         if (
-            capture_ready && !cluster_buffer_saved &&
+            capture_ready && !captures.cluster_buffer_saved &&
             !cluster_buffer_path.empty()) {
             save_dawn_geometry_id_buffer(
                 state,
@@ -6346,10 +6303,10 @@ bool run_dawn_engine(Engine& engine) {
                 engine,
                 cluster_buffer_path,
                 true);
-            cluster_buffer_saved = true;
+            captures.cluster_buffer_saved = true;
         }
         if (
-            capture_ready && !diagnostics_saved &&
+            capture_ready && !captures.diagnostics_saved &&
             !diagnostic_directory.empty()) {
             save_dawn_pbr_diagnostics(
                 state,
@@ -6360,7 +6317,7 @@ bool run_dawn_engine(Engine& engine) {
                 engine,
                 camera,
                 diagnostic_directory);
-            diagnostics_saved = true;
+            captures.diagnostics_saved = true;
         }
 
         wgpuSurfacePresent(state.surface);
