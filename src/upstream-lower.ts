@@ -1,6 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, resolve } from "node:path";
 import { CameraLowerer } from "./lowering/camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
@@ -14,6 +12,7 @@ import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
 import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
+import { GeneratedTree } from "./generated-tree.js";
 import type {
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
@@ -21,7 +20,7 @@ import type {
 
 class GeneratedSourceWriter {
     public constructor(
-        private readonly outputRoot: string,
+        private readonly tree: GeneratedTree,
         private readonly store: UpstreamSourceStore,
     ) {}
 
@@ -47,13 +46,8 @@ class GeneratedSourceWriter {
     ): void {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
-        const capabilitiesPath = resolve(
-            this.outputRoot,
+        this.tree.write(
             "upstream/include/bblite/upstream/render_capabilities.hpp",
-        );
-        mkdirSync(dirname(capabilitiesPath), { recursive: true });
-        writeFileSync(
-            capabilitiesPath,
             `#pragma once
 
 #define BBLITE_GPU_DEFORMATION ${options.gpuDeformation ? 1 : 0}
@@ -299,15 +293,10 @@ class GeneratedSourceWriter {
                 occlusionUv2: options.occlusionUv2,
             });
             for (const shader of shaders) {
-                const shaderPath = resolve(this.outputRoot, shader.output);
-                mkdirSync(dirname(shaderPath), { recursive: true });
-                writeFileSync(shaderPath, shader.data);
+                this.tree.write(shader.output, shader.data);
             }
-            writeFileSync(
-                resolve(
-                    this.outputRoot,
-                    "upstream/shaders/composition.json",
-                ),
+            this.tree.write(
+                "upstream/shaders/composition.json",
                 `${JSON.stringify(
                     {
                         modules: shaders
@@ -325,11 +314,8 @@ class GeneratedSourceWriter {
                 )}\n`,
             );
             if (options.shaderPrograms.length > 0) {
-                writeFileSync(
-                    resolve(
-                        this.outputRoot,
-                        "upstream/shaders/shader-material-reflection.json",
-                    ),
+                this.tree.write(
+                    "upstream/shaders/shader-material-reflection.json",
                     `${JSON.stringify(
                         renderer.shaderMaterialReflections(
                             options.shaderPrograms,
@@ -339,8 +325,8 @@ class GeneratedSourceWriter {
                     )}\n`,
                 );
             }
-            writeFileSync(
-                resolve(this.outputRoot, "upstream/renderer-fidelity.json"),
+            this.tree.write(
+                "upstream/renderer-fidelity.json",
                 `${JSON.stringify(renderer.fidelityManifest(), null, 2)}\n`,
             );
             generated.push(
@@ -440,10 +426,8 @@ class GeneratedSourceWriter {
             );
         }
 
-        const provenancePath = resolve(this.outputRoot, "upstream/provenance.json");
-        mkdirSync(dirname(provenancePath), { recursive: true });
-        writeFileSync(
-            provenancePath,
+        this.tree.write(
+            "upstream/provenance.json",
             `${JSON.stringify({ package: this.store.pin, generated }, null, 2)}\n`,
         );
     }
@@ -454,13 +438,9 @@ class GeneratedSourceWriter {
         generated: Array<{ modulePath: string; symbolName: string }>,
         relativeHeader?: string,
     ): void {
-        const sourcePath = resolve(this.outputRoot, relativeSource);
-        mkdirSync(dirname(sourcePath), { recursive: true });
-        writeFileSync(sourcePath, lowered.source);
+        this.tree.write(relativeSource, lowered.source);
         if (relativeHeader && lowered.header) {
-            const headerPath = resolve(this.outputRoot, relativeHeader);
-            mkdirSync(dirname(headerPath), { recursive: true });
-            writeFileSync(headerPath, lowered.header);
+            this.tree.write(relativeHeader, lowered.header);
         }
         generated.push({ modulePath: lowered.modulePath, symbolName: lowered.symbolName });
     }
@@ -502,8 +482,9 @@ export function emitUpstreamGenerated(
         dispersion: false,
         occlusionUv2: false,
     },
+    tree = new GeneratedTree(outputRoot),
 ): void {
-    new GeneratedSourceWriter(outputRoot, new UpstreamSourceStore()).emit(
+    new GeneratedSourceWriter(tree, new UpstreamSourceStore()).emit(
         features,
         options,
     );

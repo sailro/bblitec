@@ -10,6 +10,7 @@ import {
 import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
 import { runInstrumentedCapture } from "./capture-instrumented.js";
 import { resolveScene, scenes } from "./scene-registry.js";
+import { readCacheConfiguration } from "./build-stamp.js";
 
 function runNode(module: string, arguments_: string[]): void {
     run(process.execPath, [resolve(module), ...arguments_]);
@@ -193,6 +194,83 @@ function build(idOrSource: string): void {
     }
 }
 
+/**
+ * True when the build directory was configured with exactly the values
+ * this invocation would pass. Anything unaccounted for -- a missing
+ * cache, a value that differs, a generator switch -- configures again,
+ * so the skip can only ever be taken when it changes nothing.
+ */
+function cacheMatchesConfiguration(
+    buildDirectory: string,
+    configureArguments: string[],
+): boolean {
+    if (process.env.BBLITE_COLD_BUILD === "1") {
+        return false;
+    }
+    const cache = readCacheConfiguration(buildDirectory);
+    if (!cache) {
+        return false;
+    }
+    const generatorIndex = configureArguments.indexOf("-G");
+    const generator =
+        generatorIndex >= 0
+            ? configureArguments[generatorIndex + 1]
+            : undefined;
+    if (
+        generator !== undefined &&
+        cache.CMAKE_GENERATOR !== generator
+    ) {
+        return false;
+    }
+    for (const argument of configureArguments) {
+        if (!argument.startsWith("-D")) {
+            continue;
+        }
+        const separator = argument.indexOf("=");
+        if (separator < 0) {
+            return false;
+        }
+        const name = argument.slice(2, separator);
+        const value = argument.slice(separator + 1);
+        const cached = cache[name];
+        if (cached === undefined) {
+            return false;
+        }
+        if (
+            resolve(cached).toLowerCase() !==
+                resolve(value).toLowerCase() &&
+            cached !== value
+        ) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * `--cold` reconfigures every build directory it touches instead of
+ * trusting the cache comparison. Nothing should need it -- a mismatch
+ * reconfigures on its own -- but the pre-push validation run has the
+ * option of not depending on that reasoning at all.
+ */
+function withColdBuild(rest: string[], body: () => void): void {
+    if (!rest.includes("--cold")) {
+        body();
+        return;
+    }
+    const previous = process.env.BBLITE_COLD_BUILD;
+    process.env.BBLITE_COLD_BUILD = "1";
+    try {
+        body();
+    } finally {
+        if (previous === undefined) {
+            delete process.env.BBLITE_COLD_BUILD;
+        } else {
+            process.env.BBLITE_COLD_BUILD = previous;
+        }
+    }
+}
+
 function buildScene(scene: (typeof scenes)[number]): void {
     const generator = process.env.BBLITE_CMAKE_GENERATOR ?? "Ninja";
     const ninja =
@@ -254,11 +332,19 @@ function buildScene(scene: (typeof scenes)[number]): void {
         );
     }
     const environment = ninja?.environment ?? process.env;
-    run(
-        process.env.CMAKE_COMMAND ?? "cmake",
-        configureArguments,
-        environment,
-    );
+    // Configure only when the cache does not already hold exactly what
+    // this invocation would set. The generator re-runs CMake itself when
+    // CMakeLists.txt or features.cmake change, so a matching cache means
+    // the configure step has nothing to do -- but a changed BBLITE_BACKEND
+    // or generated directory has to reconfigure, or the build would
+    // silently produce the previous configuration.
+    if (!cacheMatchesConfiguration(scene.buildDirectory, configureArguments)) {
+        run(
+            process.env.CMAKE_COMMAND ?? "cmake",
+            configureArguments,
+            environment,
+        );
+    }
     run(
         process.env.CMAKE_COMMAND ?? "cmake",
         [
@@ -309,11 +395,11 @@ async function main(): Promise<void> {
         return;
     }
     if (command === "build" && id) {
-        build(id);
+        withColdBuild(rest, () => build(id));
         return;
     }
     if (command === "process" && id) {
-        processScene(id);
+        withColdBuild(rest, () => processScene(id));
         return;
     }
     if (command === "parity" && id) {

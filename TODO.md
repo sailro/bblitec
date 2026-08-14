@@ -275,7 +275,20 @@ CPU-side from GPU-side causes immediately.
 ## P1 — Developer experience
 
 - [ ] Add portable CMake presets.
+- [ ] Share the PAL across scenes with the same capability signature. Every
+  scene compiles `pal.cpp`, `pal_sdl.cpp`, `pal_sdl_gpu.cpp` and
+  `pal_dawn.cpp` into its own build directory, but the generated
+  `render_capabilities.hpp` has only 13 distinct signatures across the
+  registry and one of them covers 44 scenes, so editing the PAL costs
+  dozens of identical rebuilds. Either a compiler launcher (`sccache`
+  handles MSVC) or one static library per signature; incremental
+  generation does not help this case, because the PAL genuinely changed.
 - [ ] Improve missing-tool and stale-output diagnostics.
+- [ ] Repair `scene -- geometry`: its copy-task scan matches
+  `name: "..."`, but the pinned scenes 145/146/149 name their tasks with a
+  template literal (`` name: `scene145-impostor-${entry.name}` ``), so the
+  command reports "no geometry-output copy tasks" for every scene that has
+  them. The diagnostic has been inert since that upstream change.
 - [ ] Add `--explain-feature` and generated-code-to-upstream inspection.
 - [ ] Document adding a lowerer and curated scene fixture.
 

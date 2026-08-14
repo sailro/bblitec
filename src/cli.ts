@@ -11,7 +11,14 @@ import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
 import { packageHdrEnvironment } from "./hdr-packager.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
+import {
+    buildStampHeader,
+    buildStampHeaderPath,
+    buildStampInputsPath,
+    computeBuildStamp,
+} from "./build-stamp.js";
 import { readUpstreamPin } from "./upstream-source.js";
+import { GeneratedTree } from "./generated-tree.js";
 
 interface CliOptions {
     input: string;
@@ -244,11 +251,15 @@ async function main(): Promise<void> {
     });
 
     mkdirSync(outputPath, { recursive: true });
+    // Assets are materialized from their sources every run; the compiled
+    // tree is written through `tree`, which rewrites only what changed
+    // and prunes what this run no longer emits.
     rmSync(resolve(outputPath, "assets"), { recursive: true, force: true });
-    rmSync(resolve(outputPath, "upstream"), { recursive: true, force: true });
+    const tree = new GeneratedTree(outputPath);
     await Promise.all(result.manifest.assets.map((asset) => materializeAsset(asset, inputPath, outputPath)));
     const specializationFeatures =
         emitAssetSpecializations(outputPath, result.manifest.assets);
+    tree.keep("upstream/gltf-specialization.json");
     if (specializationFeatures.imageBasedLighting) {
         const brdfAsset: CompileAsset = {
             source: "generated:pinned-ibl-brdf-lut",
@@ -313,8 +324,8 @@ async function main(): Promise<void> {
         iridescence: specializationFeatures.iridescence,
         dispersion: specializationFeatures.dispersion,
         occlusionUv2: specializationFeatures.occlusionUv2,
-    });
-    writeFileSync(resolve(outputPath, "main.cpp"), result.cpp);
+    }, tree);
+    tree.write("main.cpp", result.cpp);
     const imageCodecs = reachedImageCodecs(
         outputPath,
         result.manifest.assets,
@@ -322,17 +333,20 @@ async function main(): Promise<void> {
     const imageCodecLines = imageCodecs
         .map((codec) => `    "${codec}"`)
         .join("\n");
-    writeFileSync(
-        resolve(outputPath, "features.cmake"),
+    tree.write(
+        "features.cmake",
         `${result.cmake}
 set(BBLITE_IMAGE_CODECS
 ${imageCodecLines}
 )
 `,
     );
-    writeFileSync(resolve(outputPath, "manifest.json"), `${JSON.stringify(result.manifest, null, 2)}\n`);
-    writeFileSync(
-        resolve(outputPath, "fidelity.json"),
+    tree.write(
+        "manifest.json",
+        `${JSON.stringify(result.manifest, null, 2)}\n`,
+    );
+    tree.write(
+        "fidelity.json",
         `${JSON.stringify(
             {
                 source: result.manifest.source,
@@ -343,6 +357,22 @@ ${imageCodecLines}
         )}\n`,
     );
 
+    // Prune before stamping: a source this run no longer emits must be
+    // gone from the tree before its digest is taken. The stamp header is
+    // written after the digest but belongs to this run, so it is claimed
+    // first -- pruning it would rewrite it on every generation and
+    // recompile everything that includes it.
+    tree.keep(buildStampHeaderPath);
+    tree.prune("upstream");
+    // Last, because it digests everything written above. The executable
+    // embeds this and the parity gate refuses a binary whose stamp no
+    // longer matches the inputs on disk.
+    const { stamp, inputs } = computeBuildStamp(outputPath);
+    tree.write(buildStampHeaderPath, buildStampHeader(stamp));
+    tree.write(
+        buildStampInputsPath,
+        `${JSON.stringify({ stamp, inputs }, null, 2)}\n`,
+    );
     console.log(`Generated ${outputPath}`);
     console.log(`Features: ${result.manifest.features.join(", ")}`);
     if (result.manifest.assets.length > 0) {

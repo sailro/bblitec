@@ -103,6 +103,10 @@ export async function runGeometryOutputDiagnostics(
             actual,
             true,
             { BBLITE_COPY_TASK: task },
+            undefined,
+            undefined,
+            undefined,
+            resolve(scene.output),
         );
         const comparison = compareImages(actual, reference);
         generateDiffMap(actual, reference, diff);

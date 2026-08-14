@@ -12,6 +12,10 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { captureSuiteReference } from "./capture-suite-reference.js";
 import {
+    comparePayload,
+    computeBuildStamp,
+} from "./build-stamp.js";
+import {
     isRegisteredScene,
     resolveScene,
     type SceneDefinition,
@@ -140,6 +144,81 @@ export function defaultExecutable(buildDirectory: string): string {
     return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
 }
 
+/**
+ * Refuse a measurement taken from a stale build.
+ *
+ * The executable reports the digest of the sources it was compiled from,
+ * and its shader and asset payload is copied beside it after every
+ * successful build. Comparing both against the generated tree catches the
+ * three ways a run can measure something other than the current inputs: a
+ * build that never ran, a shader step that failed without stopping the
+ * build, and a deployment that never happened.
+ */
+export function verifyDeployedPayload(
+    executable: string,
+    generatedDirectory: string,
+): void {
+    // BBLITE_ASSET_DIR and BBLITE_GPU_SHADER_DIR redirect the runtime
+    // lookup, so the deployment beside the executable is only the payload
+    // when neither override is active.
+    const executableDirectory = resolve(executable, "..");
+    const payloads: Array<[string, string, string]> = [];
+    if (!process.env.BBLITE_GPU_SHADER_DIR) {
+        payloads.push([
+            "shaders",
+            resolve(generatedDirectory, "upstream/shaders"),
+            resolve(executableDirectory, "shaders"),
+        ]);
+    }
+    if (!process.env.BBLITE_ASSET_DIR) {
+        payloads.push([
+            "assets",
+            resolve(generatedDirectory, "assets"),
+            resolve(executableDirectory, "assets"),
+        ]);
+    }
+    for (const [label, source, deployed] of payloads) {
+        const mismatches = comparePayload(source, deployed);
+        if (mismatches.length > 0) {
+            const detail = mismatches
+                .slice(0, 5)
+                .map(
+                    (mismatch) =>
+                        `${mismatch.path} (${mismatch.reason})`,
+                )
+                .join(", ");
+            throw new Error(
+                `Stale ${label} beside ${executable}: ${mismatches.length} file(s) differ from ${source} ` +
+                    `[${detail}]. Run 'scene -- process' before measuring.`,
+            );
+        }
+    }
+}
+
+export function verifyBuildIdentity(
+    executable: string,
+    generatedDirectory: string,
+    reportedStampPath: string,
+): void {
+    const expected = computeBuildStamp(generatedDirectory).stamp;
+    if (!existsSync(reportedStampPath)) {
+        throw new Error(
+            `The native executable did not report a build stamp. Rebuild it with 'scene -- process' so it carries one: ${executable}`,
+        );
+    }
+    const reported = readFileSync(
+        reportedStampPath,
+        "utf8",
+    ).trim();
+    if (reported !== expected) {
+        throw new Error(
+            `Stale native build: ${executable} was built from different sources ` +
+                `(reports ${reported.slice(0, 12)}, generated tree is ${expected.slice(0, 12)}). ` +
+                `Run 'scene -- process' before measuring.`,
+        );
+    }
+}
+
 export function runNative(
     executable: string,
     screenshot: string,
@@ -148,11 +227,17 @@ export function runNative(
     idBufferPath?: string,
     clusterBufferPath?: string,
     diagnosticDirectory?: string,
+    generatedDirectory?: string,
 ): void {
     if (!existsSync(executable)) {
         throw new Error(
             `Native executable not found: ${executable}. Build the scene Release target first.`,
         );
+    }
+    if (generatedDirectory) {
+        // Before spending a run: a payload that never deployed would
+        // otherwise surface as a driver error from the previous binaries.
+        verifyDeployedPayload(executable, generatedDirectory);
     }
     mkdirSync(resolve(screenshot, ".."), { recursive: true });
     const screenshotFrame = Number.parseInt(
@@ -193,11 +278,25 @@ export function runNative(
             BBLITE_MAX_FRAMES: String(maxFrames),
             BBLITE_SCREENSHOT: resolve(screenshot),
             BBLITE_TEST_PASS: "1",
+            ...(generatedDirectory
+                ? {
+                      BBLITE_BUILD_STAMP_OUT: resolve(
+                          `${screenshot}.build-stamp`,
+                      ),
+                  }
+                : {}),
         },
     });
     if (result.error) throw result.error;
     if (result.status !== 0) {
         throw new Error(`Native renderer exited with status ${result.status}.`);
+    }
+    if (generatedDirectory) {
+        verifyBuildIdentity(
+            executable,
+            generatedDirectory,
+            resolve(`${screenshot}.build-stamp`),
+        );
     }
 }
 
@@ -346,6 +445,7 @@ export async function runSceneParity(
             arguments_.gpu && config.attribution?.diagnostics
                 ? outputDirectory
                 : undefined,
+            resolve(scene.output),
         );
     }
 

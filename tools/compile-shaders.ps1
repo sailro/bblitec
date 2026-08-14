@@ -149,6 +149,28 @@ function Test-ShaderCacheBinary {
     }
 }
 
+# Publish a freshly produced file only when it differs from what is
+# already there. Tint rewrites its HLSL, MSL and reflection dumps on every
+# run; replacing an identical file makes the shader directory newer than
+# the snapshot CMake copied from it, which re-runs the snapshot and
+# relinks every scene even when nothing changed.
+function Move-IfDifferent {
+    param([string]$Temporary, [string]$Destination)
+
+    if (Test-Path -LiteralPath $Destination) {
+        $current = [System.IO.File]::ReadAllBytes($Destination)
+        $produced = [System.IO.File]::ReadAllBytes($Temporary)
+        if (
+            $current.Length -eq $produced.Length -and
+            -not (Compare-Object $current $produced)
+        ) {
+            Remove-Item -LiteralPath $Temporary -Force
+            return
+        }
+    }
+    Move-Item -LiteralPath $Temporary -Destination $Destination -Force
+}
+
 function Normalize-TintHlslBindings {
     param([string]$Path)
 
@@ -268,17 +290,19 @@ foreach ($shaderDirectory in $shaderDirectories) {
             } else {
                 "mainFragment"
             }
+            $pendingHlsl = "$outputBase.pending-hlsl"
             $reflection = & $Tint $source.FullName `
                 --entry-point $entryPoint `
                 --format hlsl `
-                --output-name "$outputBase.hlsl" `
+                --output-name $pendingHlsl `
                 --dump-inspector-bindings true 2>&1
             if ($LASTEXITCODE -ne 0) {
                 throw "Tint HLSL generation failed for $($source.FullName)."
             }
             $reflectionText = $reflection -join [Environment]::NewLine
-            $reflectionText |
-                Set-Content "$outputBase.tint-reflection.txt"
+            $pendingReflection = "$outputBase.pending-reflection"
+            $reflectionText | Set-Content $pendingReflection
+            Move-IfDifferent $pendingReflection "$outputBase.tint-reflection.txt"
             $wgsl = Get-Content $source.FullName -Raw
             $expectedBindings = @(
                 [regex]::Matches(
@@ -305,11 +329,14 @@ foreach ($shaderDirectory in $shaderDirectories) {
             ) {
                 throw "Tint binding reflection differs from native WGSL for $($source.FullName)."
             }
-            Normalize-TintHlslBindings "$outputBase.hlsl"
-            & $Tint $source.FullName --entry-point $entryPoint --format msl --output-name "$outputBase.msl"
+            Normalize-TintHlslBindings $pendingHlsl
+            Move-IfDifferent $pendingHlsl "$outputBase.hlsl"
+            $pendingMsl = "$outputBase.pending-msl"
+            & $Tint $source.FullName --entry-point $entryPoint --format msl --output-name $pendingMsl
             if ($LASTEXITCODE -ne 0) {
                 throw "Tint MSL generation failed for $($source.FullName)."
             }
+            Move-IfDifferent $pendingMsl "$outputBase.msl"
         }
     }
     foreach ($source in Get-ChildItem $shaderDirectory -Filter "*.hlsl") {
@@ -380,9 +407,15 @@ foreach ($shaderDirectory in $shaderDirectories) {
             dxilCompilerSha256 = (Get-FileHash $Dxc -Algorithm SHA256).Hash
         }
     }
+    # Rewriting an unchanged record would make the shader directory look
+    # newer than the snapshot CMake copied from it, which re-runs the
+    # snapshot and relinks every scene on every run.
+    $compilerRecordPath = Join-Path $shaderDirectory "shader-compiler.json"
+    $pendingCompilerRecord = "$compilerRecordPath.pending"
     $compilerRecord |
         ConvertTo-Json |
-        Set-Content (Join-Path $shaderDirectory "shader-compiler.json")
+        Set-Content $pendingCompilerRecord
+    Move-IfDifferent $pendingCompilerRecord $compilerRecordPath
 }
 
 $backend = if ($usedTint) { "Tint WGSL plus DXC" } else { "DXC HLSL" }
