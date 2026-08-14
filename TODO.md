@@ -207,7 +207,11 @@ CPU-side from GPU-side causes immediately.
   template instead declares `array<LightEntry, MAX_LIGHTS>` and loops
   `min(mesh.lc, MAX_LIGHTS)`, so lights created in scene code, lights added
   after registration, and the per-mesh light list all still fall outside
-  what is lowered.
+  what is lowered. The per-mesh list is the pressing one and it is what
+  `mesh.lc` counts: a `.babylon` light carries `includedOnlyMeshesIds` and
+  `excludedMeshesIds`, Scene 9 uses both, and a scene-global slot list
+  cannot express either — the uniform shape has to become per-mesh before
+  that scene can be measured.
 - [ ] Extend Standard vertex colors beyond the reached RGB slice: the pinned
   `std-vertex-color-fragment.ts` also consumes `vColor.a` under the
   `mesh.hasVertexAlpha` opt-in (output alpha, the vertex-alpha alpha test, and
@@ -545,14 +549,22 @@ runtime gaps may remain hidden behind it.
      the fragment now carry one slot per light a scene's `.babylon` assets
      declare, counted at generation. Sponza draws at region MAD 2.836 with
      67.8% of its pixels already exact.
-  2. Parented and geometry-less nodes: 16 of its 98 meshes carry a
-     `parentId` and 29 have no geometry, and the loader silently skips both
-     (the two-pass `.babylon` wiring entry below).
+  2. Per-mesh light lists, which is what the residual actually is. Sponza's
+     two orange lights carry `includedOnlyMeshesIds` naming three meshes,
+     and its white light carries a 32-entry `excludedMeshesIds`; native
+     applies every light to every mesh, so the orange spills onto columns
+     the pin leaves neutral. A lit column reads `[123, 50, 31]` against the
+     golden's `[29, 29, 28]` while unlit stone, the ornament and the ceiling
+     are all delta 0 — the base pass and its textures already agree. This is
+     the same per-mesh light set the pinned template's `min(mesh.lc,
+     MAX_LIGHTS)` loop exists for, so it also decides the shape of the light
+     uniforms: a scene-global slot list cannot express it.
   3. Standard normal mapping for the 13 `bumpTexture` materials.
-  4. Localize the residual, which concentrates on the surfaces the three
-     point lights reach: two thirds of the frame is already byte-exact, so
-     the base pass and its textures agree and something in the point-light
-     terms does not. Attenuation and `range` are the first suspects.
+  Its parented and geometry-less nodes are NOT on this path: all 16 parented
+  meshes and all 29 geometry-less ones are bones and camera targets carrying
+  no geometry, and native already draws all 32 of the scene's visible meshes.
+  The two-pass `.babylon` wiring below stays a latent gap rather than a
+  Sponza rung.
   Then register it and measure. Nothing before rung 3 can be gated on this
   scene, so each rung lands proved byte-neutral for the scenes already
   measured rather than by a number of its own.
