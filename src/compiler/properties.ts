@@ -221,7 +221,11 @@ export function readProperty(
     context: PropertyContext,
     owner: Value,
     property: string,
-    expression: ts.PropertyAccessExpression,
+    /**
+     * Where to report a refusal. Usually the property access, but a
+     * destructuring element names the same properties.
+     */
+    expression: ts.Node,
 ): Value | undefined {
     const rule = propertyRules.find(
         (candidate) =>

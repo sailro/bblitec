@@ -795,59 +795,60 @@ class Compiler
             );
         this.emit(`auto ${temporary} = ${value.cpp};`);
         for (const element of declaration.name.elements) {
-            if (
-                element.dotDotDotToken ||
-                !ts.isIdentifier(element.name)
-            ) {
+            const { name, property } =
+                this.bindingProperty(element);
+            const cppName = this.cppIdentifier(name.text);
+            // The same properties `rtt.rt` and `rtt.texture` name, read
+            // off the temporary the destructuring bound.
+            const propertyValue =
+                readProperty(
+                    this,
+                    { ...value, cpp: temporary },
+                    property,
+                    element,
+                ) ??
                 this.fail(
                     element,
-                    "Object destructuring supports identifier properties only.",
+                    `Unsupported render-target texture property '${property}'.`,
                 );
-            }
-            const property =
-                element.propertyName &&
-                (ts.isIdentifier(element.propertyName) ||
-                    ts.isStringLiteral(element.propertyName))
-                    ? element.propertyName.text
-                    : element.name.text;
-            const cppName = this.cppIdentifier(
-                element.name.text,
-            );
-            const propertyValue: Value =
-                property === "rt"
-                    ? {
-                          kind: "render-target",
-                          cpp: `${temporary}.rt`,
-                          ...(value.engineCpp
-                              ? {
-                                    engineCpp:
-                                        value.engineCpp,
-                                }
-                              : {}),
-                      }
-                    : property === "texture"
-                      ? {
-                            kind: "render-texture",
-                            cpp: `${temporary}.texture`,
-                            ...(value.engineCpp
-                                ? {
-                                      engineCpp:
-                                          value.engineCpp,
-                                  }
-                                : {}),
-                        }
-                      : this.fail(
-                            element,
-                            `Unsupported render-target texture property '${property}'.`,
-                        );
             this.emit(
                 `auto ${cppName} = ${propertyValue.cpp};`,
             );
-            this.defineVariable(element.name, {
+            this.defineVariable(name, {
                 ...propertyValue,
                 cpp: cppName,
             });
         }
+    }
+
+    /**
+     * The source property a destructuring element reads, with the
+     * binding forms the compiler does not lower rejected first. The
+     * record and render-target paths share this and then diverge on
+     * where the value comes from.
+     */
+    private bindingProperty(element: ts.BindingElement): {
+        name: ts.Identifier;
+        property: string;
+    } {
+        if (
+            element.dotDotDotToken ||
+            !ts.isIdentifier(element.name)
+        ) {
+            this.fail(
+                element,
+                "Object destructuring supports identifier properties only.",
+            );
+        }
+        return {
+            name: element.name,
+            property:
+                element.propertyName &&
+                (ts.isIdentifier(element.propertyName) ||
+                    ts.isStringLiteral(element.propertyName))
+                    ? element.propertyName.text
+                    : element.name.text,
+        };
     }
 
     private emitRecordBindingDeclaration(
@@ -855,21 +856,8 @@ class Compiler
         value: Value,
     ): void {
         for (const element of pattern.elements) {
-            if (
-                element.dotDotDotToken ||
-                !ts.isIdentifier(element.name)
-            ) {
-                this.fail(
-                    element,
-                    "Object destructuring supports identifier properties only.",
-                );
-            }
-            const property =
-                element.propertyName &&
-                (ts.isIdentifier(element.propertyName) ||
-                    ts.isStringLiteral(element.propertyName))
-                    ? element.propertyName.text
-                    : element.name.text;
+            const { name, property } =
+                this.bindingProperty(element);
             const propertyValue =
                 value.recordProperties?.[property];
             if (!propertyValue) {
@@ -884,13 +872,11 @@ class Compiler
                     `Record destructuring supports numeric properties only, received ${propertyValue.kind}.`,
                 );
             }
-            const cppName = this.cppIdentifier(
-                element.name.text,
-            );
+            const cppName = this.cppIdentifier(name.text);
             this.emit(
                 `[[maybe_unused]] double ${cppName} = ${propertyValue.cpp};`,
             );
-            this.defineVariable(element.name, {
+            this.defineVariable(name, {
                 kind: "number",
                 cpp: cppName,
                 ...(propertyValue.staticNumber === undefined
@@ -1819,19 +1805,11 @@ class Compiler
 
     public compilePlaneOptions(expression: ts.Expression): [string, string] {
         const object = this.expectObjectLiteral(expression);
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.propertyName(property.name)
-                    : undefined;
-            if (!name || !["size", "width", "height"].includes(name)) {
-                this.fail(
-                    property,
-                    "Plane options support only size, width, and height.",
-                );
-            }
-        }
+        this.validateObjectProperties(
+            object,
+            ["size", "width", "height"],
+            "Plane options support only size, width, and height.",
+        );
         const size = this.objectProperty(object, "size");
         const width = this.objectProperty(object, "width");
         const height = this.objectProperty(object, "height");
@@ -1901,22 +1879,11 @@ class Compiler
         expression: ts.Expression,
     ): [string, string, string] {
         const object = this.expectObjectLiteral(expression);
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.propertyName(property.name)
-                    : undefined;
-            if (
-                !name ||
-                !["diameter", "thickness", "tessellation"].includes(name)
-            ) {
-                this.fail(
-                    property,
-                    "Torus options support diameter, thickness, and tessellation.",
-                );
-            }
-        }
+        this.validateObjectProperties(
+            object,
+            ["diameter", "thickness", "tessellation"],
+            "Torus options support diameter, thickness, and tessellation.",
+        );
         const diameter = this.objectProperty(object, "diameter");
         const thickness = this.objectProperty(object, "thickness");
         const tessellation = this.objectProperty(object, "tessellation");
@@ -1952,35 +1919,23 @@ class Compiler
         string,
     ] {
         const object = this.expectObjectLiteral(expression);
-        const supported = new Set([
-            "baseColorTexture",
-            "ormTexture",
-            "metallicFactor",
-            "roughnessFactor",
-            "directIntensity",
-            "environmentIntensity",
-            "alpha",
-            "reflectance",
-            "doubleSided",
-            "transmissive",
-            "subsurface",
-        ]);
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.propertyName(property.name)
-                    : undefined;
-            if (
-                !name ||
-                !supported.has(name)
-            ) {
-                this.fail(
-                    property,
-                    "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, lighting intensities, skybox mode, and transmission subsurface fields.",
-                );
-            }
-        }
+        this.validateObjectProperties(
+            object,
+            [
+                "baseColorTexture",
+                "ormTexture",
+                "metallicFactor",
+                "roughnessFactor",
+                "directIntensity",
+                "environmentIntensity",
+                "alpha",
+                "reflectance",
+                "doubleSided",
+                "transmissive",
+                "subsurface",
+            ],
+            "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, lighting intensities, skybox mode, and transmission subsurface fields.",
+        );
         const baseColorExpression = this.objectProperty(object, "baseColorTexture");
         const ormExpression = this.objectProperty(object, "ormTexture");
         if (!baseColorExpression || !ormExpression) {
@@ -2086,34 +2041,25 @@ class Compiler
 
     public compileGridMaterialOptions(expression: ts.Expression): string[] {
         const object = this.expectObjectLiteral(expression);
-        const supported = new Set([
-            "name",
-            "mainColor",
-            "lineColor",
-            "gridRatio",
-            "gridOffset",
-            "majorUnitFrequency",
-            "minorUnitVisibility",
-            "opacity",
-            "antialias",
-            "preMultiplyAlpha",
-            "useMaxLine",
-            "visibility",
-            "backFaceCulling",
-        ]);
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.propertyName(property.name)
-                    : undefined;
-            if (!name || !supported.has(name)) {
-                this.fail(
-                    property,
-                    "Grid material options support colors, object-space spacing/offset, line frequency/visibility, opacity, antialiasing, premultiplication, max-line composition, visibility, and culling.",
-                );
-            }
-        }
+        this.validateObjectProperties(
+            object,
+            [
+                "name",
+                "mainColor",
+                "lineColor",
+                "gridRatio",
+                "gridOffset",
+                "majorUnitFrequency",
+                "minorUnitVisibility",
+                "opacity",
+                "antialias",
+                "preMultiplyAlpha",
+                "useMaxLine",
+                "visibility",
+                "backFaceCulling",
+            ],
+            "Grid material options support colors, object-space spacing/offset, line frequency/visibility, opacity, antialiasing, premultiplication, max-line composition, visibility, and culling.",
+        );
         const mainColor = this.objectProperty(object, "mainColor");
         const lineColor = this.objectProperty(object, "lineColor");
         const gridRatio = this.objectProperty(object, "gridRatio");
@@ -2170,30 +2116,21 @@ class Compiler
         expression: ts.Expression,
     ): { name: string; id: number } {
         const object = this.expectObjectLiteral(expression);
-        const supportedProperties = new Set([
-            "name",
-            "vertexSource",
-            "fragmentSource",
-            "attributes",
-            "uniforms",
-            "needAlphaBlending",
-            "needAlphaTesting",
-            "backFaceCulling",
-            "depthWrite",
-        ]);
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.propertyName(property.name)
-                    : undefined;
-            if (!name || !supportedProperties.has(name)) {
-                this.fail(
-                    property,
-                    "Reached shader materials support source, attributes, uniforms, alpha state, culling, and depthWrite only.",
-                );
-            }
-        }
+        this.validateObjectProperties(
+            object,
+            [
+                "name",
+                "vertexSource",
+                "fragmentSource",
+                "attributes",
+                "uniforms",
+                "needAlphaBlending",
+                "needAlphaTesting",
+                "backFaceCulling",
+                "depthWrite",
+            ],
+            "Reached shader materials support source, attributes, uniforms, alpha state, culling, and depthWrite only.",
+        );
 
         const vertexExpression = this.objectProperty(object, "vertexSource");
         const fragmentExpression = this.objectProperty(object, "fragmentSource");
@@ -2941,26 +2878,17 @@ class Compiler
         skyboxPosition: string;
     } {
         const object = this.expectObjectLiteral(expression);
-        const supported = new Set([
-            "faceSize",
-            "useCubemapSkybox",
-            "skipGround",
-            "skyboxSize",
-            "skyboxPosition",
-        ]);
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.propertyName(property.name)
-                    : undefined;
-            if (!name || !supported.has(name)) {
-                this.fail(
-                    property,
-                    "HDR environment options support faceSize, cubemap skybox, ground skipping, skybox size, and skybox position.",
-                );
-            }
-        }
+        this.validateObjectProperties(
+            object,
+            [
+                "faceSize",
+                "useCubemapSkybox",
+                "skipGround",
+                "skyboxSize",
+                "skyboxPosition",
+            ],
+            "HDR environment options support faceSize, cubemap skybox, ground skipping, skybox size, and skybox position.",
+        );
         const faceSizeExpression = this.objectProperty(object, "faceSize");
         const faceSize = faceSizeExpression
             ? Number(this.compilePositiveInteger(faceSizeExpression).slice(0, -1))
