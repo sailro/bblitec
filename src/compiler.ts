@@ -1240,7 +1240,10 @@ class Compiler
             }
             return field;
         }
-        if (!ts.isIdentifier(ownerExpression)) {
+        if (
+            !ts.isIdentifier(ownerExpression) &&
+            !ts.isPropertyAccessExpression(ownerExpression)
+        ) {
             this.fail(
                 expression,
                 `Unsupported property value '${expression.getText()}'.`,
@@ -1249,52 +1252,13 @@ class Compiler
         // Through compileValue rather than lookup: a module-level
         // constant is never bound in a variable scope, so it resolves
         // through its own initializer the way an entry-scope constant
-        // resolves through its binding. Unknown identifiers still fail
-        // in lookup at the end of that chain.
+        // resolves through its binding, and a property-access owner
+        // resolves by recursing here, so `camera.ortho.halfHeight` reads
+        // as the path it is written as. Unknown identifiers still fail
+        // in lookup at the end of that chain, and an owner that is
+        // itself unsupported fails naming the sub-path that failed.
         const owner = this.compileValue(ownerExpression);
         const property = expression.name.text;
-        const declared = readProperty(
-            this,
-            owner,
-            property,
-            expression,
-        );
-        if (declared) {
-            return declared;
-        }
-        if (
-            owner.kind === "engine" &&
-            property === "msaaSamples"
-        ) {
-            return {
-                kind: "number",
-                cpp: `${owner.msaaSamples ?? 4}.0f`,
-                staticNumber: owner.msaaSamples ?? 4,
-            };
-        }
-        if (owner.kind === "camera") {
-            if (property === "target") {
-                const cameraRecord = `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value]`;
-                const component = (
-                    name: "x" | "y" | "z",
-                ): Value => ({
-                    kind: "number",
-                    cpp: `${cameraRecord}.target.${name}`,
-                    ...(owner.engineCpp
-                        ? { engineCpp: owner.engineCpp }
-                        : {}),
-                });
-                return {
-                    kind: "record",
-                    cpp: "",
-                    recordProperties: {
-                        x: component("x"),
-                        y: component("y"),
-                        z: component("z"),
-                    },
-                };
-            }
-        }
         if (owner.kind === "record") {
             const accessor = owner.recordGetters?.[property];
             if (accessor) {
@@ -1319,60 +1283,12 @@ class Compiler
             }
             return value;
         }
-        if (
-            owner.kind === "tuple" &&
-            property === "length"
-        ) {
-            const length =
-                owner.tupleElements?.length ?? 0;
-            return {
-                kind: "number",
-                cpp: `${length}.0f`,
-                staticNumber: length,
-            };
-        }
-        if (owner.kind === "task" && owner.geometryTask) {
-            if (property === "outputTexture") {
-                if (!owner.geometryTask.emitColor) {
-                    this.fail(expression, "Geometry task has no targetTexture output.");
-                }
-                return {
-                    kind: "render-texture",
-                    cpp: `bbl::geometry_task_output_texture(${owner.cpp})`,
-                    ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
-                };
-            }
-            const geometryProperties: Record<string, GeometryTextureTypeName> = {
-                geometryIrradianceTexture: "IRRADIANCE",
-                geometryWorldPositionTexture: "WORLD_POSITION",
-                geometryLocalPositionTexture: "LOCAL_POSITION",
-                geometryReflectivityTexture: "REFLECTIVITY",
-                geometryViewDepthTexture: "VIEW_DEPTH",
-                geometryNormalizedViewDepthTexture: "NORMALIZED_VIEW_DEPTH",
-                geometryScreenspaceDepthTexture: "SCREENSPACE_DEPTH",
-                geometryViewNormalTexture: "VIEW_NORMAL",
-                geometryWorldNormalTexture: "WORLD_NORMAL",
-                geometryAlbedoTexture: "ALBEDO",
-                geometryLinearVelocityTexture: "LINEAR_VELOCITY",
-            };
-            const type = geometryProperties[property];
-            if (type) {
-                if (!owner.geometryTask.attachments.includes(type)) {
-                    this.fail(
-                        expression,
-                        `Geometry task did not request ${type}.`,
-                    );
-                }
-                return {
-                    kind: "render-texture",
-                    cpp: `bbl::geometry_task_texture(${owner.cpp}, bbl::GeometryTextureType::${this.geometryEnumMember(type)})`,
-                    ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
-                };
-            }
-        }
-        this.fail(
-            expression,
-            `Unsupported property value '${expression.getText()}'.`,
+        return (
+            this.readOwnerProperty(owner, expression) ??
+            this.fail(
+                expression,
+                `Unsupported property value '${expression.getText()}'.`,
+            )
         );
     }
 
@@ -4094,6 +4010,24 @@ class Compiler
     private lookupRecordProperty(
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
+        if (
+            ts.isPropertyAccessExpression(
+                expression.expression,
+            )
+        ) {
+            // A path resolves one link at a time, through this same
+            // non-throwing lookup: an owner nobody here can name is
+            // still the data lowerer's to try, not an error.
+            const nested = this.lookupRecordProperty(
+                expression.expression,
+            );
+            return nested
+                ? this.readOwnerProperty(
+                      nested,
+                      expression,
+                  )
+                : undefined;
+        }
         if (!ts.isIdentifier(expression.expression)) {
             return undefined;
         }
@@ -4108,28 +4042,50 @@ class Compiler
                 ? this.compileValue(resolved)
                 : undefined;
         })();
-        if (owner?.kind === "record") {
+        return owner
+            ? this.readOwnerProperty(owner, expression)
+            : undefined;
+    }
+
+    /**
+     * One link of a path, once the owner is resolved. Every read site
+     * ends here -- the general property path, the static evaluator's
+     * lookup, and each nested link -- so a path resolves the same way
+     * wherever it is written and however deep it goes. The readings that
+     * are not a declared field lookup live here because they are what
+     * differs, and each used to sit in only one of the two paths:
+     * `camera.target` and the geometry-task outputs resolved in an
+     * expression but not in a numeric context.
+     *
+     * A record owner is the exception: this returns the property or
+     * nothing, because the lookup path must stay non-throwing for the
+     * data lowerer to try next. The general path handles records itself,
+     * where a missing property is an error with a message.
+     */
+    private readOwnerProperty(
+        owner: Value,
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        if (owner.kind === "record") {
             return owner.recordProperties?.[
                 expression.name.text
             ];
         }
-        if (owner) {
-            // The same table the general property path reads. Keeping a
-            // second copy here is what made `camera.ortho.halfHeight`
-            // resolve in an expression but not in a numeric context: the
-            // copy was never told about the orthographic bounds.
-            const declared = readProperty(
-                this,
-                owner,
-                expression.name.text,
-                expression,
-            );
-            if (declared) {
-                return declared;
-            }
+        // The same table the general property path reads. Keeping a
+        // second copy here is what made `camera.ortho.halfHeight`
+        // resolve in an expression but not in a numeric context: the
+        // copy was never told about the orthographic bounds.
+        const declared = readProperty(
+            this,
+            owner,
+            expression.name.text,
+            expression,
+        );
+        if (declared) {
+            return declared;
         }
         if (
-            owner?.kind === "tuple" &&
+            owner.kind === "tuple" &&
             expression.name.text === "length"
         ) {
             const length =
@@ -4141,7 +4097,7 @@ class Compiler
             };
         }
         if (
-            owner?.kind === "engine" &&
+            owner.kind === "engine" &&
             expression.name.text === "msaaSamples"
         ) {
             return {
@@ -4150,7 +4106,102 @@ class Compiler
                 staticNumber: owner.msaaSamples ?? 4,
             };
         }
+        if (
+            owner.kind === "camera" &&
+            expression.name.text === "target"
+        ) {
+            // Not a field but three of them: the record this synthesizes
+            // is what makes `camera.target.x` and destructuring it read
+            // the same components.
+            const record = `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value]`;
+            const component = (
+                name: "x" | "y" | "z",
+            ): Value => ({
+                kind: "number",
+                cpp: `${record}.target.${name}`,
+                ...(owner.engineCpp
+                    ? { engineCpp: owner.engineCpp }
+                    : {}),
+            });
+            return {
+                kind: "record",
+                cpp: "",
+                recordProperties: {
+                    x: component("x"),
+                    y: component("y"),
+                    z: component("z"),
+                },
+            };
+        }
+        if (owner.kind === "task" && owner.geometryTask) {
+            return this.readGeometryTaskProperty(
+                owner,
+                owner.geometryTask,
+                expression,
+            );
+        }
         return undefined;
+    }
+
+    /**
+     * A geometry task's outputs, which are gated on what the task was
+     * asked to write rather than on the property name alone.
+     */
+    private readGeometryTaskProperty(
+        owner: Value,
+        task: GeometryOutputTaskManifest,
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const property = expression.name.text;
+        const engineCpp = owner.engineCpp
+            ? { engineCpp: owner.engineCpp }
+            : {};
+        if (property === "outputTexture") {
+            if (!task.emitColor) {
+                this.fail(
+                    expression,
+                    "Geometry task has no targetTexture output.",
+                );
+            }
+            return {
+                kind: "render-texture",
+                cpp: `bbl::geometry_task_output_texture(${owner.cpp})`,
+                ...engineCpp,
+            };
+        }
+        const geometryProperties: Record<
+            string,
+            GeometryTextureTypeName
+        > = {
+            geometryIrradianceTexture: "IRRADIANCE",
+            geometryWorldPositionTexture: "WORLD_POSITION",
+            geometryLocalPositionTexture: "LOCAL_POSITION",
+            geometryReflectivityTexture: "REFLECTIVITY",
+            geometryViewDepthTexture: "VIEW_DEPTH",
+            geometryNormalizedViewDepthTexture:
+                "NORMALIZED_VIEW_DEPTH",
+            geometryScreenspaceDepthTexture:
+                "SCREENSPACE_DEPTH",
+            geometryViewNormalTexture: "VIEW_NORMAL",
+            geometryWorldNormalTexture: "WORLD_NORMAL",
+            geometryAlbedoTexture: "ALBEDO",
+            geometryLinearVelocityTexture: "LINEAR_VELOCITY",
+        };
+        const type = geometryProperties[property];
+        if (!type) {
+            return undefined;
+        }
+        if (!task.attachments.includes(type)) {
+            this.fail(
+                expression,
+                `Geometry task did not request ${type}.`,
+            );
+        }
+        return {
+            kind: "render-texture",
+            cpp: `bbl::geometry_task_texture(${owner.cpp}, bbl::GeometryTextureType::${this.geometryEnumMember(type)})`,
+            ...engineCpp,
+        };
     }
 
     public unwrap(expression: ts.Expression): ts.Expression {

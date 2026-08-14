@@ -292,12 +292,6 @@ CPU-side from GPU-side causes immediately.
   than ignoring it, and the per-sample image-processing pass on the
   multisampled transmission target has to degrade with it, which is why
   it did not come along with the rest of the frame conductor.
-- [ ] Read a nested property path directly: `compilePropertyAccess` and
-  `lookupRecordProperty` both require the owner to be an identifier, so
-  `camera.ortho.halfHeight` fails while binding `camera.ortho` first and
-  reading through the binding works. The declared reads in
-  `compiler/properties.ts` compose fine; what is missing is recursing on a
-  property-access owner instead of rejecting it.
 - [ ] Improve missing-tool and stale-output diagnostics.
 - [ ] Repair `scene -- geometry`: its copy-task scan matches
   `name: "..."`, but the pinned scenes 145/146/149 name their tasks with a
