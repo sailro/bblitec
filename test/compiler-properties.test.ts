@@ -96,6 +96,50 @@ test("reads a scene field off its own expression", () => {
     );
 });
 
+test("reads a path written as a path, at any depth", () => {
+    // Every link resolves through the same reading, so where the path is
+    // written stops mattering: these all used to need an intermediate
+    // binding, and `camera.target.x` resolved in an expression while
+    // failing in a numeric context.
+    const result = compileSource(
+        sceneWithCamera(
+            `
+            enableOrthographicCamera(camera, { halfHeight: 2 });
+            const a = createBox(engine, camera.ortho.halfHeight);
+            const b = createBox(engine, scene.camera.alpha);
+            const c = createBox(engine, scene.camera.target.y);
+        `,
+            ["createBox", "enableOrthographicCamera"],
+        ),
+    );
+
+    assert.match(
+        result.cpp,
+        /v_engine\.cameras\[v_camera\.value\]\.ortho_half_height/,
+    );
+    assert.match(
+        result.cpp,
+        /v_engine\.cameras\[v_scene\.camera\.value\]\.alpha/,
+    );
+    assert.match(
+        result.cpp,
+        /v_engine\.cameras\[v_scene\.camera\.value\]\.target\.y/,
+    );
+});
+
+test("names the sub-path that failed", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                sceneWithCamera(
+                    "const box = createBox(engine, camera.nope.halfHeight);",
+                    ["createBox"],
+                ),
+            ),
+        /camera\.nope\.halfHeight/,
+    );
+});
+
 test("re-tags a handle and then reads through it", () => {
     // `camera.ortho` reads nothing -- it is the camera handle under
     // another kind -- so the read that follows it has to resolve the

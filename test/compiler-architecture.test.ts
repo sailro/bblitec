@@ -114,14 +114,20 @@ test("resolves property reads from one declared table", () => {
     );
     assert.match(compiler, /readProperty/);
     assert.match(properties, /propertyRules/);
-    // All three read sites -- the general property path, the one the
-    // static evaluator calls, and destructuring, which names the same
-    // properties -- consult the table rather than restating it, and the
-    // writes take their field names from it too. Each of those was a
-    // separate copy, and they had drifted apart.
+    // Every read of a handle's property ends in one place. The general
+    // property path, the static evaluator's lookup and each nested link
+    // go through `readOwnerProperty`, which is the only caller of the
+    // table besides destructuring, and the writes take their field names
+    // from the table too. Each of those was a separate copy once, and
+    // they had drifted apart.
+    assert.equal(
+        (compiler.match(/readOwnerProperty\(/g) ?? [])
+            .length,
+        4,
+    );
     assert.equal(
         (compiler.match(/readProperty\(/g) ?? []).length,
-        3,
+        2,
     );
     assert.match(assignments, /cameraRecordField/);
     for (const field of [
