@@ -97,6 +97,7 @@ export class RendererLowerer {
         sheen?: boolean;
         iridescence?: boolean;
         dispersion?: boolean;
+        nodeVisibility?: boolean;
         orthographicCamera?: boolean;
         background?: boolean;
         shaderPrograms?: CompiledShaderProgram[];
@@ -1281,7 +1282,13 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         const MeshRecord& mesh = engine.meshes[handle.value];
         if (mesh.geometry >= engine.geometries.size()) {
             continue;
-        }
+        }${options.nodeVisibility ? `
+        // KHR_node_visibility, materialized per mesh by the loader and by
+        // the animation pointer, exactly as the pinned setSubtreeVisible
+        // materializes it per node.
+        if (!mesh.visible) {
+            continue;
+        }` : ""}
         RenderItem item;
         item.mesh = handle;
         item.geometry = mesh.geometry;

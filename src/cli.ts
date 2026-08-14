@@ -323,6 +323,9 @@ async function main(): Promise<void> {
         morphStorage: specializationFeatures.morphStorage,
         nonTrianglePrimitives:
             specializationFeatures.nonTrianglePrimitives,
+        nodeVisibility: specializationFeatures.nodeVisibility,
+        animationPointer:
+            specializationFeatures.animationPointer,
         textureTransform:
             specializationFeatures.textureTransform,
         imageBasedLighting:

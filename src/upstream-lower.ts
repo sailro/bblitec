@@ -32,6 +32,8 @@ export interface UpstreamEmitOptions {
     gpuDeformation: boolean;
     morphStorage: boolean;
     nonTrianglePrimitives: boolean;
+    nodeVisibility: boolean;
+    animationPointer: boolean;
     textureTransform: boolean;
     imageBasedLighting: boolean;
     gpuInstancing: boolean;
@@ -116,7 +118,10 @@ class GeneratedSourceWriter {
         if (features.includes("camera:default")) {
             this.writeSource(
                 "upstream/src/camera_default.cpp",
-                new CameraLowerer(context).lowerDefaultFactory(),
+                new CameraLowerer(context).lowerDefaultFactory(
+                    options.nodeVisibility,
+                    options.gpuDeformation,
+                ),
                 generated,
             );
         }
@@ -214,6 +219,9 @@ class GeneratedSourceWriter {
                 "upstream/src/gltf_loader.cpp",
                 gltf.lowerLoaderAdapter(
                     options.nonTrianglePrimitives,
+                    options.nodeVisibility,
+                    options.animationPointer,
+                    options.gpuDeformation,
                 ),
                 generated,
             );
@@ -251,6 +259,7 @@ class GeneratedSourceWriter {
                     sheen: options.sheen,
                     iridescence: options.iridescence,
                     dispersion: options.dispersion,
+                    nodeVisibility: options.nodeVisibility,
                     orthographicCamera: features.includes(
                         "camera:orthographic",
                     ),
@@ -500,6 +509,8 @@ export function emitUpstreamGenerated(
         gpuDeformation: false,
         morphStorage: false,
         nonTrianglePrimitives: false,
+        nodeVisibility: false,
+        animationPointer: false,
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,

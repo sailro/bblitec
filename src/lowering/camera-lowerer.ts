@@ -290,7 +290,10 @@ CameraHandle create_free_camera(
         };
     }
 
-    public lowerDefaultFactory(): LoweredSource {
+    public lowerDefaultFactory(
+        nodeVisibility = false,
+        animatedWorldBounds = false,
+    ): LoweredSource {
         const modulePath = "src/scene/scene-camera.ts";
         const symbolName = "createDefaultCamera";
         const { file, declaration } =
@@ -479,12 +482,16 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
     bool has_bounds = false;
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value >= engine.meshes.size()) continue;
-        const MeshRecord& mesh = engine.meshes[handle.value];
+        const MeshRecord& mesh = engine.meshes[handle.value];${nodeVisibility ? `
+        // The pinned framing pass skips \`visible === false\` meshes, so
+        // KHR_node_visibility moves the default camera as well as the draw
+        // list.
+        if (!mesh.visible) continue;` : ""}
         Vec3 local_min{};
         Vec3 local_max{};
         if (mesh.primitive == PrimitiveKind::gltf && mesh.geometry < engine.geometries.size()) {
-            local_min = engine.geometries[mesh.geometry].bounds_min;
-            local_max = engine.geometries[mesh.geometry].bounds_max;
+            local_min = engine.geometries[mesh.geometry].${animatedWorldBounds ? "world_" : ""}bounds_min;
+            local_max = engine.geometries[mesh.geometry].${animatedWorldBounds ? "world_" : ""}bounds_max;
         } else {
             local_min = Vec3{
                 -mesh.dimensions.x * 0.5f,

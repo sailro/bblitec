@@ -357,19 +357,19 @@ The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
 **Swept 2026-08-13:** 184 unregistered scenes compiled, 8 clean and 176
-blocked across 80 distinct first blockers. Scenes 267, 268, 256, 30 and 260
-have since graduated to measured gates, leaving 179 unregistered, re-swept
+blocked across 80 distinct first blockers. Scenes 267, 268, 256, 30, 260 and
+34 have since graduated to measured gates, leaving 178 unregistered, re-swept
 unchanged on 2026-08-14 (the same clean set, same clusters). The lane partition
 below was written from reading and holds up: no scene in the compiler-contract
 lane compiles, so the compiler has not silently outgrown its inventory. Each
 scene's entry is its FIRST blocker; clearing one may expose another.
 
-**Compile clean (5):** 9, 34, 242, 244, 253. All five are past the compiler
-and blocked downstream in the loader/runtime lane. Three of the original eight
+**Compile clean (4):** 9, 242, 244, 253. All four are past the compiler
+and blocked downstream in the loader/runtime lane. Four of the original eight
 graduated on 2026-08-14: scene 256, the only one with no downstream blocker at
 all; scene 30 once generation-time Draco decoding, texture-transform offsets
 and the undeclared-tangent decision landed; and scene 260 once the loader read
-the glTF primitive mode.
+the glTF primitive mode; and scene 34 with the two glTF visibility extensions.
 
 Each of the original eight was **run**, not just read, and three carried
 misleading labels — scene 30 was Draco rather than "an accessor without a
@@ -403,7 +403,7 @@ only for a contract no corpus scene exercises (a feature combination the corpus
 never composes, or a slice being built ahead of the scene that will use it),
 and delete it once corpus scenes cover the contract.
 
-The 181 unmeasured scenes are partitioned by the boundary required to reproduce
+The 180 unmeasured scenes are partitioned by the boundary required to reproduce
 their deterministic reference behavior, not by incidental browser helpers.
 Capture-inert demo controls and fixed-coordinate picking stay in the first
 lane when they can be erased or lowered inside the compiler, asset pipeline,
@@ -413,12 +413,12 @@ platform, user-input, or external-service contract.
 Scenes 256 and 280 arrived with the 1.20.0 pin: 256 is a measured gate as of
 2026-08-14, and 280 blocks on `parseNodeParticleSource` as expected.
 
-**Integrate first (146 scenes):** 4, 9, 11, 12, 15-23, 25-27,
-34, 36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
+**Integrate first (145 scenes):** 4, 9, 11, 12, 15-23, 25-27,
+36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229,
 231, 241, 242, 244, 251-253, 261-264, 269-271, 275-279. Scenes 3, 7,
 35, and 216 graduated to measured parity gates on 2026-08-12, and Scenes
-267, 268, 256, 30 and 260 on 2026-08-14.
+267, 268, 256, 30, 260 and 34 on 2026-08-14.
 
 This lane includes static CSG/CSG2, compressed assets and splats,
 deterministic picking in Scenes 113-115, 117, 118, and 129, and the
@@ -525,26 +525,35 @@ runtime gaps may remain hidden behind it.
   loader currently skips parented and geometry-less nodes silently. Zero
   effect on gated Scenes 24/145 (HillValley has neither); reached by ungated
   Scenes 9 and 143 (Sponza `.babylon`).
-- [ ] Scene 9: support nullable glTF fields currently read as strings.
-- [ ] Scenes 34, 242, 244, 253: support `KHR_animation_pointer`, whose
-  channel `path` is `pointer` and whose target is a JSON pointer into the
-  document rather than a node TRS field. These were filed as one
-  animation-channel gap; running them showed four different contracts
-  behind the same message, smallest first:
-  - Scene 34, one target — `/nodes/N/extensions/KHR_node_visibility/visible`.
-    Also needs `KHR_node_visibility` itself: the pinned extension cascades
-    `visible=false` through the subtree (`setSubtreeVisible`) and the render
-    path *and camera-AABB filter* skip those nodes, so it couples to camera
-    framing, not just to draw submission.
-  - Scene 242, nine targets — material `emissiveFactor`, `baseColorFactor`
+- [ ] Scene 9: the Sponza `.babylon` scene, whose recorded blocker — optional
+  fields written as JSON `null` rather than omitted, which the loader reads as
+  strings — is only the first line of its chain. Running it puts the rest of
+  the lift in view: the 24 materials reach **six Standard texture slots** the
+  renderer has none of (23 diffuse, 16 ambient, 15 specular, 13 bump, 4
+  reflection, 3 opacity) across 72 texture files, three lights against the
+  reached two-light Standard slice, and 98 meshes of which 29 are
+  geometry-less containers and 16 are parented — the two-pass `.babylon`
+  parent wiring below. Several PRs, not one, and the Standard texture
+  pipeline is the bulk of it.
+- [ ] Scenes 242, 244, 253: extend `KHR_animation_pointer` beyond the node
+  visibility target Scene 34 measures. The channel `path` is `pointer` and
+  the target is a JSON pointer into the document rather than a node TRS
+  field; the pinned base module resolves node-visibility and node-TRS
+  pointers itself and pulls `animation-pointer-basecolor`,
+  `animation-pointer-ext` and `animation-pointer-lights` for the rest, which
+  is the same split these three scenes need. Counted by pointer shape rather
+  than by channel, smallest first:
+  - Scene 242, nine channels of three shapes — material `emissiveFactor`, `baseColorFactor`
     and `KHR_materials_emissive_strength/emissiveStrength`: animated material
     uniforms.
-  - Scene 244, two targets — `KHR_texture_transform/rotation` on a normal
-    texture and on a volume thickness texture, so it needs animated UV
-    transforms plus clearcoat/specular/transmission/volume.
-  - Scene 253, sixty-nine targets across cameras, `KHR_lights_punctual` and
-    about ten material extensions. Last, not first.
-  All four seek to a fixed frame and pause for capture, so a gate needs the
+  - Scene 244, two channels of two shapes — `KHR_texture_transform/rotation`
+    on a normal texture and on a volume thickness texture, so it needs
+    animated UV transforms plus clearcoat/specular/transmission/volume.
+  - Scene 253, sixty-nine channels across **thirty-four** distinct shapes:
+    camera perspective and orthographic planes, `KHR_lights_punctual` color,
+    intensity, range and cone angles, node TRS and weights, and about ten
+    material extensions. Last, not first.
+  All three seek to a fixed frame and pause for capture, so a gate needs the
   value each pointer resolves to at that frame rather than a live animation
   system.
 - [ ] Scene 37: it now fails during generation on `PBR material-extension

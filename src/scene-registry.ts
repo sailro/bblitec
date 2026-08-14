@@ -973,6 +973,27 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene34",
+        name: "Scene 34 - Node Visibility",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene34.ts",
+        title: "Babylon Lite Native - Node Visibility",
+        parity: {
+            // 0.75 s sits strictly inside a STEP interval where the
+            // animated cube is hidden, so the golden discriminates both
+            // extensions at once: a static read of the pointer target
+            // would draw the blue cube, and ignoring KHR_node_visibility
+            // would draw the red ones.
+            referenceTimeSeconds: 0.75,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "0.75",
+            },
+        },
+    },
+    {
         id: "scene273",
         name: "Scene 273 - Runtime Material Family",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene273.ts",
