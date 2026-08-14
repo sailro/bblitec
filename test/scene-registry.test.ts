@@ -11,6 +11,38 @@ test("registers unique generated scene targets", () => {
         ["primitives", "scene1", "scene3", "scene6", "scene14", "scene24", "scene28", "scene29", "scene31", "scene33", "scene35", "scene216", "scene150", "scene178", "scene210", "scene212", "scene243", "scene246", "scene247", "scene254", "scene255", "scene258", "scene259", "scene265", "scene2", "scene7", "scene8", "scene5", "scene10", "scene13", "scene32", "scene159", "scene161", "scene163", "audit-shader-frame-graph", "regression-runtime-sweep", "regression-instanced-ground", "regression-morph-ground", "regression-compiler-state", "scene168", "scene176", "scene213", "scene151", "scene154", "scene240", "regression-track-clamp", "scene116", "scene145", "scene146", "scene248", "scene245", "scene249", "scene257", "scene266", "scene267", "scene268", "scene273", "scene274"],
     );
     assert.equal(new Set(scenes.map(({ output }) => output)).size, scenes.length);
+    // Entries carry only what is theirs; every path a scene id implies is
+    // derived, so the registry cannot restate one of them incorrectly.
+    for (const scene of scenes) {
+        if (scene.id === "primitives") continue;
+        assert.equal(scene.output, `generated/${scene.id}`);
+        assert.equal(
+            scene.buildDirectory,
+            `native/build-${scene.id}-release`,
+        );
+        if (!scene.parity) continue;
+        assert.equal(
+            scene.parity.reference.path,
+            `reference/${scene.id}/babylon-lite-golden.png`,
+        );
+        assert.equal(
+            scene.parity.actual,
+            `artifacts/parity/${scene.id}-native.png`,
+        );
+        assert.equal(
+            scene.parity.outputDirectory,
+            `artifacts/parity/${scene.id}`,
+        );
+    }
+    // An entry that needs a different target still gets it.
+    assert.equal(
+        getScene("primitives").buildDirectory,
+        "native/build-sdl",
+    );
+    assert.equal(
+        getScene("primitives").output,
+        "generated/primitives",
+    );
     assert.equal(getScene("scene10").parity?.reference.kind, "source");
     assert.equal(getScene("scene2").parity?.maxFullMad, 0.01);
     assert.equal(getScene("scene163").parity?.maxFullMad, 0.001);

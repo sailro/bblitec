@@ -283,6 +283,39 @@ CPU-side from GPU-side causes immediately.
   dozens of identical rebuilds. Either a compiler launcher (`sccache`
   handles MSVC) or one static library per signature; incremental
   generation does not help this case, because the PAL genuinely changed.
+- [ ] Continue moving verbatim CPU-side packing into
+  `pal_gpu_shared.hpp`. Morph deltas and weights, the half-float readback
+  conversion, and the PBR diagnostic name table are moved; measured
+  cross-backend duplication is down to 4.0% (185 lines in blocks of five
+  or more). What remains is entangled with backend-specific types rather
+  than copy/pasted logic: the id/cluster buffer fill reads each backend's
+  own mesh record, and the image-decode fallback is followed by different
+  upload calls. Both need an accessor or a template before they can move,
+  so they are worth doing only alongside the frame-conductor work.
+- [ ] Extract the shared frame conductor from the two backend frame
+  functions. `run_gpu_engine` (3,922 lines, 63% of its file) and
+  `run_dawn_engine` (3,062 lines, 47%) each parse their own copy of the
+  runtime-flag matrix (17 versus 12 `environment_variable` reads) and
+  duplicate frame accounting, capture gating, and screenshot deferral;
+  divergence there reads as a backend delta, which the differential
+  misattributes to the GPU side. Stage it: a `FrameOptions` struct parsed
+  once beside the build stamp, then the accounting/gating helpers. The
+  unsupported-flag principle is already enforced (Dawn fails loudly on
+  `BBLITE_MSAA` and `BBLITE_COPY_TASK`); implementing single-sample
+  rendering on Dawn belongs to this item because the per-sample
+  transmission pass must degrade with it.
+- [ ] Emit one `camera_basis()` helper in the generated render plan: seven
+  emitted functions in the renderer lowerer construct the same
+  eye/forward/right/up basis, which is why the orthographic projection
+  lives in `build_view_projection` alone and composes with backgrounds
+  only through an explicit generation error. Neutrality is proven by
+  unchanged MADs across the differential matrix, not by byte-diffing.
+- [ ] Table-drive the repeated property lowering: the 20 near-identical
+  assignment blocks in `compiler/assignments.ts` and the
+  `compilePropertyAccess` matrix in `compiler.ts` (273 lines, the file's
+  hottest growth point) differ in ~3 tokens per case; the camera-read
+  `Map` in `compiler.ts` is the pattern to extend. Part of the
+  focused-compiler-modules item above.
 - [ ] Improve missing-tool and stale-output diagnostics.
 - [ ] Repair `scene -- geometry`: its copy-task scan matches
   `name: "..."`, but the pinned scenes 145/146/149 name their tasks with a

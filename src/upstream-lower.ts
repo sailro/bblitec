@@ -13,12 +13,16 @@ import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
 import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
+import { reachedGeneratedSources } from "./generated-sources.js";
 import type {
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
 } from "./compiler.js";
 
 class GeneratedSourceWriter {
+    /** Native sources this run wrote, checked against the reached table. */
+    private readonly emitted = new Set<string>();
+
     public constructor(
         private readonly tree: GeneratedTree,
         private readonly store: UpstreamSourceStore,
@@ -426,6 +430,34 @@ class GeneratedSourceWriter {
             );
         }
 
+        // The table in generated-sources.ts decides which sources a feature
+        // set reaches, and the manifest and CMake feature list are built
+        // from it. Checking the emission against it in both directions is
+        // what keeps them from drifting: a source emitted but not declared
+        // never reaches the build, and one declared but not emitted fails
+        // the configure with a missing file.
+        const declared = new Set(
+            reachedGeneratedSources(features),
+        );
+        const missing = [...declared].filter(
+            (source) => !this.emitted.has(source),
+        );
+        const undeclared = [...this.emitted].filter(
+            (source) => !declared.has(source),
+        );
+        if (missing.length > 0 || undeclared.length > 0) {
+            throw new Error(
+                "Generated source table disagrees with what was emitted" +
+                    (missing.length > 0
+                        ? `; declared but not emitted: ${missing.join(", ")}`
+                        : "") +
+                    (undeclared.length > 0
+                        ? `; emitted but not declared: ${undeclared.join(", ")}`
+                        : "") +
+                    ". Update src/generated-sources.ts alongside the emitter.",
+            );
+        }
+
         this.tree.write(
             "upstream/provenance.json",
             `${JSON.stringify({ package: this.store.pin, generated }, null, 2)}\n`,
@@ -438,6 +470,7 @@ class GeneratedSourceWriter {
         generated: Array<{ modulePath: string; symbolName: string }>,
         relativeHeader?: string,
     ): void {
+        this.emitted.add(relativeSource);
         this.tree.write(relativeSource, lowered.source);
         if (relativeHeader && lowered.header) {
             this.tree.write(relativeHeader, lowered.header);

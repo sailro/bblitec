@@ -2879,26 +2879,6 @@ void save_dawn_texture_file(
     const std::uint32_t output_row_bytes = width * 4;
     std::vector<std::uint8_t> rgba(
         static_cast<std::size_t>(output_row_bytes) * height);
-    const auto half_to_byte = [](std::uint16_t value) {
-        const bool negative = (value & 0x8000u) != 0;
-        const std::uint16_t exponent = (value >> 10) & 0x1fu;
-        const std::uint16_t mantissa = value & 0x03ffu;
-        float decoded = 0.0f;
-        if (exponent == 0) {
-            decoded = std::ldexp(static_cast<float>(mantissa), -24);
-        } else if (exponent == 31) {
-            decoded = mantissa == 0
-                ? std::numeric_limits<float>::infinity()
-                : std::numeric_limits<float>::quiet_NaN();
-        } else {
-            decoded = std::ldexp(
-                1.0f + static_cast<float>(mantissa) / 1024.0f,
-                static_cast<int>(exponent) - 15);
-        }
-        if (negative) decoded = -decoded;
-        return static_cast<std::uint8_t>(
-            std::lround(std::clamp(decoded, 0.0f, 1.0f) * 255.0f));
-    };
     for (std::uint32_t y = 0; y < height; ++y) {
         const std::uint8_t* source_row =
             mapped + static_cast<std::size_t>(y) * aligned_row_bytes;
@@ -3402,17 +3382,7 @@ void save_dawn_pbr_diagnostics(
     wgpuCommandBufferRelease(command);
     wgpuCommandEncoderRelease(encoder);
 
-    constexpr std::array<const char*, 9> names{
-        "normal-gpu.png",
-        "reflectivity-gpu.png",
-        "irradiance-gpu.png",
-        "ibl-gpu.png",
-        "normalized-depth-gpu.png",
-        "albedo-gpu.png",
-        "direct-light-gpu.png",
-        "base-color-gpu.png",
-        "pre-tone-hdr-gpu.png",
-    };
+    const auto& names = pbr_diagnostic_names;
     for (std::size_t index = 0; index < names.size(); ++index) {
         save_dawn_texture_file(
             state,
@@ -3438,6 +3408,12 @@ bool run_dawn_engine(Engine& engine) {
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("Dawn renderer requires a registered scene.");
     }
+    const FrameOptions frame_options = read_frame_options();
+    reject_unsupported_frame_options(
+        frame_options,
+        "Dawn",
+        /*supports_single_sample=*/false,
+        /*supports_copy_task=*/false);
     Scene& scene = *engine.registered_scenes.front();
     if (scene.transmission_enabled && !scene.tasks.empty()) {
         dawn_error(
@@ -3463,16 +3439,14 @@ bool run_dawn_engine(Engine& engine) {
                 "implemented yet.");
         }
     }
-    const std::string animation_seek =
-        environment_variable("BBLITE_ANIMATION_SEEK_SECONDS");
-    if (!animation_seek.empty()) {
-        const float time = std::strtof(animation_seek.c_str(), nullptr);
+    if (frame_options.animation_seek_seconds != 0.0) {
+        const float time =
+            static_cast<float>(frame_options.animation_seek_seconds);
         for (const auto& seek : scene.animation_seekers) {
             seek(time);
         }
     }
-    const std::string background_flag =
-        environment_variable("BBLITE_BACKGROUND");
+    const std::string& background_flag = frame_options.background_flag;
     const bool background_enabled =
         background_flag == "1" ||
         background_flag == "true" ||
@@ -3480,7 +3454,7 @@ bool run_dawn_engine(Engine& engine) {
          scene.environment.background_enabled_by_default);
     const bool use_skybox =
         background_enabled && scene.environment.has_skybox;
-    const std::string ground_flag = environment_variable("BBLITE_GROUND");
+    const std::string& ground_flag = frame_options.ground_flag;
     const bool use_ground =
         scene.environment.has_ground &&
         ground_flag != "0" &&
@@ -3491,7 +3465,7 @@ bool run_dawn_engine(Engine& engine) {
 
     DawnState state;
     const bool hidden_test_pass =
-        environment_variable("BBLITE_TEST_PASS") == "1";
+        frame_options.test_pass;
     state.window = SDL_CreateWindow(
         engine.options.title.c_str(),
         engine.options.width,
@@ -3744,9 +3718,9 @@ bool run_dawn_engine(Engine& engine) {
     // benchmarks keep immediate present (the recorded frame-time
     // numbers depend on it).
     surface_configuration.presentMode =
-        environment_variable("BBLITE_BENCHMARK_FRAMES").empty()
-            ? WGPUPresentMode_Fifo
-            : WGPUPresentMode_Immediate;
+        frame_options.benchmark_requested
+            ? WGPUPresentMode_Immediate
+            : WGPUPresentMode_Fifo;
     wgpuSurfaceConfigure(state.surface, &surface_configuration);
 
     // Shared frame targets: 4x MSAA color (surface format, or linear
@@ -3991,77 +3965,15 @@ bool run_dawn_engine(Engine& engine) {
         if (
             mesh_record.gpu_deformation &&
             !geometry.morph_positions.empty()) {
-            // Flat 6-float deltas indexed
-            // (target * vertexCount + vertex) * 6, packed with the
-            // same x negation as the vertex attributes.
-            const std::size_t target_count =
-                geometry.morph_positions.size();
-            const std::size_t vertex_count =
-                geometry.vertices.size();
-            std::vector<float> deltas(
-                target_count * vertex_count * 6,
-                0.0f);
-            for (
-                std::size_t target = 0;
-                target < target_count;
-                ++target) {
-                const std::vector<Vec3>& positions =
-                    geometry.morph_positions[target];
-                for (
-                    std::size_t vertex = 0;
-                    vertex < vertex_count;
-                    ++vertex) {
-                    const std::size_t offset =
-                        (target * vertex_count + vertex) * 6;
-                    const Vec3 position =
-                        vertex < positions.size()
-                            ? positions[vertex]
-                            : Vec3{};
-                    const Vec3 normal =
-                        target < geometry.morph_normals.size() &&
-                        vertex <
-                            geometry.morph_normals[target].size()
-                            ? geometry.morph_normals[target][vertex]
-                            : Vec3{};
-                    deltas[offset] = -position.x;
-                    deltas[offset + 1] = position.y;
-                    deltas[offset + 2] = position.z;
-                    deltas[offset + 3] = -normal.x;
-                    deltas[offset + 4] = normal.y;
-                    deltas[offset + 5] = normal.z;
-                }
-            }
+            const std::vector<float> deltas =
+                pack_morph_deltas(geometry);
             mesh.morph_deltas = create_buffer(
                 state,
                 WGPUBufferUsage_Storage,
                 deltas.data(),
                 deltas.size() * sizeof(float));
-            std::vector<std::uint8_t> weights_blob(
-                16 + target_count * sizeof(float),
-                0);
-            const std::uint32_t header[2] = {
-                static_cast<std::uint32_t>(target_count),
-                static_cast<std::uint32_t>(vertex_count),
-            };
-            std::memcpy(
-                weights_blob.data(),
-                header,
-                sizeof(header));
-            for (
-                std::size_t target = 0;
-                target < target_count;
-                ++target) {
-                const float weight =
-                    target <
-                    mesh_record.morph_storage_weights.size()
-                        ? mesh_record.morph_storage_weights[target]
-                        : 0.0f;
-                std::memcpy(
-                    weights_blob.data() + 16 +
-                        target * sizeof(float),
-                    &weight,
-                    sizeof(float));
-            }
+            const std::vector<std::uint8_t> weights_blob =
+                pack_morph_weights(geometry, mesh_record);
             mesh.morph_weights = create_buffer(
                 state,
                 WGPUBufferUsage_Storage,
@@ -4965,30 +4877,18 @@ bool run_dawn_engine(Engine& engine) {
             : fallback_camera;
 
     const std::string screenshot_path =
-        environment_variable("BBLITE_SCREENSHOT");
+        frame_options.screenshot_path;
     const std::string id_buffer_path =
-        environment_variable("BBLITE_ID_BUFFER");
+        frame_options.id_buffer_path;
     const std::string cluster_buffer_path =
-        environment_variable("BBLITE_CLUSTER_BUFFER");
+        frame_options.cluster_buffer_path;
     const std::string diagnostic_directory =
-        environment_variable("BBLITE_DIAGNOSTIC_DIR");
-    const long screenshot_frame = [&] {
-        const std::string value =
-            environment_variable("BBLITE_SCREENSHOT_FRAME");
-        return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
-    }();
-    const long benchmark_frames = [&] {
-        const std::string value =
-            environment_variable("BBLITE_BENCHMARK_FRAMES");
-        return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
-    }();
-    const bool benchmark = benchmark_frames > 0;
-    const long benchmark_warmup = benchmark ? 30 : 0;
-    const long limit = [&] {
-        if (benchmark) return benchmark_frames + benchmark_warmup;
-        const std::string value = environment_variable("BBLITE_MAX_FRAMES");
-        return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
-    }();
+        frame_options.diagnostic_directory;
+    const long screenshot_frame = frame_options.screenshot_frame;
+    const long benchmark_frames = frame_options.benchmark_frames;
+    const bool benchmark = frame_options.benchmarking();
+    const long benchmark_warmup = frame_options.benchmark_warmup();
+    const long limit = frame_options.frame_budget();
     std::vector<double> benchmark_samples;
     if (benchmark) {
         benchmark_samples.reserve(
@@ -6476,18 +6376,7 @@ bool run_dawn_engine(Engine& engine) {
         }
         ++frame;
     }
-    if (!benchmark_samples.empty()) {
-        std::sort(benchmark_samples.begin(), benchmark_samples.end());
-        double sum = 0.0;
-        for (const double sample : benchmark_samples) sum += sample;
-        std::cout
-            << "Babylon Lite Dawn benchmark | driver=D3D12"
-            << " | frames=" << benchmark_samples.size()
-            << " | average=" << (sum / benchmark_samples.size())
-            << " ms | median="
-            << benchmark_samples[benchmark_samples.size() / 2]
-            << " ms\n";
-    }
+    report_benchmark(benchmark_samples, "Dawn", "D3D12");
     SDL_DestroyWindow(state.window);
     state.window = nullptr;
     return true;

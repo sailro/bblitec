@@ -9,6 +9,101 @@ export interface DirectPropertyAssignment {
     supportsCompound: boolean;
 }
 
+/**
+ * Property writes that store one value into one field of an engine
+ * record. They differ only in which record, which field, and how the
+ * right-hand side compiles, so they are declared rather than repeated:
+ * the ceremony around them (resolving the engine, rejecting a compound
+ * assignment where JavaScript semantics need a fresh value) was identical
+ * in every copy.
+ *
+ * `simpleOnly` marks the fields where `+=` has no meaning because the
+ * value is a colour or a flag rather than an accumulating number.
+ */
+interface RecordFieldAssignment {
+    kind: "material" | "camera-ortho";
+    property: string;
+    collection: "materials" | "cameras";
+    field: string;
+    value: "color3" | "number" | "boolean";
+    simpleOnly?: boolean;
+    /** Stored as the logical inverse of what the source assigns. */
+    invert?: boolean;
+}
+
+const recordFieldAssignments: readonly RecordFieldAssignment[] = [
+    {
+        kind: "material",
+        property: "diffuseColor",
+        collection: "materials",
+        field: "diffuse_color",
+        value: "color3",
+        simpleOnly: true,
+    },
+    {
+        kind: "material",
+        property: "specularColor",
+        collection: "materials",
+        field: "specular_color",
+        value: "color3",
+        simpleOnly: true,
+    },
+    {
+        kind: "material",
+        property: "emissiveColor",
+        collection: "materials",
+        field: "emissive_factor",
+        value: "color3",
+        simpleOnly: true,
+    },
+    {
+        kind: "material",
+        property: "alpha",
+        collection: "materials",
+        field: "base_color_factor.a",
+        value: "number",
+    },
+    {
+        kind: "material",
+        property: "specularPower",
+        collection: "materials",
+        field: "specular_power",
+        value: "number",
+    },
+    {
+        kind: "material",
+        property: "disableLighting",
+        collection: "materials",
+        field: "disable_lighting",
+        value: "boolean",
+        simpleOnly: true,
+    },
+    {
+        // src/material/standard/create-standard-material.ts defaults
+        // `backFaceCulling: true`, and standard-pipeline.ts culls with
+        // `features & DOUBLE_SIDED ? "none" : "back"`, so the flag is the
+        // native `double_sided` inverted.
+        kind: "material",
+        property: "backFaceCulling",
+        collection: "materials",
+        field: "double_sided",
+        value: "boolean",
+        simpleOnly: true,
+        invert: true,
+    },
+    {
+        // src/camera/orthographic.ts: the bounds stay live, and its setter
+        // only stores the extent and invalidates the projection cache. The
+        // native projection is rebuilt from the record every frame, so
+        // storing it is the whole contract.
+        kind: "camera-ortho",
+        property: "halfHeight",
+        collection: "cameras",
+        field: "ortho_half_height",
+        value: "number",
+    },
+];
+
 function emitFrameGraphTransmission(
     context: AssignmentContext,
     expression: ts.BinaryExpression,
@@ -459,115 +554,31 @@ export function emitPropertyAssignment(
             return;
         }
 
-        if (
-            target.kind === "material" &&
-            property === "diffuseColor"
-        ) {
-            requireSimpleAssignment(
-                context,
-                expression,
-                "material diffuseColor",
-            );
+        const recordField = recordFieldAssignments.find(
+            (candidate) =>
+                candidate.kind === target.kind &&
+                candidate.property === property,
+        );
+        if (recordField) {
+            if (recordField.simpleOnly) {
+                requireSimpleAssignment(
+                    context,
+                    expression,
+                    `${recordField.kind} ${recordField.property}`,
+                );
+            }
+            const value =
+                recordField.value === "color3"
+                    ? context.compileColor3(expression.right)
+                    : recordField.value === "boolean"
+                      ? context.compileBoolean(expression.right)
+                      : context.compileNumber(expression.right);
+            const stored = recordField.invert
+                ? `!(${value})`
+                : value;
             context.emit(
-                `${context.requireEngine(target, expression)}.materials[${target.cpp}.value].diffuse_color = ${context.compileColor3(expression.right)};`,
-            );
-            return;
-        }
-
-        if (
-            target.kind === "material" &&
-            property === "alpha"
-        ) {
-            context.emit(
-                `${context.requireEngine(target, expression)}.materials[${target.cpp}.value].base_color_factor.a ${operator} ${context.compileNumber(expression.right)};`,
-            );
-            return;
-        }
-
-        if (
-            target.kind === "material" &&
-            property === "specularColor"
-        ) {
-            requireSimpleAssignment(
-                context,
-                expression,
-                "material specularColor",
-            );
-            context.emit(
-                `${context.requireEngine(target, expression)}.materials[${target.cpp}.value].specular_color = ${context.compileColor3(expression.right)};`,
-            );
-            return;
-        }
-
-        if (
-            target.kind === "material" &&
-            property === "specularPower"
-        ) {
-            context.emit(
-                `${context.requireEngine(target, expression)}.materials[${target.cpp}.value].specular_power ${operator} ${context.compileNumber(expression.right)};`,
-            );
-            return;
-        }
-
-        if (
-            target.kind === "material" &&
-            property === "emissiveColor"
-        ) {
-            requireSimpleAssignment(
-                context,
-                expression,
-                "material emissiveColor",
-            );
-            context.emit(
-                `${context.requireEngine(target, expression)}.materials[${target.cpp}.value].emissive_factor = ${context.compileColor3(expression.right)};`,
-            );
-            return;
-        }
-
-        if (
-            target.kind === "material" &&
-            property === "disableLighting"
-        ) {
-            requireSimpleAssignment(
-                context,
-                expression,
-                "material disableLighting",
-            );
-            context.emit(
-                `${context.requireEngine(target, expression)}.materials[${target.cpp}.value].disable_lighting = ${context.compileBoolean(expression.right)};`,
-            );
-            return;
-        }
-
-        if (
-            target.kind === "camera-ortho" &&
-            property === "halfHeight"
-        ) {
-            // src/camera/orthographic.ts: the bounds stay live, and its
-            // setter only stores the extent and invalidates the
-            // projection cache. The native projection is rebuilt from the
-            // record every frame, so storing it is the whole contract.
-            context.emit(
-                `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].ortho_half_height ${operator} ${context.compileNumber(expression.right)};`,
-            );
-            return;
-        }
-
-        if (
-            target.kind === "material" &&
-            property === "backFaceCulling"
-        ) {
-            // src/material/standard/create-standard-material.ts defaults
-            // `backFaceCulling: true`, and standard-pipeline.ts culls with
-            // `features & DOUBLE_SIDED ? "none" : "back"`, so the flag is
-            // the native `double_sided` inverted.
-            requireSimpleAssignment(
-                context,
-                expression,
-                "material backFaceCulling",
-            );
-            context.emit(
-                `${context.requireEngine(target, expression)}.materials[${target.cpp}.value].double_sided = !(${context.compileBoolean(expression.right)});`,
+                `${context.requireEngine(target, expression)}.${recordField.collection}[${target.cpp}.value].${recordField.field} ` +
+                    `${recordField.simpleOnly ? "=" : operator} ${stored};`,
             );
             return;
         }
