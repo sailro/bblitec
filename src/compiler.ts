@@ -75,6 +75,7 @@ import {
     shaderUniformValueLayout,
 } from "./shader-material-programs.js";
 import { readUpstreamPin } from "./upstream-source.js";
+import { reachedGeneratedSources } from "./generated-sources.js";
 
 const featureSources: Record<Feature, string[]> = {
     "animation:property": [],
@@ -260,103 +261,10 @@ class Compiler
 
         const features = featureOrder.filter((feature) => this.features.has(feature));
         const runtimeSources = features.flatMap((feature) => featureSources[feature]);
-        const generatedSources: string[] = [
-            "upstream/src/engine.cpp",
-            "upstream/src/scene_core.cpp",
-        ];
-        if (features.includes("animation:property")) {
-            generatedSources.push("upstream/src/animation_property.cpp");
-        }
-        if (
-            features.includes("camera:arc-rotate") ||
-            features.includes("camera:default") ||
-            features.includes("camera:free")
-        ) {
-            generatedSources.push(
-                "upstream/src/camera_arc_rotate.cpp",
-                "upstream/src/camera_controls.cpp",
-            );
-        }
-        if (features.includes("camera:free")) {
-            generatedSources.push("upstream/src/camera_free.cpp");
-        }
-        if (features.includes("camera:default")) {
-            generatedSources.push("upstream/src/camera_default.cpp");
-        }
-        if (features.includes("camera:orthographic")) {
-            generatedSources.push(
-                "upstream/src/camera_orthographic.cpp",
-            );
-        }
-        if (features.includes("environment:env")) {
-            generatedSources.push(
-                "upstream/src/env_parse.cpp",
-                "upstream/src/environment.cpp",
-            );
-        }
-        if (features.includes("environment:hdr")) {
-            generatedSources.push("upstream/src/environment_hdr.cpp");
-        }
-        if (
-            features.includes("light:hemispheric") ||
-            features.includes("light:directional")
-        ) {
-            generatedSources.push("upstream/src/light_matrix.cpp");
-        }
-        if (features.includes("light:hemispheric")) {
-            generatedSources.push("upstream/src/light_hemispheric.cpp");
-        }
-        if (features.includes("light:directional")) {
-            generatedSources.push("upstream/src/light_directional.cpp");
-        }
-        if (features.includes("light:point")) {
-            generatedSources.push("upstream/src/light_point.cpp");
-        }
-        if (features.includes("background:image-skybox")) {
-            generatedSources.push("upstream/src/image_skybox.cpp");
-        }
-        if (features.includes("loader:gltf")) {
-            generatedSources.push(
-                "upstream/src/gltf_glb_parser.cpp",
-                "upstream/src/gltf_loader.cpp",
-            );
-        }
-        if (features.includes("loader:babylon")) {
-            generatedSources.push("upstream/src/babylon_loader.cpp");
-        }
-        if (features.includes("renderer:pbr")) {
-            generatedSources.push("upstream/src/renderer_plan.cpp");
-        }
-        if (features.includes("renderer:geometry-output")) {
-            generatedSources.push("upstream/src/frame_graph_geometry.cpp");
-        }
-        if (features.includes("material:pbr")) {
-            generatedSources.push("upstream/src/material_pbr.cpp");
-        }
-        if (features.includes("material:no-color-view")) {
-            generatedSources.push("upstream/src/material_views.cpp");
-        }
-        if (features.includes("material:grid")) {
-            generatedSources.push("upstream/src/material_grid.cpp");
-        }
-        if (features.includes("material:shader")) {
-            generatedSources.push("upstream/src/material_shader.cpp");
-        }
-        if (features.includes("material:standard")) {
-            generatedSources.push("upstream/src/material_standard.cpp");
-        }
-        if (
-            features.includes("mesh:box") ||
-            features.includes("mesh:from-data") ||
-            features.includes("mesh:ground") ||
-            features.includes("mesh:plane") ||
-            features.includes("mesh:sphere") ||
-            features.includes("mesh:thin-instances") ||
-            features.includes("mesh:thin-instances-dynamic") ||
-            features.includes("mesh:torus")
-        ) {
-            generatedSources.push("upstream/src/mesh_factories.cpp");
-        }
+        // The manifest and CMake projection of the same table the upstream
+        // lowerer emits from, so a feature's sources are declared once.
+        const generatedSources =
+            reachedGeneratedSources(features);
         return {
             cpp: this.renderCpp(features),
             cmake: this.renderCmake(features, runtimeSources, generatedSources),

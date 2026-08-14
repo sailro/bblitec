@@ -3438,6 +3438,19 @@ bool run_dawn_engine(Engine& engine) {
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("Dawn renderer requires a registered scene.");
     }
+    // Flags this backend does not implement fail loudly instead of
+    // silently rendering something else: a no-op here would surface as a
+    // backend delta, which the differential attributes to the GPU side.
+    if (environment_variable("BBLITE_MSAA") == "1") {
+        throw std::runtime_error(
+            "BBLITE_MSAA is not supported by the Dawn backend; run the "
+            "single-sample diagnostic through SDL_GPU.");
+    }
+    if (!environment_variable("BBLITE_COPY_TASK").empty()) {
+        throw std::runtime_error(
+            "BBLITE_COPY_TASK is not supported by the Dawn backend; the "
+            "geometry copy-task diagnostic runs through SDL_GPU.");
+    }
     Scene& scene = *engine.registered_scenes.front();
     if (scene.transmission_enabled && !scene.tasks.empty()) {
         dawn_error(
