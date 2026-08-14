@@ -3408,19 +3408,12 @@ bool run_dawn_engine(Engine& engine) {
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("Dawn renderer requires a registered scene.");
     }
-    // Flags this backend does not implement fail loudly instead of
-    // silently rendering something else: a no-op here would surface as a
-    // backend delta, which the differential attributes to the GPU side.
-    if (environment_variable("BBLITE_MSAA") == "1") {
-        throw std::runtime_error(
-            "BBLITE_MSAA is not supported by the Dawn backend; run the "
-            "single-sample diagnostic through SDL_GPU.");
-    }
-    if (!environment_variable("BBLITE_COPY_TASK").empty()) {
-        throw std::runtime_error(
-            "BBLITE_COPY_TASK is not supported by the Dawn backend; the "
-            "geometry copy-task diagnostic runs through SDL_GPU.");
-    }
+    const FrameOptions frame_options = read_frame_options();
+    reject_unsupported_frame_options(
+        frame_options,
+        "Dawn",
+        /*supports_single_sample=*/false,
+        /*supports_copy_task=*/false);
     Scene& scene = *engine.registered_scenes.front();
     if (scene.transmission_enabled && !scene.tasks.empty()) {
         dawn_error(
@@ -3446,16 +3439,14 @@ bool run_dawn_engine(Engine& engine) {
                 "implemented yet.");
         }
     }
-    const std::string animation_seek =
-        environment_variable("BBLITE_ANIMATION_SEEK_SECONDS");
-    if (!animation_seek.empty()) {
-        const float time = std::strtof(animation_seek.c_str(), nullptr);
+    if (frame_options.animation_seek_seconds != 0.0) {
+        const float time =
+            static_cast<float>(frame_options.animation_seek_seconds);
         for (const auto& seek : scene.animation_seekers) {
             seek(time);
         }
     }
-    const std::string background_flag =
-        environment_variable("BBLITE_BACKGROUND");
+    const std::string& background_flag = frame_options.background_flag;
     const bool background_enabled =
         background_flag == "1" ||
         background_flag == "true" ||
@@ -3463,7 +3454,7 @@ bool run_dawn_engine(Engine& engine) {
          scene.environment.background_enabled_by_default);
     const bool use_skybox =
         background_enabled && scene.environment.has_skybox;
-    const std::string ground_flag = environment_variable("BBLITE_GROUND");
+    const std::string& ground_flag = frame_options.ground_flag;
     const bool use_ground =
         scene.environment.has_ground &&
         ground_flag != "0" &&
@@ -3474,7 +3465,7 @@ bool run_dawn_engine(Engine& engine) {
 
     DawnState state;
     const bool hidden_test_pass =
-        environment_variable("BBLITE_TEST_PASS") == "1";
+        frame_options.test_pass;
     state.window = SDL_CreateWindow(
         engine.options.title.c_str(),
         engine.options.width,
@@ -3727,9 +3718,9 @@ bool run_dawn_engine(Engine& engine) {
     // benchmarks keep immediate present (the recorded frame-time
     // numbers depend on it).
     surface_configuration.presentMode =
-        environment_variable("BBLITE_BENCHMARK_FRAMES").empty()
-            ? WGPUPresentMode_Fifo
-            : WGPUPresentMode_Immediate;
+        frame_options.benchmark_requested
+            ? WGPUPresentMode_Immediate
+            : WGPUPresentMode_Fifo;
     wgpuSurfaceConfigure(state.surface, &surface_configuration);
 
     // Shared frame targets: 4x MSAA color (surface format, or linear
@@ -4886,30 +4877,18 @@ bool run_dawn_engine(Engine& engine) {
             : fallback_camera;
 
     const std::string screenshot_path =
-        environment_variable("BBLITE_SCREENSHOT");
+        frame_options.screenshot_path;
     const std::string id_buffer_path =
-        environment_variable("BBLITE_ID_BUFFER");
+        frame_options.id_buffer_path;
     const std::string cluster_buffer_path =
-        environment_variable("BBLITE_CLUSTER_BUFFER");
+        frame_options.cluster_buffer_path;
     const std::string diagnostic_directory =
-        environment_variable("BBLITE_DIAGNOSTIC_DIR");
-    const long screenshot_frame = [&] {
-        const std::string value =
-            environment_variable("BBLITE_SCREENSHOT_FRAME");
-        return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
-    }();
-    const long benchmark_frames = [&] {
-        const std::string value =
-            environment_variable("BBLITE_BENCHMARK_FRAMES");
-        return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
-    }();
-    const bool benchmark = benchmark_frames > 0;
-    const long benchmark_warmup = benchmark ? 30 : 0;
-    const long limit = [&] {
-        if (benchmark) return benchmark_frames + benchmark_warmup;
-        const std::string value = environment_variable("BBLITE_MAX_FRAMES");
-        return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
-    }();
+        frame_options.diagnostic_directory;
+    const long screenshot_frame = frame_options.screenshot_frame;
+    const long benchmark_frames = frame_options.benchmark_frames;
+    const bool benchmark = frame_options.benchmarking();
+    const long benchmark_warmup = frame_options.benchmark_warmup();
+    const long limit = frame_options.frame_budget();
     std::vector<double> benchmark_samples;
     if (benchmark) {
         benchmark_samples.reserve(
@@ -6397,18 +6376,7 @@ bool run_dawn_engine(Engine& engine) {
         }
         ++frame;
     }
-    if (!benchmark_samples.empty()) {
-        std::sort(benchmark_samples.begin(), benchmark_samples.end());
-        double sum = 0.0;
-        for (const double sample : benchmark_samples) sum += sample;
-        std::cout
-            << "Babylon Lite Dawn benchmark | driver=D3D12"
-            << " | frames=" << benchmark_samples.size()
-            << " | average=" << (sum / benchmark_samples.size())
-            << " ms | median="
-            << benchmark_samples[benchmark_samples.size() / 2]
-            << " ms\n";
-    }
+    report_benchmark(benchmark_samples, "Dawn", "D3D12");
     SDL_DestroyWindow(state.window);
     state.window = nullptr;
     return true;

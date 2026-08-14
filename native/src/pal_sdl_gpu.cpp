@@ -529,6 +529,8 @@ void save_texture_png(
 void dump_deformation_uniforms(
     std::uint32_t mesh,
     const DeformationUniforms& deformation) {
+    // Read here rather than from the frame options: this dump helper is
+    // called from the upload path, which is not handed them.
     static const std::string dump_path =
         environment_variable("BBLITE_DEFORMATION_DUMP");
     if (dump_path.empty()) return;
@@ -2235,6 +2237,12 @@ void release(GpuState& state) {
 #endif
 
 bool run_gpu_engine(Engine& engine) {
+    const FrameOptions frame_options = read_frame_options();
+    reject_unsupported_frame_options(
+        frame_options,
+        "SDL_GPU",
+        /*supports_single_sample=*/true,
+        /*supports_copy_task=*/true);
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
     const std::string enabled = environment_variable("BBLITE_GPU");
     if (enabled == "0" || enabled == "false" || enabled == "off") return false;
@@ -2242,16 +2250,14 @@ bool run_gpu_engine(Engine& engine) {
         throw std::runtime_error("GPU renderer requires a registered scene.");
     }
     Scene& scene = *engine.registered_scenes.front();
-    const std::string animation_seek =
-        environment_variable("BBLITE_ANIMATION_SEEK_SECONDS");
-    if (!animation_seek.empty()) {
+    if (frame_options.animation_seek_seconds != 0.0) {
         const float time =
-            std::strtof(animation_seek.c_str(), nullptr);
+            static_cast<float>(frame_options.animation_seek_seconds);
         for (const auto& seek : scene.animation_seekers) {
             seek(time);
         }
     }
-    const std::string background_flag = environment_variable("BBLITE_BACKGROUND");
+    const std::string& background_flag = frame_options.background_flag;
     const bool background_enabled =
         background_flag == "1" ||
         background_flag == "true" ||
@@ -2260,24 +2266,24 @@ bool run_gpu_engine(Engine& engine) {
     const bool use_skybox =
         background_enabled &&
         scene.environment.has_skybox;
-    const std::string ground_flag = environment_variable("BBLITE_GROUND");
+    const std::string& ground_flag = frame_options.ground_flag;
     const bool use_ground =
         scene.environment.has_ground &&
         ground_flag != "0" &&
         ground_flag != "false";
-    const std::string id_buffer_path = environment_variable("BBLITE_ID_BUFFER");
+    const std::string id_buffer_path = frame_options.id_buffer_path;
     const std::string cluster_buffer_path =
-        environment_variable("BBLITE_CLUSTER_BUFFER");
+        frame_options.cluster_buffer_path;
     const std::string diagnostic_directory =
-        environment_variable("BBLITE_DIAGNOSTIC_DIR");
-    const std::string copy_task_filter =
-        environment_variable("BBLITE_COPY_TASK");
+        frame_options.diagnostic_directory;
+    const std::string& copy_task_filter =
+        frame_options.copy_task_filter;
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) gpu_error("SDL_Init");
 
     GpuState state;
     try {
         const bool hidden_test_pass =
-            environment_variable("BBLITE_TEST_PASS") == "1";
+            frame_options.test_pass;
         state.window = SDL_CreateWindow(
             engine.options.title.c_str(),
             engine.options.width,
@@ -2288,7 +2294,7 @@ bool run_gpu_engine(Engine& engine) {
                 : SDL_WINDOW_RESIZABLE);
         if (!state.window) gpu_error("SDL_CreateWindow");
         const bool gpu_debug =
-            environment_variable("BBLITE_GPU_DEBUG") == "1";
+            frame_options.gpu_debug;
         state.device = SDL_CreateGPUDevice(
             SDL_GPU_SHADERFORMAT_DXIL |
                 SDL_GPU_SHADERFORMAT_SPIRV |
@@ -2322,7 +2328,7 @@ bool run_gpu_engine(Engine& engine) {
                     return mesh.clockwise_front_face;
                 });
         if (
-            environment_variable("BBLITE_MSAA") != "1" &&
+            !frame_options.single_sample &&
             upstream::preferred_sample_count() >= 4 &&
             SDL_GPUTextureSupportsSampleCount(
                 state.device,
@@ -2346,7 +2352,7 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_GPU_SAMPLECOUNT_4)) {
             state.sample_count = SDL_GPU_SAMPLECOUNT_4;
         }
-        const bool benchmark_mode = !environment_variable("BBLITE_BENCHMARK_FRAMES").empty();
+        const bool benchmark_mode = frame_options.benchmark_requested;
         if (benchmark_mode && SDL_WindowSupportsGPUPresentMode(
                 state.device,
                 state.window,
@@ -4021,28 +4027,16 @@ bool run_gpu_engine(Engine& engine) {
                 ? engine.cameras[scene.camera.value]
                 : fallback_camera;
         CameraPointerState pointer_state;
-        const std::string screenshot_path = environment_variable("BBLITE_SCREENSHOT");
-        const long screenshot_frame = [&] {
-            const std::string value =
-                environment_variable("BBLITE_SCREENSHOT_FRAME");
-            return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
-        }();
+        const std::string screenshot_path = frame_options.screenshot_path;
+        const long screenshot_frame = frame_options.screenshot_frame;
         bool screenshot_saved = false;
         bool id_buffer_saved = false;
         bool cluster_buffer_saved = false;
         bool diagnostics_saved = false;
-        const long configured = [&] {
-            const std::string value = environment_variable("BBLITE_BENCHMARK_FRAMES");
-            return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
-        }();
+        const long configured = frame_options.benchmark_frames;
         const bool benchmark = configured > 0;
         const long warmup = benchmark ? 30 : 0;
-        const long limit = benchmark
-            ? configured + warmup
-            : [&] {
-                  const std::string value = environment_variable("BBLITE_MAX_FRAMES");
-                  return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
-              }();
+        const long limit = frame_options.frame_budget();
         std::vector<double> samples;
         bool running = true;
         long frame = 0;
@@ -6065,18 +6059,10 @@ bool run_gpu_engine(Engine& engine) {
             }
             ++frame;
         }
-        if (!samples.empty()) {
-            std::sort(samples.begin(), samples.end());
-            double sum = 0.0;
-            for (double sample : samples) sum += sample;
-            std::cout
-                << "Babylon Lite SDL_GPU benchmark | driver="
-                << SDL_GetGPUDeviceDriver(state.device)
-                << " | frames=" << samples.size()
-                << " | average=" << (sum / samples.size())
-                << " ms | median=" << samples[samples.size() / 2]
-                << " ms\n";
-        }
+        report_benchmark(
+            samples,
+            "SDL_GPU",
+            SDL_GetGPUDeviceDriver(state.device));
         if (!SDL_WaitForGPUIdle(state.device)) {
             gpu_error("SDL_WaitForGPUIdle");
         }

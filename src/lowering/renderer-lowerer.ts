@@ -792,6 +792,13 @@ RenderDrawLists build_render_task_draw_lists(
     const std::vector<RenderItem>& items,
     const Engine& engine,
     const FrameTaskRecord& task);
+struct CameraBasis {
+    Vec3 eye;
+    Vec3 forward;
+    Vec3 right;
+    Vec3 up;
+};
+CameraBasis camera_basis(const CameraRecord& camera);
 void sort_transparent_draws(
     RenderDrawList& transparent,
     const Engine& engine,
@@ -1201,16 +1208,29 @@ RenderDrawLists build_render_task_draw_lists(
     return result;
 }
 
-void sort_transparent_draws(
-    RenderDrawList& transparent,
-    const Engine& engine,
-    const CameraRecord& camera) {
+// The view basis every camera-facing computation starts from: the eye the
+// pinned ArcRotate formula puts the camera at, and the orthonormal frame
+// looking at its target. Written once because a camera feature that
+// changes it -- an orthographic volume, a different up axis -- has to
+// change it everywhere at once.
+CameraBasis camera_basis(const CameraRecord& camera) {
     const Vec3 eye = arc_rotate_eye_position(camera);
     const Vec3 forward = normalize(Vec3{
         camera.target.x - eye.x,
         camera.target.y - eye.y,
         camera.target.z - eye.z,
     });
+    const Vec3 right = normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, forward));
+    return CameraBasis{eye, forward, right, cross(forward, right)};
+}
+
+void sort_transparent_draws(
+    RenderDrawList& transparent,
+    const Engine& engine,
+    const CameraRecord& camera) {
+    const CameraBasis basis = camera_basis(camera);
+    const Vec3& eye = basis.eye;
+    const Vec3& forward = basis.forward;
     for (RenderDrawCommand& command : transparent.commands) {
         if (
             command.item.mesh.value >= engine.meshes.size() ||
@@ -1283,14 +1303,11 @@ std::array<float, 16> build_view_projection(
     const CameraRecord& camera,
     float aspect,
     bool reverse_depth) {
-    const Vec3 eye = arc_rotate_eye_position(camera);
-    const Vec3 forward = normalize(Vec3{
-        camera.target.x - eye.x,
-        camera.target.y - eye.y,
-        camera.target.z - eye.z,
-    });
-    const Vec3 right = normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, forward));
-    const Vec3 up = cross(forward, right);
+    const CameraBasis basis = camera_basis(camera);
+    const Vec3& eye = basis.eye;
+    const Vec3& forward = basis.forward;
+    const Vec3& right = basis.right;
+    const Vec3& up = basis.up;
     std::array<float, 16> view{};
     view[0] = right.x;
     view[4] = right.y;
@@ -1367,15 +1384,12 @@ ${options.orthographicCamera
 std::array<float, 16> build_skybox_view_projection(
     const CameraRecord& camera,
     float aspect) {
-    const Vec3 eye = arc_rotate_eye_position(camera);
-    const Vec3 forward = normalize(Vec3{
-        camera.target.x - eye.x,
-        camera.target.y - eye.y,
-        camera.target.z - eye.z,
-    });
-    const Vec3 right =
-        normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, forward));
-    const Vec3 up = cross(forward, right);
+    // A skybox follows the camera, so this view keeps the rotation and
+    // drops the eye translation the other builders apply.
+    const CameraBasis basis = camera_basis(camera);
+    const Vec3& forward = basis.forward;
+    const Vec3& right = basis.right;
+    const Vec3& up = basis.up;
     std::array<float, 16> view{};
     view[0] = right.x;
     view[4] = right.y;
@@ -1573,14 +1587,11 @@ PbrUniforms build_pbr_uniforms(
             result.light_color,
             result.ground_color);
     }
-${secondAnalyticLightFill}    const Vec3 eye = arc_rotate_eye_position(camera);
-    const Vec3 forward = normalize(Vec3{
-        camera.target.x - eye.x,
-        camera.target.y - eye.y,
-        camera.target.z - eye.z,
-    });
-    const Vec3 right = normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, forward));
-    const Vec3 up = cross(forward, right);
+${secondAnalyticLightFill}    const CameraBasis basis = camera_basis(camera);
+    const Vec3& eye = basis.eye;
+    const Vec3& forward = basis.forward;
+    const Vec3& right = basis.right;
+    const Vec3& up = basis.up;
     result.camera_position = {eye.x, eye.y, eye.z, camera.far_plane};
     result.camera_forward_near = {
         forward.x,
@@ -1687,15 +1698,11 @@ StandardUniforms build_standard_uniforms(
     const CameraRecord& camera,
     const RenderItem& item) {
     StandardUniforms result;
-    const Vec3 eye = arc_rotate_eye_position(camera);
-    const Vec3 forward = normalize(Vec3{
-        camera.target.x - eye.x,
-        camera.target.y - eye.y,
-        camera.target.z - eye.z,
-    });
-    const Vec3 right =
-        normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, forward));
-    const Vec3 up = cross(forward, right);
+    const CameraBasis basis = camera_basis(camera);
+    const Vec3& eye = basis.eye;
+    const Vec3& forward = basis.forward;
+    const Vec3& right = basis.right;
+    const Vec3& up = basis.up;
     result.camera_position = {
         eye.x,
         eye.y,
@@ -1919,7 +1926,7 @@ BackgroundPlan build_background_plan(const EnvironmentState& environment) {
 BackgroundUniforms build_background_uniforms(
     const EnvironmentState& environment,
     const CameraRecord& camera) {
-    const Vec3 eye = arc_rotate_eye_position(camera);
+    const Vec3 eye = camera_basis(camera).eye;
     BackgroundUniforms result;
     result.primary_color_alpha = {
         environment.primary_color.r,
@@ -2043,15 +2050,11 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
     const Scene& scene,
     const CameraRecord& camera) {
     ImageSkyboxUniforms result;
-    const Vec3 eye = arc_rotate_eye_position(camera);
-    const Vec3 forward = normalize(Vec3{
-        camera.target.x - eye.x,
-        camera.target.y - eye.y,
-        camera.target.z - eye.z,
-    });
-    const Vec3 right =
-        normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, forward));
-    const Vec3 up = cross(forward, right);
+    const CameraBasis basis = camera_basis(camera);
+    const Vec3& eye = basis.eye;
+    const Vec3& forward = basis.forward;
+    const Vec3& right = basis.right;
+    const Vec3& up = basis.up;
     result.camera_position = {eye.x, eye.y, eye.z, 0.0f};
     result.view_right = {right.x, right.y, right.z, 0.0f};
     result.view_up = {up.x, up.y, up.z, 0.0f};

@@ -3,6 +3,7 @@
 // byte-identical vertex data.
 #pragma once
 
+#include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
@@ -12,9 +13,12 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace bbl::pal {
@@ -487,6 +491,142 @@ inline std::vector<float> decode_rgbd(const TextureData& texture_data, int& widt
         result[index + 3] = 1.0f;
     }
     return result;
+}
+
+// How a measured run is driven, parsed once for whichever backend runs
+// it.
+//
+// Both frame loops used to read this matrix themselves, and the copies
+// drifted: BBLITE_MSAA and BBLITE_COPY_TASK were honored by SDL_GPU and
+// silently ignored by Dawn. A divergence in these decisions surfaces as a
+// backend delta, which the differential attributes to the GPU side, so
+// the flags a run is given have to reach both backends the same way.
+struct FrameOptions {
+    std::string screenshot_path;
+    std::string id_buffer_path;
+    std::string cluster_buffer_path;
+    std::string diagnostic_directory;
+    std::string shader_directory;
+    std::string copy_task_filter;
+    std::string deformation_dump;
+    // Kept as written rather than pre-interpreted: the background and
+    // ground flags accept "1"/"true" as well as "0"/"false", and each
+    // default differs (a requested background is off unless asked for, a
+    // requested ground is on unless refused).
+    std::string background_flag;
+    std::string ground_flag;
+    bool gpu_debug = false;
+    bool test_pass = false;
+    bool single_sample = false;
+    long screenshot_frame = 0;
+    long max_frames = 0;
+    long benchmark_frames = 0;
+    double animation_seek_seconds = 0.0;
+
+    /** Frames to run: a benchmark adds its fixed warmup to the request. */
+    [[nodiscard]] long frame_budget() const {
+        return benchmark_frames > 0
+            ? benchmark_frames + benchmark_warmup()
+            : max_frames;
+    }
+    [[nodiscard]] bool benchmarking() const {
+        return benchmark_frames > 0;
+    }
+    /**
+     * Whether a benchmark was asked for at all. Present mode keys on the
+     * request rather than the count, because the recorded frame-time
+     * numbers depend on immediate present being selected before the
+     * count is known to be positive.
+     */
+    bool benchmark_requested = false;
+    [[nodiscard]] long benchmark_warmup() const {
+        return benchmark_frames > 0 ? 30 : 0;
+    }
+};
+
+inline long frame_option_number(const char* name) {
+    const std::string value = environment_variable(name);
+    return value.empty()
+        ? 0L
+        : std::strtol(value.c_str(), nullptr, 10);
+}
+
+inline FrameOptions read_frame_options() {
+    FrameOptions options;
+    options.screenshot_path = environment_variable("BBLITE_SCREENSHOT");
+    options.id_buffer_path = environment_variable("BBLITE_ID_BUFFER");
+    options.cluster_buffer_path =
+        environment_variable("BBLITE_CLUSTER_BUFFER");
+    options.diagnostic_directory =
+        environment_variable("BBLITE_DIAGNOSTIC_DIR");
+    options.shader_directory =
+        environment_variable("BBLITE_GPU_SHADER_DIR");
+    options.copy_task_filter = environment_variable("BBLITE_COPY_TASK");
+    options.deformation_dump =
+        environment_variable("BBLITE_DEFORMATION_DUMP");
+    options.gpu_debug = environment_variable("BBLITE_GPU_DEBUG") == "1";
+    options.test_pass = environment_variable("BBLITE_TEST_PASS") == "1";
+    options.single_sample = environment_variable("BBLITE_MSAA") == "1";
+    options.background_flag = environment_variable("BBLITE_BACKGROUND");
+    options.ground_flag = environment_variable("BBLITE_GROUND");
+    options.screenshot_frame =
+        frame_option_number("BBLITE_SCREENSHOT_FRAME");
+    options.max_frames = frame_option_number("BBLITE_MAX_FRAMES");
+    options.benchmark_frames =
+        frame_option_number("BBLITE_BENCHMARK_FRAMES");
+    options.benchmark_requested =
+        !environment_variable("BBLITE_BENCHMARK_FRAMES").empty();
+    const std::string seek =
+        environment_variable("BBLITE_ANIMATION_SEEK_SECONDS");
+    options.animation_seek_seconds =
+        seek.empty() ? 0.0 : std::strtod(seek.c_str(), nullptr);
+    return options;
+}
+
+/**
+ * The benchmark summary both backends print. The numbers are compared
+ * across backends, so the shape of the line and the statistics behind it
+ * have to be produced the same way.
+ */
+inline void report_benchmark(
+    std::vector<double> samples,
+    const char* backend,
+    const std::string& driver) {
+    if (samples.empty()) return;
+    std::sort(samples.begin(), samples.end());
+    double sum = 0.0;
+    for (const double sample : samples) sum += sample;
+    std::cout
+        << "Babylon Lite " << backend << " benchmark | driver="
+        << driver
+        << " | frames=" << samples.size()
+        << " | average=" << (sum / samples.size())
+        << " ms | median=" << samples[samples.size() / 2]
+        << " ms\n";
+}
+
+/**
+ * Refuse a flag this backend does not implement rather than rendering
+ * something else: a silent no-op would be measured as a backend delta.
+ */
+inline void reject_unsupported_frame_options(
+    const FrameOptions& options,
+    const char* backend,
+    bool supports_single_sample,
+    bool supports_copy_task) {
+    if (options.single_sample && !supports_single_sample) {
+        throw std::runtime_error(
+            std::string("BBLITE_MSAA is not supported by the ") +
+            backend +
+            " backend; run the single-sample diagnostic through SDL_GPU.");
+    }
+    if (!options.copy_task_filter.empty() && !supports_copy_task) {
+        throw std::runtime_error(
+            std::string("BBLITE_COPY_TASK is not supported by the ") +
+            backend +
+            " backend; the geometry copy-task diagnostic runs through "
+            "SDL_GPU.");
+    }
 }
 
 // The PBR diagnostic buffers both backends write, in the order the
