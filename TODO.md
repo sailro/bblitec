@@ -322,11 +322,23 @@ carry 58 copies of `vcpkg_installed` at 48 MB each, about 2.8 GB. A shared
   frame-graph resolve step becomes a texture copy), so the two
   backends now disagree about the diagnostic itself.
 - [ ] Improve missing-tool and stale-output diagnostics.
-- [ ] Repair `scene -- geometry`: its copy-task scan matches
-  `name: "..."`, but the pinned scenes 145/146/149 name their tasks with a
-  template literal (`` name: `scene145-impostor-${entry.name}` ``), so the
-  command reports "no geometry-output copy tasks" for every scene that has
-  them. The diagnostic has been inert since that upstream change.
+- [ ] Repair `scene -- geometry`, which has two halves and only the first is
+  easy. Scenes 145/146/149 build their copy tasks in a loop, so the names
+  never appear literally in the source: `` name: `scene145-impostor-${entry.name}` ``
+  over an array of textures. Both halves of the tool scan for
+  `name: "..."` and therefore find nothing.
+  - **Discovery** is straightforward: the compiler unrolls the loop, so the
+    generated tree already contains `scene145-impostor-albedo`,
+    `-irradiance`, `-linearVelocity`, `-localPosition`, `-normViewDepth`,
+    `-realColor` and the rest. Read them from `generated/<id>` instead of
+    from the source.
+  - **The browser-side transform is the real work.** It rewrites the scene
+    source so one impostor renders full-screen, matching the same quoted
+    name and replacing its `viewport: { ... }`. For loop-constructed tasks
+    there is no per-task literal to rewrite — the viewport is computed from
+    the loop index — so selecting one impostor means transforming the loop
+    itself, or driving the reference capture some other way.
+  Inert since that upstream change; diagnosed 2026-08-14 but not fixed.
 - [ ] Add `--explain-feature` and generated-code-to-upstream inspection.
 - [ ] Document adding a lowerer and curated scene fixture.
 
