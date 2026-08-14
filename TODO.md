@@ -525,16 +525,24 @@ runtime gaps may remain hidden behind it.
   loader currently skips parented and geometry-less nodes silently. Zero
   effect on gated Scenes 24/145 (HillValley has neither); reached by ungated
   Scenes 9 and 143 (Sponza `.babylon`).
-- [ ] Scene 9: the Sponza `.babylon` scene, whose recorded blocker — optional
-  fields written as JSON `null` rather than omitted, which the loader reads as
-  strings — is only the first line of its chain. Running it puts the rest of
-  the lift in view: the 24 materials reach **six Standard texture slots** the
-  renderer has none of (23 diffuse, 16 ambient, 15 specular, 13 bump, 4
-  reflection, 3 opacity) across 72 texture files, three lights against the
-  reached two-light Standard slice, and 98 meshes of which 29 are
-  geometry-less containers and 16 are parented — the two-pass `.babylon`
-  parent wiring below. Several PRs, not one, and the Standard texture
-  pipeline is the bulk of it.
+- [ ] Scene 9: the Sponza `.babylon` scene. Its recorded blocker — optional
+  fields written as JSON `null` rather than omitted — is closed; the loader
+  reads every optional string through a null-tolerant helper now. Its texture
+  slots turned out to be a shorter lift than the count suggests: Scene 24
+  already drives 128 diffuse, 57 ambient, 32 reflection, 2 specular and 1
+  opacity texture through the same loader, so of Sponza's six slots only
+  **bumpTexture** (13 materials) is unreached. Run in order, each rung the
+  scene's next actual blocker:
+  1. Three Standard lights. Sponza carries three point lights and the
+     generated uniform block holds two — the two-light slice entry below.
+     This is the current blocker.
+  2. Parented and geometry-less nodes: 16 of its 98 meshes carry a
+     `parentId` and 29 have no geometry, and the loader silently skips both
+     (the two-pass `.babylon` wiring entry below).
+  3. Standard normal mapping for the 13 `bumpTexture` materials.
+  Then register it and measure. Nothing before rung 3 can be gated on this
+  scene, so each rung lands proved byte-neutral for the scenes already
+  measured rather than by a number of its own.
 - [ ] Scenes 242, 244, 253: extend `KHR_animation_pointer` beyond the node
   visibility target Scene 34 measures. The channel `path` is `pointer` and
   the target is a JSON pointer into the document rather than a node TRS
