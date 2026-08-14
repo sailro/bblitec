@@ -298,6 +298,12 @@
       "sha256": "0c369b62275fda4d2476059311cb83d0f1479bd5db6d3fd0c540b3d523a65c75"
     },
     {
+      "id": "scene256",
+      "upstreamPath": "lab/lite/src/lite/scene256.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene256.ts",
+      "sha256": "f75bd3ec8e95de1e6b2eb327b0c5085aba56f1fc5bc0ea129527c7f1c70ab041"
+    },
+    {
       "id": "scene273",
       "upstreamPath": "lab/lite/src/lite/scene273.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene273.ts",

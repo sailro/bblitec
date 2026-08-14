@@ -933,6 +933,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene256",
+        name: "Scene 256 - Normal Tangent Test",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene256.ts",
+        title: "Babylon Lite Native - Normal Tangent Test",
+        parity: {
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.09,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene273",
         name: "Scene 273 - Runtime Material Family",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene273.ts",

@@ -344,17 +344,18 @@ The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
 **Swept 2026-08-13:** 184 unregistered scenes compiled, 8 clean and 176
-blocked across 80 distinct first blockers. Scenes 267 and 268 have since
-graduated to measured gates, leaving 182 unregistered, re-swept unchanged on
-2026-08-14 (the same 8 clean, 174 blocked, same clusters). The lane partition
+blocked across 80 distinct first blockers. Scenes 267, 268 and 256 have since
+graduated to measured gates, leaving 181 unregistered, re-swept unchanged on
+2026-08-14 (the same clean set, same clusters). The lane partition
 below was written from reading and holds up: no scene in the compiler-contract
 lane compiles, so the compiler has not silently outgrown its inventory. Each
 scene's entry is its FIRST blocker; clearing one may expose another.
 
-**Compile clean (8):** 9, 30, 34, 242, 244, 253, 256, 260. Seven were already
-recorded as past the compiler and blocked downstream in the loader/runtime
-lane, so only 256 is newly placed — it was the unaudited NormalTangentTest
-glTF and reaches the compiler cleanly.
+**Compile clean (7):** 9, 30, 34, 242, 244, 253, 260. All seven are past the
+compiler and blocked downstream in the loader/runtime lane. Scene 256 was the
+eighth and graduated to a measured gate on 2026-08-14 — it was the only one of
+the clean set with no downstream blocker, which is what made it the next
+integration rather than the loader work the others need.
 
 **Largest first-blocker clusters:** `loadSpriteAtlas` 16, browser-dependent
 condition 17 (15 of them deferred-lane physics), `parseNodeMaterialFromSnippet`
@@ -388,15 +389,15 @@ lane when they can be erased or lowered inside the compiler, asset pipeline,
 or renderer. A scene is deferred when its covered behavior needs a new
 platform, user-input, or external-service contract.
 
-Scenes 256 and 280 arrived with the 1.20.0 pin and are now measured: 256
-compiles clean, 280 blocks on `parseNodeParticleSource` as expected.
+Scenes 256 and 280 arrived with the 1.20.0 pin: 256 is a measured gate as of
+2026-08-14, and 280 blocks on `parseNodeParticleSource` as expected.
 
 **Integrate first (148 scenes):** 4, 9, 11, 12, 15-23, 25-27, 30,
 34, 36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229,
 231, 241, 242, 244, 251-253, 260-264, 269-271, 275-279. Scenes 3, 7,
 35, and 216 graduated to measured parity gates on 2026-08-12, and Scenes
-267 and 268 on 2026-08-14.
+267, 268 and 256 on 2026-08-14.
 
 This lane includes static CSG/CSG2, compressed assets and splats,
 deterministic picking in Scenes 113-115, 117, 118, and 129, and the
