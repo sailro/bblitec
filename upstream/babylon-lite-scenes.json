@@ -338,6 +338,12 @@
       "upstreamPath": "lab/lite/src/lite/scene9.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene9.ts",
       "sha256": "153e542242e8e491bc91cfc3c34a422d7e9f68298447e0b1c699b3c7451f550a"
+    },
+    {
+      "id": "scene242",
+      "upstreamPath": "lab/lite/src/lite/scene242.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene242.ts",
+      "sha256": "4e9e4530deb9d661492995207ef48831c9fab51e0260ceec381bcce38981d8d8"
     }
   ],
   "modules": []

@@ -1006,6 +1006,26 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene242",
+        name: "Scene 242 - Emissive Fireflies",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene242.ts",
+        title: "Babylon Lite Native - Emissive Fireflies",
+        parity: {
+            // 6.5 s falls between two keys near the emissive peak, so the
+            // capture reads an interpolated value on all nine pointer
+            // channels rather than a keyframe either side could hit by
+            // rounding.
+            referenceTimeSeconds: 6.5,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.01,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "6.5",
+            },
+        },
+    },
+    {
         id: "scene273",
         name: "Scene 273 - Runtime Material Family",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene273.ts",

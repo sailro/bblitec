@@ -17,6 +17,7 @@ interface GltfSpecialization {
         skins: boolean;
         sparseAccessors: boolean;
         nonTrianglePrimitives: boolean;
+        animationPointerMaterials: boolean;
         extras: boolean;
         occlusionUv2: boolean;
     };
@@ -199,6 +200,21 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
     const nonTrianglePrimitives = primitives.some(
         (primitive) => typeof primitive.mode === "number" && primitive.mode !== 4,
     );
+    // Babylon Lite splits KHR_animation_pointer across modules: the base one
+    // resolves node targets, and material targets pull their own. A scene
+    // that animates only node visibility never carries the material writers.
+    const animationPointerMaterials = asRecords(document.animations).some(
+        (animation) =>
+            asRecords(animation.channels).some((channel) =>
+                asString(
+                    asRecord(
+                        asRecord(asRecord(channel.target)?.extensions)?.[
+                            "KHR_animation_pointer"
+                        ],
+                    )?.pointer,
+                )?.startsWith("/materials/"),
+            ),
+    );
     const extras = hasExtras(document);
     // Babylon Lite's pbr-template-ext appends a dedicated occlusion
     // texture pair sampled at uv2 when a material's occlusionTexture
@@ -227,6 +243,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
             skins,
             sparseAccessors,
             nonTrianglePrimitives,
+            animationPointerMaterials,
             extras,
             occlusionUv2,
         },
@@ -239,6 +256,7 @@ export interface AssetSpecializationFeatures {
     nonTrianglePrimitives: boolean;
     nodeVisibility: boolean;
     animationPointer: boolean;
+    animationPointerMaterials: boolean;
     imageBasedLighting: boolean;
     textureTransform: boolean;
     gpuInstancing: boolean;
@@ -262,6 +280,7 @@ export function emitAssetSpecializations(
             nonTrianglePrimitives: false,
             nodeVisibility: false,
             animationPointer: false,
+            animationPointerMaterials: false,
             imageBasedLighting: false,
             textureTransform: false,
             gpuInstancing: false,
@@ -318,6 +337,10 @@ export function emitAssetSpecializations(
         ),
         nodeVisibility: usesExtension("KHR_node_visibility"),
         animationPointer: usesExtension("KHR_animation_pointer"),
+        animationPointerMaterials: specializations.some(
+            (specialization) =>
+                specialization.features.animationPointerMaterials,
+        ),
         imageBasedLighting: usesExtension("EXT_lights_image_based"),
         textureTransform: usesExtension("KHR_texture_transform"),
         gpuInstancing: usesExtension("EXT_mesh_gpu_instancing"),

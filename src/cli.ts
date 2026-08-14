@@ -463,6 +463,8 @@ async function main(): Promise<void> {
         ),
         animationPointer:
             specializationFeatures.animationPointer,
+        animationPointerMaterials:
+            specializationFeatures.animationPointerMaterials,
         textureTransform:
             specializationFeatures.textureTransform,
         imageBasedLighting:
