@@ -460,6 +460,7 @@ struct MaterialRecord {
     float diffuse_v_scale = 1.0f;
     float diffuse_u_offset = 0.0f;
     float diffuse_v_offset = 0.0f;
+    std::uint32_t diffuse_coord_index = 0;
     std::uint32_t specular_coord_index = 0;
     std::uint32_t ambient_coord_index = 0;
     float metallic_factor = 1.0f;
@@ -560,6 +561,12 @@ struct LightRecord {
     Color3 specular_color{};
     Color3 ground_color{0.0f, 0.0f, 0.0f};
     std::array<float, 16> local_matrix{};
+    // The meshes this light applies to, as the pinned engine keeps them: an
+    // inclusion list wins outright when it is non-empty, otherwise the
+    // exclusion list filters. Empty on both means every mesh, which is what
+    // a light created in scene code gets.
+    std::vector<std::uint32_t> included_meshes;
+    std::vector<std::uint32_t> excluded_meshes;
 };
 
 struct CameraRecord {

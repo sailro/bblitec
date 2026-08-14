@@ -114,6 +114,7 @@ export function standardFragmentWgsl(
     fog = false,
     vertexColors = false,
     lightSlots = 2,
+    diffuseUv2 = false,
 ): string {
     // The pinned template declares `array<LightEntry, MAX_LIGHTS>` and loops
     // `min(mesh.lc, MAX_LIGHTS)` entries. Native unrolls the same terms into
@@ -216,7 +217,8 @@ struct FragmentUniforms {
     textureOptions: vec4<f32>,
     uvOptions: vec4<f32>,
     materialOptions: vec4<f32>,
-    reflectionOptions: vec4<f32>,
+    reflectionOptions: vec4<f32>,${diffuseUv2 ? `
+    diffuseUvOptions: vec4<f32>,` : ""}
 ${fogUniformFields}}
 @group(3) @binding(0) var<uniform> uniforms: FragmentUniforms;
 
@@ -310,7 +312,11 @@ ${fogHelper}${outputDeclaration(task)}
 fn mainFragment(input: FragmentInput) -> ${returnType} {
     let normalW = normalize(input.normal);
 
-    let diffuseUv = input.uv * uniforms.uvOptions.xy;
+${diffuseUv2 ? `    var diffuseBaseUv = input.uv;
+    if (uniforms.diffuseUvOptions.x > 0.5) {
+        diffuseBaseUv = input.uv2;
+    }
+    let diffuseUv = diffuseBaseUv * uniforms.uvOptions.xy;` : `    let diffuseUv = input.uv * uniforms.uvOptions.xy;`}
     var diffuseSample = vec4<f32>(1.0);
     if (uniforms.textureOptions.x > 0.5) {
         diffuseSample = textureSample(

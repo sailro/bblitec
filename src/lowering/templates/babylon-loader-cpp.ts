@@ -1,4 +1,16 @@
-export function babylonLoaderCpp(provenance: string): string {
+/**
+ * The generated `.babylon` loader.
+ *
+ * `lightMeshLists` mirrors what the asset declares: a light carries
+ * `includedOnlyMeshesIds` or `excludedMeshesIds` naming the meshes it lights,
+ * which the pinned engine keeps as a per-mesh light set. A file whose lights
+ * name neither emits this loader without the resolution.
+ */
+export function babylonLoaderCpp(
+    provenance: string,
+    lightMeshLists = false,
+    diffuseUv2 = false,
+): string {
     return `// ${provenance}
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
@@ -278,7 +290,12 @@ MaterialHandle load_material(
         texture != source.end() && texture->is_object()) {
         material.diffuse_level = texture->value("level", 1.0f);
         material.diffuse_u_scale = texture->value("uScale", 1.0f);
-        material.diffuse_v_scale = texture->value("vScale", 1.0f);
+        material.diffuse_v_scale = texture->value("vScale", 1.0f);${diffuseUv2 ? `
+        // A diffuse texture selects a UV set the same way the specular and
+        // ambient slots below do. Sponza's upper walls are the reached case:
+        // their base texture is authored against the second set.
+        material.diffuse_coord_index =
+            texture->value("coordinatesIndex", 0) == 1 ? 1u : 0u;` : ""}
         if (texture->value("hasAlpha", false)) {
             material.alpha_cutoff = 0.4f;
         }
@@ -385,7 +402,12 @@ AssetHandle load_babylon(Engine& engine, const std::string& path) {
         return fallback;
     };
 
-    if (const auto meshes = document.find("meshes");
+${lightMeshLists ? `    // A light names the meshes it lights, or the ones it skips, by mesh id.
+    // Resolving those against the records this loader creates needs the id
+    // of each one, and a node with submeshes becomes several records.
+    std::unordered_map<std::string, std::vector<std::uint32_t>>
+        mesh_records_by_id;
+` : ""}    if (const auto meshes = document.find("meshes");
         meshes != document.end() && meshes->is_array()) {
         for (const Json& source : *meshes) {
             if (
@@ -561,7 +583,10 @@ AssetHandle load_babylon(Engine& engine, const std::string& path) {
                 engine.meshes.push_back(mesh);
                 asset.meshes.push_back(MeshHandle{
                     static_cast<std::uint32_t>(
-                        engine.meshes.size() - 1)});
+                        engine.meshes.size() - 1)});${lightMeshLists ? `
+                mesh_records_by_id[string_or(source, "id")].push_back(
+                    static_cast<std::uint32_t>(
+                        engine.meshes.size() - 1));` : ""}
             }
         }
     }
@@ -582,7 +607,29 @@ AssetHandle load_babylon(Engine& engine, const std::string& path) {
             light.diffuse_color =
                 color3_or(source, "diffuse", Color3{1.0f, 1.0f, 1.0f});
             light.specular_color =
-                color3_or(source, "specular", Color3{1.0f, 1.0f, 1.0f});
+                color3_or(source, "specular", Color3{1.0f, 1.0f, 1.0f});${lightMeshLists ? `
+            const auto resolve_mesh_ids =
+                [&](const char* name,
+                    std::vector<std::uint32_t>& target) {
+                const auto ids = source.find(name);
+                if (ids == source.end() || !ids->is_array()) return;
+                for (const Json& entry : *ids) {
+                    if (!entry.is_string()) continue;
+                    const auto found = mesh_records_by_id.find(
+                        entry.get<std::string>());
+                    if (found == mesh_records_by_id.end()) continue;
+                    target.insert(
+                        target.end(),
+                        found->second.begin(),
+                        found->second.end());
+                }
+            };
+            resolve_mesh_ids(
+                "includedOnlyMeshesIds",
+                light.included_meshes);
+            resolve_mesh_ids(
+                "excludedMeshesIds",
+                light.excluded_meshes);` : ""}
             engine.lights.push_back(light);
             asset.lights.push_back(LightHandle{
                 static_cast<std::uint32_t>(engine.lights.size() - 1)});

@@ -99,6 +99,8 @@ export class RendererLowerer {
         dispersion?: boolean;
         nodeVisibility?: boolean;
         standardLights?: number;
+        standardLightLists?: boolean;
+        standardDiffuseUv2?: boolean;
         orthographicCamera?: boolean;
         background?: boolean;
         shaderPrograms?: CompiledShaderProgram[];
@@ -743,7 +745,8 @@ struct StandardUniforms {
     std::array<float, 4> texture_options{};
     std::array<float, 4> uv_options{};
     std::array<float, 4> material_options{};
-    std::array<float, 4> reflection_options{};
+    std::array<float, 4> reflection_options{};${options.standardDiffuseUv2 ? `
+    std::array<float, 4> diffuse_uv_options{};` : ""}
 ${fogUniformFields}\
 };
 
@@ -1810,7 +1813,54 @@ ${fogUniforms}\
             1.0f,
         };
     };
-    if (
+${options.standardLightLists ? `    // A light can name the meshes it applies to, so the slots hold this
+    // mesh's light set rather than the scene's. That is the same set the
+    // pinned template's \`min(mesh.lc, MAX_LIGHTS)\` loop walks.
+    std::uint32_t light_slot = 0;
+    for (const LightHandle handle : scene.lights) {
+        if (handle.value >= engine.lights.size()) continue;
+        const LightRecord& light = engine.lights[handle.value];
+        const bool applies = light.included_meshes.empty()
+            ? std::find(
+                  light.excluded_meshes.begin(),
+                  light.excluded_meshes.end(),
+                  item.mesh.value) == light.excluded_meshes.end()
+            : std::find(
+                  light.included_meshes.begin(),
+                  light.included_meshes.end(),
+                  item.mesh.value) != light.included_meshes.end();
+        if (!applies) continue;
+        switch (light_slot) {
+            case 0:
+                write_light(
+                    light,
+                    result.light_data,
+                    result.light_diffuse,
+                    result.light_specular,
+                    result.light_direction);
+                break;
+            case 1:
+                write_light(
+                    light,
+                    result.light_data_2,
+                    result.light_diffuse_2,
+                    result.light_specular_2,
+                    result.light_direction_2);
+                break;${extraStandardLights.map((slot) => `
+            case ${slot - 1}:
+                write_light(
+                    light,
+                    result.light_data_${slot},
+                    result.light_diffuse_${slot},
+                    result.light_specular_${slot},
+                    result.light_direction_${slot});
+                break;`).join("")}
+            default:
+                break;
+        }
+        ++light_slot;
+        if (light_slot >= ${standardLightSlots}u) break;
+    }` : `    if (
         !scene.lights.empty() &&
         scene.lights[0].value < engine.lights.size()) {
         write_light(
@@ -1819,7 +1869,7 @@ ${fogUniforms}\
             result.light_diffuse,
             result.light_specular,
             result.light_direction);
-    }
+    }`}${options.standardLightLists ? "" : `
     if (
         scene.lights.size() > 1 &&
         scene.lights[1].value < engine.lights.size()) {
@@ -1839,7 +1889,7 @@ ${fogUniforms}\
             result.light_diffuse_${slot},
             result.light_specular_${slot},
             result.light_direction_${slot});
-    }`).join("")}
+    }`).join("")}`}
     if (item.material.value < engine.materials.size()) {
         const MaterialRecord& material =
             engine.materials[item.material.value];
@@ -1884,7 +1934,13 @@ ${fogUniforms}\
             material.alpha_cutoff,
             material.opacity_level,
             material.disable_lighting ? 1.0f : 0.0f,
-        };
+        };${options.standardDiffuseUv2 ? `
+        result.diffuse_uv_options = {
+            static_cast<float>(material.diffuse_coord_index),
+            0.0f,
+            0.0f,
+            0.0f,
+        };` : ""}
         result.reflection_options = {
             material.reflection_cube == invalid_handle ? 0.0f : 1.0f,
             material.reflection_level,
@@ -2125,6 +2181,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         standardMaterial: boolean;
         standardVertexColors?: boolean;
         standardLights?: number;
+        standardDiffuseUv2?: boolean;
         gridMaterial?: boolean;
         idDiagnostics: boolean;
         pbrDiagnostics: boolean;
@@ -2897,6 +2954,7 @@ ${directMarker}`,
                     options.fog === true,
                     options.standardVertexColors === true,
                     Math.max(2, options.standardLights ?? 2),
+                    options.standardDiffuseUv2 === true,
                 ),
             });
         }

@@ -35,6 +35,8 @@ export interface UpstreamEmitOptions {
     nodeVisibility: boolean;
     animationPointer: boolean;
     standardLights: number;
+    standardLightLists: boolean;
+    standardDiffuseUv2: boolean;
     textureTransform: boolean;
     imageBasedLighting: boolean;
     gpuInstancing: boolean;
@@ -234,7 +236,10 @@ class GeneratedSourceWriter {
         if (features.includes("loader:babylon")) {
             this.writeSource(
                 "upstream/src/babylon_loader.cpp",
-                new BabylonLowerer(context).lowerLoaderAdapter(),
+                new BabylonLowerer(context).lowerLoaderAdapter(
+                    options.standardLightLists,
+                    options.standardDiffuseUv2,
+                ),
                 generated,
             );
         }
@@ -262,6 +267,8 @@ class GeneratedSourceWriter {
                     dispersion: options.dispersion,
                     nodeVisibility: options.nodeVisibility,
                     standardLights: options.standardLights,
+                    standardLightLists: options.standardLightLists,
+                    standardDiffuseUv2: options.standardDiffuseUv2,
                     orthographicCamera: features.includes(
                         "camera:orthographic",
                     ),
@@ -297,6 +304,7 @@ class GeneratedSourceWriter {
                     "material:standard-vertex-colors",
                 ),
                 standardLights: options.standardLights,
+                standardDiffuseUv2: options.standardDiffuseUv2,
                 gridMaterial: features.includes("material:grid"),
                 idDiagnostics: options.idDiagnostics,
                 pbrDiagnostics: options.pbrDiagnostics,
@@ -515,6 +523,8 @@ export function emitUpstreamGenerated(
         nodeVisibility: false,
         animationPointer: false,
         standardLights: 0,
+        standardLightLists: false,
+        standardDiffuseUv2: false,
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,
