@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { CompileAsset, CompileError, compileSource } from "./compiler.js";
 import type { CompiledShaderProgram } from "./compiler.js";
@@ -9,6 +9,7 @@ import { emitUpstreamGenerated } from "./upstream-lower.js";
 import { emitAssetSpecializations } from "./asset-specializer.js";
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
+import { decompressGeometry } from "./compressed-geometry.js";
 import { packageHdrEnvironment } from "./hdr-packager.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
 import {
@@ -125,7 +126,10 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
     if (asset.kind === "gltf" && /\.gltf(?:[?#]|$)/i.test(source)) {
         writeFileSync(
             destination,
-            await packageGltf(source, dirname(inputPath)),
+            await decompressGeometry(
+                await packageGltf(source, dirname(inputPath)),
+                source,
+            ),
         );
         return;
     }
@@ -153,11 +157,23 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
         if (!response.ok) {
             throw new Error(`Failed to download ${source}: HTTP ${response.status}.`);
         }
-        writeFileSync(destination, new Uint8Array(await response.arrayBuffer()));
+        writeFileSync(
+            destination,
+            await decompressGeometry(
+                new Uint8Array(await response.arrayBuffer()),
+                source,
+            ),
+        );
         return;
     }
 
-    copyFileSync(resolve(dirname(inputPath), source), destination);
+    writeFileSync(
+        destination,
+        await decompressGeometry(
+            new Uint8Array(readFileSync(resolve(dirname(inputPath), source))),
+            source,
+        ),
+    );
 }
 
 const jpegNamePattern = /\.jpe?g(?:[?#]|$)/i;

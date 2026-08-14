@@ -164,18 +164,23 @@ target_compile_definitions(bblite_native PRIVATE BBLITE_ASSET_DIR="assets")
 target_compile_definitions(bblite_native PRIVATE BBLITE_GPU_SHADER_DIR="shaders")
 
 if(EXISTS "${BBLITE_GENERATED_DIR}/assets")
-    add_custom_command(
-        TARGET bblite_native
-        POST_BUILD
+    # Deployed by its own always-run target rather than POST_BUILD on the
+    # executable. An asset filename is hashed from its source URL, not its
+    # bytes, so re-materializing one can change its content while its name
+    # and every generated source stay identical -- nothing relinks, and a
+    # POST_BUILD copy never fires. The measured run then reads the previous
+    # asset beside a current executable. `copy_directory_if_different`
+    # keeps that honest without rewriting megabytes on every build.
+    add_custom_target(
+        bblite_assets
+        ALL
         COMMAND
-            "${CMAKE_COMMAND}" -E remove_directory
-            "$<TARGET_FILE_DIR:bblite_native>/assets"
-        COMMAND
-            "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_COMMAND}" -E copy_directory_if_different
             "${BBLITE_GENERATED_DIR}/assets"
             "$<TARGET_FILE_DIR:bblite_native>/assets"
         VERBATIM
     )
+    add_dependencies(bblite_assets bblite_native)
 endif()
 
 if(BBLITE_GENERATED_SHADER_FILES)
