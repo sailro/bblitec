@@ -380,8 +380,8 @@ export class RendererLowerer {
                 ? `        result.uv_transform = {
             material.diffuse_u_scale,
             material.diffuse_v_scale,
-            0.0f,
-            0.0f,
+            material.diffuse_u_offset,
+            material.diffuse_v_offset,
         };
 `
                 : "";

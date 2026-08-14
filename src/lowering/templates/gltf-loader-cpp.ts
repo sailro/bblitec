@@ -1008,12 +1008,10 @@ void apply_texture_transform(
         material.diffuse_v_scale = scale[1];
     }
     if (offset.size() == 2) {
-        if (
-            std::abs(offset[0]) > 0.000001f ||
-            std::abs(offset[1]) > 0.000001f) {
-            throw std::runtime_error(
-                "Offset glTF texture transforms are not supported.");
-        }
+        // KHR_texture_transform composes as uv * scale + offset, which is
+        // what the fragment already computes from uvTransform.xy/.zw.
+        material.diffuse_u_offset = offset[0];
+        material.diffuse_v_offset = offset[1];
     }
     if (
         std::abs(
@@ -1040,6 +1038,14 @@ void require_matching_texture_transform(
         std::abs(
             candidate.diffuse_v_scale -
             material.diffuse_v_scale) >
+            0.000001f ||
+        std::abs(
+            candidate.diffuse_u_offset -
+            material.diffuse_u_offset) >
+            0.000001f ||
+        std::abs(
+            candidate.diffuse_v_offset -
+            material.diffuse_v_offset) >
             0.000001f) {
         throw std::runtime_error(
             "Reached glTF material uses distinct texture transforms.");

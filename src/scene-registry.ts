@@ -933,6 +933,22 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene30",
+        name: "Scene 30 - Volume Testing",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene30.ts",
+        title: "Babylon Lite Native - Volume Testing",
+        parity: {
+            // SDL_GPU carries the transmission scene's per-sample
+            // image-processing gap (the same one scene 33 measures), so it
+            // gates looser than Dawn, which runs the pinned pass.
+            maxFullMad: 0.17,
+            maxForegroundMad: 0.21,
+            dawnThresholds: { maxFullMad: 0.05, maxForegroundMad: 0.07 },
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene256",
         name: "Scene 256 - Normal Tangent Test",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene256.ts",
