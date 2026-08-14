@@ -541,6 +541,25 @@ export function emitPropertyAssignment(
 
         if (
             target.kind === "material" &&
+            property === "backFaceCulling"
+        ) {
+            // src/material/standard/create-standard-material.ts defaults
+            // `backFaceCulling: true`, and standard-pipeline.ts culls with
+            // `features & DOUBLE_SIDED ? "none" : "back"`, so the flag is
+            // the native `double_sided` inverted.
+            requireSimpleAssignment(
+                context,
+                expression,
+                "material backFaceCulling",
+            );
+            context.emit(
+                `${context.requireEngine(target, expression)}.materials[${target.cpp}.value].double_sided = !(${context.compileBoolean(expression.right)});`,
+            );
+            return;
+        }
+
+        if (
+            target.kind === "material" &&
             property === "emissiveTexture"
         ) {
             requireSimpleAssignment(

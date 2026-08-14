@@ -519,6 +519,22 @@ export function compileMaterialIntrinsic(
             };
         }
 
+        case "enableStandardVertexColors": {
+            // src/material/standard/enable-standard-vertex-colors.ts
+            // installs the vertex-colour fragment factory globally, and
+            // standard-renderable.ts then composes it for every mesh
+            // carrying a colour buffer. Nothing is created at run time,
+            // so the call reaches the feature and emits no statement:
+            // the generated Standard fragment carries the pinned slot.
+            context.expectArgumentCount(call, 0, 0);
+            context.reachFeature("material:standard");
+            context.reachFeature(
+                "material:standard-vertex-colors",
+            );
+            context.reachFeature("renderer:pbr");
+            return { kind: "void", cpp: "" };
+        }
+
         default:
             return undefined;
     }

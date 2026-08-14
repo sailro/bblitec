@@ -62,6 +62,10 @@ const fogWgslModule = "src/shader/wgsl-fog.ts";
 const pbrFogWgslModule = "src/material/pbr/pbr-fog-wgsl.ts";
 const skyboxCubemapModule =
     "src/material/standard/skybox-cubemap.ts";
+const standardVertexColorFragmentModule =
+    "src/material/standard/fragments/std-vertex-color-fragment.ts";
+const standardRenderableModule =
+    "src/material/standard/standard-renderable.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
 const backgroundHdrModule = "src/material/pbr/background-hdr-skybox.ts";
@@ -2009,6 +2013,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         normalTextureScale?: boolean;
         shaderPrograms: CompiledShaderProgram[];
         standardMaterial: boolean;
+        standardVertexColors?: boolean;
         gridMaterial?: boolean;
         idDiagnostics: boolean;
         pbrDiagnostics: boolean;
@@ -2035,6 +2040,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             uniformDefaults: program.uniformDefaults ?? [],
         })),
         standardMaterial: false,
+        standardVertexColors: false,
         gridMaterial: false,
         idDiagnostics: true,
         pbrDiagnostics: true,
@@ -2085,6 +2091,17 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         ) {
             throw new Error(
                 "Pinned Standard double-sided normal semantics changed.",
+            );
+        }
+        if (
+            options.standardVertexColors &&
+            options.geometryOutputTasks.length > 0
+        ) {
+            // standard-renderable.ts composes the vertex-colour fragment
+            // for the geometry outputs too (its ALBEDO attachment writes
+            // baseColor), but no reached scene combines them.
+            throw new Error(
+                "Standard vertex colors are lowered for the color fragment only; geometry outputs with vertex colors are not supported yet.",
             );
         }
         const gridModule = "src/material/grid/grid-material.ts";
@@ -2196,6 +2213,38 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                     standardGeometry,
                     "pow(mat.sc.rgb, vec3<f32>(2.2))",
                     "standard reflectivity output",
+                ],
+            );
+        }
+        if (options.standardVertexColors) {
+            const standardVertexColorFragment =
+                this.context.store.getSource(
+                    standardVertexColorFragmentModule,
+                );
+            const standardRenderable =
+                this.context.store.getSource(
+                    standardRenderableModule,
+                );
+            requiredUpstreamFormulas.push(
+                [
+                    standardVertexColorFragment,
+                    'let at = "baseColor *= input.vColor.rgb;"',
+                    "standard vertex color base color",
+                ],
+                [
+                    standardVertexColorFragment,
+                    '_vertexSlots: { VB: "out.vColor = color;" }',
+                    "standard vertex color passthrough",
+                ],
+                [
+                    standardVertexColorFragment,
+                    "if (hasVertexAlpha) {",
+                    "standard vertex alpha opt-in",
+                ],
+                [
+                    standardRenderable,
+                    "const hasVertexColor = !!mesh._gpu.colorBuffer && !!_stdVertexColorFragment;",
+                    "standard vertex color mesh condition",
                 ],
             );
         }
@@ -2735,6 +2784,7 @@ ${directMarker}`,
                     ),
                     undefined,
                     options.fog === true,
+                    options.standardVertexColors === true,
                 ),
             });
         }

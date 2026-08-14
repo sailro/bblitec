@@ -205,6 +205,7 @@ export type Feature =
     | "material:grid"
     | "material:shader"
     | "material:standard"
+    | "material:standard-vertex-colors"
     | "mesh:box"
     | "mesh:from-data"
     | "mesh:ground"

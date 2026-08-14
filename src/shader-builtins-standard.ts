@@ -111,10 +111,16 @@ export function standardFragmentWgsl(
     provenance: string,
     task?: GeometryOutputTaskManifest,
     fog = false,
+    vertexColors = false,
 ): string {
     if (fog && task) {
         throw new Error(
             "Standard fog is lowered only for the color fragment variant.",
+        );
+    }
+    if (vertexColors && task) {
+        throw new Error(
+            "Standard vertex colors are lowered only for the color fragment variant.",
         );
     }
     const returnType = task
@@ -164,6 +170,19 @@ fn bblCalcFogFactor(fogDistance: vec3<f32>) -> f32 {
     }
 `
         : "";
+    // src/material/standard/fragments/std-vertex-color-fragment.ts: the
+    // opt-in fragment declares the `color` vertex attribute, passes it
+    // through as `vColor`, and multiplies the base color by its RGB in
+    // the alpha-test slot. The shared native vertex stage already carries
+    // the attribute at location 6, so only the fragment side varies.
+    // Alpha stays untouched: the pinned fragment consumes `vColor.a` only
+    // under the `mesh.hasVertexAlpha` opt-in, which no reached scene sets.
+    const vertexColorInput = vertexColors
+        ? "    @location(6) color: vec4<f32>,\n"
+        : "";
+    const vertexColorBlend = vertexColors
+        ? "\n    baseColor *= input.color.rgb;"
+        : "";
     return `// ${provenance}
 @group(2) @binding(0) var diffuseTexture: texture_2d<f32>;
 @group(2) @binding(1) var diffuseSampler: sampler;
@@ -211,7 +230,7 @@ struct FragmentInput {
     @location(3) uv: vec2<f32>,
     @location(4) localPosition: vec3<f32>,
     @location(5) uv2: vec2<f32>,
-};
+${vertexColorInput}};
 
 struct LightResult {
     diffuse: vec3<f32>,
@@ -305,8 +324,8 @@ fn mainFragment(input: FragmentInput) -> ${returnType} {
     if (diffuseSample.a < uniforms.materialOptions.y) {
         discard;
     }
-    let baseColor =
-        diffuseSample.rgb * uniforms.emissiveLevel.w;
+    ${vertexColors ? "var" : "let"} baseColor =
+        diffuseSample.rgb * uniforms.emissiveLevel.w;${vertexColorBlend}
 
     var emissiveSample = vec4<f32>(0.0);
     if (uniforms.reflectionOptions.z > 0.5) {

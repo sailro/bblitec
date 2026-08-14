@@ -186,6 +186,13 @@ CPU-side from GPU-side causes immediately.
 - [ ] Require typed metadata specialization, focused tests, and an independent
   parity scene for each extension.
 - [ ] Generalize Standard lighting beyond the reached two-light uniform slice.
+- [ ] Extend Standard vertex colors beyond the reached RGB slice: the pinned
+  `std-vertex-color-fragment.ts` also consumes `vColor.a` under the
+  `mesh.hasVertexAlpha` opt-in (output alpha, the vertex-alpha alpha test, and
+  the transparent-phase source-over blend), and `standard-renderable.ts`
+  composes the fragment for the geometry outputs as well. Scene 267 reaches
+  neither; generation fails explicitly on the geometry-output combination, and
+  Scene 231 needs the alpha half.
 
 ### Shader provenance
 
@@ -277,7 +284,8 @@ The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
 **Swept 2026-08-13:** 184 unregistered scenes compiled, 8 clean and 176
-blocked across 80 distinct first blockers. The lane partition below was
+blocked across 80 distinct first blockers. Scene 267 has since graduated to a
+measured gate, leaving 183 unregistered. The lane partition below was
 written from reading and holds up: no scene in the compiler-contract lane
 compiles, so the compiler has not silently outgrown its inventory. Each
 scene's entry is its FIRST blocker; clearing one may expose another.
@@ -297,12 +305,14 @@ carries the identifier: Standard diffuse-texture assignment blocks 5 scenes
 (18, 25, 90, 110, 272), mesh name/id setters block 4 (111, 113, 129, 221), and
 vector `.set()` on node properties blocks 5 (4, 22, 65, 141, 142).
 
-**No corpus scene can currently retire the runtime-sweep gate.** Of the scenes
-reaching `createMeshFromData` (86, 114, 170-175, 231, 267), `setThinInstances`
-(16, 17, 43, 103, 165, 204, 219, 279) or `removeFromScene` (129, 173, 271,
-272), none compiles yet. `flushThinInstances` and `setThinInstanceCount` are
-not referenced anywhere under `corpus/` at this pin, so a project-owned gate is
-the only possible validation for those two contracts.
+**No corpus scene can currently retire the runtime-sweep gate.** Scene 267 now
+measures `createMeshFromData` from the corpus, but of the remaining scenes
+reaching it (86, 114, 170-175, 231) and of every scene reaching
+`setThinInstances` (16, 17, 43, 103, 165, 204, 219, 279) or `removeFromScene`
+(129, 173, 271, 272), none compiles yet. `flushThinInstances` and
+`setThinInstanceCount` are not referenced anywhere under `corpus/` at this pin,
+so a project-owned gate is the only possible validation for those two
+contracts.
 
 Corpus scenes are the preferred validation: a feature is proven by the pinned
 Babylon Lite scenes that reach it, not by a project-owned gate. Author a gate
@@ -310,7 +320,7 @@ only for a contract no corpus scene exercises (a feature combination the corpus
 never composes, or a slice being built ahead of the scene that will use it),
 and delete it once corpus scenes cover the contract.
 
-The 184 unmeasured scenes are partitioned by the boundary required to reproduce
+The 183 unmeasured scenes are partitioned by the boundary required to reproduce
 their deterministic reference behavior, not by incidental browser helpers.
 Capture-inert demo controls and fixed-coordinate picking stay in the first
 lane when they can be erased or lowered inside the compiler, asset pipeline,
@@ -320,11 +330,12 @@ platform, user-input, or external-service contract.
 Scenes 256 and 280 arrived with the 1.20.0 pin and are now measured: 256
 compiles clean, 280 blocks on `parseNodeParticleSource` as expected.
 
-**Integrate first (150 scenes):** 4, 9, 11, 12, 15-23, 25-27, 30,
+**Integrate first (149 scenes):** 4, 9, 11, 12, 15-23, 25-27, 30,
 34, 36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229,
-231, 241, 242, 244, 251-253, 260-264, 267-271, 275-279. Scenes 3, 7,
-35, and 216 graduated to measured parity gates on 2026-08-12.
+231, 241, 242, 244, 251-253, 260-264, 268-271, 275-279. Scenes 3, 7,
+35, and 216 graduated to measured parity gates on 2026-08-12, and Scene
+267 on 2026-08-14.
 
 This lane includes static CSG/CSG2, compressed assets and splats,
 deterministic picking in Scenes 113-115, 117, 118, and 129, and the
@@ -354,7 +365,7 @@ runtime gaps may remain hidden behind it.
 - [ ] Scenes 18, 25: support Standard ground diffuse textures.
 - [ ] Scene 19: support `loadDdsEnvironment`.
 - [ ] Scene 20: lower the reached arrow-function value.
-- [ ] Scenes 21, 90: support the reached non-identifier variable declarations.
+- [ ] Scene 21: support the reached non-identifier variable declarations.
 - [ ] Scene 23: support `Math.cos` with runtime numeric arguments.
 - [ ] Scenes 26, 87: support image-processing `toneMapping`.
 - [ ] Scene 27: support glTF `selectVariant`.
@@ -376,7 +387,7 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 86: support `setClipPlane`.
 - [ ] Scene 91: support `initializeCsg2Async`.
 - [ ] Scene 99: support `enableBoneControl`.
-- [ ] Scene 110: support Standard material diffuse textures.
+- [ ] Scenes 90, 110: support Standard material diffuse textures.
 - [ ] Scene 111: support mesh IDs.
 - [ ] Scene 112: resolve and lower `addDdsEnvironmentBackground`.
 - [ ] Scenes 113, 129: support mesh names.
@@ -401,13 +412,14 @@ runtime gaps may remain hidden behind it.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
 - [ ] Scenes 202-207: extend reached engine options.
 - [ ] Scenes 218, 219: support asset-container entity iteration.
-- [ ] Scene 231: support `enableStandardVertexColors`.
+- [ ] Scene 231: support `enableStandardSkeleton`, which is its first
+  blocker now that Standard vertex colors are lowered; behind it sit
+  `enableStandardUvOffset`, `createTexture2DFromPixels`, the skeleton
+  subpath imports (`createSkeleton`, `updateSkeletonBoneMatrices`), its
+  shared `scene231-skin` module, and `mesh.hasVertexAlpha`.
 - [ ] Scene 241: fold the reached query-derived camera alpha.
 - [ ] Scene 252: generalize the reached structured argument.
 - [ ] Scenes 262-264, 276, 277: support node-particle sources.
-- [ ] Scene 267: support `material.backFaceCulling`, now its first
-  blocker, then re-audit for its
-  remaining blockers.
 - [ ] Scene 268: support orthographic cameras.
 - [ ] Scene 269: support transform nodes.
 - [ ] Scene 270: support the reached mesh scaling setter.

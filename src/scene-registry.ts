@@ -1269,6 +1269,26 @@ export const scenes: readonly SceneDefinition[] = [
         },
     },
     {
+        id: "scene267",
+        name: "Scene 267 - Standard Vertex Colors",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene267.ts",
+        output: "generated/scene267",
+        title: "Babylon Lite Native - Standard Vertex Colors",
+        buildDirectory: "native/build-scene267-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/scene267/babylon-lite-golden.png",
+            },
+            actual: "artifacts/parity/scene267-native.png",
+            outputDirectory: "artifacts/parity/scene267",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [8, 10, 18],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene273",
         name: "Scene 273 - Runtime Material Family",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene273.ts",

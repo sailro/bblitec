@@ -2290,6 +2290,46 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     ]);
 });
 
+test("compiles Babylon Lite scene 267 Standard vertex colors", () => {
+    const source = readFileSync(
+        resolve("corpus/babylon-lite/lab/lite/src/lite/scene267.ts"),
+        "utf8",
+    );
+    const result = compileSource(source, {
+        fileName: "corpus/babylon-lite/lab/lite/src/lite/scene267.ts",
+    });
+
+    assert.deepEqual(result.manifest.features, [
+        "core",
+        "backend:sdl",
+        "camera:arc-rotate",
+        "material:standard",
+        "material:standard-vertex-colors",
+        "mesh:from-data",
+        "renderer:pbr",
+    ]);
+    // The RGBA colors ride the ninth createMeshFromData slot, after the
+    // three optional typed arrays the scene skips with `undefined`.
+    assert.match(
+        result.cpp,
+        /create_mesh_from_data\([^;]*\{\}, \{\}, \{\}, bbl::js::f32_array_from\(bbl::js::Array<double>\{0\.0, 0\.0, 1\.0, 1\.0, 1\.0, 0\.0, 1\.0, 1\.0, 0\.0, 1\.0, 0\.0, 1\.0, 1\.0, 1\.0, 0\.0, 1\.0\}\)\)/,
+    );
+    assert.match(result.cpp, /\.disable_lighting = true;/);
+    assert.match(result.cpp, /\.double_sided = !\(false\);/);
+    // enableStandardVertexColors installs a shader fragment upstream, so
+    // it reaches the feature and emits no statement.
+    assert.doesNotMatch(result.cpp, /vertex_colors/);
+    assert.deepEqual(result.manifest.generatedSources, [
+        "upstream/src/engine.cpp",
+        "upstream/src/scene_core.cpp",
+        "upstream/src/camera_arc_rotate.cpp",
+        "upstream/src/camera_controls.cpp",
+        "upstream/src/renderer_plan.cpp",
+        "upstream/src/material_standard.cpp",
+        "upstream/src/mesh_factories.cpp",
+    ]);
+});
+
 test("compiles Babylon Lite scene 13 PBR spheres grid", () => {
     const source = readFileSync(resolve("corpus/babylon-lite/lab/lite/src/lite/scene13.ts"), "utf8");
     const result = compileSource(source, {

@@ -295,6 +295,14 @@ view/world-normal MAD from `1.459`/`1.446` to `0.002`/`0.003`.
 Mirrored double-sided PBR meshes retain their authored index order and select
 a clockwise front-face pipeline, preserving Babylon Lite's
 `front_facing`-driven normal flip in Scenes 168 and 266.
+Standard vertex colors follow the pinned `enableStandardVertexColors` opt-in:
+the generated Standard fragment declares the `color` attribute and multiplies
+the base color by its RGB only for a scene that reaches the call, so every
+other Standard scene keeps a byte-identical fragment. Upstream composes that
+fragment per mesh, for meshes carrying a color buffer; native geometry defaults
+every vertex color to white, which multiplies as the identity, so the
+scene-level gate renders the same image. Scene 267 gates it and is byte-exact
+on both backends.
 
 Scenes 145 and 146 resolve each geometry attachment at full resolution, then
 bilinearly downscale it into one of twelve preview regions on a 4x-MSAA target

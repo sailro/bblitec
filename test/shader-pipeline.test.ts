@@ -235,6 +235,47 @@ test("generates Tint Standard material and geometry WGSL", () => {
     assert.match(geometry, /output\.f1 = vec4<f32>/);
 });
 
+test("adds the pinned Standard vertex-color slot only when reached", () => {
+    const plain = standardFragmentWgsl("standard provenance");
+    const colored = standardFragmentWgsl(
+        "standard provenance",
+        undefined,
+        false,
+        true,
+    );
+    assert.doesNotMatch(plain, /@location\(6\) color/);
+    assert.doesNotMatch(plain, /baseColor \*=/);
+    assert.match(plain, /let baseColor =/);
+    // std-vertex-color-fragment.ts multiplies the base color by the RGB
+    // in the alpha-test slot and leaves alpha alone without the
+    // mesh.hasVertexAlpha opt-in.
+    assert.match(colored, /@location\(6\) color: vec4<f32>,/);
+    assert.match(colored, /var baseColor =/);
+    assert.match(colored, /baseColor \*= input\.color\.rgb;/);
+    assert.doesNotMatch(colored, /alpha \*= input\.color\.a/);
+    assert.equal(
+        colored
+            .replace("    @location(6) color: vec4<f32>,\n", "")
+            .replace("\n    baseColor *= input.color.rgb;", "")
+            .replace("    var baseColor =", "    let baseColor ="),
+        plain,
+    );
+    assert.throws(
+        () =>
+            standardFragmentWgsl(
+                "geometry provenance",
+                {
+                    shaderIndex: 0,
+                    attachments: ["ALBEDO"],
+                    emitColor: true,
+                },
+                false,
+                true,
+            ),
+        /color fragment variant/,
+    );
+});
+
 test("generates Tint PBR color, diagnostics, and geometry WGSL", () => {
     const converted = readFileSync(
         resolve("src/lowering/templates/renderer/pbr.frag.wgsl"),

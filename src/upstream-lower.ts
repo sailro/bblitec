@@ -254,6 +254,9 @@ class GeneratedSourceWriter {
                 standardMaterial:
                     features.includes("material:standard") &&
                     features.includes("renderer:pbr"),
+                standardVertexColors: features.includes(
+                    "material:standard-vertex-colors",
+                ),
                 gridMaterial: features.includes("material:grid"),
                 idDiagnostics: options.idDiagnostics,
                 pbrDiagnostics: options.pbrDiagnostics,
