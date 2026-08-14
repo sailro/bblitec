@@ -12,6 +12,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -383,6 +385,89 @@ inline float inverse_image_processed_channel(
     return exposure > 0.0f ? color / exposure : color;
 }
 
+#if BBLITE_GPU_MORPH_STORAGE
+// Storage-buffer morph payloads shared by both render backends (moved
+// verbatim from the two upload paths). Both backends must pack these
+// byte-identically: the deltas are indexed by the shader as
+// (target * vertexCount + vertex) * 6, and the weights blob carries a
+// 16-byte header the shader reads before the float array.
+inline std::vector<float> pack_morph_deltas(
+    const ModelGeometry& geometry) {
+    // Flat 6-float deltas indexed
+    // (target * vertexCount + vertex) * 6, packed with the
+    // same x negation as the vertex attributes.
+    const std::size_t target_count = geometry.morph_positions.size();
+    const std::size_t vertex_count = geometry.vertices.size();
+    std::vector<float> deltas(
+        target_count * vertex_count * 6,
+        0.0f);
+    for (
+        std::size_t target = 0;
+        target < target_count;
+        ++target) {
+        const std::vector<Vec3>& positions =
+            geometry.morph_positions[target];
+        for (
+            std::size_t vertex = 0;
+            vertex < vertex_count;
+            ++vertex) {
+            const std::size_t offset =
+                (target * vertex_count + vertex) * 6;
+            const Vec3 position =
+                vertex < positions.size()
+                    ? positions[vertex]
+                    : Vec3{};
+            const Vec3 normal =
+                target < geometry.morph_normals.size() &&
+                vertex <
+                    geometry.morph_normals[target].size()
+                    ? geometry.morph_normals[target][vertex]
+                    : Vec3{};
+            deltas[offset] = -position.x;
+            deltas[offset + 1] = position.y;
+            deltas[offset + 2] = position.z;
+            deltas[offset + 3] = -normal.x;
+            deltas[offset + 4] = normal.y;
+            deltas[offset + 5] = normal.z;
+        }
+    }
+    return deltas;
+}
+
+inline std::vector<std::uint8_t> pack_morph_weights(
+    const ModelGeometry& geometry,
+    const MeshRecord& mesh_record) {
+    const std::size_t target_count = geometry.morph_positions.size();
+    const std::size_t vertex_count = geometry.vertices.size();
+    std::vector<std::uint8_t> weights_blob(
+        16 + target_count * sizeof(float),
+        0);
+    const std::uint32_t header[2] = {
+        static_cast<std::uint32_t>(target_count),
+        static_cast<std::uint32_t>(vertex_count),
+    };
+    std::memcpy(
+        weights_blob.data(),
+        header,
+        sizeof(header));
+    for (
+        std::size_t target = 0;
+        target < target_count;
+        ++target) {
+        const float weight =
+            target < mesh_record.morph_storage_weights.size()
+                ? mesh_record.morph_storage_weights[target]
+                : 0.0f;
+        std::memcpy(
+            weights_blob.data() + 16 +
+                target * sizeof(float),
+            &weight,
+            sizeof(float));
+    }
+    return weights_blob;
+}
+#endif
+
 // RGBD decode and half-float packing shared by both render
 // backends (moved verbatim from pal_sdl_gpu.cpp).
 inline std::vector<float> decode_rgbd(const TextureData& texture_data, int& width, int& height) {
@@ -402,6 +487,44 @@ inline std::vector<float> decode_rgbd(const TextureData& texture_data, int& widt
         result[index + 3] = 1.0f;
     }
     return result;
+}
+
+// The PBR diagnostic buffers both backends write, in the order the
+// comparison tool reads them (src/compare-lite-diagnostics.ts).
+inline constexpr std::array<const char*, 9> pbr_diagnostic_names{
+    "normal-gpu.png",
+    "reflectivity-gpu.png",
+    "irradiance-gpu.png",
+    "ibl-gpu.png",
+    "normalized-depth-gpu.png",
+    "albedo-gpu.png",
+    "direct-light-gpu.png",
+    "base-color-gpu.png",
+    "pre-tone-hdr-gpu.png",
+};
+
+// The readback inverse of float_to_half below, shared by both backends'
+// screenshot and diagnostic-buffer paths: a half-float channel decoded
+// and quantized to the byte a PNG stores.
+inline std::uint8_t half_to_byte(std::uint16_t value) {
+    const bool negative = (value & 0x8000u) != 0;
+    const std::uint16_t exponent = (value >> 10) & 0x1fu;
+    const std::uint16_t mantissa = value & 0x03ffu;
+    float decoded = 0.0f;
+    if (exponent == 0) {
+        decoded = std::ldexp(static_cast<float>(mantissa), -24);
+    } else if (exponent == 31) {
+        decoded = mantissa == 0
+            ? std::numeric_limits<float>::infinity()
+            : std::numeric_limits<float>::quiet_NaN();
+    } else {
+        decoded = std::ldexp(
+            1.0f + static_cast<float>(mantissa) / 1024.0f,
+            static_cast<int>(exponent) - 15);
+    }
+    if (negative) decoded = -decoded;
+    return static_cast<std::uint8_t>(
+        std::lround(std::clamp(decoded, 0.0f, 1.0f) * 255.0f));
 }
 
 inline std::uint16_t float_to_half(float value) {

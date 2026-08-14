@@ -470,26 +470,6 @@ void save_texture_png(
     const bool bgra =
         format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM ||
         format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB;
-    const auto half_to_byte = [](std::uint16_t value) {
-        const bool negative = (value & 0x8000u) != 0;
-        const std::uint16_t exponent = (value >> 10) & 0x1fu;
-        const std::uint16_t mantissa = value & 0x03ffu;
-        float decoded = 0.0f;
-        if (exponent == 0) {
-            decoded = std::ldexp(static_cast<float>(mantissa), -24);
-        } else if (exponent == 31) {
-            decoded = mantissa == 0
-                ? std::numeric_limits<float>::infinity()
-                : std::numeric_limits<float>::quiet_NaN();
-        } else {
-            decoded = std::ldexp(
-                1.0f + static_cast<float>(mantissa) / 1024.0f,
-                static_cast<int>(exponent) - 15);
-        }
-        if (negative) decoded = -decoded;
-        return static_cast<std::uint8_t>(
-            std::lround(std::clamp(decoded, 0.0f, 1.0f) * 255.0f));
-    };
     for (std::uint32_t y = 0; y < height; ++y) {
         const std::uint8_t* source_row = mapped + static_cast<std::size_t>(y) * aligned_row_bytes;
         std::uint8_t* destination_row =
@@ -1905,17 +1885,7 @@ void save_pbr_diagnostic_buffers(
         gpu_error("SDL_SubmitGPUCommandBuffer PBR diagnostic");
     }
 
-    constexpr std::array<const char*, 9> names{
-        "normal-gpu.png",
-        "reflectivity-gpu.png",
-        "irradiance-gpu.png",
-        "ibl-gpu.png",
-        "normalized-depth-gpu.png",
-        "albedo-gpu.png",
-        "direct-light-gpu.png",
-        "base-color-gpu.png",
-        "pre-tone-hdr-gpu.png",
-    };
+    const auto& names = pbr_diagnostic_names;
     for (std::size_t index = 0; index < names.size(); ++index) {
         SDL_GPUCommandBuffer* download = SDL_AcquireGPUCommandBuffer(state.device);
         if (!download) gpu_error("SDL_AcquireGPUCommandBuffer PBR diagnostic download");
@@ -3707,78 +3677,15 @@ bool run_gpu_engine(Engine& engine) {
             if (
                 mesh_record.gpu_deformation &&
                 !geometry.morph_positions.empty()) {
-                // Flat 6-float deltas indexed
-                // (target * vertexCount + vertex) * 6, packed with the
-                // same x negation as the vertex attributes.
-                const std::size_t target_count =
-                    geometry.morph_positions.size();
-                const std::size_t vertex_count =
-                    geometry.vertices.size();
-                std::vector<float> deltas(
-                    target_count * vertex_count * 6,
-                    0.0f);
-                for (
-                    std::size_t target = 0;
-                    target < target_count;
-                    ++target) {
-                    const std::vector<Vec3>& positions =
-                        geometry.morph_positions[target];
-                    for (
-                        std::size_t vertex = 0;
-                        vertex < vertex_count;
-                        ++vertex) {
-                        const std::size_t offset =
-                            (target * vertex_count + vertex) * 6;
-                        const Vec3 position =
-                            vertex < positions.size()
-                                ? positions[vertex]
-                                : Vec3{};
-                        const Vec3 normal =
-                            target < geometry.morph_normals.size() &&
-                            vertex <
-                                geometry.morph_normals[target].size()
-                                ? geometry.morph_normals[target][vertex]
-                                : Vec3{};
-                        deltas[offset] = -position.x;
-                        deltas[offset + 1] = position.y;
-                        deltas[offset + 2] = position.z;
-                        deltas[offset + 3] = -normal.x;
-                        deltas[offset + 4] = normal.y;
-                        deltas[offset + 5] = normal.z;
-                    }
-                }
+                const std::vector<float> deltas =
+                    pack_morph_deltas(geometry);
                 gpu_mesh.morph_deltas = upload_buffer(
                     state.device,
                     SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
                     deltas.data(),
                     deltas.size() * sizeof(float));
-                std::vector<std::uint8_t> weights_blob(
-                    16 + target_count * sizeof(float),
-                    0);
-                const std::uint32_t header[2] = {
-                    static_cast<std::uint32_t>(target_count),
-                    static_cast<std::uint32_t>(vertex_count),
-                };
-                std::memcpy(
-                    weights_blob.data(),
-                    header,
-                    sizeof(header));
-                for (
-                    std::size_t target = 0;
-                    target < target_count;
-                    ++target) {
-                    const float weight =
-                        target <
-                        mesh_record.morph_storage_weights.size()
-                            ? mesh_record
-                                  .morph_storage_weights[target]
-                            : 0.0f;
-                    std::memcpy(
-                        weights_blob.data() + 16 +
-                            target * sizeof(float),
-                        &weight,
-                        sizeof(float));
-                }
+                const std::vector<std::uint8_t> weights_blob =
+                    pack_morph_weights(geometry, mesh_record);
                 gpu_mesh.morph_weights = upload_buffer(
                     state.device,
                     SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,

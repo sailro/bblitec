@@ -283,6 +283,15 @@ CPU-side from GPU-side causes immediately.
   dozens of identical rebuilds. Either a compiler launcher (`sccache`
   handles MSVC) or one static library per signature; incremental
   generation does not help this case, because the PAL genuinely changed.
+- [ ] Continue moving verbatim CPU-side packing into
+  `pal_gpu_shared.hpp`. Morph deltas and weights, the half-float readback
+  conversion, and the PBR diagnostic name table are moved; measured
+  cross-backend duplication is down to 4.0% (185 lines in blocks of five
+  or more). What remains is entangled with backend-specific types rather
+  than copy/pasted logic: the id/cluster buffer fill reads each backend's
+  own mesh record, and the image-decode fallback is followed by different
+  upload calls. Both need an accessor or a template before they can move,
+  so they are worth doing only alongside the frame-conductor work.
 - [ ] Extract the shared frame conductor from the two backend frame
   functions. `run_gpu_engine` (3,922 lines, 63% of its file) and
   `run_dawn_engine` (3,062 lines, 47%) each parse their own copy of the
