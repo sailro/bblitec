@@ -239,7 +239,18 @@ bundled Ninja without requiring a Developer Command Prompt. Set
 directory with a different generator; all build trees are ignored and safe to
 delete.
 
-Build scenes sequentially: concurrent vcpkg use is unreliable.
+Scenes build several at a time, but their CMake *configure* steps are
+serialized, because that is where vcpkg runs and concurrent vcpkg use is
+unreliable — it shares a download and binary cache between otherwise
+independent build directories. Compiling and linking touch nothing shared. A
+warm tree skips configure entirely, so the lock is normally uncontended.
+
+`BBLITE_PARALLEL_SCENES` and `BBLITE_SCENE_BUILD_JOBS` override how many scenes
+build at once and how many jobs each gets; `BBLITE_PARALLEL_COMPILES` and
+`BBLITE_PARALLEL_PARITY` do the same for generation and measurement. The
+defaults are one job per scene with as many scenes as the machine has hardware
+threads (measured better than any other split — see `buildConcurrency`), all
+scenes generating at once, and four measured at once.
 
 Set `VCPKG_ROOT` before configuring a new build directory. If a directory was
 first configured without the toolchain, delete that specific
@@ -546,13 +557,16 @@ changes, run the canonical full validation sequence once:
 
 ```powershell
 npm test
-npm run scenes:compile
-npm run shaders:build
 npm run scenes:process
 npm run scenes:parity
 npm run parity:diagnostics
 npm run status:verify
 ```
+
+`scenes:process` *is* compile, shaders and build. The sequence used to name
+the first two separately as well, which ran them twice: with write-if-different
+generation the second pass wrote nothing, so it was two and a half minutes
+spent re-deriving bytes that were already on disk.
 
 `scenes:parity` runs both backends (`parity all --differential`) because
 [status](status.md) publishes an SDL_GPU and a Dawn number for every scene; a
