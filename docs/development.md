@@ -383,7 +383,7 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_GPU_BACKEND=dawn` | select the Dawn (WebGPU) render backend |
 | `BBLITE_GPU_REQUIRED=1` | fail instead of falling back |
 | `BBLITE_GPU_DEBUG=1` | enable the backend GPU validation layer |
-| `BBLITE_MSAA=1` | force single-sample rendering for diagnostics (SDL_GPU; the Dawn backend fails explicitly) |
+| `BBLITE_MSAA=1` | force single-sample rendering for diagnostics, on both backends: it answers whether a difference is multisampling by removing it |
 | `BBLITE_BACKGROUND=0` | disable a requested DDS/HDR skybox |
 | `BBLITE_GROUND=0` | disable a requested transparent environment ground |
 | `BBLITE_MAX_FRAMES=<n>` | automated frame limit |

@@ -230,7 +230,10 @@ CPU-side from GPU-side causes immediately.
   33 foreground 1.457 → 0.123), so this entry tracks only the SDL_GPU
   side of the keep-both-backends direction; it requires SDL_GPU
   multisampled-texture sampling (vendored patch) or an equivalent
-  custom per-sample resolve.
+  custom per-sample resolve. The gap is now measured rather than
+  argued: running both backends single-sampled collapses scene 33's
+  backend delta from 0.058/1.365 to 0.000/0.002, so this pass is the
+  whole of it.
 - [ ] Compose environment/camera sizing from object-local bounds through the
   pinned abs-matrix OBB-to-AABB world transform and add the
   `upperRadiusLimit` ground/skybox override (upstream `scene-size.ts`,
@@ -287,11 +290,13 @@ CPU-side from GPU-side causes immediately.
   dozens of identical rebuilds. Either a compiler launcher (`sccache`
   handles MSVC) or one static library per signature; incremental
   generation does not help this case, because the PAL genuinely changed.
-- [ ] Implement single-sample rendering on the Dawn backend so
-  `BBLITE_MSAA=1` works there too. Dawn refuses the flag today rather
-  than ignoring it, and the per-sample image-processing pass on the
-  multisampled transmission target has to degrade with it, which is why
-  it did not come along with the rest of the frame conductor.
+- [ ] Run `BBLITE_MSAA=1` on scene 116 under SDL_GPU: the single-sample
+  frame graph fails there with `SDL_SubmitGPUCommandBufferAndAcquireFence:
+  Failed to close command list`, which predates the Dawn work and is
+  the only scene where the flag is refused by the backend that has
+  always supported it. Dawn runs the same scene single-sampled (its
+  frame-graph resolve step becomes a texture copy), so the two
+  backends now disagree about the diagnostic itself.
 - [ ] Improve missing-tool and stale-output diagnostics.
 - [ ] Repair `scene -- geometry`: its copy-task scan matches
   `name: "..."`, but the pinned scenes 145/146/149 name their tasks with a
