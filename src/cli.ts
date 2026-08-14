@@ -301,6 +301,38 @@ function reachedDiffuseUv2(
     return false;
 }
 
+/**
+ * Whether any reached `.babylon` material carries a bump map. The pinned
+ * Standard material composes its normal-map fragment per material, so a
+ * scene with none emits the loader, uniform block, shader and texture slot
+ * it emitted before.
+ */
+function reachedStandardBump(
+    outputPath: string,
+    assets: CompileAsset[],
+): boolean {
+    for (const asset of assets) {
+        if (asset.kind !== "babylon") {
+            continue;
+        }
+        const materialized = resolve(outputPath, "assets", asset.output);
+        if (!existsSync(materialized)) {
+            continue;
+        }
+        const document = JSON.parse(
+            readFileSync(materialized, "utf8"),
+        ) as { materials?: { bumpTexture?: unknown }[] };
+        if (
+            (document.materials ?? []).some(
+                (material) => material.bumpTexture,
+            )
+        ) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function reachedStandardLights(lights: BabylonLight[]): number {
     return lights.filter((light) => light.type === 0).length;
 }
@@ -422,6 +454,10 @@ async function main(): Promise<void> {
             reachedBabylonLights,
         ),
         standardDiffuseUv2: reachedDiffuseUv2(
+            outputPath,
+            result.manifest.assets,
+        ),
+        standardBump: reachedStandardBump(
             outputPath,
             result.manifest.assets,
         ),

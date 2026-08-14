@@ -101,6 +101,7 @@ export class RendererLowerer {
         standardLights?: number;
         standardLightLists?: boolean;
         standardDiffuseUv2?: boolean;
+        standardBump?: boolean;
         orthographicCamera?: boolean;
         background?: boolean;
         shaderPrograms?: CompiledShaderProgram[];
@@ -129,6 +130,21 @@ export class RendererLowerer {
             this.context.functionDeclaration(
                 "src/scene/world-matrix-state.ts",
                 "composeTrsLocalMatrix",
+            );
+        }
+        if (
+            options.standardBump &&
+            (options.transmission === true ||
+                options.clearcoat === true ||
+                options.sheen === true ||
+                options.iridescence === true)
+        ) {
+            // The Standard bump pair appends after every PBR texture pair,
+            // so its binding index is 12 only while none of those pairs
+            // exist. A scene composing both would need the index computed
+            // in the fragment rather than fixed, and none reaches it.
+            throw new Error(
+                "Standard bump mapping is lowered only for scenes without transmission or PBR material-extension textures.",
             );
         }
         if (options.orthographicCamera && options.background) {
@@ -746,7 +762,8 @@ struct StandardUniforms {
     std::array<float, 4> uv_options{};
     std::array<float, 4> material_options{};
     std::array<float, 4> reflection_options{};${options.standardDiffuseUv2 ? `
-    std::array<float, 4> diffuse_uv_options{};` : ""}
+    std::array<float, 4> diffuse_uv_options{};` : ""}${options.standardBump ? `
+    std::array<float, 4> bump_options{};` : ""}
 ${fogUniformFields}\
 };
 
@@ -1940,6 +1957,12 @@ ${options.standardLightLists ? `    // A light can name the meshes it applies to
             0.0f,
             0.0f,
             0.0f,
+        };` : ""}${options.standardBump ? `
+        result.bump_options = {
+            material.bump_scale,
+            material.bump_texture.bytes.empty() ? 0.0f : 1.0f,
+            0.0f,
+            0.0f,
         };` : ""}
         result.reflection_options = {
             material.reflection_cube == invalid_handle ? 0.0f : 1.0f,
@@ -2182,6 +2205,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         standardVertexColors?: boolean;
         standardLights?: number;
         standardDiffuseUv2?: boolean;
+        standardBump?: boolean;
         gridMaterial?: boolean;
         idDiagnostics: boolean;
         pbrDiagnostics: boolean;
@@ -2955,6 +2979,7 @@ ${directMarker}`,
                     options.standardVertexColors === true,
                     Math.max(2, options.standardLights ?? 2),
                     options.standardDiffuseUv2 === true,
+                    options.standardBump === true,
                 ),
             });
         }

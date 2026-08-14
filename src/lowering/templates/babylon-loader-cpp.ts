@@ -10,6 +10,7 @@ export function babylonLoaderCpp(
     provenance: string,
     lightMeshLists = false,
     diffuseUv2 = false,
+    bumpTexture = false,
 ): string {
     return `// ${provenance}
 #include <bblite/pal.hpp>
@@ -309,7 +310,16 @@ MaterialHandle load_material(
         texture != source.end() && texture->is_object()) {
         material.opacity_level = texture->value("level", 1.0f);
     }
-    if (const auto texture = source.find("ambientTexture");
+${bumpTexture ? `    if (const auto texture = source.find("bumpTexture");
+        texture != source.end() && texture->is_object()) {
+        material.bump_texture =
+            texture_data(source, "bumpTexture", base_path);
+        // The pinned fragment takes bumpScale = 1 / level, so a level of
+        // zero would divide by zero rather than flatten the surface.
+        const float level = texture->value("level", 1.0f);
+        material.bump_scale = level != 0.0f ? 1.0f / level : 0.0f;
+    }
+` : ""}    if (const auto texture = source.find("ambientTexture");
         texture != source.end() && texture->is_object()) {
         material.ambient_level = texture->value("level", 1.0f);
         material.ambient_coord_index =

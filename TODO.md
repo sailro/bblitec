@@ -370,13 +370,13 @@ registry to measure it.
 
 **Swept 2026-08-13:** 184 unregistered scenes compiled, 8 clean and 176
 blocked across 80 distinct first blockers. Scenes 267, 268, 256, 30, 260 and
-34 have since graduated to measured gates, leaving 178 unregistered, re-swept
+34 and 9 have since graduated to measured gates, leaving 177 unregistered, re-swept
 unchanged on 2026-08-14 (the same clean set, same clusters). The lane partition
 below was written from reading and holds up: no scene in the compiler-contract
 lane compiles, so the compiler has not silently outgrown its inventory. Each
 scene's entry is its FIRST blocker; clearing one may expose another.
 
-**Compile clean (4):** 9, 242, 244, 253. All four are past the compiler
+**Compile clean (3):** 242, 244, 253. All three are past the compiler
 and blocked downstream in the loader/runtime lane. Four of the original eight
 graduated on 2026-08-14: scene 256, the only one with no downstream blocker at
 all; scene 30 once generation-time Draco decoding, texture-transform offsets
@@ -415,7 +415,7 @@ only for a contract no corpus scene exercises (a feature combination the corpus
 never composes, or a slice being built ahead of the scene that will use it),
 and delete it once corpus scenes cover the contract.
 
-The 180 unmeasured scenes are partitioned by the boundary required to reproduce
+The 179 unmeasured scenes are partitioned by the boundary required to reproduce
 their deterministic reference behavior, not by incidental browser helpers.
 Capture-inert demo controls and fixed-coordinate picking stay in the first
 lane when they can be erased or lowered inside the compiler, asset pipeline,
@@ -425,12 +425,12 @@ platform, user-input, or external-service contract.
 Scenes 256 and 280 arrived with the 1.20.0 pin: 256 is a measured gate as of
 2026-08-14, and 280 blocks on `parseNodeParticleSource` as expected.
 
-**Integrate first (145 scenes):** 4, 9, 11, 12, 15-23, 25-27,
+**Integrate first (144 scenes):** 4, 11, 12, 15-23, 25-27,
 36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229,
 231, 241, 242, 244, 251-253, 261-264, 269-271, 275-279. Scenes 3, 7,
 35, and 216 graduated to measured parity gates on 2026-08-12, and Scenes
-267, 268, 256, 30, 260 and 34 on 2026-08-14.
+267, 268, 256, 30, 260, 34 and 9 on 2026-08-14.
 
 This lane includes static CSG/CSG2, compressed assets and splats,
 deterministic picking in Scenes 113-115, 117, 118, and 129, and the
@@ -537,7 +537,7 @@ runtime gaps may remain hidden behind it.
   loader currently skips parented and geometry-less nodes silently. Zero
   effect on gated Scenes 24/145 (HillValley has neither); reached by ungated
   Scenes 9 and 143 (Sponza `.babylon`).
-- [ ] Scene 9: the Sponza `.babylon` scene. Its recorded blocker — optional
+- [x] Scene 9: the Sponza `.babylon` scene. Its recorded blocker — optional
   fields written as JSON `null` rather than omitted — is closed; the loader
   reads every optional string through a null-tolerant helper now. Its texture
   slots turned out to be a shorter lift than the count suggests: Scene 24
@@ -554,10 +554,13 @@ runtime gaps may remain hidden behind it.
      loader creates, and the Standard slots hold the mesh's light set rather
      than the scene's. Region MAD 2.836 → 1.340, interior 2.089 → 0.585,
      78.1% of the frame exact.
-  3. Standard normal mapping for the 13 `bumpTexture` materials. The
-     residual is concentrated there now: edges measure 5.208 against an
-     interior of 0.585, which is the silhouette-and-shading signature of a
-     missing normal map rather than anything in the base pass.
+  3. ~~Standard normal mapping~~ done: the pinned cotangent-frame fragment,
+     bound as a seventh texture pair after every PBR pair. Region MAD
+     1.340 → 0.335 with edges 5.208 → 0.939.
+  Scene 9 is a measured gate at 0.330 on both backends, whose direct
+  agreement is one channel step. What remains is scattered over the frame
+  rather than concentrated anywhere: 91.5% of pixels exact, 96.6% within one
+  step, interior 0.217 against edges 0.939.
   Its parented and geometry-less nodes are NOT on this path: all 16 parented
   meshes and all 29 geometry-less ones are bones and camera targets carrying
   no geometry, and native already draws all 32 of the scene's visible meshes.

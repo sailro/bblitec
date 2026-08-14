@@ -319,6 +319,20 @@ specialization flag, which is the predicate behind Babylon Lite's own
 dynamically imported `gltf-feature-primitive.js`: a scene whose assets are all
 triangle lists emits a loader that carries no topology handling at all, which
 is where upstream keeps it too.
+Standard bump maps build the pinned cotangent frame from screen-space
+derivatives (`shader/wgsl-helpers.ts` `WGSL_PERTURB_NORMAL`), so a mesh needs
+no tangent attribute, and the interpolated normal is scaled by 1 over the
+texture's `level` before the frame is built. The pair binds after every PBR
+texture pair, which fixes its index while none of those exist; generation
+fails explicitly on a scene composing bump mapping with transmission or a PBR
+material extension, because the fragment would then need its binding computed
+rather than fixed. A material with no bump map samples a flat
+(128, 128, 255) texel and keeps its interpolated normal.
+A `.babylon` light applies to the meshes its `includedOnlyMeshesIds` names, or
+to every mesh its `excludedMeshesIds` does not, resolved at load against the
+records the loader creates. The Standard uniform slots therefore hold the
+light set of the mesh being drawn, which is the set the pinned template's
+`min(mesh.lc, MAX_LIGHTS)` loop walks.
 `KHR_node_visibility` is materialized per mesh rather than tested per draw.
 The pinned `setSubtreeVisible` writes the flag on a node and every descendant
 at set time, so the loader bakes the ancestor cascade into each mesh record

@@ -115,6 +115,7 @@ export function standardFragmentWgsl(
     vertexColors = false,
     lightSlots = 2,
     diffuseUv2 = false,
+    bumpTexture = false,
 ): string {
     // The pinned template declares `array<LightEntry, MAX_LIGHTS>` and loops
     // `min(mesh.lc, MAX_LIGHTS)` entries. Native unrolls the same terms into
@@ -190,7 +191,9 @@ export function standardFragmentWgsl(
 @group(2) @binding(8) var reflectionTexture: texture_cube<f32>;
 @group(2) @binding(9) var reflectionSampler: sampler;
 @group(2) @binding(10) var emissiveTexture: texture_2d<f32>;
-@group(2) @binding(11) var emissiveSampler: sampler;
+@group(2) @binding(11) var emissiveSampler: sampler;${bumpTexture ? `
+@group(2) @binding(12) var bumpTexture: texture_2d<f32>;
+@group(2) @binding(13) var bumpSampler: sampler;` : ""}
 
 struct FragmentUniforms {
     cameraPosition: vec4<f32>,
@@ -218,7 +221,8 @@ struct FragmentUniforms {
     uvOptions: vec4<f32>,
     materialOptions: vec4<f32>,
     reflectionOptions: vec4<f32>,${diffuseUv2 ? `
-    diffuseUvOptions: vec4<f32>,` : ""}
+    diffuseUvOptions: vec4<f32>,` : ""}${bumpTexture ? `
+    bumpOptions: vec4<f32>,` : ""}
 ${fogUniformFields}}
 @group(3) @binding(0) var<uniform> uniforms: FragmentUniforms;
 
@@ -308,9 +312,37 @@ fn evaluateLight(
 }
 
 ${fogHelper}${outputDeclaration(task)}
-@fragment
+${bumpTexture ? `// src/shader/wgsl-helpers.ts WGSL_PERTURB_NORMAL, the cotangent frame the
+// pinned normal-map fragment builds from screen-space derivatives so that a
+// mesh needs no tangent attribute.
+fn perturbNormal(vNormalW: vec3<f32>, positionW: vec3<f32>, uv: vec2<f32>, bumpScale: f32) -> vec3<f32> {
+let normalSample = textureSample(bumpTexture, bumpSampler, uv).rgb * 2.0 - 1.0;
+let N = normalize(vNormalW) * bumpScale;
+let dp1 = dpdx(positionW);
+let dp2 = -dpdy(positionW);
+let duv1 = dpdx(uv);
+let duv2 = -dpdy(uv);
+let dp2perp = cross(dp2, N);
+let dp1perp = cross(N, dp1);
+var tangent = dp2perp * duv1.x + dp1perp * duv2.x;
+var bitangent = dp2perp * duv1.y + dp1perp * duv2.y;
+let det = max(dot(tangent, tangent), dot(bitangent, bitangent));
+let invmax = select(inverseSqrt(det), 0.0, det == 0.0);
+let cotangentFrame = mat3x3<f32>(tangent * invmax, bitangent * invmax, N);
+return normalize(cotangentFrame * normalSample);
+}
+
+` : ""}@fragment
 fn mainFragment(input: FragmentInput) -> ${returnType} {
-    let normalW = normalize(input.normal);
+    ${bumpTexture ? `var normalW = normalize(input.normal);
+    if (uniforms.bumpOptions.y > 0.5) {
+        normalW = perturbNormal(
+            input.normal,
+            input.worldPosition,
+            input.uv,
+            uniforms.bumpOptions.x,
+        );
+    }` : `let normalW = normalize(input.normal);`}
 
 ${diffuseUv2 ? `    var diffuseBaseUv = input.uv;
     if (uniforms.diffuseUvOptions.x > 0.5) {

@@ -37,6 +37,7 @@ export interface UpstreamEmitOptions {
     standardLights: number;
     standardLightLists: boolean;
     standardDiffuseUv2: boolean;
+    standardBump: boolean;
     textureTransform: boolean;
     imageBasedLighting: boolean;
     gpuInstancing: boolean;
@@ -75,6 +76,7 @@ class GeneratedSourceWriter {
 #define BBLITE_MATERIAL_IRIDESCENCE ${options.iridescence ? 1 : 0}
 #define BBLITE_MATERIAL_DISPERSION ${options.dispersion ? 1 : 0}
 #define BBLITE_MATERIAL_OCCLUSION_UV2 ${options.occlusionUv2 ? 1 : 0}
+#define BBLITE_MATERIAL_STANDARD_BUMP ${options.standardBump ? 1 : 0}
 #define BBLITE_IMAGE_SKYBOX ${features.includes("background:image-skybox") ? 1 : 0}
 `,
         );
@@ -239,6 +241,7 @@ class GeneratedSourceWriter {
                 new BabylonLowerer(context).lowerLoaderAdapter(
                     options.standardLightLists,
                     options.standardDiffuseUv2,
+                    options.standardBump,
                 ),
                 generated,
             );
@@ -269,6 +272,7 @@ class GeneratedSourceWriter {
                     standardLights: options.standardLights,
                     standardLightLists: options.standardLightLists,
                     standardDiffuseUv2: options.standardDiffuseUv2,
+                    standardBump: options.standardBump,
                     orthographicCamera: features.includes(
                         "camera:orthographic",
                     ),
@@ -305,6 +309,7 @@ class GeneratedSourceWriter {
                 ),
                 standardLights: options.standardLights,
                 standardDiffuseUv2: options.standardDiffuseUv2,
+                standardBump: options.standardBump,
                 gridMaterial: features.includes("material:grid"),
                 idDiagnostics: options.idDiagnostics,
                 pbrDiagnostics: options.pbrDiagnostics,
@@ -525,6 +530,7 @@ export function emitUpstreamGenerated(
         standardLights: 0,
         standardLightLists: false,
         standardDiffuseUv2: false,
+        standardBump: false,
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,

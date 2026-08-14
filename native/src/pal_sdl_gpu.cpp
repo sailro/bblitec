@@ -70,9 +70,17 @@ constexpr std::uint32_t pbr_texture_binding_count =
     pbr_base_texture_binding_count +
     pbr_material_extension_binding_count;
 
+// The Standard bump pair appends after every PBR pair, so it shifts no
+// existing binding index; the capacity only has to make room for it.
+constexpr std::uint32_t standard_bump_binding_count =
+    BBLITE_MATERIAL_STANDARD_BUMP ? 1u : 0u;
+constexpr std::uint32_t standard_bump_binding =
+    pbr_texture_binding_count;
+
 constexpr std::size_t pbr_texture_binding_capacity =
-    pbr_texture_binding_count > 9u
-        ? static_cast<std::size_t>(pbr_texture_binding_count)
+    pbr_texture_binding_count + standard_bump_binding_count > 9u
+        ? static_cast<std::size_t>(
+              pbr_texture_binding_count + standard_bump_binding_count)
         : 9u;
 
 
@@ -110,6 +118,9 @@ struct GpuMesh {
     SDL_GPUTexture* occlusion = nullptr;
 #endif
     SDL_GPUTexture* standard_emissive = nullptr;
+#if BBLITE_MATERIAL_STANDARD_BUMP
+    SDL_GPUTexture* standard_bump = nullptr;
+#endif
     SDL_GPUTexture* reflection = nullptr;
     SDL_GPUSampler* base_color_sampler = nullptr;
     SDL_GPUSampler* metallic_roughness_sampler = nullptr;
@@ -134,6 +145,9 @@ struct GpuMesh {
     SDL_GPUSampler* occlusion_sampler = nullptr;
 #endif
     SDL_GPUSampler* standard_emissive_sampler = nullptr;
+#if BBLITE_MATERIAL_STANDARD_BUMP
+    SDL_GPUSampler* standard_bump_sampler = nullptr;
+#endif
     std::uint32_t index_count = 0;
     std::uint32_t instance_count = 1;
     std::uint64_t transform_version = 0;
@@ -1919,6 +1933,9 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
     SDL_ReleaseGPUTexture(state.device, mesh.occlusion);
 #endif
     SDL_ReleaseGPUTexture(state.device, mesh.standard_emissive);
+#if BBLITE_MATERIAL_STANDARD_BUMP
+    SDL_ReleaseGPUTexture(state.device, mesh.standard_bump);
+#endif
     SDL_ReleaseGPUSampler(state.device, mesh.base_color_sampler);
     SDL_ReleaseGPUSampler(state.device, mesh.metallic_roughness_sampler);
     SDL_ReleaseGPUSampler(state.device, mesh.normal_sampler);
@@ -1948,6 +1965,11 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
     SDL_ReleaseGPUSampler(
         state.device,
         mesh.standard_emissive_sampler);
+#if BBLITE_MATERIAL_STANDARD_BUMP
+    SDL_ReleaseGPUSampler(
+        state.device,
+        mesh.standard_bump_sampler);
+#endif
 }
 
 void release(GpuState& state) {
@@ -2401,7 +2423,7 @@ bool run_gpu_engine(Engine& engine) {
                   state.device,
                   "standard.frag",
                   SDL_GPU_SHADERSTAGE_FRAGMENT,
-                  6,
+                  6 + standard_bump_binding_count,
                   1,
                   "mainFragment")
             : nullptr;
@@ -3733,6 +3755,9 @@ bool run_gpu_engine(Engine& engine) {
             const TextureData* occlusion = nullptr;
 #endif
             const TextureData* standard_emissive = nullptr;
+#if BBLITE_MATERIAL_STANDARD_BUMP
+            const TextureData* standard_bump = nullptr;
+#endif
             bool has_pbr_emissive_factor = false;
             std::array<std::uint8_t, 4> base_color_fallback{
                 255, 255, 255, 255};
@@ -3768,6 +3793,11 @@ bool run_gpu_engine(Engine& engine) {
                 standard_emissive = standard_material
                     ? &material.emissive_texture
                     : nullptr;
+#if BBLITE_MATERIAL_STANDARD_BUMP
+                standard_bump = standard_material
+                    ? &material.bump_texture
+                    : nullptr;
+#endif
 #if BBLITE_MATERIAL_CLEARCOAT
                 clearcoat = standard_material
                     ? nullptr
@@ -3958,6 +3988,20 @@ bool run_gpu_engine(Engine& engine) {
             gpu_mesh.occlusion_sampler = create_texture_sampler(
                 state.device,
                 occlusion ? occlusion->sampler : TextureSamplerState{});
+#endif
+#if BBLITE_MATERIAL_STANDARD_BUMP
+            // A flat tangent-space normal, so a material with no bump map
+            // reads (0, 0, 1) and keeps its interpolated normal.
+            gpu_mesh.standard_bump = upload_texture(
+                state.device,
+                standard_bump ? *standard_bump : TextureData{},
+                false,
+                {128, 128, 255, 255});
+            gpu_mesh.standard_bump_sampler = create_texture_sampler(
+                state.device,
+                standard_bump
+                    ? standard_bump->sampler
+                    : TextureSamplerState{});
 #endif
             gpu_mesh.standard_emissive = upload_texture(
                 state.device,
@@ -4680,6 +4724,14 @@ bool run_gpu_engine(Engine& engine) {
                                     },
                                     };
                                 if (standard_bucket) {
+#if BBLITE_MATERIAL_STANDARD_BUMP
+                                    texture_bindings[
+                                        standard_bump_binding] =
+                                        SDL_GPUTextureSamplerBinding{
+                                            mesh.standard_bump,
+                                            mesh.standard_bump_sampler,
+                                        };
+#endif
                                     texture_bindings[5] =
                                         material &&
                                             material
@@ -4706,7 +4758,7 @@ bool run_gpu_engine(Engine& engine) {
                                     0,
                                     texture_bindings,
                                     standard_bucket
-                                        ? 6
+                                        ? 6u + standard_bump_binding_count
                                         : pbr_texture_binding_count);
                             }
                             bind_mesh_vertex_buffers(
@@ -5763,6 +5815,15 @@ bool run_gpu_engine(Engine& engine) {
                                     mesh.thickness_sampler,
                                 },
                             };
+#if BBLITE_MATERIAL_STANDARD_BUMP
+                        if (standard) {
+                            texture_bindings[standard_bump_binding] =
+                                SDL_GPUTextureSamplerBinding{
+                                    mesh.standard_bump,
+                                    mesh.standard_bump_sampler,
+                                };
+                        }
+#endif
                         if (!standard) {
                             append_material_extension_bindings(
                                 &texture_bindings[
@@ -5773,7 +5834,9 @@ bool run_gpu_engine(Engine& engine) {
                             pass,
                             0,
                             texture_bindings,
-                            standard ? 6 : pbr_texture_binding_count);
+                            standard
+                                ? 6u + standard_bump_binding_count
+                                : pbr_texture_binding_count);
                     }
                     SDL_DrawGPUIndexedPrimitives(
                         pass,

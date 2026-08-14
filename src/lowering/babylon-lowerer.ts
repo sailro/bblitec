@@ -8,6 +8,7 @@ export class BabylonLowerer {
     public lowerLoaderAdapter(
         lightMeshLists = false,
         diffuseUv2 = false,
+        bumpTexture = false,
     ): LoweredSource {
         const modulePath = "src/loader-babylon/load-babylon.ts";
         const symbolName = "loadBabylon";
@@ -80,6 +81,7 @@ export class BabylonLowerer {
                 this.context.provenance(modulePath, symbolName),
                 lightMeshLists,
                 diffuseUv2,
+                bumpTexture,
             ),
         };
     }

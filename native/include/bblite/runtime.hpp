@@ -537,6 +537,11 @@ struct MaterialRecord {
     TextureData opacity_texture;
     TextureData specular_texture;
     TextureData ambient_texture;
+    // Standard bump map. The pinned fragment builds a cotangent frame from
+    // screen-space derivatives, so no tangent attribute is involved, and it
+    // scales the interpolated normal by 1 / level before the frame is built.
+    TextureData bump_texture;
+    float bump_scale = 1.0f;
     // Dedicated glTF occlusion texture sampled at uv2 (Babylon Lite's
     // pbr-template-ext pair for occlusionTexture.texCoord == 1).
     TextureData occlusion_texture;

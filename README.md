@@ -13,16 +13,16 @@ Unsupported syntax and APIs fail at compile time with source locations.
 
 | [<img src="docs/images/scenes/scene1.png" alt="Scene 1" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene5.png" alt="Scene 5" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene7.png" alt="Scene 7" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene14.png" alt="Scene 14" width="170">](docs/status.md#curated-parity-scenes) |
 | :-: | :-: | :-: | :-: |
-| [<img src="docs/images/scenes/scene24.png" alt="Scene 24" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene33.png" alt="Scene 33" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene176.png" alt="Scene 176" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene178.png" alt="Scene 178" width="170">](docs/status.md#curated-parity-scenes) |
+| [<img src="docs/images/scenes/scene24.png" alt="Scene 24" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene9.png" alt="Scene 9" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene176.png" alt="Scene 176" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene178.png" alt="Scene 178" width="170">](docs/status.md#curated-parity-scenes) |
 
-*A few of the 55 curated parity scenes, compiled to native C++ and rendered
+*A few of the 56 curated parity scenes, compiled to native C++ and rendered
 on both GPU backends — click any frame for the measured numbers.*
 
 ## Current proof points
 
 - Pinned upstream: `@babylonjs/lite@1.20.0`,
   commit `95ed3029cc43e479ec924741aea4024e9bf33527`.
-- 55 curated Babylon Lite parity scenes, plus primitives and project-owned differential regression gates.
+- 56 curated Babylon Lite parity scenes, plus primitives and project-owned differential regression gates.
 - External glTF/GLB support.
 - Support for Typescript structs, nullable objects, dynamic arrays,
   enums, switch/break/continue, destructuring, spread, runtime Math.
