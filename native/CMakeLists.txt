@@ -113,14 +113,10 @@ add_executable(
 )
 
 if(BBLITE_GENERATED_SHADER_FILES)
-    set(
-        BBLITE_SHADER_LINK_SOURCE
-        "${CMAKE_CURRENT_BINARY_DIR}/bblite-shader-link.cpp"
-    )
+    # The snapshot is ordered before the executable by a target dependency,
+    # and reruns only when a generated shader file is newer than the stamp.
     add_custom_command(
-        OUTPUT
-            "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
-            "${BBLITE_SHADER_LINK_SOURCE}"
+        OUTPUT "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
         COMMAND "${CMAKE_COMMAND}" -E remove_directory "${BBLITE_BUILD_SHADER_DIR}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${BBLITE_BUILD_SHADER_DIR}"
         COMMAND
@@ -130,25 +126,12 @@ if(BBLITE_GENERATED_SHADER_FILES)
         COMMAND
             "${CMAKE_COMMAND}" -E touch
             "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
-        COMMAND
-            "${CMAKE_COMMAND}" -E touch
-            "${BBLITE_SHADER_LINK_SOURCE}"
         DEPENDS ${BBLITE_GENERATED_SHADER_FILES}
         VERBATIM
     )
-    set_source_files_properties(
-        "${BBLITE_SHADER_LINK_SOURCE}"
-        PROPERTIES GENERATED TRUE
-    )
-    target_sources(
-        bblite_native
-        PRIVATE "${BBLITE_SHADER_LINK_SOURCE}"
-    )
     add_custom_target(
         bblite_shader_snapshot
-        DEPENDS
-            "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
-            "${BBLITE_SHADER_LINK_SOURCE}"
+        DEPENDS "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
     )
     add_dependencies(bblite_native bblite_shader_snapshot)
 endif()
@@ -184,9 +167,14 @@ if(EXISTS "${BBLITE_GENERATED_DIR}/assets")
 endif()
 
 if(BBLITE_GENERATED_SHADER_FILES)
+    # Deployed by a stamped target rather than POST_BUILD on the executable,
+    # for the reason the asset target above records: a shader-only change
+    # relinks nothing, so a POST_BUILD copy never fires and the measured run
+    # reads the previous shaders beside a current executable. Driving it from
+    # the snapshot stamp keeps an unchanged build a no-op without owning an
+    # empty translation unit purely to force a relink.
     add_custom_command(
-        TARGET bblite_native
-        POST_BUILD
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders-deployed.stamp"
         COMMAND
             "${CMAKE_COMMAND}" -E remove_directory
             "$<TARGET_FILE_DIR:bblite_native>/shaders"
@@ -194,8 +182,18 @@ if(BBLITE_GENERATED_SHADER_FILES)
             "${CMAKE_COMMAND}" -E copy_directory
             "${BBLITE_BUILD_SHADER_DIR}"
             "$<TARGET_FILE_DIR:bblite_native>/shaders"
+        COMMAND
+            "${CMAKE_COMMAND}" -E touch
+            "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders-deployed.stamp"
+        DEPENDS "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
         VERBATIM
     )
+    add_custom_target(
+        bblite_shader_deploy
+        ALL
+        DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders-deployed.stamp"
+    )
+    add_dependencies(bblite_shader_deploy bblite_native)
 endif()
 
 if(BBLITE_SDL_DIR)
