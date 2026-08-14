@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { captureSuiteReference } from "./capture-suite-reference.js";
+import type { RenderItemSpecialization } from "./asset-specializer.js";
 import {
     comparePayload,
     computeBuildStamp,
@@ -73,26 +74,9 @@ function usesSeededRandom(scene: SceneDefinition): boolean {
     }
 }
 
-interface RenderItemMetadata {
-    drawId: number;
-    nodeIndex: number;
-    nodeName?: string;
-    meshIndex: number;
-    meshName?: string;
-    primitiveIndex: number;
-    triangleCount: number;
-    trianglesPerCluster: number;
-    clusterIdStart: number;
-    clusterCount: number;
-    materialIndex?: number;
-    materialName?: string;
-    shaderVariant: "pbr";
-    alphaMode: "OPAQUE" | "MASK" | "BLEND";
-    doubleSided: boolean;
-}
 
 interface GltfSpecialization {
-    renderItems: RenderItemMetadata[];
+    renderItems: RenderItemSpecialization[];
 }
 
 interface Arguments {
@@ -484,7 +468,7 @@ export async function runSceneParity(
         specializations.flatMap((specialization) => specialization.renderItems)
             .map((item) => [item.drawId, item] as const),
     );
-    const renderItemForCluster = (clusterId: number): RenderItemMetadata | undefined =>
+    const renderItemForCluster = (clusterId: number): RenderItemSpecialization | undefined =>
         specializations.flatMap((specialization) => specialization.renderItems)
             .find(
                 (item) =>

@@ -12,9 +12,9 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import {
     createSuiteSceneServer,
-    resolveBrowserPath,
     suiteBrowserModule,
 } from "./capture-suite-reference.js";
+import { resolveBrowserPath } from "./browser-path.js";
 import { resolveScene } from "./scene-registry.js";
 
 export interface InstrumentedCaptureOptions {

@@ -1,9 +1,6 @@
 import ts from "typescript";
-import type {
-    Feature,
-    Value,
-    ValueKind,
-} from "../types.js";
+import type { Value } from "../types.js";
+import type { IntrinsicCallContext } from "./context.js";
 
 type CompiledPbrMaterialOptions = [
     Value,
@@ -26,18 +23,8 @@ type CompiledPbrMaterialOptions = [
     string,
 ];
 
-export interface MaterialIntrinsicContext {
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    compileValue(expression: ts.Expression): Value;
-    expectKind(
-        value: Value,
-        kind: ValueKind,
-        node: ts.Node,
-    ): void;
+export interface MaterialIntrinsicContext
+    extends IntrinsicCallContext {
     expectSameEngine(
         left: Value,
         right: Value,
@@ -77,7 +64,6 @@ export interface MaterialIntrinsicContext {
         expression: ts.Expression,
         count: number,
     ): string[];
-    reachFeature(feature: Feature): void;
     cppString(value: string): string;
     fail(node: ts.Node, message: string): never;
 }

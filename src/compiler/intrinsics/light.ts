@@ -1,26 +1,11 @@
 import ts from "typescript";
-import type {
-    Feature,
-    Value,
-    ValueKind,
-} from "../types.js";
+import type { Value } from "../types.js";
+import type { IntrinsicCallContext } from "./context.js";
 
-export interface LightIntrinsicContext {
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    compileValue(expression: ts.Expression): Value;
-    expectKind(
-        value: Value,
-        kind: ValueKind,
-        node: ts.Node,
-    ): void;
+export interface LightIntrinsicContext extends IntrinsicCallContext {
     compileVec3(expression: ts.Expression): string;
     compileNumber(expression: ts.Expression): string;
     requireDefaultEngine(node: ts.Node): string;
-    reachFeature(feature: Feature): void;
 }
 
 export function compileLightIntrinsic(

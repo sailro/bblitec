@@ -2,6 +2,7 @@ import type {
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
 } from "./compiler.js";
+import { fogFactorWgsl } from "./shader-builtins-utility.js";
 
 function geometryExpression(type: GeometryTextureTypeName): string {
     const write = "select(0.0, 1.0, alpha > 0.4)";
@@ -131,29 +132,8 @@ export function standardFragmentWgsl(
     fogColor: vec4<f32>,
 `
         : "";
-    const fogHelper = fog
-        ? `const bblFogE: f32 = 2.71828;
-
-fn bblCalcFogFactor(fogDistance: vec3<f32>) -> f32 {
-    var fogCoeff = 1.0;
-    let fogMode = uniforms.fogInfos.x;
-    let fogStart = uniforms.fogInfos.y;
-    let fogEnd = uniforms.fogInfos.z;
-    let fogDensity = uniforms.fogInfos.w;
-    let dist = length(fogDistance);
-    if (fogMode == 3.0) {
-        fogCoeff = (fogEnd - dist) / (fogEnd - fogStart);
-    } else if (fogMode == 1.0) {
-        fogCoeff = 1.0 / pow(bblFogE, dist * fogDensity);
-    } else if (fogMode == 2.0) {
-        fogCoeff =
-            1.0 / pow(bblFogE, dist * dist * fogDensity * fogDensity);
-    }
-    return clamp(fogCoeff, 0.0, 1.0);
-}
-
-`
-        : "";
+    const fogHelper = fog ? `${fogFactorWgsl()}
+` : "";
     const fogBlend = fog
         ? `    if (uniforms.fogInfos.x > 0.0) {
         let fogView =
