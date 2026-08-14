@@ -585,6 +585,36 @@ inline FrameOptions read_frame_options() {
 }
 
 /**
+ * The delta a scene's before-render callbacks advance by.
+ *
+ * A scene that sets `fixedDeltaMs` pins it, which is how the measured
+ * animated scenes stay deterministic. Everything else advances by the
+ * time the previous frame actually took, so an interactive run animates
+ * at real speed. The first frame has no previous time and reports zero,
+ * matching the pinned engine's first callback.
+ *
+ * Both backends drive callbacks from this: SDL_GPU measured the elapsed
+ * time while Dawn passed a hardcoded 16 ms and never read the clock, so
+ * a scene that integrated over the delta would have animated at a
+ * different rate on each backend -- a divergence the differential would
+ * have reported as a GPU-side difference.
+ */
+class FrameClock {
+public:
+    [[nodiscard]] float advance(float fixed_delta_ms) {
+        const double now = monotonic_milliseconds();
+        const float measured = previous_ > 0.0
+            ? static_cast<float>(now - previous_)
+            : 0.0f;
+        previous_ = now;
+        return fixed_delta_ms > 0.0f ? fixed_delta_ms : measured;
+    }
+
+private:
+    double previous_ = 0.0;
+};
+
+/**
  * Decode a texture's bytes to RGBA, substituting a 1x1 fallback texel
  * when the scene carries none, and apply the pinned `invertY` flip. The
  * result is what both backends upload, so it is produced once.

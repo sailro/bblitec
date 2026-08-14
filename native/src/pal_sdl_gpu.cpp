@@ -4012,7 +4012,7 @@ bool run_gpu_engine(Engine& engine) {
         std::vector<double> samples;
         bool running = true;
         long frame = 0;
-        double previous_frame_time = 0.0;
+        FrameClock frame_clock;
         while (captures.keep_running(running, frame)) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
@@ -4024,17 +4024,8 @@ bool run_gpu_engine(Engine& engine) {
                         pointer_state);
                 }
             }
-            const double frame_time = monotonic_milliseconds();
-            const float real_delta_ms =
-                previous_frame_time > 0.0
-                    ? static_cast<float>(
-                          frame_time - previous_frame_time)
-                    : 0.0f;
-            previous_frame_time = frame_time;
             const float delta_ms =
-                scene.fixed_delta_ms > 0.0f
-                    ? scene.fixed_delta_ms
-                    : real_delta_ms;
+                frame_clock.advance(scene.fixed_delta_ms);
             for (const auto& callback : scene.before_render) {
                 callback(delta_ms);
             }

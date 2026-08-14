@@ -283,27 +283,11 @@ CPU-side from GPU-side causes immediately.
   dozens of identical rebuilds. Either a compiler launcher (`sccache`
   handles MSVC) or one static library per signature; incremental
   generation does not help this case, because the PAL genuinely changed.
-- [ ] Continue moving verbatim CPU-side packing into
-  `pal_gpu_shared.hpp`. Morph deltas and weights, the half-float readback
-  conversion, and the PBR diagnostic name table are moved; measured
-  cross-backend duplication is down to 4.0% (185 lines in blocks of five
-  or more). What remains is entangled with backend-specific types rather
-  than copy/pasted logic: the id/cluster buffer fill reads each backend's
-  own mesh record, and the image-decode fallback is followed by different
-  upload calls. Both need an accessor or a template before they can move,
-  so they are worth doing only alongside the frame-conductor work.
-- [ ] Extract the shared frame conductor from the two backend frame
-  functions. `run_gpu_engine` (3,922 lines, 63% of its file) and
-  `run_dawn_engine` (3,062 lines, 47%) each parse their own copy of the
-  runtime-flag matrix (17 versus 12 `environment_variable` reads) and
-  duplicate frame accounting, capture gating, and screenshot deferral;
-  divergence there reads as a backend delta, which the differential
-  misattributes to the GPU side. Stage it: a `FrameOptions` struct parsed
-  once beside the build stamp, then the accounting/gating helpers. The
-  unsupported-flag principle is already enforced (Dawn fails loudly on
-  `BBLITE_MSAA` and `BBLITE_COPY_TASK`); implementing single-sample
-  rendering on Dawn belongs to this item because the per-sample
-  transmission pass must degrade with it.
+- [ ] Implement single-sample rendering on the Dawn backend so
+  `BBLITE_MSAA=1` works there too. Dawn refuses the flag today rather
+  than ignoring it, and the per-sample image-processing pass on the
+  multisampled transmission target has to degrade with it, which is why
+  it did not come along with the rest of the frame conductor.
 - [ ] Emit one `camera_basis()` helper in the generated render plan: seven
   emitted functions in the renderer lowerer construct the same
   eye/forward/right/up basis, which is why the orthographic projection

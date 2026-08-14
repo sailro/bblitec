@@ -4869,6 +4869,7 @@ bool run_dawn_engine(Engine& engine) {
     }
 
     CaptureGate captures(frame_options, limit);
+    FrameClock frame_clock;
     bool running = true;
     long frame = 0;
     CameraPointerState pointer_state;
@@ -4884,7 +4885,7 @@ bool run_dawn_engine(Engine& engine) {
             }
         }
         const float delta_ms =
-            scene.fixed_delta_ms > 0.0f ? scene.fixed_delta_ms : 16.0f;
+            frame_clock.advance(scene.fixed_delta_ms);
         for (const auto& callback : scene.before_render) {
             callback(delta_ms);
         }
