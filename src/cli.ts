@@ -232,6 +232,39 @@ function reachedImageCodecs(
     return jpeg ? ["png", "jpeg"] : ["png"];
 }
 
+/**
+ * How many Standard light slots the scene's materialized `.babylon` assets
+ * ask for. The pinned template sizes its light array at generation time from
+ * `MAX_LIGHTS`; native unrolls one slot per light instead, and the count is
+ * knowable here because the loader only accepts point lights (`type: 0`) and
+ * the asset is on disk before the emitters run.
+ */
+function reachedStandardLights(
+    outputPath: string,
+    assets: CompileAsset[],
+): number {
+    let count = 0;
+    for (const asset of assets) {
+        if (asset.kind !== "babylon") {
+            continue;
+        }
+        const materialized = resolve(outputPath, "assets", asset.output);
+        if (!existsSync(materialized)) {
+            continue;
+        }
+        const document = JSON.parse(
+            readFileSync(materialized, "utf8"),
+        ) as { lights?: { type?: number }[] };
+        count = Math.max(
+            count,
+            (document.lights ?? []).filter(
+                (light) => light.type === 0,
+            ).length,
+        );
+    }
+    return count;
+}
+
 function materializedAssetSource(
     source: string,
     inputPath: string,
@@ -324,6 +357,10 @@ async function main(): Promise<void> {
         nonTrianglePrimitives:
             specializationFeatures.nonTrianglePrimitives,
         nodeVisibility: specializationFeatures.nodeVisibility,
+        standardLights: reachedStandardLights(
+            outputPath,
+            result.manifest.assets,
+        ),
         animationPointer:
             specializationFeatures.animationPointer,
         textureTransform:

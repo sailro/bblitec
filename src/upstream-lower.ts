@@ -34,6 +34,7 @@ export interface UpstreamEmitOptions {
     nonTrianglePrimitives: boolean;
     nodeVisibility: boolean;
     animationPointer: boolean;
+    standardLights: number;
     textureTransform: boolean;
     imageBasedLighting: boolean;
     gpuInstancing: boolean;
@@ -260,6 +261,7 @@ class GeneratedSourceWriter {
                     iridescence: options.iridescence,
                     dispersion: options.dispersion,
                     nodeVisibility: options.nodeVisibility,
+                    standardLights: options.standardLights,
                     orthographicCamera: features.includes(
                         "camera:orthographic",
                     ),
@@ -294,6 +296,7 @@ class GeneratedSourceWriter {
                 standardVertexColors: features.includes(
                     "material:standard-vertex-colors",
                 ),
+                standardLights: options.standardLights,
                 gridMaterial: features.includes("material:grid"),
                 idDiagnostics: options.idDiagnostics,
                 pbrDiagnostics: options.pbrDiagnostics,
@@ -511,6 +514,7 @@ export function emitUpstreamGenerated(
         nonTrianglePrimitives: false,
         nodeVisibility: false,
         animationPointer: false,
+        standardLights: 0,
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,

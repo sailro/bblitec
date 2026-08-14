@@ -98,6 +98,7 @@ export class RendererLowerer {
         iridescence?: boolean;
         dispersion?: boolean;
         nodeVisibility?: boolean;
+        standardLights?: number;
         orthographicCamera?: boolean;
         background?: boolean;
         shaderPrograms?: CompiledShaderProgram[];
@@ -356,6 +357,16 @@ export class RendererLowerer {
             options.textureTransform
                 ? "    std::array<float, 4> uv_transform{};\n"
                 : "";
+        // One uniform slot per Standard light the scene's assets carry,
+        // never fewer than the two this block has always emitted.
+        const standardLightSlots = Math.max(
+            2,
+            options.standardLights ?? 2,
+        );
+        const extraStandardLights = Array.from(
+            { length: standardLightSlots - 2 },
+            (_, index) => index + 3,
+        );
         const fogUniformFields = options.fog
             ? `    std::array<float, 4> fog_infos{};
     std::array<float, 4> fog_color{};
@@ -720,7 +731,11 @@ struct StandardUniforms {
     std::array<float, 4> light_data_2{};
     std::array<float, 4> light_diffuse_2{};
     std::array<float, 4> light_specular_2{};
-    std::array<float, 4> light_direction_2{};
+    std::array<float, 4> light_direction_2{};${extraStandardLights.map((slot) => `
+    std::array<float, 4> light_data_${slot}{};
+    std::array<float, 4> light_diffuse_${slot}{};
+    std::array<float, 4> light_specular_${slot}{};
+    std::array<float, 4> light_direction_${slot}{};`).join("")}
     std::array<float, 4> diffuse_alpha{};
     std::array<float, 4> specular_power{};
     std::array<float, 4> emissive_level{};
@@ -1727,9 +1742,9 @@ StandardUniforms build_standard_uniforms(
     result.view_up = {up.x, up.y, up.z, 0.0f};
     result.view_forward = {forward.x, forward.y, forward.z, 0.0f};
 ${fogUniforms}\
-    if (scene.lights.size() > 2) {
+    if (scene.lights.size() > ${standardLightSlots}) {
         throw std::runtime_error(
-            "Reached Standard material supports at most two lights.");
+            "Reached Standard material supports at most ${standardLightSlots} lights.");
     }
     const auto write_light =
         [](
@@ -1814,7 +1829,17 @@ ${fogUniforms}\
             result.light_diffuse_2,
             result.light_specular_2,
             result.light_direction_2);
-    }
+    }${extraStandardLights.map((slot) => `
+    if (
+        scene.lights.size() > ${slot - 1} &&
+        scene.lights[${slot - 1}].value < engine.lights.size()) {
+        write_light(
+            engine.lights[scene.lights[${slot - 1}].value],
+            result.light_data_${slot},
+            result.light_diffuse_${slot},
+            result.light_specular_${slot},
+            result.light_direction_${slot});
+    }`).join("")}
     if (item.material.value < engine.materials.size()) {
         const MaterialRecord& material =
             engine.materials[item.material.value];
@@ -2099,6 +2124,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         shaderPrograms: CompiledShaderProgram[];
         standardMaterial: boolean;
         standardVertexColors?: boolean;
+        standardLights?: number;
         gridMaterial?: boolean;
         idDiagnostics: boolean;
         pbrDiagnostics: boolean;
@@ -2870,6 +2896,7 @@ ${directMarker}`,
                     undefined,
                     options.fog === true,
                     options.standardVertexColors === true,
+                    Math.max(2, options.standardLights ?? 2),
                 ),
             });
         }
