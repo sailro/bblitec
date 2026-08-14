@@ -8,6 +8,7 @@
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
+#include <bblite/upstream/renderer_plan.hpp>
 
 #include <algorithm>
 #include <array>
@@ -580,6 +581,84 @@ inline FrameOptions read_frame_options() {
         environment_variable("BBLITE_ANIMATION_SEEK_SECONDS");
     options.animation_seek_seconds =
         seek.empty() ? 0.0 : std::strtod(seek.c_str(), nullptr);
+    return options;
+}
+
+/**
+ * Decode a texture's bytes to RGBA, substituting a 1x1 fallback texel
+ * when the scene carries none, and apply the pinned `invertY` flip. The
+ * result is what both backends upload, so it is produced once.
+ */
+inline DecodedImage decode_uploadable_image(
+    const TextureData& texture_data,
+    const std::array<std::uint8_t, 4>& fallback) {
+    DecodedImage image;
+    if (texture_data.bytes.empty()) {
+        image.width = image.height = 1;
+        image.rgba.assign(fallback.begin(), fallback.end());
+    } else {
+        image = decode_image(ts::ArrayBuffer(texture_data.bytes));
+    }
+    if (texture_data.invert_y && image.height > 1) {
+        const std::size_t row_bytes =
+            static_cast<std::size_t>(image.width) * 4;
+        std::vector<std::uint8_t> row(row_bytes);
+        for (int y = 0; y < image.height / 2; ++y) {
+            std::uint8_t* top =
+                image.rgba.data() +
+                static_cast<std::size_t>(y) * row_bytes;
+            std::uint8_t* bottom =
+                image.rgba.data() +
+                static_cast<std::size_t>(image.height - 1 - y) *
+                    row_bytes;
+            std::memcpy(row.data(), top, row_bytes);
+            std::memcpy(top, bottom, row_bytes);
+            std::memcpy(bottom, row.data(), row_bytes);
+        }
+    }
+    return image;
+}
+
+/**
+ * Cluster ids advance in fixed 128-triangle groups, and the id and
+ * cluster buffers are compared against the browser's, so both backends
+ * have to number them identically.
+ */
+struct ClusterRange {
+    std::uint32_t triangle_count;
+    std::uint32_t id_start;
+};
+
+inline ClusterRange advance_cluster_range(
+    std::uint32_t index_count,
+    std::uint32_t& cluster_id_base) {
+    const std::uint32_t triangle_count = index_count / 3;
+    const std::uint32_t id_start = cluster_id_base;
+    cluster_id_base += (triangle_count + 127u) / 128u;
+    return ClusterRange{triangle_count, id_start};
+}
+
+/**
+ * The alpha state the diagnostic shaders read: the bucket as a mode, the
+ * cutoff, and the material alpha. A material-less item renders opaque at
+ * full alpha.
+ */
+inline std::array<float, 4> diagnostic_alpha_options(
+    const upstream::RenderItem& item,
+    const MaterialRecord* material) {
+    std::array<float, 4> options{};
+    if (!material) {
+        options[2] = 1.0f;
+        return options;
+    }
+    options[0] =
+        item.bucket == upstream::RenderBucket::alpha_blend
+            ? 2.0f
+            : item.bucket == upstream::RenderBucket::alpha_mask
+                ? 1.0f
+                : 0.0f;
+    options[1] = material->alpha_cutoff;
+    options[2] = material->base_color_factor.a;
     return options;
 }
 

@@ -1027,30 +1027,8 @@ WGPUTexture upload_material_texture(
     bool srgb,
     const std::array<std::uint8_t, 4>& fallback,
     std::uint32_t& out_mip_count) {
-    DecodedImage image;
-    if (texture_data.bytes.empty()) {
-        image.width = image.height = 1;
-        image.rgba.assign(fallback.begin(), fallback.end());
-    } else {
-        image = decode_image(ts::ArrayBuffer(texture_data.bytes));
-    }
-    if (texture_data.invert_y && image.height > 1) {
-        const std::size_t row_bytes =
-            static_cast<std::size_t>(image.width) * 4;
-        std::vector<std::uint8_t> row(row_bytes);
-        for (int y = 0; y < image.height / 2; ++y) {
-            std::uint8_t* top =
-                image.rgba.data() +
-                static_cast<std::size_t>(y) * row_bytes;
-            std::uint8_t* bottom =
-                image.rgba.data() +
-                static_cast<std::size_t>(image.height - 1 - y) *
-                    row_bytes;
-            std::memcpy(row.data(), top, row_bytes);
-            std::memcpy(top, bottom, row_bytes);
-            std::memcpy(bottom, row.data(), row_bytes);
-        }
-    }
+    const DecodedImage image =
+        decode_uploadable_image(texture_data, fallback);
     const std::uint32_t mip_count =
         1u + static_cast<std::uint32_t>(
                  std::floor(
@@ -2998,9 +2976,10 @@ void save_dawn_geometry_id_buffer(
             mesh_index < render_plan.size();
             ++mesh_index) {
             DawnMesh& mesh = state.meshes[mesh_index];
-            const std::uint32_t triangle_count = mesh.index_count / 3;
-            const std::uint32_t current_cluster_base = cluster_id_base;
-            cluster_id_base += (triangle_count + 127u) / 128u;
+            const ClusterRange cluster =
+                advance_cluster_range(mesh.index_count, cluster_id_base);
+            const std::uint32_t triangle_count = cluster.triangle_count;
+            const std::uint32_t current_cluster_base = cluster.id_start;
             const upstream::RenderItem& item = render_plan[mesh_index];
             const MaterialRecord* material =
                 item.material.value < engine.materials.size()
@@ -3010,20 +2989,8 @@ void save_dawn_geometry_id_buffer(
                 item.cull_mode == upstream::RenderCullMode::none;
             if (double_sided != (sided_mode == 1)) continue;
 
-            float alpha_options[4]{};
-            if (material) {
-                alpha_options[0] =
-                    item.bucket == upstream::RenderBucket::alpha_blend
-                        ? 2.0f
-                        : item.bucket ==
-                                upstream::RenderBucket::alpha_mask
-                            ? 1.0f
-                            : 0.0f;
-                alpha_options[1] = material->alpha_cutoff;
-                alpha_options[2] = material->base_color_factor.a;
-            } else {
-                alpha_options[2] = 1.0f;
-            }
+            const std::array<float, 4> alpha_options =
+                diagnostic_alpha_options(item, material);
             WGPUBufferDescriptor uniform_descriptor =
                 WGPU_BUFFER_DESCRIPTOR_INIT;
             uniform_descriptor.usage =
@@ -3036,7 +3003,10 @@ void save_dawn_geometry_id_buffer(
                 DiagnosticClusterUniforms uniforms{};
                 uniforms.cluster_options[0] = current_cluster_base;
                 uniforms.cluster_options[1] = 128;
-                std::copy_n(alpha_options, 4, uniforms.alpha_options);
+                std::copy_n(
+                    alpha_options.begin(),
+                    4,
+                    uniforms.alpha_options);
                 wgpuQueueWriteBuffer(
                     state.queue,
                     uniform_buffer,
@@ -3055,7 +3025,10 @@ void save_dawn_geometry_id_buffer(
                     static_cast<float>((draw_id >> 16) & 0xffu) /
                     255.0f;
                 uniforms.id_color[3] = 1.0f;
-                std::copy_n(alpha_options, 4, uniforms.alpha_options);
+                std::copy_n(
+                    alpha_options.begin(),
+                    4,
+                    uniforms.alpha_options);
                 wgpuQueueWriteBuffer(
                     state.queue,
                     uniform_buffer,
