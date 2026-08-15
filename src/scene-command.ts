@@ -10,6 +10,10 @@ import {
 } from "./parity-scene.js";
 import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
 import { runInstrumentedCapture } from "./capture-instrumented.js";
+import {
+    decodeCapturedUniforms,
+    formatDecodedUniforms,
+} from "./capture-uniforms.js";
 import { resolveScene, scenes } from "./scene-registry.js";
 import { readCacheConfiguration } from "./build-stamp.js";
 
@@ -744,6 +748,26 @@ async function main(): Promise<void> {
         );
         return;
     }
+    if (command === "uniforms" && id) {
+        const argument = (name: string): string | undefined => {
+            const index = rest.indexOf(name);
+            return index >= 0 ? rest[index + 1] : undefined;
+        };
+        const scene = resolveScene(id);
+        const directory =
+            argument("--capture") ??
+            join("artifacts", "capture", scene.id);
+        const sizes = argument("--size");
+        const module = argument("--module");
+        const decoded = decodeCapturedUniforms(directory, {
+            ...(sizes !== undefined
+                ? { sizes: sizes.split(",").map((value) => Number(value)) }
+                : {}),
+            ...(module !== undefined ? { module } : {}),
+        });
+        console.log(formatDecodedUniforms(decoded));
+        return;
+    }
     if (command === "capture" && id) {
         const argument = (name: string): string | undefined => {
             const index = rest.indexOf(name);
@@ -766,7 +790,7 @@ async function main(): Promise<void> {
         return;
     }
     throw new Error(
-        "Usage: scene-command <list | show <id|source.ts> | compile|build|process|parity|geometry|capture <id|source.ts|all> [options]>",
+        "Usage: scene-command <list | show <id|source.ts> | compile|build|process|parity|geometry|capture|uniforms <id|source.ts|all> [options]>",
     );
 }
 
