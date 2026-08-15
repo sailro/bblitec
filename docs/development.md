@@ -568,7 +568,6 @@ Scene 1 CPU and GPU runs use the same generic command:
 ```powershell
 npm run scene -- parity scene1 --cpu
 npm run scene -- parity scene1
-npm run parity:diagnostics
 ```
 
 `--cpu` is a gate only when the scene registry defines `cpuThresholds`.
@@ -586,7 +585,7 @@ before any of the scene 1 commands renders the draw-id, triangle-cluster, and
 PBR diagnostic buffers through Dawn instead of SDL_GPU; the `-gpu` filenames
 always reflect whichever backend produced the run. The two backends produce
 byte-identical id/cluster buffers and one-LSB-equal PBR buffers, so either
-side can attribute a diff against the browser oracle.
+side can attribute a diff.
 
 Render both GPU backends and diff them against each other and the
 golden in one report:
@@ -739,7 +738,6 @@ changes, run the canonical full validation sequence once:
 npm test
 npm run scenes:process
 npm run scenes:parity
-npm run parity:diagnostics
 npm run status:verify
 ```
 
@@ -785,9 +783,8 @@ Package any built numbered scene:
 npm run package:demo -- -Scene scene243
 ```
 
-`npm run package:boombox` remains the Scene 1 shorthand. The payload
-follows the `BBLITE_BACKEND` the build directory was configured with
-(read from its CMake cache): `SDL_GPU` ships offline DXIL/SPIR-V
+The payload follows the `BBLITE_BACKEND` the build directory was configured
+with (read from its CMake cache): `SDL_GPU` ships offline DXIL/SPIR-V
 shaders and no Dawn DLLs, `DAWN` ships WGSL text plus
 `webgpu_dawn.dll`/`dxcompiler.dll`/`dxil.dll` and the Dawn license
 (no FXC — see [backends](backends.md#building-and-running)), and

@@ -520,11 +520,6 @@ contract reduced scene 145 full MAD from `1.077` to `0.063` and scene 146 from
 full-resolution attachment maxima remain `0.067` and `0.057`; use
 `npm run scene -- geometry scene145|scene146` to inspect them individually.
 
-The diagnostic comparison report joins each final-image hotspot to the
-available WebGPU-oracle buffer MADs and its attributed shader variant. Base
-color and pre-tone HDR are currently native captures only; they are listed as
-uncompared artifacts until matching browser readbacks are added.
-
 ## Validation policy
 
 There is no hosted CI. A validated milestone keeps:
