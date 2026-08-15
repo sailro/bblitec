@@ -12,6 +12,7 @@ export interface PromiseLoweringContext {
     pushScope(cppPrefix: string): void;
     popScope(): void;
     allocateBlockPrefix(): string;
+    allocateTemporaryCppName(label: string): string;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -36,13 +37,38 @@ export function compileImmediatePromise(
                 "Promise.all requires one static array literal.",
             );
         }
-        for (const element of call.arguments[0].elements) {
-            emitValue(
-                context,
-                context.compileValue(element),
-            );
+        // Every element runs for its side effects whether or not the caller
+        // keeps its result — one of the awaited calls in Scene 21 is
+        // `loadEnvironment`, which the destructuring pattern skips with a
+        // hole. So the elements are always compiled in order here; the only
+        // question is whether their values have to outlive the call.
+        if (!isDestructured(call)) {
+            for (const element of call.arguments[0].elements) {
+                emitValue(
+                    context,
+                    context.compileValue(element),
+                );
+            }
+            return { kind: "void", cpp: "" };
         }
-        return { kind: "void", cpp: "" };
+        const elements: Value[] = [];
+        for (const element of call.arguments[0].elements) {
+            const value = context.compileValue(element);
+            if (value.cpp.length === 0 || value.kind === "engine") {
+                elements.push(value);
+                continue;
+            }
+            if (value.kind === "void") {
+                context.emit(`${value.cpp};`);
+                elements.push(value);
+                continue;
+            }
+            const temporary =
+                context.allocateTemporaryCppName("awaited");
+            context.emit(`auto ${temporary} = ${value.cpp};`);
+            elements.push({ ...value, cpp: temporary });
+        }
+        return { kind: "tuple", cpp: "", tupleElements: elements };
     }
     if (
         !ts.isPropertyAccessExpression(call.expression) ||
@@ -98,6 +124,28 @@ export function compileImmediatePromise(
         context.popScope();
     }
     return { kind: "void", cpp: "" };
+}
+
+/**
+ * Whether the awaited call's result is bound by an array pattern. A
+ * `Promise.all` whose result is discarded keeps emitting its elements as bare
+ * statements, which is what every scene reaching it before Scene 21 does.
+ */
+function isDestructured(call: ts.CallExpression): boolean {
+    let node: ts.Node = call;
+    while (
+        ts.isAwaitExpression(node.parent) ||
+        ts.isParenthesizedExpression(node.parent) ||
+        ts.isAsExpression(node.parent) ||
+        ts.isNonNullExpression(node.parent)
+    ) {
+        node = node.parent;
+    }
+    return (
+        ts.isVariableDeclaration(node.parent) &&
+        node.parent.initializer === node &&
+        ts.isArrayBindingPattern(node.parent.name)
+    );
 }
 
 function emitValue(
