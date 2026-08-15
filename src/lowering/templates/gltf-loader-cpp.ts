@@ -157,6 +157,15 @@ enum class LightTrackKind {
     outer_cone_angle,
 };
 
+// A light instantiated on an animated node. The pinned loader parents the
+// light to that node, so its world position and direction follow the node
+// every frame; ours bakes them at load, which leaves an animated light
+// shining from wherever it started.
+struct AnimatedLightBinding {
+    LightHandle light{};
+    std::size_t node = 0;
+};
+
 struct LightTrack {
     LightHandle light{};
     LightTrackKind kind = LightTrackKind::color;
@@ -391,7 +400,8 @@ struct AnimationRuntime {
     std::vector<TranslationTrack> scale_tracks;
     std::vector<WeightTrack> weight_tracks;${animationPointer ? `
     std::vector<VisibilityTrack> visibility_tracks;
-    std::vector<LightTrack> light_tracks;` : ""}${animationPointerMaterials ? `
+    std::vector<LightTrack> light_tracks;
+    std::vector<AnimatedLightBinding> light_nodes;` : ""}${animationPointerMaterials ? `
     std::vector<MaterialTrack> material_tracks;` : ""}
     std::vector<std::vector<std::uint32_t>> node_meshes;
     std::vector<AnimatedNode> nodes;
@@ -2020,6 +2030,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
 ${animationPointer ? `    // Runtime lights indexed by their KHR_lights_punctual definition index,
     // which is the index a light pointer names.
     std::vector<LightHandle> punctual_lights;
+    std::vector<AnimatedLightBinding> light_node_bindings;
 ` : ""}    if (const ts::JsonValue* extensions_value =
             optional(document, "extensions")) {
         const JsonObject& extensions =
@@ -2141,13 +2152,17 @@ ${animationPointer ? `    // Runtime lights indexed by their KHR_lights_punctual
                 if (light_index >= punctual_lights.size()) {
                     punctual_lights.resize(light_index + 1, LightHandle{});
                 }
-                punctual_lights[light_index] = light_handle;` : ""}
+                punctual_lights[light_index] = light_handle;
+                light_node_bindings.push_back(
+                    AnimatedLightBinding{light_handle, node_index});` : ""}
             }
         }
     }
     const auto animation_runtime =
         std::make_shared<AnimationRuntime>();
-    animation_runtime->node_meshes.resize(node_json.size());
+${animationPointer ? `    animation_runtime->light_nodes =
+        std::move(light_node_bindings);
+` : ""}    animation_runtime->node_meshes.resize(node_json.size());
     animation_runtime->nodes.resize(node_json.size());
     for (std::size_t index = 0; index < node_json.size(); ++index) {
         const JsonObject& node = node_json[index].as_object();
@@ -4165,7 +4180,33 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                 node.computing = false;
                 node.computed = true;
                 return node.world;
-            };
+            };${animationPointer ? `
+            // The pinned loader parents each punctual light to the node that
+            // instantiates it, so an animated node carries its light with it.
+            // Recomposed from the same world matrix and the same mirror
+            // convention the load-time path uses.
+            for (const AnimatedLightBinding& binding :
+                 animation_runtime->light_nodes) {
+                if (
+                    binding.light.value >= engine.lights.size() ||
+                    binding.node >= animation_runtime->nodes.size()) {
+                    continue;
+                }
+                const Matrix& light_world =
+                    compute_animated_world(binding.node);
+                LightRecord& light =
+                    engine.lights[binding.light.value];
+                light.position = Vec3{
+                    -light_world[12],
+                    light_world[13],
+                    light_world[14],
+                };
+                light.direction = normalize(Vec3{
+                    light_world[8],
+                    -light_world[9],
+                    -light_world[10],
+                });
+            }` : ""}
             for (const AnimatedMeshBinding& binding :
                  animation_runtime->meshes) {
                 ModelGeometry& geometry =
