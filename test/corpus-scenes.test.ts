@@ -121,7 +121,7 @@ test("keeps registered Babylon Lite support modules byte-identical to the pin", 
     for (const module of manifest.modules ?? []) {
         assert.match(
             module.upstreamPath,
-            /^lab\/lite\/src\/(?:demos|shared)\//,
+            /^lab\/lite\/src\/(?:demos|shared|_shared)\//,
         );
         assert.equal(
             module.source,

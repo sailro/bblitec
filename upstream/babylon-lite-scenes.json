@@ -399,6 +399,16 @@
       "upstreamPath": "lab/lite/src/shared/scene252-stdmorph.ts",
       "source": "corpus/babylon-lite/lab/lite/src/shared/scene252-stdmorph.ts",
       "sha256": "b6956a3222183bf612246f64892b315be698d7ceb40b8d594762428eedcc1bad"
+    },
+    {
+      "upstreamPath": "lab/lite/src/_shared/sprite-atlas-image.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/_shared/sprite-atlas-image.ts",
+      "sha256": "e4105e29198f336e792cdb05f2ce70e26eb61e373047ce429808edcded02aa91"
+    },
+    {
+      "upstreamPath": "lab/lite/src/_shared/sprite-grid.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/_shared/sprite-grid.ts",
+      "sha256": "9597ad7ae32b190f5c16dbd0ca1ff65ca6e851c3a717d069ca1361b087635ae3"
     }
   ]
 }
