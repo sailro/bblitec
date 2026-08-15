@@ -446,6 +446,18 @@ struct PropertyAnimationGroupOptions {
     bool loop = true;
 };
 
+// KHR_texture_transform is per texture slot upstream: gltf-ext-uv-transform.ts
+// attaches uScale/vScale/uOffset/vOffset/uAng to each texture wrapper, and each
+// sample computes its own UV from that wrapper's fields, so two slots on one
+// material may carry different transforms.
+struct TextureTransform {
+    float u_scale = 1.0f;
+    float v_scale = 1.0f;
+    float u_offset = 0.0f;
+    float v_offset = 0.0f;
+    float rotation = 0.0f;
+};
+
 struct MaterialRecord {
     Color3 diffuse_color{};
     Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
@@ -465,6 +477,22 @@ struct MaterialRecord {
     float diffuse_v_scale = 1.0f;
     float diffuse_u_offset = 0.0f;
     float diffuse_v_offset = 0.0f;
+    // Per-slot glTF texture transforms. Occlusion has no slot of its own: the
+    // pinned pointer registry maps occlusionTexture onto the ORM wrapper, which
+    // is the same texture our loader samples it from.
+    TextureTransform base_color_transform{};
+    TextureTransform orm_transform{};
+    TextureTransform normal_transform{};
+    TextureTransform emissive_transform{};
+    TextureTransform clearcoat_transform{};
+    TextureTransform clearcoat_roughness_transform{};
+    TextureTransform clearcoat_normal_transform{};
+    TextureTransform sheen_transform{};
+    TextureTransform sheen_roughness_transform{};
+    TextureTransform iridescence_transform{};
+    TextureTransform iridescence_thickness_transform{};
+    TextureTransform transmission_transform{};
+    TextureTransform thickness_transform{};
     std::uint32_t diffuse_coord_index = 0;
     std::uint32_t specular_coord_index = 0;
     std::uint32_t ambient_coord_index = 0;
