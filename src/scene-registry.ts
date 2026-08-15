@@ -1134,6 +1134,18 @@ const sceneInputs: readonly SceneInput[] = [
             },
         },
     },
+    {
+        id: "scene15",
+        name: "Scene 15 - Two Spot Lights",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene15.ts",
+        title: "Babylon Lite Native - Two Spot Lights",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

@@ -116,6 +116,7 @@ export function standardFragmentWgsl(
     lightSlots = 2,
     diffuseUv2 = false,
     bumpTexture = false,
+    spotLights = false,
 ): string {
     // The pinned template declares `array<LightEntry, MAX_LIGHTS>` and loops
     // `min(mesh.lc, MAX_LIGHTS)` entries. Native unrolls the same terms into
@@ -140,6 +141,37 @@ export function standardFragmentWgsl(
             "Standard vertex colors are lowered only for the color fragment variant.",
         );
     }
+    if (spotLights && task) {
+        throw new Error(
+            "Standard spot lights are lowered only for the color fragment variant.",
+        );
+    }
+    // The pinned lighting function reads `vLightDirection.w` as the cone
+    // cosine, so an unrolled slot cannot also use it to say whether it holds
+    // a light. A scene reaching a spot tags empty slots as kind -1 instead.
+    const emptySlotTest = spotLights
+        ? "lightData.w < -0.5"
+        : "lightDirection.w < 0.5";
+    // src/material/standard/standard-template.ts LIGHTING_FN, `t == 2u`:
+    // the cone cosine gates the light off entirely outside the cone and
+    // raises it to the falloff exponent inside it.
+    const spotCone = spotLights
+        ? `    if (lightData.w > 1.5 && lightData.w < 2.5) {
+        let coneCosine = max(
+            0.0,
+            dot(lightDirection.xyz, -resolvedDirection),
+        );
+        if (coneCosine >= lightDirection.w) {
+            attenuation *= max(
+                0.0,
+                pow(coneCosine, lightSpecular.a),
+            );
+        } else {
+            attenuation = 0.0;
+        }
+    }
+`
+        : "";
     const returnType = task
         ? "FragmentOutput"
         : "@location(0) vec4<f32>";
@@ -254,7 +286,7 @@ fn evaluateLight(
     var result: LightResult;
     result.diffuse = vec3<f32>(0.0);
     result.specular = vec3<f32>(0.0);
-    if (lightDirection.w < 0.5) {
+    if (${emptySlotTest}) {
         return result;
     }
     if (lightData.w > 2.5) {
@@ -294,7 +326,7 @@ fn evaluateLight(
     } else if (lightDistance > 0.000001) {
         resolvedDirection = lightVector / lightDistance;
     }
-    result.diffuse =
+${spotCone}    result.diffuse =
         max(0.0, dot(normalW, resolvedDirection)) *
         lightDiffuse.rgb *
         attenuation;

@@ -98,6 +98,7 @@ const featureSources: Record<Feature, string[]> = {
     "light:hemispheric": [],
     "light:directional": [],
     "light:point": [],
+    "light:spot": [],
     "loader:babylon": [],
     "loader:gltf": [],
     "material:pbr": [],

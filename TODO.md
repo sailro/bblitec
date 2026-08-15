@@ -188,13 +188,14 @@ CPU-side from GPU-side causes immediately.
   the reached triangle-list and triangle-strip pair.
 - [ ] Complete glTF animation coverage: scale and STEP channels, multiple
   clips, and richer animation-group controls.
-- [ ] glTF cameras. Spot lights load and shade in the extra-light slots
+- [ ] glTF cameras. Spot lights load and shade in the PBR extra-light slots
   under the pinned physical cone falloff; the primary slot encodes its kind
-  in `lightDirection.w` and carries no cone, so a scene whose FIRST light is
-  a spot fails explicitly rather than shading it as a directional light. The
-  pinned standard-falloff branch, which applies the spot exponent, is also
-  unreached: our extra-light attenuation is the physical inverse-square mode,
-  where the exponent is not read, and a glTF spot carries exponent 1 anyway.
+  in `lightDirection.w` and carries no cone, so a PBR scene whose FIRST light
+  is a spot fails explicitly rather than shading it as a directional light.
+  The Standard family shades spot cones under the pinned cosine-and-exponent
+  falloff instead (Scene 15), so the exponent is unread only on the PBR path,
+  where the attenuation is the physical inverse-square mode and a glTF spot
+  carries exponent 1 anyway.
 - [ ] KTX2/Basis and compression investigations. `EXT_texture_webp` is
   supported: the loader resolves the alternate image source the extension
   names, and the WebP decoder links only for scenes whose materialized assets
@@ -233,6 +234,25 @@ CPU-side from GPU-side causes immediately.
   `excludedMeshesIds`, Scene 9 uses both, and a scene-global slot list
   cannot express either — the uniform shape has to become per-mesh before
   that scene can be measured.
+- [ ] Carry a spot light's cone angle into native at the pin's precision. The
+  pinned factory computes `Math.cos(angle * 0.5)` in JS doubles and stores the
+  result into a float UBO; the compiler passes scalars to intrinsics as
+  `static_cast<float>(<double expression>)`, so the cosine is computed from an
+  already-rounded angle. Scene 15's `Math.PI / 2` gives bit-identical results
+  either way, but sweeping plausible cone angles at 1e-4 spacing, the two
+  orders disagree by one ULP for 35% of them — and the cone test is a hard
+  `>=` threshold, so one ULP flips whole boundary pixels rather than shading
+  them slightly differently. Scenes 18, 22, and 203 pass 1.2, 1.5, and 0.8;
+  measure one of them before deciding whether the intrinsic boundary needs a
+  double-valued scalar path.
+- [ ] Extend scene-code spot lights past the reached colour pair. The pinned
+  light also exposes `angle`, `exponent`, and `range` as settable properties;
+  no reached scene writes them, so their setters fail explicitly rather than
+  being accepted and ignored. Scene 203 is the only corpus scene that writes
+  `range` on a spot and it is blocked on engine options. Two compositions stay
+  out as well, both for the same reason — the slot component the cone cosine
+  takes is the one that says whether the slot holds a light: a spot in the
+  FIRST PBR analytic slot, and a spot with Standard geometry outputs.
 - [ ] Extend Standard vertex colors beyond the reached RGB slice: the pinned
   `std-vertex-color-fragment.ts` also consumes `vColor.a` under the
   `mesh.hasVertexAlpha` opt-in (output alpha, the vertex-alpha alpha test, and
@@ -310,6 +330,16 @@ CPU-side from GPU-side causes immediately.
   rounding on sparkle pixels with no directional bias; treat it as
   the same-browser raster floor unless an instrumented capture says
   otherwise.
+- [ ] Find why Scenes 9 and 37 do not render bit-identically on Dawn across
+  runs. Both are stable on SDL_GPU and both wobble on Dawn with no code change
+  at all: three consecutive differential runs of Scene 37 put its
+  SDL_GPU-versus-Dawn exact-match count at 920709, 920714, and 920773 of
+  921600, and Scene 9 left its baseline cell and returned to it exactly. The
+  published values are unaffected — every wobble is far below a rounded
+  digit — but it makes the documented neutrality proof ("snapshot every
+  `report-differential.json`, compare cell by cell") report these two scenes
+  as moved for any change whatsoever, so the proof needs a repeat run to
+  separate a real regression from this.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 
@@ -389,22 +419,22 @@ directly, which skips the per-invocation rebuild:
 The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
-**Current inventory:** 61 registered parity scenes and 172 unregistered
+**Current inventory:** 62 registered parity scenes and 171 unregistered
 corpus scenes. The compiler-contract lane has no compile-clean scenes. Each
 entry below records the first blocker only; clearing it can expose another.
 
 **Compile clean (0):** every compile-clean corpus scene is registered. The
 compiler-contract lane below is what gates the rest.
 
-**Largest first-blocker clusters:** `loadSpriteAtlas` 16, browser-dependent
-condition 17 (15 of them deferred-lane physics), `parseNodeMaterialFromSnippet`
-12, `createSpotLight` 8, engine options beyond msaaSamples/requiredLimits 7,
-static array literal 6, `parseNodeParticleSource` 6, numeric operators 6,
-`loadSplat` 5. Missing intrinsics account for 45% of all failures across 30
+**Largest first-blocker clusters:** browser-dependent condition 17 (15 of them
+deferred-lane physics), `parseNodeMaterialFromSnippet` 17, `loadSpriteAtlas`
+16, engine options beyond msaaSamples/requiredLimits 7, static array literal 6,
+numeric operators 6, `parseNodeParticleSource` 6, `receiveShadows` 5,
+`loadSplat` 5. Missing intrinsics account for 44% of all failures across 28
 distinct names. Several families are split across entries because the message
 carries the identifier: Standard diffuse-texture assignment blocks 5 scenes
-(18, 25, 90, 110, 272), mesh name/id setters block 4 (111, 113, 129, 221), and
-vector `.set()` on node properties blocks 5 (4, 22, 65, 141, 142).
+(18, 25, 90, 110, 272), vector `.set()` on node properties blocks 6 (4, 22, 65,
+141, 142, 223), and mesh name/id setters block 4 (111, 113, 129, 221).
 
 **No corpus scene can currently retire the runtime-sweep gate.** Scene 267 now
 measures `createMeshFromData` from the corpus, but of the remaining scenes
@@ -428,7 +458,7 @@ lane when they can be erased or lowered inside the compiler, asset pipeline,
 or renderer. A scene is deferred when its covered behavior needs a new
 platform, user-input, or external-service contract.
 
-**Integrate first (138 scenes):** 4, 11, 12, 15-23, 25-27,
+**Integrate first (137 scenes):** 4, 11, 12, 16-23, 25-27,
 36, 38, 39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-158, 160, 162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223,
 226, 229, 231, 241, 251, 261-264, 269-271, 275-280.
@@ -450,7 +480,7 @@ runtime gaps may remain hidden behind it.
 
 ### Integration-first compiler contract gaps
 
-- [ ] Scenes 4, 22, 65, 141: support light position setters.
+- [ ] Scenes 4, 22, 65, 141, 223: support light position setters.
 - [ ] Scene 115: support `Number.isFinite`, which is now its first
   blocker, then re-audit for deterministic picking.
 - [ ] Scenes 11, 144, 152, 157, 158, 179: generalize static array
@@ -460,14 +490,12 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 229: lower the reached spread element, which is its first
   blocker now that module-level constants resolve.
 - [ ] Scenes 12, 43: fold or explicitly lower the reached browser-dependent conditions.
-- [ ] Scenes 15, 67-72, 223: support `createSpotLight`.
-- [ ] Scenes 16, 226, 251, 261: extend numeric expression operators.
-- [ ] Scene 17: support `Math.atan`.
+- [ ] Scenes 16, 226, 251: extend numeric expression operators.
+- [ ] Scenes 17, 19: support `loadDdsEnvironment`.
 - [ ] Scenes 18, 25: support Standard ground diffuse textures.
-- [ ] Scene 19: support `loadDdsEnvironment`.
 - [ ] Scene 20: lower the reached arrow-function value.
 - [ ] Scene 21: support the reached non-identifier variable declarations.
-- [ ] Scene 23: support `Math.cos` with runtime numeric arguments.
+- [ ] Scene 23: support `setPbrAnisotropy`.
 - [ ] Scenes 26, 87: support image-processing `toneMapping`.
 - [ ] Scene 27: support glTF `selectVariant`.
 - [ ] Scene 36: support `loadBasisTexture2D`.
@@ -476,12 +504,13 @@ runtime gaps may remain hidden behind it.
 - [ ] Scenes 50, 52-56, 58, 92-98, 117, 118: support `loadSpriteAtlas`.
 - [ ] Scene 51: lower the reached browser-derived numeric value.
 - [ ] Scenes 57, 59: support the `CAMERA_POSITION` shader binding.
-- [ ] Scenes 60, 61, 64, 77-80, 82, 84, 85, 88, 89: support node-material snippets.
+- [ ] Scenes 60, 61, 64, 67-71, 77-80, 82, 84, 85, 88, 89: support
+  node-material snippets.
 - [ ] Scenes 62, 81, 83: resolve the module-level texture-URL
   constants they read. `loadTexture2D` itself landed; the blocker moved to
   `SCENE62_TEXTURE_URL` and its siblings.
 - [ ] Scene 63: support reached scene-light insertion.
-- [ ] Scenes 66, 214, 215, 271: support `receiveShadows`.
+- [ ] Scenes 66, 72, 214, 215, 271: support `receiveShadows`.
 - [ ] Scene 73: support camera viewports.
 - [ ] Scenes 74, 76: support `createEffectWrapper`.
 - [ ] Scene 75: support the `SCENE_CLEAR_COLOR` shader binding.
@@ -492,12 +521,13 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 111: support mesh IDs.
 - [ ] Scene 112: resolve and lower `addDdsEnvironmentBackground`.
 - [ ] Scenes 113, 129: support mesh names.
-- [ ] Scenes 114, 149: support the reached constructor expressions.
+- [ ] Scene 114: resolve `createMeshFromData` through its local re-export.
+- [ ] Scene 149: support the reached constructor expression.
 - [ ] Scenes 120, 121, 124-126: support `loadSplat`.
 - [ ] Scene 122: support `loadSOG`.
 - [ ] Scene 123: support `loadSPZ`.
 - [ ] Scenes 127, 128: support `createLinearDepthMaterial`.
-- [ ] Scene 140: support numeric conditional expressions in this context.
+- [ ] Scene 140: fold the reached browser-derived boolean.
 - [ ] Scene 142: support quaternion setters.
 - [ ] Scene 143: support `createBlurPostProcessTask`.
 - [ ] Scene 147: support `createCircleOfConfusionPostProcessTask`.
@@ -509,10 +539,13 @@ runtime gaps may remain hidden behind it.
   and an explicit image-neutral lowering decision for
   `enableThinInstanceGpuCulling`.
 - [ ] Scenes 160, 162: extend reached shader-material options.
-- [ ] Scenes 177, 217: extend reached PBR material options.
+- [ ] Scene 177: support `setPbrIridescence` on a scene-code material.
+- [ ] Scene 217: extend reached PBR material options.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
 - [ ] Scenes 202-207: extend reached engine options.
-- [ ] Scenes 218, 219: support asset-container entity iteration.
+- [ ] Scene 218: support asset-container entity iteration.
+- [ ] Scene 219: lower a value return that is not an inlined function's final
+  statement.
 - [ ] Scene 231: support `enableStandardSkeleton`, which is its first
   blocker now that Standard vertex colors are lowered; behind it sit
   `enableStandardUvOffset`, `createTexture2DFromPixels`, the skeleton
@@ -520,8 +553,8 @@ runtime gaps may remain hidden behind it.
   shared `scene231-skin` module, and `mesh.hasVertexAlpha`.
 - [ ] Scene 241: fold the reached query-derived camera alpha.
 - [ ] Scenes 262-264, 276, 277, 280: support node-particle sources.
-- [ ] Scene 269: support transform nodes.
-- [ ] Scene 270: support the reached mesh scaling setter.
+- [ ] Scenes 269, 270: support transform nodes.
+- [ ] Scene 261: support the reached mesh material assignment.
 - [ ] Scene 275: support `loadFont`.
 - [ ] Scene 278: support `createLineSystem`.
 - [ ] Scene 279: support `createLineMaterial`.
