@@ -174,8 +174,14 @@ CPU-side from GPU-side causes immediately.
   the dedicated uv2 occlusion pair is ported; base color, normal,
   emissive, and metallic-roughness texCoord selection remain
   unsupported).
-- [ ] Generalize texture transforms beyond one shared scale to per-slot
-  offsets, rotations, and independent transforms.
+- [x] Generalize texture transforms beyond one shared scale to per-slot
+  offsets, rotations, and independent transforms. Each texture slot carries
+  its own `KHR_texture_transform` and each sample computes its own UV, which
+  is where the pin keeps it. Two cases stay uncovered because no corpus asset
+  reaches them: `KHR_texture_transform.texCoord`, which selects a UV set per
+  slot (swept: zero usages across all 46 corpus model URLs), and upstream's
+  orm-unpack split, where occlusion samples the ORM image at a transform of
+  its own rather than the metallic-roughness one.
 - [ ] Vertex colors beyond the reached alpha/mask slice.
 - [ ] Sparse accessors, and the point/line/line-strip primitive modes beyond
   the reached triangle-list and triangle-strip pair.

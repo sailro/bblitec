@@ -37,6 +37,230 @@ import { standardFragmentWgsl } from "../shader-builtins-standard.js";
 import { pbrFragmentWgsl } from "../shader-builtins-pbr.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
+/**
+ * The texture slots a composed PBR fragment can sample, each with the material
+ * record field holding its glTF texture transform. Babylon Lite keeps the
+ * transform on the texture wrapper rather than on the material
+ * (`gltf-ext-uv-transform.ts`), so slots on one material disagree freely and
+ * each sample computes its own UV. `extension` names the option that composes
+ * the fragment owning the slot, so a scene emits exactly the pairs its shader
+ * reads — which is how upstream's per-fragment UBO slices behave.
+ */
+const pbrUvTransformSlots: ReadonlyArray<{
+    wgsl: string;
+    cpp: string;
+    extension?: "clearcoat" | "sheen" | "iridescence" | "transmission";
+}> = [
+    { wgsl: "baseColor", cpp: "base_color" },
+    { wgsl: "orm", cpp: "orm" },
+    { wgsl: "normal", cpp: "normal" },
+    { wgsl: "emissive", cpp: "emissive" },
+    { wgsl: "clearcoat", cpp: "clearcoat", extension: "clearcoat" },
+    {
+        wgsl: "clearcoatRoughness",
+        cpp: "clearcoat_roughness",
+        extension: "clearcoat",
+    },
+    {
+        wgsl: "clearcoatNormal",
+        cpp: "clearcoat_normal",
+        extension: "clearcoat",
+    },
+    { wgsl: "sheen", cpp: "sheen", extension: "sheen" },
+    { wgsl: "sheenRoughness", cpp: "sheen_roughness", extension: "sheen" },
+    { wgsl: "iridescence", cpp: "iridescence", extension: "iridescence" },
+    {
+        wgsl: "iridescenceThickness",
+        cpp: "iridescence_thickness",
+        extension: "iridescence",
+    },
+    {
+        wgsl: "refractionMap",
+        cpp: "transmission",
+        extension: "transmission",
+    },
+    { wgsl: "thickness", cpp: "thickness", extension: "transmission" },
+];
+
+function uvTransformName(slot: string): string {
+    return `bblUv${slot.charAt(0).toUpperCase()}${slot.slice(1)}`;
+}
+
+function replaceUvTransformMarker(
+    source: string,
+    marker: RegExp,
+    replacement: string,
+    label: string,
+): string {
+    if (!marker.test(source)) {
+        throw new Error(`PBR UV transform marker changed: ${label}.`);
+    }
+    return source.replace(marker, () => replacement);
+}
+
+/**
+ * Give every texture sample its own UV. Babylon Lite computes each slot's UV
+ * from that slot's own matrix and offset (`txfUV` in the composed fragment), so
+ * one material can rotate its normal map while its thickness map rotates the
+ * other way. Applied after the material-extension fragments are composed, since
+ * their samples are slots too.
+ */
+function applyPbrUvTransformWgsl(
+    source: string,
+    slots: ReadonlyArray<{ wgsl: string; cpp: string }>,
+): string {
+    const reached = new Set(slots.map((slot) => slot.wgsl));
+    let result = replaceUvTransformMarker(
+        source,
+        /  imageProcessingOptions : vec4<f32>,/,
+        "  imageProcessingOptions : vec4<f32>,\n" +
+            slots
+                .map(
+                    (slot) =>
+                        `  ${slot.wgsl}UVm : vec4<f32>,\n` +
+                        `  ${slot.wgsl}UVt : vec4<f32>,`,
+                )
+                .join("\n"),
+        "uniform block",
+    );
+    const declarations = slots
+        .map(
+            (slot) =>
+                `  let ${uvTransformName(slot.wgsl)} = bblTxfUv(v_4, ` +
+                `FragmentUniforms.${slot.wgsl}UVm, ` +
+                `FragmentUniforms.${slot.wgsl}UVt.xy);`,
+        )
+        .join("\n");
+    const signature = /fn main_inner\(([^)]*)\) \{/;
+    const signatureMatch = signature.exec(result);
+    if (!signatureMatch) {
+        throw new Error("PBR UV transform marker changed: main_inner signature.");
+    }
+    result = result.replace(
+        signature,
+        () =>
+            "fn bblTxfUv(uv : vec2<f32>, m : vec4<f32>, t : vec2<f32>) -> vec2<f32> {\n" +
+            "  return vec2<f32>(dot(m.xy, uv), dot(m.zw, uv)) + t;\n" +
+            "}\n\n" +
+            `${signatureMatch[0]}\n${declarations}`,
+    );
+    // Each site names the slot whose transform it must sample at. The
+    // derivative pairs belong to the normal-map slots: the cotangent frame is
+    // built from the UV the normal map is sampled at.
+    const sites: Array<{ slot: string; marker: RegExp; replacement: string }> = [
+        {
+            slot: "normal",
+            marker: /textureSample\(normalTexture, normalSampler, v_4\)/,
+            replacement: "textureSample(normalTexture, normalSampler, bblUvNormal)",
+        },
+        {
+            slot: "normal",
+            marker: /      let v_13 = dpdx\(v_4\);\r?\n      let v_14 = dpdy\(v_4\);/,
+            replacement:
+                "      let v_13 = dpdx(bblUvNormal);\n" +
+                "      let v_14 = dpdy(bblUvNormal);",
+        },
+        {
+            slot: "baseColor",
+            marker: /textureSample\(baseColorTexture, baseColorSampler, v_4\)/,
+            replacement:
+                "textureSample(baseColorTexture, baseColorSampler, bblUvBaseColor)",
+        },
+        {
+            slot: "orm",
+            marker: /textureSample\(metallicRoughnessTexture, metallicRoughnessSampler, v_4\)/,
+            replacement:
+                "textureSample(metallicRoughnessTexture, metallicRoughnessSampler, bblUvOrm)",
+        },
+        {
+            slot: "emissive",
+            marker: /textureSample\(emissiveTexture, emissiveSampler, v_4\)/,
+            replacement:
+                "textureSample(emissiveTexture, emissiveSampler, bblUvEmissive)",
+        },
+        {
+            slot: "refractionMap",
+            marker: /      transmissionSampler,\r?\n      v_4,/,
+            replacement: "      transmissionSampler,\n      bblUvRefractionMap,",
+        },
+        {
+            slot: "thickness",
+            marker: /      thicknessSampler,\r?\n      v_4,/,
+            replacement: "      thicknessSampler,\n      bblUvThickness,",
+        },
+        {
+            slot: "clearcoat",
+            marker: /textureSample\(clearcoatTexture, clearcoatSampler, v_4\)/,
+            replacement:
+                "textureSample(clearcoatTexture, clearcoatSampler, bblUvClearcoat)",
+        },
+        {
+            slot: "clearcoatRoughness",
+            marker: /        clearcoatRoughnessSampler,\r?\n        v_4\)/,
+            replacement:
+                "        clearcoatRoughnessSampler,\n        bblUvClearcoatRoughness)",
+        },
+        {
+            slot: "clearcoatNormal",
+            marker: /  let cc_duv1 = dpdx\(v_4\);\r?\n  let cc_duv2 = dpdy\(v_4\);/,
+            replacement:
+                "  let cc_duv1 = dpdx(bblUvClearcoatNormal);\n" +
+                "  let cc_duv2 = dpdy(bblUvClearcoatNormal);",
+        },
+        {
+            slot: "clearcoatNormal",
+            marker: /textureSample\(clearcoatNormalTexture, clearcoatNormalSampler, v_4\)/,
+            replacement:
+                "textureSample(clearcoatNormalTexture, clearcoatNormalSampler, bblUvClearcoatNormal)",
+        },
+        {
+            slot: "sheen",
+            marker: /textureSample\(sheenColorTexture, sheenColorSampler, v_4\)/,
+            replacement:
+                "textureSample(sheenColorTexture, sheenColorSampler, bblUvSheen)",
+        },
+        {
+            slot: "sheenRoughness",
+            marker: /textureSample\(sheenRoughnessTexture, sheenRoughnessSampler, v_4\)/,
+            replacement:
+                "textureSample(sheenRoughnessTexture, sheenRoughnessSampler, bblUvSheenRoughness)",
+        },
+        {
+            slot: "iridescence",
+            marker: /textureSample\(iridescenceTexture, iridescenceSampler, v_4\)/,
+            replacement:
+                "textureSample(iridescenceTexture, iridescenceSampler, bblUvIridescence)",
+        },
+        {
+            slot: "iridescenceThickness",
+            marker: /        iridescenceThicknessSampler,\r?\n        v_4\)/,
+            replacement:
+                "        iridescenceThicknessSampler,\n        bblUvIridescenceThickness)",
+        },
+    ];
+    for (const site of sites) {
+        if (!reached.has(site.slot)) continue;
+        result = replaceUvTransformMarker(
+            result,
+            site.marker,
+            site.replacement,
+            `${site.slot} sample`,
+        );
+    }
+    return result;
+}
+
+function reachedUvTransformSlots(options: {
+    clearcoat?: boolean;
+    sheen?: boolean;
+    iridescence?: boolean;
+    transmission?: boolean;
+}): ReadonlyArray<{ wgsl: string; cpp: string }> {
+    return pbrUvTransformSlots.filter(
+        (slot) => slot.extension === undefined || options[slot.extension] === true,
+    );
+}
+
 const renderTaskModule = "src/frame-graph/render-task.ts";
 const pbrTemplateModule = "src/material/pbr/pbr-template.ts";
 const pbrTemplateExtModule = "src/material/pbr/pbr-template-ext.ts";
@@ -371,9 +595,16 @@ export class RendererLowerer {
     std::array<std::array<float, 4>, 4> view_projection{};
 `
             : "";
+        const uvTransformSlots = reachedUvTransformSlots(options);
         const textureTransformUniformField =
             options.textureTransform
-                ? "    std::array<float, 4> uv_transform{};\n"
+                ? uvTransformSlots
+                      .map(
+                          (slot) =>
+                              `    std::array<float, 4> ${slot.cpp}_uv_m{};\n` +
+                              `    std::array<float, 4> ${slot.cpp}_uv_t{};\n`,
+                      )
+                      .join("")
                 : "";
         // One uniform slot per Standard light the scene's assets carry,
         // never fewer than the two this block has always emitted.
@@ -405,15 +636,48 @@ export class RendererLowerer {
     };
 `
             : "";
+        // Pinned uv-transform writeOne: the rotation-free branch stores the
+        // scales on the diagonal untouched, and the rotated branch composes
+        // [c*sx, s*sy, -s*sx, c*sy] in JavaScript doubles before the
+        // Float32Array store rounds each component once.
         const textureTransformMaterialUniform =
             options.textureTransform
-                ? `        result.uv_transform = {
-            material.diffuse_u_scale,
-            material.diffuse_v_scale,
-            material.diffuse_u_offset,
-            material.diffuse_v_offset,
-        };
-`
+                ? uvTransformSlots
+                      .map(
+                          (slot) => `        {
+            const TextureTransform& slot = material.${slot.cpp}_transform;
+            if (slot.rotation == 0.0f) {
+                result.${slot.cpp}_uv_m = {
+                    slot.u_scale,
+                    0.0f,
+                    0.0f,
+                    slot.v_scale,
+                };
+            } else {
+                const double angle = static_cast<double>(slot.rotation);
+                const double cosine = std::cos(angle);
+                const double sine = std::sin(angle);
+                result.${slot.cpp}_uv_m = {
+                    static_cast<float>(
+                        cosine * static_cast<double>(slot.u_scale)),
+                    static_cast<float>(
+                        sine * static_cast<double>(slot.v_scale)),
+                    static_cast<float>(
+                        -sine * static_cast<double>(slot.u_scale)),
+                    static_cast<float>(
+                        cosine * static_cast<double>(slot.v_scale)),
+                };
+            }
+            result.${slot.cpp}_uv_t = {
+                slot.u_offset,
+                slot.v_offset,
+                0.0f,
+                0.0f,
+            };
+        }
+`,
+                      )
+                      .join("")
                 : "";
         const multiLightUniformFields =
             options.multiLight
@@ -2770,18 +3034,6 @@ fn bblCalcFogFactor(fogDistance : vec3<f32>) -> f32 {
                 "    bblFoggedColor,\n    FragmentUniforms.imageProcessingOptions.x > 0.5f,",
             );
         }
-        if (options.textureTransform) {
-            convertedPbr = convertedPbr.replace(
-                /  imageProcessingOptions : vec4<f32>,/,
-                "  imageProcessingOptions : vec4<f32>,\n" +
-                    "  uvTransform : vec4<f32>,",
-            );
-            convertedPbr = convertedPbr.replace(
-                /fn main_inner\(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>, v_5 : vec4<f32>, v_6 : bool\) \{/,
-                "fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4_raw : vec2<f32>, v_5 : vec4<f32>, v_6 : bool) {\n" +
-                    "  let v_4 = v_4_raw * FragmentUniforms.uvTransform.xy + FragmentUniforms.uvTransform.zw;",
-            );
-        }
         if (options.multiLight) {
             const primaryPointAttenuation =
                 /    let v_62 = max\(0\.0f, \(1\.0f - \(sqrt\(v_59\) \/ max\(FragmentUniforms\.groundColor\.w, 0\.00009999999747378752f\)\)\)\);/;
@@ -2951,6 +3203,12 @@ ${directMarker}`,
             dispersion: options.dispersion === true,
             occlusionUv2: options.occlusionUv2 === true,
         });
+        if (options.textureTransform) {
+            convertedPbr = applyPbrUvTransformWgsl(
+                convertedPbr,
+                reachedUvTransformSlots(options),
+            );
+        }
         const pbrProvenance = this.context.provenance(
             pbrTemplateModule,
             "createPbrTemplate",

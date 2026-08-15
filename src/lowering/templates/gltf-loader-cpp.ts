@@ -1032,8 +1032,12 @@ const ts::JsonValue* texture_transform_value(
         "KHR_texture_transform");
 }
 
+// Read one textureInfo's KHR_texture_transform into that slot's own transform.
+// The pinned wrapTexture patches only the fields the extension declares and
+// leaves the rest at their defaults, so an absent scale/offset/rotation keeps
+// the identity values this record is constructed with.
 void apply_texture_transform(
-    MaterialRecord& material,
+    TextureTransform& slot,
     const ts::JsonValue* texture_info) {
     if (!texture_info) return;
     const ts::JsonValue* extensions_value =
@@ -1053,52 +1057,14 @@ void apply_texture_transform(
     const std::vector<float> offset =
         float_array(optional(transform, "offset"));
     if (scale.size() == 2) {
-        material.diffuse_u_scale = scale[0];
-        material.diffuse_v_scale = scale[1];
+        slot.u_scale = scale[0];
+        slot.v_scale = scale[1];
     }
     if (offset.size() == 2) {
-        // KHR_texture_transform composes as uv * scale + offset, which is
-        // what the fragment already computes from uvTransform.xy/.zw.
-        material.diffuse_u_offset = offset[0];
-        material.diffuse_v_offset = offset[1];
+        slot.u_offset = offset[0];
+        slot.v_offset = offset[1];
     }
-    if (
-        std::abs(
-            float_or(transform, "rotation", 0.0f)) >
-        0.000001f) {
-        throw std::runtime_error(
-            "Rotated glTF texture transforms are not supported.");
-    }
-}
-
-void require_matching_texture_transform(
-    const MaterialRecord& material,
-    const ts::JsonValue* texture_info) {
-    if (!texture_info) return;
-    MaterialRecord candidate;
-    apply_texture_transform(
-        candidate,
-        texture_info);
-    if (
-        std::abs(
-            candidate.diffuse_u_scale -
-            material.diffuse_u_scale) >
-            0.000001f ||
-        std::abs(
-            candidate.diffuse_v_scale -
-            material.diffuse_v_scale) >
-            0.000001f ||
-        std::abs(
-            candidate.diffuse_u_offset -
-            material.diffuse_u_offset) >
-            0.000001f ||
-        std::abs(
-            candidate.diffuse_v_offset -
-            material.diffuse_v_offset) >
-            0.000001f) {
-        throw std::runtime_error(
-            "Reached glTF material uses distinct texture transforms.");
-    }
+    slot.rotation = float_or(transform, "rotation", 0.0f);
 }
 
 // Babylon Lite bakes texture-less PBR factors into 1x1 factor
@@ -1151,7 +1117,7 @@ MaterialHandle load_material(
         material.base_color_texture = texture_data(
             buffer, container, views, images, textures, samplers, base_color_texture);
         apply_texture_transform(
-            material,
+            material.base_color_transform,
             base_color_texture);
         const ts::JsonValue*
             metallic_roughness_texture =
@@ -1160,8 +1126,8 @@ MaterialHandle load_material(
                     "metallicRoughnessTexture");
         material.metallic_roughness_texture = texture_data(
             buffer, container, views, images, textures, samplers, metallic_roughness_texture);
-        require_matching_texture_transform(
-            material,
+        apply_texture_transform(
+            material.orm_transform,
             metallic_roughness_texture);
         if (material.metallic_roughness_texture.bytes.empty()) {
             material.metallic_factor =
@@ -1195,8 +1161,8 @@ MaterialHandle load_material(
         optional(material_json, "normalTexture");
     material.normal_texture = texture_data(
         buffer, container, views, images, textures, samplers, normal_texture);
-    require_matching_texture_transform(
-        material,
+    apply_texture_transform(
+        material.normal_transform,
         normal_texture);
     if (normal_texture) {
         material.normal_texture_scale =
@@ -1315,6 +1281,9 @@ MaterialHandle load_material(
                 textures,
                 samplers,
                 optional(volume, "thicknessTexture"));
+            apply_texture_transform(
+                material.thickness_transform,
+                optional(volume, "thicknessTexture"));
         }
         if (const ts::JsonValue* transmission_value =
                 optional(extensions, "KHR_materials_transmission")) {
@@ -1329,6 +1298,9 @@ MaterialHandle load_material(
                 images,
                 textures,
                 samplers,
+                optional(transmission, "transmissionTexture"));
+            apply_texture_transform(
+                material.transmission_transform,
                 optional(transmission, "transmissionTexture"));
         }
         if (const ts::JsonValue* dispersion_value =
@@ -1410,14 +1382,14 @@ MaterialHandle load_material(
                           "scale",
                           1.0f)
                     : 1.0f;
-            require_matching_texture_transform(
-                material,
+            apply_texture_transform(
+                material.clearcoat_transform,
                 clearcoat_texture);
-            require_matching_texture_transform(
-                material,
+            apply_texture_transform(
+                material.clearcoat_roughness_transform,
                 clearcoat_roughness_texture);
-            require_matching_texture_transform(
-                material,
+            apply_texture_transform(
+                material.clearcoat_normal_transform,
                 clearcoat_normal_texture);
         }
         if (const ts::JsonValue* sheen_value =
@@ -1481,12 +1453,17 @@ MaterialHandle load_material(
                 material.sheen_roughness_texture =
                     material.sheen_color_texture;
             }
-            require_matching_texture_transform(
-                material,
+            apply_texture_transform(
+                material.sheen_transform,
                 sheen_color_texture);
-            require_matching_texture_transform(
-                material,
-                sheen_roughness_texture);
+            // Roughness shares the colour texture when the asset declares no
+            // separate one, so it shares that texture's transform too — the
+            // fallback the pinned pointer resolver makes explicit.
+            apply_texture_transform(
+                material.sheen_roughness_transform,
+                sheen_roughness_texture
+                    ? sheen_roughness_texture
+                    : sheen_color_texture);
         }
         if (const ts::JsonValue* iridescence_value =
                 optional(
@@ -1533,22 +1510,28 @@ MaterialHandle load_material(
                     textures,
                     samplers,
                     iridescence_thickness_texture);
-            require_matching_texture_transform(
-                material,
+            apply_texture_transform(
+                material.iridescence_transform,
                 iridescence_texture);
-            require_matching_texture_transform(
-                material,
+            apply_texture_transform(
+                material.iridescence_thickness_transform,
                 iridescence_thickness_texture);
         }
     }
     material.emissive_texture = texture_data(
         buffer, container, views, images, textures, samplers, optional(material_json, "emissiveTexture"));
-    require_matching_texture_transform(
-        material,
+    apply_texture_transform(
+        material.emissive_transform,
         optional(material_json, "emissiveTexture"));
-    require_matching_texture_transform(
-        material,
-        optional(material_json, "occlusionTexture"));
+    if (material.metallic_roughness_texture.bytes.empty()) {
+        // Occlusion is sampled from the ORM texture, so it carries that slot's
+        // transform. When the asset declares no metallic-roughness texture the
+        // occlusion image IS the ORM texture, so its own transform is the one
+        // that slot must use.
+        apply_texture_transform(
+            material.orm_transform,
+            optional(material_json, "occlusionTexture"));
+    }
     const std::vector<float> emissive = float_array(optional(material_json, "emissiveFactor"));
     if (emissive.size() == 3) material.emissive_factor = Color3{emissive[0], emissive[1], emissive[2]};${animationPointerMaterials ? `
     material.emissive_base_factor = material.emissive_factor;` : ""}
