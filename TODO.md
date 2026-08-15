@@ -462,6 +462,17 @@ The audit uses the pinned
 scene that did not reach a MAD measurement; measured scenes are dashboarded in
 [status](docs/status.md).
 
+**The corpus carries only the shared modules registered scenes import.**
+`lab/lite/src/shared/` holds one file here (scene252-stdmorph.ts, pinned in
+`upstream/babylon-lite-scenes.json` like any scene source), because that is the
+only one a registered scene reaches. Two of the three largest blocker clusters
+import shared modules that are therefore absent: every `loadSpriteAtlas` scene
+reads `../_shared/sprite-atlas-image` and `../_shared/sprite-grid`, and every
+node-material scene reads `../shared/sceneNN-nme.js`. The compiler reports the
+missing intrinsic first, so the gap only surfaces once that intrinsic lands.
+Integrating from either cluster starts by copying those modules out of the
+pinned upstream tree and pinning their SHA-256 beside the scenes.
+
 Refresh it by building `dist` once and then compiling each unregistered scene
 directly, which skips the per-invocation rebuild:
 `node dist/src/scene-command.js compile corpus/babylon-lite/lab/lite/src/lite/sceneNNN.ts`.
@@ -539,7 +550,10 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 229: lower the reached spread element, which is its first
   blocker now that module-level constants resolve.
 - [ ] Scenes 12, 43: fold or explicitly lower the reached browser-dependent conditions.
-- [ ] Scenes 16, 226, 251: extend numeric expression operators.
+- [ ] Scenes 16, 226, 251: lower the reached nullish-coalescing operator. The
+  blocker message names numeric expressions, but the operand is a container:
+  226 reads `container._gaussianSplats ?? []` and 251 `xbot.animationGroups ??
+  []`, with splats and animation groups behind them.
 - [ ] Scenes 18, 25: support Standard ground diffuse textures.
 - [ ] Scene 20: lower the reached arrow-function value.
 - [ ] Scene 21: support the reached non-identifier variable declarations.
@@ -603,7 +617,9 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 241: fold the reached query-derived camera alpha.
 - [ ] Scenes 262-264, 276, 277, 280: support node-particle sources.
 - [ ] Scenes 269, 270: support transform nodes.
-- [ ] Scene 261: support the reached mesh material assignment.
+- [ ] Scene 261: lower the reached arrow function, which is what fails on
+  `box.material` inside it rather than the assignment itself; temporal
+  anti-aliasing sits behind it.
 - [ ] Scene 275: support `loadFont`.
 - [ ] Scene 278: support `createLineSystem`.
 - [ ] Scene 279: support `createLineMaterial`.
