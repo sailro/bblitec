@@ -138,13 +138,18 @@ ${seedScript}<script type="module" src="${entryPath}"></script></body></html>`;
         }
         const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
         const path = resolve(root, relative);
-        // Local TypeScript modules referenced with ESM ".js" specifiers
-        // (corpus demo modules, example helpers) transpile on demand.
+        // Local TypeScript modules transpile on demand. Corpus scenes
+        // write both specifier styles: the ESM ".js" one the demo build
+        // rewrites, and the bare extensionless one bundlers resolve (the
+        // sprite scenes import `../_shared/sprite-atlas-image`), so the
+        // sibling to compile is found either way.
         if (
-            url.pathname.endsWith(".js") &&
-            (!existsSync(path) || !statSync(path).isFile())
+            !existsSync(path) ||
+            !statSync(path).isFile()
         ) {
-            const typescriptPath = `${path.slice(0, -3)}.ts`;
+            const typescriptPath = url.pathname.endsWith(".js")
+                ? `${path.slice(0, -3)}.ts`
+                : `${path}.ts`;
             if (
                 typescriptPath.startsWith(`${root}${sep}`) &&
                 existsSync(typescriptPath) &&

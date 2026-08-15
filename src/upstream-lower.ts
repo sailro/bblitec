@@ -9,6 +9,11 @@ import { GltfLowerer } from "./lowering/gltf-lowerer.js";
 import { BabylonLowerer } from "./lowering/babylon-lowerer.js";
 import { FactoryLowerer } from "./lowering/factory-lowerer.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
+import { SpriteLowerer } from "./lowering/sprite-lowerer.js";
+import {
+    spriteFragmentWgsl,
+    spriteVertexWgsl,
+} from "./shader-builtins-sprite.js";
 import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
 import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
@@ -280,6 +285,50 @@ class GeneratedSourceWriter {
                 generated,
             );
         }
+        // Every WGSL module this run emits, whichever renderer produced it.
+        const composedShaders: Array<{
+            output: string;
+            data: string;
+        }> = [];
+        if (features.includes("sprite:2d")) {
+            const sprites = new SpriteLowerer(context);
+            this.writeSource(
+                "upstream/src/sprite_2d.cpp",
+                sprites.lowerCore(),
+                generated,
+                "upstream/include/bblite/upstream/sprite_layer.hpp",
+            );
+            if (features.includes("renderer:sprite")) {
+                const shader = sprites.shaderSource();
+                const provenance = context.provenance(
+                    "src/sprite/sprite-pipeline.ts",
+                    "makeSpriteWgsl",
+                );
+                composedShaders.push(
+                    {
+                        output:
+                            "upstream/shaders/sprite.vert.native.wgsl",
+                        data: spriteVertexWgsl(
+                            provenance,
+                            shader,
+                        ),
+                    },
+                    {
+                        output:
+                            "upstream/shaders/sprite.frag.native.wgsl",
+                        data: spriteFragmentWgsl(
+                            provenance,
+                            shader,
+                        ),
+                    },
+                );
+                generated.push({
+                    modulePath: "src/sprite/sprite-pipeline.ts",
+                    symbolName:
+                        "makeSpritePrologueWgsl,makeSpriteWgsl,buildSpriteLayerUbo",
+                });
+            }
+        }
         if (features.includes("renderer:pbr")) {
             const renderer = new RendererLowerer(context);
             this.writeSource(
@@ -374,27 +423,7 @@ class GeneratedSourceWriter {
                 dispersion: options.dispersion,
                 occlusionUv2: options.occlusionUv2,
             });
-            for (const shader of shaders) {
-                this.tree.write(shader.output, shader.data);
-            }
-            this.tree.write(
-                "upstream/shaders/composition.json",
-                `${JSON.stringify(
-                    {
-                        modules: shaders
-                            .filter(({ output }) =>
-                                output.endsWith(".wgsl"))
-                            .map(({ output, data }) => ({
-                                output,
-                                sha256: createHash("sha256")
-                                    .update(data)
-                                    .digest("hex"),
-                            })),
-                    },
-                    null,
-                    2,
-                )}\n`,
-            );
+            composedShaders.push(...shaders);
             if (options.shaderPrograms.length > 0) {
                 this.tree.write(
                     "upstream/shaders/shader-material-reflection.json",
@@ -506,6 +535,30 @@ class GeneratedSourceWriter {
                 "upstream/src/mesh_factories.cpp",
                 factories.lowerMeshFactories(),
                 generated,
+            );
+        }
+
+        if (composedShaders.length > 0) {
+            for (const shader of composedShaders) {
+                this.tree.write(shader.output, shader.data);
+            }
+            this.tree.write(
+                "upstream/shaders/composition.json",
+                `${JSON.stringify(
+                    {
+                        modules: composedShaders
+                            .filter(({ output }) =>
+                                output.endsWith(".wgsl"))
+                            .map(({ output, data }) => ({
+                                output,
+                                sha256: createHash("sha256")
+                                    .update(data)
+                                    .digest("hex"),
+                            })),
+                    },
+                    null,
+                    2,
+                )}\n`,
             );
         }
 

@@ -67,6 +67,10 @@ Primary source ownership:
 | `native/src/pal.cpp` | filesystem, paths, environment, timing, host engine |
 | `native/src/pal_sdl.cpp` | deterministic SDL_Renderer fallback |
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
+| `native/src/pal_sdl_gpu_shared.hpp` | SDL_GPU-only mechanics: shader load, buffer/texture upload, sampler, PNG readback |
+| `native/src/pal_sdl_gpu_sprite.cpp` | the pure-2D sprite pass on SDL_GPU, a separate translation unit because a sprite-only scene generates no camera or render-plan headers |
+| `native/src/pal_dawn_shared.hpp` | Dawn-only device, surface and swapchain bring-up |
+| `native/src/pal_dawn_sprite.cpp` | the same sprite pass on Dawn |
 | `native/src/pal_dawn.cpp` | Dawn (WebGPU) resources, uploads, pipelines, readback, submission |
 | `native/src/pal_gpu_shared.hpp` | vertex packing, RGBD decode, deformation uniforms, and inverse image processing shared byte-identically by both GPU backends |
 
@@ -185,6 +189,8 @@ The current generated slice includes:
 - generated infinite-distance solid and HDR skybox behavior
 - finite root-positioned DDS background cubes matching Babylon Lite's scene
   view-projection contract
+- pure-2D sprite layers and their own `SpriteRenderer` rendering context,
+  over a compile-time-drawn canvas2D atlas, on both GPU backends
 - ordered opaque/transparent draw lists, camera matrices, uniforms, and
   frame-graph tasks
 - Standard/PBR geometry MRTs, depth-only passes, blits, and MSAA resolve

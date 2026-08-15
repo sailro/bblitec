@@ -113,6 +113,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["loader:babylon"],
     },
     {
+        source: "upstream/src/sprite_2d.cpp",
+        features: ["sprite:2d"],
+    },
+    {
         source: "upstream/src/renderer_plan.cpp",
         features: ["renderer:pbr"],
     },

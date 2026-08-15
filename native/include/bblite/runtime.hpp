@@ -87,6 +87,18 @@ struct TaskHandle {
     std::uint32_t value = invalid_handle;
 };
 
+struct SpriteAtlasHandle {
+    std::uint32_t value = invalid_handle;
+};
+
+struct Sprite2DLayerHandle {
+    std::uint32_t value = invalid_handle;
+};
+
+struct SpriteRendererHandle {
+    std::uint32_t value = invalid_handle;
+};
+
 enum class PrimitiveKind {
     babylon,
     box,
@@ -399,6 +411,89 @@ struct MeshRecord {
     std::uint64_t morph_weights_version = 0;
 };
 
+// ---------------------------------------------------------------------------
+// Sprites (src/sprite/*). A sprite layer is pure data upstream and stays pure
+// data here: the Index API writes floats into one interleaved instance buffer
+// and the renderer draws it. None of it touches the scene renderer -- a
+// `SpriteRenderer` is its own rendering context on the engine, exactly as the
+// pinned one is.
+// ---------------------------------------------------------------------------
+
+/** shared/sprite-atlas.ts `SpriteFrame`: UVs in [0,1], size in pixels. */
+struct SpriteFrame {
+    Vec2 uv_min{};
+    Vec2 uv_max{};
+    Vec2 source_size_px{};
+    Vec2 pivot{0.5f, 0.5f};
+};
+
+struct SpriteAtlasRecord {
+    // Decoded at load, because `createGridSpriteAtlas` partitions the
+    // texture it was handed and so needs its size before any frame exists.
+    std::vector<std::uint8_t> rgba;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<SpriteFrame> frames;
+    bool premultiplied_alpha = false;
+    TextureSamplerState sampler{};
+};
+
+/** blend-descriptors.ts / sprite-blend.ts, as the pure data they are. */
+enum class SpriteBlendFactor {
+    zero,
+    one,
+    src_alpha,
+    one_minus_src_alpha,
+    dst,
+    dst_alpha,
+};
+
+struct SpriteBlendComponent {
+    SpriteBlendFactor src = SpriteBlendFactor::one;
+    SpriteBlendFactor dst = SpriteBlendFactor::zero;
+};
+
+struct SpriteBlendDescriptor {
+    // `_descriptor` absent upstream means no colour blend at all.
+    bool enabled = true;
+    SpriteBlendComponent color{};
+    SpriteBlendComponent alpha{};
+    // `_premultipliedOpacity`: per-layer opacity scales RGB as well as A.
+    bool premultiplied_opacity = false;
+};
+
+/** sprite-2d.ts `Sprite2DView`. Identity is a pixel-perfect HUD. */
+struct Sprite2DView {
+    Vec2 position_px{};
+    float zoom = 1.0f;
+    float rotation = 0.0f;
+};
+
+struct Sprite2DLayerRecord {
+    SpriteAtlasHandle atlas{};
+    SpriteBlendDescriptor blend{};
+    float opacity = 1.0f;
+    bool visible = true;
+    float order = 0.0f;
+    Sprite2DView view{};
+    Vec2 pivot{0.5f, 0.5f};
+    std::uint32_t count = 0;
+    std::uint32_t capacity = 0;
+    // 13 for the pure-2D layout; the depth-hosted 14th slot is unreached.
+    std::uint32_t instance_floats_per_sprite = 13;
+    std::vector<float> instance_data;
+    // The CPU-only shadow holding each sprite's true size regardless of
+    // visibility, which is what makes hiding a free degenerate quad.
+    std::vector<float> saved_size;
+    std::uint64_t version = 0;
+};
+
+struct SpriteRendererRecord {
+    std::vector<Sprite2DLayerHandle> layers;
+    Color4 clear_value{0.0f, 0.0f, 0.0f, 1.0f};
+    bool clear = true;
+};
+
 struct PropertyAnimationKey {
     float time = 0.0f;
     std::array<float, 4> value{};
@@ -701,6 +796,12 @@ struct Engine {
     std::vector<FrameTaskRecord> frame_tasks;
     RenderTargetHandle swapchain_target{};
     std::vector<Scene*> registered_scenes;
+    std::vector<SpriteAtlasRecord> sprite_atlases;
+    std::vector<Sprite2DLayerRecord> sprite_layers;
+    std::vector<SpriteRendererRecord> sprite_renderers;
+    // `engine._renderingContexts`, for the sprite half: registration
+    // order is draw order across renderers.
+    std::vector<SpriteRendererHandle> registered_sprite_renderers;
 };
 
 struct EnvironmentState {
@@ -1042,6 +1143,73 @@ void go_to_frame(
     float frame);
 void attach_control(Engine& engine, CameraHandle camera, Scene& scene);
 void attach_free_control(Engine& engine, CameraHandle camera, Scene& scene);
+struct LoadSpriteAtlasOptions {
+    float grid_width_px = 0.0f;
+    float grid_height_px = 0.0f;
+    TextureFilter sampling = TextureFilter::linear;
+    bool premultiplied_alpha = false;
+    bool premultiply_on_load = false;
+};
+
+struct Sprite2DLayerOptions {
+    float capacity = 16.0f;
+    SpriteBlendDescriptor blend_mode{};
+    float opacity = 1.0f;
+    bool visible = true;
+    float order = 0.0f;
+    Vec2 pivot{0.5f, 0.5f};
+};
+
+/**
+ * Per-sprite init record (`Sprite2DProps`). Every optional field carries a
+ * `has_` companion because the pinned writer distinguishes "absent" from a
+ * value: an absent `sizePx` falls back to the frame, an absent `flipX`
+ * preserves the orientation already baked into the UVs.
+ */
+struct Sprite2DProps {
+    Vec2 position_px{};
+    Vec2 size_px{};
+    bool has_size_px = false;
+    float frame = 0.0f;
+    bool has_frame = false;
+    float rotation = 0.0f;
+    bool has_rotation = false;
+    Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
+    bool has_color = false;
+    bool flip_x = false;
+    bool has_flip_x = false;
+    bool flip_y = false;
+    bool has_flip_y = false;
+    bool visible = true;
+    bool has_visible = false;
+};
+
+struct SpriteRendererOptions {
+    std::vector<Sprite2DLayerHandle> layers;
+    bool clear = true;
+    Color4 clear_value{0.0f, 0.0f, 0.0f, 1.0f};
+};
+
+SpriteBlendDescriptor sprite_blend_alpha();
+SpriteAtlasHandle load_sprite_atlas(
+    Engine& engine,
+    const std::string& path,
+    LoadSpriteAtlasOptions options);
+Sprite2DLayerHandle create_sprite_2d_layer(
+    Engine& engine,
+    SpriteAtlasHandle atlas,
+    Sprite2DLayerOptions options);
+double add_sprite_2d_index(
+    Engine& engine,
+    Sprite2DLayerHandle layer,
+    Sprite2DProps props);
+SpriteRendererHandle create_sprite_renderer(
+    Engine& engine,
+    SpriteRendererOptions options);
+void register_sprite_renderer(
+    Engine& engine,
+    SpriteRendererHandle renderer);
+
 void register_scene(Scene& scene);
 void enable_scene_transmission(Scene& scene);
 void load_image_skybox(

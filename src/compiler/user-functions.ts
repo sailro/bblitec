@@ -204,6 +204,8 @@ export class UserFunctionLowerer {
         context: UserFunctionContext,
         call: ts.CallExpression,
         declaration: SupportedFunction,
+        inBodyScope: <T>(work: () => T) => T = (work) =>
+            work(),
     ): Value {
         const ir = this.irFor(
             declaration,
@@ -217,13 +219,15 @@ export class UserFunctionLowerer {
             (node, message) =>
                 context.fail(node, message),
         );
-        return this.lower(
-            context,
-            ir,
-            call.arguments.map((argument) =>
+        // As in `compile`: the arguments were written at the call site
+        // and resolve in the scope there, so only the body runs in the
+        // scope the callback closed over.
+        const argumentValues = call.arguments.map(
+            (argument) =>
                 this.argumentValue(context, argument),
-            ),
-            call,
+        );
+        return inBodyScope(() =>
+            this.lower(context, ir, argumentValues, call),
         );
     }
 
@@ -364,11 +368,26 @@ export class UserFunctionLowerer {
             },
         );
         const body = declaration.body;
-        if (!body || !ts.isBlock(body)) {
+        if (!body) {
             fail(
-                body ?? declaration,
-                "User arrow functions require a block body.",
+                declaration,
+                "Reached user functions require a body.",
             );
+        }
+        // A concise arrow body is exactly `{ return <expression>; }`, so
+        // it lowers as the final value return with no statements before
+        // it. `frameForIndex: (index) => 8 + (index % 16)` is that shape.
+        if (!ts.isBlock(body)) {
+            const conciseIr: UserFunctionIr = {
+                declaration,
+                name: nameHint,
+                parameters,
+                statements: [],
+                needsWrapper: false,
+                returnExpression: body,
+            };
+            this.cache.set(declaration, conciseIr);
+            return conciseIr;
         }
         // The final statement may be a value return; earlier bare returns
         // lower through a breakable wrapper. Everything else is rejected.

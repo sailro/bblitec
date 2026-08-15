@@ -103,10 +103,16 @@ else()
     )
 endif()
 if(NOT BBLITE_BACKEND_SDL_GPU)
+    # Every SDL_GPU translation unit leaves with the backend. The feature
+    # list names them because a feature decides whether a renderer exists
+    # at all; the backend selection decides which API draws it, and the
+    # two are independent — a build with either backend removed must still
+    # compile every feature the scene reached.
     list(
         REMOVE_ITEM
         BBLITE_RUNTIME_SOURCES
         "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu.cpp"
+        "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu_sprite.cpp"
     )
 endif()
 
@@ -280,6 +286,12 @@ if(BBLITE_BACKEND_DAWN)
         bblite_native
         PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn.cpp"
     )
+    if("renderer:sprite" IN_LIST BBLITE_RUNTIME_FEATURES)
+        target_sources(
+            bblite_native
+            PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn_sprite.cpp"
+        )
+    endif()
     target_link_libraries(bblite_native PRIVATE dawn::webgpu_dawn)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=1)
     get_target_property(BBLITE_DAWN_LIBRARY_TYPE dawn::webgpu_dawn TYPE)
@@ -330,6 +342,28 @@ if("renderer:pbr" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PBR_RENDERER=1)
 else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PBR_RENDERER=0)
+endif()
+
+if("renderer:sprite" IN_LIST BBLITE_RUNTIME_FEATURES)
+    # The sprite atlas is a PNG decoded at load, so this path needs the
+    # image decoder even when no PBR renderer is compiled.
+    if(SDL3_FOUND)
+        find_package(SDL3_image CONFIG REQUIRED)
+        target_link_libraries(
+            bblite_native
+            PRIVATE
+            $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
+        )
+    endif()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_SPRITE_RENDERER=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_SPRITE_RENDERER=0
+    )
 endif()
 
 if("renderer:geometry-output" IN_LIST BBLITE_RUNTIME_FEATURES)

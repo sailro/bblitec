@@ -1337,6 +1337,22 @@ export class DataLowerer {
         dataType: DataType,
     ): string {
         const unwrapped = this.context.unwrap(expression);
+        // A conditional selects between two values of the sink's own
+        // type, so each branch lowers for the same sink and the choice
+        // stays where the source wrote it. Numbers and booleans are left
+        // alone: their own compilers already lower a conditional, and
+        // routing them here would change what every existing scene emits.
+        if (
+            ts.isConditionalExpression(unwrapped) &&
+            dataType.kind !== "number" &&
+            dataType.kind !== "boolean"
+        ) {
+            return (
+                `(${this.context.compileCondition(unwrapped.condition)}` +
+                ` ? ${this.compileForSink(unwrapped.whenTrue, dataType)}` +
+                ` : ${this.compileForSink(unwrapped.whenFalse, dataType)})`
+            );
+        }
         switch (dataType.kind) {
             case "number":
                 return this.context.compileNumber(

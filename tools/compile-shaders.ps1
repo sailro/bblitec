@@ -218,6 +218,14 @@ function Normalize-TintHlslBindings {
             return "register($registerClass$mapped, space$space)"
         }
     )
+    # Where SV_Position sat in Tint's own declaration order, per emitted
+    # struct. An output struct is built with a flattening aggregate
+    # initializer whose values follow that same order, so moving the
+    # declaration without moving the value by the same amount silently
+    # feeds the varyings into SV_Position. The index is the only thing
+    # that ties the two halves together: the member name cannot, because
+    # it is the shader author's (the pinned sprite varying is `p`).
+    $positionIndex = @{}
     $normalized = [regex]::Replace(
         $normalized,
         "struct (\w+_(?:inputs|outputs)) \{\r?\n(?<body>[\s\S]*?)\r?\n\};",
@@ -227,6 +235,12 @@ function Normalize-TintHlslBindings {
                 $match.Groups["body"].Value -split "\r?\n" |
                     Where-Object { $_.Trim().Length -gt 0 }
             )
+            for ($index = 0; $index -lt $lines.Count; $index++) {
+                if ($lines[$index] -match ":\s*SV_Position") {
+                    $positionIndex[$match.Groups[1].Value] = $index
+                    break
+                }
+            }
             $position = @(
                 $lines |
                     Where-Object { $_ -match ":\s*SV_Position" }
@@ -246,24 +260,29 @@ function Normalize-TintHlslBindings {
     )
     $normalized = [regex]::Replace(
         $normalized,
-        "(\w+_outputs\s+\w+\s*=\s*\{)(?<values>[^{}]*)(?<suffix>\};)",
+        "(?<struct>\w+_outputs)(?<lead>\s+\w+\s*=\s*\{)(?<values>[^{}]*)(?<suffix>\};)",
         {
             param($match)
+            $name = $match.Groups["struct"].Value
+            if (-not $positionIndex.ContainsKey($name)) {
+                return $match.Value
+            }
+            $index = $positionIndex[$name]
             $values = @(
                 $match.Groups["values"].Value -split "," |
                     ForEach-Object { $_.Trim() }
             )
-            $position = @(
-                $values | Where-Object { $_ -match "\.position$" }
-            )
-            if ($position.Count -ne 1) {
+            if ($index -ge $values.Count) {
                 return $match.Value
             }
-            $others = @(
-                $values | Where-Object { $_ -notmatch "\.position$" }
-            )
-            return "$($match.Groups[1].Value)$(
-                ($position + $others) -join ", "
+            $ordered = @($values[$index])
+            for ($other = 0; $other -lt $values.Count; $other++) {
+                if ($other -ne $index) {
+                    $ordered += $values[$other]
+                }
+            }
+            return "$name$($match.Groups["lead"].Value)$(
+                $ordered -join ", "
             )$($match.Groups["suffix"].Value)"
         }
     )

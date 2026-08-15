@@ -447,10 +447,40 @@ export class StaticEvaluator {
         return value.cpp;
     }
 
+    /**
+     * A comparison produces a boolean, not a number. `||` stays out: the
+     * numeric fall-through form above owns it, and no reached source writes
+     * a logical `||` where a value is expected.
+     */
+    public isComparisonExpression(
+        expression: ts.Expression,
+    ): boolean {
+        const unwrapped = this.unwrap(expression);
+        return (
+            ts.isBinaryExpression(unwrapped) &&
+            [
+                ts.SyntaxKind.EqualsEqualsEqualsToken,
+                ts.SyntaxKind.ExclamationEqualsEqualsToken,
+                ts.SyntaxKind.LessThanToken,
+                ts.SyntaxKind.LessThanEqualsToken,
+                ts.SyntaxKind.GreaterThanToken,
+                ts.SyntaxKind.GreaterThanEqualsToken,
+            ].includes(unwrapped.operatorToken.kind)
+        );
+    }
+
     public isNumberExpression(
         expression: ts.Expression,
     ): boolean {
         const unwrapped = this.unwrap(expression);
+        if (
+            this.isComparisonExpression(unwrapped) ||
+            (ts.isBinaryExpression(unwrapped) &&
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken)
+        ) {
+            return false;
+        }
         return (
             ts.isNumericLiteral(unwrapped) ||
             ts.isPrefixUnaryExpression(unwrapped) ||
@@ -543,11 +573,54 @@ export class StaticEvaluator {
         this.fail(unwrapped, "Expected a string literal.");
     }
 
+    /**
+     * `options.x ?? fallback` over a static record.
+     *
+     * Babylon Lite reads its option records this way throughout, and a
+     * record literal settles the question at compile time: the property
+     * is either written in the literal, in which case the left operand is
+     * the value and the fallback is dead, or it is absent, in which case
+     * the property is `undefined` and the fallback is the value. Neither
+     * arm needs a native null, and resolving to the winning *expression*
+     * rather than to a value keeps its precision for whichever consumer
+     * asked. A `??` over anything else fails rather than being lowered to
+     * a runtime test that nothing reaches.
+     */
+    public resolveNullish(
+        expression: ts.BinaryExpression,
+    ): ts.Expression {
+        const left = this.unwrap(expression.left);
+        if (ts.isPropertyAccessExpression(left)) {
+            const owner = this.resolveValue(left.expression);
+            if (owner.kind === "record") {
+                const name = left.name.text;
+                return owner.recordProperties?.[name] ||
+                    owner.recordGetters?.[name]
+                    ? expression.left
+                    : expression.right;
+            }
+        }
+        this.fail(
+            expression.operatorToken,
+            "'??' is lowered over a static record property, whose presence decides the value at compile time.",
+        );
+    }
+
     public resolveStaticExpression(
         expression: ts.Expression,
         resolving: ReadonlySet<ts.Symbol> = new Set(),
     ): ts.Expression {
         const unwrapped = this.unwrap(expression);
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken
+        ) {
+            return this.resolveStaticExpression(
+                this.resolveNullish(unwrapped),
+                resolving,
+            );
+        }
         if (!ts.isIdentifier(unwrapped)) {
             return unwrapped;
         }

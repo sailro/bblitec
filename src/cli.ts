@@ -19,7 +19,11 @@ import {
     buildStampInputsPath,
     computeBuildStamp,
 } from "./build-stamp.js";
-import { readUpstreamPin } from "./upstream-source.js";
+import {
+    drawSpriteAtlasPng,
+    parseSpriteAtlasAssetSource,
+} from "./sprite-atlas-packager.js";
+import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 
 interface CliOptions {
@@ -134,6 +138,19 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
 
     if (asset.source === "generated:pinned-ibl-brdf-lut") {
         writeFileSync(destination, generateIblBrdfLutRgba16f());
+        return;
+    }
+
+    if (asset.kind === "sprite-atlas") {
+        writeFileSync(
+            destination,
+            await drawSpriteAtlasPng(
+                parseSpriteAtlasAssetSource(
+                    asset.source,
+                    findRepositoryRoot(dirname(inputPath)),
+                ),
+            ),
+        );
         return;
     }
 
