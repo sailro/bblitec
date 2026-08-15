@@ -745,9 +745,11 @@ test("lowers glTF material extensions into typed uniforms and shader layers", ()
     );
     assert.match(plan.header, /std::array<float, 4> sheen_params2\{\};/);
     assert.match(plan.header, /std::array<float, 4> iridescence_params\{\};/);
+    // The iridescence options carry the texture-presence flags the shader
+    // mixes against, so they sit between the parameters and the harmonics.
     assert.match(
         plan.header,
-        /iridescence_params\{\};\s*\r?\n\s*std::array<std::array<float, 4>, 9> spherical_harmonics/,
+        /iridescence_params\{\};\s*\r?\n\s*std::array<float, 4> iridescence_options\{\};\s*\r?\n\s*std::array<std::array<float, 4>, 9> spherical_harmonics/,
     );
     assert.match(
         plan.source,

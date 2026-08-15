@@ -599,6 +599,12 @@ struct MaterialRecord {
     // bytes is the browser's effective base color.
     std::array<std::uint8_t, 4> base_color_fallback{
         255, 255, 255, 255};
+    // Texture-less metallic/roughness baked to the pinned 8-bit texel
+    // (uploadOrmFactorTexture writes [255, roughness, metallic, 255]) with the
+    // uniform factors left at one. Keeping the factor in the texel rather than
+    // the uniform is what makes an animated factor behave: the pointer writer
+    // multiplies the uniform against this texel, so a baked zero stays zero.
+    std::array<std::uint8_t, 4> orm_fallback{255, 255, 255, 255};
     RenderTextureRef emissive_render_texture{};
     std::uint32_t reflection_cube = invalid_handle;
     float reflection_level = 1.0f;

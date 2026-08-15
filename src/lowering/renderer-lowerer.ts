@@ -233,9 +233,9 @@ function applyPbrUvTransformWgsl(
         },
         {
             slot: "iridescenceThickness",
-            marker: /        iridescenceThicknessSampler,\r?\n        v_4\)/,
+            marker: /          iridescenceThicknessSampler,\r?\n          v_4\)/,
             replacement:
-                "        iridescenceThicknessSampler,\n        bblUvIridescenceThickness)",
+                "          iridescenceThicknessSampler,\n          bblUvIridescenceThickness)",
         },
     ];
     for (const site of sites) {
@@ -872,7 +872,8 @@ export class RendererLowerer {
     std::array<float, 4> sheen_params2{};
 `
                 : ""}${options.iridescence
-                ? "    std::array<float, 4> iridescence_params{};\n"
+                ? "    std::array<float, 4> iridescence_params{};\n" +
+                  "    std::array<float, 4> iridescence_options{};\n"
                 : ""}${options.occlusionUv2
                 ? "    std::array<float, 4> occlusion_params{};\n"
                 : ""}`;
@@ -922,6 +923,14 @@ export class RendererLowerer {
             material.iridescence_index_of_refraction,
             material.iridescence_minimum_thickness,
             material.iridescence_maximum_thickness,
+        };
+        result.iridescence_options = {
+            material.iridescence_texture.bytes.empty() ? 0.0f : 1.0f,
+            material.iridescence_thickness_texture.bytes.empty()
+                ? 0.0f
+                : 1.0f,
+            0.0f,
+            0.0f,
         };
 `
                 : ""}${options.occlusionUv2

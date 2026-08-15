@@ -4138,6 +4138,7 @@ bool run_dawn_engine(Engine& engine) {
         std::array<std::uint8_t, 4>
             slot_fallback[mesh_texture_slots] = {};
         bool has_pbr_emissive_factor = false;
+        std::array<std::uint8_t, 4> orm_fallback{255, 255, 255, 255};
         std::array<std::uint8_t, 4> base_color_fallback{
             255, 255, 255, 255};
         if (item.material.value < engine.materials.size()) {
@@ -4145,6 +4146,7 @@ bool run_dawn_engine(Engine& engine) {
                 engine.materials[item.material.value];
             if (!standard_material) {
                 base_color_fallback = material.base_color_fallback;
+                orm_fallback = material.orm_fallback;
             }
             if (
                 standard_material &&
@@ -4220,7 +4222,11 @@ bool run_dawn_engine(Engine& engine) {
         slot_fallback[standard_bump_slot] = {128, 128, 255, 255};
 #endif
         slot_fallback[0] = base_color_fallback;
-        slot_fallback[1] = {255, 255, 255, 255};
+        // The pinned ORM factor texel, so an animated metallic or roughness
+        // factor multiplies the authored value rather than white.
+        slot_fallback[1] = standard_material
+            ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
+            : orm_fallback;
         slot_fallback[2] = standard_material
             ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
             : std::array<std::uint8_t, 4>{128, 128, 255, 255};
