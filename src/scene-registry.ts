@@ -1070,6 +1070,32 @@ const sceneInputs: readonly SceneInput[] = [
             },
         },
     },
+    {
+        id: "scene244",
+        name: "Scene 244 - Pot of Coals",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene244.ts",
+        title: "Babylon Lite Native - Pot of Coals",
+        parity: {
+            // Both pointer channels are LINEAR over 0..4 s and neither has a
+            // key at 1.0, so the capture reads an interpolated rotation on
+            // each: the normal map at t*PI/2 and the volume thickness at
+            // 2*PI*(1 - t/4). They rotate in opposite directions, so a single
+            // shared material transform cannot produce this frame.
+            referenceTimeSeconds: 1.0,
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.06,
+            // The SDL_GPU column carries the recorded per-sample image
+            // processing gap on a multisampled transmission target, which is
+            // why its residual sits on the dome's edges; Dawn runs the pinned
+            // per-sample pass and lands within one channel step everywhere.
+            dawnThresholds: { maxFullMad: 0.002, maxForegroundMad: 0.02 },
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "1.0",
+            },
+        },
+    },
 ];
 
 /**

@@ -19,6 +19,7 @@ interface GltfSpecialization {
         nonTrianglePrimitives: boolean;
         animationPointerMaterials: boolean;
         transmissiveMaterial: boolean;
+        specularReflectance: boolean;
         extras: boolean;
         occlusionUv2: boolean;
     };
@@ -228,6 +229,26 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
                 asRecord(material.extensions)?.["KHR_materials_transmission"],
             )?.transmissionFactor as number | undefined ?? 0) > 0,
     );
+    // The pinned dielectric loader fetches setPbrMetallicReflectance — and with
+    // it the reflectance fragment — only when a specular field actually departs
+    // from its default, so a material declaring the extension at factor 1 and
+    // colour (1,1,1) reaches nothing.
+    const specularReflectance = asRecords(document.materials).some((material) => {
+        const specular = asRecord(
+            asRecord(material.extensions)?.["KHR_materials_specular"],
+        );
+        if (!specular) return false;
+        const factor = specular.specularFactor as number | undefined;
+        const color = specular.specularColorFactor;
+        return (
+            specular.specularTexture !== undefined ||
+            specular.specularColorTexture !== undefined ||
+            (typeof factor === "number" && Math.abs(factor - 1) > 1e-6) ||
+            (Array.isArray(color) &&
+                color.length === 3 &&
+                (color[0] !== 1 || color[1] !== 1 || color[2] !== 1))
+        );
+    });
     const extras = hasExtras(document);
     // Babylon Lite's pbr-template-ext appends a dedicated occlusion
     // texture pair sampled at uv2 when a material's occlusionTexture
@@ -258,6 +279,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
             nonTrianglePrimitives,
             animationPointerMaterials,
             transmissiveMaterial,
+            specularReflectance,
             extras,
             occlusionUv2,
         },
@@ -272,6 +294,7 @@ export interface AssetSpecializationFeatures {
     animationPointer: boolean;
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
+    materialSpecular: boolean;
     imageBasedLighting: boolean;
     textureTransform: boolean;
     gpuInstancing: boolean;
@@ -297,6 +320,7 @@ export function emitAssetSpecializations(
             animationPointer: false,
             animationPointerMaterials: false,
             assetTransmission: false,
+            materialSpecular: false,
             imageBasedLighting: false,
             textureTransform: false,
             gpuInstancing: false,
@@ -359,6 +383,9 @@ export function emitAssetSpecializations(
         ),
         assetTransmission: specializations.some(
             (specialization) => specialization.features.transmissiveMaterial,
+        ),
+        materialSpecular: specializations.some(
+            (specialization) => specialization.features.specularReflectance,
         ),
         imageBasedLighting: usesExtension("EXT_lights_image_based"),
         textureTransform: usesExtension("KHR_texture_transform"),

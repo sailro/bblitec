@@ -74,6 +74,40 @@ inspection prevents repeating Babylon Lite's own parity debugging and helps
 separate a known WebGPU/raster floor from a missing compiler or PAL contract.
 Post-pin commits are relevant only to an explicit upstream-version evaluation.
 
+### What a registered scene owns
+
+A curated scene is described by several files that are checked against each
+other, so a missing one fails the corpus tests rather than degrading quietly.
+
+| File | What it carries |
+| --- | --- |
+| `src/scene-registry.ts` | the entry: id, source, title, thresholds, background, native environment |
+| `upstream/babylon-lite-scenes.json` | the SHA-256 of the corpus source, proving it matches the pin |
+| `reference/<id>/babylon-lite-golden.png` | the browser golden |
+| `reference/exact-corpus-manifest.json` | `sourceSha256`, `referenceSha256`, and `moduleSha256` over the browser module the capture harness builds |
+| `test/scene-registry.test.ts` | the registry id list in file order, and the curated count the README publishes |
+| `docs/images/scenes/scene<N>.png` | a 320x180 preview: a 4x4 box-filtered average of the golden |
+| `docs/status.md` | the published row, checked against measurement by `status:verify` |
+
+The README states the curated count twice, and a curated scene is a `sceneNNN`
+entry only — primitives and the project-owned regression gates are counted
+separately in the same sentence.
+
+Thresholds are set by measurement, not by intent: register with loose values,
+measure both backends, then tighten to just above what was measured. Scenes
+where Dawn is structurally closer to the golden carry their own
+`dawnThresholds`. `backgroundColor` is the scene's clear color rounded to
+bytes per channel.
+
+Animated scenes pin a frame rather than a wall-clock moment.
+`referenceTimeSeconds` makes the browser harness seek and pause, and
+`nativeEnvironment.BBLITE_ANIMATION_SEEK_SECONDS` pairs the native run to the
+same time. A golden is only valid for the registry parameters it was captured
+under: a reference captured without them carries no seek, so the scene
+free-ran, and diffing a seeked native run against it produces a large and
+meaningless result. When native and `scene -- capture <id> --seek <t>` agree
+but the golden does not, the golden is stale.
+
 ### Sizing a capability before implementing it
 
 A blocker names a capability; it does not size one. Compile-probe the scene
@@ -226,6 +260,13 @@ Generation:
 
 Generation must finish before shader compilation and native build. Do not run
 those phases concurrently.
+
+Every `npm run scene -- ...` invocation first re-runs a clean `npm run build`,
+so editing TypeScript while one is running risks a mixed `dist`. For a chain of
+several operations, build once and call `node dist/src/scene-command.js <op>
+<scene>` directly, which leaves `dist` frozen while sources change. Text and
+WGSL templates are the exception: generation reads them from `src/` rather than
+from `dist`, so a template edit reaches a generation that is already running.
 
 ## Shader compilation
 
@@ -547,7 +588,11 @@ is structurally closer to the golden carry tighter `dawnThresholds`
 in the registry), and `report-differential.json` adds the direct
 SDL_GPU-versus-Dawn comparison — backend agreement to one LSB puts a
 divergence on the CPU side, disagreement puts it on the GPU side.
-`--differential` also composes with `parity all`.
+`--differential` also composes with `parity all`. It runs each backend in its
+own process, because the backend selection is process-global, and those
+processes receive only the differential flag — so it does not carry
+`--recapture-reference`. Capture a new golden with a plain
+`parity <id> --recapture-reference` first, then run the differential.
 
 ## Instrumented browser capture
 
@@ -615,6 +660,33 @@ Generation rewrites a file only when its bytes change and prunes what a run no
 longer emits, so an unchanged scene rebuilds nothing. `scene -- process`
 reconfigures only when the CMake cache differs from the values it would pass;
 `--cold` forces the configure regardless.
+
+## Proving a change moved nothing
+
+Most changes are supposed to leave every measured scene where it was, and the
+proof should match what the change can possibly affect. The full matrix is not
+always the right tool, and for compiler-only work it is strictly weaker than
+the cheap one.
+
+**A change confined to TypeScript is proved by the generated tree.** Compile
+every registered scene, then digest every file under `generated/`. Byte-
+identical generated output plus an untouched `native/` tree means the build
+stamps are identical, which means the executables are the same binaries, which
+means the measurements cannot have moved. That is an exact proof rather than a
+measurement, and it costs a compile pass instead of a build-and-render pass.
+
+Two things break it. A corpus sweep compiles unregistered scenes into new
+`generated/sceneNNN` directories and so invalidates the file list — sweep
+first, delete the stray directories, then digest. And nothing else may use
+`dist/` while `npm run build` runs, because the build removes the directory
+first.
+
+**A change that reaches native sources, the PAL, or shader emission has to be
+measured**, because generated bytes changing tells you nothing about the
+image. Snapshot every `artifacts/parity/*/report-differential.json` before the
+run and compare the same files afterwards, cell by cell: reading MAD columns
+by eye misses a moved backend delta. `status:verify` performs the published
+half of that comparison automatically.
 
 There is no hosted CI. During iteration, run only the smallest relevant tests,
 generation steps, affected native builds, and scene parity gates. Do not repeat

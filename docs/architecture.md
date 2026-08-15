@@ -254,6 +254,16 @@ uncapped storage-buffer morph path: a flat 6-float delta buffer and a
 pinned accumulation loop before skinning. Skins beyond 64 joints keep the
 general CPU deformation path rather than truncating.
 
+Two lists decide what a scene compiles, and they answer different questions.
+`BBLITE_RUNTIME_FEATURES` in `features.cmake` records what the scene's own
+TypeScript reached, and it is finalized during compilation — before remote
+assets are materialized, so no asset fact can reach it. `render_capabilities.hpp`
+records what the loaded assets reach, and it is written after asset
+specialization. A capability an asset can reach without the scene source naming
+it is therefore defined in the capability header rather than derived from the
+feature list; scene transmission is one, because Babylon Lite enables it from
+any transmissive material a loaded asset carries.
+
 Generated `render_capabilities.hpp`, shader reflection, and native layout
 declarations must stay synchronized. The D3D12 pipeline failure encountered
 during the initial migration was caused by declaring only 8 SDL vertex

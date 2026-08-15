@@ -233,6 +233,32 @@ Scene 151 gates directional-plus-hemispheric Standard lighting and is
 pixel-exact. The supported light-count boundary is recorded in
 [Status](status.md).
 
+Two glTF material contracts are expressed in a shape that differs from the
+pinned one while producing the same values, and each holds for a stated reason.
+
+**Per-texture UV transforms are emitted per scene, not per material.** Babylon
+Lite attaches `uScale`/`vScale`/`uOffset`/`vOffset`/`uAng` to each texture
+wrapper and compiles the per-texture UV matrices into the materials that carry
+one, so a material with no transform never gains the fields. The generated
+fragment is per scene here, so it declares one matrix and offset pair for every
+slot it samples and every material fills them, identity where the asset
+declares no transform. Identity reduces the transform to the raw varying
+exactly — the matrix is `(1, 0, 0, 1)` and the offset is zero, so each
+coordinate is one product plus a zero term — which is why scenes that reach the
+extension on some materials and not others are unaffected. Rotation is composed
+in double before the float store, matching a `Math.cos` result reaching a
+`Float32Array`.
+
+**A glTF index of refraction folds into the material's reflectance.** The pin
+keeps reflectance at its default and scales it with `metallicF0Factor`, so
+`KHR_materials_ior` sets the factor to `((ior-1)/(ior+1))^2 / 0.04` and the
+product is the dielectric F0. The loader stores that product directly instead,
+which is the same value while nothing else scales F0. `KHR_materials_specular`
+is the second scale, so a material declaring it separates the two again: the
+factor becomes the extension's `specularFactor` and reflectance returns to its
+default, which is also how the pin resolves the two extensions against each
+other — the specular factor overwrites the one the index of refraction seeded.
+
 DXC cannot be removed from the D3D12 path because Tint does not emit DXIL.
 Tint does emit SPIR-V, but its separate WGSL texture/sampler binding numbers do
 not directly satisfy SDL_GPU's dense corresponding-slot contract. Vulkan
