@@ -188,7 +188,13 @@ CPU-side from GPU-side causes immediately.
   the reached triangle-list and triangle-strip pair.
 - [ ] Complete glTF animation coverage: scale and STEP channels, multiple
   clips, and richer animation-group controls.
-- [ ] glTF cameras and spot lights.
+- [ ] glTF cameras. Spot lights load and shade in the extra-light slots
+  under the pinned physical cone falloff; the primary slot encodes its kind
+  in `lightDirection.w` and carries no cone, so a scene whose FIRST light is
+  a spot fails explicitly rather than shading it as a directional light. The
+  pinned standard-falloff branch, which applies the spot exponent, is also
+  unreached: our extra-light attenuation is the physical inverse-square mode,
+  where the exponent is not read, and a glTF spot carries exponent 1 anyway.
 - [ ] KTX2/Basis and compression investigations. `EXT_texture_webp` is
   supported: the loader resolves the alternate image source the extension
   names, and the WebP decoder links only for scenes whose materialized assets

@@ -105,6 +105,7 @@ enum class LightKind {
     directional,
     hemispheric,
     point,
+    spot,
 };
 
 enum class MaterialAlphaMode {
@@ -605,6 +606,12 @@ struct LightRecord {
     Vec3 direction{0.0f, 1.0f, 0.0f};
     float intensity = 1.0f;
     float range = std::numeric_limits<float>::max();
+    // cos(angle/2) for a spot cone, which is what the pinned spot light packs
+    // into its direction slot. glTF gives the half-angle directly as
+    // spot.outerConeAngle, and the pinned loader doubles it into the full
+    // cone angle the light stores, so the cosine of the half-angle is the
+    // cosine of outerConeAngle.
+    float cos_half_angle = 1.0f;
     Color3 diffuse_color{};
     Color3 specular_color{};
     Color3 ground_color{0.0f, 0.0f, 0.0f};

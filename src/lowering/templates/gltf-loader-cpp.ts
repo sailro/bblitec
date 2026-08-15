@@ -2025,7 +2025,8 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                     string_or(definition, "type");
                 if (
                     type != "point" &&
-                    type != "directional") {
+                    type != "directional" &&
+                    type != "spot") {
                     continue;
                 }
                 const Matrix& light_world =
@@ -2033,7 +2034,26 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 LightRecord light;
                 light.kind = type == "point"
                     ? LightKind::point
-                    : LightKind::directional;
+                    : type == "spot"
+                        ? LightKind::spot
+                        : LightKind::directional;
+                if (type == "spot") {
+                    // createSpotLight(position, direction, outer * 2, 1,
+                    // intensity): the pinned loader passes twice the outer
+                    // cone angle as the full cone, and the light stores
+                    // cos(angle / 2). innerConeAngle is read by neither the
+                    // pinned light nor its pointer handlers.
+                    const ts::JsonValue* spot_value =
+                        optional(definition, "spot");
+                    const float outer_cone_angle = spot_value
+                        ? float_or(
+                              spot_value->as_object(),
+                              "outerConeAngle",
+                              0.7853981633974483f)
+                        : 0.7853981633974483f;
+                    light.cos_half_angle =
+                        std::cos(outer_cone_angle);
+                }
                 light.position = Vec3{
                     -light_world[12],
                     light_world[13],
