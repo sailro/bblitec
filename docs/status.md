@@ -5,25 +5,6 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 The supported feature set, split into what is decided at compile time and what
 lives at run time, is in [features](features.md).
 
-## Scene 1 (BoomBox) baseline
-
-Development Windows machine, D3D12, 1280x720; frame times are
-same-session paired runs (`BBLITE_BENCHMARK_FRAMES=2000`, 30 warmup
-frames, immediate present, frame CPU time from acquire through
-submit and present):
-
-| Renderer | Full MAD | Foreground MAD | Frame time |
-| --- | ---: | ---: | ---: |
-| SDL_GPU, 4x MSAA | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.015}}$ | 0.192 ms average, 0.155 ms median |
-| Dawn, 4x MSAA | $\color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.015}}$ | 0.229 ms average, 0.179 ms median |
-
-Against the pinned Babylon Lite output, Scene 1 rendering is effectively exact
-on both backends. Dawn's higher CPU frame time is its always-on validation and
-robustness (the browser reference runs with both) plus per-draw uniform-buffer
-writes where SDL_GPU uses push constants; see
-[backends](backends.md) for the full comparison. Regression ceilings are
-`0.01` full and `0.03` foreground MAD.
-
 ## Curated parity scenes
 
 Thresholds live in `src/scene-registry.ts`; run one scene with
@@ -128,22 +109,3 @@ its contract.
 | runtime-sweep | <img src="images/scenes/regression-runtime-sweep.png" alt="Runtime sweep rendering" width="160"> | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.001}}$ | thin-instance pools with flush and count updates, handles inside data retired by `removeFromScene`, file-texture sampler contract (Scene 267 measures typed-array meshes from the corpus) |
 | instanced-ground | <img src="images/scenes/regression-instanced-ground.png" alt="Instanced ground rendering" width="160"> | $\color{#1a7f37}{\textsf{0.136}} / \color{#1a7f37}{\textsf{0.089}}$ | $\color{#1a7f37}{\textsf{0.136}} / \color{#1a7f37}{\textsf{0.089}}$ | `EXT_mesh_gpu_instancing` with the requested environment ground |
 | morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | $\color{#1a7f37}{\textsf{0.150}} / \color{#1a7f37}{\textsf{0.190}}$ | $\color{#1a7f37}{\textsf{0.150}} / \color{#1a7f37}{\textsf{0.190}}$ | storage-buffer morphing with the requested environment ground |
-
-## Diagnostics
-
-Scene 1 parity can emit:
-
-- draw and triangle-cluster IDs
-- world normal, reflectivity, irradiance, IBL
-- normalized depth, albedo, and direct light
-- raw base color and pre-tone HDR (`RGBA16F` raw plus PNG preview)
-- background, edge, interior, channel-bias, hotspot, and material attribution
-
-Normalized depth is bit-exact against the Babylon Lite WebGPU oracle. See
-[fidelity.md](fidelity.md) for artifact semantics.
-
-Current Scene 1 foreground diagnostic MAD: world normal `0.011`, albedo
-`0.000`, reflectivity `0.000`, irradiance `0.040`, normalized depth `0.000`.
-
-Requested environment grounds and DDS/HDR skyboxes render by default. They can
-be disabled independently with `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0`.
