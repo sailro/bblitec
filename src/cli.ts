@@ -10,6 +10,7 @@ import { emitAssetSpecializations } from "./asset-specializer.js";
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
 import { decompressGeometry } from "./compressed-geometry.js";
+import { packageDdsEnvironment } from "./dds-packager.js";
 import { packageHdrEnvironment } from "./hdr-packager.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
 import {
@@ -105,6 +106,24 @@ function parseArguments(arguments_: string[]): CliOptions {
     };
 }
 
+async function assetBytes(
+    source: string,
+    inputPath: string,
+): Promise<Uint8Array> {
+    if (!/^https?:\/\//i.test(source)) {
+        return new Uint8Array(
+            readFileSync(resolve(dirname(inputPath), source)),
+        );
+    }
+    const response = await fetch(source);
+    if (!response.ok) {
+        throw new Error(
+            `Failed to download ${source}: HTTP ${response.status}.`,
+        );
+    }
+    return new Uint8Array(await response.arrayBuffer());
+}
+
 async function materializeAsset(asset: CompileAsset, inputPath: string, outputPath: string): Promise<void> {
     const source = materializedAssetSource(
         asset.source,
@@ -134,20 +153,21 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
         return;
     }
 
-    if (asset.kind === "hdr-environment") {
-        const bytes = /^https?:\/\//i.test(source)
-            ? await fetch(source).then(async (response) => {
-                  if (!response.ok) {
-                      throw new Error(
-                          `Failed to download ${source}: HTTP ${response.status}.`,
-                      );
-                  }
-                  return new Uint8Array(await response.arrayBuffer());
-              })
-            : new Uint8Array(readFileSync(resolve(dirname(inputPath), source)));
+    if (asset.kind === "dds-environment") {
         writeFileSync(
             destination,
-            await packageHdrEnvironment(bytes, asset.faceSize ?? 256),
+            packageDdsEnvironment(await assetBytes(source, inputPath)),
+        );
+        return;
+    }
+
+    if (asset.kind === "hdr-environment") {
+        writeFileSync(
+            destination,
+            await packageHdrEnvironment(
+                await assetBytes(source, inputPath),
+                asset.faceSize ?? 256,
+            ),
         );
         return;
     }
@@ -519,7 +539,11 @@ async function main(): Promise<void> {
             ),
         multiLight:
             specializationFeatures.multiLight,
-        clearcoat: specializationFeatures.clearcoat,
+        clearcoat:
+            specializationFeatures.clearcoat ||
+            result.manifest.features.includes(
+                "material:clearcoat",
+            ),
         sheen: specializationFeatures.sheen,
         iridescence: specializationFeatures.iridescence,
         dispersion: specializationFeatures.dispersion,

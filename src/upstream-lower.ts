@@ -162,7 +162,8 @@ class GeneratedSourceWriter {
         }
         if (
             features.includes("environment:env") ||
-            features.includes("environment:hdr")
+            features.includes("environment:hdr") ||
+            features.includes("environment:dds")
         ) {
             const environment = new EnvironmentLowerer(context);
             if (features.includes("environment:env")) {
@@ -182,6 +183,13 @@ class GeneratedSourceWriter {
                 this.writeSource(
                     "upstream/src/environment_hdr.cpp",
                     environment.lowerHdrLoaderAdapter(),
+                    generated,
+                );
+            }
+            if (features.includes("environment:dds")) {
+                this.writeSource(
+                    "upstream/src/environment_dds.cpp",
+                    environment.lowerDdsLoaderAdapter(),
                     generated,
                 );
             }

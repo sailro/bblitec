@@ -1627,6 +1627,29 @@ void set_pbr_skybox(Engine& engine, MaterialHandle material) {
     engine.materials[material.value].skybox_mode = true;
 }
 
+// src/material/pbr/fragments/clearcoat-fragment.ts#writeClearcoatUBO leaves
+// the whole clearcoat slice at zero unless isEnabled is set, so a disabled
+// coat keeps the record's zero intensity and shades as no coat at all.
+// The pinned defaults live in the same writer: intensity 1, roughness 0,
+// index of refraction 1.5, normal scale 1.
+void set_pbr_clearcoat(
+    Engine& engine,
+    MaterialHandle material,
+    bool enabled,
+    float intensity,
+    float roughness,
+    float index_of_refraction,
+    float normal_scale) {
+    if (!enabled) {
+        return;
+    }
+    MaterialRecord& record = engine.materials[material.value];
+    record.clearcoat_intensity = intensity;
+    record.clearcoat_roughness = roughness;
+    record.clearcoat_index_of_refraction = index_of_refraction;
+    record.clearcoat_normal_scale = normal_scale;
+}
+
 MaterialHandle create_pbr_material(
     Engine& engine,
     PbrMaterialOptions options) {

@@ -188,7 +188,7 @@ export function parseRgbe(bytes: Uint8Array): HdrImage {
     return { width, height, data };
 }
 
-function shToPolynomial(sh: Float64Array): Float32Array {
+export function shToPolynomial(sh: Float64Array): Float32Array {
     const inversePi = 1 / Math.PI;
     const polynomial = new Float32Array(27);
     for (let channel = 0; channel < 3; channel += 1) {
@@ -218,7 +218,7 @@ function shToPolynomial(sh: Float64Array): Float32Array {
     return polynomial;
 }
 
-function preScalePolynomial(polynomial: Float32Array): Float32Array {
+export function preScalePolynomial(polynomial: Float32Array): Float32Array {
     const result = new Float32Array(27);
     for (let channel = 0; channel < 3; channel += 1) {
         const x = polynomial[channel]!;

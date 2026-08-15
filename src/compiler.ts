@@ -92,6 +92,7 @@ const featureSources: Record<Feature, string[]> = {
     "environment:ibl": [],
     "environment:env": [],
     "environment:hdr": [],
+    "environment:dds": [],
     "background:ground": [],
     "background:skybox": [],
     "background:image-skybox": [],
@@ -102,6 +103,7 @@ const featureSources: Record<Feature, string[]> = {
     "loader:babylon": [],
     "loader:gltf": [],
     "material:pbr": [],
+    "material:clearcoat": [],
     "material:no-color-view": [],
     "material:grid": [],
     "material:shader": [],
@@ -2106,6 +2108,52 @@ class Compiler
         ];
     }
 
+    /**
+     * The reached slice of `ClearCoatProps`. The pinned defaults come from
+     * `writeClearcoatUBO`, which is also where the `isEnabled` guard lives:
+     * a disabled coat writes no slice at all. The three optional textures
+     * are rejected rather than ignored — no reached scene carries one, and
+     * they would need their own binding pairs.
+     */
+    public compileClearCoatOptions(
+        expression: ts.Expression,
+    ): [string, string, string, string, string] {
+        const object = this.expectObjectLiteral(expression);
+        this.validateObjectProperties(
+            object,
+            [
+                "isEnabled",
+                "intensity",
+                "roughness",
+                "indexOfRefraction",
+                "bumpTextureScale",
+            ],
+            "Reached clearcoat options support isEnabled, intensity, roughness, indexOfRefraction, and bumpTextureScale.",
+        );
+        const isEnabled = this.objectProperty(object, "isEnabled");
+        const intensity = this.objectProperty(object, "intensity");
+        const roughness = this.objectProperty(object, "roughness");
+        const indexOfRefraction = this.objectProperty(
+            object,
+            "indexOfRefraction",
+        );
+        const bumpTextureScale = this.objectProperty(
+            object,
+            "bumpTextureScale",
+        );
+        return [
+            isEnabled ? this.compileBoolean(isEnabled) : "false",
+            intensity ? this.compileNumber(intensity) : "1.0f",
+            roughness ? this.compileNumber(roughness) : "0.0f",
+            indexOfRefraction
+                ? this.compileNumber(indexOfRefraction)
+                : "1.5f",
+            bumpTextureScale
+                ? this.compileNumber(bumpTextureScale)
+                : "1.0f",
+        ];
+    }
+
     public compileShaderMaterialOptions(
         expression: ts.Expression,
     ): { name: string; id: number } {
@@ -2838,6 +2886,25 @@ class Compiler
             skyboxSize ? this.compileNumber(skyboxSize) : "1000.0f",
             brdfUrl ? this.compileStringLiteral(brdfUrl) : "",
         ];
+    }
+
+    /**
+     * `loadDdsEnvironment` takes a required `brdfUrl` plus `skipSkybox` and
+     * `skipGround`, which it accepts and never acts on — it creates neither.
+     * Rejecting them keeps a scene that sets one from compiling as though it
+     * had been honoured.
+     */
+    public compileDdsEnvironmentOptions(
+        expression: ts.Expression,
+    ): string {
+        const object = this.expectObjectLiteral(expression);
+        this.validateObjectProperties(
+            object,
+            ["brdfUrl"],
+            "Reached DDS environment options support brdfUrl.",
+        );
+        const brdfUrl = this.objectProperty(object, "brdfUrl");
+        return brdfUrl ? this.compileStringLiteral(brdfUrl) : "";
     }
 
     public compileSceneDefaultRenderTask(
@@ -3677,6 +3744,8 @@ class Compiler
                 ? sourceName.replace(/\.gltf$/i, ".glb")
                 : kind === "hdr-environment"
                     ? sourceName.replace(/\.hdr$/i, ".bblhdr")
+                : kind === "dds-environment"
+                    ? sourceName.replace(/\.dds$/i, ".bblhdr")
                 : sourceName;
         const safeName = packagedName.replace(/[^A-Za-z0-9._-]/g, "_");
         const output =

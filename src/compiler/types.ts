@@ -52,6 +52,7 @@ export interface CompileAsset {
     output: string;
     kind:
         | "babylon"
+        | "dds-environment"
         | "environment"
         | "gltf"
         | "hdr-environment"
@@ -207,6 +208,7 @@ export type Feature =
     | "environment:ibl"
     | "environment:env"
     | "environment:hdr"
+    | "environment:dds"
     | "light:hemispheric"
     | "light:directional"
     | "light:point"
@@ -214,6 +216,7 @@ export type Feature =
     | "loader:babylon"
     | "loader:gltf"
     | "material:pbr"
+    | "material:clearcoat"
     | "material:no-color-view"
     | "material:grid"
     | "material:shader"

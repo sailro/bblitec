@@ -28,6 +28,9 @@ export interface AssetIntrinsicContext
     compileHdrEnvironmentOptions(
         expression: ts.Expression,
     ): CompiledHdrEnvironmentOptions;
+    compileDdsEnvironmentOptions(
+        expression: ts.Expression,
+    ): string;
     registerAsset(
         source: string,
         kind: CompileAsset["kind"],
@@ -373,6 +376,56 @@ export function compileAssetIntrinsic(
                     `${groundAsset ? `bbl::asset_path(${context.cppString(groundAsset.output)})` : context.cppString("")}, ` +
                     `${skyboxAsset ? `bbl::asset_path(${context.cppString(skyboxAsset.output)})` : context.cppString("")}, ` +
                     `${options[2]}, ` +
+                    `${brdfAsset ? `bbl::asset_path(${context.cppString(brdfAsset.output)})` : context.cppString("")}})`,
+            };
+        }
+
+        case "loadDdsEnvironment": {
+            // src/loader-env/load-dds-env.ts: a prefiltered DDS cubemap is
+            // the IBL source itself, uploaded mip for mip, with the
+            // irradiance harmonics projected out of mip 0. Both halves are
+            // settled by the asset, so both are compiled into the package
+            // the runtime reads. The pinned loader takes no skybox or
+            // ground of its own — `skipSkybox`/`skipGround` are the only
+            // other options it accepts and no reached scene sets them.
+            context.expectArgumentCount(call, 2, 3);
+            const scene =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                scene,
+                "scene",
+                call.arguments[0]!,
+            );
+            const source =
+                context.compileStringLiteral(
+                    call.arguments[1]!,
+                );
+            const brdfUrl = call.arguments[2]
+                ? context.compileDdsEnvironmentOptions(
+                      call.arguments[2],
+                  )
+                : "";
+            const environmentAsset =
+                context.registerAsset(
+                    source,
+                    "dds-environment",
+                );
+            const brdfAsset = brdfUrl
+                ? context.registerAsset(
+                      context.resolveBundledAsset(brdfUrl),
+                      "texture",
+                  )
+                : undefined;
+            context.reachFeature("environment:ibl");
+            context.reachFeature("environment:dds");
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::load_dds_environment(${scene.cpp}, ` +
+                    `bbl::DdsEnvironmentOptions{` +
+                    `bbl::asset_path(${context.cppString(
+                        environmentAsset.output,
+                    )}), ` +
                     `${brdfAsset ? `bbl::asset_path(${context.cppString(brdfAsset.output)})` : context.cppString("")}})`,
             };
         }
