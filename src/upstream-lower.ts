@@ -35,6 +35,7 @@ export interface UpstreamEmitOptions {
     nodeVisibility: boolean;
     animationPointer: boolean;
     animationPointerMaterials: boolean;
+    assetTransmission: boolean;
     standardLights: number;
     standardLightLists: boolean;
     standardDiffuseUv2: boolean;
@@ -65,9 +66,20 @@ class GeneratedSourceWriter {
     ): void {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
+        // Scene transmission is reached from the scene's own code and from a
+        // loaded asset alike: the pin's `registerPbrTransmission` enables it for
+        // any transmissive surface the asset carries, without the scene naming
+        // it. That makes it an asset capability like the material extensions
+        // beside it, so the compiled define lives here rather than being derived
+        // from the reached-feature list alone.
+        const transmission =
+            features.includes("renderer:transmission") ||
+            options.assetTransmission;
         this.tree.write(
             "upstream/include/bblite/upstream/render_capabilities.hpp",
             `#pragma once
+
+#define BBLITE_RENDERER_TRANSMISSION ${transmission ? 1 : 0}
 
 #define BBLITE_GPU_DEFORMATION ${options.gpuDeformation ? 1 : 0}
 #define BBLITE_GPU_MORPH_STORAGE ${options.morphStorage ? 1 : 0}
@@ -229,6 +241,7 @@ class GeneratedSourceWriter {
                     options.animationPointer,
                     options.gpuDeformation,
                     options.animationPointerMaterials,
+                    options.assetTransmission,
                 ),
                 generated,
             );
@@ -253,7 +266,7 @@ class GeneratedSourceWriter {
             this.writeSource(
                 "upstream/src/renderer_plan.cpp",
                 renderer.lowerRenderPlan({
-                    transmission: features.includes("renderer:transmission"),
+                    transmission: transmission,
                     fog: features.includes("renderer:fog"),
                     imageSkybox: features.includes(
                         "background:image-skybox",
@@ -299,7 +312,7 @@ class GeneratedSourceWriter {
                 imageSkybox: features.includes(
                     "background:image-skybox",
                 ),
-                transmission: features.includes("renderer:transmission"),
+                transmission: transmission,
                 fog: features.includes("renderer:fog"),
                 normalTextureScale: features.includes("loader:gltf"),
                 shaderPrograms: options.shaderPrograms,
@@ -531,6 +544,7 @@ export function emitUpstreamGenerated(
         nodeVisibility: false,
         animationPointer: false,
         animationPointerMaterials: false,
+        assetTransmission: false,
         standardLights: 0,
         standardLightLists: false,
         standardDiffuseUv2: false,

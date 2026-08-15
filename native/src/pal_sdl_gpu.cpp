@@ -45,7 +45,7 @@ namespace bbl::pal {
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 namespace {
 
-#if defined(BBLITE_RENDERER_TRANSMISSION)
+#if BBLITE_RENDERER_TRANSMISSION
 constexpr std::uint32_t pbr_base_texture_binding_count = 9;
 #else
 constexpr std::uint32_t pbr_base_texture_binding_count = 6;

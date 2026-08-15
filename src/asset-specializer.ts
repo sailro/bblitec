@@ -18,6 +18,7 @@ interface GltfSpecialization {
         sparseAccessors: boolean;
         nonTrianglePrimitives: boolean;
         animationPointerMaterials: boolean;
+        transmissiveMaterial: boolean;
         extras: boolean;
         occlusionUv2: boolean;
     };
@@ -215,6 +216,18 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
                 )?.startsWith("/materials/"),
             ),
     );
+    // Babylon Lite turns scene transmission on from the asset rather than from
+    // scene code: `registerPbrTransmission` accepts a mesh whose material is
+    // `_transmissive` with a refraction intensity above zero, and the dielectric
+    // loader sets both from `transmissionFactor`. A declared extension with a
+    // zero factor leaves the intensity at zero and reaches nothing, which is why
+    // the predicate reads the factor rather than the extension.
+    const transmissiveMaterial = asRecords(document.materials).some(
+        (material) =>
+            (asRecord(
+                asRecord(material.extensions)?.["KHR_materials_transmission"],
+            )?.transmissionFactor as number | undefined ?? 0) > 0,
+    );
     const extras = hasExtras(document);
     // Babylon Lite's pbr-template-ext appends a dedicated occlusion
     // texture pair sampled at uv2 when a material's occlusionTexture
@@ -244,6 +257,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
             sparseAccessors,
             nonTrianglePrimitives,
             animationPointerMaterials,
+            transmissiveMaterial,
             extras,
             occlusionUv2,
         },
@@ -257,6 +271,7 @@ export interface AssetSpecializationFeatures {
     nodeVisibility: boolean;
     animationPointer: boolean;
     animationPointerMaterials: boolean;
+    assetTransmission: boolean;
     imageBasedLighting: boolean;
     textureTransform: boolean;
     gpuInstancing: boolean;
@@ -281,6 +296,7 @@ export function emitAssetSpecializations(
             nodeVisibility: false,
             animationPointer: false,
             animationPointerMaterials: false,
+            assetTransmission: false,
             imageBasedLighting: false,
             textureTransform: false,
             gpuInstancing: false,
@@ -340,6 +356,9 @@ export function emitAssetSpecializations(
         animationPointerMaterials: specializations.some(
             (specialization) =>
                 specialization.features.animationPointerMaterials,
+        ),
+        assetTransmission: specializations.some(
+            (specialization) => specialization.features.transmissiveMaterial,
         ),
         imageBasedLighting: usesExtension("EXT_lights_image_based"),
         textureTransform: usesExtension("KHR_texture_transform"),
