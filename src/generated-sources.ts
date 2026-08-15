@@ -69,6 +69,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["environment:hdr"],
     },
     {
+        source: "upstream/src/environment_dds.cpp",
+        features: ["environment:dds"],
+    },
+    {
         source: "upstream/src/light_matrix.cpp",
         features: [
             "light:hemispheric",

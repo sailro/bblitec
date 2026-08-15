@@ -249,6 +249,22 @@ component carrying "this slot is empty" moves, and it moves only for the
 scenes that need the cone. Scene 15 is the parity gate, byte-identical across
 both backends.
 
+**A DDS environment's irradiance harmonics are projected at compile time.**
+Babylon Lite's `loadDdsEnvironment` uploads the file's mip chain as the
+specular cube and projects the first nine spherical harmonics out of mip 0
+while the page loads, weighting each texel by the solid angle it subtends.
+Both halves are decided entirely by the asset, so `src/dds-packager.ts` does
+them once during generation and the runtime reads a package instead of a
+container format — the same split the HDR path already uses. The projection is
+reproduced rather than approximated: the 27 floats the package carries are
+bit-identical to the ones an instrumented capture shows the browser uploading
+for Scene 19. The package is the format the HDR path emits, so the DDS file's
+face-major mip chain is transposed to mip-major during generation and one
+native reader serves both. Two differences from the HDR loader are the pin's
+own and are carried through: a DDS environment uses LOD generation scale 0.8
+rather than 1.0, and it writes no image-processing state at all, where the HDR
+loader sets exposure, contrast, and tone mapping.
+
 Two glTF material contracts are expressed in a shape that differs from the
 pinned one while producing the same values, and each holds for a stated reason.
 

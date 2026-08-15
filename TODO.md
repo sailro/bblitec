@@ -320,6 +320,23 @@ CPU-side from GPU-side causes immediately.
 - [ ] Add headless renderer tests.
 - [ ] Add differential tests for camera, environment, material, and transform
   functions.
+- [ ] Close Scene 19's clearcoat rounding bias. The scene measures 0.096 full
+  / 0.430 region on both backends, which agree with each other, and the region
+  figure is the coat alone: every sphere pixel is within one channel step and
+  native is always the brighter side, so roughly 43% of them round up. The
+  environment underneath is not implicated — the same scene with
+  `setPbrClearCoat` removed measures 0.000 with 99.98% of pixels exact, and an
+  instrumented capture shows our harmonics, environment factors, and the whole
+  `ccParams`/`ccRefractionParams` pair matching the browser's uploads bit for
+  bit. Eliminated by reading the browser's own composed fragment beside ours:
+  the layered-colour sum associates the same way, `ccSchlick` is character for
+  character identical, the specular-AA and horizon-occlusion terms our
+  fragment carries are gated off for this material, and the second analytic
+  light slot is empty. What is left is a term-level difference inside the coat
+  block; bisect it empirically against the deployed WGSL rather than by
+  reading, and note Scene 28 measures the same coat at 0.001/0.016 over a
+  glTF asset, so whatever it is only shows on a roughness-0 coat over a
+  bright IBL-only sphere.
 - [ ] Chase the last sub-0.02 foreground residuals on Scenes 243
   (0.005) and 247 (0.014) only if a structural cause surfaces; both
   former floors are closed by ported pinned contracts (the dedicated
@@ -419,7 +436,7 @@ directly, which skips the per-invocation rebuild:
 The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
-**Current inventory:** 62 registered parity scenes and 171 unregistered
+**Current inventory:** 63 registered parity scenes and 170 unregistered
 corpus scenes. The compiler-contract lane has no compile-clean scenes. Each
 entry below records the first blocker only; clearing it can expose another.
 
@@ -458,7 +475,7 @@ lane when they can be erased or lowered inside the compiler, asset pipeline,
 or renderer. A scene is deferred when its covered behavior needs a new
 platform, user-input, or external-service contract.
 
-**Integrate first (137 scenes):** 4, 11, 12, 16-23, 25-27,
+**Integrate first (136 scenes):** 4, 11, 12, 16-18, 20-23, 25-27,
 36, 38, 39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-158, 160, 162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223,
 226, 229, 231, 241, 251, 261-264, 269-271, 275-280.
@@ -491,7 +508,6 @@ runtime gaps may remain hidden behind it.
   blocker now that module-level constants resolve.
 - [ ] Scenes 12, 43: fold or explicitly lower the reached browser-dependent conditions.
 - [ ] Scenes 16, 226, 251: extend numeric expression operators.
-- [ ] Scenes 17, 19: support `loadDdsEnvironment`.
 - [ ] Scenes 18, 25: support Standard ground diffuse textures.
 - [ ] Scene 20: lower the reached arrow-function value.
 - [ ] Scene 21: support the reached non-identifier variable declarations.
@@ -540,7 +556,7 @@ runtime gaps may remain hidden behind it.
   `enableThinInstanceGpuCulling`.
 - [ ] Scenes 160, 162: extend reached shader-material options.
 - [ ] Scene 177: support `setPbrIridescence` on a scene-code material.
-- [ ] Scene 217: extend reached PBR material options.
+- [ ] Scenes 17, 217: extend reached PBR material options.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
 - [ ] Scenes 202-207: extend reached engine options.
 - [ ] Scene 218: support asset-container entity iteration.

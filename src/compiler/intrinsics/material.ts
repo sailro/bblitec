@@ -47,6 +47,9 @@ export interface MaterialIntrinsicContext
     compileGridMaterialOptions(
         expression: ts.Expression,
     ): string[];
+    compileClearCoatOptions(
+        expression: ts.Expression,
+    ): [string, string, string, string, string];
     compileShaderMaterialOptions(
         expression: ts.Expression,
     ): { name: string; id: number };
@@ -462,6 +465,34 @@ export function compileMaterialIntrinsic(
                         material,
                         call,
                     )}, ${material.cpp})`,
+            };
+        }
+
+        case "setPbrClearCoat": {
+            // src/material/pbr/set-clearcoat.ts assigns the props onto the
+            // material and registers the clearcoat fragment extension. The
+            // registration is unconditional — it does not consult
+            // `isEnabled` — so the call reaches the feature and the
+            // `isEnabled` guard stays where the pin keeps it, in the UBO
+            // writer.
+            context.expectArgumentCount(call, 2, 2);
+            const material =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                material,
+                "material",
+                call.arguments[0]!,
+            );
+            const clearCoat = context.compileClearCoatOptions(
+                call.arguments[1]!,
+            );
+            context.reachFeature("material:clearcoat");
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_pbr_clearcoat(` +
+                    `${context.requireEngine(material, call)}, ` +
+                    `${material.cpp}, ${clearCoat.join(", ")})`,
             };
         }
 

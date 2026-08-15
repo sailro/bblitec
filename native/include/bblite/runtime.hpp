@@ -815,6 +815,13 @@ struct HdrEnvironmentOptions {
     Vec3 skybox_position{};
 };
 
+// A prefiltered DDS cubemap arrives compiled into the same environment
+// package an HDR source produces, so the loader needs only the two paths.
+struct DdsEnvironmentOptions {
+    std::string environment_url;
+    std::string brdf_url;
+};
+
 Engine create_engine(EngineOptions options = {});
 Scene create_scene_context(Engine& engine);
 std::string asset_path(const std::string& relative_path);
@@ -863,6 +870,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path);
 AssetHandle load_babylon(Engine& engine, const std::string& path);
 void load_environment(Scene& scene, EnvironmentOptions options);
 void load_hdr_environment(Scene& scene, HdrEnvironmentOptions options);
+void load_dds_environment(Scene& scene, DdsEnvironmentOptions options);
 MaterialHandle create_standard_material(Engine& engine);
 MaterialHandle create_grid_material(
     Engine& engine,
@@ -908,6 +916,14 @@ void set_alpha_to_coverage(
     bool enabled);
 void set_pbr_unlit(Engine& engine, MaterialHandle material);
 void set_pbr_skybox(Engine& engine, MaterialHandle material);
+void set_pbr_clearcoat(
+    Engine& engine,
+    MaterialHandle material,
+    bool enabled,
+    float intensity,
+    float roughness,
+    float index_of_refraction,
+    float normal_scale);
 void set_pbr_emissive(
     Engine& engine,
     MaterialHandle material,

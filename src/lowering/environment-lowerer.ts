@@ -522,6 +522,177 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
         };
     }
 
+    public lowerDdsLoaderAdapter(): LoweredSource {
+        const modulePath = "src/loader-env/load-dds-env.ts";
+        const symbolName = "loadDdsEnvironment";
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        const assemble = this.context.callExpression(
+            declaration,
+            "assembleEnvironmentTextures",
+        );
+        const lodExpression = assemble.arguments[3];
+        if (!lodExpression) {
+            this.context.contractError(
+                assemble,
+                "Expected DDS LOD generation scale.",
+            );
+        }
+        const lodGenerationScale = this.context.numericValue(
+            lodExpression,
+            file,
+        );
+        // The pin is explicit that this loader leaves image processing to the
+        // caller, unlike the .env loader beside it, and says why: BJS's
+        // CreateFromPrefilteredData does not touch it either. If that ever
+        // changes the native record has to follow, so assert it rather than
+        // assume it.
+        if (
+            this.context.hasNode(declaration, (node) =>
+                ts.isPropertyAccessExpression(node) &&
+                this.context
+                    .propertyPath(node)
+                    ?.join(".")
+                    .startsWith("scene.imageProcessing") === true,
+            )
+        ) {
+            this.context.contractError(
+                declaration,
+                "Pinned DDS environment loader now writes image processing state.",
+            );
+        }
+        for (const call of ["computeSH", "assembleEnvironmentTextures"]) {
+            if (!this.context.hasCall(declaration, call)) {
+                this.context.contractError(
+                    declaration,
+                    `Expected DDS call '${call}'.`,
+                );
+            }
+        }
+        return {
+            modulePath,
+            symbolName,
+            header: "",
+            source: `// ${this.context.provenance(
+                modulePath,
+                symbolName,
+                "src/loader-env/load-dds-env.ts#computeSH is compiled into the package by src/dds-packager.ts",
+            )}
+#include <bblite/pal.hpp>
+#include <bblite/runtime.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <stdexcept>
+
+namespace bbl {
+namespace {
+
+std::uint32_t package_u32(
+    const std::vector<std::uint8_t>& bytes,
+    std::size_t offset) {
+    if (offset + 4 > bytes.size()) {
+        throw std::runtime_error("Compiled DDS package is truncated.");
+    }
+    return
+        static_cast<std::uint32_t>(bytes[offset]) |
+        (static_cast<std::uint32_t>(bytes[offset + 1]) << 8) |
+        (static_cast<std::uint32_t>(bytes[offset + 2]) << 16) |
+        (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
+}
+
+float package_f32(
+    const std::vector<std::uint8_t>& bytes,
+    std::size_t offset) {
+    const std::uint32_t bits = package_u32(bytes, offset);
+    float result = 0.0f;
+    static_assert(sizeof(result) == sizeof(bits));
+    std::memcpy(&result, &bits, sizeof(result));
+    return result;
+}
+
+} // namespace
+
+void load_dds_environment(
+    Scene& scene,
+    DdsEnvironmentOptions options) {
+    const std::vector<std::uint8_t> bytes =
+        pal::read_binary_file(options.environment_url);
+    static constexpr std::array<std::uint8_t, 8> magic{
+        0x42, 0x42, 0x4c, 0x48, 0x44, 0x52, 0x31, 0x00};
+    if (
+        bytes.size() < 124 ||
+        !std::equal(magic.begin(), magic.end(), bytes.begin())) {
+        throw std::runtime_error("Invalid compiled DDS environment package.");
+    }
+    const std::uint32_t width = package_u32(bytes, 8);
+    const std::uint32_t mip_count = package_u32(bytes, 12);
+    if (width == 0 || mip_count == 0) {
+        throw std::runtime_error("Compiled DDS environment has invalid dimensions.");
+    }
+    scene.environment.has_irradiance = true;
+    for (std::size_t coefficient = 0; coefficient < 9; ++coefficient) {
+        scene.environment.spherical_harmonics[coefficient] = Color3{
+            package_f32(bytes, 16 + coefficient * 12),
+            package_f32(bytes, 20 + coefficient * 12),
+            package_f32(bytes, 24 + coefficient * 12),
+        };
+    }
+    scene.environment.specular_width = width;
+    scene.environment.specular_mip_count = mip_count;
+    scene.environment.specular_rgba16f = true;
+    scene.environment.specular_faces.clear();
+    scene.environment.specular_faces.reserve(
+        static_cast<std::size_t>(mip_count) * 6);
+    std::size_t offset = 124;
+    for (std::uint32_t mip = 0; mip < mip_count; ++mip) {
+        const std::uint32_t size = std::max(width >> mip, 1u);
+        const std::size_t byte_size =
+            static_cast<std::size_t>(size) * size * 8;
+        for (std::uint32_t face = 0; face < 6; ++face) {
+            if (offset + byte_size > bytes.size()) {
+                throw std::runtime_error(
+                    "Compiled DDS environment pixel data is truncated.");
+            }
+            TextureData data;
+            data.bytes.assign(
+                bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                bytes.begin() +
+                    static_cast<std::ptrdiff_t>(offset + byte_size));
+            scene.environment.specular_faces.push_back(std::move(data));
+            offset += byte_size;
+        }
+    }
+    if (offset != bytes.size()) {
+        throw std::runtime_error(
+            "Compiled DDS environment has trailing pixel data.");
+    }
+    // The pinned loader decodes the same bundled BRDF PNG the .env loader
+    // does (loadBrdfImage then decodeBrdfPng), rather than generating the LUT
+    // with a compute pass the way the HDR loader beside it does.
+    scene.environment.brdf_lut = {};
+    if (!options.brdf_url.empty()) {
+        scene.environment.brdf_lut.bytes =
+            pal::read_binary_file(options.brdf_url);
+    }
+    // A DDS environment creates no background of its own: the pinned loader
+    // takes a cubemap and nothing else.
+    scene.environment.has_ground = false;
+    scene.environment.has_skybox = false;
+    scene.environment.background_enabled_by_default = false;
+    scene.environment.lod_generation_scale =
+        ${this.context.floatLiteral(lodGenerationScale)};
+}
+
+} // namespace bbl
+`,
+        };
+    }
+
     public lowerHdrLoaderAdapter(): LoweredSource {
         const modulePath = "src/loader-hdr/load-hdr.ts";
         const symbolName = "loadHdrEnvironment";
