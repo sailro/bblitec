@@ -862,11 +862,16 @@ test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", ()
         /select\(\(bblLayeredColor \+ \(bblExtraDiffuse \+ bblExtraSpecular\)\), v_31/,
     );
 
+    // The glTF arm of createSheenFragment: hasAlbedoScaling scales the base
+    // layer, keeps the tint texture linear, and multiplies the environment
+    // term by specular and horizon occlusion. This is what a
+    // KHR_materials_sheen asset reaches.
     const sheen = fragmentOf(
         new RendererLowerer(new LoweringContext()).lowerShaders({
             ...options,
             transmission: false,
             sheen: true,
+            sheenAlbedoScaling: true,
         }),
     );
     assert.match(sheen, /fn bblCharlieSheenDistribution/);
@@ -876,6 +881,42 @@ test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", ()
         /let sheenAlbedoScaling = 1\.0f - shMax \* shBrdf\.b;/,
     );
     assert.match(sheen, /\)\ \* sheenAlbedoScaling \+/);
+    assert.match(
+        sheen,
+        /shColorScaled \* shBrdf\.b \* v_98 \* \(v_99 \* v_99\)/,
+    );
+
+    // The legacy arm, which is what setPbrSheen defaults to: the tint is read
+    // through pow(rgb, 2.2), roughness comes from the tint texture's alpha
+    // because no separate roughness map is declared, the lobe is attenuated
+    // by 1 - dielectricF0 rather than the base layer being scaled, and the
+    // environment term drops the occlusion factors.
+    const legacySheen = fragmentOf(
+        new RendererLowerer(new LoweringContext()).lowerShaders({
+            ...options,
+            transmission: false,
+            sheen: true,
+            sheenAlbedoScaling: false,
+        }),
+    );
+    assert.match(
+        legacySheen,
+        /pow\(sheenMapData\.rgb, vec3<f32>\(2\.2f\)\)/,
+    );
+    assert.match(
+        legacySheen,
+        /let sheenRoughnessAdjusted = FragmentUniforms\.sheenParams2\.x \* sheenMapData\.a;/,
+    );
+    assert.match(
+        legacySheen,
+        /let shIntensity = FragmentUniforms\.sheenParams\.a \* \(1\.0f - v_51\);/,
+    );
+    assert.match(
+        legacySheen,
+        /let shEnvReflectance =\s*\n?\s*shColorScaled \* shBrdf\.b;/,
+    );
+    assert.ok(!legacySheen.includes("sheenAlbedoScaling"));
+    assert.ok(!legacySheen.includes("sheenRoughnessTexture"));
     assert.match(
         sheen,
         /@group\(2u\) @binding\(12u\) var sheenColorTexture : texture_2d<f32>;/,

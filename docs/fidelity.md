@@ -249,6 +249,28 @@ component carrying "this slot is empty" moves, and it moves only for the
 scenes that need the cone. Scene 15 is the parity gate, byte-identical across
 both backends.
 
+**Sheen is composed as one of two pinned models, chosen at generation.**
+`createSheenFragment` takes a `hasAlbedoScaling` flag and builds materially
+different arithmetic from it, so it is a fragment fork rather than a uniform.
+The `true` arm, which a glTF `KHR_materials_sheen` material reaches, scales
+the base layer by `1 - shMax * shBrdf.b`, treats the tint texture as linear,
+and multiplies the environment term by specular and horizon occlusion. The
+`false` arm, which is what `setPbrSheen` defaults to, reads the tint through
+`pow(rgb, 2.2)`, takes roughness from the tint texture's alpha because it
+declares no separate roughness map, attenuates the lobe by `1 - dielectricF0`,
+and leaves the base layer alone. The generated fragment carries whichever arm
+the scene reaches — the legacy one also drops the sheen roughness texture's
+binding pair and UV transform, since nothing samples them. Scene 29 gates the
+glTF arm and Scene 21 the legacy one; a scene composing both would need two
+fragments and fails at generation instead.
+
+**A skybox size of zero asks the loader for the pinned default.** The
+generated loader resolves an unset `skyboxSize` to `createDefaultEnvironment`'s
+20, so the compiler passes zero rather than substituting a size of its own.
+It previously substituted 1000, which built a skybox large enough for a
+camera's far plane to clip — invisible from a scene's reference pose and a
+straight-edged hole in the background as soon as the camera moved.
+
 **A DDS environment's irradiance harmonics are projected at compile time.**
 Babylon Lite's `loadDdsEnvironment` uploads the file's mip chain as the
 specular cube and projects the first nine spherical harmonics out of mip 0

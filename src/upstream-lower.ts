@@ -47,6 +47,7 @@ export interface UpstreamEmitOptions {
     multiLight: boolean;
     clearcoat: boolean;
     sheen: boolean;
+    sheenAlbedoScaling: boolean;
     iridescence: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
@@ -301,6 +302,8 @@ class GeneratedSourceWriter {
                         options.multiLight,
                     clearcoat: options.clearcoat,
                     sheen: options.sheen,
+                    sheenAlbedoScaling:
+                        options.sheenAlbedoScaling,
                     iridescence: options.iridescence,
                     dispersion: options.dispersion,
                     nodeVisibility: options.nodeVisibility,
@@ -366,6 +369,7 @@ class GeneratedSourceWriter {
                     options.multiLight,
                 clearcoat: options.clearcoat,
                 sheen: options.sheen,
+                sheenAlbedoScaling: options.sheenAlbedoScaling,
                 iridescence: options.iridescence,
                 dispersion: options.dispersion,
                 occlusionUv2: options.occlusionUv2,
@@ -580,6 +584,7 @@ export function emitUpstreamGenerated(
         multiLight: false,
         clearcoat: false,
         sheen: false,
+        sheenAlbedoScaling: false,
         iridescence: false,
         dispersion: false,
         occlusionUv2: false,

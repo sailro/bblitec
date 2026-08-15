@@ -296,11 +296,20 @@ function applyPbrReflectanceWgsl(source: string): string {
 function reachedUvTransformSlots(options: {
     clearcoat?: boolean;
     sheen?: boolean;
+    sheenAlbedoScaling?: boolean;
     iridescence?: boolean;
     transmission?: boolean;
 }): ReadonlyArray<{ wgsl: string; cpp: string }> {
     return pbrUvTransformSlots.filter(
-        (slot) => slot.extension === undefined || options[slot.extension] === true,
+        (slot) =>
+            (slot.extension === undefined ||
+                options[slot.extension] === true) &&
+            // The legacy sheen arm samples no separate roughness map, so
+            // that slot's transform has nothing to transform.
+            !(
+                slot.wgsl === "sheenRoughness" &&
+                options.sheenAlbedoScaling !== true
+            ),
     );
 }
 
@@ -364,6 +373,7 @@ export class RendererLowerer {
         multiLight?: boolean;
         clearcoat?: boolean;
         sheen?: boolean;
+        sheenAlbedoScaling?: boolean;
         iridescence?: boolean;
         dispersion?: boolean;
         nodeVisibility?: boolean;
@@ -2626,6 +2636,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         multiLight?: boolean;
         clearcoat?: boolean;
         sheen?: boolean;
+        sheenAlbedoScaling?: boolean;
         iridescence?: boolean;
         dispersion?: boolean;
         occlusionUv2?: boolean;
@@ -3373,6 +3384,18 @@ ${directMarker}`,
             );
         }
         if (
+            options.sheen &&
+            options.sheenAlbedoScaling !== true &&
+            options.materialSpecular === true
+        ) {
+            // The legacy sheen arm attenuates its lobe by the dielectric
+            // Fresnel term, which `KHR_materials_specular` moves. No reached
+            // scene composes the two.
+            throw new Error(
+                "Legacy sheen composed with KHR_materials_specular is not lowered.",
+            );
+        }
+        if (
             (options.clearcoat || options.sheen) &&
             options.multiLight
         ) {
@@ -3385,6 +3408,8 @@ ${directMarker}`,
             environmentRotation: options.environmentRotation === true,
             clearcoat: options.clearcoat === true,
             sheen: options.sheen === true,
+            sheenAlbedoScaling:
+                options.sheenAlbedoScaling === true,
             iridescence: options.iridescence === true,
             dispersion: options.dispersion === true,
             occlusionUv2: options.occlusionUv2 === true,

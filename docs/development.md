@@ -68,6 +68,16 @@ scene is considered for integration, before implementing native fixes:
    contract.
 5. Carry useful evidence into the scene dashboard note, focused tests, or
    `TODO.md` before setting a curated threshold.
+6. Run the scene in the demo window and move the camera before calling the
+   integration done. A gate renders the one pose its author chose, so a
+   defect that is off-screen or edge-on there passes a green matrix: orbiting
+   found a skybox large enough for the camera's far plane to clip it, and an
+   environment ground that draws as a hard-edged opaque quad where the pinned
+   one is invisible. This stays a manual step deliberately — a second capture
+   per scene would double the matrix to cover something only a few scenes
+   reach. When it finds something, turn it into a measurement rather than a
+   screenshot: copy the scene into `examples\`, move its camera there, and
+   `parity --recapture-reference` so both sides are compared at that pose.
 
 Do not wait for a high MAD investigation to perform this review. Early history
 inspection prevents repeating Babylon Lite's own parity debugging and helps

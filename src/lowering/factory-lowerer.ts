@@ -1632,6 +1632,36 @@ void set_pbr_skybox(Engine& engine, MaterialHandle material) {
 // coat keeps the record's zero intensity and shades as no coat at all.
 // The pinned defaults live in the same writer: intensity 1, roughness 0,
 // index of refraction 1.5, normal scale 1.
+// src/material/pbr/fragments/sheen-fragment.ts#writeSheenUBO: a disabled
+// sheen writes no slice, and the record's zero sheen color shades as none.
+// The pinned defaults are colour [1,1,1], roughness 0, intensity 1.
+void set_pbr_sheen(
+    Engine& engine,
+    MaterialHandle material,
+    bool enabled,
+    Color3 color,
+    float roughness,
+    float intensity) {
+    if (!enabled) {
+        return;
+    }
+    MaterialRecord& record = engine.materials[material.value];
+    record.sheen_color = color;
+    record.sheen_roughness = roughness;
+    record.sheen_intensity = intensity;
+}
+
+// The sheen tint texture modulates the colour. It is applied whether or not
+// the layer is enabled, matching the pin, where the props object carries the
+// texture and the UBO writer is what consults isEnabled.
+void set_pbr_sheen_texture(
+    Engine& engine,
+    MaterialHandle material,
+    FileTexture texture) {
+    engine.materials[material.value].sheen_color_texture =
+        std::move(texture.data);
+}
+
 void set_pbr_clearcoat(
     Engine& engine,
     MaterialHandle material,

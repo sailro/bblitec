@@ -805,6 +805,10 @@ struct EnvironmentOptions {
     std::string skybox_url;
     float skybox_size = 1000.0f;
     std::string brdf_url;
+    // A skybox URL naming the .env itself asks for the environment's own
+    // cubemap rather than a separate DDS, which is the pinned loader's
+    // `skyboxIsEnv` branch. Decided at compile time from the two URLs.
+    bool skybox_uses_environment = false;
 };
 
 struct HdrEnvironmentOptions {
@@ -924,6 +928,17 @@ void set_pbr_clearcoat(
     float roughness,
     float index_of_refraction,
     float normal_scale);
+void set_pbr_sheen(
+    Engine& engine,
+    MaterialHandle material,
+    bool enabled,
+    Color3 color,
+    float roughness,
+    float intensity);
+void set_pbr_sheen_texture(
+    Engine& engine,
+    MaterialHandle material,
+    FileTexture texture);
 void set_pbr_emissive(
     Engine& engine,
     MaterialHandle material,

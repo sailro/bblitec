@@ -544,7 +544,18 @@ async function main(): Promise<void> {
             result.manifest.features.includes(
                 "material:clearcoat",
             ),
-        sheen: specializationFeatures.sheen,
+        sheen:
+            specializationFeatures.sheen ||
+            result.manifest.features.includes("material:sheen"),
+        // The two pinned sheen models are composed, not switched at run time,
+        // so one fragment cannot serve both. A glTF KHR_materials_sheen
+        // material takes the albedo-scaling arm; `setPbrSheen` defaults to
+        // the legacy one and can ask for the other explicitly.
+        sheenAlbedoScaling:
+            specializationFeatures.sheen ||
+            result.manifest.features.includes(
+                "material:sheen-albedo-scaling",
+            ),
         iridescence: specializationFeatures.iridescence,
         dispersion: specializationFeatures.dispersion,
         occlusionUv2: specializationFeatures.occlusionUv2,

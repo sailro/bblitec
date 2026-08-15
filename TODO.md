@@ -291,9 +291,12 @@ CPU-side from GPU-side causes immediately.
 - [ ] Compose environment/camera sizing from object-local bounds through the
   pinned abs-matrix OBB-to-AABB world transform and add the
   `upperRadiusLimit` ground/skybox override (upstream `scene-size.ts`,
-  `mesh-world-bounds.ts`, PR #532). Latent today: every gated scene's baked
-  bounds coincide with the pinned result and no corpus scene sets
-  `upperRadiusLimit`, so the port must keep all sized scenes bit-identical.
+  `mesh-world-bounds.ts`, PR #532). No corpus scene sets `upperRadiusLimit`,
+  and every gated scene's baked bounds coincide with the pinned result **at
+  its reference pose** — but that is as far as the agreement has been checked,
+  and the ground defect above is the first evidence it may not hold once the
+  camera moves. The port must keep all sized scenes bit-identical at their
+  gated poses; verify it against a moved camera too.
 - [ ] Stop advancing scene before-render callbacks on null-swapchain
   iterations (the loop `continue`s without counting the frame, so the scene
   frame counter can drift ahead of the native frame counter and shift
@@ -357,6 +360,25 @@ CPU-side from GPU-side causes immediately.
   `report-differential.json`, compare cell by cell") report these two scenes
   as moved for any change whatsoever, so the proof needs a repeat run to
   separate a real regression from this.
+- [ ] Fix the environment ground, which draws as a hard-edged opaque quad
+  where the pinned one is invisible. Found by orbiting Scenes 6 and 14 in the
+  demo window — every reference pose either hides the ground off-screen or
+  catches it edge-on, where the fragment's own `facing` fade takes it to zero,
+  so no gate sees it. Reproduced against the browser by setting Scene 14's
+  `cam.beta = 0.55` in a probe copy and recapturing: **background MAD 7.312**
+  while the model stays at 0.138, and the browser draws no visible ground at
+  all from there. Only Scenes 6 and 14 reach it — they are the only two that
+  pass `groundTextureUrl` — and every other scene was orbited without finding
+  anything. Two candidates are already eliminated: the asset is intact
+  (`backgroundGround.png` materializes as RGBA with its radial alpha, 255 at
+  the centre through 1 at the edge to 0 in the corner), and the fragment's
+  `backgroundCenter` fade origin is not the deviation it looks like — the
+  pinned `createBgMeshUBO` writes zero there exactly as the generated plan
+  does. What is left is the ground's SIZE and root position, which is the
+  `scene-size.ts` port already filed below, and whether the quad is drawn
+  through a blended pipeline at all: the generated fragment returns
+  premultiplied `vec4(color * alpha, alpha)`, and an opaque pipeline would
+  discard that alpha and produce exactly this hard-edged quad.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 
@@ -436,7 +458,7 @@ directly, which skips the per-invocation rebuild:
 The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
-**Current inventory:** 63 registered parity scenes and 170 unregistered
+**Current inventory:** 64 registered parity scenes and 169 unregistered
 corpus scenes. The compiler-contract lane has no compile-clean scenes. Each
 entry below records the first blocker only; clearing it can expose another.
 
@@ -475,7 +497,7 @@ lane when they can be erased or lowered inside the compiler, asset pipeline,
 or renderer. A scene is deferred when its covered behavior needs a new
 platform, user-input, or external-service contract.
 
-**Integrate first (136 scenes):** 4, 11, 12, 16-18, 20-23, 25-27,
+**Integrate first (135 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25-27,
 36, 38, 39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-158, 160, 162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223,
 226, 229, 231, 241, 251, 261-264, 269-271, 275-280.
