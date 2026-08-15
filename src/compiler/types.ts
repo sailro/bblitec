@@ -79,7 +79,8 @@ export type ShaderMaterialVariantName =
 export type LightKind =
     | "directional"
     | "hemispheric"
-    | "point";
+    | "point"
+    | "spot";
 
 export interface GeometryOutputTaskManifest {
     shaderIndex: number;
@@ -209,6 +210,7 @@ export type Feature =
     | "light:hemispheric"
     | "light:directional"
     | "light:point"
+    | "light:spot"
     | "loader:babylon"
     | "loader:gltf"
     | "material:pbr"

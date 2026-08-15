@@ -233,6 +233,22 @@ Scene 151 gates directional-plus-hemispheric Standard lighting and is
 pixel-exact. The supported light-count boundary is recorded in
 [Status](status.md).
 
+**An unrolled Standard light slot says whether it holds a light; the pinned
+loop says how many there are.** Babylon Lite declares
+`array<LightEntry, MAX_LIGHTS>` and walks `min(mesh.lc, MAX_LIGHTS)` of it, so
+a slot past the count is never read and needs no marking. The generated
+fragment unrolls one slot per reached light instead, which means an unwritten
+slot is evaluated and has to identify itself. It does so through a component
+the pinned lighting function does not read for the light kinds in that slot:
+normally `vLightDirection.w`, which every written light sets to one. A spot
+light takes that component for its cone cosine, so a scene reaching one tags
+empty slots in the kind component instead — the pinned kinds are 0 point,
+1 directional, 2 spot and 3 hemispheric, and the generated writer leaves -1
+there. Both forms evaluate the same lights to the same values; only the
+component carrying "this slot is empty" moves, and it moves only for the
+scenes that need the cone. Scene 15 is the parity gate, byte-identical across
+both backends.
+
 Two glTF material contracts are expressed in a shape that differs from the
 pinned one while producing the same values, and each holds for a stated reason.
 

@@ -242,6 +242,25 @@ const lightProperties: Readonly<
             supportsCompound: true,
         },
     },
+    // A spot light carries the same colour pair as the other positional
+    // kinds. Its `angle`, `exponent` and `range` are settable upstream and
+    // are not written by any reached scene, so they stay unlowered and fail
+    // explicitly rather than being accepted and ignored.
+    spot: {
+        ...commonLightProperties,
+        diffuse: {
+            collection: "lights",
+            nativeProperty: "diffuse_color",
+            valueKind: "color3",
+            supportsCompound: false,
+        },
+        specular: {
+            collection: "lights",
+            nativeProperty: "specular_color",
+            valueKind: "color3",
+            supportsCompound: false,
+        },
+    },
 };
 
 export function directPropertyAssignment(

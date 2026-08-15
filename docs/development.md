@@ -710,6 +710,12 @@ run and compare the same files afterwards, cell by cell: reading MAD columns
 by eye misses a moved backend delta. `status:verify` performs the published
 half of that comparison automatically.
 
+Two scenes need a second run before a moved cell means anything. Scenes 9 and
+37 do not render bit-identically on Dawn from one run to the next, by a few
+dozen pixels of 921600, so their Dawn columns move for any change and for no
+change alike. Re-run those two and compare again; a real regression stays put,
+this does not.
+
 There is no hosted CI. During iteration, run only the smallest relevant tests,
 generation steps, affected native builds, and scene parity gates. Do not repeat
 the complete corpus matrix after every local change.

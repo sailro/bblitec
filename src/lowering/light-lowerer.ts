@@ -226,6 +226,87 @@ LightHandle create_directional_light(
         };
     }
 
+    public lowerSpotFactory(): LoweredSource {
+        const modulePath = "src/light/spot-light.ts";
+        const symbolName = "createSpotLight";
+        const { declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        const defaults = this.extractPositionalLightDefaults(
+            modulePath,
+            symbolName,
+            "spot",
+            true,
+        );
+        // The cone is stored as the cosine of its half angle, computed once
+        // at creation. `angle` is the FULL cone angle, so a scene passing
+        // Math.PI / 2 lights a quarter turn in total.
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                declaration,
+                "_cosHalfAngle",
+            ),
+            "Math.cos(angle * 0.5)",
+            "spot-light cone cosine",
+        );
+        // A spot is the one light kind whose local matrix carries both a
+        // direction and a position; the other kinds pass one or the other.
+        this.context.assertExpressionShape(
+            this.context.callExpression(
+                declaration,
+                "localMatrixFromDirection",
+            ),
+            "localMatrixFromDirection(light.direction.x, light.direction.y, light.direction.z, light.position.x, light.position.y, light.position.z, _localMatrix)",
+            "spot-light local matrix",
+        );
+        return {
+            modulePath,
+            symbolName,
+            header: "",
+            source: `// ${this.context.provenance(modulePath, symbolName)}
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/light_matrix.hpp>
+
+#include <cmath>
+
+namespace bbl {
+
+LightHandle create_spot_light(
+    Engine& engine,
+    Vec3 position,
+    Vec3 direction,
+    float angle,
+    float exponent,
+    float intensity) {
+    LightRecord light;
+    light.kind = LightKind::spot;
+    light.position = position;
+    light.direction = direction;
+    light.intensity = intensity;
+    light.exponent = exponent;
+    light.cos_half_angle = std::cos(angle * 0.5f);
+    light.diffuse_color = ${this.context.cppColor3(defaults.diffuseColor)};
+    light.specular_color = ${this.context.cppColor3(defaults.specularColor)};
+    light.range = std::numeric_limits<float>::max();
+    upstream::local_matrix_from_direction(
+        direction.x,
+        direction.y,
+        direction.z,
+        position.x,
+        position.y,
+        position.z,
+        light.local_matrix);
+    engine.lights.push_back(light);
+    return LightHandle{
+        static_cast<std::uint32_t>(engine.lights.size() - 1)};
+}
+
+} // namespace bbl
+`,
+        };
+    }
+
     private extractHemisphericDefaults(modulePath: string, symbolName: string): HemisphericDefaults {
         const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
         const lightObject =
@@ -252,7 +333,7 @@ LightHandle create_directional_light(
     private extractPositionalLightDefaults(
         modulePath: string,
         symbolName: string,
-        expectedType: "directional" | "point",
+        expectedType: "directional" | "point" | "spot",
         requireRange: boolean,
     ): PositionalLightDefaults {
         const { file, declaration } =

@@ -70,7 +70,11 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     },
     {
         source: "upstream/src/light_matrix.cpp",
-        features: ["light:hemispheric", "light:directional"],
+        features: [
+            "light:hemispheric",
+            "light:directional",
+            "light:spot",
+        ],
     },
     {
         source: "upstream/src/light_hemispheric.cpp",
@@ -83,6 +87,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     {
         source: "upstream/src/light_point.cpp",
         features: ["light:point"],
+    },
+    {
+        source: "upstream/src/light_spot.cpp",
+        features: ["light:spot"],
     },
     {
         source: "upstream/src/image_skybox.cpp",

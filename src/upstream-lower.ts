@@ -188,7 +188,8 @@ class GeneratedSourceWriter {
         }
         if (
             features.includes("light:hemispheric") ||
-            features.includes("light:directional")
+            features.includes("light:directional") ||
+            features.includes("light:spot")
         ) {
             const light = new LightLowerer(context);
             this.writeSource(
@@ -216,6 +217,13 @@ class GeneratedSourceWriter {
             this.writeSource(
                 "upstream/src/light_point.cpp",
                 new LightLowerer(context).lowerPointFactory(),
+                generated,
+            );
+        }
+        if (features.includes("light:spot")) {
+            this.writeSource(
+                "upstream/src/light_spot.cpp",
+                new LightLowerer(context).lowerSpotFactory(),
                 generated,
             );
         }
@@ -292,6 +300,8 @@ class GeneratedSourceWriter {
                     standardLightLists: options.standardLightLists,
                     standardDiffuseUv2: options.standardDiffuseUv2,
                     standardBump: options.standardBump,
+                    standardSpotLights:
+                        features.includes("light:spot"),
                     orthographicCamera: features.includes(
                         "camera:orthographic",
                     ),
@@ -329,6 +339,7 @@ class GeneratedSourceWriter {
                 standardLights: options.standardLights,
                 standardDiffuseUv2: options.standardDiffuseUv2,
                 standardBump: options.standardBump,
+                standardSpotLights: features.includes("light:spot"),
                 gridMaterial: features.includes("material:grid"),
                 idDiagnostics: options.idDiagnostics,
                 pbrDiagnostics: options.pbrDiagnostics,

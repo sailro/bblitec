@@ -371,6 +371,7 @@ export class RendererLowerer {
         standardLightLists?: boolean;
         standardDiffuseUv2?: boolean;
         standardBump?: boolean;
+        standardSpotLights?: boolean;
         orthographicCamera?: boolean;
         background?: boolean;
         shaderPrograms?: CompiledShaderProgram[];
@@ -685,6 +686,18 @@ export class RendererLowerer {
             { length: standardLightSlots - 2 },
             (_, index) => index + 3,
         );
+        // Which slots hold a light is normally read off `light_direction.w`,
+        // which every written light sets to one and an untouched slot leaves
+        // at zero. A spot cone needs that component for its cosine, so a
+        // scene reaching one tags the empty slots in the kind component
+        // instead: the pinned kinds are 0 point, 1 directional, 2 spot and
+        // 3 hemispheric, and -1 is none of them.
+        const emptyLightData = options.standardSpotLights
+            ? "{0.0f, 0.0f, 0.0f, -1.0f}"
+            : "{}";
+        const standardPositionalLight = options.standardSpotLights
+            ? "positional"
+            : "light.kind == LightKind::point";
         const fogUniformFields = options.fog
             ? `    std::array<float, 4> fog_infos{};
     std::array<float, 4> fog_color{};
@@ -1112,15 +1125,15 @@ struct StandardUniforms {
     std::array<float, 4> view_right{};
     std::array<float, 4> view_up{};
     std::array<float, 4> view_forward{};
-    std::array<float, 4> light_data{};
+    std::array<float, 4> light_data${emptyLightData};
     std::array<float, 4> light_diffuse{};
     std::array<float, 4> light_specular{};
     std::array<float, 4> light_direction{};
-    std::array<float, 4> light_data_2{};
+    std::array<float, 4> light_data_2${emptyLightData};
     std::array<float, 4> light_diffuse_2{};
     std::array<float, 4> light_specular_2{};
     std::array<float, 4> light_direction_2{};${extraStandardLights.map((slot) => `
-    std::array<float, 4> light_data_${slot}{};
+    std::array<float, 4> light_data_${slot}${emptyLightData};
     std::array<float, 4> light_diffuse_${slot}{};
     std::array<float, 4> light_specular_${slot}{};
     std::array<float, 4> light_direction_${slot}{};`).join("")}
@@ -2153,7 +2166,13 @@ ${fogUniforms}\
             std::array<float, 4>& light_data,
             std::array<float, 4>& light_diffuse,
             std::array<float, 4>& light_specular,
-            std::array<float, 4>& light_direction) {
+            std::array<float, 4>& light_direction) {${options.standardSpotLights ? `
+        // A spot is positional like a point light and directional like a
+        // directional one: it packs its position in the data slot and its
+        // cone axis in the direction slot.
+        const bool positional =
+            light.kind == LightKind::point ||
+            light.kind == LightKind::spot;` : ""}
         const Vec3 matrix_direction{
             light.local_matrix[8],
             light.local_matrix[9],
@@ -2171,32 +2190,36 @@ ${fogUniforms}\
               }
             : light.direction;
         light_data = {
-            light.kind == LightKind::point
+            ${standardPositionalLight}
                 ? light.position.x
                 : direction.x,
-            light.kind == LightKind::point
+            ${standardPositionalLight}
                 ? light.position.y
                 : direction.y,
-            light.kind == LightKind::point
+            ${standardPositionalLight}
                 ? light.position.z
                 : direction.z,
             light.kind == LightKind::hemispheric
                 ? 3.0f
                 : light.kind == LightKind::directional
                     ? 1.0f
-                    : 0.0f,
+                    : ${options.standardSpotLights ? `light.kind == LightKind::spot
+                        ? 2.0f
+                        : 0.0f` : "0.0f"},
         };
         light_diffuse = {
             light.diffuse_color.r * light.intensity,
             light.diffuse_color.g * light.intensity,
             light.diffuse_color.b * light.intensity,
-            light.kind == LightKind::point ? light.range : 0.0f,
+            ${standardPositionalLight} ? light.range : 0.0f,
         };
         light_specular = {
             light.specular_color.r * light.intensity,
             light.specular_color.g * light.intensity,
             light.specular_color.b * light.intensity,
-            0.0f,
+            ${options.standardSpotLights ? `light.kind == LightKind::spot
+                ? light.exponent
+                : 0.0f` : "0.0f"},
         };
         light_direction = {
             light.kind == LightKind::hemispheric
@@ -2208,7 +2231,9 @@ ${fogUniforms}\
             light.kind == LightKind::hemispheric
                 ? light.ground_color.b
                 : direction.z,
-            1.0f,
+            ${options.standardSpotLights ? `light.kind == LightKind::spot
+                ? light.cos_half_angle
+                : 1.0f` : "1.0f"},
         };
     };
 ${options.standardLightLists ? `    // A light can name the meshes it applies to, so the slots hold this
@@ -2587,6 +2612,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         standardLights?: number;
         standardDiffuseUv2?: boolean;
         standardBump?: boolean;
+        standardSpotLights?: boolean;
         gridMaterial?: boolean;
         idDiagnostics: boolean;
         pbrDiagnostics: boolean;
@@ -2676,6 +2702,17 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             // baseColor), but no reached scene combines them.
             throw new Error(
                 "Standard vertex colors are lowered for the color fragment only; geometry outputs with vertex colors are not supported yet.",
+            );
+        }
+        if (
+            options.standardSpotLights &&
+            options.geometryOutputTasks.length > 0
+        ) {
+            // The geometry fragments share the same lighting function, but
+            // their slots keep the direction component as the occupied flag
+            // the spot cone needs. No reached scene composes the two.
+            throw new Error(
+                "Standard spot lights are lowered for the color fragment only; geometry outputs with spot lights are not supported yet.",
             );
         }
         const gridModule = "src/material/grid/grid-material.ts";
@@ -2787,6 +2824,20 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                     standardGeometry,
                     "pow(mat.sc.rgb, vec3<f32>(2.2))",
                     "standard reflectivity output",
+                ],
+            );
+        }
+        if (options.standardSpotLights) {
+            requiredUpstreamFormulas.push(
+                [
+                    standardTemplate,
+                    "let c = max(0.0, dot(L.vLightDirection.xyz, -lv));",
+                    "standard spot cone cosine",
+                ],
+                [
+                    standardTemplate,
+                    "if (c >= L.vLightDirection.w) { a *= max(0.0, pow(c, L.vLightSpecular.a)); } else { a = 0.0; }",
+                    "standard spot cone falloff",
                 ],
             );
         }
@@ -3380,6 +3431,7 @@ ${directMarker}`,
                     Math.max(2, options.standardLights ?? 2),
                     options.standardDiffuseUv2 === true,
                     options.standardBump === true,
+                    options.standardSpotLights === true,
                 ),
             });
         }

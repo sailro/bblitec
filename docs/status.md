@@ -11,7 +11,7 @@ of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
 | Plain-data model | interface structs, `T \| null` optionals, dynamic arrays, `Float32Array`/`Uint32Array`, string-literal enum tags, `Record<Union, T>` indexed by tag, readonly numeric tables, tuples, destructuring, object spread, `indexOf`, and constant arrays materialized on demand. Resource handles are storable inside data, so a mesh held in a struct drives its transforms and scene membership like a local. Const locals bind container elements as aliases; function-valued parameters inline. `Math` and the pinned seeded `Math.random` |
 | Engine/scene | creation, registration, fixed delta, before-render callbacks, runtime material-family append, `removeFromScene` with render-plan rematching, `setFog` linear/exp/exp2 |
 | Cameras | ArcRotate, FreeCamera, default framing, native controls, target assignment and reads, per-frame clamping of the reached properties, and the `enableOrthographicCamera` opt-in with its aspect-derived view volume |
-| Lights | directional, hemispheric and point with diffuse/specular colors; one Standard slot per light a scene declares, each mesh lit by the set its assets name; two PBR analytic lights, either kind in either slot |
+| Lights | directional, hemispheric, point and spot with diffuse/specular colors; one Standard slot per light a scene declares, each mesh lit by the set its assets name; spot cones shade under the pinned cosine-and-exponent falloff on Standard surfaces and the physical falloff in the PBR extra-light slots; two PBR analytic lights, either kind in either slot |
 | Geometry | box, sphere, subdivided ground, plane, torus; `createMeshFromData` typed-array meshes; fixed-capacity thin-instance pools with per-frame flush and count updates; indexed glTF/GLB and `.babylon`; glTF triangle-list and triangle-strip primitive modes; `KHR_node_visibility` with its subtree cascade; generated and flat normals; negative transforms |
 | Assets | external glTF packaging, embedded PNG/JPEG, `.env`, compile-time RGBE HDR/GGX cubemaps, glTF image-based lights, DDS, `loadSkybox` cubemaps, `loadTexture2D` file textures, `.babylon` textures |
 | Materials | Standard, PBR, GridMaterial, Standard cotangent-frame normal maps, PBR vertex colors and the Standard RGB ones behind `enableStandardVertexColors`; the opt-in setters `setPbrUnlit`, `setPbrSkybox` and `setPbrEmissive`; scene-local shader variants compiled from the entry file's own WGSL, with typed uniforms resolved to reflected offsets |
@@ -75,6 +75,7 @@ semantics side by side, with its risk and validation.
 | 10 | <img src="images/scenes/scene10.png" alt="Scene 10 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | generated sphere, no-IBL PBR, geometric normals |
 | 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.001}} / \color{#1a7f37}{\textsf{0.014}}$ | $\color{#1a7f37}{\textsf{0.001}} / \color{#1a7f37}{\textsf{0.014}}$ | material grid, ground, explicit occlusion |
 | 14 | <img src="images/scenes/scene14.png" alt="Scene 14 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.290}} / \color{#1a7f37}{\textsf{0.051}}$ | $\color{#1a7f37}{\textsf{0.289}} / \color{#1a7f37}{\textsf{0.049}}$ | Flight Helmet glTF, default framing, IBL, ground, DDS skybox |
+| 15 | <img src="images/scenes/scene15.png" alt="Scene 15 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | two scene-code spot lights over a Standard ground, cone cosine and exponent falloff |
 | 24 | <img src="images/scenes/scene24.png" alt="Scene 24 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.021}} / \color{#1a7f37}{\textsf{0.022}}$ | $\color{#1a7f37}{\textsf{0.015}} / \color{#1a7f37}{\textsf{0.016}}$ | Hill Valley `.babylon` geometry, textures, baked lighting |
 | 28 | <img src="images/scenes/scene28.png" alt="Scene 28 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.001}} / \color{#1a7f37}{\textsf{0.016}}$ | $\color{#1a7f37}{\textsf{0.001}} / \color{#1a7f37}{\textsf{0.016}}$ | `KHR_materials_clearcoat` intensity, roughness, coat normals |
 | 29 | <img src="images/scenes/scene29.png" alt="Scene 29 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.009}}$ | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.009}}$ | `KHR_materials_sheen` with `KHR_texture_transform` scaling |
@@ -211,6 +212,10 @@ in-process pinned Tint at startup, with no offline artifacts or shader cache.
   normals
 - glTF STEP channels, multiple-clip controls, broader property targets,
   and Standard scenes beyond two simultaneous lights remain unsupported
+- a spot light created in scene code carries its colors and intensity; its
+  `angle`, `exponent`, and `range` setters, a spot in the first PBR analytic
+  slot, and a spot composed with Standard geometry outputs all fail
+  explicitly
 - direct `createMorphTargets` covers one target attached to one mesh; broader
   target sets and reusable target objects remain unsupported
 - scene fog is ported for PBR, Standard, and image-skybox surfaces; fog

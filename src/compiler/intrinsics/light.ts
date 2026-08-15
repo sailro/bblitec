@@ -72,6 +72,31 @@ export function compileLightIntrinsic(
             };
         }
 
+        case "createSpotLight": {
+            context.expectArgumentCount(call, 4, 5);
+            const engine = context.requireDefaultEngine(call);
+            const position =
+                context.compileVec3(call.arguments[0]!);
+            const direction =
+                context.compileVec3(call.arguments[1]!);
+            const angle = context.compileNumber(call.arguments[2]!);
+            const exponent =
+                context.compileNumber(call.arguments[3]!);
+            const intensity = call.arguments[4]
+                ? context.compileNumber(call.arguments[4])
+                : "1.0f";
+            context.reachFeature("light:spot");
+            return {
+                kind: "light",
+                cpp:
+                    `bbl::create_spot_light(` +
+                    `${engine}, ${position}, ${direction}, ` +
+                    `${angle}, ${exponent}, ${intensity})`,
+                engineCpp: engine,
+                lightKind: "spot",
+            };
+        }
+
         default:
             return undefined;
     }

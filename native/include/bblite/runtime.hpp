@@ -622,6 +622,11 @@ struct LightRecord {
     // cone angle the light stores, so the cosine of the half-angle is the
     // cosine of outerConeAngle.
     float cos_half_angle = 1.0f;
+    // Spot falloff exponent. The pinned Standard lighting function raises the
+    // cone cosine to it, so a higher value sharpens the edge. A glTF spot
+    // carries no exponent and the PBR path shades cones by inverse-square
+    // falloff instead, which never reads this.
+    float exponent = 1.0f;
     Color3 diffuse_color{};
     Color3 specular_color{};
     Color3 ground_color{0.0f, 0.0f, 0.0f};
@@ -931,6 +936,13 @@ void mark_material_ubo_dirty(Engine& engine, MaterialHandle material);
 LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
 LightHandle create_directional_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
 LightHandle create_point_light(Engine& engine, Vec3 position, float intensity = 1.0f);
+LightHandle create_spot_light(
+    Engine& engine,
+    Vec3 position,
+    Vec3 direction,
+    float angle,
+    float exponent,
+    float intensity = 1.0f);
 CameraHandle create_arc_rotate_camera(Engine& engine, float alpha, float beta, float radius, Vec3 target);
 CameraHandle create_free_camera(Engine& engine, Vec3 position, Vec3 target);
 CameraHandle create_default_camera(Engine& engine, Scene& scene);
