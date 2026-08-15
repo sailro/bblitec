@@ -27,6 +27,7 @@ export function gltfLoaderCpp(
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -147,7 +148,44 @@ struct VisibilityTrack {
     std::vector<std::size_t> subtree;
     std::vector<float> times;
     std::vector<bool> values;
-};` : ""}${animationPointerMaterials ? `
+};
+
+// Pointer targets the pinned resolver has no handler for. Its registry is a
+// list of patterns and anything outside it returns null, so the channel is
+// warned about once and then never applied — the browser renders as though the
+// asset had not authored it. Reproducing that is a parity requirement rather
+// than a shortcut: implementing one of these would animate a value the
+// reference holds still. Each entry is absent from the pinned registry for its
+// own reason:
+//   - roughnessFactor: Babylon.js registers the metallicFactor pointer twice
+//     and the second registration animates roughness, so roughnessFactor
+//     itself is never registered. The pin matches that deliberately.
+//   - alphaCutoff and the camera planes: no handler in any pointer module.
+//   - spot/innerConeAngle: the lights module handles color, intensity, range
+//     and spot/outerConeAngle only.
+bool pointer_unhandled_upstream(const std::string& pointer) {
+    const auto tail_after_index =
+        [&pointer](const std::string& prefix) -> std::string {
+        if (pointer.rfind(prefix, 0) != 0) return std::string();
+        const std::size_t start = prefix.size();
+        std::size_t end = start;
+        while (end < pointer.size() && std::isdigit(
+                   static_cast<unsigned char>(pointer[end]))) {
+            ++end;
+        }
+        if (end == start) return std::string();
+        return pointer.substr(end);
+    };
+    const std::string material_tail = tail_after_index("/materials/");
+    if (
+        material_tail == "/pbrMetallicRoughness/roughnessFactor" ||
+        material_tail == "/alphaCutoff") {
+        return true;
+    }
+    if (!tail_after_index("/cameras/").empty()) return true;
+    return tail_after_index("/extensions/KHR_lights_punctual/lights/") ==
+        "/spot/innerConeAngle";
+}` : ""}${animationPointerMaterials ? `
 
 enum class MaterialTrackKind {
     base_color_factor,
@@ -2845,8 +2883,13 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                     channel_value.as_object();
                 const JsonObject& target =
                     required(channel, "target").as_object();
-                const std::string path_name =
-                    required(target, "path").as_string();${animationPointer ? `
+                std::string path_name =
+                    required(target, "path").as_string();
+                // A node-TRS pointer resolves to the same thing a standard
+                // channel does, so it carries a node index the standard path
+                // reads in place of the target's own.
+                bool pointer_node_override = false;
+                std::size_t pointer_node_index = 0;${animationPointer ? `
                 if (path_name == "pointer") {
                     // KHR_animation_pointer. The pinned base module resolves
                     // node-visibility and node-TRS pointers itself and pulls
@@ -2864,6 +2907,57 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                         throw std::runtime_error(
                             "glTF pointer channel is missing its KHR_animation_pointer target.");
                     }
+                    // Dropped before dispatch, so an unported target the pin
+                    // DOES resolve still fails explicitly below rather than
+                    // rendering a value nothing animates.
+                    const std::string pointer_target =
+                        required(
+                            pointer_extension->as_object(),
+                            "pointer")
+                            .as_string();
+                    if (pointer_unhandled_upstream(pointer_target)) {
+                        continue;
+                    }
+                    // A /nodes/{n}/{translation|rotation|scale|weights}
+                    // pointer is semantically identical to a standard channel
+                    // on node n. The pin emits a standard channel for it so it
+                    // flows through the proven topological node-TRS and morph
+                    // writeback, which moves the node and its descendants,
+                    // rather than through an opaque per-node writer. Rewriting
+                    // the target here reaches the same code for the same
+                    // reason.
+                    {
+                        const std::string node_prefix = "/nodes/";
+                        if (pointer_target.rfind(node_prefix, 0) == 0) {
+                            const std::size_t index_start =
+                                node_prefix.size();
+                            std::size_t index_end = index_start;
+                            while (
+                                index_end < pointer_target.size() &&
+                                std::isdigit(static_cast<unsigned char>(
+                                    pointer_target[index_end]))) {
+                                ++index_end;
+                            }
+                            const std::string node_path =
+                                pointer_target.substr(index_end);
+                            if (
+                                index_end > index_start &&
+                                (node_path == "/translation" ||
+                                 node_path == "/rotation" ||
+                                 node_path == "/scale" ||
+                                 node_path == "/weights")) {
+                                pointer_node_override = true;
+                                pointer_node_index =
+                                    static_cast<std::size_t>(
+                                        std::stoull(
+                                            pointer_target.substr(
+                                                index_start,
+                                                index_end - index_start)));
+                                path_name = node_path.substr(1);
+                            }
+                        }
+                    }
+                    if (!pointer_node_override) {
                     const std::string pointer =
                         required(
                             pointer_extension->as_object(),
@@ -3150,6 +3244,7 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                         ->visibility_tracks
                         .push_back(std::move(track));
                     continue;
+                    }
                 }` : ""}
                 if (
                     path_name != "rotation" &&
@@ -3176,7 +3271,9 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                 const AccessorInfo& output =
                     accessors.at(unsigned_value(required(sampler, "output")));
                 const std::size_t target_node =
-                    unsigned_value(required(target, "node"));
+                    pointer_node_override
+                        ? pointer_node_index
+                        : unsigned_value(required(target, "node"));
                 if (input.type != "SCALAR") {
                     throw std::runtime_error(
                         "glTF animation input accessor must be SCALAR.");
