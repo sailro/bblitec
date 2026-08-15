@@ -623,6 +623,28 @@ writes to `artifacts\capture\<scene>`:
   golden when no draw filter is active, proving the hooks are
   non-perturbing
 
+The buffers are recorded as base64, and nothing in the file says what they
+mean. Decode them against the layouts the capture already contains:
+
+```powershell
+npm run scene -- uniforms scene253 --size 96
+```
+
+`uniforms` reads a capture directory, parses the struct declarations out of the
+browser's own composed shader modules beside it, and prints every uniform
+buffer whose size matches one of them as named fields. That turns "is our
+material record right?" into a direct comparison against the values the
+browser actually uploaded, rather than an argument about shader text.
+
+A composed fragment declares one struct per material feature set, so several
+unrelated layouts can share a size — the base-colour UV transform pair and the
+dielectric reflectance slice both occupy 32 bytes. Every candidate is decoded
+and labelled with the module it came from rather than one being picked, since
+reading plausible values out of the wrong layout is worse than reporting the
+ambiguity. `--module <substring>` narrows it once the right fragment is known,
+and `--capture <dir>` reads a capture written somewhere other than
+`artifacts\capture\<scene>`.
+
 `--seek` overrides the registry's `referenceTimeSeconds`, and
 `--skip-draw <indexCount>` drops matching draws for per-draw
 isolation; pair it with a matching temporary filter in the native
