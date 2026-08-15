@@ -25,6 +25,18 @@
           ]
         }
       ]
+    },
+    "webp": {
+      "description": "WebP texture decoding for scenes whose materialized assets reach image/webp",
+      "dependencies": [
+        {
+          "name": "sdl3-image",
+          "default-features": false,
+          "features": [
+            "webp"
+          ]
+        }
+      ]
     }
   }
 }

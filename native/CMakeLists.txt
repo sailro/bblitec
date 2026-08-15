@@ -18,9 +18,14 @@ include("${BBLITE_GENERATED_DIR}/features.cmake")
 if(NOT DEFINED BBLITE_IMAGE_CODECS)
     set(BBLITE_IMAGE_CODECS "png" "jpeg")
 endif()
-if("jpeg" IN_LIST BBLITE_IMAGE_CODECS AND NOT "jpeg" IN_LIST VCPKG_MANIFEST_FEATURES)
-    list(APPEND VCPKG_MANIFEST_FEATURES "jpeg")
-endif()
+foreach(BBLITE_IMAGE_CODEC IN ITEMS "jpeg" "webp")
+    if(
+        "${BBLITE_IMAGE_CODEC}" IN_LIST BBLITE_IMAGE_CODECS
+        AND NOT "${BBLITE_IMAGE_CODEC}" IN_LIST VCPKG_MANIFEST_FEATURES
+    )
+        list(APPEND VCPKG_MANIFEST_FEATURES "${BBLITE_IMAGE_CODEC}")
+    endif()
+endforeach()
 
 project(babylon_lite_native LANGUAGES CXX)
 

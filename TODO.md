@@ -170,8 +170,9 @@ CPU-side from GPU-side causes immediately.
 ### glTF
 
 - [ ] Multiple UV sets and texture-coordinate selection beyond the
-  reached TEXCOORD_1 occlusion slice (the loader reads TEXCOORD_1 and
-  the dedicated uv2 occlusion pair is ported; base color, normal,
+  reached TEXCOORD_1 occlusion slice (the loader reads TEXCOORD_1, the
+  dedicated uv2 occlusion pair is ported, and the UV set occlusion samples
+  from is chosen per material rather than per asset; base color, normal,
   emissive, and metallic-roughness texCoord selection remain
   unsupported).
 - [x] Generalize texture transforms beyond one shared scale to per-slot
@@ -188,7 +189,10 @@ CPU-side from GPU-side causes immediately.
 - [ ] Complete glTF animation coverage: scale and STEP channels, multiple
   clips, and richer animation-group controls.
 - [ ] glTF cameras and spot lights.
-- [ ] KTX2/Basis and compression investigations.
+- [ ] KTX2/Basis and compression investigations. `EXT_texture_webp` is
+  supported: the loader resolves the alternate image source the extension
+  names, and the WebP decoder links only for scenes whose materialized assets
+  carry `image/webp`, through the same reached-codec list that gates JPEG.
 
 ### Property animation
 
@@ -379,7 +383,7 @@ directly, which skips the per-invocation rebuild:
 The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
-**Current inventory:** 59 registered parity scenes and 174 unregistered
+**Current inventory:** 60 registered parity scenes and 173 unregistered
 corpus scenes. The compiler-contract lane has no compile-clean scenes. Each
 entry below records the first blocker only; clearing it can expose another.
 
@@ -411,15 +415,15 @@ only for a contract no corpus scene exercises (a feature combination the corpus
 never composes, or a slice being built ahead of the scene that will use it),
 and delete it once corpus scenes cover the contract.
 
-The 174 unregistered scenes are partitioned by the boundary required to reproduce
+The 173 unregistered scenes are partitioned by the boundary required to reproduce
 their deterministic reference behavior, not by incidental browser helpers.
 Capture-inert demo controls and fixed-coordinate picking stay in the first
 lane when they can be erased or lowered inside the compiler, asset pipeline,
 or renderer. A scene is deferred when its covered behavior needs a new
 platform, user-input, or external-service contract.
 
-**Integrate first (140 scenes):** 4, 11, 12, 15-23, 25-27,
-36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
+**Integrate first (139 scenes):** 4, 11, 12, 15-23, 25-27,
+36, 38, 39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-158, 160, 162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223,
 226, 229, 231, 241, 251, 253, 261-264, 269-271, 275-280.
 
@@ -579,10 +583,6 @@ runtime gaps may remain hidden behind it.
   `reflectanceTexture` pair — including the `pow(2.2)` the reflectance
   fragment applies to each — stays unreached. The same fragment's
   `occlusionStrength` mix is already the base template's own.
-- [ ] Scene 37: it now fails during generation on `PBR material-extension
-  marker changed: occlusion uv2 inner signature`, before the loader gap it
-  was recorded under. That reads as marker drift rather than a missing
-  feature, and it is the one scene whose position moved backwards.
 - [ ] Carry primitive topology to the pipeline for the modes a triangle list
   cannot express: points, lines, and line strips. Scene 260 measured the
   triangle strip by expanding it to its triangle list in the loader, which

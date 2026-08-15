@@ -1096,6 +1096,19 @@ const sceneInputs: readonly SceneInput[] = [
             },
         },
     },
+    {
+        id: "scene37",
+        name: "Scene 37 - Sheen Wood Leather Sofa",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene37.ts",
+        title: "Babylon Lite Native - Sheen Wood Leather Sofa",
+        parity: {
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.01,
+            dawnThresholds: { maxFullMad: 0.002, maxForegroundMad: 0.008 },
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

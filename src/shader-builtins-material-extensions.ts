@@ -117,6 +117,9 @@ function uniformFields(options: MaterialExtensionOptions): string {
     if (options.iridescence) {
         fields.push("  iridescenceParams : vec4<f32>,");
     }
+    if (options.occlusionUv2) {
+        fields.push("  occlusionParams : vec4<f32>,");
+    }
     return fields.length > 0 ? `${fields.join("\n")}\n` : "";
 }
 
@@ -694,15 +697,23 @@ export function applyMaterialExtensionWgsl(
                 "v_6 : bool, bblUv2 : vec2<f32>) {",
             "occlusion uv2 inner signature",
         );
-        // Babylon Lite's pbr-template-ext occlusionOverride: the
-        // dedicated occlusion texture replaces the ORM red channel,
-        // sampled at uv2.
+        // Babylon Lite's pbr-template-ext occlusionOverride: a material whose
+        // occlusionTexture selects TEXCOORD_1 samples a dedicated texture at
+        // uv2 instead of the ORM red channel. Upstream compiles that choice
+        // into the material's own fragment; this fragment is shared by the
+        // scene's materials, so the choice is a per-material uniform and both
+        // sources keep the occlusion-strength mix the pin applies to each.
         result = replaceOnce(
             result,
             "  let v_34 = mix(1.0f, v_33.x, " +
                 "FragmentUniforms.materialFactors.z);",
-            "  let v_34 = textureSample(occlusionTexture, " +
-                "occlusionSampler, bblUv2).x;",
+            "  let bblOcclusionSample = select(\n" +
+                "    v_33.x,\n" +
+                "    textureSample(occlusionTexture, occlusionSampler, bblUv2).x,\n" +
+                "    FragmentUniforms.occlusionParams.x > 0.5f,\n" +
+                "  );\n" +
+                "  let v_34 = mix(1.0f, bblOcclusionSample, " +
+                "FragmentUniforms.materialFactors.z);",
             "occlusion uv2 override",
         );
     }
