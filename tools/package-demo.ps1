@@ -122,11 +122,14 @@ if ($sdlShared) {
         $runtimeDlls += "jpeg62.dll"
     }
     if ($webpReached) {
-        # SDL_image links the demuxer, which pulls the decoder and the
-        # sharpyuv helper libwebp is built against.
+        # SDL3_image imports libwebp, libwebpdemux and libwebpmux directly,
+        # and libwebp imports libsharpyuv. Missing any one of them fails the
+        # process at load with STATUS_DLL_NOT_FOUND before main runs, so this
+        # list is the import closure rather than the obvious pair.
         $runtimeDlls += @(
             "libwebp.dll",
             "libwebpdemux.dll",
+            "libwebpmux.dll",
             "libsharpyuv.dll"
         )
     }
@@ -362,6 +365,90 @@ if (Test-Path $manifestPath) {
         ($assetSources -join "`r`n") + "`r`n" |
             Set-Content (Join-Path $packageDirectory "ASSET-SOURCES.txt") -Encoding UTF8
     }
+}
+
+# A payload is only a release if it starts. A DLL the staged binaries import
+# but the package omits fails the process at load with STATUS_DLL_NOT_FOUND
+# before main runs, and nothing about the staged file list says so — the list
+# looks complete because every name on it is present. Read the import tables
+# instead, and require any imported library the toolchain also ships to be in
+# the package: system libraries live outside the vcpkg bin directory and are
+# resolved by the loader, everything else has to travel with the executable.
+function Get-ImportedLibraries {
+    param([string] $Path)
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 64 -or [BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) {
+        return @()
+    }
+    $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+    if ($bytes.Length -lt $pe + 24 -or [BitConverter]::ToUInt32($bytes, $pe) -ne 0x00004550) {
+        return @()
+    }
+    $sectionCount = [BitConverter]::ToUInt16($bytes, $pe + 6)
+    $optionalSize = [BitConverter]::ToUInt16($bytes, $pe + 20)
+    $optional = $pe + 24
+    $magic = [BitConverter]::ToUInt16($bytes, $optional)
+    # The import directory is entry 1 of the data directory, which follows the
+    # optional header's fixed part: 96 bytes for PE32, 112 for PE32+.
+    $importEntry = $optional + $(if ($magic -eq 0x20B) { 112 } else { 96 }) + 8
+    $importRva = [BitConverter]::ToUInt32($bytes, $importEntry)
+    if ($importRva -eq 0) { return @() }
+
+    $sections = @()
+    $sectionBase = $optional + $optionalSize
+    for ($i = 0; $i -lt $sectionCount; $i++) {
+        $s = $sectionBase + ($i * 40)
+        $sections += [pscustomobject]@{
+            Rva = [BitConverter]::ToUInt32($bytes, $s + 12)
+            Size = [BitConverter]::ToUInt32($bytes, $s + 8)
+            Raw = [BitConverter]::ToUInt32($bytes, $s + 20)
+        }
+    }
+    function Convert-RvaToOffset {
+        param([uint32] $Rva, $Sections)
+        foreach ($s in $Sections) {
+            if ($Rva -ge $s.Rva -and $Rva -lt ($s.Rva + [Math]::Max($s.Size, 1))) {
+                return [int]($s.Raw + ($Rva - $s.Rva))
+            }
+        }
+        return -1
+    }
+
+    $names = @()
+    $descriptor = Convert-RvaToOffset -Rva $importRva -Sections $sections
+    if ($descriptor -lt 0) { return @() }
+    while ($descriptor + 20 -le $bytes.Length) {
+        $nameRva = [BitConverter]::ToUInt32($bytes, $descriptor + 12)
+        if ($nameRva -eq 0) { break }
+        $nameOffset = Convert-RvaToOffset -Rva $nameRva -Sections $sections
+        if ($nameOffset -lt 0) { break }
+        $end = $nameOffset
+        while ($end -lt $bytes.Length -and $bytes[$end] -ne 0) { $end++ }
+        $names += [System.Text.Encoding]::ASCII.GetString($bytes, $nameOffset, $end - $nameOffset)
+        $descriptor += 20
+    }
+    return $names
+}
+
+$staged = Get-ChildItem $packageDirectory -Filter *.dll -File
+$staged += Get-ChildItem $packageDirectory -Filter *.exe -File
+$stagedNames = [System.Collections.Generic.HashSet[string]]::new(
+    [string[]]($staged | ForEach-Object { $_.Name }),
+    [System.StringComparer]::OrdinalIgnoreCase
+)
+$missing = @{}
+foreach ($binary in $staged) {
+    foreach ($import in (Get-ImportedLibraries -Path $binary.FullName)) {
+        if ($stagedNames.Contains($import)) { continue }
+        # Only the toolchain's own libraries are ours to ship.
+        if (-not (Test-Path (Join-Path $runtimeDirectory $import))) { continue }
+        $missing[$import] = $binary.Name
+    }
+}
+if ($missing.Count -gt 0) {
+    $detail = ($missing.GetEnumerator() |
+        ForEach-Object { "$($_.Key) (imported by $($_.Value))" }) -join ", "
+    throw "Package would not start: missing runtime libraries the toolchain provides: $detail"
 }
 
 Compress-Archive -Path $packageDirectory -DestinationPath $archivePath -CompressionLevel Optimal
