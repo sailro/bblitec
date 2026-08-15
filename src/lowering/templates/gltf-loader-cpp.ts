@@ -777,6 +777,28 @@ float linear_determinant(const Matrix& matrix) {
         matrix[8] * (matrix[1] * matrix[6] - matrix[5] * matrix[2]);
 }
 
+// getTextureImageIndex: an alternate-source extension supplies the image index
+// in place of the core field. The pin keeps this on its core path rather than
+// behind a feature import, because the decode needs no extra module there —
+// createImageBitmap reads WebP natively.
+std::size_t texture_image_index(const JsonObject& texture) {
+    if (
+        const ts::JsonValue* extensions =
+            optional(texture, "extensions")) {
+        if (
+            const ts::JsonValue* webp = optional(
+                extensions->as_object(),
+                "EXT_texture_webp")) {
+            if (
+                const ts::JsonValue* source =
+                    optional(webp->as_object(), "source")) {
+                return unsigned_value(*source);
+            }
+        }
+    }
+    return unsigned_value(required(texture, "source"));
+}
+
 TextureData image_data(
     const ts::ArrayBuffer& buffer,
     const upstream::ParsedGlbContainer& container,
@@ -797,11 +819,17 @@ TextureData image_data(
     }
     const std::string mime_type =
         string_or(image, "mimeType");
+    // The codec set the build links is decided by scanning these same
+    // materialized assets, so a media type listed here is always one the
+    // executable can decode: an asset carrying WebP is what put the WebP
+    // codec in BBLITE_IMAGE_CODECS in the first place.
     if (
         mime_type != "image/png" &&
-        mime_type != "image/jpeg") {
+        mime_type != "image/jpeg" &&
+        mime_type != "image/webp") {
         throw std::runtime_error(
-            "Only embedded PNG/JPEG glTF images are supported.");
+            "Only embedded PNG, JPEG and WebP glTF images are supported: " +
+            mime_type + ".");
     }
     result.bytes.assign(
         buffer.bytes().begin() + start,
@@ -1134,7 +1162,7 @@ TextureData texture_data(
         sampler ? unsigned_or(*sampler, "wrapS", 10497) : 10497);
     result.sampler.address_v = address_mode(
         sampler ? unsigned_or(*sampler, "wrapT", 10497) : 10497);
-    const std::size_t image_index = unsigned_value(required(texture, "source"));
+    const std::size_t image_index = texture_image_index(texture);
     result.bytes = image_data(
         buffer,
         container,
@@ -1317,10 +1345,8 @@ MaterialHandle load_material(
             [&](const ts::JsonValue* info) -> std::size_t {
                 const std::size_t texture_index = unsigned_value(
                     required(info->as_object(), "index"));
-                return unsigned_value(
-                    required(
-                        textures.at(texture_index).as_object(),
-                        "source"));
+                return texture_image_index(
+                    textures.at(texture_index).as_object());
             };
         const std::size_t occlusion_uv = unsigned_or(
             occlusion_texture_info->as_object(),

@@ -176,26 +176,43 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
     );
 }
 
-const jpegNamePattern = /\.jpe?g(?:[?#]|$)/i;
+/**
+ * The optional image codecs a scene's materialized assets can reach, each
+ * with the ways an asset names its content. PNG is not listed because it is
+ * unconditional: `.env` RGBD payloads, the RGBD BRDF LUT and screenshot
+ * capture all go through it.
+ */
+const optionalImageCodecs: ReadonlyArray<{
+    codec: string;
+    mimeType: string;
+    namePattern: RegExp;
+}> = [
+    {
+        codec: "jpeg",
+        mimeType: "image/jpeg",
+        namePattern: /\.jpe?g(?:[?#]|$)/i,
+    },
+    {
+        codec: "webp",
+        mimeType: "image/webp",
+        namePattern: /\.webp(?:[?#]|$)/i,
+    },
+];
 
-function glbReachesJpeg(bytes: Buffer): boolean {
+function glbImages(
+    bytes: Buffer,
+): { mimeType?: string; uri?: string }[] {
     if (bytes.length < 20 || bytes.readUInt32LE(0) !== 0x46546c67) {
-        return false;
+        return [];
     }
     const jsonLength = bytes.readUInt32LE(12);
     if (bytes.length < 20 + jsonLength) {
-        return false;
+        return [];
     }
     const document = JSON.parse(
         bytes.subarray(20, 20 + jsonLength).toString("utf8"),
     ) as { images?: { mimeType?: string; uri?: string }[] };
-    return (document.images ?? []).some(
-        (image) =>
-            image.mimeType === "image/jpeg" ||
-            (typeof image.uri === "string" &&
-                (/^data:image\/jpeg/i.test(image.uri) ||
-                    jpegNamePattern.test(image.uri))),
-    );
+    return document.images ?? [];
 }
 
 function reachedImageCodecs(
@@ -204,32 +221,49 @@ function reachedImageCodecs(
 ): string[] {
     // PNG stays unconditional: .env RGBD payloads and the RGBD BRDF
     // LUT decode through PNG, and screenshot capture encodes PNG.
-    // JPEG is reached only when a materialized asset carries JPEG
-    // content; the native build then links the JPEG codec (vcpkg
-    // manifest feature "jpeg") and packaging ships its runtime.
-    let jpeg = false;
+    // Every other codec is reached only when a materialized asset carries
+    // its content; the native build then links that codec through the
+    // matching vcpkg manifest feature and packaging ships its runtime.
+    const reached = new Set<string>();
     for (const asset of assets) {
-        if (jpegNamePattern.test(asset.output)) {
-            jpeg = true;
-            break;
-        }
         const materialized = resolve(outputPath, "assets", asset.output);
-        if (!existsSync(materialized)) {
-            continue;
-        }
-        if (/\.glb$/i.test(asset.output)) {
-            jpeg = glbReachesJpeg(readFileSync(materialized));
-        } else if (/\.(?:babylon|gltf)$/i.test(asset.output)) {
-            const text = readFileSync(materialized, "utf8");
-            jpeg =
-                /image\/jpeg/i.test(text) ||
-                /\.jpe?g["']/i.test(text);
-        }
-        if (jpeg) {
-            break;
+        const bytes = existsSync(materialized)
+            ? readFileSync(materialized)
+            : undefined;
+        const isGlb = /\.glb$/i.test(asset.output);
+        const isTextDocument = /\.(?:babylon|gltf)$/i.test(asset.output);
+        const images = bytes && isGlb ? glbImages(bytes) : [];
+        const text =
+            bytes && isTextDocument ? bytes.toString("utf8") : undefined;
+        for (const { codec, mimeType, namePattern } of optionalImageCodecs) {
+            if (reached.has(codec)) {
+                continue;
+            }
+            const inGlb = images.some(
+                (image) =>
+                    image.mimeType === mimeType ||
+                    (typeof image.uri === "string" &&
+                        (new RegExp(`^data:${mimeType}`, "i").test(image.uri) ||
+                            namePattern.test(image.uri))),
+            );
+            const inText =
+                text !== undefined &&
+                (new RegExp(mimeType.replace("/", "\\/"), "i").test(text) ||
+                    new RegExp(
+                        `${namePattern.source.replace(/\(\?:\[\?#\]\|\$\)/, "")}["']`,
+                        "i",
+                    ).test(text));
+            if (namePattern.test(asset.output) || inGlb || inText) {
+                reached.add(codec);
+            }
         }
     }
-    return jpeg ? ["png", "jpeg"] : ["png"];
+    return [
+        "png",
+        ...optionalImageCodecs
+            .map(({ codec }) => codec)
+            .filter((codec) => reached.has(codec)),
+    ];
 }
 
 /**

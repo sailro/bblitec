@@ -55,11 +55,13 @@ $cpuFallback = if ($cpuFallbackEntry) {
 # scene's features.cmake). Generated directories predating codec
 # tree-shaking carry no list and keep the historical png+jpeg set.
 $jpegReached = $true
+$webpReached = $false
 $featuresPath = Join-Path $root "generated\$Scene\features.cmake"
 if (Test-Path $featuresPath) {
     $featuresText = Get-Content $featuresPath -Raw
     if ($featuresText -match "BBLITE_IMAGE_CODECS") {
         $jpegReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"jpeg"'
+        $webpReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"webp"'
     }
 }
 
@@ -118,6 +120,15 @@ if ($sdlShared) {
     )
     if ($jpegReached) {
         $runtimeDlls += "jpeg62.dll"
+    }
+    if ($webpReached) {
+        # SDL_image links the demuxer, which pulls the decoder and the
+        # sharpyuv helper libwebp is built against.
+        $runtimeDlls += @(
+            "libwebp.dll",
+            "libwebpdemux.dll",
+            "libsharpyuv.dll"
+        )
     }
 }
 if ($dawnShared) {
@@ -199,6 +210,9 @@ $licensePackages = @{
 }
 if ($jpegReached) {
     $licensePackages["libjpeg-turbo.txt"] = "libjpeg-turbo"
+}
+if ($webpReached) {
+    $licensePackages["libwebp.txt"] = "libwebp"
 }
 foreach ($entry in $licensePackages.GetEnumerator()) {
     $source = Join-Path $vcpkgShare "$($entry.Value)\copyright"
