@@ -2883,8 +2883,13 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                     channel_value.as_object();
                 const JsonObject& target =
                     required(channel, "target").as_object();
-                const std::string path_name =
-                    required(target, "path").as_string();${animationPointer ? `
+                std::string path_name =
+                    required(target, "path").as_string();
+                // A node-TRS pointer resolves to the same thing a standard
+                // channel does, so it carries a node index the standard path
+                // reads in place of the target's own.
+                bool pointer_node_override = false;
+                std::size_t pointer_node_index = 0;${animationPointer ? `
                 if (path_name == "pointer") {
                     // KHR_animation_pointer. The pinned base module resolves
                     // node-visibility and node-TRS pointers itself and pulls
@@ -2913,6 +2918,46 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                     if (pointer_unhandled_upstream(pointer_target)) {
                         continue;
                     }
+                    // A /nodes/{n}/{translation|rotation|scale|weights}
+                    // pointer is semantically identical to a standard channel
+                    // on node n. The pin emits a standard channel for it so it
+                    // flows through the proven topological node-TRS and morph
+                    // writeback, which moves the node and its descendants,
+                    // rather than through an opaque per-node writer. Rewriting
+                    // the target here reaches the same code for the same
+                    // reason.
+                    {
+                        const std::string node_prefix = "/nodes/";
+                        if (pointer_target.rfind(node_prefix, 0) == 0) {
+                            const std::size_t index_start =
+                                node_prefix.size();
+                            std::size_t index_end = index_start;
+                            while (
+                                index_end < pointer_target.size() &&
+                                std::isdigit(static_cast<unsigned char>(
+                                    pointer_target[index_end]))) {
+                                ++index_end;
+                            }
+                            const std::string node_path =
+                                pointer_target.substr(index_end);
+                            if (
+                                index_end > index_start &&
+                                (node_path == "/translation" ||
+                                 node_path == "/rotation" ||
+                                 node_path == "/scale" ||
+                                 node_path == "/weights")) {
+                                pointer_node_override = true;
+                                pointer_node_index =
+                                    static_cast<std::size_t>(
+                                        std::stoull(
+                                            pointer_target.substr(
+                                                index_start,
+                                                index_end - index_start)));
+                                path_name = node_path.substr(1);
+                            }
+                        }
+                    }
+                    if (!pointer_node_override) {
                     const std::string pointer =
                         required(
                             pointer_extension->as_object(),
@@ -3199,6 +3244,7 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                         ->visibility_tracks
                         .push_back(std::move(track));
                     continue;
+                    }
                 }` : ""}
                 if (
                     path_name != "rotation" &&
@@ -3225,7 +3271,9 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                 const AccessorInfo& output =
                     accessors.at(unsigned_value(required(sampler, "output")));
                 const std::size_t target_node =
-                    unsigned_value(required(target, "node"));
+                    pointer_node_override
+                        ? pointer_node_index
+                        : unsigned_value(required(target, "node"));
                 if (input.type != "SCALAR") {
                     throw std::runtime_error(
                         "glTF animation input accessor must be SCALAR.");
