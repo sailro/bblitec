@@ -27,6 +27,7 @@ export function gltfLoaderCpp(
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -147,7 +148,44 @@ struct VisibilityTrack {
     std::vector<std::size_t> subtree;
     std::vector<float> times;
     std::vector<bool> values;
-};` : ""}${animationPointerMaterials ? `
+};
+
+// Pointer targets the pinned resolver has no handler for. Its registry is a
+// list of patterns and anything outside it returns null, so the channel is
+// warned about once and then never applied — the browser renders as though the
+// asset had not authored it. Reproducing that is a parity requirement rather
+// than a shortcut: implementing one of these would animate a value the
+// reference holds still. Each entry is absent from the pinned registry for its
+// own reason:
+//   - roughnessFactor: Babylon.js registers the metallicFactor pointer twice
+//     and the second registration animates roughness, so roughnessFactor
+//     itself is never registered. The pin matches that deliberately.
+//   - alphaCutoff and the camera planes: no handler in any pointer module.
+//   - spot/innerConeAngle: the lights module handles color, intensity, range
+//     and spot/outerConeAngle only.
+bool pointer_unhandled_upstream(const std::string& pointer) {
+    const auto tail_after_index =
+        [&pointer](const std::string& prefix) -> std::string {
+        if (pointer.rfind(prefix, 0) != 0) return std::string();
+        const std::size_t start = prefix.size();
+        std::size_t end = start;
+        while (end < pointer.size() && std::isdigit(
+                   static_cast<unsigned char>(pointer[end]))) {
+            ++end;
+        }
+        if (end == start) return std::string();
+        return pointer.substr(end);
+    };
+    const std::string material_tail = tail_after_index("/materials/");
+    if (
+        material_tail == "/pbrMetallicRoughness/roughnessFactor" ||
+        material_tail == "/alphaCutoff") {
+        return true;
+    }
+    if (!tail_after_index("/cameras/").empty()) return true;
+    return tail_after_index("/extensions/KHR_lights_punctual/lights/") ==
+        "/spot/innerConeAngle";
+}` : ""}${animationPointerMaterials ? `
 
 enum class MaterialTrackKind {
     base_color_factor,
@@ -2863,6 +2901,17 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                     if (!pointer_extension) {
                         throw std::runtime_error(
                             "glTF pointer channel is missing its KHR_animation_pointer target.");
+                    }
+                    // Dropped before dispatch, so an unported target the pin
+                    // DOES resolve still fails explicitly below rather than
+                    // rendering a value nothing animates.
+                    const std::string pointer_target =
+                        required(
+                            pointer_extension->as_object(),
+                            "pointer")
+                            .as_string();
+                    if (pointer_unhandled_upstream(pointer_target)) {
+                        continue;
                     }
                     const std::string pointer =
                         required(
