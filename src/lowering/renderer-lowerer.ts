@@ -2051,7 +2051,9 @@ ${fogUniforms}\
         };
         result.material_factors[0] = material.metallic_factor;
         result.material_factors[1] = material.roughness_factor;
-        result.material_factors[2] = material.has_occlusion_texture ? 1.0f : 0.0f;
+        result.material_factors[2] = material.has_occlusion_texture
+            ? material.occlusion_strength
+            : 0.0f;
         result.material_factors[3] =
             scene.environment.has_irradiance
                 ? material.environment_intensity

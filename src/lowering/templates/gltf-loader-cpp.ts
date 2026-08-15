@@ -206,6 +206,22 @@ enum class MaterialTrackKind {
     emissive_factor,
     emissive_strength,
     texture_transform,
+    // Babylon.js registers the glTF metallicFactor pointer twice and the
+    // second registration animates roughness, so a metallicFactor channel
+    // drives the roughness factor and metallic itself is never animated. The
+    // pin matches that for parity and says so; roughnessFactor has no handler
+    // at all.
+    roughness_from_metallic,
+    normal_texture_scale,
+    occlusion_strength,
+    transmission_factor,
+    index_of_refraction,
+    volume_thickness,
+    volume_attenuation_distance,
+    volume_attenuation_color,
+    iridescence_factor,
+    iridescence_index_of_refraction,
+    iridescence_maximum_thickness,
 };
 
 // Which texture slot's transform a KHR_texture_transform pointer drives, and
@@ -1377,6 +1393,12 @@ MaterialHandle load_material(
     const ts::JsonValue* occlusion_texture_info =
         optional(material_json, "occlusionTexture");
     material.has_occlusion_texture = occlusion_texture_info != nullptr;
+    if (occlusion_texture_info) {
+        material.occlusion_strength = float_or(
+            occlusion_texture_info->as_object(),
+            "strength",
+            1.0f);
+    }
     if (occlusion_texture_info) {
         // Babylon Lite's buildDefaultPbrTexturesExt: an occlusion
         // texture on TEXCOORD_1 without a metallic-roughness image
@@ -3187,6 +3209,68 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                             track.kind =
                                 MaterialTrackKind::emissive_strength;
                             components = 1;
+                        } else if (
+                            property ==
+                            "/pbrMetallicRoughness/metallicFactor") {
+                            track.kind =
+                                MaterialTrackKind::roughness_from_metallic;
+                            components = 1;
+                        } else if (property == "/normalTexture/scale") {
+                            track.kind =
+                                MaterialTrackKind::normal_texture_scale;
+                            components = 1;
+                        } else if (property == "/occlusionTexture/strength") {
+                            track.kind =
+                                MaterialTrackKind::occlusion_strength;
+                            components = 1;
+                        } else if (
+                            property ==
+                            "/extensions/KHR_materials_transmission/transmissionFactor") {
+                            track.kind =
+                                MaterialTrackKind::transmission_factor;
+                            components = 1;
+                        } else if (
+                            property ==
+                            "/extensions/KHR_materials_ior/ior") {
+                            track.kind =
+                                MaterialTrackKind::index_of_refraction;
+                            components = 1;
+                        } else if (
+                            property ==
+                            "/extensions/KHR_materials_volume/thicknessFactor") {
+                            track.kind =
+                                MaterialTrackKind::volume_thickness;
+                            components = 1;
+                        } else if (
+                            property ==
+                            "/extensions/KHR_materials_volume/attenuationDistance") {
+                            track.kind =
+                                MaterialTrackKind::volume_attenuation_distance;
+                            components = 1;
+                        } else if (
+                            property ==
+                            "/extensions/KHR_materials_volume/attenuationColor") {
+                            track.kind =
+                                MaterialTrackKind::volume_attenuation_color;
+                            components = 3;
+                        } else if (
+                            property ==
+                            "/extensions/KHR_materials_iridescence/iridescenceFactor") {
+                            track.kind =
+                                MaterialTrackKind::iridescence_factor;
+                            components = 1;
+                        } else if (
+                            property ==
+                            "/extensions/KHR_materials_iridescence/iridescenceIor") {
+                            track.kind =
+                                MaterialTrackKind::iridescence_index_of_refraction;
+                            components = 1;
+                        } else if (
+                            property ==
+                            "/extensions/KHR_materials_iridescence/iridescenceThicknessMaximum") {
+                            track.kind =
+                                MaterialTrackKind::iridescence_maximum_thickness;
+                            components = 1;
                         } else {
                             // A KHR_texture_transform pointer names the slot,
                             // then the extension, then one of its three
@@ -3691,6 +3775,49 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                         break;
                     case MaterialTrackKind::emissive_strength:
                         material.emissive_strength = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::roughness_from_metallic:
+                        material.roughness_factor = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::normal_texture_scale:
+                        material.normal_texture_scale = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::occlusion_strength:
+                        material.occlusion_strength = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::transmission_factor:
+                        material.transmission_factor = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::index_of_refraction:
+                        // The render plan recomposes the dielectric ratio from
+                        // this every frame, so writing the index is the whole
+                        // of it — the pin instead reaches its reflectance ext,
+                        // which arrives at the same F0.
+                        material.index_of_refraction = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::volume_thickness:
+                        material.thickness = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::volume_attenuation_distance:
+                        material.attenuation_distance = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::volume_attenuation_color:
+                        material.attenuation_color = Color3{
+                            mix(a.x, b.x),
+                            mix(a.y, b.y),
+                            mix(a.z, b.z),
+                        };
+                        break;
+                    case MaterialTrackKind::iridescence_factor:
+                        material.iridescence_intensity = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::iridescence_index_of_refraction:
+                        material.iridescence_index_of_refraction =
+                            mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::iridescence_maximum_thickness:
+                        material.iridescence_maximum_thickness =
+                            mix(a.x, b.x);
                         break;
                     case MaterialTrackKind::texture_transform: {
                         TextureTransform& slot =

@@ -536,6 +536,10 @@ struct MaterialRecord {
     bool skybox_mode = false;
     bool specular_aa = false;
     bool has_occlusion_texture = false;
+    // glTF occlusionTexture.strength, which the fragment mixes toward 1. The
+    // pin forces its reflectance ext on when this is animated so the mix
+    // exists; ours is on the core path, so the value simply rides here.
+    float occlusion_strength = 1.0f;
     bool unlit = false;
     bool no_color = false;
     bool disable_lighting = false;
