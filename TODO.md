@@ -403,36 +403,6 @@ CPU-side from GPU-side causes immediately.
 
 ## P1 — Developer experience
 
-- [ ] Add portable CMake presets.
-Sharing the PAL across scenes was investigated on 2026-08-14 and **declined**;
-the measurements are kept because they are what a future proposal has to beat.
-
-Every scene still compiles `pal.cpp`, `pal_sdl.cpp`, `pal_sdl_gpu.cpp` and
-`pal_dawn.cpp` into its own build directory. Keyed on everything each
-translation unit includes -- not on `render_capabilities.hpp`, which has 9
-distinct signatures but is not the whole key, because the GPU PALs also include
-the per-scene `renderer_plan.hpp` -- the 232 PAL compiles produce 83 distinct
-object files: 58 for `pal.cpp` (it embeds the per-scene build stamp), 12 each
-for the two GPU PALs, and **one** for `pal_sdl.cpp`.
-
-Two ways to collect that were measured rather than argued:
-
-- `sccache` gives **0%** across scenes. Its key is the preprocessed text, which
-  embeds absolute paths: holding the vcpkg path equal, two scenes in the same
-  group differ in 8 lines out of 182,905, all `#line` directives naming the
-  per-scene include directory. Making it hit needs a shared generated include
-  tree *and* a shared `VCPKG_INSTALLED_DIR` first -- two structural changes to
-  enable a cache that then saves ~92% of a redundant compile where a shared
-  library saves 100%.
-- One static library per group avoids the compile entirely, but owns a grouping
-  key, a build-ordering rule, and a staleness hazard the build stamp cannot
-  catch: the stamp is computed from sources, so a scene linking a stale group
-  library would still report a fresh stamp.
-
-What made it not worth the complexity is that parallelism took the cost it was
-filed against from 246.7s to 25.9s. Sharing would save perhaps 16s more of a
-2m31 validation sequence.
-
 Worth doing on its own merits, unrelated to sharing: the 58 build directories
 carry 58 copies of `vcpkg_installed` at 48 MB each, about 2.8 GB. A shared
 `VCPKG_INSTALLED_DIR` reclaims nearly all of it and shortens configure.
