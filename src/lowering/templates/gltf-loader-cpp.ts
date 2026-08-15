@@ -164,6 +164,12 @@ struct AnimatedNode {
     Vec3 translation{};
     Vec4 rotation{0.0f, 0.0f, 0.0f, 1.0f};
     Vec3 scale{1.0f, 1.0f, 1.0f};
+    // A node authored with a matrix keeps it verbatim: the pinned loader builds
+    // such a node with createSceneNodeFromMatrix, which stores the raw matrix as
+    // _localMatrix, and the local matrix reads _localMatrix in preference to the
+    // composed translation/rotation/scale. Upstream never decomposes it.
+    bool has_matrix = false;
+    Matrix matrix{};
     int parent = -1;
     Matrix world{};
     bool computed = false;
@@ -1829,6 +1835,10 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
         AnimatedNode& animated_node =
             animation_runtime->nodes[index];
         animated_node.parent = parents[index];
+        if (optional(node, "matrix")) {
+            animated_node.has_matrix = true;
+            animated_node.matrix = local_matrix(node);
+        }
         const std::vector<float> translation =
             float_array(optional(node, "translation"));
         if (translation.size() == 3) {
@@ -3408,10 +3418,12 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                         "glTF animated node hierarchy contains a cycle.");
                 }
                 node.computing = true;
-                const Matrix local = trs_matrix(
-                    node.translation,
-                    node.rotation,
-                    node.scale);
+                const Matrix local = node.has_matrix
+                    ? node.matrix
+                    : trs_matrix(
+                          node.translation,
+                          node.rotation,
+                          node.scale);
                 node.world = node.parent >= 0
                     ? multiply_matrix(
                           compute_animated_world(
