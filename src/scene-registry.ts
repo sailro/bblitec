@@ -1135,6 +1135,22 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene39",
+        name: "Scene 39 - Animated Waterfall",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene39.ts",
+        title: "Babylon Lite Native - Animated Waterfall",
+        parity: {
+            referenceTimeSeconds: 1.0,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.01,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "1.0",
+            },
+        },
+    },
+    {
         id: "scene21",
         name: "Scene 21 - PBR Sheen Cloth",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene21.ts",

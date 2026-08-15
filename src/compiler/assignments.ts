@@ -309,6 +309,49 @@ export interface AssignmentContext {
     fail(node: ts.Node, message: string): never;
 }
 
+/**
+ * `scene.lights.length = 0` empties the scene's light list, which is how a
+ * scene drops the lights a loaded asset brought with it and lights itself
+ * from the environment alone. Only the clear is lowered: truncating to a
+ * non-zero length would have to decide which handles survive, and no reached
+ * scene asks for it.
+ */
+function emitSceneLightListClear(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+    left: ts.PropertyAccessExpression,
+): boolean {
+    if (
+        left.name.text !== "length" ||
+        !ts.isPropertyAccessExpression(left.expression) ||
+        left.expression.name.text !== "lights"
+    ) {
+        return false;
+    }
+    const owner = context.compileValue(
+        left.expression.expression,
+    );
+    if (owner.kind !== "scene") {
+        return false;
+    }
+    requireSimpleAssignment(
+        context,
+        expression,
+        "scene light list length",
+    );
+    if (
+        !ts.isNumericLiteral(expression.right) ||
+        Number(expression.right.text) !== 0
+    ) {
+        context.fail(
+            expression.right,
+            "Reached scene light list assignment supports clearing to zero.",
+        );
+    }
+    context.emit(`${owner.cpp}.lights.clear();`);
+    return true;
+}
+
 export function emitPropertyAssignment(
     context: AssignmentContext,
     expression: ts.BinaryExpression,
@@ -338,6 +381,9 @@ export function emitPropertyAssignment(
             left,
         )
     ) {
+        return;
+    }
+    if (emitSceneLightListClear(context, expression, left)) {
         return;
     }
     if (
