@@ -495,15 +495,24 @@ entry below records the first blocker only; clearing it can expose another.
 **Compile clean (0):** every compile-clean corpus scene is registered. The
 compiler-contract lane below is what gates the rest.
 
-**Largest first-blocker clusters:** browser-dependent condition 17 (15 of them
-deferred-lane physics), `parseNodeMaterialFromSnippet` 17, `loadSpriteAtlas`
-15, engine options beyond msaaSamples/requiredLimits 7, static array literal 6,
-numeric operators 6, `parseNodeParticleSource` 6, `receiveShadows` 5,
-`loadSplat` 5. Missing intrinsics account for 44% of all failures across 28
-distinct names. Several families are split across entries because the message
-carries the identifier: Standard diffuse-texture assignment blocks 5 scenes
-(18, 25, 90, 110, 272), vector `.set()` on node properties blocks 6 (4, 22, 65,
-141, 142, 223), and mesh name/id setters block 4 (111, 113, 129, 221).
+**Largest first-blocker clusters**, re-measured across all 167 unregistered
+scenes after the sprite work landed: browser-dependent condition 17 (15 of them
+deferred-lane physics), `parseNodeMaterialFromSnippet` 17, engine options
+beyond msaaSamples/requiredLimits 7, `parseNodeParticleSource` 6, static array
+literal 5, `receiveShadows` 5, `loadSplat` 5, `??` over an operand that is not
+a static record property 5, `light.position.set` 4,
+`createFacingBillboardSystem` 4, string-literal arguments 3,
+`createNavigationPluginAsync` 3. Several families are split across entries
+because the message carries the identifier: Standard diffuse-texture assignment
+blocks 5 scenes (18, 25, 90, 110, 272), vector `.set()` on node properties
+blocks 6 (4, 22, 65, 141, 142, 223), and mesh name/id setters block 4 (111,
+113, 129, 221).
+
+`loadSpriteAtlas` has left the table: every one of the 15 scenes behind it now
+reports its own next blocker, and they scatter across nine different ones (the
+billboard factories, the other blend descriptors, the custom-shader entry
+points, `onSceneDispose`, module-level constants). That is the usual shape —
+one intrinsic was hiding a cluster, not a queue.
 
 **No corpus scene can currently retire the runtime-sweep gate.** Scene 267 now
 measures `createMeshFromData` from the corpus, but of the remaining scenes
@@ -559,12 +568,19 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 229: lower the reached spread element, which is its first
   blocker now that module-level constants resolve.
 - [ ] Scenes 12, 43: fold or explicitly lower the reached browser-dependent conditions.
-- [ ] Scenes 16, 226, 251: lower the reached nullish-coalescing operator. The
-  blocker message names numeric expressions, but the operand is a container:
-  226 reads `container._gaussianSplats ?? []` and 251 `xbot.animationGroups ??
-  []`, with splats and animation groups behind them.
+- [ ] Scenes 171, 174, 175, 226, 251: lower `??` over an operand that is not a
+  static record property. Scene 50 landed the fold that settles a record
+  literal's own optional properties at compile time; these read a container
+  instead — 226 `container._gaussianSplats ?? []`, 251 `xbot.animationGroups ??
+  []` — and now fail naming that limit rather than the numeric-operator
+  message an earlier sweep recorded. Splats, animation groups and the Recast
+  navigation lane sit behind them. Scene 16 has moved off this entry: its
+  first blocker is an unsupported numeric operator of its own.
 - [ ] Scenes 18, 25: support Standard ground diffuse textures.
-- [ ] Scene 20: lower the reached arrow-function value.
+- [ ] Scene 20: lower the reached arrow-function value. Scene 50 landed the
+  narrow case — a function literal written as an object-literal property,
+  inlined at the call site — and this is the general one: an arrow bound to a
+  name and used as a value.
 - [ ] Scene 21: support the reached non-identifier variable declarations.
 - [ ] Scene 23: support `setPbrAnisotropy`.
 - [ ] Scenes 26, 87: support image-processing `toneMapping`.
@@ -598,10 +614,23 @@ runtime gaps may remain hidden behind it.
     `clearSprite2DLayer` and the Handle API: the writer is lowered for the
     add arm only, and the update arm's "preserve what was not supplied"
     resolution needs the previous instance read back.
-- [ ] Scenes 52-56, 58, 92-98, 117, 118: support `loadSpriteAtlas` beyond
-  the reached slice (see the entry above for what each one adds).
-- [ ] Scene 51: lower the reached browser-derived numeric value.
-- [ ] Scenes 57, 59: support the `CAMERA_POSITION` shader binding.
+- [ ] The sprite cluster past Scene 50, each line its measured first blocker
+  now that `loadSpriteAtlas` and the pure-2D path have landed:
+  - Scene 51: a browser-derived numeric value (`Expected number, received
+    browser`), with the premultiplied atlas and blend behind it.
+  - Scene 52: `onSceneDispose` — and behind it the HUD-over-scene composition
+    the native renderers currently refuse.
+  - Scene 53: `spriteBlendOpaque`, then depth-hosted layers.
+  - Scene 58: its `PLAYER_SPRITE_URL` module constant, then sprite animation.
+  - Scene 92: `createSprite2DCustomShader`; 93, 95, 96 want a string-literal
+    argument first; 97: `spriteBlendMultiply`.
+  - Scene 117: an unsupported constructor expression, then sprite picking.
+  - Scenes 205, 206: engine options.
+- [ ] The billboard family, which shares only the atlas with the pure-2D path:
+  `createFacingBillboardSystem` (54, 55, 98, 118),
+  `createAxisLockedBillboardSystem` (56), `createBillboardCustomShader` (94).
+  Scenes 57 and 59 sit behind a Vec3-argument shape rather than the
+  `CAMERA_POSITION` binding an earlier sweep recorded.
 - [ ] Scenes 60, 61, 64, 67-71, 77-80, 82, 84, 85, 88, 89: support
   node-material snippets.
 - [ ] Scenes 62, 81, 83: resolve the module-level texture-URL
@@ -652,8 +681,8 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 241: fold the reached query-derived camera alpha.
 - [ ] Scenes 262-264, 276, 277, 280: support node-particle sources.
 - [ ] Scenes 269, 270: support transform nodes.
-- [ ] Scene 261: lower the reached arrow function, which is what fails on
-  `box.material` inside it rather than the assignment itself; temporal
+- [ ] Scene 261: support the reached `box.material` assignment, which is now
+  what fails (the arrow function around it lowers since Scene 50); temporal
   anti-aliasing sits behind it.
 - [ ] Scene 275: support `loadFont`.
 - [ ] Scene 278: support `createLineSystem`.
