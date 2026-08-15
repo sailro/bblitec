@@ -1109,6 +1109,33 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene253",
+        name: "Scene 253 - Animate All The Things",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene253.ts",
+        title: "Babylon Lite Native - Animate All The Things",
+        parity: {
+            // Seek 1.0 s reads interpolated values on every family this scene
+            // animates at once: node transforms, light colour and cone, and
+            // the material factors and extensions.
+            referenceTimeSeconds: 1.0,
+            // The region threshold accommodates a KNOWN DEFECT rather than a
+            // floor: the IOR sphere is the scene's only reflection-dominated
+            // material and its interior differs from the reference by a
+            // structured pattern. Three of the four material-extension
+            // spheres are byte-exact, and both backends agree with each other
+            // to the LSB, which places the cause CPU-side. Tighten this the
+            // moment it is fixed; it is not evidence of a raster floor.
+            maxFullMad: 0.3,
+            maxForegroundMad: 4.0,
+            dawnThresholds: { maxFullMad: 0.25, maxForegroundMad: 3.4 },
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "1.0",
+            },
+        },
+    },
 ];
 
 /**

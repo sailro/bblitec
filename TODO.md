@@ -389,12 +389,12 @@ directly, which skips the per-invocation rebuild:
 The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
-**Current inventory:** 60 registered parity scenes and 173 unregistered
+**Current inventory:** 61 registered parity scenes and 172 unregistered
 corpus scenes. The compiler-contract lane has no compile-clean scenes. Each
 entry below records the first blocker only; clearing it can expose another.
 
-**Compile clean (1):** 253 passes the compiler and requires the
-`KHR_animation_pointer` loader/runtime support described below.
+**Compile clean (0):** every compile-clean corpus scene is registered. The
+compiler-contract lane below is what gates the rest.
 
 **Largest first-blocker clusters:** `loadSpriteAtlas` 16, browser-dependent
 condition 17 (15 of them deferred-lane physics), `parseNodeMaterialFromSnippet`
@@ -421,17 +421,17 @@ only for a contract no corpus scene exercises (a feature combination the corpus
 never composes, or a slice being built ahead of the scene that will use it),
 and delete it once corpus scenes cover the contract.
 
-The 173 unregistered scenes are partitioned by the boundary required to reproduce
+The 172 unregistered scenes are partitioned by the boundary required to reproduce
 their deterministic reference behavior, not by incidental browser helpers.
 Capture-inert demo controls and fixed-coordinate picking stay in the first
 lane when they can be erased or lowered inside the compiler, asset pipeline,
 or renderer. A scene is deferred when its covered behavior needs a new
 platform, user-input, or external-service contract.
 
-**Integrate first (139 scenes):** 4, 11, 12, 15-23, 25-27,
+**Integrate first (138 scenes):** 4, 11, 12, 15-23, 25-27,
 36, 38, 39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-158, 160, 162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223,
-226, 229, 231, 241, 251, 253, 261-264, 269-271, 275-280.
+226, 229, 231, 241, 251, 261-264, 269-271, 275-280.
 
 This lane includes static CSG/CSG2, compressed assets and splats,
 deterministic picking in Scenes 113-115, 117, 118, and 129, and the
@@ -569,18 +569,21 @@ runtime gaps may remain hidden behind it.
   Then register it and measure. Nothing before rung 3 can be gated on this
   scene, so each rung lands proved byte-neutral for the scenes already
   measured rather than by a number of its own.
-- [ ] Scene 253: extend `KHR_animation_pointer` beyond the targets Scenes
-  34, 242 and 244 measure. The channel `path` is `pointer` and the target is
-  a JSON pointer into the document rather than a node TRS field; the pinned
-  base module resolves node-visibility, node-TRS, base-colour, emissive and
-  texture-transform pointers itself and pulls `animation-pointer-ext` and
-  `animation-pointer-lights` for the rest, which is the split this scene
-  needs. Sixty-nine channels across **thirty-four** distinct shapes: camera
-  perspective and orthographic planes, `KHR_lights_punctual` color,
-  intensity, range and cone angles, node TRS and weights, and about ten
-  material extensions. It seeks to a fixed frame and pauses for capture, so a
-  gate needs the value each pointer resolves to at that frame rather than a
-  live animation system.
+- [ ] Close Scene 253's IOR sphere. The scene is a measured gate, but its
+  region figure carries a defect rather than a floor: of its four
+  material-extension spheres three are byte-exact against the reference and
+  the IOR one differs by a structured interior pattern. That material is the
+  scene's only reflection-dominated one — F0 0.1735 against 0.0090 for its
+  transmissive neighbour, at roughness 0 — so transmission and a strong
+  environment reflection both matter there and nowhere else in the scene.
+  Both backends agree with each other on that sphere to the LSB, which places
+  the cause CPU-side rather than in the recorded per-sample transmission gap.
+  Eliminated by measurement, so do not retry: every material uniform (read
+  back with `scene -- uniforms scene253 --size 96 --module 31` — F0, the
+  refraction parameters and 1/ior all match), iridescence at factor 0, the
+  horizon-occlusion term the reference itself emits as 1.0, occlusion
+  strength, the unlit path, environment rotation at 0, the image-processing
+  pass, and the animation clock.
 - [ ] Extend `KHR_materials_specular` past its two factors. Scene 244
   measures `specularFactor` and `specularColorFactor`; `specularTexture` and
   `specularColorTexture` fail explicitly at load rather than being folded
