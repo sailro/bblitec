@@ -752,6 +752,7 @@ export class RendererLowerer {
             options.multiLight
                 ? `    std::array<std::array<float, 4>, 7> extra_light_positions{};
     std::array<std::array<float, 4>, 7> extra_light_colors{};
+    std::array<std::array<float, 4>, 7> extra_light_directions{};
 `
                 : "";
         // Under multi-light the extras loop owns every light past the
@@ -780,7 +781,11 @@ export class RendererLowerer {
             if (handle.value >= engine.lights.size()) continue;
             const LightRecord& extra =
                 engine.lights[handle.value];
-            if (extra.kind != LightKind::point) continue;
+            if (
+                extra.kind != LightKind::point &&
+                extra.kind != LightKind::spot) {
+                continue;
+            }
             const std::size_t output = light_index - 1;
             result.extra_light_positions[output] = {
                 extra.position.x,
@@ -793,6 +798,17 @@ export class RendererLowerer {
                 extra.diffuse_color.g,
                 extra.diffuse_color.b,
                 extra.intensity * material.direct_intensity,
+            };
+            // A cosine lives in [-1, 1], so -2 is unambiguously "this slot
+            // has no cone" and a point light keeps its bare inverse-square
+            // falloff.
+            result.extra_light_directions[output] = {
+                extra.direction.x,
+                extra.direction.y,
+                extra.direction.z,
+                extra.kind == LightKind::spot
+                    ? extra.cos_half_angle
+                    : -2.0f,
             };
         }
 `
@@ -1923,6 +1939,14 @@ PbrUniforms build_pbr_uniforms(
             return;
         }
         const LightRecord& light = engine.lights[handle.value];
+        if (light.kind == LightKind::spot) {
+            // The primary slot encodes its kind in lightDirection.w across
+            // three branches and carries no cone; only the extra-light slots
+            // do. No reached scene puts a spot first, so this refuses rather
+            // than shading it as a directional light.
+            throw std::runtime_error(
+                "Reached PBR lighting supports a spot light only outside the primary slot.");
+        }
         const Vec3 matrix_direction{
             light.local_matrix[8],
             light.local_matrix[9],
@@ -2027,7 +2051,9 @@ ${fogUniforms}\
         };
         result.material_factors[0] = material.metallic_factor;
         result.material_factors[1] = material.roughness_factor;
-        result.material_factors[2] = material.has_occlusion_texture ? 1.0f : 0.0f;
+        result.material_factors[2] = material.has_occlusion_texture
+            ? material.occlusion_strength
+            : 0.0f;
         result.material_factors[3] =
             scene.environment.has_irradiance
                 ? material.environment_intensity
@@ -3133,7 +3159,8 @@ fn bblCalcFogFactor(fogDistance : vec3<f32>) -> f32 {
                     /  groundColor : vec4<f32>,/,
                     "  groundColor : vec4<f32>,\n" +
                         "  extraLightPositions : array<vec4<f32>, 7>,\n" +
-                        "  extraLightColors : array<vec4<f32>, 7>,",
+                        "  extraLightColors : array<vec4<f32>, 7>,\n" +
+                        "  extraLightDirections : array<vec4<f32>, 7>,",
             );
             const extraLights = Array.from(
                     { length: 7 },
@@ -3144,8 +3171,24 @@ fn bblCalcFogFactor(fogDistance : vec3<f32>) -> f32 {
       let extraDistanceSquared = dot(extraDelta, extraDelta);
       let extraDirection = normalize(extraDelta);
       let extraNdotL = max(dot(v_28, extraDirection), 0.0f);
+      // Pinned spot falloff under physical light falloff, which is the mode
+      // this inverse-square attenuation already is:
+      // exp2(kappa * (spotCosine - 1)) with
+      // kappa = 6.64385618977 / (1 - cos(angle / 2)). The exponent the pinned
+      // standard-falloff branch applies is unreachable on this path, and a
+      // glTF spot carries exponent 1 in any case.
+      let extraCone = FragmentUniforms.extraLightDirections[${index}u];
+      let extraSpotCosine = dot(extraCone.xyz, -extraDirection);
+      let extraConeFalloff = select(
+        1.0f,
+        exp2(
+          (6.64385618977f / max(1.0f - extraCone.w, 0.0001f)) *
+            (extraSpotCosine - 1.0f),
+        ),
+        extraCone.w > -1.5f,
+      );
       let extraAttenuation =
-        1.0f / max(extraDistanceSquared, 0.0000001f);
+        extraConeFalloff / max(extraDistanceSquared, 0.0000001f);
       let extraHalf = normalize(v_41 + extraDirection);
       let extraNdotH = clamp(dot(v_28, extraHalf), 0.0000001f, 1.0f);
       let extraVdotH = clamp(dot(v_41, extraHalf), 0.0f, 1.0f);
