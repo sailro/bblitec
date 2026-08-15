@@ -50,6 +50,14 @@ export interface MaterialIntrinsicContext
     compileClearCoatOptions(
         expression: ts.Expression,
     ): [string, string, string, string, string];
+    compileSheenOptions(expression: ts.Expression): {
+        enabled: string;
+        color: string;
+        roughness: string;
+        intensity: string;
+        texture: ts.Expression | undefined;
+        albedoScaling: boolean;
+    };
     compileShaderMaterialOptions(
         expression: ts.Expression,
     ): { name: string; id: number };
@@ -493,6 +501,53 @@ export function compileMaterialIntrinsic(
                     `bbl::set_pbr_clearcoat(` +
                     `${context.requireEngine(material, call)}, ` +
                     `${material.cpp}, ${clearCoat.join(", ")})`,
+            };
+        }
+
+        case "setPbrSheen": {
+            // src/material/pbr/set-sheen.ts, the same opt-in shape as
+            // set-clearcoat.ts beside it: the props land on the material and
+            // the fragment extension registers unconditionally, so the call
+            // reaches the feature and the isEnabled guard stays in the
+            // pinned UBO writer.
+            context.expectArgumentCount(call, 2, 2);
+            const material =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                material,
+                "material",
+                call.arguments[0]!,
+            );
+            const sheen = context.compileSheenOptions(
+                call.arguments[1]!,
+            );
+            const engine = context.requireEngine(material, call);
+            context.reachFeature("material:sheen");
+            if (sheen.albedoScaling) {
+                context.reachFeature(
+                    "material:sheen-albedo-scaling",
+                );
+            }
+            if (sheen.texture) {
+                const texture = context.compileValue(
+                    sheen.texture,
+                );
+                context.expectKind(
+                    texture,
+                    "texture",
+                    sheen.texture,
+                );
+                context.emit(
+                    `bbl::set_pbr_sheen_texture(` +
+                        `${engine}, ${material.cpp}, ${texture.cpp});`,
+                );
+            }
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_pbr_sheen(${engine}, ${material.cpp}, ` +
+                    `${sheen.enabled}, ${sheen.color}, ` +
+                    `${sheen.roughness}, ${sheen.intensity})`,
             };
         }
 

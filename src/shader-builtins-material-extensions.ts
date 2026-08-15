@@ -3,6 +3,16 @@ export interface MaterialExtensionOptions {
     environmentRotation: boolean;
     clearcoat: boolean;
     sheen: boolean;
+    /**
+     * Which of the two pinned sheen models the fragment composes.
+     * `createSheenFragment`'s `hasAlbedoScaling` arm — the one a glTF
+     * `KHR_materials_sheen` material takes — scales the base layer, treats
+     * the tint texture as linear, and multiplies the environment term by
+     * specular and horizon occlusion. The legacy arm, which is what
+     * `setPbrSheen` defaults to, does none of those and attenuates the lobe
+     * by `1 - dielectricF0` instead.
+     */
+    sheenAlbedoScaling: boolean;
     iridescence: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
@@ -49,16 +59,19 @@ export function materialExtensionBindings(
         );
     }
     if (options.sheen) {
-        result.push(
-            {
-                texture: "sheenColorTexture",
-                sampler: "sheenColorSampler",
-            },
-            {
+        result.push({
+            texture: "sheenColorTexture",
+            sampler: "sheenColorSampler",
+        });
+        // The legacy arm declares no separate roughness map — it reads
+        // roughness from the tint texture's alpha — so the pair would be a
+        // binding nothing samples, which the reflection check rejects.
+        if (options.sheenAlbedoScaling) {
+            result.push({
                 texture: "sheenRoughnessTexture",
                 sampler: "sheenRoughnessSampler",
-            },
-        );
+            });
+        }
     }
     if (options.iridescence) {
         result.push(
@@ -402,13 +415,26 @@ function clearcoatLayer(options: MaterialExtensionOptions): string {
 `;
 }
 
-function sheenLayer(): string {
+function sheenLayer(albedoScaling: boolean): string {
+    // The legacy arm reads its tint through pow(rgb, 2.2), takes roughness
+    // from the tint texture's alpha because it declares no separate
+    // roughness map, and attenuates the lobe by the dielectric Fresnel term
+    // rather than scaling the base layer.
+    const tint = albedoScaling
+        ? "sheenMapData.rgb"
+        : "pow(sheenMapData.rgb, vec3<f32>(2.2f))";
+    const roughnessSource = albedoScaling
+        ? `FragmentUniforms.sheenParams2.x *
+    textureSample(sheenRoughnessTexture, sheenRoughnessSampler, v_4).a`
+        : "FragmentUniforms.sheenParams2.x * sheenMapData.a";
+    const intensity = albedoScaling
+        ? "FragmentUniforms.sheenParams.a"
+        : "FragmentUniforms.sheenParams.a * (1.0f - v_51)";
     return `  let sheenMapData =
     textureSample(sheenColorTexture, sheenColorSampler, v_4);
-  let sheenColorFinal = FragmentUniforms.sheenParams.rgb * sheenMapData.rgb;
-  let sheenRoughnessAdjusted = FragmentUniforms.sheenParams2.x *
-    textureSample(sheenRoughnessTexture, sheenRoughnessSampler, v_4).a;
-  let shIntensity = FragmentUniforms.sheenParams.a;
+  let sheenColorFinal = FragmentUniforms.sheenParams.rgb * ${tint};
+  let sheenRoughnessAdjusted = ${roughnessSource};
+  let shIntensity = ${intensity};
   let shColorScaled = sheenColorFinal * shIntensity;
   let shRoughness_clamped = max(sheenRoughnessAdjusted, v_47);
   let shAlphaG = shRoughness_clamped * shRoughness_clamped + 0.0005f;
@@ -434,17 +460,20 @@ function sheenLayer(): string {
     0.0f,
   );
   let shEnvReflectance =
-    shColorScaled * shBrdf.b * v_98 * (v_99 * v_99);
-  let sheenIblTerm = shEnvRadiance * shEnvReflectance;
+    shColorScaled * shBrdf.b${albedoScaling ? " * v_98 * (v_99 * v_99)" : ""};
+  let sheenIblTerm = shEnvRadiance * shEnvReflectance;${albedoScaling ? `
   let shMax = max(shColorScaled.r, max(shColorScaled.g, shColorScaled.b));
-  let sheenAlbedoScaling = 1.0f - shMax * shBrdf.b;
+  let sheenAlbedoScaling = 1.0f - shMax * shBrdf.b;` : ""}
 `;
 }
 
 function layeredComposition(options: MaterialExtensionOptions): string {
     const conservation = options.clearcoat ? " * ccConservation_ibl" : "";
     const attenuation = options.clearcoat ? " * ccDirectAttenuation" : "";
-    const albedoScaling = options.sheen ? " * sheenAlbedoScaling" : "";
+    const albedoScaling =
+        options.sheen && options.sheenAlbedoScaling
+            ? " * sheenAlbedoScaling"
+            : "";
     const additive = [
         ...(options.clearcoat
             ? ["ccDirectSpecularTerm", "ccFinalRadiance_ibl"]
@@ -679,7 +708,9 @@ export function applyMaterialExtensionWgsl(
         const layer =
             layerAliases(options) +
             (options.clearcoat ? clearcoatLayer(options) : "") +
-            (options.sheen ? sheenLayer() : "") +
+            (options.sheen
+                ? sheenLayer(options.sheenAlbedoScaling)
+                : "") +
             layeredComposition(options);
         result = replaceOnce(
             result,

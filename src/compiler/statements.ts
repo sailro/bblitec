@@ -17,6 +17,9 @@ export interface StatementLoweringContext {
     ):
         | { container: Value; element: DataType }
         | undefined;
+    sceneMeshIterationTarget(
+        expression: ts.Expression,
+    ): { sceneCpp: string; engineCpp: string } | undefined;
     bindDataIterationVariable(
         name: ts.BindingName,
         itemCpp: string,
@@ -761,6 +764,16 @@ export class StatementLowerer {
                 : undefined;
         if (
             !staticLiteral &&
+            this.emitSceneMeshForOf(
+                context,
+                statement,
+                declaration,
+            )
+        ) {
+            return;
+        }
+        if (
+            !staticLiteral &&
             this.emitRuntimeForOf(
                 context,
                 statement,
@@ -818,6 +831,58 @@ export class StatementLowerer {
      * static-table rows). Returns false when the iterated expression is not
      * a data container, so the static-literal unroll can proceed.
      */
+    /**
+     * `for (const mesh of scene.meshes)` walks the scene's own mesh list,
+     * which is a list of handles into the engine rather than a data
+     * container, so it binds a mesh value instead of a data element. The
+     * count is a run-time property of what the scene ended up holding — a
+     * loaded asset's meshes are added by the generated loader — so this
+     * stays a real loop rather than being unrolled.
+     */
+    private emitSceneMeshForOf(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        const target = context.sceneMeshIterationTarget(
+            statement.expression,
+        );
+        if (!target) {
+            return false;
+        }
+        if (!ts.isIdentifier(declaration.name)) {
+            context.fail(
+                declaration.name,
+                "Iterating scene meshes requires an identifier binding.",
+            );
+        }
+        const item =
+            context.allocateTemporaryCppName("scene_mesh");
+        context.emit(
+            `for (const bbl::MeshHandle ${item} : ${target.sceneCpp}.meshes) {`,
+        );
+        context.increaseIndent();
+        context.pushScope(context.allocateBlockPrefix());
+        try {
+            context.bindLocalValue(declaration.name, {
+                kind: "mesh",
+                cpp: item,
+                engineCpp: target.engineCpp,
+            });
+            const statements = ts.isBlock(statement.statement)
+                ? statement.statement.statements
+                : [statement.statement];
+            for (const nested of statements) {
+                this.emit(context, nested);
+            }
+        } finally {
+            context.popScope();
+            context.decreaseIndent();
+        }
+        context.emit("}");
+        return true;
+    }
+
     private emitRuntimeForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,

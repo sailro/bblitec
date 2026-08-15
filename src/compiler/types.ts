@@ -217,6 +217,8 @@ export type Feature =
     | "loader:gltf"
     | "material:pbr"
     | "material:clearcoat"
+    | "material:sheen"
+    | "material:sheen-albedo-scaling"
     | "material:no-color-view"
     | "material:grid"
     | "material:shader"

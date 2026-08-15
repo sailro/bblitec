@@ -432,7 +432,14 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
             pal::read_binary_file(options.ground_texture_url);
         scene.environment.has_ground = true;
     }
-    if (!options.skybox_url.empty()) {
+    if (options.skybox_uses_environment) {
+        // src/loader-env/load-env.ts, the skyboxIsEnv branch: the skybox is
+        // the environment's own cubemap, drawn through the same renderable
+        // the HDR path builds, so nothing further is loaded.
+        scene.environment.has_skybox = true;
+        scene.environment.background_enabled_by_default = true;
+        scene.environment.skybox_uses_environment = true;
+    } else if (!options.skybox_url.empty()) {
         scene.environment.skybox_texture.bytes =
             pal::read_binary_file(options.skybox_url);
         const std::vector<std::uint8_t>& dds = scene.environment.skybox_texture.bytes;

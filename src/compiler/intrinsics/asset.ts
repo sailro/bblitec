@@ -338,19 +338,31 @@ export function compileAssetIntrinsic(
                 ? context.compileEnvironmentOptions(
                       call.arguments[2],
                   )
-                : ["", "", "1000.0f", ""];
+                : ["", "", "0.0f", ""];
             const groundAsset = options[0]
                 ? context.registerAsset(
                       options[0],
                       "texture",
                   )
                 : undefined;
-            const skyboxAsset = options[1]
-                ? context.registerAsset(
-                      options[1],
-                      "texture",
-                  )
-                : undefined;
+            // src/loader-env/load-env.ts treats the skybox as .env when its
+            // URL matches the lighting URL or carries the .env extension,
+            // and reuses the cubemap it just parsed instead of fetching a
+            // DDS. That is decided by the two URLs alone, so it is decided
+            // here.
+            const skyboxUsesEnvironment =
+                options[1] !== "" &&
+                (options[1] === environmentUrl ||
+                    options[1]
+                        .toLowerCase()
+                        .endsWith(".env"));
+            const skyboxAsset =
+                options[1] && !skyboxUsesEnvironment
+                    ? context.registerAsset(
+                          options[1],
+                          "texture",
+                      )
+                    : undefined;
             const brdfAsset = options[3]
                 ? context.registerAsset(
                       context.resolveBundledAsset(options[3]),
@@ -362,7 +374,7 @@ export function compileAssetIntrinsic(
             if (groundAsset) {
                 context.reachFeature("background:ground");
             }
-            if (skyboxAsset) {
+            if (skyboxAsset || skyboxUsesEnvironment) {
                 context.reachFeature("background:skybox");
             }
             return {
@@ -376,7 +388,8 @@ export function compileAssetIntrinsic(
                     `${groundAsset ? `bbl::asset_path(${context.cppString(groundAsset.output)})` : context.cppString("")}, ` +
                     `${skyboxAsset ? `bbl::asset_path(${context.cppString(skyboxAsset.output)})` : context.cppString("")}, ` +
                     `${options[2]}, ` +
-                    `${brdfAsset ? `bbl::asset_path(${context.cppString(brdfAsset.output)})` : context.cppString("")}})`,
+                    `${brdfAsset ? `bbl::asset_path(${context.cppString(brdfAsset.output)})` : context.cppString("")}, ` +
+                    `${skyboxUsesEnvironment ? "true" : "false"}})`,
             };
         }
 

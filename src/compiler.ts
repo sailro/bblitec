@@ -104,6 +104,8 @@ const featureSources: Record<Feature, string[]> = {
     "loader:gltf": [],
     "material:pbr": [],
     "material:clearcoat": [],
+    "material:sheen": [],
+    "material:sheen-albedo-scaling": [],
     "material:no-color-view": [],
     "material:grid": [],
     "material:shader": [],
@@ -2154,6 +2156,75 @@ class Compiler
         ];
     }
 
+    /**
+     * The reached slice of `SheenProps`. The pinned defaults come from
+     * `writeSheenUBO`, which is also where the `isEnabled` guard lives.
+     * `albedoScaling` is read here rather than rejected because it selects
+     * which of the two pinned sheen models the fragment composes, and the
+     * reached scene leaves it at its legacy default. `roughnessTexture` is
+     * rejected: it would need its own binding pair and its own UV.
+     */
+    public compileSheenOptions(
+        expression: ts.Expression,
+    ): {
+        enabled: string;
+        color: string;
+        roughness: string;
+        intensity: string;
+        texture: ts.Expression | undefined;
+        albedoScaling: boolean;
+    } {
+        const object = this.expectObjectLiteral(expression);
+        this.validateObjectProperties(
+            object,
+            [
+                "isEnabled",
+                "color",
+                "roughness",
+                "intensity",
+                "texture",
+                "albedoScaling",
+            ],
+            "Reached sheen options support isEnabled, color, roughness, intensity, texture, and albedoScaling.",
+        );
+        const isEnabled = this.objectProperty(object, "isEnabled");
+        const color = this.objectProperty(object, "color");
+        const roughness = this.objectProperty(object, "roughness");
+        const intensity = this.objectProperty(object, "intensity");
+        const albedoScaling = this.objectProperty(
+            object,
+            "albedoScaling",
+        );
+        const albedoScalingValue = albedoScaling
+            ? this.compileBoolean(albedoScaling)
+            : "false";
+        if (
+            albedoScalingValue !== "true" &&
+            albedoScalingValue !== "false"
+        ) {
+            this.fail(
+                albedoScaling ?? object,
+                "Sheen albedoScaling must be a static boolean; it selects the composed fragment.",
+            );
+        }
+        return {
+            enabled: isEnabled
+                ? this.compileBoolean(isEnabled)
+                : "false",
+            color: color
+                ? this.compileColor3(color)
+                : "bbl::Color3{1.0f, 1.0f, 1.0f}",
+            roughness: roughness
+                ? this.compileNumber(roughness)
+                : "0.0f",
+            intensity: intensity
+                ? this.compileNumber(intensity)
+                : "1.0f",
+            texture: this.objectProperty(object, "texture"),
+            albedoScaling: albedoScalingValue === "true",
+        };
+    }
+
     public compileShaderMaterialOptions(
         expression: ts.Expression,
     ): { name: string; id: number } {
@@ -2883,7 +2954,13 @@ class Compiler
         return [
             groundTextureUrl ? this.compileStringLiteral(groundTextureUrl) : "",
             skyboxUrl ? this.compileStringLiteral(skyboxUrl) : "",
-            skyboxSize ? this.compileNumber(skyboxSize) : "1000.0f",
+            // Zero asks the loader for the pinned default rather than
+            // inventing one here: `createDefaultEnvironment`'s skyboxSize is
+            // 20, and the generated loader already resolves it. Passing a
+            // size of our own produced a skybox large enough for the camera's
+            // far plane to clip it, which shows as a straight-edged hole in
+            // the background once the camera moves off the reference pose.
+            skyboxSize ? this.compileNumber(skyboxSize) : "0.0f",
             brdfUrl ? this.compileStringLiteral(brdfUrl) : "",
         ];
     }
@@ -3709,6 +3786,31 @@ class Compiler
         return this.dataLowerer.iterationTarget(
             expression,
         );
+    }
+
+    /**
+     * Recognises `<scene>.meshes` as an iteration source. The scene keeps
+     * handles rather than data, so this hands the loop the scene and engine
+     * it needs and lets the statement lowering bind a mesh value.
+     */
+    public sceneMeshIterationTarget(
+        expression: ts.Expression,
+    ): { sceneCpp: string; engineCpp: string } | undefined {
+        const unwrapped = this.unwrap(expression);
+        if (
+            !ts.isPropertyAccessExpression(unwrapped) ||
+            unwrapped.name.text !== "meshes"
+        ) {
+            return undefined;
+        }
+        const owner = this.compileValue(unwrapped.expression);
+        if (owner.kind !== "scene") {
+            return undefined;
+        }
+        return {
+            sceneCpp: owner.cpp,
+            engineCpp: this.requireEngine(owner, unwrapped),
+        };
     }
 
     public bindDataIterationVariable(

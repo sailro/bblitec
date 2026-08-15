@@ -1135,6 +1135,21 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene21",
+        name: "Scene 21 - PBR Sheen Cloth",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene21.ts",
+        title: "Babylon Lite Native - PBR Sheen Cloth",
+        parity: {
+            // The frame is a photographic HDR skybox behind a cloth, so
+            // almost every pixel is foreground and the two figures track each
+            // other. Both sit with the other environment-backed scenes.
+            maxFullMad: 0.34,
+            maxForegroundMad: 0.34,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene19",
         name: "Scene 19 - PBR Clearcoat",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene19.ts",
