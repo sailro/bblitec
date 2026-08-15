@@ -501,6 +501,16 @@ struct MaterialRecord {
     float direct_intensity = 1.0f;
     float environment_intensity = 1.0f;
     float reflectance = 0.04f;
+    // KHR_materials_specular, through the pinned dielectric reflectance ext:
+    // specularFactor scales the dielectric F0 and its grazing weight, and
+    // specularColorFactor tints the dielectric reflectance. The fragment reads
+    // them as metallicF0Factor / specularWeight / metallicReflectanceColor and
+    // composes `dielectricF0 = reflectance * metallicF0Factor`, so the factor
+    // is kept apart from the base reflectance rather than folded into it.
+    bool has_metallic_reflectance = false;
+    float metallic_f0_factor = 1.0f;
+    float specular_weight = 1.0f;
+    Color3 metallic_reflectance_color{1.0f, 1.0f, 1.0f};
     float normal_texture_scale = 1.0f;
     float transmission_factor = 0.0f;
     float index_of_refraction = 1.5f;

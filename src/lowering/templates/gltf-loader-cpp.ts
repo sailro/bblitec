@@ -16,6 +16,7 @@ export function gltfLoaderCpp(
     animatedWorldBounds = false,
     animationPointerMaterials = false,
     assetTransmission = false,
+    materialSpecular = false,
 ): string {
     return `// ${provenance}
 #include <bblite/pal_gltf.hpp>
@@ -1256,7 +1257,59 @@ MaterialHandle load_material(
                 (material.index_of_refraction + 1.0f);
             material.reflectance = ratio * ratio;
         }
-        if (const ts::JsonValue* volume_value =
+${materialSpecular ? `        if (const ts::JsonValue* specular_value =
+                optional(
+                    extensions,
+                    "KHR_materials_specular")) {
+            const JsonObject& specular =
+                specular_value->as_object();
+            if (
+                optional(specular, "specularTexture") ||
+                optional(specular, "specularColorTexture")) {
+                throw std::runtime_error(
+                    "Reached KHR_materials_specular supports the specular and specular color factors only.");
+            }
+            material.has_metallic_reflectance = true;
+            // The pin keeps the material's own reflectance at its default and
+            // scales it with metallicF0Factor, so the IOR fold this loader
+            // applies above — exact while nothing else scales F0 — has to be
+            // undone the moment a second scale exists. IOR seeds the factor and
+            // the specular factor then replaces it, which is the spec's
+            // "specular wins" rule and what the pinned loader does by
+            // overwriting the same option.
+            const float base_reflectance = 0.04f;
+            material.metallic_f0_factor =
+                material.has_ior
+                    ? material.reflectance / base_reflectance
+                    : 1.0f;
+            material.reflectance = base_reflectance;
+            if (optional(specular, "specularFactor")) {
+                const float factor =
+                    float_or(specular, "specularFactor", 1.0f);
+                // A specular factor of one is the default: the pin drops both
+                // options rather than writing them, so an IOR-seeded factor
+                // does not survive it either.
+                material.metallic_f0_factor =
+                    std::abs(factor - 1.0f) > 0.000001f ? factor : 1.0f;
+                material.specular_weight =
+                    material.metallic_f0_factor;
+            }
+            const std::vector<float> specular_color =
+                float_array(
+                    optional(specular, "specularColorFactor"));
+            if (
+                specular_color.size() == 3 &&
+                (specular_color[0] != 1.0f ||
+                 specular_color[1] != 1.0f ||
+                 specular_color[2] != 1.0f)) {
+                material.metallic_reflectance_color = Color3{
+                    specular_color[0],
+                    specular_color[1],
+                    specular_color[2],
+                };
+            }
+        }
+` : ""}        if (const ts::JsonValue* volume_value =
                 optional(extensions, "KHR_materials_volume")) {
             const JsonObject& volume = volume_value->as_object();
             material.has_volume = true;

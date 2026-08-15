@@ -250,6 +250,49 @@ function applyPbrUvTransformWgsl(
     return result;
 }
 
+/**
+ * Scale and tint the dielectric reflectance the way the pinned reflectance
+ * fragment does. Its F0 block reads
+ *
+ *   dielectricF0 = reflectance * metallicF0Factor
+ *   colorF0      = mix(vec3(dielectricF0) * metallicReflectanceColor,
+ *                      baseColor, metallic)
+ *   colorF90     = vec3(mix(specularWeight, 1.0, metallic))
+ *   surfaceAlbedo = baseColor
+ *                 * (1 - dielectricF0 * metallicReflectanceColor)
+ *                 * (1 - metallic)
+ *
+ * which is the base template's own composition once the factor is one, the
+ * weight is one and the tint is white — so the emitted branch is a
+ * generalization of what it replaces rather than a second path.
+ */
+function applyPbrReflectanceWgsl(source: string): string {
+    let result = replaceUvTransformMarker(
+        source,
+        /  imageProcessingOptions : vec4<f32>,/,
+        "  imageProcessingOptions : vec4<f32>,\n" +
+            "  reflectanceFactors : vec4<f32>,\n" +
+            "  metallicReflectanceColor : vec4<f32>,",
+        "reflectance uniform block",
+    );
+    result = replaceUvTransformMarker(
+        result,
+        /  let v_51 = FragmentUniforms\.normalOptions\.z;\r?\n  let v_52 = \(\(v_31 \* \(1\.0f - v_51\)\) \* \(1\.0f - v_36\)\);/,
+        "  let bblSurfaceReflectivityColor = FragmentUniforms.metallicReflectanceColor.xyz;\n" +
+            "  let v_51 = FragmentUniforms.normalOptions.z * FragmentUniforms.reflectanceFactors.x;\n" +
+            "  let v_52 = ((v_31 * (vec3<f32>(1.0f) - (vec3<f32>(v_51) * bblSurfaceReflectivityColor))) * (1.0f - v_36));",
+        "dielectric F0 and surface albedo",
+    );
+    result = replaceUvTransformMarker(
+        result,
+        /  let v_75 = mix\(vec3<f32>\(v_51, v_51, v_51\), v_31, vec3<f32>\(v_36, v_36, v_36\)\);\r?\n  let v_76 = \(vec3<f32>\(1\.0f\) - v_75\);/,
+        "  let v_75 = mix((vec3<f32>(v_51, v_51, v_51) * bblSurfaceReflectivityColor), v_31, vec3<f32>(v_36, v_36, v_36));\n" +
+            "  let v_76 = (vec3<f32>(mix(FragmentUniforms.reflectanceFactors.y, 1.0f, v_36)) - v_75);",
+        "colorF0 and colorF90",
+    );
+    return result;
+}
+
 function reachedUvTransformSlots(options: {
     clearcoat?: boolean;
     sheen?: boolean;
@@ -314,6 +357,7 @@ export class RendererLowerer {
         fog?: boolean;
         imageSkybox?: boolean;
         textureTransform?: boolean;
+        materialSpecular?: boolean;
         environmentRotation?: boolean;
         gpuInstancing?: boolean;
         multiLight?: boolean;
@@ -594,6 +638,30 @@ export class RendererLowerer {
     std::array<float, 4> transmission_options{};
     std::array<std::array<float, 4>, 4> view_projection{};
 `
+            : "";
+        // The pinned reflectance ext's material-UBO slice: the F0 scale, its
+        // grazing weight, and the dielectric tint, laid out as the fragment
+        // reads them.
+        const specularUniformField = options.materialSpecular
+            ? "    std::array<float, 4> reflectance_factors{};\n"
+            : "";
+        const specularMaterialUniform = options.materialSpecular
+            ? `        result.reflectance_factors = {
+            material.metallic_f0_factor,
+            material.specular_weight,
+            0.0f,
+            0.0f,
+        };
+        result.metallic_reflectance_color = {
+            material.metallic_reflectance_color.r,
+            material.metallic_reflectance_color.g,
+            material.metallic_reflectance_color.b,
+            0.0f,
+        };
+`
+            : "";
+        const specularColorUniformField = options.materialSpecular
+            ? "    std::array<float, 4> metallic_reflectance_color{};\n"
             : "";
         const uvTransformSlots = reachedUvTransformSlots(options);
         const textureTransformUniformField =
@@ -993,6 +1061,8 @@ ${multiLightUniformFields}\
     std::array<float, 4> material_options{};
     std::array<float, 4> normal_options{};
     std::array<float, 4> image_processing_options{};
+${specularUniformField}\
+${specularColorUniformField}\
 ${textureTransformUniformField}\
 ${fogUniformFields}\
 ${transmissionUniformFields}\
@@ -1970,6 +2040,7 @@ ${multiLightMaterialUniforms}\
                 ? dielectric_ratio * dielectric_ratio
                 : material.reflectance;
         result.normal_options[3] = material.normal_texture_scale;
+${specularMaterialUniform}\
 ${textureTransformMaterialUniform}\
         if (
             item.geometry < engine.geometries.size() &&
@@ -2486,6 +2557,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         iridescence?: boolean;
         dispersion?: boolean;
         occlusionUv2?: boolean;
+        materialSpecular?: boolean;
     } = {
         ground: true,
         skybox: true,
@@ -3203,11 +3275,18 @@ ${directMarker}`,
             dispersion: options.dispersion === true,
             occlusionUv2: options.occlusionUv2 === true,
         });
+        // Both blocks insert after the same uniform-block marker, so the LAST
+        // one written ends up FIRST in the emitted struct. The C++ mirror
+        // declares the reflectance slice ahead of the UV pairs, so the UV pass
+        // has to run before the reflectance pass for the two layouts to agree.
         if (options.textureTransform) {
             convertedPbr = applyPbrUvTransformWgsl(
                 convertedPbr,
                 reachedUvTransformSlots(options),
             );
+        }
+        if (options.materialSpecular) {
+            convertedPbr = applyPbrReflectanceWgsl(convertedPbr);
         }
         const pbrProvenance = this.context.provenance(
             pbrTemplateModule,

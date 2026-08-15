@@ -36,6 +36,7 @@ export interface UpstreamEmitOptions {
     animationPointer: boolean;
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
+    materialSpecular: boolean;
     standardLights: number;
     standardLightLists: boolean;
     standardDiffuseUv2: boolean;
@@ -242,6 +243,7 @@ class GeneratedSourceWriter {
                     options.gpuDeformation,
                     options.animationPointerMaterials,
                     options.assetTransmission,
+                    options.materialSpecular,
                 ),
                 generated,
             );
@@ -273,6 +275,7 @@ class GeneratedSourceWriter {
                     ),
                     textureTransform:
                         options.textureTransform,
+                    materialSpecular: options.materialSpecular,
                     environmentRotation:
                         options.imageBasedLighting,
                     gpuInstancing:
@@ -334,6 +337,7 @@ class GeneratedSourceWriter {
                 morphStorage: options.morphStorage,
                 textureTransform:
                     options.textureTransform,
+                materialSpecular: options.materialSpecular,
                 environmentRotation:
                     options.imageBasedLighting,
                 gpuInstancing:
@@ -545,6 +549,7 @@ export function emitUpstreamGenerated(
         animationPointer: false,
         animationPointerMaterials: false,
         assetTransmission: false,
+        materialSpecular: false,
         standardLights: 0,
         standardLightLists: false,
         standardDiffuseUv2: false,
