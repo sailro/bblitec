@@ -1119,16 +1119,14 @@ const sceneInputs: readonly SceneInput[] = [
             // animates at once: node transforms, light colour and cone, and
             // the material factors and extensions.
             referenceTimeSeconds: 1.0,
-            // The region threshold accommodates a KNOWN DEFECT rather than a
-            // floor: the IOR sphere is the scene's only reflection-dominated
-            // material and its interior differs from the reference by a
-            // structured pattern. Three of the four material-extension
-            // spheres are byte-exact, and both backends agree with each other
-            // to the LSB, which places the cause CPU-side. Tighten this the
-            // moment it is fixed; it is not evidence of a raster floor.
-            maxFullMad: 0.3,
-            maxForegroundMad: 4.0,
-            dawnThresholds: { maxFullMad: 0.25, maxForegroundMad: 3.4 },
+            // The region threshold still accommodates a KNOWN DEFECT rather
+            // than a floor: the iridescence sphere — the only material whose
+            // metallic factor is animated — retains a structured interior
+            // difference after its roughness was corrected. Tighten this as
+            // that closes; it is not evidence of a raster floor.
+            maxFullMad: 0.15,
+            maxForegroundMad: 2.0,
+            dawnThresholds: { maxFullMad: 0.1, maxForegroundMad: 1.4 },
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: {

@@ -1312,6 +1312,12 @@ float quantized_unorm_factor(float value) {
         255.0f;
 }
 
+// The same rounding as a byte, which is what the pinned factor texture holds.
+std::uint8_t unorm_byte(float value) {
+    return static_cast<std::uint8_t>(
+        std::round(std::clamp(value, 0.0f, 1.0f) * 255.0f));
+}
+
 std::uint8_t linear_to_srgb_byte(float value) {
     // Pinned linearToSrgbByte: the byte lands in an rgba8unorm-srgb
     // texel whose hardware decode is the browser's effective value.
@@ -1362,10 +1368,22 @@ MaterialHandle load_material(
             material.orm_transform,
             metallic_roughness_texture);
         if (material.metallic_roughness_texture.bytes.empty()) {
-            material.metallic_factor =
-                quantized_unorm_factor(material.metallic_factor);
-            material.roughness_factor =
-                quantized_unorm_factor(material.roughness_factor);
+            // uploadOrmFactorTexture: the factors bake into the texel and the
+            // uniforms revert to one. The product is what it always was, but
+            // the split matters the moment a KHR_animation_pointer channel
+            // writes a factor — the pointer drives the UNIFORM, which the
+            // shader multiplies by this texel, so a material authored at
+            // roughness zero stays a mirror however its factor animates. Ours
+            // kept the factor in the uniform against a white texel, which let
+            // an animated factor resurrect a value the pin holds at zero.
+            material.orm_fallback = {
+                255,
+                unorm_byte(material.roughness_factor),
+                unorm_byte(material.metallic_factor),
+                255,
+            };
+            material.metallic_factor = 1.0f;
+            material.roughness_factor = 1.0f;
         }
         if (material.base_color_texture.bytes.empty()) {
             // Pinned uploadBaseColorFactorTexture: the factor bakes

@@ -3759,6 +3759,8 @@ bool run_gpu_engine(Engine& engine) {
             const TextureData* standard_bump = nullptr;
 #endif
             bool has_pbr_emissive_factor = false;
+            std::array<std::uint8_t, 4> orm_fallback{
+                255, 255, 255, 255};
             std::array<std::uint8_t, 4> base_color_fallback{
                 255, 255, 255, 255};
             const bool standard_material =
@@ -3783,6 +3785,7 @@ bool run_gpu_engine(Engine& engine) {
                 if (!standard_material) {
                     base_color_fallback =
                         material.base_color_fallback;
+                    orm_fallback = material.orm_fallback;
                 }
                 transmission = standard_material
                     ? nullptr
@@ -3857,7 +3860,12 @@ bool run_gpu_engine(Engine& engine) {
                 state.device,
                 metallic_roughness ? *metallic_roughness : TextureData{},
                 false,
-                {255, 255, 255, 255});
+                // The pinned ORM factor texel, so an animated metallic or
+                // roughness factor multiplies the authored value rather than
+                // white. Standard materials never carry one.
+                standard_material
+                    ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
+                    : orm_fallback);
             gpu_mesh.metallic_roughness_sampler = create_texture_sampler(
                 state.device,
                 metallic_roughness

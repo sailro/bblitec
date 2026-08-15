@@ -569,21 +569,22 @@ runtime gaps may remain hidden behind it.
   Then register it and measure. Nothing before rung 3 can be gated on this
   scene, so each rung lands proved byte-neutral for the scenes already
   measured rather than by a number of its own.
-- [ ] Close Scene 253's IOR sphere. The scene is a measured gate, but its
-  region figure carries a defect rather than a floor: of its four
-  material-extension spheres three are byte-exact against the reference and
-  the IOR one differs by a structured interior pattern. That material is the
-  scene's only reflection-dominated one — F0 0.1735 against 0.0090 for its
-  transmissive neighbour, at roughness 0 — so transmission and a strong
-  environment reflection both matter there and nowhere else in the scene.
-  Both backends agree with each other on that sphere to the LSB, which places
-  the cause CPU-side rather than in the recorded per-sample transmission gap.
+- [ ] Close Scene 253's iridescence sphere. The scene is a measured gate but
+  its region figure carries a defect rather than a floor. The material is the
+  only one in the corpus whose `metallicFactor` is animated — which the pin
+  routes to ROUGHNESS — and correcting the factor bake below took the scene
+  from 0.251/3.841 to 0.128/1.936 on SDL_GPU and 0.086/1.328 on Dawn. What
+  remains is a structured interior difference on that sphere alone, with
+  iridescence at factor 1 and its index of refraction and maximum thickness
+  also animated. Both backends agree with each other to one channel step,
+  which places the cause CPU-side.
   Eliminated by measurement, so do not retry: every material uniform (read
-  back with `scene -- uniforms scene253 --size 96 --module 31` — F0, the
-  refraction parameters and 1/ior all match), iridescence at factor 0, the
-  horizon-occlusion term the reference itself emits as 1.0, occlusion
-  strength, the unlit path, environment rotation at 0, the image-processing
-  pass, and the animation clock.
+  back with `scene -- uniforms scene253 --size 48 --module 21`), the
+  refraction parameters, the horizon-occlusion term the reference itself
+  emits as 1.0, occlusion strength, the unlit path, environment rotation at 0,
+  the image-processing pass, and the animation clock. Note the spheres are
+  laid out Volume, Transmission, Iridescence, IOR by node translation — NOT
+  in label order, which cost real time.
 - [ ] Extend `KHR_materials_specular` past its two factors. Scene 244
   measures `specularFactor` and `specularColorFactor`; `specularTexture` and
   `specularColorTexture` fail explicitly at load rather than being folded

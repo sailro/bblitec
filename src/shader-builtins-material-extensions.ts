@@ -115,7 +115,10 @@ function uniformFields(options: MaterialExtensionOptions): string {
         );
     }
     if (options.iridescence) {
-        fields.push("  iridescenceParams : vec4<f32>,");
+        fields.push(
+            "  iridescenceParams : vec4<f32>,",
+            "  iridescenceOptions : vec4<f32>,",
+        );
     }
     if (options.occlusionUv2) {
         fields.push("  occlusionParams : vec4<f32>,");
@@ -487,20 +490,36 @@ function iridescenceFresnel(): string {
     v_31,
     vec3<f32>(v_36, v_36, v_36),
   );
+  // A material with no iridescence textures reads its factor and its MAXIMUM
+  // thickness directly: the pinned fragment composes the texture terms only
+  // when the textures exist, so an absent thickness map means the maximum
+  // rather than an interpolation toward the minimum. This fragment is shared
+  // by the scene's materials, so the choice rides a per-material flag the way
+  // the transmission options beside it already do. Getting it wrong is
+  // invisible until a material sets a non-zero iridescence factor, because
+  // the intensity multiplies the whole term away.
   let iriIntensity = clamp(
     FragmentUniforms.iridescenceParams.x *
-      textureSample(iridescenceTexture, iridescenceSampler, v_4).r,
+      mix(
+        1.0f,
+        textureSample(iridescenceTexture, iridescenceSampler, v_4).r,
+        FragmentUniforms.iridescenceOptions.x,
+      ),
     0.0f,
     1.0f,
   );
   let iriThickness = max(
     mix(
-      FragmentUniforms.iridescenceParams.z,
       FragmentUniforms.iridescenceParams.w,
-      textureSample(
-        iridescenceThicknessTexture,
-        iridescenceThicknessSampler,
-        v_4).g,
+      mix(
+        FragmentUniforms.iridescenceParams.z,
+        FragmentUniforms.iridescenceParams.w,
+        textureSample(
+          iridescenceThicknessTexture,
+          iridescenceThicknessSampler,
+          v_4).g,
+      ),
+      FragmentUniforms.iridescenceOptions.y,
     ),
     0.0f,
   );
