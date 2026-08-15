@@ -153,14 +153,137 @@ enum class MaterialTrackKind {
     base_color_factor,
     emissive_factor,
     emissive_strength,
+    texture_transform,
+};
+
+// Which texture slot's transform a KHR_texture_transform pointer drives, and
+// which of its three components. The pin resolves the slot to the runtime
+// texture wrapper and writes uAng, uOffset/vOffset or uScale/vScale on it;
+// per-slot transforms live on the material record here, so the slot travels as
+// a tag rather than as a pointer into a vector that reallocates.
+enum class TextureTransformSlot {
+    base_color,
+    orm,
+    normal,
+    emissive,
+    clearcoat,
+    clearcoat_roughness,
+    clearcoat_normal,
+    sheen,
+    sheen_roughness,
+    iridescence,
+    iridescence_thickness,
+    transmission,
+    thickness,
+};
+
+enum class TextureTransformComponent {
+    offset,
+    scale,
+    rotation,
 };
 
 struct MaterialTrack {
     std::size_t material = 0;
     MaterialTrackKind kind = MaterialTrackKind::base_color_factor;
+    TextureTransformSlot slot = TextureTransformSlot::base_color;
+    TextureTransformComponent component =
+        TextureTransformComponent::rotation;
     std::vector<float> times;
     std::vector<Vec4> values;
-};` : ""}
+};
+
+// The texture slots a KHR_texture_transform pointer may name. The core four
+// mirror the pin's TX_SLOT map, in which metallicRoughnessTexture is
+// deliberately absent: Babylon.js omits the extension path segment when it
+// registers that pointer, so the interpolation never attaches and the MR
+// transform stays at its load-time value. The pin matches that for parity, and
+// so does this. The extension slots mirror resolveExtTexture, and occlusion
+// resolves onto the ORM slot exactly as TX_SLOT does.
+bool material_transform_slot(
+    const std::string& path,
+    TextureTransformSlot& slot) {
+    if (path == "/pbrMetallicRoughness/baseColorTexture") {
+        slot = TextureTransformSlot::base_color;
+    } else if (path == "/emissiveTexture") {
+        slot = TextureTransformSlot::emissive;
+    } else if (path == "/normalTexture") {
+        slot = TextureTransformSlot::normal;
+    } else if (path == "/occlusionTexture") {
+        slot = TextureTransformSlot::orm;
+    } else if (
+        path ==
+        "/extensions/KHR_materials_clearcoat/clearcoatTexture") {
+        slot = TextureTransformSlot::clearcoat;
+    } else if (
+        path ==
+        "/extensions/KHR_materials_clearcoat/clearcoatRoughnessTexture") {
+        slot = TextureTransformSlot::clearcoat_roughness;
+    } else if (
+        path ==
+        "/extensions/KHR_materials_clearcoat/clearcoatNormalTexture") {
+        slot = TextureTransformSlot::clearcoat_normal;
+    } else if (
+        path == "/extensions/KHR_materials_sheen/sheenColorTexture") {
+        slot = TextureTransformSlot::sheen;
+    } else if (
+        path ==
+        "/extensions/KHR_materials_sheen/sheenRoughnessTexture") {
+        slot = TextureTransformSlot::sheen_roughness;
+    } else if (
+        path ==
+        "/extensions/KHR_materials_iridescence/iridescenceTexture") {
+        slot = TextureTransformSlot::iridescence;
+    } else if (
+        path ==
+        "/extensions/KHR_materials_iridescence/iridescenceThicknessTexture") {
+        slot = TextureTransformSlot::iridescence_thickness;
+    } else if (
+        path ==
+        "/extensions/KHR_materials_transmission/transmissionTexture") {
+        slot = TextureTransformSlot::transmission;
+    } else if (
+        path == "/extensions/KHR_materials_volume/thicknessTexture") {
+        slot = TextureTransformSlot::thickness;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+TextureTransform& material_transform(
+    MaterialRecord& material,
+    TextureTransformSlot slot) {
+    switch (slot) {
+        case TextureTransformSlot::base_color:
+            return material.base_color_transform;
+        case TextureTransformSlot::orm:
+            return material.orm_transform;
+        case TextureTransformSlot::normal:
+            return material.normal_transform;
+        case TextureTransformSlot::emissive:
+            return material.emissive_transform;
+        case TextureTransformSlot::clearcoat:
+            return material.clearcoat_transform;
+        case TextureTransformSlot::clearcoat_roughness:
+            return material.clearcoat_roughness_transform;
+        case TextureTransformSlot::clearcoat_normal:
+            return material.clearcoat_normal_transform;
+        case TextureTransformSlot::sheen:
+            return material.sheen_transform;
+        case TextureTransformSlot::sheen_roughness:
+            return material.sheen_roughness_transform;
+        case TextureTransformSlot::iridescence:
+            return material.iridescence_transform;
+        case TextureTransformSlot::iridescence_thickness:
+            return material.iridescence_thickness_transform;
+        case TextureTransformSlot::transmission:
+            return material.transmission_transform;
+        case TextureTransformSlot::thickness:
+            break;
+    }
+    return material.thickness_transform;
+}` : ""}
 
 struct AnimatedNode {
     Vec3 translation{};
@@ -2770,9 +2893,52 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                                 MaterialTrackKind::emissive_strength;
                             components = 1;
                         } else {
-                            throw std::runtime_error(
-                                "Reached KHR_animation_pointer lowering supports base color, emissive factor and emissive strength material targets only: " +
-                                pointer + ".");
+                            // A KHR_texture_transform pointer names the slot,
+                            // then the extension, then one of its three
+                            // components. The pin resolves the slot to the
+                            // runtime texture wrapper and drives uAng,
+                            // uOffset/vOffset or uScale/vScale on it.
+                            const std::string transform_infix =
+                                "/extensions/KHR_texture_transform/";
+                            const std::size_t transform_start =
+                                property.rfind(transform_infix);
+                            bool resolved = false;
+                            if (transform_start != std::string::npos) {
+                                const std::string component_name =
+                                    property.substr(
+                                        transform_start +
+                                        transform_infix.size());
+                                const std::string slot_path =
+                                    property.substr(0, transform_start);
+                                if (
+                                    material_transform_slot(
+                                        slot_path,
+                                        track.slot)) {
+                                    if (component_name == "rotation") {
+                                        track.component =
+                                            TextureTransformComponent::rotation;
+                                        components = 1;
+                                        resolved = true;
+                                    } else if (component_name == "offset") {
+                                        track.component =
+                                            TextureTransformComponent::offset;
+                                        components = 2;
+                                        resolved = true;
+                                    } else if (component_name == "scale") {
+                                        track.component =
+                                            TextureTransformComponent::scale;
+                                        components = 2;
+                                        resolved = true;
+                                    }
+                                }
+                            }
+                            if (!resolved) {
+                                throw std::runtime_error(
+                                    "Reached KHR_animation_pointer lowering supports base color, emissive factor, emissive strength and texture transform material targets only: " +
+                                    pointer + ".");
+                            }
+                            track.kind =
+                                MaterialTrackKind::texture_transform;
                         }
                         if (material_index >= materials.size()) {
                             throw std::runtime_error(
@@ -3228,6 +3394,24 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     case MaterialTrackKind::emissive_strength:
                         material.emissive_strength = mix(a.x, b.x);
                         break;
+                    case MaterialTrackKind::texture_transform: {
+                        TextureTransform& slot =
+                            material_transform(material, track.slot);
+                        if (
+                            track.component ==
+                            TextureTransformComponent::rotation) {
+                            slot.rotation = mix(a.x, b.x);
+                        } else if (
+                            track.component ==
+                            TextureTransformComponent::offset) {
+                            slot.u_offset = mix(a.x, b.x);
+                            slot.v_offset = mix(a.y, b.y);
+                        } else {
+                            slot.u_scale = mix(a.x, b.x);
+                            slot.v_scale = mix(a.y, b.y);
+                        }
+                        break;
+                    }
                 }
                 // The load-time fold, redone from whichever half moved.
                 material.emissive_factor = Color3{
