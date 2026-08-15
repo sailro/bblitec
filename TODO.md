@@ -123,6 +123,15 @@ CPU-side from GPU-side causes immediately.
   assignments.
 - [x] Add string-literal-union enum tags and null narrowing. Discriminated
   unions and numeric-literal narrowing beyond checker null analysis remain.
+- [ ] Generalize the contracts Scene 50 folded at compile time. `??` is
+  lowered over a static record property, whose presence in the literal
+  decides the value, and a record property carrying a function literal is
+  inlined at the call site; neither has a runtime form, so a nullish operand
+  that is not a static record property, or a callback that escapes its call
+  site, fails explicitly. `canvas.width`/`canvas.height` name the engine's
+  configured size, which is the size the surface was created at; a scene
+  reading them after a resize would need the live render-target size the
+  pinned `getRenderTargetSize` reads instead.
 - [ ] Replace the conservative alias rules (path-bound locals are
   read-only copies; owned locals reject writes after escaping by copy)
   with real escape analysis when a reached scene needs shared mutable
@@ -463,15 +472,15 @@ scene that did not reach a MAD measurement; measured scenes are dashboarded in
 [status](docs/status.md).
 
 **The corpus carries only the shared modules registered scenes import.**
-`lab/lite/src/shared/` holds one file here (scene252-stdmorph.ts, pinned in
-`upstream/babylon-lite-scenes.json` like any scene source), because that is the
-only one a registered scene reaches. Two of the three largest blocker clusters
-import shared modules that are therefore absent: every `loadSpriteAtlas` scene
-reads `../_shared/sprite-atlas-image` and `../_shared/sprite-grid`, and every
-node-material scene reads `../shared/sceneNN-nme.js`. The compiler reports the
-missing intrinsic first, so the gap only surfaces once that intrinsic lands.
-Integrating from either cluster starts by copying those modules out of the
-pinned upstream tree and pinning their SHA-256 beside the scenes.
+`lab/lite/src/shared/` and `lab/lite/src/_shared/` hold three files here
+(scene252-stdmorph.ts, sprite-atlas-image.ts, sprite-grid.ts), each pinned in
+`upstream/babylon-lite-scenes.json` like any scene source, because those are
+the ones a registered scene reaches. The node-material cluster still imports
+modules that are absent: every such scene reads `../shared/sceneNN-nme.js`.
+The compiler reports the missing intrinsic first, so the gap only surfaces
+once that intrinsic lands. Integrating from that cluster starts by copying
+those modules out of the pinned upstream tree and pinning their SHA-256
+beside the scenes, the way the sprite cluster's two already are.
 
 Refresh it by building `dist` once and then compiling each unregistered scene
 directly, which skips the per-invocation rebuild:
@@ -479,7 +488,7 @@ directly, which skips the per-invocation rebuild:
 The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
-**Current inventory:** 65 registered parity scenes and 168 unregistered
+**Current inventory:** 66 registered parity scenes and 167 unregistered
 corpus scenes. The compiler-contract lane has no compile-clean scenes. Each
 entry below records the first blocker only; clearing it can expose another.
 
@@ -488,7 +497,7 @@ compiler-contract lane below is what gates the rest.
 
 **Largest first-blocker clusters:** browser-dependent condition 17 (15 of them
 deferred-lane physics), `parseNodeMaterialFromSnippet` 17, `loadSpriteAtlas`
-16, engine options beyond msaaSamples/requiredLimits 7, static array literal 6,
+15, engine options beyond msaaSamples/requiredLimits 7, static array literal 6,
 numeric operators 6, `parseNodeParticleSource` 6, `receiveShadows` 5,
 `loadSplat` 5. Missing intrinsics account for 44% of all failures across 28
 distinct names. Several families are split across entries because the message
@@ -511,15 +520,15 @@ only for a contract no corpus scene exercises (a feature combination the corpus
 never composes, or a slice being built ahead of the scene that will use it),
 and delete it once corpus scenes cover the contract.
 
-The 172 unregistered scenes are partitioned by the boundary required to reproduce
+The 171 unregistered scenes are partitioned by the boundary required to reproduce
 their deterministic reference behavior, not by incidental browser helpers.
 Capture-inert demo controls and fixed-coordinate picking stay in the first
 lane when they can be erased or lowered inside the compiler, asset pipeline,
 or renderer. A scene is deferred when its covered behavior needs a new
 platform, user-input, or external-service contract.
 
-**Integrate first (134 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25-27,
-36, 38, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
+**Integrate first (133 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25-27,
+36, 38, 43, 51-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-158, 160, 162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223,
 226, 229, 231, 241, 251, 261-264, 269-271, 275-280.
 
@@ -564,7 +573,33 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 38: support `createCylinder`.
 - [ ] Scene 148: support `createDepthOfFieldPostProcessTask`, which is its
   first blocker now that the scene light-list clear is lowered.
-- [ ] Scenes 50, 52-56, 58, 92-98, 117, 118: support `loadSpriteAtlas`.
+- [ ] Extend the sprite path past the slice Scene 50 measures. The pure-2D
+  straight-alpha layer is ported (atlas, grid frames, the Index API's
+  instance writer, the pinned WGSL and layer UBO); each item below is a
+  separate arm upstream keeps behind its own module or hook, and each fails
+  explicitly today rather than being approximated:
+  - the other blend descriptors — `spriteBlendPremultiplied` (Scene 51, with
+    `premultiplyOnLoad`), `spriteBlendMultiply` (97), `spriteBlendOpaque`
+    (53). The native record already carries the pin's factor pairs, so this
+    is compiler-side plus one pipeline per distinct blend in a renderer.
+  - depth-hosted layers: `addDepthHostedSpriteLayer` with `depth: "test"` /
+    `"test-write"` (53), which adds the 14th instance float, the depth
+    attachment and the scene bind group, and composes with a `SceneContext`.
+  - a `SpriteRenderer` overlaid on a scene (52), which is that composition
+    without the depth slot: the sprite pass appends to the scene's frame.
+  - `createSprite2DCustomShader` (92, 93), `setSprite2DUvOffset` (96) and
+    `setSprite2DCoverageGamma`, each of which is a shader permutation the
+    pin installs through a lazily-registered hook.
+  - the billboard family (54-57, 59, 94, 95, 98, 118, 205, 206), which is a
+    different module set (`billboard-*.js`) sharing only the atlas.
+  Both GPU backends already draw the reached slice, so each item above is
+  compiler and shader work rather than a second backend.
+  - `updateSprite2DIndex`, `removeSprite2DIndex`, `setSprite2DFrameIndex`,
+    `clearSprite2DLayer` and the Handle API: the writer is lowered for the
+    add arm only, and the update arm's "preserve what was not supplied"
+    resolution needs the previous instance read back.
+- [ ] Scenes 52-56, 58, 92-98, 117, 118: support `loadSpriteAtlas` beyond
+  the reached slice (see the entry above for what each one adds).
 - [ ] Scene 51: lower the reached browser-derived numeric value.
 - [ ] Scenes 57, 59: support the `CAMERA_POSITION` shader binding.
 - [ ] Scenes 60, 61, 64, 67-71, 77-80, 82, 84, 85, 88, 89: support

@@ -12,7 +12,12 @@
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
 
-#if defined(BBLITE_HAS_DAWN) && BBLITE_HAS_DAWN
+// The scene renderer needs a scene: its camera math and render plan are
+// generated only for a scene that registers one. A sprite-only scene
+// registers a SpriteRenderer instead and draws through
+// `pal_dawn_sprite.cpp`, so this translation unit compiles to nothing.
+#if defined(BBLITE_HAS_DAWN) && BBLITE_HAS_DAWN && \
+    defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 
 #include <bblite/upstream/camera_math.hpp>
 #if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
@@ -22,17 +27,8 @@
 #include <bblite/upstream/renderer_plan.hpp>
 
 #include "pal_camera_controls.hpp"
+#include "pal_dawn_shared.hpp"
 #include "pal_gpu_shared.hpp"
-
-#include <SDL3/SDL.h>
-#include <SDL3_image/SDL_image.h>
-#include <webgpu/webgpu.h>
-
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-#endif
 
 #include <algorithm>
 #include <array>
@@ -51,21 +47,6 @@
 namespace bbl::pal {
 
 namespace {
-
-std::string view_text(WGPUStringView view) {
-    if (!view.data) return {};
-    return view.length == WGPU_STRLEN
-        ? std::string(view.data)
-        : std::string(view.data, view.length);
-}
-
-WGPUStringView string_view(const char* text) {
-    return WGPUStringView{text, WGPU_STRLEN};
-}
-
-[[noreturn]] void dawn_error(const std::string& message) {
-    throw std::runtime_error("Dawn backend: " + message);
-}
 
 struct DawnMeshBindings {
     WGPUBindGroup scene = nullptr;
@@ -206,14 +187,7 @@ struct DawnGeometryTask {
         pipelines;
 };
 
-struct DawnState {
-    SDL_Window* window = nullptr;
-    WGPUInstance instance = nullptr;
-    WGPUAdapter adapter = nullptr;
-    WGPUDevice device = nullptr;
-    WGPUQueue queue = nullptr;
-    WGPUSurface surface = nullptr;
-    WGPUTextureFormat surface_format = WGPUTextureFormat_BGRA8Unorm;
+struct DawnState : DawnDevice {
     // Transmission scenes render the frame in linear rgba16float and
     // apply image processing at the end; everything else targets the
     // surface format directly.
@@ -398,7 +372,6 @@ struct DawnState {
     std::array<std::array<WGPURenderPipeline, 2>, 3>
         diagnostics_pipelines{};
     std::vector<DawnMesh> meshes;
-    std::string uncaptured_error;
 
     // Frame-task draw resources are tied to the current render plan
     // and rebuild together with the meshes.
@@ -774,40 +747,11 @@ struct DawnState {
     }
 };
 
-void wait_for(WGPUInstance instance, WGPUFuture future) {
-    WGPUFutureWaitInfo wait_info{};
-    wait_info.future = future;
-    const WGPUWaitStatus status =
-        wgpuInstanceWaitAny(instance, 1, &wait_info, UINT64_MAX);
-    if (status != WGPUWaitStatus_Success) {
-        dawn_error("wgpuInstanceWaitAny failed.");
-    }
-}
-
+/** Forwards to the shared loader; the call sites name the state. */
 WGPUShaderModule load_wgsl_module(
     DawnState& state,
     const std::string& base_name) {
-    const std::string shader_override =
-        environment_variable("BBLITE_GPU_SHADER_DIR");
-    const std::string shader_root = shader_override.empty()
-        ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR)
-        : shader_override;
-    const std::vector<std::uint8_t> bytes = read_binary_file(
-        join_path(shader_root, base_name + ".native.wgsl"));
-    const std::string source(
-        reinterpret_cast<const char*>(bytes.data()),
-        bytes.size());
-    WGPUShaderSourceWGSL wgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
-    wgsl.code = WGPUStringView{source.c_str(), source.size()};
-    WGPUShaderModuleDescriptor descriptor{};
-    descriptor.nextInChain = &wgsl.chain;
-    descriptor.label = string_view(base_name.c_str());
-    WGPUShaderModule module =
-        wgpuDeviceCreateShaderModule(state.device, &descriptor);
-    if (!module) {
-        dawn_error("wgpuDeviceCreateShaderModule " + base_name);
-    }
-    return module;
+    return bbl::pal::load_wgsl_module(state.device, base_name);
 }
 
 WGPUBuffer create_buffer(
@@ -2726,35 +2670,6 @@ DawnMeshBindings& bindings_for(
     return mesh.bindings.emplace(kind, bindings).first->second;
 }
 
-void save_capture_png(
-    const std::vector<std::uint8_t>& pixels,
-    std::uint32_t width,
-    std::uint32_t height,
-    std::uint32_t bytes_per_row,
-    bool bgra,
-    const std::string& path) {
-    SDL_Surface* surface = SDL_CreateSurface(
-        static_cast<int>(width),
-        static_cast<int>(height),
-        bgra ? SDL_PIXELFORMAT_ARGB8888 : SDL_PIXELFORMAT_ABGR8888);
-    if (!surface) {
-        dawn_error(std::string("SDL_CreateSurface: ") + SDL_GetError());
-    }
-    for (std::uint32_t row = 0; row < height; ++row) {
-        std::memcpy(
-            static_cast<std::uint8_t*>(surface->pixels) +
-                static_cast<std::size_t>(row) * surface->pitch,
-            pixels.data() +
-                static_cast<std::size_t>(row) * bytes_per_row,
-            static_cast<std::size_t>(width) * 4);
-    }
-    const bool saved = IMG_SavePNG(surface, path.c_str());
-    SDL_DestroySurface(surface);
-    if (!saved) {
-        dawn_error(std::string("IMG_SavePNG: ") + SDL_GetError());
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Attribution captures (scene-1 diagnostics tooling): draw-id and
 // triangle-cluster id buffers plus the PBR diagnostic MRT set, matching
@@ -3476,6 +3391,17 @@ bool run_dawn_engine(Engine& engine) {
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("Dawn renderer requires a registered scene.");
     }
+    // A scene that also registers sprite renderers composes two
+    // rendering contexts in one frame (the pinned HUD-on-3D shape, corpus
+    // scene 52). The sprite pass is recordable into any open render pass
+    // for exactly that, but nothing here records it yet, and drawing the
+    // scene while silently dropping the sprites would be measured as a
+    // parity residual rather than a missing feature.
+    if (!engine.registered_sprite_renderers.empty()) {
+        throw std::runtime_error(
+            "A sprite renderer registered alongside a scene is not "
+            "composed into the scene's frame yet.");
+    }
     const FrameOptions frame_options = read_frame_options();
     reject_unsupported_frame_options(
         frame_options,
@@ -3527,150 +3453,21 @@ bool run_dawn_engine(Engine& engine) {
         scene.environment.has_ground &&
         ground_flag != "0" &&
         ground_flag != "false";
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
-        dawn_error(std::string("SDL_Init: ") + SDL_GetError());
-    }
-
     DawnState state;
     // Every attachment and pipeline reads this, so it is settled before
     // any of them is created.
     state.sample_count = frame_options.single_sample ? 1u : 4u;
-    const bool hidden_test_pass =
-        frame_options.test_pass;
-    state.window = SDL_CreateWindow(
-        engine.options.title.c_str(),
-        engine.options.width,
-        engine.options.height,
-        hidden_test_pass
-            ? SDL_WINDOW_RESIZABLE | SDL_WINDOW_NOT_FOCUSABLE
-            : SDL_WINDOW_RESIZABLE);
-    if (!state.window) {
-        dawn_error(std::string("SDL_CreateWindow: ") + SDL_GetError());
-    }
+    const bool hidden_test_pass = frame_options.test_pass;
 
-#if defined(_WIN32)
-    // Every Dawn shape can reach FXC: builds without built DXC compile
-    // through it exclusively, and DXC builds fall back to it when Dawn
-    // force-disables use_dxc on adapters below shader model 6. Dawn
-    // resolves d3dcompiler_47.dll via absolute-path candidates (module
-    // and executable directories) and a final bare-name LoadLibraryEx
-    // whose LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR flag is invalid for
-    // relative names (ERROR_INVALID_PARAMETER), so with no compiler
-    // DLL beside the executable it never reaches System32. Preloading
-    // here makes Dawn's own load return the already-loaded module, so
-    // packages ship no FXC; the application directory keeps priority
-    // over System32, preserving the Chrome-style "ship the exact SDK
-    // compiler" override.
-    LoadLibraryExW(
-        L"d3dcompiler_47.dll",
-        nullptr,
-        LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
-#endif
-
-    static const WGPUInstanceFeatureName instance_features[] = {
-        WGPUInstanceFeatureName_TimedWaitAny,
-    };
-    WGPUInstanceDescriptor instance_descriptor =
-        WGPU_INSTANCE_DESCRIPTOR_INIT;
-    instance_descriptor.requiredFeatureCount = 1;
-    instance_descriptor.requiredFeatures = instance_features;
-    state.instance = wgpuCreateInstance(&instance_descriptor);
-    if (!state.instance) dawn_error("wgpuCreateInstance failed.");
-
-    void* hwnd = SDL_GetPointerProperty(
-        SDL_GetWindowProperties(state.window),
-        SDL_PROP_WINDOW_WIN32_HWND_POINTER,
-        nullptr);
-    void* hinstance = SDL_GetPointerProperty(
-        SDL_GetWindowProperties(state.window),
-        SDL_PROP_WINDOW_WIN32_INSTANCE_POINTER,
-        nullptr);
-    if (!hwnd) dawn_error("SDL window exposes no Win32 HWND.");
-    WGPUSurfaceSourceWindowsHWND surface_source =
-        WGPU_SURFACE_SOURCE_WINDOWS_HWND_INIT;
-    surface_source.hinstance = hinstance;
-    surface_source.hwnd = hwnd;
-    WGPUSurfaceDescriptor surface_descriptor{};
-    surface_descriptor.nextInChain = &surface_source.chain;
-    state.surface =
-        wgpuInstanceCreateSurface(state.instance, &surface_descriptor);
-    if (!state.surface) dawn_error("wgpuInstanceCreateSurface failed.");
-
-    WGPURequestAdapterOptions adapter_options =
-        WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
-#if defined(BBLITE_DAWN_DXC) && BBLITE_DAWN_DXC
-    // Chrome's Dawn compiles HLSL with DXC (dxcompiler.dll and
-    // dxil.dll ship beside the browser); enable the same adapter
-    // toggle so native shader codegen matches the reference captures.
-    // Libraries built without DAWN_USE_BUILT_DXC force-ignore the
-    // toggle with a console warning, so FXC-only builds skip the
-    // request entirely.
-    static const char* adapter_toggles[] = {"use_dxc"};
-    WGPUDawnTogglesDescriptor toggles = WGPU_DAWN_TOGGLES_DESCRIPTOR_INIT;
-    toggles.chain.sType = WGPUSType_DawnTogglesDescriptor;
-    toggles.enabledToggleCount = 1;
-    toggles.enabledToggles = adapter_toggles;
-    adapter_options.nextInChain = &toggles.chain;
-#endif
-    adapter_options.powerPreference = WGPUPowerPreference_HighPerformance;
-    adapter_options.backendType = WGPUBackendType_D3D12;
-    adapter_options.compatibleSurface = state.surface;
-    WGPURequestAdapterCallbackInfo adapter_callback =
-        WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
-    adapter_callback.mode = WGPUCallbackMode_WaitAnyOnly;
-    adapter_callback.callback = [](
-                                    WGPURequestAdapterStatus status,
-                                    WGPUAdapter adapter,
-                                    WGPUStringView message,
-                                    void* userdata1,
-                                    void*) {
-        auto* dawn_state = static_cast<DawnState*>(userdata1);
-        if (status == WGPURequestAdapterStatus_Success) {
-            dawn_state->adapter = adapter;
-        } else {
-            dawn_state->uncaptured_error = view_text(message);
-        }
-    };
-    adapter_callback.userdata1 = &state;
-    wait_for(
-        state.instance,
-        wgpuInstanceRequestAdapter(
-            state.instance,
-            &adapter_options,
-            adapter_callback));
-    if (!state.adapter) {
-        dawn_error("no D3D12 adapter: " + state.uncaptured_error);
-    }
-
-    WGPUDeviceDescriptor device_descriptor = WGPU_DEVICE_DESCRIPTOR_INIT;
-    // The pinned engine requests float32-filterable whenever the
-    // adapter offers it; the depth-copy r32float texture relies on it.
-    // Primitive-index unlocks the triangle-cluster diagnostic shader's
-    // `enable primitive_index` directive (attribution captures only).
-    std::array<WGPUFeatureName, 2> device_features{};
-    std::size_t device_feature_count = 0;
-    if (wgpuAdapterHasFeature(
-            state.adapter,
-            WGPUFeatureName_Float32Filterable)) {
-        device_features[device_feature_count++] =
-            WGPUFeatureName_Float32Filterable;
-    }
-    if (wgpuAdapterHasFeature(
-            state.adapter,
-            WGPUFeatureName_PrimitiveIndex)) {
-        device_features[device_feature_count++] =
-            WGPUFeatureName_PrimitiveIndex;
-    }
-    device_descriptor.requiredFeatureCount = device_feature_count;
-    device_descriptor.requiredFeatures = device_features.data();
-    WGPULimits required_limits = WGPU_LIMITS_INIT;
-    bool needs_limits = false;
+    DawnDeviceOptions device_options;
+    device_options.hidden_test_pass = hidden_test_pass;
+    device_options.immediate_present =
+        frame_options.benchmark_requested;
 #if BBLITE_GPU_INSTANCING
     // The SDL-specialized WGSL feeds per-instance matrix columns at
     // locations 16-19; the WebGPU default caps attribute locations
     // below 16, so raise the device limit to cover location 19.
-    required_limits.maxVertexAttributes = 20;
-    needs_limits = true;
+    device_options.max_vertex_attributes = 20;
 #endif
     // Geometry MRT chains can exceed the default 32-byte color budget;
     // the entry's erased requiredLimits option is derived here from
@@ -3702,97 +3499,16 @@ bool run_dawn_engine(Engine& engine) {
                 std::max(color_bytes_per_sample, total);
         }
         if (color_bytes_per_sample > 32) {
-            required_limits.maxColorAttachmentBytesPerSample =
+            device_options.max_color_attachment_bytes_per_sample =
                 color_bytes_per_sample;
-            needs_limits = true;
         }
     }
-    if (needs_limits) {
-        device_descriptor.requiredLimits = &required_limits;
-    }
-    device_descriptor.uncapturedErrorCallbackInfo.callback =
-        [](
-            WGPUDevice const*,
-            WGPUErrorType,
-            WGPUStringView message,
-            void* userdata1,
-            void*) {
-            auto* error = static_cast<std::string*>(userdata1);
-            if (error->empty()) *error = view_text(message);
-        };
-    device_descriptor.uncapturedErrorCallbackInfo.userdata1 =
-        &state.uncaptured_error;
-    // An explicit device-lost callback keeps Dawn from warning at
-    // device creation that none was set. Destroyed is the expected
-    // teardown transition; any other reason funnels into the same
-    // first-error capture the uncaptured-error callback uses and is
-    // thrown at frame end.
-    device_descriptor.deviceLostCallbackInfo.mode =
-        WGPUCallbackMode_AllowSpontaneous;
-    device_descriptor.deviceLostCallbackInfo.callback =
-        [](
-            WGPUDevice const*,
-            WGPUDeviceLostReason reason,
-            WGPUStringView message,
-            void* userdata1,
-            void*) {
-            if (reason == WGPUDeviceLostReason_Destroyed) return;
-            auto* error = static_cast<std::string*>(userdata1);
-            if (error->empty()) {
-                *error = "device lost: " + view_text(message);
-            }
-        };
-    device_descriptor.deviceLostCallbackInfo.userdata1 =
-        &state.uncaptured_error;
-    WGPURequestDeviceCallbackInfo device_callback =
-        WGPU_REQUEST_DEVICE_CALLBACK_INFO_INIT;
-    device_callback.mode = WGPUCallbackMode_WaitAnyOnly;
-    device_callback.callback = [](
-                                   WGPURequestDeviceStatus status,
-                                   WGPUDevice device,
-                                   WGPUStringView message,
-                                   void* userdata1,
-                                   void*) {
-        auto* dawn_state = static_cast<DawnState*>(userdata1);
-        if (status == WGPURequestDeviceStatus_Success) {
-            dawn_state->device = device;
-        } else {
-            dawn_state->uncaptured_error = view_text(message);
-        }
-    };
-    device_callback.userdata1 = &state;
-    wait_for(
-        state.instance,
-        wgpuAdapterRequestDevice(
-            state.adapter,
-            &device_descriptor,
-            device_callback));
-    if (!state.device) {
-        dawn_error("device creation failed: " + state.uncaptured_error);
-    }
-    state.queue = wgpuDeviceGetQueue(state.device);
+    create_dawn_device(engine.options, device_options, state);
 
     const std::uint32_t width =
         static_cast<std::uint32_t>(engine.options.width);
     const std::uint32_t height =
         static_cast<std::uint32_t>(engine.options.height);
-    WGPUSurfaceConfiguration surface_configuration =
-        WGPU_SURFACE_CONFIGURATION_INIT;
-    surface_configuration.device = state.device;
-    surface_configuration.format = state.surface_format;
-    surface_configuration.usage =
-        WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
-    surface_configuration.width = width;
-    surface_configuration.height = height;
-    // Present with vsync like the SDL_GPU backend so the per-frame
-    // camera inertia integrates identically across backends;
-    // benchmarks keep immediate present (the recorded frame-time
-    // numbers depend on it).
-    surface_configuration.presentMode =
-        frame_options.benchmark_requested
-            ? WGPUPresentMode_Immediate
-            : WGPUPresentMode_Fifo;
-    wgpuSurfaceConfigure(state.surface, &surface_configuration);
 
     // Shared frame targets: 4x MSAA color (surface format, or linear
     // rgba16float for transmission frames whose multisampled texture

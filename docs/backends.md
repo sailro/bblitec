@@ -187,6 +187,25 @@ groups, pass encoding and swapchain handling stay per backend — those API
 sequences are the mutually validating surface, and merging them would remove the
 diagnostic value of having two.
 
+Nothing else is shared, and in particular nothing is shared *between* the
+backends beyond that file. Each backend owns its own device mechanics in a
+header only its own translation units include —
+`pal_sdl_gpu_shared.hpp` (shader loading, buffer and texture upload, sampler
+construction, PNG readback) and `pal_dawn_shared.hpp` (instance, surface,
+adapter, device, swapchain bring-up). Each exists because its backend now has
+two renderers, not because the backends have anything in common: a scene that
+registers a `SpriteRenderer` and no `SceneContext` generates no camera math and
+no render plan, so it cannot compile the scene renderer's translation unit at
+all and draws from `pal_sdl_gpu_sprite.cpp` or `pal_dawn_sprite.cpp` instead.
+That split is upstream's own — a `SpriteRenderer` is its own `RenderingContext`
+on the engine rather than part of a scene.
+
+Deleting a backend stays a matter of dropping its files. `BBLITE_BACKEND`
+removes every translation unit belonging to the backend it turns off,
+including its sprite pass, and each entry point compiles to a stub that
+returns false, so the other backend keeps rendering every feature the scene
+reached.
+
 ## Empirical findings
 
 Regression guards from the migration; each was measured, not assumed:

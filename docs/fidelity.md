@@ -278,6 +278,39 @@ binding pair and UV transform, since nothing samples them. Scene 29 gates the
 glTF arm and Scene 21 the legacy one; a scene composing both would need two
 fragments and fails at generation instead.
 
+**A sprite atlas that is drawn rather than fetched is executed, not
+reimplemented.** `lab/lite/src/_shared/sprite-atlas-image.ts` builds its
+256x128 atlas with canvas2D — rotated wedges, `arc`, `hsl` — and returns a
+data URL, so there is no file to download and the pixels are a browser
+rasterizer's antialiasing rather than a formula. Generation serves the pinned
+module from a local server, calls its exported factory in headless Chromium,
+and bakes the PNG the data URL carries as a generated asset. Nothing about the
+drawing is transcribed. The tradeoff is the HDR prefilter's and is the same
+one: the baked bytes depend on the Chrome that compiled them. It is recorded
+per scene as the `drawn-sprite-atlas` adaptation.
+
+The frames are not baked with them. `createGridSpriteAtlas` partitions
+whatever texture the loader was handed, so the generated loader decodes the
+PNG and runs the pinned derivation over its own width and height — a changed
+atlas needs no compiler change. `loadSpriteAtlas` fixes the sampler the pin
+fixes (clamp on both axes, no mip chain, filter from `sampling`), and the
+texture is `rgba8unorm` with `srgb` off, so the atlas texels reach the blend
+stage as the bytes on disk.
+
+**A sprite layer is drawn by its own renderer, not by the scene.** Upstream's
+`SpriteRenderer` implements `RenderingContext` directly and registers on the
+engine rather than on a `SceneContext`, opens its own single-sample swapchain
+pass, and draws one instanced quad per layer. Native mirrors that: a scene
+registering a sprite renderer and no scene compiles no scene renderer at all,
+and the sprite pass is a separate translation unit. The instance layout is the
+pinned pure-2D one — thirteen floats, 52 bytes, position/size/uvMin/uvMax/
+rotation/colour — and the layer UBO is the pinned sixteen floats. The reached
+slice is the straight-alpha blend on `depth: "none"` layers; depth-hosted
+layers, the other blend descriptors, custom shaders, uv scroll and coverage
+gamma are all behind upstream's own hooks and none is emitted. Both GPU
+backends draw it, from one generated WGSL pair and one instance layout, and
+on this scene they agree byte for byte with each other and with the golden.
+
 **A skybox size of zero asks the loader for the pinned default.** The
 generated loader resolves an unset `skyboxSize` to `createDefaultEnvironment`'s
 20, so the compiler passes zero rather than substituting a size of its own.

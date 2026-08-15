@@ -31,6 +31,10 @@ import {
     compileSceneIntrinsic,
     type SceneIntrinsicContext,
 } from "./scene.js";
+import {
+    compileSpriteIntrinsic,
+    type SpriteIntrinsicContext,
+} from "./sprite.js";
 import type { Value } from "../types.js";
 
 export interface IntrinsicContext
@@ -41,7 +45,8 @@ export interface IntrinsicContext
         LightIntrinsicContext,
         MaterialIntrinsicContext,
         MeshIntrinsicContext,
-        SceneIntrinsicContext {}
+        SceneIntrinsicContext,
+        SpriteIntrinsicContext {}
 
 type IntrinsicCompiler = (
     context: IntrinsicContext,
@@ -58,6 +63,7 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileAnimationIntrinsic,
     compileMaterialIntrinsic,
     compileAssetIntrinsic,
+    compileSpriteIntrinsic,
 ];
 
 export function compileRegisteredIntrinsic(

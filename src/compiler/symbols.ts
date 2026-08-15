@@ -30,6 +30,19 @@ export class CompilerSymbols {
             : symbol;
     }
 
+    /**
+     * The file a named import's declaration lives in. Used where a value's
+     * *module* is the thing that matters rather than its name — a drawn
+     * sprite atlas is materialized by running the module that draws it.
+     */
+    public declarationSourcePath(
+        identifier: ts.Identifier,
+    ): string | undefined {
+        const declaration =
+            this.valueSymbol(identifier)?.declarations?.[0];
+        return declaration?.getSourceFile().fileName;
+    }
+
     public importedName(
         identifier: ts.Identifier,
     ): string | undefined {

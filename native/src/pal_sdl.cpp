@@ -2,16 +2,21 @@
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER || BBLITE_HAS_SPRITE_RENDERER
 #include <bblite/pal_image.hpp>
 #endif
 #if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
 #include <bblite/pal_gltf.hpp>
 #endif
+// A scene with no SceneContext generates no camera, so the deterministic
+// CPU renderer below -- which draws scene meshes through one -- is not
+// compiled for it either.
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/camera_controls.hpp>
 #include <bblite/upstream/camera_math.hpp>
 
 #include "pal_camera_controls.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -26,7 +31,7 @@
 
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL
 #include <SDL3/SDL.h>
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER || BBLITE_HAS_SPRITE_RENDERER
 #include <SDL3_image/SDL_image.h>
 #endif
 #endif
@@ -34,7 +39,7 @@
 namespace bbl {
 
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER || BBLITE_HAS_SPRITE_RENDERER
 pal::DecodedImage pal::decode_image(const ts::ArrayBuffer& buffer) {
     SDL_IOStream* stream = SDL_IOFromConstMem(buffer.data(), buffer.byte_length());
     if (!stream) throw std::runtime_error(std::string("Unable to open image: ") + SDL_GetError());
@@ -60,6 +65,7 @@ pal::DecodedImage pal::decode_image(const ts::ArrayBuffer& buffer) {
 }
 #endif
 
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 namespace {
 
 struct Point2 {
@@ -1085,17 +1091,37 @@ void print_benchmark(const char* renderer_name, std::vector<double> samples) {
 
 } // namespace
 #endif
+#endif
 
 void pal::run_engine(Engine& engine) {
     const std::string gpu_backend =
         pal::environment_variable("BBLITE_GPU_BACKEND");
+    // A sprite renderer is its own rendering context on the engine, so a
+    // scene that registered one and no SceneContext draws through the
+    // sprite path. There is no CPU fallback for it: the SDL_Renderer path
+    // renders scene meshes, which such a scene does not have.
+    const bool sprites_only =
+        !engine.registered_sprite_renderers.empty() &&
+        engine.registered_scenes.empty();
     if (gpu_backend == "dawn") {
-        if (pal::run_dawn_engine(engine)) {
+        if (sprites_only
+                ? pal::run_sprite_dawn_engine(engine)
+                : pal::run_dawn_engine(engine)) {
             return;
         }
         throw std::runtime_error(
             "BBLITE_GPU_BACKEND=dawn requires a Dawn-enabled native "
             "build (BBLITE_BACKEND=DAWN or BOTH).");
+    }
+    if (sprites_only) {
+        if (pal::run_sprite_gpu_engine(engine)) {
+            return;
+        }
+        if (pal::run_sprite_dawn_engine(engine)) {
+            return;
+        }
+        throw std::runtime_error(
+            "A sprite renderer requires a GPU backend.");
     }
 #if defined(BBLITE_HAS_SDL_GPU) && BBLITE_HAS_SDL_GPU
     try {
@@ -1157,7 +1183,8 @@ void pal::run_engine(Engine& engine) {
     }
 
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && \
-    defined(BBLITE_CPU_FALLBACK) && BBLITE_CPU_FALLBACK
+    defined(BBLITE_CPU_FALLBACK) && BBLITE_CPU_FALLBACK && \
+    defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         throw std::runtime_error(std::string("SDL_Init failed: ") + SDL_GetError());
     }

@@ -8,7 +8,12 @@
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
+// The render plan is generated only for scenes that register a
+// SceneContext; a sprite-only scene has none, and reaches this header for
+// the frame options, capture gate and clock alone.
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -668,6 +673,7 @@ inline ClusterRange advance_cluster_range(
     return ClusterRange{triangle_count, id_start};
 }
 
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 /**
  * The alpha state the diagnostic shaders read: the bucket as a mode, the
  * cutoff, and the material alpha. A material-less item renders opaque at
@@ -691,6 +697,7 @@ inline std::array<float, 4> diagnostic_alpha_options(
     options[2] = material->base_color_factor.a;
     return options;
 }
+#endif
 
 /**
  * Which requested captures have landed, and whether the loop may stop.

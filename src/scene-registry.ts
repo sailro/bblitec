@@ -1195,6 +1195,18 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene50",
+        name: "Scene 50 - Sprite Grid",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene50.ts",
+        title: "Babylon Lite Native - Sprite Grid",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [18, 20, 31],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

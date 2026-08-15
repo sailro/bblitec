@@ -56,6 +56,10 @@ export interface CompileAsset {
         | "environment"
         | "gltf"
         | "hdr-environment"
+        // The one asset kind whose source is scene-adjacent TypeScript run at
+        // compile time rather than a URL fetched and repacked: the pinned
+        // sprite-atlas module draws its pixels with canvas2D.
+        | "sprite-atlas"
         | "texture";
     faceSize?: number;
 }
@@ -119,6 +123,9 @@ export type ValueKind =
     | "render-texture"
     | "record"
     | "scene"
+    | "sprite-atlas"
+    | "sprite-layer"
+    | "sprite-renderer"
     | "string"
     | "task"
     | "texture"
@@ -152,11 +159,18 @@ export interface Value {
     tupleElements?: Value[];
     recordProperties?: Record<string, Value>;
     /**
-     * Record properties that name a local function. The identifier the
-     * literal wrote is kept so a call through the property resolves and
-     * inlines exactly as a direct call to that function does.
+     * Record properties that carry a function: either an identifier
+     * naming a local one, or a function literal written in place. The
+     * node the literal wrote is kept so a call through the property
+     * resolves and inlines exactly as a direct call does — which for the
+     * identifier form is the same resolver a direct call uses, and for
+     * the literal form is the callback path a function-literal argument
+     * already takes.
      */
-    recordMethods?: Record<string, ts.Identifier>;
+    recordMethods?: Record<
+        string,
+        ts.Identifier | ts.ArrowFunction | ts.FunctionExpression
+    >;
     /**
      * Record properties declared with `get`. The accessor is kept
      * rather than its value, so each read re-evaluates it.
@@ -234,6 +248,8 @@ export type Feature =
     | "mesh:thin-instances-dynamic"
     | "mesh:torus"
     | "scene:remove"
+    | "sprite:2d"
+    | "renderer:sprite"
     | "renderer:pbr"
     | "renderer:transmission"
     | "renderer:fog"

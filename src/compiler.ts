@@ -78,8 +78,13 @@ import {
     shaderMaterialPrograms,
     shaderUniformValueLayout,
 } from "./shader-material-programs.js";
-import { readUpstreamPin } from "./upstream-source.js";
+import {
+    findRepositoryRoot,
+    readUpstreamPin,
+} from "./upstream-source.js";
+import { spriteAtlasAssetSource } from "./sprite-atlas-packager.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
+import { dirname, relative, resolve, sep } from "node:path";
 
 const featureSources: Record<Feature, string[]> = {
     "animation:property": [],
@@ -121,6 +126,8 @@ const featureSources: Record<Feature, string[]> = {
     "mesh:thin-instances-dynamic": [],
     "mesh:torus": [],
     "scene:remove": [],
+    "sprite:2d": [],
+    "renderer:sprite": ["src/pal_sdl_gpu_sprite.cpp"],
     "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],
     "renderer:fog": [],
@@ -243,6 +250,7 @@ class Compiler
             (identifier) =>
                 this.symbols.valueSymbol(identifier),
             (expression) =>
+                this.canvasSizeValue(expression) ??
                 this.lookupRecordProperty(expression) ??
                 this.dataLowerer.compileDataPath(
                     expression,
@@ -271,7 +279,15 @@ class Compiler
         }
 
         const features = featureOrder.filter((feature) => this.features.has(feature));
-        const runtimeSources = features.flatMap((feature) => featureSources[feature]);
+        // Two features can name the same PAL translation unit (the sprite
+        // and PBR renderers share one), and CMake must list it once.
+        const runtimeSources = [
+            ...new Set(
+                features.flatMap(
+                    (feature) => featureSources[feature],
+                ),
+            ),
+        ];
         // The manifest and CMake projection of the same table the upstream
         // lowerer emits from, so a feature's sources are declared once.
         const generatedSources =
@@ -907,6 +923,15 @@ class Compiler
         const unwrapped = this.unwrap(expression);
 
         if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken
+        ) {
+            return this.compileValue(
+                this.evaluator.resolveNullish(unwrapped),
+            );
+        }
+        if (
             unwrapped.kind === ts.SyntaxKind.ThisKeyword
         ) {
             const instance = this.activeThis();
@@ -931,6 +956,11 @@ class Compiler
             return this.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
+            const canvasSize =
+                this.canvasSizeValue(unwrapped);
+            if (canvasSize) {
+                return canvasSize;
+            }
             const data = this.dataLowerer.compileDataPath(
                 unwrapped,
                 "read",
@@ -1045,37 +1075,50 @@ class Compiler
             const whenFalse = this.compileValue(
                 unwrapped.whenFalse,
             );
+            // A tuple value is a compile-time list of element values with
+            // no native expression of its own, so selecting between two
+            // tuples is selecting element by element. Same arity is the
+            // condition for that to be the same thing.
             if (
-                whenTrue.kind !== whenFalse.kind ||
-                whenTrue.cpp.length === 0 ||
-                whenFalse.cpp.length === 0 ||
-                (whenTrue.engineCpp &&
-                    whenFalse.engineCpp &&
-                    whenTrue.engineCpp !==
-                        whenFalse.engineCpp)
+                whenTrue.kind === "tuple" &&
+                whenFalse.kind === "tuple"
             ) {
-                this.fail(
-                    unwrapped,
-                    "Conditional expressions require matching native value branches.",
+                const trueElements =
+                    whenTrue.tupleElements ?? [];
+                const falseElements =
+                    whenFalse.tupleElements ?? [];
+                if (
+                    trueElements.length !==
+                    falseElements.length
+                ) {
+                    this.fail(
+                        unwrapped,
+                        "Conditional tuple branches must have the same length.",
+                    );
+                }
+                const condition = this.compileCondition(
+                    unwrapped.condition,
                 );
+                return {
+                    kind: "tuple",
+                    cpp: "",
+                    tupleElements: trueElements.map(
+                        (element, index) =>
+                            this.selectValue(
+                                condition,
+                                element,
+                                falseElements[index]!,
+                                unwrapped,
+                            ),
+                    ),
+                };
             }
-            const conditional: Value = {
-                ...whenTrue,
-                cpp: `(${this.compileCondition(unwrapped.condition)} ? ${whenTrue.cpp} : ${whenFalse.cpp})`,
-            };
-            if (
-                whenTrue.staticNumber !==
-                whenFalse.staticNumber
-            ) {
-                delete conditional.staticNumber;
-            }
-            if (
-                whenTrue.staticString !==
-                whenFalse.staticString
-            ) {
-                delete conditional.staticString;
-            }
-            return conditional;
+            return this.selectValue(
+                this.compileCondition(unwrapped.condition),
+                whenTrue,
+                whenFalse,
+                unwrapped,
+            );
         }
         if (ts.isArrayLiteralExpression(unwrapped)) {
             return {
@@ -1089,8 +1132,12 @@ class Compiler
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
             const properties: Record<string, Value> = {};
-            const methods: Record<string, ts.Identifier> =
-                {};
+            const methods: Record<
+                string,
+                | ts.Identifier
+                | ts.ArrowFunction
+                | ts.FunctionExpression
+            > = {};
             const getters: Record<
                 string,
                 ts.GetAccessorDeclaration
@@ -1127,6 +1174,13 @@ class Compiler
                     if (
                         ts.isIdentifier(initializer) &&
                         this.namesLocalFunction(initializer)
+                    ) {
+                        methods[name] = initializer;
+                        continue;
+                    }
+                    if (
+                        ts.isArrowFunction(initializer) ||
+                        ts.isFunctionExpression(initializer)
                     ) {
                         methods[name] = initializer;
                         continue;
@@ -1209,6 +1263,16 @@ class Compiler
                 cpp: this.compileBoolean(unwrapped),
             };
         }
+        // A comparison in value position is the same expression a
+        // condition position already lowers; only where it lands differs.
+        if (
+            this.evaluator.isComparisonExpression(unwrapped)
+        ) {
+            return {
+                kind: "boolean",
+                cpp: this.compileCondition(unwrapped),
+            };
+        }
         if (this.isBrowserOnlyExpression(unwrapped)) {
             const browserValue =
                 this.evaluateBrowserValue(unwrapped);
@@ -1222,6 +1286,47 @@ class Compiler
         }
 
         this.fail(unwrapped, `Unsupported value expression: ${ts.SyntaxKind[unwrapped.kind]}.`);
+    }
+
+    /**
+     * `condition ? whenTrue : whenFalse` for two already-compiled values.
+     * Both branches must name the same kind of native expression, since
+     * the result has to be one expression the caller can use.
+     */
+    private selectValue(
+        condition: string,
+        whenTrue: Value,
+        whenFalse: Value,
+        node: ts.Node,
+    ): Value {
+        if (
+            whenTrue.kind !== whenFalse.kind ||
+            whenTrue.cpp.length === 0 ||
+            whenFalse.cpp.length === 0 ||
+            (whenTrue.engineCpp &&
+                whenFalse.engineCpp &&
+                whenTrue.engineCpp !== whenFalse.engineCpp)
+        ) {
+            this.fail(
+                node,
+                "Conditional expressions require matching native value branches.",
+            );
+        }
+        const conditional: Value = {
+            ...whenTrue,
+            cpp: `(${condition} ? ${whenTrue.cpp} : ${whenFalse.cpp})`,
+        };
+        if (
+            whenTrue.staticNumber !== whenFalse.staticNumber
+        ) {
+            delete conditional.staticNumber;
+        }
+        if (
+            whenTrue.staticString !== whenFalse.staticString
+        ) {
+            delete conditional.staticString;
+        }
+        return conditional;
     }
 
     private compilePropertyAccess(expression: ts.PropertyAccessExpression): Value {
@@ -1345,6 +1450,22 @@ class Compiler
                           ]
                         : undefined;
                 if (instance && recordMethod) {
+                    // A literal written in the record has no identifier
+                    // to resolve, so it takes the callback path a
+                    // function-literal argument already takes. Both
+                    // arrive at the same inliner.
+                    if (!ts.isIdentifier(recordMethod)) {
+                        return this.userFunctions.compileCallbackCall(
+                            this,
+                            call,
+                            recordMethod,
+                            (work) =>
+                                this.withRecordScopes(
+                                    instance,
+                                    work,
+                                ),
+                        );
+                    }
                     const method =
                         this.userFunctions.compile(
                             this,
@@ -3848,6 +3969,10 @@ class Compiler
                     ? sourceName.replace(/\.hdr$/i, ".bblhdr")
                 : kind === "dds-environment"
                     ? sourceName.replace(/\.dds$/i, ".bblhdr")
+                // A drawn atlas names the module that draws it; what lands
+                // beside the executable is the PNG that module returns.
+                : kind === "sprite-atlas"
+                    ? `${basenameWithoutExtension(sourceName)}.png`
                 : sourceName;
         const safeName = packagedName.replace(/[^A-Za-z0-9._-]/g, "_");
         const output =
@@ -3862,6 +3987,53 @@ class Compiler
         };
         this.assets.set(key, asset);
         return asset;
+    }
+
+    /**
+     * A sprite atlas that is DRAWN rather than fetched.
+     *
+     * `getSpriteAtlasDataUrl()` builds its image with canvas2D and returns a
+     * data URL, so there is no URL to materialize and no pixels to lower.
+     * The call resolves to the module that draws them, and generation runs
+     * that module in headless Chromium and bakes the PNG it returns — the
+     * same executable route the pinned GGX prefilter already takes.
+     */
+    public registerSpriteAtlasAsset(
+        expression: ts.Expression,
+    ): string {
+        const unwrapped = this.unwrap(expression);
+        if (ts.isCallExpression(unwrapped)) {
+            const callee = this.unwrap(unwrapped.expression);
+            const modulePath = ts.isIdentifier(callee)
+                ? this.symbols.declarationSourcePath(callee)
+                : undefined;
+            if (modulePath && ts.isIdentifier(callee)) {
+                if (unwrapped.arguments.length !== 0) {
+                    this.fail(
+                        unwrapped,
+                        "A drawn sprite atlas factory takes no arguments.",
+                    );
+                }
+                const root = findRepositoryRoot(
+                    dirname(resolve(this.options.fileName)),
+                );
+                const asset = this.registerAsset(
+                    spriteAtlasAssetSource(
+                        relative(root, modulePath)
+                            .split(sep)
+                            .join("/"),
+                        callee.text,
+                    ),
+                    "sprite-atlas",
+                );
+                return this.cppString(asset.output);
+            }
+        }
+        // A plain URL still works: the atlas is an image either way.
+        const url = this.compileStringLiteral(expression);
+        return this.cppString(
+            this.registerAsset(url, "texture").output,
+        );
     }
 
     public resolveBundledAsset(source: string): string {
@@ -3893,8 +4065,56 @@ class Compiler
         return (hash >>> 0).toString(16).padStart(8, "0");
     }
 
+    /**
+     * `canvas.width` / `canvas.height` on the render canvas.
+     *
+     * The canvas itself is browser-only, but its size is not: it is the
+     * size the drawing surface was created at, which native names as the
+     * engine's own options. Scene code reads it to lay content out in
+     * pixels (the pinned sprite grid centres itself in it), so the read
+     * has to produce a number rather than being erased with its owner.
+     */
+    private canvasSizeProperty(
+        expression: ts.Expression,
+    ): "width" | "height" | undefined {
+        const unwrapped = this.unwrap(expression);
+        if (
+            !ts.isPropertyAccessExpression(unwrapped) ||
+            (unwrapped.name.text !== "width" &&
+                unwrapped.name.text !== "height")
+        ) {
+            return undefined;
+        }
+        const ownerType = this.checker.getTypeAtLocation(
+            unwrapped.expression,
+        );
+        return ownerType.getSymbol()?.getName() ===
+            "HTMLCanvasElement"
+            ? unwrapped.name.text
+            : undefined;
+    }
+
+    public canvasSizeValue(
+        expression: ts.Expression,
+    ): Value | undefined {
+        const property =
+            this.canvasSizeProperty(expression);
+        return property
+            ? {
+                  kind: "number",
+                  cpp: `static_cast<double>(${this.requireDefaultEngine(
+                      expression,
+                  )}.options.${property})`,
+                  dataType: { kind: "number" },
+              }
+            : undefined;
+    }
+
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
         const unwrapped = this.unwrap(expression);
+        if (this.canvasSizeProperty(unwrapped)) {
+            return false;
+        }
         if (ts.isIdentifier(unwrapped)) {
             if (
                 [
@@ -4532,6 +4752,25 @@ class Compiler
                 nativeSemantics: "The compiler downloads them into the generated asset directory and generated code performs deterministic local reads.",
                 risk: "medium",
                 validation: ["asset paths in manifest.json", "typed asset specialization tests"],
+            });
+        }
+        if (
+            [...this.assets.values()].some(
+                (asset) => asset.kind === "sprite-atlas",
+            )
+        ) {
+            adaptations.push({
+                id: "drawn-sprite-atlas",
+                category: "asset-materialization",
+                sourceSemantics:
+                    "The atlas is drawn at run time with canvas2D and handed to loadSpriteAtlas as a data URL.",
+                nativeSemantics:
+                    "Generation runs the same module in headless Chromium and bakes the PNG it returns, so the pixels are a browser rasterizer's rather than a reimplementation. The bytes depend on the Chrome that compiled them, exactly as the pinned GGX prefilter already does.",
+                risk: "medium",
+                validation: [
+                    "scene 50 parity against the browser golden",
+                    "byte-stable across repeated compilations",
+                ],
             });
         }
         if (features.includes("backend:sdl")) {
