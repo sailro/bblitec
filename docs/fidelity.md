@@ -249,6 +249,20 @@ component carrying "this slot is empty" moves, and it moves only for the
 scenes that need the cone. Scene 15 is the parity gate, byte-identical across
 both backends.
 
+**The emissive texture is sampled at the raw UV, never through its own
+transform.** Every other slot samples through the UV its
+`KHR_texture_transform` builds, and the emissive slot's transform is parsed,
+animated and uploaded exactly like them — but
+`createEmissiveColorFragment` hardcodes
+`textureSample(emissiveTexture,emissiveSampler,input.uv)`, and the composed
+shader an instrumented capture recovers computes `emissiveUV` on the line
+above and then ignores it. The generated fragment matches that. It is only
+observable when a material carries both an emissive texture and a non-identity
+emissive transform, which in this corpus means Scene 39, whose water animates
+one: sampling through the transform scrolled an emissive texture the browser
+holds still, and cost 0.581 of region MAD until the sample was put back on the
+raw UV.
+
 **Sheen is composed as one of two pinned models, chosen at generation.**
 `createSheenFragment` takes a `hasAlbedoScaling` flag and builds materially
 different arithmetic from it, so it is a fragment fork rather than a uniform.

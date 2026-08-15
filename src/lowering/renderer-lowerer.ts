@@ -172,12 +172,14 @@ function applyPbrUvTransformWgsl(
             replacement:
                 "textureSample(metallicRoughnessTexture, metallicRoughnessSampler, bblUvOrm)",
         },
-        {
-            slot: "emissive",
-            marker: /textureSample\(emissiveTexture, emissiveSampler, v_4\)/,
-            replacement:
-                "textureSample(emissiveTexture, emissiveSampler, bblUvEmissive)",
-        },
+        // The emissive slot is deliberately absent. Its transform is parsed,
+        // animated and uploaded like every other slot, but the pinned
+        // fragment never samples through it: createEmissiveColorFragment
+        // hardcodes `textureSample(emissiveTexture,emissiveSampler,input.uv)`,
+        // and the composed shader an instrumented capture recovers computes
+        // `emissiveUV` on the line above and then ignores it. Rewriting the
+        // sample to the transformed UV made Scene 39's water scroll its
+        // emissive texture where the browser holds it still.
         {
             slot: "refractionMap",
             marker: /      transmissionSampler,\r?\n      v_4,/,

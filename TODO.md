@@ -95,6 +95,16 @@ CPU-side from GPU-side causes immediately.
   (viewProjection + world) stay with scene 165.
 - [ ] Extend shader IR to composed PBR/Grid/background fragments, then replace
   the remaining renderer-lowerer source-text contracts with parsed shader IR.
+  The surface is 16 marker rewrites over the converted fragment text, 8 of
+  them regexes matching a `textureSample` call to redirect it at a
+  transform-built UV. That shape is why Scene 39's emissive bug survived: the
+  table said which slots to redirect, nothing checked the pinned fragment
+  agreed, and the emissive one did not. Convert in that order — parse the
+  fragment and re-emit it byte-identically across every generated tree FIRST,
+  since that is the gate on whether the IR can carry it at all, then replace
+  the per-slot UV redirects with typed rewrites. The structural splices
+  (material extensions, fog) insert whole statement blocks and are a later
+  step than the call rewrites.
 - [x] Lower non-generic typed user functions, defaults, and one final return.
 - [x] Support lexical block scopes and safe variable shadowing.
 - [x] Lower block-scoped `if`/`else`, numeric `for`, and `while`.
@@ -458,7 +468,7 @@ directly, which skips the per-invocation rebuild:
 The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
-**Current inventory:** 64 registered parity scenes and 169 unregistered
+**Current inventory:** 65 registered parity scenes and 168 unregistered
 corpus scenes. The compiler-contract lane has no compile-clean scenes. Each
 entry below records the first blocker only; clearing it can expose another.
 
@@ -497,8 +507,8 @@ lane when they can be erased or lowered inside the compiler, asset pipeline,
 or renderer. A scene is deferred when its covered behavior needs a new
 platform, user-input, or external-service contract.
 
-**Integrate first (135 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25-27,
-36, 38, 39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
+**Integrate first (134 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25-27,
+36, 38, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-158, 160, 162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223,
 226, 229, 231, 241, 251, 261-264, 269-271, 275-280.
 
@@ -538,7 +548,8 @@ runtime gaps may remain hidden behind it.
 - [ ] Scene 27: support glTF `selectVariant`.
 - [ ] Scene 36: support `loadBasisTexture2D`.
 - [ ] Scene 38: support `createCylinder`.
-- [ ] Scenes 39, 148: support reached scene-light list mutation.
+- [ ] Scene 148: support `createDepthOfFieldPostProcessTask`, which is its
+  first blocker now that the scene light-list clear is lowered.
 - [ ] Scenes 50, 52-56, 58, 92-98, 117, 118: support `loadSpriteAtlas`.
 - [ ] Scene 51: lower the reached browser-derived numeric value.
 - [ ] Scenes 57, 59: support the `CAMERA_POSITION` shader binding.
