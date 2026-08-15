@@ -13,14 +13,9 @@ baselines belong in [status](docs/status.md) and Git history.
 
 ## P0 — Dual render backends
 
-The Dawn (WebGPU) backend is complete: every scene either backend can
-express passes on both at values equal to or better than SDL_GPU (see
-[backends](docs/backends.md) for the architecture, the honest
-comparison, and the empirical regression guards). Both backends stay
-long-term as mutually validating implementations — the direct
-Dawn-versus-SDL_GPU diff is the project's decisive diagnostic: two
-independent compiler and API stacks agreeing to one LSB isolates
-CPU-side from GPU-side causes immediately.
+Both backends are complete and stay long-term as mutually validating
+implementations; [backends](docs/backends.md) carries the rationale, the
+comparison, and the empirical guards. What is left:
 
 - [ ] Re-enable the pinned position-seeded background dither on Dawn
   (scenes 6/14; scene 7's solid skybox and ground share the same
@@ -36,21 +31,6 @@ CPU-side from GPU-side causes immediately.
   multiply) — which also implies adopting reverse-Z in the native
   main pass (previously verified image-neutral) and would kill the
   VP epsilon differences recorded by the instrumented captures.
-- [x] Port the scene 1 diagnostics/attribution outputs to Dawn (draw
-  IDs, triangle clusters, PBR diagnostic buffers). Both backends now
-  serve `parity:diagnostics` (select with `BBLITE_GPU_BACKEND=dawn`);
-  the id and cluster buffers came out byte-identical across backends
-  and the PBR buffers agree to one LSB except pre-tone HDR (≤10 ulp
-  in the raw halfs from the offline-DXC-versus-Dawn compile split).
-  The cluster shader's `enable primitive_index` requires the Dawn
-  device to request the primitive-index feature (adapter-gated in
-  `pal_dawn`).
-- [x] Formalize a backend-differential comparison mode in the parity
-  tooling (render both backends, diff them against each other and the
-  golden in one report), then review the per-scene thresholds against
-  the Dawn columns. `scene parity <id> --differential` writes
-  `report-differential.json` with per-backend and backend-delta
-  numbers; `dawnThresholds` registry entries gate the Dawn columns.
 - [ ] Extend the Dawn integration beyond Windows: the platform surface
   is one HWND branch plus the adapter backend selection and the per-OS
   Dawn library build — the WGSL feeds Dawn directly on every backend,
@@ -74,7 +54,6 @@ CPU-side from GPU-side causes immediately.
 
 ### Modules and functions
 
-- [x] Resolve named local multi-file imports and re-exports.
 - [ ] Add namespace/default imports and non-static module initialization.
 - [ ] Build a typed user-code IR from `ts.Program`/`TypeChecker` symbols.
 - [ ] Move statement, expression, and intrinsic lowering into focused
@@ -83,16 +62,6 @@ CPU-side from GPU-side causes immediately.
   `compiler/properties.ts` and the declared writes in
   `compiler/assignments.ts`, each a table the entry compiler consults
   rather than a chain it extends.
-- [x] Generate scene-local custom shader variants from supported WGSL
-  IR instead of limiting native emission to predeclared variant names:
-  createShaderMaterial compiles the entry file's own WGSL through the
-  typed shader IR into a generated per-scene variant table (pipeline
-  state from the pinned shader-pipeline mapping, reflected per-stage
-  uniform blocks, declared uniform defaults), both PALs build their
-  shader pipelines from the table, and uniform writes resolve to
-  reflected value offsets at compile time. The reached surface keeps
-  the worldViewProjection-only system block; wider system-uniform sets
-  (viewProjection + world) stay with scene 165.
 - [ ] Extend shader IR to composed PBR/Grid/background fragments, then replace
   the remaining renderer-lowerer source-text contracts with parsed shader IR.
   The surface is 16 marker rewrites over the converted fragment text, 8 of
@@ -105,24 +74,12 @@ CPU-side from GPU-side causes immediately.
   the per-slot UV redirects with typed rewrites. The structural splices
   (material extensions, fog) insert whole statement blocks and are a later
   step than the call rewrites.
-- [x] Lower non-generic typed user functions, defaults, and one final return.
-- [x] Support lexical block scopes and safe variable shadowing.
-- [x] Lower block-scoped `if`/`else`, numeric `for`, and `while`.
-- [x] Unroll `for...of` over statically resolved array literals.
-- [x] Emit fully data-typed user functions as real C++ functions with
-  native early returns and once-only emission (handle-touching helpers
-  keep the inline path); runtime `for` headers carry the incrementor so
-  `continue` matches JavaScript.
-- [x] Lower runtime iterables over data containers, numeric `switch`,
-  `break`, and `continue`. String-literal switch discriminants (input
-  handling) stay with the input-layer erasure lane.
-- [x] Generalize typed object and array literals into the plain-data
-  model: interface structs, `T | null` optionals with checker narrowing,
-  dynamic arrays, deep static numeric tables, tuple/struct destructuring
-  in for-of, swap destructuring, and object spread in declarations and
-  assignments.
-- [x] Add string-literal-union enum tags and null narrowing. Discriminated
-  unions and numeric-literal narrowing beyond checker null analysis remain.
+- [ ] Lower string-literal switch discriminants, which belong to the
+  input-layer erasure lane (numeric `switch`, `break`, `continue`, and
+  runtime iterables over data containers are lowered).
+- [ ] Add discriminated unions and numeric-literal narrowing beyond the
+  checker's null analysis (string-literal-union enum tags and null narrowing
+  are lowered).
 - [ ] Generalize the contracts Scene 50 folded at compile time. `??` is
   lowered over a static record property, whose presence in the literal
   decides the value, and a record property carrying a function literal is
@@ -194,14 +151,11 @@ CPU-side from GPU-side causes immediately.
   from is chosen per material rather than per asset; base color, normal,
   emissive, and metallic-roughness texCoord selection remain
   unsupported).
-- [x] Generalize texture transforms beyond one shared scale to per-slot
-  offsets, rotations, and independent transforms. Each texture slot carries
-  its own `KHR_texture_transform` and each sample computes its own UV, which
-  is where the pin keeps it. Two cases stay uncovered because no corpus asset
-  reaches them: `KHR_texture_transform.texCoord`, which selects a UV set per
-  slot (swept: zero usages across all 46 corpus model URLs), and upstream's
-  orm-unpack split, where occlusion samples the ORM image at a transform of
-  its own rather than the metallic-roughness one.
+- [ ] Cover the two texture-transform cases no corpus asset reaches:
+  `KHR_texture_transform.texCoord`, which selects a UV set per slot (swept:
+  zero usages across all 46 corpus model URLs), and upstream's orm-unpack
+  split, where occlusion samples the ORM image at a transform of its own
+  rather than the metallic-roughness one.
 - [ ] Vertex colors beyond the reached alpha/mask slice.
 - [ ] Sparse accessors, and the point/line/line-strip primitive modes beyond
   the reached triangle-list and triangle-strip pair.
@@ -233,7 +187,6 @@ CPU-side from GPU-side causes immediately.
 
 ### Material extensions
 
-- [x] Clearcoat, sheen, iridescence, and dispersion.
 - [ ] Anisotropy. Specular is measured by Scene 244 for its two factors; its
   two textures stay unreached (see the corpus audit entry).
 - [ ] Compose clearcoat/sheen layers with punctual multi-light PBR; the
@@ -404,38 +357,9 @@ CPU-side from GPU-side causes immediately.
 ## P1 — Developer experience
 
 - [ ] Add portable CMake presets.
-Sharing the PAL across scenes was investigated on 2026-08-14 and **declined**;
-the measurements are kept because they are what a future proposal has to beat.
-
-Every scene still compiles `pal.cpp`, `pal_sdl.cpp`, `pal_sdl_gpu.cpp` and
-`pal_dawn.cpp` into its own build directory. Keyed on everything each
-translation unit includes -- not on `render_capabilities.hpp`, which has 9
-distinct signatures but is not the whole key, because the GPU PALs also include
-the per-scene `renderer_plan.hpp` -- the 232 PAL compiles produce 83 distinct
-object files: 58 for `pal.cpp` (it embeds the per-scene build stamp), 12 each
-for the two GPU PALs, and **one** for `pal_sdl.cpp`.
-
-Two ways to collect that were measured rather than argued:
-
-- `sccache` gives **0%** across scenes. Its key is the preprocessed text, which
-  embeds absolute paths: holding the vcpkg path equal, two scenes in the same
-  group differ in 8 lines out of 182,905, all `#line` directives naming the
-  per-scene include directory. Making it hit needs a shared generated include
-  tree *and* a shared `VCPKG_INSTALLED_DIR` first -- two structural changes to
-  enable a cache that then saves ~92% of a redundant compile where a shared
-  library saves 100%.
-- One static library per group avoids the compile entirely, but owns a grouping
-  key, a build-ordering rule, and a staleness hazard the build stamp cannot
-  catch: the stamp is computed from sources, so a scene linking a stale group
-  library would still report a fresh stamp.
-
-What made it not worth the complexity is that parallelism took the cost it was
-filed against from 246.7s to 25.9s. Sharing would save perhaps 16s more of a
-2m31 validation sequence.
-
-Worth doing on its own merits, unrelated to sharing: the 58 build directories
-carry 58 copies of `vcpkg_installed` at 48 MB each, about 2.8 GB. A shared
-`VCPKG_INSTALLED_DIR` reclaims nearly all of it and shortens configure.
+- [ ] Share one `VCPKG_INSTALLED_DIR` across build trees. Each build directory
+  carries its own 48 MB copy of `vcpkg_installed`, about 2.8 GB across the
+  matrix; sharing reclaims nearly all of it and shortens configure.
 - [ ] Run `BBLITE_MSAA=1` on scene 116 under SDL_GPU: the single-sample
   frame graph fails there with `SDL_SubmitGPUCommandBufferAndAcquireFence:
   Failed to close command list`, which predates the Dawn work and is
@@ -696,41 +620,11 @@ runtime gaps may remain hidden behind it.
 
 - [ ] Port the pinned two-pass `.babylon` parent wiring and geometry-less
   `TransformNode` containers (`load-babylon.ts` second pass); the native
-  loader currently skips parented and geometry-less nodes silently. Zero
-  effect on gated Scenes 24/145 (HillValley has neither); reached by ungated
-  Scenes 9 and 143 (Sponza `.babylon`).
-- [x] Scene 9: the Sponza `.babylon` scene. Its recorded blocker — optional
-  fields written as JSON `null` rather than omitted — is closed; the loader
-  reads every optional string through a null-tolerant helper now. Its texture
-  slots turned out to be a shorter lift than the count suggests: Scene 24
-  already drives 128 diffuse, 57 ambient, 32 reflection, 2 specular and 1
-  opacity texture through the same loader, so of Sponza's six slots only
-  **bumpTexture** (13 materials) is unreached. Run in order, each rung the
-  scene's next actual blocker:
-  1. ~~Three Standard lights~~ done: the uniform block, the write calls and
-     the fragment now carry one slot per light a scene's `.babylon` assets
-     declare, counted at generation. Sponza draws at region MAD 2.836 with
-     67.8% of its pixels already exact.
-  2. ~~Per-mesh light lists~~ done: a light resolves its
-     `includedOnlyMeshesIds` and `excludedMeshesIds` against the records the
-     loader creates, and the Standard slots hold the mesh's light set rather
-     than the scene's. Region MAD 2.836 → 1.340, interior 2.089 → 0.585,
-     78.1% of the frame exact.
-  3. ~~Standard normal mapping~~ done: the pinned cotangent-frame fragment,
-     bound as a seventh texture pair after every PBR pair. Region MAD
-     1.340 → 0.335 with edges 5.208 → 0.939.
-  Scene 9 is a measured gate at 0.330 on both backends, whose direct
-  agreement is one channel step. What remains is scattered over the frame
-  rather than concentrated anywhere: 91.5% of pixels exact, 96.6% within one
-  step, interior 0.217 against edges 0.939.
-  Its parented and geometry-less nodes are NOT on this path: all 16 parented
-  meshes and all 29 geometry-less ones are bones and camera targets carrying
-  no geometry, and native already draws all 32 of the scene's visible meshes.
-  The two-pass `.babylon` wiring below stays a latent gap rather than a
-  Sponza rung.
-  Then register it and measure. Nothing before rung 3 can be gated on this
-  scene, so each rung lands proved byte-neutral for the scenes already
-  measured rather than by a number of its own.
+  loader currently skips parented and geometry-less nodes silently. No
+  measured scene is affected: HillValley (Scenes 24/145) has neither, and
+  Sponza's 16 parented and 29 geometry-less nodes are all bones and camera
+  targets carrying no geometry, so gated Scene 9 already draws all 32 of its
+  visible meshes. Reached by the ungated Scene 143.
 - [ ] Close Scene 253's iridescence sphere. The scene is a measured gate but
   its region figure carries a defect rather than a floor. The material is the
   only one in the corpus whose `metallicFactor` is animated — which the pin
