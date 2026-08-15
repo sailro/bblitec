@@ -150,6 +150,20 @@ struct VisibilityTrack {
     std::vector<bool> values;
 };
 
+enum class LightTrackKind {
+    color,
+    intensity,
+    range,
+    outer_cone_angle,
+};
+
+struct LightTrack {
+    LightHandle light{};
+    LightTrackKind kind = LightTrackKind::color;
+    std::vector<float> times;
+    std::vector<Vec4> values;
+};
+
 // Pointer targets the pinned resolver has no handler for. Its registry is a
 // list of patterns and anything outside it returns null, so the channel is
 // warned about once and then never applied — the browser renders as though the
@@ -360,7 +374,8 @@ struct AnimationRuntime {
     std::vector<TranslationTrack> translation_tracks;
     std::vector<TranslationTrack> scale_tracks;
     std::vector<WeightTrack> weight_tracks;${animationPointer ? `
-    std::vector<VisibilityTrack> visibility_tracks;` : ""}${animationPointerMaterials ? `
+    std::vector<VisibilityTrack> visibility_tracks;
+    std::vector<LightTrack> light_tracks;` : ""}${animationPointerMaterials ? `
     std::vector<MaterialTrack> material_tracks;` : ""}
     std::vector<std::vector<std::uint32_t>> node_meshes;
     std::vector<AnimatedNode> nodes;
@@ -1980,7 +1995,10 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             };
         }
     }` : ""}
-    if (const ts::JsonValue* extensions_value =
+${animationPointer ? `    // Runtime lights indexed by their KHR_lights_punctual definition index,
+    // which is the index a light pointer names.
+    std::vector<LightHandle> punctual_lights;
+` : ""}    if (const ts::JsonValue* extensions_value =
             optional(document, "extensions")) {
         const JsonObject& extensions =
             extensions_value->as_object();
@@ -2091,10 +2109,17 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                         "range",
                         std::numeric_limits<float>::max());
                 engine.lights.push_back(light);
-                asset.lights.push_back(
-                    LightHandle{
-                        static_cast<std::uint32_t>(
-                            engine.lights.size() - 1)});
+                const LightHandle light_handle{
+                    static_cast<std::uint32_t>(
+                        engine.lights.size() - 1)};
+                asset.lights.push_back(light_handle);${animationPointer ? `
+                // setGltfPunctualLight: a light pointer names the definition
+                // index, not the node, so the runtime light it created has to
+                // be reachable by that index.
+                if (light_index >= punctual_lights.size()) {
+                    punctual_lights.resize(light_index + 1, LightHandle{});
+                }
+                punctual_lights[light_index] = light_handle;` : ""}
             }
         }
     }
@@ -2977,6 +3002,136 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                             }
                         }
                     }
+                    // /extensions/KHR_lights_punctual/lights/{l}/{color|
+                    // intensity|range|spot/outerConeAngle}. The pinned writers
+                    // set diffuse AND specular from a colour, and an outer
+                    // cone angle sets the light's full angle to twice the
+                    // value, which its setter turns back into cos(angle / 2).
+                    {
+                        const std::string light_prefix =
+                            "/extensions/KHR_lights_punctual/lights/";
+                        if (
+                            !pointer_node_override &&
+                            pointer_target.rfind(light_prefix, 0) == 0) {
+                            std::size_t index_end = light_prefix.size();
+                            while (
+                                index_end < pointer_target.size() &&
+                                std::isdigit(static_cast<unsigned char>(
+                                    pointer_target[index_end]))) {
+                                ++index_end;
+                            }
+                            const std::string light_field =
+                                pointer_target.substr(index_end);
+                            LightTrack track;
+                            std::size_t components = 0;
+                            if (light_field == "/color") {
+                                track.kind = LightTrackKind::color;
+                                components = 3;
+                            } else if (light_field == "/intensity") {
+                                track.kind = LightTrackKind::intensity;
+                                components = 1;
+                            } else if (light_field == "/range") {
+                                track.kind = LightTrackKind::range;
+                                components = 1;
+                            } else if (
+                                light_field == "/spot/outerConeAngle") {
+                                track.kind =
+                                    LightTrackKind::outer_cone_angle;
+                                components = 1;
+                            } else {
+                                throw std::runtime_error(
+                                    "Reached KHR_animation_pointer lowering supports light color, intensity, range and outer cone angle targets only: " +
+                                    pointer_target + ".");
+                            }
+                            const std::size_t light_definition =
+                                static_cast<std::size_t>(
+                                    std::stoull(
+                                        pointer_target.substr(
+                                            light_prefix.size(),
+                                            index_end -
+                                                light_prefix.size())));
+                            // The pinned writer reads the light back through
+                            // the asset and does nothing when it is absent, so
+                            // a channel targeting a light type this loader
+                            // skips is dropped rather than fatal.
+                            if (
+                                light_definition >= punctual_lights.size() ||
+                                punctual_lights[light_definition].value ==
+                                    invalid_handle) {
+                                continue;
+                            }
+                            track.light =
+                                punctual_lights[light_definition];
+                            const JsonObject& light_sampler =
+                                animation_samplers
+                                    .at(unsigned_value(
+                                        required(channel, "sampler")))
+                                    .as_object();
+                            const std::string light_interpolation =
+                                string_or(
+                                    light_sampler,
+                                    "interpolation",
+                                    "LINEAR");
+                            if (light_interpolation != "LINEAR") {
+                                throw std::runtime_error(
+                                    "Reached KHR_animation_pointer light targets support LINEAR interpolation only.");
+                            }
+                            const AccessorInfo& light_input =
+                                accessors.at(unsigned_value(
+                                    required(light_sampler, "input")));
+                            const AccessorInfo& light_output =
+                                accessors.at(unsigned_value(
+                                    required(light_sampler, "output")));
+                            if (
+                                light_input.type != "SCALAR" ||
+                                light_input.count != light_output.count ||
+                                component_count(light_output.type) !=
+                                    components) {
+                                throw std::runtime_error(
+                                    "glTF light pointer accessors have an unsupported layout.");
+                            }
+                            for (
+                                std::size_t index = 0;
+                                index < light_input.count;
+                                ++index) {
+                                const float time = read_component(
+                                    buffer,
+                                    container,
+                                    views,
+                                    light_input,
+                                    index,
+                                    0);
+                                track.times.push_back(time);
+                                animation_runtime->duration =
+                                    std::max(
+                                        animation_runtime->duration,
+                                        time);
+                                Vec4 value{};
+                                float* const channels[4] = {
+                                    &value.x,
+                                    &value.y,
+                                    &value.z,
+                                    &value.w,
+                                };
+                                for (
+                                    std::size_t component = 0;
+                                    component < components;
+                                    ++component) {
+                                    *channels[component] = read_component(
+                                        buffer,
+                                        container,
+                                        views,
+                                        light_output,
+                                        index,
+                                        component);
+                                }
+                                track.values.push_back(value);
+                            }
+                            animation_runtime->light_tracks.push_back(
+                                std::move(track));
+                            continue;
+                        }
+                    }
                     if (!pointer_node_override) {
                     const std::string pointer =
                         required(
@@ -3565,6 +3720,63 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     material.emissive_base_factor.b *
                         material.emissive_strength,
                 };
+            }
+` : ""}${animationPointer ? `            for (const LightTrack& track :
+                 animation_runtime->light_tracks) {
+                if (
+                    track.times.empty() ||
+                    track.light.value >= engine.lights.size()) {
+                    continue;
+                }
+                std::size_t right = 1;
+                while (
+                    right < track.times.size() &&
+                    track.times[right] < animation_runtime->time) {
+                    ++right;
+                }
+                const std::size_t left =
+                    right < track.times.size() ? right - 1 : right - 1;
+                const std::size_t clamped_right =
+                    std::min(right, track.times.size() - 1);
+                const float span =
+                    track.times[clamped_right] - track.times[left];
+                const float amount = span > 0.0f
+                    ? std::clamp(
+                          (animation_runtime->time - track.times[left]) /
+                              span,
+                          0.0f,
+                          1.0f)
+                    : 0.0f;
+                const Vec4& a = track.values[left];
+                const Vec4& b = track.values[clamped_right];
+                const auto mix =
+                    [amount](const float from, const float to) {
+                    return from + (to - from) * amount;
+                };
+                LightRecord& light = engine.lights[track.light.value];
+                switch (track.kind) {
+                    case LightTrackKind::color:
+                        // The pinned writer sets diffuse and specular alike.
+                        light.diffuse_color = Color3{
+                            mix(a.x, b.x),
+                            mix(a.y, b.y),
+                            mix(a.z, b.z),
+                        };
+                        light.specular_color = light.diffuse_color;
+                        break;
+                    case LightTrackKind::intensity:
+                        light.intensity = mix(a.x, b.x);
+                        break;
+                    case LightTrackKind::range:
+                        light.range = mix(a.x, b.x);
+                        break;
+                    case LightTrackKind::outer_cone_angle:
+                        // angle = value * 2, and the light stores
+                        // cos(angle / 2), so the cosine is of the value.
+                        light.cos_half_angle =
+                            std::cos(mix(a.x, b.x));
+                        break;
+                }
             }
 ` : ""}            for (const RotationTrack& track :
                  animation_runtime->rotation_tracks) {
