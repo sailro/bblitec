@@ -276,6 +276,7 @@ class GeneratedSourceWriter {
                     textureTransform:
                         options.textureTransform,
                     materialSpecular: options.materialSpecular,
+                    occlusionUv2: options.occlusionUv2,
                     environmentRotation:
                         options.imageBasedLighting,
                     gpuInstancing:

@@ -358,6 +358,7 @@ export class RendererLowerer {
         imageSkybox?: boolean;
         textureTransform?: boolean;
         materialSpecular?: boolean;
+        occlusionUv2?: boolean;
         environmentRotation?: boolean;
         gpuInstancing?: boolean;
         multiLight?: boolean;
@@ -856,6 +857,8 @@ export class RendererLowerer {
 `
                 : ""}${options.iridescence
                 ? "    std::array<float, 4> iridescence_params{};\n"
+                : ""}${options.occlusionUv2
+                ? "    std::array<float, 4> occlusion_params{};\n"
                 : ""}`;
         const materialExtensionUniforms =
             `${options.clearcoat
@@ -903,6 +906,14 @@ export class RendererLowerer {
             material.iridescence_index_of_refraction,
             material.iridescence_minimum_thickness,
             material.iridescence_maximum_thickness,
+        };
+`
+                : ""}${options.occlusionUv2
+                ? `        result.occlusion_params = {
+            material.occlusion_texture_uv2 ? 1.0f : 0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
         };
 `
                 : ""}`;
