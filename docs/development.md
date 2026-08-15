@@ -180,6 +180,8 @@ re-synced: cross-check the changed file list against `src\scene-registry.ts`.
 
 Update `upstream\babylon-lite.json` (both `version` and `sourceVersion`), the
 `package.json` dependency, and the lock file together, then `npm install`.
+The README's pinned-upstream line is the only prose copy of the pair, so it
+moves with them; no other page restates them.
 Copy every changed `lab/lite` file into `corpus\babylon-lite\` — the corpus is
 read-only evidence of the pinned tree — and refresh the `sha256` values in
 `upstream\babylon-lite-scenes.json`.

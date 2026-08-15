@@ -21,10 +21,10 @@ Babylon intrinsics are identified by resolved import symbols, then dispatched
 through focused intrinsic modules. Generated behavior must never depend on
 scene names or regular-expression matching of entry-source text.
 
-The repository pins `@babylonjs/lite@1.20.0` and source commit
-`95ed3029cc43e479ec924741aea4024e9bf33527`. Original TypeScript is recovered
-from published source maps. Lowerers assert expected upstream symbols,
-constants, and formulas before emitting code.
+The repository pins one reviewed Babylon Lite package and source commit, in
+`upstream/babylon-lite.json`. Original TypeScript is recovered from published
+source maps. Lowerers assert expected upstream symbols, constants, and
+formulas before emitting code.
 
 ## Ownership
 

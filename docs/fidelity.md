@@ -231,7 +231,7 @@ parity gate for this contract.
 
 Scene 151 gates directional-plus-hemispheric Standard lighting and is
 pixel-exact. The supported light-count boundary is recorded in
-[Status](status.md).
+[Features](features.md#lights).
 
 **An unrolled Standard light slot says whether it holds a light; the pinned
 loop says how many there are.** Babylon Lite declares

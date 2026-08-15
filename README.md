@@ -35,8 +35,9 @@ on both GPU backends — click any frame for the measured numbers.*
   shaders, and Dawn (WebGPU) rendering through the browser reference's own
   compiler and rasterization stack — every expressible scene passes on both.
 
-See [current status](docs/status.md) for the supported subset and all measured
-scene results.
+See [features](docs/features.md) for the supported feature set — split into
+what is decided at compile time and what lives at run time — and
+[current status](docs/status.md) for all measured scene results.
 
 ## Quick start
 
@@ -71,9 +72,10 @@ generator-specific.
 | Page | Purpose |
 | --- | --- |
 | [Architecture](docs/architecture.md) | Compiler pipeline, ownership boundaries, runtime, renderer |
+| [Features](docs/features.md) | Supported feature families, compile-time versus run-time, boundaries |
 | [Development](docs/development.md) | Setup, commands, builds, switches, parity, troubleshooting |
 | [Fidelity](docs/fidelity.md) | Semantic adaptations, shader contracts, diagnostics |
-| [Status](docs/status.md) | Supported subset, measured baselines, known gaps |
+| [Status](docs/status.md) | Measured baselines, parity scenes, diagnostics |
 | [Backends](docs/backends.md) | The two GPU render backends: architecture, comparison, porting contracts |
 | [TODO](TODO.md) | Prioritized future work only |
 

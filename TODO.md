@@ -466,9 +466,8 @@ carry 58 copies of `vcpkg_installed` at 48 MB each, about 2.8 GB. A shared
 
 ## P1 — Full Babylon Lite corpus audit
 
-The audit uses the pinned
-`95ed3029cc43e479ec924741aea4024e9bf33527` corpus. These entries cover every
-scene that did not reach a MAD measurement; measured scenes are dashboarded in
+The audit uses the pinned corpus. These entries cover every scene that did not
+reach a MAD measurement; measured scenes are dashboarded in
 [status](docs/status.md).
 
 **The corpus carries only the shared modules registered scenes import.**
@@ -488,15 +487,16 @@ directly, which skips the per-invocation rebuild:
 The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
-**Current inventory:** 66 registered parity scenes and 167 unregistered
-corpus scenes. The compiler-contract lane has no compile-clean scenes. Each
-entry below records the first blocker only; clearing it can expose another.
+**Current inventory:** 167 corpus scenes remain unregistered; the registered
+ones are dashboarded in [status](docs/status.md). The compiler-contract lane
+has no compile-clean scenes. Each entry below records the first blocker only;
+clearing it can expose another.
 
 **Compile clean (0):** every compile-clean corpus scene is registered. The
 compiler-contract lane below is what gates the rest.
 
-**Largest first-blocker clusters**, re-measured across all 167 unregistered
-scenes after the sprite work landed: browser-dependent condition 17 (15 of them
+**Largest first-blocker clusters**, re-measured across all of them after the
+sprite work landed: browser-dependent condition 17 (15 of them
 deferred-lane physics), `parseNodeMaterialFromSnippet` 17, engine options
 beyond msaaSamples/requiredLimits 7, `parseNodeParticleSource` 6, static array
 literal 5, `receiveShadows` 5, `loadSplat` 5, `??` over an operand that is not
@@ -529,7 +529,7 @@ only for a contract no corpus scene exercises (a feature combination the corpus
 never composes, or a slice being built ahead of the scene that will use it),
 and delete it once corpus scenes cover the contract.
 
-The 171 unregistered scenes are partitioned by the boundary required to reproduce
+The unregistered scenes are partitioned by the boundary required to reproduce
 their deterministic reference behavior, not by incidental browser helpers.
 Capture-inert demo controls and fixed-coordinate picking stay in the first
 lane when they can be erased or lowered inside the compiler, asset pipeline,

@@ -110,8 +110,8 @@ in-process-compile split on HDR accumulation).
 Both backends render every expressible scene within its gate; the
 differences that remain are structural.
 
-**Parity.** Dawn is equal to or better than SDL_GPU on all 50
-measured scenes. Where it wins, the wins are structural: scene 259 is
+**Parity.** Dawn is equal to or better than SDL_GPU on every
+measured scene. Where it wins, the wins are structural: scene 259 is
 bit-exact on Dawn because the browser's own compiler eliminates
 SDL_GPU's DXC-versus-browser rounding; the transmission family drops
 an order of magnitude (scene 33 foreground 1.457 → 0.123, the

@@ -15,17 +15,19 @@ the platform abstraction layer (PAL).
 Do not duplicate detailed facts in this file:
 
 - `docs/architecture.md`: pipeline, ownership, runtime, renderer, deformation
+- `docs/features.md`: supported feature families, compile-time versus run-time, boundaries
 - `docs/development.md`: commands, build order, capture metadata, troubleshooting
 - `docs/fidelity.md`: semantic policy, adaptations, diagnostics
-- `docs/status.md`: supported slice, limits, metrics, parity scenes
+- `docs/status.md`: measured metrics, parity scenes, diagnostics
 - `TODO.md`: unfinished work only
 
 Read the relevant canonical page before changing that area.
 
 ## Pinned upstream
 
-- Package: `@babylonjs/lite@1.18.0`
-- Source commit: `7184feda683072980735f9a180e6f567ee5717ba`
+- The package and source commit are pinned in `upstream/babylon-lite.json`;
+  the README states the current pair. Never restate them elsewhere — a prose
+  copy is what goes stale.
 - Original TypeScript is reconstructed from published source maps.
 - Generated files include provenance comments and
   `generated/<scene>/upstream/provenance.json`.

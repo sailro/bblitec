@@ -2,30 +2,8 @@
 
 `bblitec` is a real compiler for a deliberately constrained reachable subset
 of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
-
-## Supported vertical slice
-
-| Area | Current support |
-| --- | --- |
-| TypeScript modules/functions | classes and factory records as compile-time instances: fields become locals, methods and single-return getters inline at their call sites, and a record carries the scope it closed over. Local imports and re-exports, module constants, typed non-generic functions with defaults, lexical scopes, if/else, for/while, switch, for-of. Fully data-typed functions emit as real C++ functions; handle-touching helpers inline. Recursion, inheritance, accessors, statics and value-returning methods are rejected |
-| Plain-data model | interface structs, `T \| null` optionals, dynamic arrays, `Float32Array`/`Uint32Array`, string-literal enum tags, `Record<Union, T>` indexed by tag, readonly numeric tables, tuples, destructuring, object spread, `indexOf`, and constant arrays materialized on demand. Resource handles are storable inside data, so a mesh held in a struct drives its transforms and scene membership like a local. Const locals bind container elements as aliases; function-valued parameters inline. `Math` and the pinned seeded `Math.random` |
-| Engine/scene | creation, registration, fixed delta, before-render callbacks, runtime material-family append, `removeFromScene` with render-plan rematching, `setFog` linear/exp/exp2 |
-| Cameras | ArcRotate, FreeCamera, default framing, native controls, target assignment and reads, per-frame clamping of the reached properties, and the `enableOrthographicCamera` opt-in with its aspect-derived view volume |
-| Lights | directional, hemispheric, point and spot with diffuse/specular colors; one Standard slot per light a scene declares, each mesh lit by the set its assets name; spot cones shade under the pinned cosine-and-exponent falloff on Standard surfaces and the physical falloff in the PBR extra-light slots; two PBR analytic lights, either kind in either slot |
-| Geometry | box, sphere, subdivided ground, plane, torus; `createMeshFromData` typed-array meshes; fixed-capacity thin-instance pools with per-frame flush and count updates; indexed glTF/GLB and `.babylon`; glTF triangle-list and triangle-strip primitive modes; `KHR_node_visibility` with its subtree cascade; generated and flat normals; negative transforms |
-| Assets | external glTF packaging, embedded PNG/JPEG, `.env`, compile-time RGBE HDR/GGX cubemaps, prefiltered DDS cubemap environments, glTF image-based lights, DDS, `loadSkybox` cubemaps, `loadTexture2D` file textures, `.babylon` textures |
-| Materials | Standard, PBR, GridMaterial, Standard cotangent-frame normal maps, PBR vertex colors and the Standard RGB ones behind `enableStandardVertexColors`; the opt-in setters `setPbrUnlit`, `setPbrSkybox` and `setPbrEmissive`; scene-local shader variants compiled from the entry file's own WGSL, with typed uniforms resolved to reflected offsets |
-| Material state | alpha mask/blend/coverage, reflectance, emissive strength, lighting intensities, double-sided, normal scale, shared texture scaling, transmission, IOR, volume, dispersion, clearcoat, sheen, iridescence |
-| Animation | deterministic seeking; property-animation groups over position/scaling/quaternion with LINEAR/STEP tracks; glTF LINEAR/CUBICSPLINE transforms and LINEAR morph weights; `KHR_animation_pointer` node-visibility targets on STEP samplers |
-| Deformation | recursive skeleton hierarchies, inverse bind matrices, four-weight GPU skinning, GPU position/normal/tangent morph targets, direct single-target morph attachment on generated meshes, uncapped storage-buffer morphing, static GPU instancing, post-deformation flat normals |
-| Sprites | pure-2D `depth: "none"` layers over a grid atlas, drawn by their own `SpriteRenderer` rendering context with no scene: per-sprite position, size, frame, tint, rotation and flip on the straight-alpha blend. The atlas is executed at compile time when scene code draws it with canvas2D |
-| Frame graph | render targets/tasks, material overrides, depth-only passes, 7+4 geometry MRTs, blits, MSAA resolve |
-| Runtime | typed handles/records, immediate AOT promises, typed JSON/binary views, tree-shaken GPU deformation and cyclic flat-normal uploads |
-| Shaders | WGSL through pinned Tint; DXIL/SPIR-V via normalized Tint HLSL and DXC; MSL via Tint; Dawn consumes the WGSL directly |
-| Native renderer | ordered draw lists over two peer GPU backends (SDL_GPU and Dawn/WebGPU), linear RGBA16F transmission with per-sample image processing on Dawn, deterministic SDL_Renderer fallback |
-
-Generated behavior is tied to `@babylonjs/lite@1.20.0` at commit
-`95ed3029cc43e479ec924741aea4024e9bf33527`.
+The supported feature set, split into what is decided at compile time and what
+lives at run time, is in [features](features.md).
 
 ## Scene 1 (BoomBox) baseline
 
@@ -169,80 +147,3 @@ Current Scene 1 foreground diagnostic MAD: world normal `0.011`, albedo
 
 Requested environment grounds and DDS/HDR skyboxes render by default. They can
 be disabled independently with `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0`.
-
-## Shader pipeline
-
-All native GPU shader families originate as WGSL and use pinned Tint. No HLSL
-or MSL source templates remain under `src/`.
-
-| Target | Offline path |
-| --- | --- |
-| D3D12 | WGSL → Tint HLSL → normalized registers/signatures → DXC DXIL |
-| Vulkan | WGSL → Tint HLSL → normalization → DXC SPIR-V |
-| Metal | WGSL → Tint MSL |
-
-Tint Inspector bindings are checked against generated WGSL. DXIL/SPIR-V
-artifacts are content-addressed and reused across scenes. Direct Tint SPIR-V is
-deferred until its resource bindings are remapped to SDL_GPU conventions. The
-Dawn backend bypasses this table entirely: it hands the generated WGSL to its
-in-process pinned Tint at startup, with no offline artifacts or shader cache.
-
-## Current boundaries
-
-- one statically analyzable entry file and one engine
-- selected TypeScript expressions, assignments, callbacks, and intrinsics
-- the plain-data model is value-semantic apart from const locals bound to a
-  container element or member, which bind a native reference so writes reach
-  the container (a mutable local stays a copy that rejects writes, and using a
-  reference after its container is resized is a compile error), object parameters pass by native reference,
-  `new Array` elements zero-initialize, and `Math.random` is the pinned
-  seeded sequence (each recorded in generated `fidelity.json`)
-- no arbitrary object graphs, runtime object identity, or runtime module
-  loading; a class instance is a compile-time record of field bindings and
-  cannot be stored in data or selected at runtime, and a field holding a
-  resource is wired once rather than reassigned; a record's methods and
-  getters close over the scope that built them, but the record itself is
-  still compile-time and cannot be stored in data or chosen between at
-  runtime; recursion stays rejected
-- no physics, audio, or networking
-- property animation covers LINEAR/STEP scalar/vector tracks, quaternion
-  slerp, group ranges/looping/speed, and deterministic seeking for reached
-  mesh `position`, `position.x`, `scaling`, and `rotationQuaternion` paths
-- glTF animation covers LINEAR/CUBICSPLINE rotation, translation, and scale
-  plus LINEAR morph weights; morphing and skinning are vertex-shader
-  evaluated.
-  Meshes above two morph targets use Babylon's pinned uncapped
-  storage-buffer morph path; CPU fallback remains for skins beyond 64
-  joints and CPU face-normal recomputation for primitives without source
-  normals
-- glTF STEP channels, multiple-clip controls, broader property targets,
-  and Standard scenes beyond two simultaneous lights remain unsupported
-- a spot light created in scene code carries its colors and intensity; its
-  `angle`, `exponent`, and `range` setters, a spot in the first PBR analytic
-  slot, and a spot composed with Standard geometry outputs all fail
-  explicitly
-- direct `createMorphTargets` covers one target attached to one mesh; broader
-  target sets and reusable target objects remain unsupported
-- scene fog is ported for PBR, Standard, and image-skybox surfaces; fog
-  composed with Grid, custom-shader, environment-ground/DDS-skybox
-  background, transmission, geometry-output, or diagnostic surfaces
-  fails explicitly until those fog fragments are ported
-- PBR material extensions cover clearcoat, sheen, iridescence, and dispersion
-  with one shared UV transform; specular and anisotropy, per-slot texture
-  transforms, and layered composition combined with punctual multi-light
-  remain unsupported
-- reached custom shader variants compile from the scene's own WGSL
-  sources through the typed shader IR (parse, validate, reflect,
-  re-emit) with pinned Tint HLSL/MSL emission plus DXC DXIL/SPIR-V
-  compilation; the supported WGSL subset and the worldViewProjection
-  system uniform bound the surface — arbitrary system-uniform sets and
-  matrix-valued custom uniforms remain unsupported
-- GridMaterial, frame-graph blit/depth, and attribution utilities use
-  generated WGSL through Tint
-- ground and cubemap-skybox fragments use generated WGSL through Tint
-- PBR and Standard material, diagnostic, and geometry variants use WGSL through
-  Tint; no HLSL/MSL source templates remain
-- D3D12 is validated locally; Vulkan and Metal artifacts are generated but
-  still require real-device validation
-
-Unfinished priorities are maintained only in [TODO](../TODO.md).
