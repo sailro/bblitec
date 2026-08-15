@@ -311,12 +311,9 @@ else()
 endif()
 
 if("renderer:pbr" IN_LIST BBLITE_RUNTIME_FEATURES)
-    if("renderer:transmission" IN_LIST BBLITE_RUNTIME_FEATURES)
-        target_compile_definitions(
-            bblite_native
-            PRIVATE BBLITE_RENDERER_TRANSMISSION=1
-        )
-    endif()
+    # BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp,
+    # because a loaded asset reaches scene transmission on its own and the
+    # reached-feature list only records what the scene's code asked for.
     if(SDL3_FOUND)
         find_package(SDL3_image CONFIG REQUIRED)
         target_link_libraries(

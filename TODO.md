@@ -566,9 +566,22 @@ runtime gaps may remain hidden behind it.
   `animation-pointer-ext` and `animation-pointer-lights` for the rest, which
   is the same split these three scenes need. Counted by pointer shape rather
   than by channel, smallest first:
-  - Scene 244, two channels of two shapes — `KHR_texture_transform/rotation`
-    on a normal texture and on a volume thickness texture, so it needs
-    animated UV transforms plus clearcoat/specular/transmission/volume.
+  - Scene 244 carries two channels of two shapes —
+    `KHR_texture_transform/rotation` on a normal texture and on a volume
+    thickness texture — but the channel count is not its size. Running it and
+    reading the browser's own composed fragment for its HeatDome puts five
+    contracts in front of a measurement, three of which are now closed:
+    animated nodes keeping their authored `matrix` (done), per-slot texture
+    transforms (done — its two animated slots rotate in opposite directions,
+    so no single material transform can express it), scene transmission
+    reached from the asset rather than from scene code (done). What remains
+    is `KHR_materials_specular`, whose zero specularFactor and zero
+    specularColorFactor are what make its dome invisible, and the two pointer
+    targets themselves. The specular half needs the pinned dielectric
+    reflectance fields — `metallicF0Factor`, `specularWeight` and
+    `metallicReflectanceColor` — where the record carries one scalar
+    `reflectance` today, plus the `occlusionStrength` mix the same fragment
+    applies.
   - Scene 253, sixty-nine channels across **thirty-four** distinct shapes:
     camera perspective and orthographic planes, `KHR_lights_punctual` color,
     intensity, range and cone angles, node TRS and weights, and about ten

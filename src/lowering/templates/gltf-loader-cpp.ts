@@ -15,6 +15,7 @@ export function gltfLoaderCpp(
     animationPointer = false,
     animatedWorldBounds = false,
     animationPointerMaterials = false,
+    assetTransmission = false,
 ): string {
     return `// ${provenance}
 #include <bblite/pal_gltf.hpp>
@@ -1710,7 +1711,35 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             scene.environment =
                 image_based_environment;
         };
-    }
+    }${assetTransmission ? `
+    // registerPbrTransmission: the pinned transmission setter installs a scene
+    // hook that the renderable build drains, and the hook enables scene
+    // transmission when any of the meshes it is handed carries a transmissive
+    // surface. The predicate is that hook's own — a transmissive material whose
+    // refraction intensity is above zero, which the dielectric loader takes from
+    // transmissionFactor — so a declared extension at the zero default reaches
+    // nothing, exactly as it does upstream. The scene source never names it.
+    {
+        bool transmissive_surface = false;
+        for (const MaterialHandle handle : materials) {
+            if (
+                handle.value < engine.materials.size() &&
+                engine.materials[handle.value].transmission_factor >
+                    0.0f) {
+                transmissive_surface = true;
+                break;
+            }
+        }
+        if (transmissive_surface) {
+            std::function<void(Scene&)> previous_setup =
+                asset.scene_setup;
+            asset.scene_setup =
+                [previous_setup](Scene& scene) {
+                if (previous_setup) previous_setup(scene);
+                enable_scene_transmission(scene);
+            };
+        }
+    }` : ""}
     if (const ts::JsonValue* extensions_value =
             optional(document, "extensions")) {
         const JsonObject& extensions =

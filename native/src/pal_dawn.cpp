@@ -97,7 +97,7 @@ constexpr std::uint32_t instance_uniform_binding = 1;
 // thickness, dedicated uv2 occlusion. Mesh-owned slots: 0-3 material
 // textures, 4 standard emissive, then transmission/thickness, then
 // extension textures.
-#if defined(BBLITE_RENDERER_TRANSMISSION)
+#if BBLITE_RENDERER_TRANSMISSION
 constexpr std::size_t transmission_texture_slots = 2;
 // The bound trio is one pair wider than the mesh-owned slots: the
 // scene-color pair rebinds the base color when no grab exists.
@@ -2659,7 +2659,7 @@ DawnMeshBindings& bindings_for(
     // and the base color as an inert stand-in otherwise (exactly like
     // the SDL backend with transmission disabled at runtime).
     std::size_t pair = 6;
-#if defined(BBLITE_RENDERER_TRANSMISSION)
+#if BBLITE_RENDERER_TRANSMISSION
     if (state.transmission_color_view) {
         views[pair] = state.transmission_color_view;
         samplers[pair] = state.transmission_sampler;
@@ -4177,7 +4177,7 @@ bool run_dawn_engine(Engine& engine) {
                 material.emissive_factor.g != 0.0f ||
                 material.emissive_factor.b != 0.0f;
             if (!standard_material) {
-#if defined(BBLITE_RENDERER_TRANSMISSION)
+#if BBLITE_RENDERER_TRANSMISSION
                 slot_data[5] = &material.transmission_texture;
                 slot_data[6] = &material.thickness_texture;
 #endif
@@ -4233,7 +4233,7 @@ bool run_dawn_engine(Engine& engine) {
         {
             // sRGB flags and fallbacks mirror the SDL upload_texture
             // calls for the transmission trio and each extension pair.
-#if defined(BBLITE_RENDERER_TRANSMISSION)
+#if BBLITE_RENDERER_TRANSMISSION
             slot_fallback[5] = {255, 255, 255, 255};
             slot_fallback[6] = {255, 255, 255, 255};
 #endif

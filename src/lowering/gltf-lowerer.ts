@@ -119,6 +119,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         animationPointer = false,
         animatedWorldBounds = false,
         animationPointerMaterials = false,
+        assetTransmission = false,
     ): LoweredSource {
         const modulePath = "src/loader-gltf/load-gltf.ts";
         const symbolName = "loadGltf";
@@ -331,6 +332,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 animationPointer,
                 animatedWorldBounds,
                 animationPointerMaterials,
+                assetTransmission,
             ),
         };
     }
