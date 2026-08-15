@@ -204,7 +204,8 @@ CPU-side from GPU-side causes immediately.
 ### Material extensions
 
 - [x] Clearcoat, sheen, iridescence, and dispersion.
-- [ ] Specular and anisotropy.
+- [ ] Anisotropy. Specular is measured by Scene 244 for its two factors; its
+  two textures stay unreached (see the corpus audit entry).
 - [ ] Compose clearcoat/sheen layers with punctual multi-light PBR; the
   combination currently fails explicitly in the renderer lowerer.
 - [ ] Require typed metadata specialization, focused tests, and an independent
@@ -378,11 +379,11 @@ directly, which skips the per-invocation rebuild:
 The command accepts an unregistered path, so nothing has to be added to the
 registry to measure it.
 
-**Current inventory:** 58 registered parity scenes and 175 unregistered
+**Current inventory:** 59 registered parity scenes and 174 unregistered
 corpus scenes. The compiler-contract lane has no compile-clean scenes. Each
 entry below records the first blocker only; clearing it can expose another.
 
-**Compile clean (2):** 244 and 253 pass the compiler and require
+**Compile clean (1):** 253 passes the compiler and requires the
 `KHR_animation_pointer` loader/runtime support described below.
 
 **Largest first-blocker clusters:** `loadSpriteAtlas` 16, browser-dependent
@@ -410,17 +411,17 @@ only for a contract no corpus scene exercises (a feature combination the corpus
 never composes, or a slice being built ahead of the scene that will use it),
 and delete it once corpus scenes cover the contract.
 
-The 175 unregistered scenes are partitioned by the boundary required to reproduce
+The 174 unregistered scenes are partitioned by the boundary required to reproduce
 their deterministic reference behavior, not by incidental browser helpers.
 Capture-inert demo controls and fixed-coordinate picking stay in the first
 lane when they can be erased or lowered inside the compiler, asset pipeline,
 or renderer. A scene is deferred when its covered behavior needs a new
 platform, user-input, or external-service contract.
 
-**Integrate first (141 scenes):** 4, 11, 12, 15-23, 25-27,
+**Integrate first (140 scenes):** 4, 11, 12, 15-23, 25-27,
 36-39, 43, 50-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152,
 155-158, 160, 162, 165, 177, 179, 200-207, 211, 214, 215, 217-219, 223,
-226, 229, 231, 241, 244, 251, 253, 261-264, 269-271, 275-280.
+226, 229, 231, 241, 251, 253, 261-264, 269-271, 275-280.
 
 This lane includes static CSG/CSG2, compressed assets and splats,
 deterministic picking in Scenes 113-115, 117, 118, and 129, and the
@@ -558,37 +559,26 @@ runtime gaps may remain hidden behind it.
   Then register it and measure. Nothing before rung 3 can be gated on this
   scene, so each rung lands proved byte-neutral for the scenes already
   measured rather than by a number of its own.
-- [ ] Scenes 244, 253: extend `KHR_animation_pointer` beyond the node
-  visibility target Scene 34 measures. The channel `path` is `pointer` and
-  the target is a JSON pointer into the document rather than a node TRS
-  field; the pinned base module resolves node-visibility and node-TRS
-  pointers itself and pulls `animation-pointer-basecolor`,
-  `animation-pointer-ext` and `animation-pointer-lights` for the rest, which
-  is the same split these three scenes need. Counted by pointer shape rather
-  than by channel, smallest first:
-  - Scene 244 carries two channels of two shapes —
-    `KHR_texture_transform/rotation` on a normal texture and on a volume
-    thickness texture — but the channel count is not its size. Running it and
-    reading the browser's own composed fragment for its HeatDome puts five
-    contracts in front of a measurement, three of which are now closed:
-    animated nodes keeping their authored `matrix` (done), per-slot texture
-    transforms (done — its two animated slots rotate in opposite directions,
-    so no single material transform can express it), scene transmission
-    reached from the asset rather than from scene code (done). What remains
-    is `KHR_materials_specular`, whose zero specularFactor and zero
-    specularColorFactor are what make its dome invisible, and the two pointer
-    targets themselves. The specular half needs the pinned dielectric
-    reflectance fields — `metallicF0Factor`, `specularWeight` and
-    `metallicReflectanceColor` — where the record carries one scalar
-    `reflectance` today, plus the `occlusionStrength` mix the same fragment
-    applies.
-  - Scene 253, sixty-nine channels across **thirty-four** distinct shapes:
-    camera perspective and orthographic planes, `KHR_lights_punctual` color,
-    intensity, range and cone angles, node TRS and weights, and about ten
-    material extensions. Last, not first.
-  All three seek to a fixed frame and pause for capture, so a gate needs the
-  value each pointer resolves to at that frame rather than a live animation
-  system.
+- [ ] Scene 253: extend `KHR_animation_pointer` beyond the targets Scenes
+  34, 242 and 244 measure. The channel `path` is `pointer` and the target is
+  a JSON pointer into the document rather than a node TRS field; the pinned
+  base module resolves node-visibility, node-TRS, base-colour, emissive and
+  texture-transform pointers itself and pulls `animation-pointer-ext` and
+  `animation-pointer-lights` for the rest, which is the split this scene
+  needs. Sixty-nine channels across **thirty-four** distinct shapes: camera
+  perspective and orthographic planes, `KHR_lights_punctual` color,
+  intensity, range and cone angles, node TRS and weights, and about ten
+  material extensions. It seeks to a fixed frame and pauses for capture, so a
+  gate needs the value each pointer resolves to at that frame rather than a
+  live animation system.
+- [ ] Extend `KHR_materials_specular` past its two factors. Scene 244
+  measures `specularFactor` and `specularColorFactor`; `specularTexture` and
+  `specularColorTexture` fail explicitly at load rather than being folded
+  away. Scene 241 is the only corpus asset that carries them, and it is
+  compiler-blocked, so the pinned `metallicReflectanceTexture` /
+  `reflectanceTexture` pair — including the `pow(2.2)` the reflectance
+  fragment applies to each — stays unreached. The same fragment's
+  `occlusionStrength` mix is already the base template's own.
 - [ ] Scene 37: it now fails during generation on `PBR material-extension
   marker changed: occlusion uv2 inner signature`, before the loader gap it
   was recorded under. That reads as marker drift rather than a missing
