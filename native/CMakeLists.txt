@@ -245,21 +245,6 @@ endif()
 if(SDL3_FOUND)
     target_link_libraries(bblite_native PRIVATE SDL3::SDL3)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_SDL=1)
-    # A shared BBLITE_SDL_DIR install has to beat the toolchain's SDL3.dll
-    # in the executable directory: vcpkg's app-local deployment copies its
-    # own beside the executable for SDL3_image's sake, and whichever file
-    # is there is the one both the executable and SDL3_image.dll load.
-    # Registered after that deployment, so this copy wins.
-    if(BBLITE_SDL_DIR AND TARGET SDL3::SDL3-shared)
-        add_custom_command(
-            TARGET bblite_native POST_BUILD
-            COMMAND
-                "${CMAKE_COMMAND}" -E copy_if_different
-                "$<TARGET_FILE:SDL3::SDL3-shared>"
-                "$<TARGET_FILE_DIR:bblite_native>"
-            VERBATIM
-        )
-    endif()
 else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_SDL=0)
     message(WARNING "SDL3 was not found. The generated application will use the headless backend.")

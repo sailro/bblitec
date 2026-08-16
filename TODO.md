@@ -326,16 +326,24 @@ comparison, and the empirical guards. What is left:
   to `COMPUTE_STORAGE_WRITE` only and gives D3D12 a `TEXTURE2DMS`
   shader-resource view.
 
-  The port itself is written and measured on the `claude/sdl-multisample-read`
-  branch: `tools/build-sdl-multisample.ps1` builds the pinned SDL version with
-  the patch applied, `BBLITE_SDL_DIR` points a build at it, the multisampled
-  colour target takes `GRAPHICS_STORAGE_READ`, and the pinned per-sample
-  fragment binds through `SDL_BindGPUFragmentStorageTextures` (a `Texture2DMS`
-  is `Load()`-ed and carries no sampler). Every transmission scene's SDL_GPU
-  column converges on Dawn's — scene 33 foreground 1.457 → 0.125 against
-  Dawn's 0.123, scene 253 0.681 → 0.030, scene 212 0.181 → 0.029 — with no
-  other cell moving. What remains here is only the SDL version bump; the
-  branch cannot merge before it because a stock SDL asserts on the texture.
+  `native/vcpkg-overlay-ports/sdl3` is the registry's own port at the
+  manifest's `builtin-baseline` with that patch appended to its `PATCHES`
+  list, selected by `native/vcpkg-configuration.json`. Going through vcpkg
+  rather than a side build is what keeps SDL3_image compiled against the same
+  library instead of trusted to stay ABI-compatible with it.
+
+  **The exit criterion is an SDL release containing the patch** — 3.6.0 is the
+  one to watch. When it lands: move `builtin-baseline` to a registry commit
+  carrying it, then delete `native/vcpkg-configuration.json` and
+  `native/vcpkg-overlay-ports`. Nothing else changes; the renderer side is
+  already written and measured.
+
+  The renderer side: the multisampled colour target takes
+  `GRAPHICS_STORAGE_READ`, and the pinned per-sample fragment binds through
+  `SDL_BindGPUFragmentStorageTextures` — a `Texture2DMS` is `Load()`-ed and
+  carries no sampler. Every transmission scene's SDL_GPU column converges on
+  Dawn's — scene 33 foreground 1.457 → 0.125 against Dawn's 0.123, scene 253
+  0.681 → 0.030, scene 212 0.181 → 0.029 — with no other cell moving.
 - [ ] Draw the pinned solid-colour skybox. `load-env.ts` pushes
   `buildSolidSkyboxRenderable` — a cube shaded from the primary and clear
   colours, with `WGSL_DITHER` prefixed unconditionally — for any scene that
