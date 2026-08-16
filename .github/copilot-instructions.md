@@ -52,7 +52,23 @@ npm run scene -- uniforms scene33 --size 96    # decode one browser buffer as na
 | Which draw owns the bad pixels? | attribution buffers under `artifacts/parity/<id>` |
 | Does removing the feature remove the residual? | copy the scene to `examples/`, strip it, `parity --recapture-reference` |
 
-Three rules that exist because sessions were lost to their absence:
+Four rules that exist because sessions were lost to their absence:
+
+- **The loader is the specification. The file format is not.** When you
+  need to know what a glTF property means to Babylon, open the loader
+  extension that reads it — never reason from what the property means in
+  the glTF spec, and never generalize one extension's rule to its
+  neighbours. Every rule re-derived that way in one session was wrong,
+  and each one composed a variant that looked plausible and was missing
+  an arm: a declared extension is enabled *with no factor at all*
+  (`isEnabled: true` unconditionally, in all four of them); a
+  `KHR_texture_transform: {}` patches nothing so composes no transform;
+  a `baseColorFactor` with no image behind it is baked into the texel
+  and declares no UBO field; `ior !== 1.5` alone turns the reflectance
+  layer on; and an *animated* pointer can change a material's shape —
+  an animated occlusion strength registers the reflectance extension,
+  which then takes occlusion over entirely. None of those are guessable
+  and all of them are two minutes of reading.
 
 - **Never call a residual a floor from statistics alone.** A floor claim
   is a claim about a mechanism and needs one: the pinned line that does
@@ -183,6 +199,13 @@ binaries are the same, which means no measurement can have moved. See
 - Record every intentional semantic adaptation in generated `fidelity.json`.
 - Keep shader formulas tied to upstream markers in
   `renderer-fidelity.json`; do not tune backend shaders against a golden.
+- **Do not type a shader formula out.** The pinned `composeShader` runs
+  under Node, so a helper the generated fragment needs can be *taken* from
+  a real composition instead of transcribed — `pinnedShaderHelpers()` in
+  `src/pinned-pbr-variants.ts` does exactly that, and the fragment calls
+  the pin's own names. A re-typed formula agrees only until upstream
+  changes it. Give it no transcribed fallback either: the fallback is the
+  copy that drifts.
 - Avoid unrelated cleanup.
 - There is no hosted CI. Complete the documented local validation matrix
   before committing or pushing.

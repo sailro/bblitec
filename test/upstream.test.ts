@@ -14,6 +14,7 @@ import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
+import { pinnedShaderHelpers } from "../src/pinned-pbr-variants.js";
 import {
     readUpstreamPin,
     UpstreamSourceStore,
@@ -775,8 +776,12 @@ test("lowers glTF material extensions into typed uniforms and shader layers", ()
     assert.doesNotMatch(baseline.source, /material\.dispersion/);
 });
 
-test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", () => {
+test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", async () => {
     const options = {
+        // Every layer's formulas come from the pin's own composition, so the
+        // lowering refuses to run without them rather than falling back to a
+        // transcription.
+        pinnedHelpers: await pinnedShaderHelpers(),
         ground: false,
         skybox: false,
         shaderPrograms: [] as CompiledShaderProgram[],
@@ -845,8 +850,12 @@ test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", ()
         /@group\(2u\) @binding\(17u\) var clearcoatNormalSampler : sampler;/,
     );
     assert.match(clearcoat, /  clearcoatParams : vec4<f32>,/);
-    assert.match(clearcoat, /fn bblVisibilityKelemen/);
-    assert.match(clearcoat, /return 0\.25f \/ \(VdotH_kl \* VdotH_kl \+ 0\.0000001f\);/);
+    // The pin's own text under the pin's own name.
+    assert.match(clearcoat, /fn visibility_Kelemen/);
+    assert.match(
+        clearcoat,
+        /return 0\.25 \/ \(VdotH_kl \* VdotH_kl \+ 0\.0000001\);/,
+    );
     assert.match(
         clearcoat,
         /let ccDirectAttenuation = 1\.0f - ccFresnel_dl \* ccIntensity;/,
@@ -863,7 +872,7 @@ test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", ()
     );
     // A glTF coat takes createClearcoatFragment's PBR2_CC_F0_REMAP_OFF arm,
     // so the base F0 reaches the base layer unchanged.
-    assert.doesNotMatch(clearcoat, /bblClearcoatRemappedF0/);
+    assert.doesNotMatch(clearcoat, /getR0RemappedForClearCoat/);
     assert.match(
         clearcoat,
         /let v_75 = mix\(vec3<f32>\(v_51, v_51, v_51\), v_31, vec3<f32>\(v_36, v_36, v_36\)\);/,
@@ -879,11 +888,8 @@ test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", ()
             clearcoatF0Remap: true,
         }),
     );
-    assert.match(clearcoatRemapped, /fn bblClearcoatRemappedF0\(/);
-    assert.match(
-        clearcoatRemapped,
-        /let num = ccA \+ ccB \* sf0;/,
-    );
+    assert.match(clearcoatRemapped, /fn getR0RemappedForClearCoat\(/);
+    assert.match(clearcoatRemapped, /let num = ccA \+ ccB \* sf0;/);
     assert.match(
         clearcoatRemapped,
         /let bblBaseColorF0 = mix\(vec3<f32>\(v_51, v_51, v_51\), v_31, vec3<f32>\(v_36, v_36, v_36\)\);/,
@@ -916,8 +922,11 @@ test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", ()
             sheenAlbedoScaling: true,
         }),
     );
-    assert.match(sheen, /fn bblCharlieSheenDistribution/);
-    assert.match(sheen, /fn bblVisibilityAshikhmin/);
+    assert.match(
+        sheen,
+        /fn normalDistributionFunction_CharlieSheen/,
+    );
+    assert.match(sheen, /fn visibility_Ashikhmin/);
     assert.match(
         sheen,
         /let sheenAlbedoScaling = 1\.0f - shMax \* shBrdf\.b;/,
@@ -971,10 +980,11 @@ test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", ()
             iridescence: true,
         }),
     );
-    assert.match(iridescence, /fn bblIridescenceEval\(/);
+    assert.match(iridescence, /fn iri_eval\(/);
+    // The thin-film stack arrives minified, exactly as the pin emits it.
     assert.match(
         iridescence,
-        /let opd = 2\.0f \* iridescenceIor \* thickness \* cosTheta2;/,
+        /let opd=2\.0\*iridescenceIor\*thickness\*cosTheta2;/,
     );
     assert.match(
         iridescence,

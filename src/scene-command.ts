@@ -20,6 +20,9 @@ import {
     formatDecodedUniforms,
 } from "./capture-uniforms.js";
 import { resolveScene, scenes } from "./scene-registry.js";
+import { runComposeReport } from "./scene-compose-report.js";
+import { holdDistLock } from "./dist-lock.js";
+import { runNeutralityReport } from "./scene-neutrality.js";
 import { readCacheConfiguration } from "./build-stamp.js";
 
 function run(
@@ -240,9 +243,23 @@ async function parity(
     extraArguments: string[],
 ): Promise<void> {
     const differential = extraArguments.includes("--differential");
+    // `--gpu-debug` is consumed here, not forwarded: `runSceneParity`'s parser
+    // rejects an argument it does not know. The fan-out below re-adds it for
+    // each child, which then consumes its own copy the same way.
     const passthrough = extraArguments.filter(
-        (argument) => argument !== "--differential",
+        (argument) =>
+            argument !== "--differential" && argument !== "--gpu-debug",
     );
+    // `--gpu-debug` turns a backend's own validation on for this run. It also
+    // has to defuse SDL's assertion handler: the default prompts, so a failed
+    // render pass hangs the harness instead of naming itself, and the whole
+    // point of the flag is that the backend says what it refused. Scene 116's
+    // "Failed to close command list" became "Store op is RESOLVE ... but
+    // texture is not multisample" in one run once it could print.
+    if (extraArguments.includes("--gpu-debug")) {
+        process.env["BBLITE_GPU_DEBUG"] = "1";
+        process.env["SDL_ASSERT"] = "always_ignore";
+    }
     if (idOrSource === "all") {
         const measured = scenes.filter((scene) => scene.parity);
         // One child process per scene, not one promise.
@@ -290,6 +307,9 @@ async function parity(
                             ...(differential
                                 ? ["--differential"]
                                 : passthrough),
+                            ...(extraArguments.includes("--gpu-debug")
+                                ? ["--gpu-debug"]
+                                : []),
                         ],
                         process.env,
                         inFlight > 1 ? output : undefined,
@@ -773,6 +793,10 @@ async function runRenderDiff(
 
 async function main(): Promise<void> {
     const [command, id, ...rest] = process.argv.slice(2);
+    // Every `npm run scene` runs `npm run build` first, so any build started
+    // while this one is working deletes the `dist/` it is executing from.
+    // `tools/clean-dist.mjs` refuses to cross this lock.
+    holdDistLock([command, id].filter(Boolean).join(" "));
     if (command === "list") {
         for (const scene of scenes) {
             console.log(
@@ -868,8 +892,16 @@ async function main(): Promise<void> {
         await runRenderDiff(id, rest);
         return;
     }
+    if (command === "compose" && id) {
+        await runComposeReport(id, scenes, resolveScene);
+        return;
+    }
+    if (command === "neutrality" && id) {
+        runNeutralityReport(id);
+        return;
+    }
     throw new Error(
-        "Usage: scene-command <list | show <id|source.ts> | compile|build|process|parity|geometry|capture|uniforms|diff <id|source.ts|all> [options]>",
+        "Usage: scene-command <list | show <id|source.ts> | compile|build|process|parity|geometry|capture|uniforms|diff|compose <id|source.ts|all> [options] | neutrality <baseline-parity-directory>>",
     );
 }
 

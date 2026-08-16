@@ -25,6 +25,11 @@ import {
 } from "./sprite-atlas-packager.js";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
+import { pinnedShaderHelpers } from "./pinned-pbr-variants.js";
+import {
+    assertArmsCovered,
+    composeGltfMaterials,
+} from "./pinned-material-arms.js";
 
 interface CliOptions {
     input: string;
@@ -510,6 +515,46 @@ async function main(): Promise<void> {
         outputPath,
         result.manifest.assets,
     );
+    const emittedArms = {
+        clearcoat:
+            specializationFeatures.clearcoat ||
+            result.manifest.features.includes("material:clearcoat"),
+        clearcoatF0Remap: result.manifest.features.includes(
+            "material:clearcoat-f0-remap",
+        ),
+        sheen:
+            specializationFeatures.sheen ||
+            result.manifest.features.includes("material:sheen"),
+        sheenAlbedoScaling:
+            specializationFeatures.sheen ||
+            result.manifest.features.includes(
+                "material:sheen-albedo-scaling",
+            ),
+        iridescence: specializationFeatures.iridescence,
+        dispersion: specializationFeatures.dispersion,
+        occlusionUv2: specializationFeatures.occlusionUv2,
+        // The same derivation `upstream-lower.ts` uses for the compiled
+        // define: transmission is reached from scene code and from a loaded
+        // asset alike, because the pin enables it for any transmissive
+        // surface the asset carries without the scene naming it.
+        transmission:
+            result.manifest.features.includes("renderer:transmission") ||
+            specializationFeatures.assetTransmission,
+    };
+    // Every glTF material the scene loads, composed through Babylon Lite's own
+    // pipeline. An arm it reaches that the emitted fragment does not carry is
+    // refused here, where it names the material, rather than shipping as a
+    // shading bias nothing points at.
+    for (const asset of result.manifest.assets) {
+        if (asset.kind !== "gltf") continue;
+        assertArmsCovered(
+            await composeGltfMaterials(
+                resolve(outputPath, "assets", asset.output),
+            ),
+            emittedArms,
+            asset.output,
+        );
+    }
     emitUpstreamGenerated(outputPath, result.manifest.features, {
         idDiagnostics: options.idDiagnostics,
         pbrDiagnostics: options.pbrDiagnostics,
@@ -556,33 +601,24 @@ async function main(): Promise<void> {
             ),
         multiLight:
             specializationFeatures.multiLight,
-        clearcoat:
-            specializationFeatures.clearcoat ||
-            result.manifest.features.includes(
-                "material:clearcoat",
-            ),
-        sheen:
-            specializationFeatures.sheen ||
-            result.manifest.features.includes("material:sheen"),
+        clearcoat: emittedArms.clearcoat,
+        sheen: emittedArms.sheen,
         // The two pinned sheen models are composed, not switched at run time,
         // so one fragment cannot serve both. A glTF KHR_materials_sheen
         // material takes the albedo-scaling arm; `setPbrSheen` defaults to
         // the legacy one and can ask for the other explicitly.
-        sheenAlbedoScaling:
-            specializationFeatures.sheen ||
-            result.manifest.features.includes(
-                "material:sheen-albedo-scaling",
-            ),
+        sheenAlbedoScaling: emittedArms.sheenAlbedoScaling,
         // The coat's base-F0 remap is composed for every clearcoat except a
         // glTF one: `gltf-ext-clearcoat.ts` is the single caller passing
         // `useF0Remap: false`. So it follows the scene-code setter and not
         // the asset specializer's `KHR_materials_clearcoat` flag.
-        clearcoatF0Remap: result.manifest.features.includes(
-            "material:clearcoat-f0-remap",
-        ),
-        iridescence: specializationFeatures.iridescence,
-        dispersion: specializationFeatures.dispersion,
-        occlusionUv2: specializationFeatures.occlusionUv2,
+        clearcoatF0Remap: emittedArms.clearcoatF0Remap,
+        // Taken from a real composition rather than transcribed, so the coat's
+        // formulas are the pin's own text under the pin's own names.
+        pinnedHelpers: await pinnedShaderHelpers(),
+        iridescence: emittedArms.iridescence,
+        dispersion: emittedArms.dispersion,
+        occlusionUv2: emittedArms.occlusionUv2,
     }, tree);
     tree.write("main.cpp", result.cpp);
     const imageCodecs = reachedImageCodecs(

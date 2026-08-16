@@ -77,9 +77,31 @@ Ground and skybox fragments also use generated WGSL, gated by Scenes 1 and 8.
 The shared material vertex stage and Standard fragment variants use generated
 WGSL as well, gated by scenes 145 and 273.
 PBR color, diagnostic, and geometry-output variants now use WGSL through Tint.
-The PBR source is a pinned DXC-SPIR-V/Tint transcription of the previously
-validated native shader; direct Babylon composer extraction remains the next
-provenance improvement.
+The PBR *body* is still a pinned DXC-SPIR-V/Tint transcription of the
+previously validated native shader, and replacing it with per-material
+variants from Babylon's own composer remains the next provenance improvement.
+
+The layer *formulas* no longer are. Every helper the clearcoat, sheen and
+iridescence arms call — `visibility_Kelemen`, `getR0RemappedForClearCoat`,
+`ccSchlick`, `normalDistributionFunction_CharlieSheen`, `visibility_Ashikhmin`,
+the whole `iri_*` thin-film stack and its `IRI_XYZ_TO_REC709` matrix — is
+lifted verbatim out of a real composition through the pinned
+`composeShader`, under the pin's own names, by `pinnedShaderHelpers()` in
+`src/pinned-pbr-variants.ts`. There is deliberately no transcribed fallback:
+a fallback is the copy that drifts, so a helper the pin renames or drops is a
+generation failure instead of a shading bias. `rotateY` keeps a one-line
+wrapper because upstream takes the rotation angle as a parameter and the
+layers here reach it from a uniform — that plumbing is ours, the rotation is
+the pin's.
+
+The same composer is used as a check on the fragment as a whole. Generation
+runs every glTF material the scene loads through the pin's own
+`_computePbrMaterialFeatures` and refuses to emit a fragment missing an arm
+one of them composes, naming the material and the variant
+(`src/pinned-material-arms.ts`). It does not make the fragment
+per-material — that is the variant-model work above — but it stops a missed
+arm from shipping silently while it is not, which is the failure mode every
+entry in the layer section below shares.
 
 HDR environments preserve mip zero and use the pinned WebGPU 1024-sample GGX
 prefilter for higher mips. The generated package records the pinned module,
@@ -133,6 +155,17 @@ IEC formula measurably disagreed with the GPU's table (scene 255
 regressed 0.101 to 0.249 before the texel-level port took it to
 0.000). The record keeps the raw alpha for the pinned blend
 semantics.
+An **animated** base color factor inverts that bake. `whiteFallback` in
+`animation-pointer-basecolor.ts` swaps the factor for `[1,1,1,1]` before
+the upload whenever a `KHR_animation_pointer` channel drives it and the
+material has no base color image, and hands the real factor back to be
+carried as a UBO field for the pointer writer to overwrite. Baking it as
+well applies it twice: Scene 253's Transparency sphere carried the
+authored 0.502 in its texel and the animated 0.648 in its uniform against
+the browser's 0.648 alone, and that factor of 0.5019 was the whole of its
+region figure (Dawn 1.328 to 0.030). Because materials are built before
+animations are read, the answer has to be gathered in a pre-pass, which is
+what upstream does and what the generated loader now does.
 Environment horizon occlusion applies only to normal-mapped materials:
 the pinned `ibl-fragment` composes `eho = 1.0` without a normal map,
 and the native fragment gates the same factor on the has-normal-map

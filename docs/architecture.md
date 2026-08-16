@@ -58,6 +58,10 @@ Primary source ownership:
 | `src/upstream-source.ts` | pinned source-map reconstruction |
 | `src/upstream-graph.ts` | conservative reachable-module analysis |
 | `src/upstream-lower.ts` | lowerer orchestration, provenance, generated capabilities |
+| `src/pinned-shader-composer.ts` | executes the pin's own `composeShader`, and lifts named declarations out of a composition verbatim |
+| `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant; supplies the generated shader's helper text |
+| `src/pinned-material-input.ts` | maps a glTF material to the shape `_computePbrMaterialFeatures` reads — the loader's rules ported, not the format's |
+| `src/pinned-material-arms.ts` | composes every material a scene loads and refuses a fragment missing an arm one of them reaches |
 | `src/lowering/context.ts` | source-located AST declarations, expression contracts, and diagnostics |
 | `src/lowering/*-lowerer.ts` | focused Babylon API and formula lowering |
 | `src/lowering/templates/` | generated C++ and portable shader templates |

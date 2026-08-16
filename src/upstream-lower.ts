@@ -54,6 +54,8 @@ export interface UpstreamEmitOptions {
     sheen: boolean;
     sheenAlbedoScaling: boolean;
     clearcoatF0Remap: boolean;
+    /** The pin's own helper declarations; see `pinnedShaderHelpers()`. */
+    pinnedHelpers?: Readonly<Record<string, string>>;
     iridescence: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
@@ -356,6 +358,12 @@ class GeneratedSourceWriter {
                         options.sheenAlbedoScaling,
                     clearcoatF0Remap:
                         options.clearcoatF0Remap,
+                    ...(options.pinnedHelpers === undefined
+                        ? {}
+                        : {
+                            pinnedHelpers:
+                                options.pinnedHelpers,
+                        }),
                     iridescence: options.iridescence,
                     dispersion: options.dispersion,
                     nodeVisibility: options.nodeVisibility,
@@ -423,6 +431,12 @@ class GeneratedSourceWriter {
                 sheen: options.sheen,
                 sheenAlbedoScaling: options.sheenAlbedoScaling,
                 clearcoatF0Remap: options.clearcoatF0Remap,
+                ...(options.pinnedHelpers === undefined
+                    ? {}
+                    : {
+                        pinnedHelpers:
+                            options.pinnedHelpers,
+                    }),
                 iridescence: options.iridescence,
                 dispersion: options.dispersion,
                 occlusionUv2: options.occlusionUv2,

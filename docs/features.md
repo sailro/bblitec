@@ -364,9 +364,25 @@ clearcoat, sheen, and iridescence.
 Deterministic scene-level seeking over two separate runtimes: property
 animation clips and groups over position, `position.x`, scaling and
 quaternion paths with LINEAR/STEP tracks, ranges, looping and speed ratios;
-and glTF LINEAR/CUBICSPLINE transform channels with LINEAR morph weights,
-plus `KHR_animation_pointer` targets for node visibility, base color, emissive
-factor, emissive strength, and texture transforms.
+and glTF LINEAR/CUBICSPLINE transform channels with LINEAR morph weights.
+
+`KHR_animation_pointer` reaches node visibility; punctual light color,
+intensity, range and outer cone angle; and fifteen material targets — base
+color factor, emissive factor, emissive strength, texture transforms, normal
+texture scale, occlusion strength, transmission factor, index of refraction,
+volume thickness, volume attenuation distance and color, and the three
+iridescence ones (factor, IOR, maximum thickness). A `metallicFactor` channel
+drives *roughness*, because Babylon.js registers that pointer twice and the
+second registration wins; `roughnessFactor` has no handler at all, in the pin
+or here. Scene 253 gates the set with 69 channels.
+
+Several of those targets change what the material *composes*, not just what
+it writes: an animated occlusion strength registers the reflectance extension
+(which then takes occlusion over entirely), an animated texture transform
+forces the UV matrix fields, and an animated base color factor with no base
+color image makes the factor texture white and moves the factor into the UBO.
+Those are the loader's own rules, ported rather than inferred; see
+[fidelity](fidelity.md).
 
 ### Deformation and instancing
 

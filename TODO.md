@@ -236,7 +236,108 @@ comparison, and the empirical guards. What is left:
 ### Shader provenance
 
 - [ ] Replace the pinned converted native PBR WGSL with direct extraction from
-  Babylon Lite's full feature composer.
+  Babylon Lite's full feature composer. **This is the entry every hand-written
+  shader arm is a symptom of, and it is not a text swap — it is a variant-model
+  change.**
+
+  The mechanism is available and proved: `src/shader/shader-composer.ts` is a
+  pure function over a `ShaderTemplate` and a `ShaderFragment[]` with no device
+  and no browser globals, the pinned package ships it as an ES module, and
+  `src/pinned-shader-composer.ts` executes it under test. `createPbrComposer`
+  in `material/pbr/pbr-compose.ts` is the pin's own material-to-shader entry
+  point, taking `(features, features2, meshFeatures, sceneFeatures, lightMode,
+  singleLightType, ...)` over the `pbr-flag-bits.ts` bits.
+
+  **Two of the three pieces are done.**
+
+  *The formulas come from the pin.* The clearcoat, sheen and iridescence
+  helpers are no longer transcribed: `pinnedShaderHelpers()` composes real
+  variants and lifts the declarations out verbatim, so the emitted fragment
+  calls `visibility_Kelemen`, `iri_eval` and
+  `normalDistributionFunction_CharlieSheen` under the pin's own names and a
+  renamed or removed helper is a build failure. There is deliberately no
+  transcribed fallback.
+
+  *The composer is driven correctly.* `pinnedMaterialInputFromGltf` maps a
+  glTF material to the shape `_computePbrMaterialFeatures` reads, and **all
+  31 materials across the seven instrumented-capture scenes compose
+  byte-identically** to the fragment the browser recorded. Scene 21's cloth —
+  the one material built by scene code rather than loaded — is covered by a
+  test that hand-writes its shape, since the compiler does not yet carry
+  those records; see the second bullet below.
+
+  *What remains is the variant model itself* — the third piece, below.
+
+  Meanwhile `src/pinned-material-arms.ts` turns the failure mode into a build
+  error: generation composes every glTF material and refuses to emit a
+  fragment missing an arm one of them reaches, naming the material. That does
+  not make the fragment per-material, but it stops a missed arm from shipping
+  silently while it is not.
+
+  What makes it structural is the shape on each side. Babylon composes **one
+  fragment per material feature set**: the instrumented capture of Scene 253
+  holds 17 distinct fragment bodies for that scene's 14 materials. The
+  generated renderer composes **one fragment per scene** and selects behaviour
+  inside it from `materialOptions`/`normalOptions` uniform lanes. A single
+  fragment cannot express a per-material fork, so every fork upstream makes —
+  `useF0Remap`, `hasAlbedoScaling`, `hasSpecularAA`, `hasBaseNormalMap`, the
+  `hasIbl`/`hasNormalMap` arms inside each ext — has to be re-expressed here as
+  a uniform branch somebody writes by hand. That is why formulas keep getting
+  re-derived, and why a missed arm reads as a small systematic shading bias
+  rather than as a failure.
+
+  So the remaining work is: adopt per-material shader variants, then let the
+  composer produce each one. `pal_dawn.cpp` and `pal_sdl_gpu.cpp` hold a
+  single `geometry.pbr_fragment` per scene, so this needs a fragment per
+  variant, a variant recorded per renderable, and — the part with real cost —
+  the pin's **per-variant material UBO** in place of the monolithic
+  `PbrUniforms`, since each variant declares only the fields its own
+  extensions contribute, in registration order. `composePinnedPbrVariant`
+  already returns that layout as `materialUboSpec`.
+
+  Two inputs the composer needs that the asset cannot supply, both found by
+  measurement rather than reasoning:
+
+  - **The light mode is a scene property, not an asset one.** Scene 39's glTF
+    declares two `KHR_lights_punctual` lights and *none* of its captured
+    fragments composes a light path at all; it only matches at `lightMode 0`.
+    Deriving it from the asset is wrong.
+  - **Scene-code materials are a second input.** Scene 21's cloth material
+    declares no glTF extensions whatsoever and its captured fragment carries
+    `sheenParams`, because the scene calls `setPbrSheen`. Reaching it needs
+    the scene's own lowered material calls — `compileSheenOptions` in
+    `src/compiler/intrinsics/material.ts` already resolves those values at
+    compile time, so the input exists; it is not yet carried to the composer.
+    `Value` is spread whole across a `const` binding (`{ ...value, cpp }`),
+    so the shape can ride the material value from `createPbrMaterial` to each
+    `setPbr*` and be keyed by the generated C++ name.
+
+    Two defaults differ from the glTF path and both are load-bearing, which
+    is why the test pins them rather than leaving them to be inferred:
+    `enableSpecularAA` is set unconditionally by `assemblePbrPropsExt` — the
+    *glTF assembly* — and not by `createPbrMaterial`, so a scene-code
+    material has it **off**; and `setPbrSheen` keeps the legacy sheen model
+    where `gltf-ext-sheen.ts` always asks for the albedo-scaling one. Scene
+    21 composes byte-identically only with both.
+
+  Two contracts found while probing, both worth keeping: the environment bit is
+  read from `sceneFeatures`, not `features` (`_hasIbl = hasScene(PBR_HAS_ENV)`),
+  and the ext fragments reach the composer through the registry `_getPbrExts()`
+  that the `setPbr*` entry points populate, not from the feature bits — so
+  driving the composer faithfully means reproducing that registration, which is
+  the same "an enable\* entry point installs a factory" shape Scene 267 already
+  documented.
+
+  A third, learned the expensive way: **the loader is the specification, not
+  the glTF format.** Every rule re-derived from what the format "means" was
+  wrong, and each one composed a plausible variant missing an arm. A declared
+  extension is enabled even with no factor (`isEnabled: true` unconditionally);
+  a `KHR_texture_transform: {}` patches nothing so composes no transform; a
+  `baseColorFactor` with no image behind it is baked into the texel and
+  declares no UBO field; `ior !== 1.5` alone turns the reflectance layer on;
+  and an animated pointer can change a material's *shape* — an animated
+  occlusion strength registers the reflectance extension, which then takes
+  occlusion over entirely.
 
 ### Packed native assets
 
@@ -286,6 +387,21 @@ comparison, and the empirical guards. What is left:
   before-render callbacks, the per-mesh uploads and the topology update all
   have to move below the acquisition together, since the uploads read the
   state the callbacks write and splitting them would render a frame late.
+  Verified while measuring: `++frame` is the last statement of the loop body
+  on both backends (`pal_sdl_gpu.cpp`, `pal_dawn.cpp`), so the `continue`
+  really does skip it, and the drift is exactly one scene frame per skipped
+  iteration. Incrementing before the `continue` would make the two counters
+  agree, but it is not the same fix — it keeps the scene advancing at full
+  speed behind a minimized window, where the reorder stops time the way a
+  throttled `requestAnimationFrame` does. Prefer the reorder.
+
+  A cheaper shape than moving the prologue down: move the acquisition *and*
+  `start` up to the top of the loop body instead, which is a few lines rather
+  than several hundred and lands the prologue inside the bracket identically.
+  It has its own cost — the swapchain image is then held across the whole
+  prologue, which is latency the late acquisition currently avoids — so it is
+  a trade to make deliberately, not a simplification.
+
   What makes that more than a mechanical move is the benchmark bracket:
   `start` sits immediately before the acquisition on both backends and
   [backends](docs/backends.md) publishes the pair as "frame CPU time from
@@ -324,15 +440,44 @@ comparison, and the empirical guards. What is left:
   the same-browser raster floor unless an instrumented capture says
   otherwise.
 - [ ] Find why Scenes 9 and 37 do not render bit-identically on Dawn across
-  runs. Both are stable on SDL_GPU and both wobble on Dawn with no code change
-  at all: three consecutive differential runs of Scene 37 put its
-  SDL_GPU-versus-Dawn exact-match count at 920709, 920714, and 920773 of
-  921600, and Scene 9 left its baseline cell and returned to it exactly. The
-  published values are unaffected — every wobble is far below a rounded
+  runs. **Localised to Dawn's multisampled path; the scene, the assets, the
+  CPU side and the image-processing average are all excluded by measurement.**
+
+  Scene 37 reproduces every time and is the one to work on; Scene 9 wobbles
+  rarely. Hashing `artifacts/parity/scene37/native-*.png` across repeated
+  `parity scene37 --differential` runs gives:
+
+  | render | across runs |
+  | --- | --- |
+  | SDL_GPU | **bit-identical** (3 of 3) |
+  | Dawn, 4x MSAA | **differs every run** (6 of 6 pairs) |
+  | Dawn, `BBLITE_MSAA=1` | **bit-identical** (3 of 3) |
+
+  The differences are 11–70 pixels of 921600, **every one of them exactly
+  ±1**, scattered through a band around x∈[460,785] y∈[280,355] whose members
+  move from pair to pair. They sit on textured, high-gradient pixels (median
+  local gradient 17), not on flat areas.
+
+  What that rules out. The asset carries **no animations and no skins** and
+  the registry pins no clock for this scene, so nothing time-dependent varies
+  — and the same geometry shader is bit-stable single-sampled, so it is not
+  the shading math or a nondeterministic DXC. The Dawn image-processing pass
+  sums samples in a fixed order (`for i in 0..n { c += ip(textureLoad(s,px,i)) }`
+  then `c/n`), so the average is not the source either; the *samples* differ.
+  Every colour and depth attachment on the geometry path uses `LoadOp_Clear`,
+  so stale-attachment leakage is not the obvious candidate it would otherwise
+  be.
+
+  What is left is per-sample coverage or per-sample depth in the multisampled
+  geometry pass. Next step is an instrumented capture of the multisampled
+  attachment itself rather than the resolved frame.
+
+  The published values are unaffected — every wobble is far below a rounded
   digit — but it makes the documented neutrality proof ("snapshot every
   `report-differential.json`, compare cell by cell") report these two scenes
-  as moved for any change whatsoever, so the proof needs a repeat run to
-  separate a real regression from this.
+  as moved for any change whatsoever. Until it is closed, either re-run to
+  separate a real regression from this, or compare those two scenes under
+  `BBLITE_MSAA=1`, which is bit-stable.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 
@@ -342,13 +487,21 @@ comparison, and the empirical guards. What is left:
 - [ ] Share one `VCPKG_INSTALLED_DIR` across build trees. Each build directory
   carries its own 48 MB copy of `vcpkg_installed`, about 2.8 GB across the
   matrix; sharing reclaims nearly all of it and shortens configure.
-- [ ] Run `BBLITE_MSAA=1` on scene 116 under SDL_GPU: the single-sample
-  frame graph fails there with `SDL_SubmitGPUCommandBufferAndAcquireFence:
-  Failed to close command list`, which predates the Dawn work and is
-  the only scene where the flag is refused by the backend that has
-  always supported it. Dawn runs the same scene single-sampled (its
-  frame-graph resolve step becomes a texture copy), so the two
-  backends now disagree about the diagnostic itself.
+- [x] **CLOSED.** `BBLITE_MSAA=1` under SDL_GPU. The entry named scene 116,
+  but the flag was refused by *every* frame-graph scene carrying an explicit
+  resolve task — 116, 145 and 146 all died with
+  `SDL_SubmitGPUCommandBufferAndAcquireFence: Failed to close command list`.
+  Running the binary under `BBLITE_GPU_DEBUG=1` named it outright:
+  `'!"Store op is RESOLVE or RESOLVE_AND_STORE but texture is not
+  multisample!"'`. The frame graph's resolve step asked for
+  `SDL_GPU_STOREOP_RESOLVE` unconditionally, and single-sampling makes its
+  source a 1x texture.
+  The entry had the answer in its own last sentence — "Dawn runs the same
+  scene single-sampled (its frame-graph resolve step becomes a texture
+  copy)" — so the fix is that degradation ported to SDL_GPU as a
+  `SDL_CopyGPUTextureToTexture`. All three scenes now run single-sampled and
+  their multisampled parity is unchanged (116 at 0.000/0.000 on both
+  backends, 145 and 146 at their published figures).
 - [ ] Improve missing-tool and stale-output diagnostics.
 - [ ] Add `--explain-feature` and generated-code-to-upstream inspection.
 - [ ] Document adding a lowerer and curated scene fixture.
@@ -590,22 +743,98 @@ runtime gaps may remain hidden behind it.
   Sponza's 16 parented and 29 geometry-less nodes are all bones and camera
   targets carrying no geometry, so gated Scene 9 already draws all 32 of its
   visible meshes. Reached by the ungated Scene 143.
-- [ ] Close Scene 253's iridescence sphere. The scene is a measured gate but
-  its region figure carries a defect rather than a floor. The material is the
-  only one in the corpus whose `metallicFactor` is animated — which the pin
-  routes to ROUGHNESS — and correcting the factor bake below took the scene
-  from 0.251/3.841 to 0.128/1.936 on SDL_GPU and 0.086/1.328 on Dawn. What
-  remains is a structured interior difference on that sphere alone, with
-  iridescence at factor 1 and its index of refraction and maximum thickness
-  also animated. Both backends agree with each other to one channel step,
-  which places the cause CPU-side.
+- [x] **CLOSED.** Scene 253's **transparency** sphere. `whiteFallback` in
+  `loader-gltf/animation-pointer-basecolor.ts` is the predicate this entry
+  asked for: a base colour factor that is *animated*, on a material with *no
+  base colour image*, bakes a fully white `[1,1,1,1]` texel and keeps the real
+  factor — alpha included — in the uniform for the pointer writer. Our loader
+  baked the factor into the texel *and* left its alpha in the uniform, so the
+  0.502 authored alpha multiplied the 0.648 animated one to 0.326 against the
+  browser's 0.648. That ratio, 0.5019, is the 0.5052 the images measured.
+  Ported as a `collect_animated_base_color` pre-pass — a pre-pass upstream too,
+  and for the same reason: materials are built before animations are read.
+
+  Dawn **0.086/1.328 → 0.002/0.030**, SDL_GPU **0.128/1.936 → 0.047/0.681**;
+  thresholds tightened to 0.06/0.8 and 0.005/0.05.
+
+  It leaves one thing behind, which is a new entry rather than a residue of
+  this one: the backends agreed to one channel step while the alpha defect
+  dominated both, and now disagree at MAD 0.044. Scene 253 transmits, and
+  SDL_GPU's transmission pass processes the resolved pixel once where the pin
+  processes each MSAA sample — the same gap Scene 33 measures — so the SDL_GPU
+  side of that entry now has a second scene behind it.
+
+  The original diagnosis, kept because the method is reusable:
+
+  The scene is a measured gate
+  but its region figure carries a defect rather than a floor: 0.128/1.936 on
+  SDL_GPU and 0.086/1.328 on Dawn, and both backends agree with each other to
+  one channel step, which places the cause CPU-side.
+  **The sphere is the one labelled Transparency, not the iridescence one this
+  entry named until it was measured per object.** Boxing every object in the
+  grid and taking its own MAD puts that sphere at **20.582** and leaves every
+  other object at or below 1.346 — the iridescence sphere is 0.644 — so it
+  carries essentially the whole region figure on its own. Re-measure per
+  object before reading any of the history below; the earlier attributions to
+  the iridescence and IOR spheres were made from crops.
+  Inverting the pinned image processing (exposure 0.8, contrast 1.2, tonemap
+  on) and comparing the sphere against the background it composites over, the
+  native contribution above that background is **0.5052 / 0.5051 / 0.5054** of
+  the browser's across R/G/B. A scalar that constant across channels is the
+  alpha composition rather than the shading.
+  Both sides carry the same input: the browser's animated material buffer
+  (`buffers.json` #230, eight writes) decodes to `baseColorFactor
+  (1, 1, 1, 0.647995174)` with `materialAlpha` 1, and the native capture's
+  material 4 is `BLEND` with base color `(1, 1, 1, 0.647995174)`. So the
+  animated value is not the divergence.
+  **The alpha the two sides blend with is measured, not inferred.** Patching
+  the deployed `pbr.frag.native.wgsl` to return a term as greyscale with output
+  alpha forced to 1 and running it under Dawn, then inverting the pinned image
+  processing, reads any shader value directly; an opaque sphere calibrates the
+  inversion (alpha 1.0 recovers as 1.00146). That gives, on the transparency
+  sphere:
+
+  | term | value |
+  | --- | --- |
+  | final output alpha | 0.32886 |
+  | `v_32`, the base alpha chain | 0.32274 |
+  | `v_30.w`, the base-colour texel's alpha | 0.50330 |
+  | `base_color_factor.w` in our uniform | 0.647995174 |
+
+  So the texel alpha and the uniform alpha multiply: 0.5033 x 0.648 = 0.326.
+  Against the browser's 0.648 that is a ratio of 0.5075, which is the
+  0.5052 the images measure. The BLEND arm's specular boost contributes 0.006
+  and is not the cause.
+
+  **The texel alpha is the material's LOAD-TIME alpha and the uniform is its
+  ANIMATED one.** The asset gives material 4 (`PBRProperties-Transparent`)
+  `baseColorFactor [1, 1, 1, 0.5019608]` — exactly the 128/255 in the texel —
+  and animates `/materials/4/pbrMetallicRoughness/baseColorFactor`. The
+  generated loader bakes the load-time factor into the fallback texel
+  (`gltf-loader-cpp.ts`, the `base_color_texture.bytes.empty()` branch) and
+  reverts only `.r/.g/.b` to one, leaving `.a` in the uniform for the pointer
+  writer to overwrite.
+
+  The answer — `uploadBaseColorFactorTexture` does bake alpha
+  (`Math.round(clamp(f[3]) * 255)`), so the bake itself matched, but the
+  capture carried no 1x1 texel with alpha 128, which said the animated factor
+  was not reaching that path at all. It reaches a *different* one:
+  `whiteFallback` swaps the factor for `[1,1,1,1]` before the bake and returns
+  the real one to be carried as a uniform field. Note the ORM branch
+  immediately above ours documents the *opposite* resolution for its own
+  factors — the pointer drives the uniform and the texel keeps the authored
+  value — so the two factors did not share an answer, which is exactly why
+  this had to be read rather than assumed.
   Eliminated by measurement, so do not retry: every material uniform (read
   back with `scene -- uniforms scene253 --size 48 --module 21`), the
   refraction parameters, the horizon-occlusion term the reference itself
-  emits as 1.0, occlusion strength, the unlit path, environment rotation at 0,
-  the image-processing pass, and the animation clock. Note the spheres are
-  laid out Volume, Transmission, Iridescence, IOR by node translation — NOT
-  in label order, which cost real time.
+  emits as 1.0 (our `v_99 * v_99` is the pin's `eho` — it squares inside
+  `environmentHorizonOcclusion`, we square at the use site), occlusion
+  strength, the unlit path, environment rotation at 0, the image-processing
+  pass, and the animation clock. `scene -- diff scene253` adds that 65 of 98
+  native uniform fields agree exactly and the rest are layout artifacts, so
+  the inputs are not it. Note the row-1 spheres are laid out Volume,
+  Transmission, Iridescence, IOR by node translation — NOT in label order.
 - [ ] Extend `KHR_materials_specular` past its two factors. Scene 244
   measures `specularFactor` and `specularColorFactor`; `specularTexture` and
   `specularColorTexture` fail explicitly at load rather than being folded

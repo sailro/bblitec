@@ -1332,6 +1332,56 @@ std::uint8_t linear_to_srgb_byte(float value) {
         std::round(encoded * 255.0));
 }
 
+// animation-pointer-basecolor.ts#collectBaseColorDefs: which materials have
+// their base colour factor driven by a KHR_animation_pointer channel. It is a
+// pre-pass upstream for the same reason it is one here — materials are built
+// before animations are read, and the answer changes how a material is built.
+std::vector<bool> collect_animated_base_color(
+    const JsonObject& document,
+    std::size_t material_count) {
+    std::vector<bool> animated(material_count, false);
+    for (const ts::JsonValue& animation : array_or_empty(document, "animations")) {
+        for (const ts::JsonValue& channel :
+             array_or_empty(animation.as_object(), "channels")) {
+            const ts::JsonValue* target =
+                optional(channel.as_object(), "target");
+            if (target == nullptr) continue;
+            const ts::JsonValue* extensions =
+                optional(target->as_object(), "extensions");
+            if (extensions == nullptr) continue;
+            const ts::JsonValue* pointer_extension = optional(
+                extensions->as_object(), "KHR_animation_pointer");
+            if (pointer_extension == nullptr) continue;
+            const ts::JsonValue* pointer =
+                optional(pointer_extension->as_object(), "pointer");
+            if (pointer == nullptr) continue;
+            const std::string path = pointer->as_string();
+            const std::string prefix = "/materials/";
+            const std::string suffix =
+                "/pbrMetallicRoughness/baseColorFactor";
+            if (path.size() <= prefix.size() + suffix.size()) continue;
+            if (path.compare(0, prefix.size(), prefix) != 0) continue;
+            if (path.compare(
+                    path.size() - suffix.size(),
+                    suffix.size(),
+                    suffix) != 0) {
+                continue;
+            }
+            const std::string digits = path.substr(
+                prefix.size(),
+                path.size() - prefix.size() - suffix.size());
+            if (digits.empty() ||
+                digits.find_first_not_of("0123456789") != std::string::npos) {
+                continue;
+            }
+            const std::size_t index =
+                static_cast<std::size_t>(std::stoull(digits));
+            if (index < animated.size()) animated[index] = true;
+        }
+    }
+    return animated;
+}
+
 MaterialHandle load_material(
     Engine& engine,
     const JsonObject& material_json,
@@ -1340,7 +1390,8 @@ MaterialHandle load_material(
     const std::vector<BufferViewInfo>& views,
     const JsonArray& images,
     const JsonArray& textures,
-    const JsonArray& samplers) {
+    const JsonArray& samplers,
+    bool animated_base_color) {
     MaterialRecord material;
     material.emissive_factor = Color3{0.0f, 0.0f, 0.0f};
     material.specular_aa = true;
@@ -1386,25 +1437,37 @@ MaterialHandle load_material(
             material.roughness_factor = 1.0f;
         }
         if (material.base_color_texture.bytes.empty()) {
-            // Pinned uploadBaseColorFactorTexture: the factor bakes
-            // into the sRGB fallback texel (alpha as a linear byte)
-            // and the shader uniform reverts to white; the raw alpha
-            // stays on the record for the pinned blend semantics.
-            material.base_color_fallback = {
-                linear_to_srgb_byte(material.base_color_factor.r),
-                linear_to_srgb_byte(material.base_color_factor.g),
-                linear_to_srgb_byte(material.base_color_factor.b),
-                static_cast<std::uint8_t>(
-                    std::round(
-                        std::clamp(
-                            material.base_color_factor.a,
-                            0.0f,
-                            1.0f) *
-                        255.0f)),
-            };
-            material.base_color_factor.r = 1.0f;
-            material.base_color_factor.g = 1.0f;
-            material.base_color_factor.b = 1.0f;
+            if (animated_base_color) {
+                // animation-pointer-basecolor.ts#whiteFallback: a base
+                // colour factor that is animated, on a material with no
+                // base colour image, bakes a fully WHITE texel and keeps
+                // the real factor — alpha included — in the uniform for
+                // the pointer writer to overwrite. Baking the factor here
+                // as well multiplies it in twice: Scene 253's Transparency
+                // sphere carried 0.502 in the texel and 0.648 in the
+                // uniform against the browser's 0.648 alone.
+                material.base_color_fallback = {255, 255, 255, 255};
+            } else {
+                // Pinned uploadBaseColorFactorTexture: the factor bakes
+                // into the sRGB fallback texel (alpha as a linear byte)
+                // and the shader uniform reverts to white; the raw alpha
+                // stays on the record for the pinned blend semantics.
+                material.base_color_fallback = {
+                    linear_to_srgb_byte(material.base_color_factor.r),
+                    linear_to_srgb_byte(material.base_color_factor.g),
+                    linear_to_srgb_byte(material.base_color_factor.b),
+                    static_cast<std::uint8_t>(
+                        std::round(
+                            std::clamp(
+                                material.base_color_factor.a,
+                                0.0f,
+                                1.0f) *
+                            255.0f)),
+                };
+                material.base_color_factor.r = 1.0f;
+                material.base_color_factor.g = 1.0f;
+                material.base_color_factor.b = 1.0f;
+            }
         }
     }
     const ts::JsonValue* normal_texture =
@@ -1936,9 +1999,13 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     }
     std::vector<MaterialHandle> materials;
     materials.reserve(material_json.size());
-    for (const ts::JsonValue& value : material_json) {
+    const std::vector<bool> animated_base_color =
+        collect_animated_base_color(document, material_json.size());
+    for (std::size_t index = 0; index < material_json.size(); ++index) {
         materials.push_back(load_material(
-            engine, value.as_object(), buffer, container, views, image_json, texture_json, sampler_json));
+            engine, material_json[index].as_object(), buffer, container, views,
+            image_json, texture_json, sampler_json,
+            animated_base_color[index]));
     }
 
     std::vector<int> parents(node_json.size(), -1);

@@ -7,7 +7,7 @@ evidence under it. The recurring cost in this project has never been a
 hard bug — it has been an afternoon spent inferring from a pixel residual
 something that one command prints directly.
 
-Two rules make the rest of this page work:
+Three rules make the rest of this page work:
 
 - **Capture before theorizing.** A hypothesis that was not derived from a
   capture is a guess, and a guess that happens to sound mechanical is the
@@ -44,6 +44,7 @@ meaningful, and stopping early is how a wrong branch gets taken.
 | 4 | What exactly did the browser upload into that buffer? | `scene -- capture <id>` then `scene -- uniforms <id> --size N` |
 | 5 | Which draw owns the bad pixels? | attribution buffers in `artifacts/parity/<id>` |
 | 6 | Does removing the feature remove the residual? | copy the scene to `examples/`, strip it, `parity --recapture-reference` |
+| 7 | Did we derive the material's features at all? | `scene -- compose <id>` — composes each material through the pin and checks the whole fragment against the captured one |
 
 ### 1. Is the measurement real?
 
@@ -77,8 +78,13 @@ loader. Disagreement puts it on the GPU side — a pipeline state, a shader
 translation, a format. This is the sharpest single bit of information
 available, and it costs one command.
 
-Scenes 9 and 37 are not bit-stable on Dawn from run to run; re-run before
-reading anything into a moved Dawn cell for those two.
+Scenes 9 and 37 are not bit-stable on Dawn from run to run, so a moved Dawn
+cell for those two means nothing on its own — `scene -- neutrality` knows that
+and reports them as expected wobble. The scope is measured rather than
+assumed: SDL_GPU is bit-identical across runs and so is Dawn under
+`BBLITE_MSAA=1`, and only 4x Dawn moves, by a few dozen pixels of 921600, all
+of them by exactly one. So it is the multisampled path, and nothing else about
+those two scenes is in question.
 
 ### 3. `scene -- diff` — the two captures, paired
 
@@ -191,6 +197,41 @@ For an animated scene, capture the browser at the seek and at ±1 frame
 and compare against each. That gives the *scale* of one frame of motion,
 so a residual can be judged against it instead of against intuition.
 
+### 7. Did we derive the material's features at all?
+
+`scene -- compose <id|all>` runs every glTF material the scene loads through
+Babylon Lite's own `_computePbrMaterialFeatures` and `composeShader`, and
+checks the result against the fragments `scene -- capture` recorded from the
+browser. Byte-for-byte, not bit-by-bit: a fragment that matches proves the
+whole derivation at once, and one that does not prints the line where it
+stops agreeing, which names the arm.
+
+```
+scene253: 14 material(s), 15 captured PBR fragment(s)
+  ok   "PBRProperties-OcclusionStrength" [ibl|linear|reflectance] == 13-module-13.wgsl  (lights 2 +tonemap)
+  GAP  "Fringe" [ibl|reflectance|sheen] matches no captured fragment
+       closest 07-module-7.wgsl, diverges at line 60:
+         ours   ["@group(1)@binding(8) var brdfLUT:texture_2d<f32>;"]
+         theirs ["@group(1)@binding(8) var occlusionTexture:texture_2d<f32>;"]
+```
+
+That divergence is the finding: the reference binds a dedicated occlusion
+texture we do not, so the uv2 mask is wrong. Every material-mapping defect
+this was built for reads that way.
+
+Two things it deliberately does not derive, because they belong to the scene
+rather than to its asset and guessing them is wrong in both directions: the
+**light mode** — Scene 39's glTF declares two punctual lights and none of its
+captured fragments composes a light path at all — and **tone mapping**, which
+Scene 21 disables in scene code after `loadEnvironment` turned it on. Both are
+swept and the combination that reproduces the capture is reported, so the
+`(lights 2 +tonemap)` suffix is a measurement of the scene rather than an
+assumption about it.
+
+Its one blind spot is a material the *scene* built rather than the asset —
+`createPbrMaterial` plus a `setPbr*` call — which it flags rather than
+reporting as a bare gap.
+
 ## Sizing a scene before writing any code
 
 A blocker names a capability; it does not size one. The first error a
@@ -225,6 +266,11 @@ before choosing a shape.
 - **Both backends, or it is not integrated.** A scene measured on one
   backend has no independent check on it at all. Making the gap visible
   does not make it acceptable.
+- **Compose its materials.** If the scene loads a glTF, `scene -- compose
+  <id>` should report every material matching. A green parity gate does not
+  prove the derivation: a fragment missing an arm entirely still renders,
+  still measures, and simply comes out slightly wrong — which is how scene
+  253 held a published gate at 6 of 14 materials composing correctly.
 - **Orbit it.** A gate renders the one pose its author chose. Moving the
   camera in the demo window found a skybox large enough for the far plane
   to clip it and a background skybox breaking into a hard-edged quad once
@@ -260,10 +306,16 @@ the wrong one wastes the run:
 | PBR diagnostic buffers | The shader's intermediate terms — normal, reflectivity, irradiance, IBL, albedo, direct light, pre-tonemap HDR. The only view *inside* a fragment; uniforms tell you the inputs were right, these tell you which term went wrong. |
 | `geometry` | Frame-graph copy-task attachments at full resolution. `diff` does not look at render targets at all. |
 | `BBLITE_DEFORMATION_DUMP` | Bone palettes and morph weights per mesh. The render capture records the material and scene uniforms, not the skinning matrices. |
+| `compose` | Whether our *feature derivation* is right, which every tool above assumes. They compare what two renderers did; `compose` compares what Babylon Lite would have built against what we built it from, so it catches a fragment that is missing an arm entirely — the failure that renders as a plausible small bias and never as an error. |
 
 The shape to expect: `parity` says something is wrong, `--differential`
 says which side, `diff` names the value, and `capture`/`uniforms`/the
 attribution buffers confirm it against the browser's own state.
+
+`compose` sits slightly outside that chain and is worth running *first* when
+the suspect is a material: it needs no native build and no parity run, only a
+capture, and a scene whose materials all compose byte-identically has ruled
+out the entire class of defect in one command.
 
 ## Artifacts
 
@@ -289,8 +341,36 @@ These are the diagnostic ones:
 | `BBLITE_RENDER_CAPTURE=<path>` | write the frame's full CPU-side description as JSON |
 | `BBLITE_DEFORMATION_DUMP=<path>` | append first-frame bone palettes and morph weights as hexfloats |
 | `BBLITE_GPU_BACKEND=dawn` | select Dawn in a dual-backend build |
-| `BBLITE_GPU_DEBUG=1` | enable the backend debug layer |
+| `BBLITE_GPU_DEBUG=1` | enable the backend debug layer (prefer `parity --gpu-debug`, which also defuses SDL's assertion handler) |
+| `BBLITE_MSAA=1` | render single-sampled |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | drive a headless measured run |
+
+**A backend error message is rarely the error.** `SDL_GPU` reports a bad
+render pass only when the command list is submitted
+(`SDL_SubmitGPUCommandBufferAndAcquireFence: Failed to close command list`),
+which names neither the pass nor the parameter. Add `--gpu-debug` and it
+names both:
+
+```bash
+npm run scene -- parity scene116 --gpu-debug
+```
+
+That turned "scene 116 refuses `BBLITE_MSAA=1`" into `'!"Store op is RESOLVE
+or RESOLVE_AND_STORE but texture is not multisample!"'` — and into a
+three-line fix. The flag does two things, and the second is why setting
+`BBLITE_GPU_DEBUG=1` by hand used to hang instead of answering: SDL's default
+assertion handler *prompts*, so the run blocks forever waiting for an input
+nothing will give it. `--gpu-debug` sets `SDL_ASSERT=always_ignore` as well,
+which makes the assertion print and the run continue.
+
+**`BBLITE_MSAA=1` is a bisection tool, not just a diagnostic.** Comparing a
+backend against *itself* at one sample separates multisampling from
+everything else. It is what localised the scenes 9/37 run-to-run wobble:
+SDL_GPU and single-sampled Dawn are both bit-identical across runs, and only
+4x Dawn is not, which excluded the scene, the assets and the shading math in
+three commands. Compare backend-to-backend or run-to-run when you do this —
+the goldens are multisampled, so every scene looks worse against them at one
+sample and that number means nothing.
 
 Comparing native bone palettes against the browser's requires the mirror
 similarity map — negate column-major indexes 1, 2, 3, 4, 8 and 12 — which
