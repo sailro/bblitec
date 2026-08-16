@@ -1103,9 +1103,12 @@ export class StatementLowerer {
                     `${owner.name.text}.set expects exactly three numeric arguments.`,
                 );
             }
-            const vector = `bbl::Vec3{${call.arguments
+            // The camera's own position and target are JavaScript
+            // numbers upstream; the record keeps them as doubles so the
+            // composed view matrix rounds where the pin's cache does.
+            const vector = `bbl::Vec3d{${call.arguments
                 .map((argument) =>
-                    context.compileNumber(argument),
+                    context.compileNumber(argument, "double"),
                 )
                 .join(", ")}}`;
             context.emit(

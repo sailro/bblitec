@@ -11,6 +11,11 @@
 namespace bbl {
 
 inline constexpr float pi = 3.14159265358979323846f;
+// Camera angles are JavaScript numbers upstream, so `Math.PI / 2` reaches
+// `Math.cos` as a double and not as its float32 neighbour. The two differ
+// enough to matter: `cos` of the double is 6.1e-17 and of the float
+// -4.4e-8, which is a whole ulp band in the composed view matrix.
+inline constexpr double pi_double = 3.14159265358979323846;
 inline constexpr std::uint32_t invalid_handle = std::numeric_limits<std::uint32_t>::max();
 inline constexpr std::uint32_t material_family_pbr = 1u << 0;
 inline constexpr std::uint32_t material_family_standard = 1u << 1;
@@ -21,6 +26,16 @@ struct Vec3 {
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
+};
+
+// A position the pinned engine keeps as three JavaScript numbers. Only the
+// camera reaches this today: `src/camera/camera.ts` composes the view,
+// projection and view-projection in that precision and rounds once into its
+// `Float32Array` caches, so a float record would round a second time, earlier.
+struct Vec3d {
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
 };
 
 struct Vec2 {
@@ -734,39 +749,44 @@ struct LightRecord {
     std::vector<std::uint32_t> excluded_meshes;
 };
 
+// Every scalar the pinned camera factories hold is a plain JavaScript
+// number, and `src/camera/camera.ts` reads them into the view and
+// projection writers in that precision. The record therefore keeps
+// doubles and `camera_world_matrix` performs the single float32 store the
+// pinned `allocateMat4()` cache performs.
 struct CameraRecord {
     CameraKind kind = CameraKind::arc_rotate;
-    Vec3 position{};
-    float alpha = -pi / 2.0f;
-    float beta = 1.1f;
-    float radius = 6.0f;
-    Vec3 target{};
-    float fov = 0.8f;
-    float near_plane = 0.1f;
-    float far_plane = 1000.0f;
-    float inertia = 0.9f;
-    float panning_inertia = 0.9f;
-    float angular_sensibility = 1000.0f;
-    float speed = 2.0f;
-    float free_yaw = 0.0f;
-    float free_pitch = 0.0f;
-    float inertial_yaw_offset = 0.0f;
-    float inertial_pitch_offset = 0.0f;
-    Vec3 inertial_direction{};
-    float panning_sensibility = 50.0f;
-    float wheel_precision = 3.0f;
-    float inertial_alpha_offset = 0.0f;
-    float inertial_beta_offset = 0.0f;
-    float inertial_radius_offset = 0.0f;
-    float inertial_panning_x = 0.0f;
-    float inertial_panning_y = 0.0f;
+    Vec3d position{};
+    double alpha = -pi_double / 2.0;
+    double beta = 1.1;
+    double radius = 6.0;
+    Vec3d target{};
+    double fov = 0.8;
+    double near_plane = 0.1;
+    double far_plane = 1000.0;
+    double inertia = 0.9;
+    double panning_inertia = 0.9;
+    double angular_sensibility = 1000.0;
+    double speed = 2.0;
+    double free_yaw = 0.0;
+    double free_pitch = 0.0;
+    double inertial_yaw_offset = 0.0;
+    double inertial_pitch_offset = 0.0;
+    Vec3d inertial_direction{};
+    double panning_sensibility = 50.0;
+    double wheel_precision = 3.0;
+    double inertial_alpha_offset = 0.0;
+    double inertial_beta_offset = 0.0;
+    double inertial_radius_offset = 0.0;
+    double inertial_panning_x = 0.0;
+    double inertial_panning_y = 0.0;
     bool controls_enabled = false;
     // Orthographic projection state (src/camera/orthographic.ts). The
     // four clip planes stay derived from the half-extent, which is the
     // reached surface: vertically +/-half_height, horizontally scaled by
     // the render target's aspect ratio.
     bool orthographic = false;
-    float ortho_half_height = 1.0f;
+    double ortho_half_height = 1.0;
 };
 
 struct Scene;
@@ -1075,15 +1095,15 @@ LightHandle create_spot_light(
     float angle,
     float exponent,
     float intensity = 1.0f);
-CameraHandle create_arc_rotate_camera(Engine& engine, float alpha, float beta, float radius, Vec3 target);
-CameraHandle create_free_camera(Engine& engine, Vec3 position, Vec3 target);
+CameraHandle create_arc_rotate_camera(Engine& engine, double alpha, double beta, double radius, Vec3d target);
+CameraHandle create_free_camera(Engine& engine, Vec3d position, Vec3d target);
 CameraHandle create_default_camera(Engine& engine, Scene& scene);
 // Returns the same camera so the caller can keep using it as the live
 // orthographic bounds object the pinned entry point hands back.
 CameraHandle enable_orthographic_camera(
     Engine& engine,
     CameraHandle camera,
-    float half_height);
+    double half_height);
 
 RenderTargetHandle create_render_target(
     Engine& engine,

@@ -120,12 +120,19 @@ Vec3 normalize(Vec3 value) {
 
 Projection create_projection(const CameraRecord& camera, int width, int height) {
     Projection projection;
-    projection.eye = upstream::arc_rotate_eye_position(camera);
-    projection.forward = normalize(subtract(camera.target, projection.eye));
-    projection.right = normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, projection.forward));
-    projection.up = cross(projection.forward, projection.right);
-    projection.focal = static_cast<float>(height) / (2.0f * std::tan(camera.fov * 0.5f));
-    projection.near_plane = std::max(camera.near_plane, 0.000001f);
+    // The same basis the GPU backends read: columns [xAxis, yAxis,
+    // zAxis, eye] of the pinned camera world matrix.
+    const std::array<float, 16> world =
+        upstream::camera_world_matrix(camera);
+    projection.eye = Vec3{world[12], world[13], world[14]};
+    projection.forward = Vec3{world[8], world[9], world[10]};
+    projection.right = Vec3{world[0], world[1], world[2]};
+    projection.up = Vec3{world[4], world[5], world[6]};
+    projection.focal = static_cast<float>(
+        static_cast<double>(height) /
+        (2.0 * std::tan(camera.fov * 0.5)));
+    projection.near_plane = static_cast<float>(
+        std::max(camera.near_plane, 0.000001));
     projection.width = width;
     projection.height = height;
     return projection;

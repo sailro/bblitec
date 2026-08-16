@@ -26,8 +26,7 @@ Generated scenes contain:
 
 Current intentional adaptations include browser-wrapper erasure, immediate AOT
 `await`, compile-time asset materialization, SDL input translation, native
-shader backends, disabled cross-backend position-seeded background dither, and
-opt-in ground composition. Scenes reaching the plain-data language slice add
+shader backends, and opt-in ground composition. Scenes reaching the plain-data language slice add
 the value-copy object model (`plain-data-value-model`: path-bound locals are
 read-only copies, object parameters alias by native reference, sparse arrays
 zero-initialize) and the pinned seeded `Math.random`
@@ -177,6 +176,53 @@ round once per component at the float32 store, matching JavaScript's
 number semantics in the pinned `mat4ComposeInto` and matrix multiply;
 this makes native glTF instance matrices bit-identical to the
 browser's uploaded thin-instance buffers.
+
+**The camera's scalars are doubles, and each float32 store in the chain is
+one the pin performs.** `alpha`, `beta`, `radius`, `target`, `position`,
+`fov`, `nearPlane` and `farPlane` are plain JavaScript numbers upstream,
+which `src/camera/camera.ts` reads into the view and projection writers at
+that precision before storing into the `allocateMat4()` `Float32Array`
+caches. `CameraRecord` keeps them as `double` and `Vec3d`, and the chain
+reproduces the pinned stores in order: `camera_world_matrix`
+(`mat4LookAtWorldLHToRef` over the eye `arc-rotate.ts` composes),
+`build_view_matrix` (`getViewMatrix`, reading that float32 world matrix
+back), `mat4PerspectiveLHToRef`, `mat4MultiplyInto`. A float record would
+round one store early, and that is not a rounding-sized difference:
+`Math.PI / 2` has `cos = 6.1e-17` as a double and `-4.4e-8` as its float32
+neighbour, which moves the whole second row of the view matrix.
+
+**The clip-z row is the one departure, and it reaches nothing else.** The
+pinned perspective maps `near -> 1` and `far -> 0`; the native main pass
+keeps `near -> 0`. `mat4PerspectiveLHToRef` writes only `[0]`, `[5]`,
+`[10]`, `[11]` and `[14]`, so in the composed view-projection clip `x`,
+`y` and `w` are products of rows `[0]`, `[5]` and the view's own `z` row,
+and `[10]`/`[14]` reach clip `z` alone. A depth convention therefore
+cannot move a coverage mask or a perspective-correct varying. Against the
+browser's uploaded matrix, that is the whole of the difference: thirteen
+of the sixteen elements are equal bit for bit and the three that are not
+are that row.
+
+**The pinned background dither reproduces on both backends, and which
+fragment carries it is a pinned fork.** `WGSL_DITHER` seeds
+`fract(sin(dot(worldPosition.xy, k)) * K)` on the interpolated world
+position, whose low bits follow the barycentrics, so it reproduces only
+where the composed view-projection agrees with the pinned engine bit for
+bit. It is the whole of the background residual on a scene whose
+background is otherwise flat: Scene 6 measures 0.314 background
+attribution without it and 0.000 with it, on SDL_GPU as well as Dawn —
+offline DXC compiles the hash to the same result the browser's compiler
+does.
+
+The fork is upstream's. `background-ground.ts` and
+`background-dds-skybox.ts` prefix `WGSL_DITHER` (behind their shared
+`enableNoise`, whose default is `true` and which no corpus scene sets),
+`background-solid-skybox.ts` prefixes it unconditionally, and
+`background-hdr-skybox.ts` — the arm an environment cubemap skybox takes
+— composes none at all. One generated fragment serves both skyboxes, so
+each PAL picks the dithered variant except when
+`skybox_uses_environment`. Dithering the environment arm is not a small
+error: it puts ±1 on roughly half the background pixels of Scenes 8 and
+21, which is 0.129 to 0.343 and 0.330 to 0.537 full MAD.
 glTF occlusion follows Babylon's `buildDefaultPbrTexturesExt` contract: an
 `occlusionTexture` on TEXCOORD_1 without a metallic-roughness image keeps the
 factor-driven ORM slot and binds the occlusion image through a dedicated

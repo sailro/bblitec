@@ -26,7 +26,10 @@ export interface MeshIntrinsicContext
     compileStringLiteral(
         expression: ts.Expression,
     ): string;
-    compileNumber(expression: ts.Expression): string;
+    compileNumber(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;

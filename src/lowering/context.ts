@@ -422,6 +422,16 @@ export class LoweringContext {
         return text.includes(".") || /e/i.test(text) ? `${text}f` : `${text}.0f`;
     }
 
+    /**
+     * The same constant where the pinned value is a JavaScript number the
+     * generated code must reach at that precision — camera scalars, and any
+     * term a pinned writer computes before its single `Float32Array` store.
+     */
+    public doubleLiteral(value: number): string {
+        const text = String(value);
+        return text.includes(".") || /e/i.test(text) ? text : `${text}.0`;
+    }
+
     public cppColor3(values: [number, number, number]): string {
         return `Color3{${values.map((value) => this.floatLiteral(value)).join(", ")}}`;
     }

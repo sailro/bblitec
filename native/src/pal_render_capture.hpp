@@ -141,6 +141,22 @@ public:
         }
         first_ = false;
     }
+    // The camera scalars are doubles, and printing them through the
+    // float overload would hide exactly the digits this capture exists
+    // to compare against the browser's.
+    void value(double number) {
+        separate();
+        if (std::isfinite(number)) {
+            std::ostringstream text;
+            text << std::setprecision(17) << number;
+            *stream_ << text.str();
+        } else if (std::isnan(number)) {
+            *stream_ << "\"nan\"";
+        } else {
+            *stream_ << (number > 0.0 ? "\"inf\"" : "\"-inf\"");
+        }
+        first_ = false;
+    }
 
     // Named shorthands. Every one of these is a "field: value" pair, and
     // writing them as one call each is what keeps the dumps below
@@ -162,6 +178,14 @@ public:
         end_array();
     }
     void field(const char* name, const Vec3& vector) {
+        key(name);
+        begin_array();
+        value(vector.x);
+        value(vector.y);
+        value(vector.z);
+        end_array();
+    }
+    void field(const char* name, const Vec3d& vector) {
         key(name);
         begin_array();
         value(vector.x);

@@ -4031,15 +4031,23 @@ bool run_dawn_engine(Engine& engine) {
     rebuild_meshes();
 
     if (use_skybox) {
-        // The dithered variant stays disabled until the camera
-        // view-projection composition is bit-identical to the pinned
-        // engine: the dither hash seeds on interpolated world
-        // positions whose low bits follow the barycentrics, so the
-        // current VP epsilon differences decorrelate the noise and
-        // add variance instead of cancelling it (measured on scene 6:
-        // 0.283 -> 0.333 full MAD).
-        state.skybox_module =
-            load_wgsl_module(state, "background-skybox.frag");
+        // Which arm of the pinned skybox this is decides whether it
+        // dithers at all: background-dds-skybox.ts prefixes WGSL_DITHER,
+        // while background-hdr-skybox.ts -- the arm an environment
+        // cubemap skybox takes -- composes none. One generated fragment
+        // serves both, so the variant is selected here.
+        //
+        // The dither seeds on interpolated world positions whose low
+        // bits follow the barycentrics, so it reproduces only where the
+        // composed view-projection agrees with the pinned engine bit for
+        // bit. That holds on Dawn for clip x, y and w; SDL_GPU keeps the
+        // undithered fragment because its offline DXC compilation of the
+        // hash decorrelates the noise.
+        state.skybox_module = load_wgsl_module(
+            state,
+            scene.environment.skybox_uses_environment
+                ? "background-skybox.frag"
+                : "background-skybox-dither.frag");
         const upstream::SkyboxPlan skybox_plan =
             upstream::build_skybox_plan(scene.environment);
         std::array<GpuVertex, 8> skybox_quad{};
@@ -4464,8 +4472,9 @@ bool run_dawn_engine(Engine& engine) {
 #endif
 
     if (use_ground) {
+        // The pinned dither, on the same terms as the skybox above.
         state.ground_module =
-            load_wgsl_module(state, "background-ground.frag");
+            load_wgsl_module(state, "background-ground-dither.frag");
         const upstream::BackgroundPlan background =
             upstream::build_background_plan(scene.environment);
         std::array<GpuVertex, 4> ground_quad{};
@@ -4759,10 +4768,13 @@ bool run_dawn_engine(Engine& engine) {
             engine,
             camera);
 
+        // getEffectiveAspectRatio divides two JavaScript numbers, so
+        // the ratio reaches the projection writer in double.
+        const double aspect =
+            static_cast<double>(width) /
+            static_cast<double>(height);
         const std::array<float, 16> matrix =
-            upstream::build_view_projection(
-                camera,
-                static_cast<float>(width) / height);
+            upstream::build_view_projection(camera, aspect);
         // Written from the same plan, camera and matrix the uploads
         // below read, so the two backends' captures are comparable to
         // each other as well as to the browser's.
@@ -5142,11 +5154,11 @@ bool run_dawn_engine(Engine& engine) {
                                 engine.cameras.size()
                         ? engine.cameras[task.render.camera.value]
                         : camera;
-                const float task_aspect = task.render.canvas_size
-                    ? static_cast<float>(width) /
-                        static_cast<float>(height)
-                    : static_cast<float>(target.width) /
-                        static_cast<float>(target.height);
+                const double task_aspect = task.render.canvas_size
+                    ? static_cast<double>(width) /
+                        static_cast<double>(height)
+                    : static_cast<double>(target.width) /
+                        static_cast<double>(target.height);
                 const std::array<float, 16> task_matrix =
                     upstream::build_view_projection(
                         task_camera,

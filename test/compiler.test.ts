@@ -541,8 +541,9 @@ test("keeps closures over entry locals on the inline path", () => {
 
     assert.doesNotMatch(result.cpp, /bblscene::nudge/);
     assert.equal(
-        result.cpp.match(/\.alpha = static_cast<float>/g)
-            ?.length,
+        result.cpp.match(
+            /cameras\[v_camera\.value\]\.alpha = /g,
+        )?.length,
         2,
     );
 });
@@ -1745,7 +1746,7 @@ test("retains module-level let constants for main entries", () => {
 
     assert.match(
         result.cpp,
-        /create_arc_rotate_camera\(v_engine, 0\.0f, 1\.0f, 3\.0f/,
+        /create_arc_rotate_camera\(v_engine, 0\.0, 1\.0, 3\.0/,
     );
 });
 
@@ -1787,7 +1788,7 @@ test("binds inline engine creation exactly once", () => {
     );
     assert.match(
         result.cpp,
-        new RegExp(`${engine}\\.cameras\\[v_camera\\.value\\]\\.alpha = 1\\.0f`),
+        new RegExp(`${engine}\\.cameras\\[v_camera\\.value\\]\\.alpha = 1\\.0;`),
     );
 });
 
@@ -1867,8 +1868,8 @@ test("preserves compound assignments for numeric properties", () => {
     assert.match(result.cpp, /\.fixed_delta_ms \+= 1\.0f/);
     assert.match(result.cpp, /\.environment\.exposure -= 0\.1f/);
     assert.match(result.cpp, /\.environment\.contrast \+= 0\.2f/);
-    assert.match(result.cpp, /\.camera\.value\]\.alpha \+= 0\.3f/);
-    assert.match(result.cpp, /\.cameras\[v_camera\.value\]\.beta -= 0\.4f/);
+    assert.match(result.cpp, /\.camera\.value\]\.alpha \+= 0\.3;/);
+    assert.match(result.cpp, /\.cameras\[v_camera\.value\]\.beta -= 0\.4;/);
     assert.match(result.cpp, /\.base_color_factor\.a \+= 0\.1f/);
     assert.match(result.cpp, /\.specular_power -= 1\.0f/);
     assert.match(result.cpp, /\.position\.x -= 0\.02f/);
@@ -2146,7 +2147,6 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
             "compile-time-asset-materialization",
             "sdl-platform-boundary",
             "sdl-gpu-shader-backends",
-            "background-dither-sdl-gpu-disabled",
         ],
     );
     assert.deepEqual(
@@ -2177,7 +2177,7 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
     assert.match(result.cpp, /bbl::load_gltf/);
     assert.match(result.cpp, /bbl::load_environment/);
     assert.match(result.cpp, /bbl::create_default_camera/);
-    assert.match(result.cpp, /\.alpha = 1\.77538f/);
+    assert.match(result.cpp, /\.alpha = 1\.77538;/);
     assert.doesNotMatch(result.cpp, /performance|Object::assign|drawCallCount/);
     assert.match(result.cmake, /gltf_loader\.cpp/);
     assert.deepEqual(result.manifest.generatedSources, [
@@ -2450,7 +2450,7 @@ test("compiles Babylon Lite scene 268 orthographic camera", () => {
     ]);
     assert.match(
         result.cpp,
-        /bbl::enable_orthographic_camera\(v_engine, v_camera, 6\.0f\)/,
+        /bbl::enable_orthographic_camera\(v_engine, v_camera, 6\.0\)/,
     );
     // Module-level constant arrays resolve through their initializers:
     // the loop bound folds and the color table indexes at compile time.
@@ -2530,7 +2530,7 @@ test("compiles Babylon Lite scene 32 unlit glTF", () => {
 
     assert.ok(result.manifest.features.includes("loader:gltf"));
     assert.ok(result.manifest.features.includes("renderer:pbr"));
-    assert.match(result.cpp, /\.alpha \+= bbl::pi/);
+    assert.match(result.cpp, /\.alpha \+= 3\.141592653589793;/);
     assert.match(result.cpp, /UnlitTest\.glb/);
 });
 
@@ -2556,7 +2556,7 @@ test("compiles Babylon Lite scene 257 negative scale", () => {
     assert.ok(result.manifest.features.includes("renderer:pbr"));
     assert.match(
         result.cpp,
-        /static_cast<float>\(std::sqrt\(800\.0\)\)/,
+        /std::sqrt\(800\.0\)/,
     );
     assert.match(result.cpp, /Node_NegativeScale_01\.glb/);
 });
@@ -2572,7 +2572,7 @@ test("compiles Babylon Lite scene 266 negative scale spheres", () => {
     assert.match(result.cpp, /NegativeScaleTest\.glb/);
     assert.match(
         result.cpp,
-        /static_cast<float>\(\(3\.141592653589793 \/ 2\.15\)\)/,
+        /\(3\.141592653589793 \/ 2\.15\)/,
     );
 });
 
@@ -2812,7 +2812,7 @@ test("compiles Babylon Lite scene 145 standard geometry outputs", () => {
     assert.match(result.cpp, /auto v_camera = v_scene\.camera/);
     assert.match(
         result.cpp,
-        /\.position = bbl::Vec3\{\(-26\.695675321687403f\)/,
+        /\.position = bbl::Vec3d\{\(-26\.695675321687403\)/,
     );
     assert.match(
         result.cpp,
@@ -2840,7 +2840,7 @@ test("compiles Babylon Lite scene 248 external glTF", () => {
     const asset = result.manifest.assets.find(({ kind }) => kind === "gltf");
     assert.equal(asset?.output.endsWith(".glb"), true);
     assert.match(asset?.source ?? "", /TextureSettingsTest\.gltf$/);
-    assert.match(result.cpp, /\.fov = 0\.8f/);
+    assert.match(result.cpp, /\.fov = 0\.8;/);
     assert.match(result.cpp, /\.near_plane =/);
     assert.match(result.cpp, /\.far_plane =/);
 });
@@ -2926,7 +2926,7 @@ test("compiles Babylon Lite scene 7 camera target assignment", () => {
     assert.ok(result.manifest.features.includes("camera:default"));
     assert.match(
         result.cpp,
-        /\.target = bbl::Vec3\{\(-0\.025979936122894287f\), 1\.6681787837296724f, 0\.4591848850250244f\}/,
+        /\.target = bbl::Vec3d\{\(-0\.025979936122894287\), 1\.6681787837296724, 0\.4591848850250244\}/,
     );
     assert.match(result.cpp, /\.fixed_delta_ms = 16\.0f/);
 });
@@ -2941,7 +2941,7 @@ test("compiles Babylon Lite scene 35 camera target destructuring", () => {
     });
     assert.ok(result.manifest.features.includes("loader:gltf"));
     assert.ok(result.manifest.features.includes("camera:default"));
-    assert.match(result.cpp, /\.alpha \+= bbl::pi/);
+    assert.match(result.cpp, /\.alpha \+= 3\.141592653589793;/);
     assert.match(
         result.cpp,
         /\[\[maybe_unused\]\] double v_x = v_engine\.cameras\[v_cam\.value\]\.target\.x;/,

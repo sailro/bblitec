@@ -276,11 +276,17 @@ export function directPropertyAssignment(
 export interface AssignmentContext {
     lookup(identifier: ts.Identifier): Value;
     compileValue(expression: ts.Expression): Value;
-    compileNumber(expression: ts.Expression): string;
+    compileNumber(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
     compileBoolean(expression: ts.Expression): string;
     compileColor3(expression: ts.Expression): string;
     compileColor4(expression: ts.Expression): string;
-    compileVec3(expression: ts.Expression): string;
+    compileVec3(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
     objectProperty(
         object: ts.ObjectLiteralExpression,
         name: string,
@@ -466,7 +472,7 @@ export function emitPropertyAssignment(
             );
         }
         context.emit(
-            `${context.requireEngine(scene, expression)}.cameras[${scene.cpp}.camera.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right)};`,
+            `${context.requireEngine(scene, expression)}.cameras[${scene.cpp}.camera.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
         );
         return;
     }
@@ -522,7 +528,7 @@ export function emitPropertyAssignment(
             );
         }
         context.emit(
-            `${component.cpp} ${operator} ${context.compileNumber(expression.right)};`,
+            `${component.cpp} ${operator} ${context.compileNumber(expression.right, "double")};`,
         );
         return;
     }
@@ -682,7 +688,12 @@ export function emitPropertyAssignment(
                     ? context.compileColor3(expression.right)
                     : recordField.value === "boolean"
                       ? context.compileBoolean(expression.right)
-                      : context.compileNumber(expression.right);
+                      : context.compileNumber(
+                            expression.right,
+                            recordField.collection === "cameras"
+                                ? "double"
+                                : "float",
+                        );
             const stored = recordField.invert
                 ? `!(${value})`
                 : value;
@@ -738,7 +749,7 @@ export function emitPropertyAssignment(
                 "camera target",
             );
             context.emit(
-                `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].target = ${context.compileVec3(expression.right)};`,
+                `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].target = ${context.compileVec3(expression.right, "double")};`,
             );
             return;
         }
@@ -748,7 +759,7 @@ export function emitPropertyAssignment(
                 cameraRecordField(property);
             if (nativeProperty) {
                 context.emit(
-                    `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right)};`,
+                    `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
                 );
                 return;
             }

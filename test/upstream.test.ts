@@ -424,20 +424,21 @@ test("generates ArcRotate and default camera factories from upstream constants",
     const framing = lowerer.lowerDefaultFactory();
     const free = lowerer.lowerFreeFactory();
     const controls = lowerer.lowerControls();
-    assert.match(arc.source, /camera\.fov = 0\.8f/);
-    assert.match(arc.source, /camera\.angular_sensibility = 1000\.0f/);
-    assert.match(arc.source, /sine_beta = 0\.0001f/);
+    assert.match(arc.source, /camera\.fov = 0\.8;/);
+    assert.match(arc.source, /camera\.angular_sensibility = 1000\.0;/);
+    assert.match(arc.source, /sine_beta = 0\.0001;/);
     assert.match(arc.header, /arc_rotate_eye_position/);
+    assert.match(arc.header, /camera_world_matrix/);
     assert.match(framing.source, /radius = diagonal \* 1\.5f/);
-    assert.match(framing.source, /record\.near_plane = radius \* 0\.01f/);
-    assert.match(framing.source, /record\.far_plane = radius \* 1000\.0f/);
+    assert.match(framing.source, /record\.near_plane = radius \* 0\.01;/);
+    assert.match(framing.source, /record\.far_plane = radius \* 1000\.0;/);
     assert.match(free.source, /camera\.kind = CameraKind::free/);
-    assert.match(free.source, /camera\.angular_sensibility = 2000\.0f/);
-    assert.match(controls.source, /rotation_epsilon = 0\.001f/);
+    assert.match(free.source, /camera\.angular_sensibility = 2000\.0;/);
+    assert.match(controls.source, /rotation_epsilon = 0\.001;/);
     assert.match(controls.source, /camera\.inertial_alpha_offset \*= camera\.inertia/);
     assert.match(
         controls.source,
-        /if \(has_movement \|\| has_rotation\) \{\s*camera\.target = Vec3/,
+        /if \(has_movement \|\| has_rotation\) \{\s*camera\.target = Vec3d/,
     );
     const ortho = lowerer.lowerOrthographic();
     assert.equal(ortho.modulePath, "src/camera/orthographic.ts");
