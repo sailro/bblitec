@@ -29,6 +29,7 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_gpu_shared.hpp"
+#include "pal_render_capture.hpp"
 
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <SDL3/SDL.h>
@@ -4010,6 +4011,29 @@ bool run_gpu_engine(Engine& engine) {
                 upstream::build_skybox_view_projection(
                     camera,
                     static_cast<float>(width) / height);
+            // The render capture describes CPU state alone, so it is
+            // written as soon as the frame's plan, camera and matrix are
+            // final rather than after the passes -- the values it reads
+            // do not change between here and present, and writing it
+            // early means a driver failure later still leaves the
+            // description of the frame that failed.
+            if (
+                capture_ready &&
+                !captures.render_capture_saved &&
+                !frame_options.render_capture_path.empty()) {
+                write_render_capture(
+                    frame_options.render_capture_path,
+                    "sdl_gpu",
+                    scene,
+                    engine,
+                    camera,
+                    render_plan,
+                    matrix,
+                    static_cast<int>(width),
+                    static_cast<int>(height),
+                    frame);
+                captures.render_capture_saved = true;
+            }
             if (!scene.tasks.empty()) {
                 create_frame_graph_textures(
                     state,

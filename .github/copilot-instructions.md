@@ -4,7 +4,8 @@
 
 `bblitec` is an experimental compiler that lowers a reachable, statically
 analyzable subset of `@babylonjs/lite` TypeScript to C++20. The native runtime
-uses SDL3 for platform services and SDL_GPU for rendering.
+uses SDL3 for platform services, and renders through either SDL_GPU or Dawn —
+a scene is not integrated until it renders correctly on both.
 
 The goal is not to reimplement Babylon Lite manually. Prefer generated code
 derived from the pinned upstream TypeScript. Handwritten C++ belongs only in
@@ -17,11 +18,53 @@ Do not duplicate detailed facts in this file:
 - `docs/architecture.md`: pipeline, ownership, runtime, renderer, deformation
 - `docs/features.md`: supported feature families, compile-time versus run-time, boundaries
 - `docs/development.md`: commands, build order, capture metadata, troubleshooting
+- `docs/debugging.md`: the diagnostic ladder and the capture tools
 - `docs/fidelity.md`: semantic policy, adaptations, diagnostics
+- `docs/backends.md`: the two GPU render backends
 - `docs/status.md`: measured metrics, parity scenes, diagnostics
 - `TODO.md`: unfinished work only
 
 Read the relevant canonical page before changing that area.
+
+## Diagnose by capture, not by inference
+
+**This is the habit that matters most in this repository.** A rendering
+difference is answered by a command, not by reasoning about the picture.
+The recurring cost here has never been a hard bug — it has been an
+afternoon of inference that one command would have ended. If you are
+about to explain a rendering difference without having captured
+anything, stop and capture.
+
+```powershell
+npm run scene -- diff scene33                  # browser vs native, field by field
+npm run scene -- parity scene33 --differential # SDL_GPU vs Dawn: CPU side or GPU side
+npm run scene -- capture scene33               # the browser's shaders, buffers, draws
+npm run scene -- capture scene33 --native      # our uniforms, draw list, scene model
+npm run scene -- uniforms scene33 --size 96    # decode one browser buffer as named fields
+```
+
+| Question | Answer |
+| --- | --- |
+| Am I measuring the build and golden I think I am? | `parity` refuses a stale binary or payload; a golden is only valid for the registry parameters it was captured under |
+| CPU side or GPU side? | `parity --differential` — backends agreeing to one LSB puts it on ours |
+| Which value differs from Babylon Lite's? | `diff` |
+| What did the browser actually upload? | `capture`, then `uniforms` |
+| Which draw owns the bad pixels? | attribution buffers under `artifacts/parity/<id>` |
+| Does removing the feature remove the residual? | copy the scene to `examples/`, strip it, `parity --recapture-reference` |
+
+Two rules that exist because sessions were lost to their absence:
+
+- **Never call a residual a floor from statistics alone.** A floor claim
+  is a claim about a mechanism and needs one: the pinned line that does
+  something ours does not. Percentages of matching pixels are not that.
+- **Measure the PNG, do not eyeball it.** "The sprites are in the wrong
+  place" cost an hour; "exactly 7200 px at (640,180)-(719,269)" named the
+  bug immediately.
+
+`docs/debugging.md` carries the full ladder, how to read a `diff` report,
+and the compile-probe method for sizing an unintegrated scene before
+writing any code. Read it when starting an integration or chasing a
+residual.
 
 ## Pinned upstream
 
@@ -59,7 +102,18 @@ complete source map is maintained in `docs/architecture.md`.
 
 ## Renderer rules
 
-- SDL_GPU is the default for generated PBR scenes.
+- A build configures `BBLITE_BACKEND=BOTH` when the pinned Dawn library is
+  installed and SDL_GPU otherwise; `BBLITE_GPU_BACKEND=dawn` selects Dawn at
+  run time in a dual-backend build.
+- **Both backends, or the scene is not integrated.** A scene measured on one
+  backend has no independent check on it at all, and making the gap visible
+  (a flag, an unmeasured column, a TODO) documents an unfinished job rather
+  than making it acceptable.
+- Run the scene in the demo window and move the camera before calling an
+  integration done. A gate renders the one pose its author chose; orbiting has
+  found defects a green matrix passed. When it finds something, turn it into a
+  measurement — copy the scene to `examples/`, move its camera there, and
+  `parity --recapture-reference` — rather than a screenshot.
 - `BBLITE_GPU=0` forces the CPU fallback.
 - glTF material handling must be metadata-driven:
   `OPAQUE`, `MASK`, `BLEND`, alpha cutoff, and double-sided state. Do not add
@@ -84,11 +138,29 @@ An executing debug `.exe` may also cause `LNK1168`.
 
 Use the smallest relevant checks. Complete the validation matrix documented
 in `docs/development.md` for compiler, renderer, loader, shader, animation, or
-PAL milestones.
+PAL milestones:
+
+```powershell
+npm test
+npm run scenes:process
+npm run scenes:parity
+npm run status:verify
+```
+
+`scenes:process` *is* compile, shaders and build — naming the steps separately
+runs generation twice.
+
+For a change confined to TypeScript the cheap proof is stronger than the
+matrix: compile every scene and digest `generated/`. Byte-identical output plus
+an untouched `native/` tree means the build stamps match, which means the
+binaries are the same, which means no measurement can have moved. See
+`docs/development.md`.
 
 ## Workflow
 
-- Do not edit generated files as the source of truth.
+- Do not edit generated files as the source of truth. Hand-instrumented files
+  under `generated/` survive a `scene -- build` and are wiped by the next
+  `compile` — useful for disposable printf debugging, never for a fix.
 - Use `npm run scene -- process <source.ts>` for an unregistered scene.
 - Add a registry entry only for curated thresholds, custom references,
   environment flags, or attribution capabilities.

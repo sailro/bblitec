@@ -515,6 +515,10 @@ struct FrameOptions {
     std::string shader_directory;
     std::string copy_task_filter;
     std::string deformation_dump;
+    // Where to write the frame's full CPU-side description
+    // (pal_render_capture.hpp), for diffing against the browser's
+    // instrumented capture.
+    std::string render_capture_path;
     // Kept as written rather than pre-interpreted: the background and
     // ground flags accept "1"/"true" as well as "0"/"false", and each
     // default differs (a requested background is off unless asked for, a
@@ -570,6 +574,8 @@ inline FrameOptions read_frame_options() {
     options.copy_task_filter = environment_variable("BBLITE_COPY_TASK");
     options.deformation_dump =
         environment_variable("BBLITE_DEFORMATION_DUMP");
+    options.render_capture_path =
+        environment_variable("BBLITE_RENDER_CAPTURE");
     options.gpu_debug = environment_variable("BBLITE_GPU_DEBUG") == "1";
     options.test_pass = environment_variable("BBLITE_TEST_PASS") == "1";
     options.single_sample = environment_variable("BBLITE_MSAA") == "1";
@@ -718,6 +724,7 @@ public:
     bool id_buffer_saved = false;
     bool cluster_buffer_saved = false;
     bool diagnostics_saved = false;
+    bool render_capture_saved = false;
 
     [[nodiscard]] bool pending() const {
         return (!options_->screenshot_path.empty() &&
@@ -727,7 +734,9 @@ public:
             (!options_->cluster_buffer_path.empty() &&
              !cluster_buffer_saved) ||
             (!options_->diagnostic_directory.empty() &&
-             !diagnostics_saved);
+             !diagnostics_saved) ||
+            (!options_->render_capture_path.empty() &&
+             !render_capture_saved);
     }
 
     /** Whether the loop should run another frame. */
@@ -790,8 +799,9 @@ inline void reject_unsupported_frame_options(
     }
 }
 
-// The PBR diagnostic buffers both backends write, in the order the
-// comparison tool reads them (src/compare-lite-diagnostics.ts).
+// The PBR diagnostic buffers both backends write, in the order
+// `parity` records them against a scene whose registry entry asks for
+// attribution diagnostics.
 inline constexpr std::array<const char*, 9> pbr_diagnostic_names{
     "normal-gpu.png",
     "reflectivity-gpu.png",

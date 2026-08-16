@@ -31,10 +31,13 @@ npm run scene -- build scene1
 npm run scene -- process scene1
 npm run scene -- parity scene1
 npm run scene -- geometry scene145 --recapture-reference
+npm run scene -- diff scene1
 ```
 
 `process` runs compile, scene-local shader compilation, CMake configure, and
 parallel native build in order.
+`diff` captures both renderers and reports where they disagree; see
+[debugging](debugging.md) for the ladder it sits in.
 `geometry` captures each existing geometry-output copy task full-screen in
 Babylon Lite and native without changing the curated scene source.
 
@@ -526,6 +529,7 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_ASSET_DIR=<path>` | override asset directory |
 | `BBLITE_GPU_SHADER_DIR=<path>` | override shader directory |
 | `BBLITE_DEFORMATION_DUMP=<path>` | append first-frame bone palettes and morph weights as hexfloats (SDL_GPU deformation scenes) |
+| `BBLITE_RENDER_CAPTURE=<path>` | write the captured frame's full CPU-side description as JSON (both GPU backends) |
 | `BBLITE_BUILD_STAMP_OUT=<path>` | write the digest of the sources this executable was built from |
 
 Controls: left-drag orbit, right/middle-drag pan, wheel zoom; arrows and
@@ -666,6 +670,42 @@ texels. This workflow resolved the scene 243 occlusion gap and the
 scene 247 shading contracts recorded in
 [backends](backends.md#empirical-findings) and
 [fidelity](fidelity.md).
+
+## Native render capture
+
+The native half of the same question:
+
+```powershell
+npm run scene -- capture scene33 --native
+npm run scene -- capture scene33 --native --backend dawn
+```
+
+`BBLITE_RENDER_CAPTURE=<path>` makes either backend write the frame it
+screenshots as JSON: the scene, camera, environment, light, mesh and
+material records, the draw list in submission order with its pipeline and
+bucket, and every uniform block it builds. The blocks are rebuilt through
+the same generated `build_*_uniforms` functions the frame loop calls with
+the same `(scene, engine, camera, item)`, which is why both backends
+write byte-identical captures for a scene — and why this describes what
+our CPU computed rather than intercepting the graphics API. A backend
+that uploaded correct bytes to the wrong slot still looks correct here;
+that is what `parity --differential` is for.
+
+The run is subject to the same build-identity checks as a measured parity
+run, so a capture cannot silently describe a stale executable.
+
+```powershell
+npm run scene -- diff scene33
+npm run scene -- diff scene33 --backend dawn --recapture
+```
+
+`diff` takes both captures — capturing whichever is missing — and reports
+where they part: draw shapes, then uniform values field by field, then
+the texture sample expressions in each side's shaders. Native fields are
+named through the struct declarations in the scene's own generated
+`renderer_plan.hpp`; browser buffers through the structs in the browser's
+own composed shaders. See [debugging](debugging.md) for how to read the
+report, including why a byte-exact scene still lists entries.
 
 ## Build identity
 

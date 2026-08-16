@@ -2,7 +2,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { availableParallelism, totalmem } from "node:os";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
     runSceneParity,
@@ -10,6 +10,11 @@ import {
 } from "./parity-scene.js";
 import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
 import { runInstrumentedCapture } from "./capture-instrumented.js";
+import { runNativeCapture } from "./capture-native.js";
+import {
+    buildRenderDiff,
+    formatRenderDiff,
+} from "./render-diff.js";
 import {
     decodeCapturedUniforms,
     formatDecodedUniforms,
@@ -711,6 +716,61 @@ async function processScene(idOrSource: string): Promise<void> {
     await build(idOrSource);
 }
 
+/**
+ * Capture both sides of a scene and report every difference.
+ *
+ * The captures are taken unless they are already on disk, because the
+ * common shape of an investigation is one capture and many readings of
+ * it: re-rendering the browser page for every question would make the
+ * loop slow enough that it stops being the first thing anyone reaches
+ * for. `--recapture` forces both, which is what to use after any change
+ * to the scene, the compiler or the native build.
+ */
+async function runRenderDiff(
+    idOrSource: string,
+    rest: string[],
+): Promise<void> {
+    const argument = (name: string): string | undefined => {
+        const index = rest.indexOf(name);
+        return index >= 0 ? rest[index + 1] : undefined;
+    };
+    const scene = resolveScene(idOrSource);
+    const backend = argument("--backend") ?? "sdl_gpu";
+    const captureDirectory = resolve(
+        argument("--capture") ?? join("artifacts", "capture", scene.id),
+    );
+    const recapture = rest.includes("--recapture");
+    const seek = argument("--seek");
+    if (recapture || !existsSync(join(captureDirectory, "buffers.json"))) {
+        await runInstrumentedCapture(idOrSource, {
+            ...(seek !== undefined ? { seekSeconds: Number(seek) } : {}),
+            outputDirectory: captureDirectory,
+        });
+    }
+    const nativeCapturePath = join(
+        captureDirectory,
+        `native-${backend}.json`,
+    );
+    if (recapture || !existsSync(nativeCapturePath)) {
+        runNativeCapture(idOrSource, {
+            backend,
+            ...(seek !== undefined ? { seekSeconds: Number(seek) } : {}),
+            outputDirectory: captureDirectory,
+        });
+    }
+    const report = buildRenderDiff(
+        scene.id,
+        captureDirectory,
+        nativeCapturePath,
+        resolve(scene.output),
+    );
+    const reportPath = join(captureDirectory, `diff-${backend}.json`);
+    writeFileSync(reportPath, `${JSON.stringify(report, null, 1)}\n`);
+    console.log(formatRenderDiff(report));
+    console.log("");
+    console.log(`Full report: ${reportPath}`);
+}
+
 async function main(): Promise<void> {
     const [command, id, ...rest] = process.argv.slice(2);
     if (command === "list") {
@@ -776,6 +836,21 @@ async function main(): Promise<void> {
         const seek = argument("--seek");
         const skipDraw = argument("--skip-draw");
         const output = argument("--out");
+        const backend = argument("--backend");
+        // `--native` asks the same question of our renderer that the
+        // browser hooks ask of Babylon Lite's, so the two captures land
+        // in one directory and `diff` can pair them.
+        if (rest.includes("--native")) {
+            const result = runNativeCapture(id, {
+                ...(backend !== undefined ? { backend } : {}),
+                ...(seek !== undefined ? { seekSeconds: Number(seek) } : {}),
+                ...(output !== undefined ? { outputDirectory: output } : {}),
+            });
+            console.log(
+                `Native ${result.backend} capture written to ${result.capturePath}`,
+            );
+            return;
+        }
         await runInstrumentedCapture(id, {
             ...(seek !== undefined
                 ? { seekSeconds: Number(seek) }
@@ -789,8 +864,12 @@ async function main(): Promise<void> {
         });
         return;
     }
+    if (command === "diff" && id) {
+        await runRenderDiff(id, rest);
+        return;
+    }
     throw new Error(
-        "Usage: scene-command <list | show <id|source.ts> | compile|build|process|parity|geometry|capture|uniforms <id|source.ts|all> [options]>",
+        "Usage: scene-command <list | show <id|source.ts> | compile|build|process|parity|geometry|capture|uniforms|diff <id|source.ts|all> [options]>",
     );
 }
 
