@@ -611,13 +611,47 @@ runtime gaps may remain hidden behind it.
   (1, 1, 1, 0.647995174)` with `materialAlpha` 1, and the native capture's
   material 4 is `BLEND` with base color `(1, 1, 1, 0.647995174)`. So the
   animated value is not the divergence.
-  One asymmetry is found and not yet explained: the generated fragment's BLEND
-  arm outputs `clamp(baseAlpha + luminance(specular)^2, 0, 1)`, while every
-  pinned module in this capture ends `return vec4(color, alpha *
-  materialAlpha)` with no specular term at all. Establish which pinned slot
-  emits that boost and when the composer includes it — but note the sign does
-  not obviously work out, since a boost makes native *more* opaque where it
-  measures darker, so treat it as a lead rather than the answer.
+  **The alpha the two sides blend with is measured, not inferred.** Patching
+  the deployed `pbr.frag.native.wgsl` to return a term as greyscale with output
+  alpha forced to 1 and running it under Dawn, then inverting the pinned image
+  processing, reads any shader value directly; an opaque sphere calibrates the
+  inversion (alpha 1.0 recovers as 1.00146). That gives, on the transparency
+  sphere:
+
+  | term | value |
+  | --- | --- |
+  | final output alpha | 0.32886 |
+  | `v_32`, the base alpha chain | 0.32274 |
+  | `v_30.w`, the base-colour texel's alpha | 0.50330 |
+  | `base_color_factor.w` in our uniform | 0.647995174 |
+
+  So the texel alpha and the uniform alpha multiply: 0.5033 x 0.648 = 0.326.
+  Against the browser's 0.648 that is a ratio of 0.5075, which is the
+  0.5052 the images measure. The BLEND arm's specular boost contributes 0.006
+  and is not the cause.
+
+  **The texel alpha is the material's LOAD-TIME alpha and the uniform is its
+  ANIMATED one.** The asset gives material 4 (`PBRProperties-Transparent`)
+  `baseColorFactor [1, 1, 1, 0.5019608]` — exactly the 128/255 in the texel —
+  and animates `/materials/4/pbrMetallicRoughness/baseColorFactor`. The
+  generated loader bakes the load-time factor into the fallback texel
+  (`gltf-loader-cpp.ts`, the `base_color_texture.bytes.empty()` branch) and
+  reverts only `.r/.g/.b` to one, leaving `.a` in the uniform for the pointer
+  writer to overwrite.
+
+  What is left is which arm the pin takes, because it cannot be taking ours:
+  `uploadBaseColorFactorTexture` does bake alpha (`Math.round(clamp(f[3]) *
+  255)`), so the bake itself matches, but baking leaves the uniform at its
+  defaults — and the browser's uniform for this material carries the animated
+  `(1, 1, 1, 0.647995174)`, and no 1x1 texel in the capture carries alpha 128.
+  So an animated base-colour factor evidently does not reach the factor-texture
+  path at all upstream. Find that predicate in the pinned glTF material setup
+  and gate our bake on it. Note the ORM branch immediately above ours documents
+  the *opposite* resolution for its own factors — the pointer drives the
+  uniform and the texel keeps the authored value — so the two factors do not
+  share an answer and the base-colour one has to be read rather than assumed.
+  Materials 2 and 11 animate the same pointer with non-unit RGB, so they are
+  the second and third test cases.
   Eliminated by measurement, so do not retry: every material uniform (read
   back with `scene -- uniforms scene253 --size 48 --module 21`), the
   refraction parameters, the horizon-occlusion term the reference itself
