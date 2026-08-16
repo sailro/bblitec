@@ -413,15 +413,44 @@ comparison, and the empirical guards. What is left:
   the same-browser raster floor unless an instrumented capture says
   otherwise.
 - [ ] Find why Scenes 9 and 37 do not render bit-identically on Dawn across
-  runs. Both are stable on SDL_GPU and both wobble on Dawn with no code change
-  at all: three consecutive differential runs of Scene 37 put its
-  SDL_GPU-versus-Dawn exact-match count at 920709, 920714, and 920773 of
-  921600, and Scene 9 left its baseline cell and returned to it exactly. The
-  published values are unaffected — every wobble is far below a rounded
+  runs. **Localised to Dawn's multisampled path; the scene, the assets, the
+  CPU side and the image-processing average are all excluded by measurement.**
+
+  Scene 37 reproduces every time and is the one to work on; Scene 9 wobbles
+  rarely. Hashing `artifacts/parity/scene37/native-*.png` across repeated
+  `parity scene37 --differential` runs gives:
+
+  | render | across runs |
+  | --- | --- |
+  | SDL_GPU | **bit-identical** (3 of 3) |
+  | Dawn, 4x MSAA | **differs every run** (6 of 6 pairs) |
+  | Dawn, `BBLITE_MSAA=1` | **bit-identical** (3 of 3) |
+
+  The differences are 11–70 pixels of 921600, **every one of them exactly
+  ±1**, scattered through a band around x∈[460,785] y∈[280,355] whose members
+  move from pair to pair. They sit on textured, high-gradient pixels (median
+  local gradient 17), not on flat areas.
+
+  What that rules out. The asset carries **no animations and no skins** and
+  the registry pins no clock for this scene, so nothing time-dependent varies
+  — and the same geometry shader is bit-stable single-sampled, so it is not
+  the shading math or a nondeterministic DXC. The Dawn image-processing pass
+  sums samples in a fixed order (`for i in 0..n { c += ip(textureLoad(s,px,i)) }`
+  then `c/n`), so the average is not the source either; the *samples* differ.
+  Every colour and depth attachment on the geometry path uses `LoadOp_Clear`,
+  so stale-attachment leakage is not the obvious candidate it would otherwise
+  be.
+
+  What is left is per-sample coverage or per-sample depth in the multisampled
+  geometry pass. Next step is an instrumented capture of the multisampled
+  attachment itself rather than the resolved frame.
+
+  The published values are unaffected — every wobble is far below a rounded
   digit — but it makes the documented neutrality proof ("snapshot every
   `report-differential.json`, compare cell by cell") report these two scenes
-  as moved for any change whatsoever, so the proof needs a repeat run to
-  separate a real regression from this.
+  as moved for any change whatsoever. Until it is closed, either re-run to
+  separate a real regression from this, or compare those two scenes under
+  `BBLITE_MSAA=1`, which is bit-stable.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 
