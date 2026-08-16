@@ -74,13 +74,18 @@ scene is considered for integration, before implementing native fixes:
 6. Run the scene in the demo window and move the camera before calling the
    integration done. A gate renders the one pose its author chose, so a
    defect that is off-screen or edge-on there passes a green matrix: orbiting
-   found a skybox large enough for the camera's far plane to clip it, and an
-   environment ground that draws as a hard-edged opaque quad where the pinned
-   one is invisible. This stays a manual step deliberately — a second capture
+   found a skybox large enough for the camera's far plane to clip it, and a
+   background skybox that breaks into a hard-edged quad once the camera leaves
+   the cube. This stays a manual step deliberately — a second capture
    per scene would double the matrix to cover something only a few scenes
    reach. When it finds something, turn it into a measurement rather than a
    screenshot: copy the scene into `examples\`, move its camera there, and
    `parity --recapture-reference` so both sides are compared at that pose.
+   Then bisect with the runtime switches before trusting the description the
+   defect came with — `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0` each remove
+   one background element, and the one whose removal makes the measurement
+   *worse* is not the cause. Both defects above were first attributed to the
+   wrong element by eye.
 
 Do not wait for a high MAD investigation to perform this review. Early history
 inspection prevents repeating Babylon Lite's own parity debugging and helps

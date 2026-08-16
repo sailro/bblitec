@@ -573,6 +573,13 @@ async function main(): Promise<void> {
             result.manifest.features.includes(
                 "material:sheen-albedo-scaling",
             ),
+        // The coat's base-F0 remap is composed for every clearcoat except a
+        // glTF one: `gltf-ext-clearcoat.ts` is the single caller passing
+        // `useF0Remap: false`. So it follows the scene-code setter and not
+        // the asset specializer's `KHR_materials_clearcoat` flag.
+        clearcoatF0Remap: result.manifest.features.includes(
+            "material:clearcoat-f0-remap",
+        ),
         iridescence: specializationFeatures.iridescence,
         dispersion: specializationFeatures.dispersion,
         occlusionUv2: specializationFeatures.occlusionUv2,

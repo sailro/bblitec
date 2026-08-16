@@ -2998,7 +2998,14 @@ bool run_gpu_engine(Engine& engine) {
             pipeline_info.vertex_shader = vertex_shader;
             pipeline_info.fragment_shader = skybox_fragment_shader;
             color_target.blend_state.enable_blend = false;
-            pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+            // The pinned background skyboxes (DDS, HDR and solid) build their
+            // pipeline through createDefaultPipelineDescriptor without a
+            // _cullMode, so they take its "back" default; only the image
+            // skybox below asks for "none" explicitly. Drawing the cube
+            // unculled leaves both the entry and the exit face rasterized
+            // once the camera is outside it, and depth writes are off, so the
+            // later face in index order wins instead of the nearer one.
+            pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             state.skybox_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
         }
         if (background_fragment_shader) {

@@ -17,6 +17,19 @@ Two rules make the rest of this page work:
   probably a sampling floor" is a claim about a mechanism, and a
   mechanism claim needs a mechanism: the pinned line that does something
   ours does not. Percentages of exactly-matching pixels are not that.
+- **Look for the missing line in an *arm*, not in the arithmetic.**
+  Upstream forks whole blocks on a boolean that records where an object
+  came from, and a fork we do not model looks exactly like a small
+  systematic bias. `createClearcoatFragment` composes its base-F0 remap
+  unless `gltf-ext-clearcoat.ts` passed `useF0Remap: false`;
+  `createSheenFragment` builds materially different arithmetic from
+  `hasAlbedoScaling`; `createDefaultPipelineDescriptor` defaults
+  `_cullMode` to `"back"` and only the image skybox overrides it. Two
+  published residuals that had been described as rounding — Scene 19's
+  coat at 0.430 region, and a hard-edged background quad at 7.312 —
+  were each one of those arms, and each closed to measurement noise.
+  **So before writing "floor", find which arm the scene reaches and
+  check we compose that one.**
 
 ## The ladder
 
@@ -166,7 +179,11 @@ npm run scene -- process examples\probe.ts
 npm run scene -- parity examples\probe.ts --recapture-reference
 ```
 
-Scene 19's residual was pinned on its clearcoat in one run this way.
+Scene 19's residual was pinned on its clearcoat in one run this way —
+which localized it, but naming it still took reading the browser's own
+composed fragment beside the generated one, where the coat's base-F0
+remap was a block present in theirs and absent in ours. Isolation says
+which feature; the composed shader says which line.
 `compile` refuses sources outside the repository, which is why the copy
 goes in `examples/`; delete it and its `generated/` directory afterwards.
 
@@ -210,11 +227,19 @@ before choosing a shape.
   does not make it acceptable.
 - **Orbit it.** A gate renders the one pose its author chose. Moving the
   camera in the demo window found a skybox large enough for the far plane
-  to clip it and an environment ground drawing as a hard-edged opaque
-  quad — both through a green matrix. When orbiting finds something, turn
-  it into a measurement: copy the scene to `examples/`, move the camera
-  there, and `parity --recapture-reference` so both sides are compared at
-  that pose.
+  to clip it and a background skybox breaking into a hard-edged quad once
+  the camera leaves the cube — both through a green matrix. When orbiting
+  finds something, turn it into a measurement: copy the scene to
+  `examples/`, move the camera there, and `parity --recapture-reference`
+  so both sides are compared at that pose.
+- **Then bisect before believing the description.** Both defects orbiting
+  found were reported against the wrong element by eye — the second was
+  filed against the environment ground for months and was the DDS skybox.
+  `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0` each remove one background
+  element, and the one whose removal makes the measurement *worse* is not
+  the cause: disabling the ground took that scene from 6.455 to 9.619,
+  disabling the skybox took it to 1.202, and that ordering named the
+  culprit before any code was read.
 - **Measure the cost of anything you are about to scope out.** Two
   beliefs that made remaining work look large — "the Dawn bring-up is
   entangled with the renderer", "re-proving neutrality is expensive" —

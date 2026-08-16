@@ -4180,7 +4180,14 @@ bool run_dawn_engine(Engine& engine) {
         descriptor.primitive.topology =
             WGPUPrimitiveTopology_TriangleList;
         descriptor.primitive.frontFace = WGPUFrontFace_CCW;
-        descriptor.primitive.cullMode = WGPUCullMode_None;
+        // The pinned background skyboxes (DDS, HDR and solid) build their
+        // pipeline through createDefaultPipelineDescriptor without a
+        // _cullMode, so they take its "back" default; only the image skybox
+        // asks for "none" explicitly. Drawing the cube unculled leaves both
+        // the entry and the exit face rasterized once the camera is outside
+        // it, and depth writes are off, so the later face in index order wins
+        // instead of the nearer one.
+        descriptor.primitive.cullMode = WGPUCullMode_Back;
         WGPUDepthStencilState depth_stencil =
             WGPU_DEPTH_STENCIL_STATE_INIT;
         depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;

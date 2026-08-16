@@ -263,18 +263,36 @@ comparison, and the empirical guards. What is left:
 - [ ] Compose environment/camera sizing from object-local bounds through the
   pinned abs-matrix OBB-to-AABB world transform and add the
   `upperRadiusLimit` ground/skybox override (upstream `scene-size.ts`,
-  `mesh-world-bounds.ts`, PR #532). No corpus scene sets `upperRadiusLimit`,
-  and every gated scene's baked bounds coincide with the pinned result **at
-  its reference pose** — but that is as far as the agreement has been checked,
-  and the ground defect above is the first evidence it may not hold once the
-  camera moves. The port must keep all sized scenes bit-identical at their
-  gated poses; verify it against a moved camera too.
+  `mesh-world-bounds.ts`, PR #532). No corpus scene sets `upperRadiusLimit`.
+  The sizing itself now has one moved-camera measurement behind it: an
+  instrumented capture of Scene 14 at `cam.beta = 0.55` decodes the browser's
+  own ground vertex buffer at half-extent `52.8457298` and its mesh UBO at
+  root `(1.10339117, -0.00531012891, 0.772171557)`, and the native builder
+  prints the same half-extent and a root agreeing to float precision, so the
+  baked-bounds shortcut and the pinned OBB-to-AABB transform coincide there as
+  well as at the reference pose. The port must keep all sized scenes
+  bit-identical at their gated poses.
 - [ ] Stop advancing scene before-render callbacks on null-swapchain
   iterations (the loop `continue`s without counting the frame, so the scene
   frame counter can drift ahead of the native frame counter and shift
   frame-indexed events such as Scene 273's runtime add). The bounded capture
   grace makes captures immune, but deterministic frame accounting is the
-  real contract.
+  real contract. It is an SDL_GPU-only path — `pal_dawn.cpp` treats a surface
+  it cannot acquire as an error and so never skips an advanced frame — and
+  the fix is a loop reorder rather than a guard: SDL only reports the null
+  texture *from* `SDL_WaitAndAcquireGPUSwapchainTexture`, and it documents
+  minimization as one example rather than the condition, so the availability
+  cannot be tested before the acquisition. The clock advance, the
+  before-render callbacks, the per-mesh uploads and the topology update all
+  have to move below the acquisition together, since the uploads read the
+  state the callbacks write and splitting them would render a frame late.
+  What makes that more than a mechanical move is the benchmark bracket:
+  `start` sits immediately before the acquisition on both backends and
+  [backends](docs/backends.md) publishes the pair as "frame CPU time from
+  surface acquire through submit and present", so reordering SDL_GPU alone
+  puts the callbacks and uploads inside its bracket and not Dawn's. Land the
+  reorder together with a re-measurement of both backends, or move Dawn's
+  acquisition to the same place so the two loops stay comparable.
 - [ ] Close Scene 7's last sub-pixel silhouette epsilon (~0.5% of
   foreground pixels beyond 5, concentrated on the tongue and eye
   contours). Instrumented bone-texture captures now compare bit for
@@ -295,23 +313,6 @@ comparison, and the empirical guards. What is left:
 - [ ] Add headless renderer tests.
 - [ ] Add differential tests for camera, environment, material, and transform
   functions.
-- [ ] Close Scene 19's clearcoat rounding bias. The scene measures 0.096 full
-  / 0.430 region on both backends, which agree with each other, and the region
-  figure is the coat alone: every sphere pixel is within one channel step and
-  native is always the brighter side, so roughly 43% of them round up. The
-  environment underneath is not implicated — the same scene with
-  `setPbrClearCoat` removed measures 0.000 with 99.98% of pixels exact, and an
-  instrumented capture shows our harmonics, environment factors, and the whole
-  `ccParams`/`ccRefractionParams` pair matching the browser's uploads bit for
-  bit. Eliminated by reading the browser's own composed fragment beside ours:
-  the layered-colour sum associates the same way, `ccSchlick` is character for
-  character identical, the specular-AA and horizon-occlusion terms our
-  fragment carries are gated off for this material, and the second analytic
-  light slot is empty. What is left is a term-level difference inside the coat
-  block; bisect it empirically against the deployed WGSL rather than by
-  reading, and note Scene 28 measures the same coat at 0.001/0.016 over a
-  glTF asset, so whatever it is only shows on a roughness-0 coat over a
-  bright IBL-only sphere.
 - [ ] Chase the last sub-0.02 foreground residuals on Scenes 243
   (0.005) and 247 (0.014) only if a structural cause surfaces; both
   former floors are closed by ported pinned contracts (the dedicated
@@ -332,25 +333,6 @@ comparison, and the empirical guards. What is left:
   `report-differential.json`, compare cell by cell") report these two scenes
   as moved for any change whatsoever, so the proof needs a repeat run to
   separate a real regression from this.
-- [ ] Fix the environment ground, which draws as a hard-edged opaque quad
-  where the pinned one is invisible. Found by orbiting Scenes 6 and 14 in the
-  demo window — every reference pose either hides the ground off-screen or
-  catches it edge-on, where the fragment's own `facing` fade takes it to zero,
-  so no gate sees it. Reproduced against the browser by setting Scene 14's
-  `cam.beta = 0.55` in a probe copy and recapturing: **background MAD 7.312**
-  while the model stays at 0.138, and the browser draws no visible ground at
-  all from there. Only Scenes 6 and 14 reach it — they are the only two that
-  pass `groundTextureUrl` — and every other scene was orbited without finding
-  anything. Two candidates are already eliminated: the asset is intact
-  (`backgroundGround.png` materializes as RGBA with its radial alpha, 255 at
-  the centre through 1 at the edge to 0 in the corner), and the fragment's
-  `backgroundCenter` fade origin is not the deviation it looks like — the
-  pinned `createBgMeshUBO` writes zero there exactly as the generated plan
-  does. What is left is the ground's SIZE and root position, which is the
-  `scene-size.ts` port already filed below, and whether the quad is drawn
-  through a blended pipeline at all: the generated fragment returns
-  premultiplied `vec4(color * alpha, alpha)`, and an opaque pipeline would
-  discard that alpha and produce exactly this hard-edged quad.
 - [ ] Add malformed asset and backend-layout tests.
 - [ ] Add a validation bundle command that preserves artifacts on failure.
 
@@ -368,23 +350,6 @@ comparison, and the empirical guards. What is left:
   frame-graph resolve step becomes a texture copy), so the two
   backends now disagree about the diagnostic itself.
 - [ ] Improve missing-tool and stale-output diagnostics.
-- [ ] Repair `scene -- geometry`, which has two halves and only the first is
-  easy. Scenes 145/146/149 build their copy tasks in a loop, so the names
-  never appear literally in the source: `` name: `scene145-impostor-${entry.name}` ``
-  over an array of textures. Both halves of the tool scan for
-  `name: "..."` and therefore find nothing.
-  - **Discovery** is straightforward: the compiler unrolls the loop, so the
-    generated tree already contains `scene145-impostor-albedo`,
-    `-irradiance`, `-linearVelocity`, `-localPosition`, `-normViewDepth`,
-    `-realColor` and the rest. Read them from `generated/<id>` instead of
-    from the source.
-  - **The browser-side transform is the real work.** It rewrites the scene
-    source so one impostor renders full-screen, matching the same quoted
-    name and replacing its `viewport: { ... }`. For loop-constructed tasks
-    there is no per-task literal to rewrite — the viewport is computed from
-    the loop index — so selecting one impostor means transforming the loop
-    itself, or driving the reference capture some other way.
-  Inert since that upstream change; diagnosed 2026-08-14 but not fixed.
 - [ ] Add `--explain-feature` and generated-code-to-upstream inspection.
 - [ ] Document adding a lowerer and curated scene fixture.
 
