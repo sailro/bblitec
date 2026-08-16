@@ -460,13 +460,21 @@ comparison, and the empirical guards. What is left:
 - [ ] Share one `VCPKG_INSTALLED_DIR` across build trees. Each build directory
   carries its own 48 MB copy of `vcpkg_installed`, about 2.8 GB across the
   matrix; sharing reclaims nearly all of it and shortens configure.
-- [ ] Run `BBLITE_MSAA=1` on scene 116 under SDL_GPU: the single-sample
-  frame graph fails there with `SDL_SubmitGPUCommandBufferAndAcquireFence:
-  Failed to close command list`, which predates the Dawn work and is
-  the only scene where the flag is refused by the backend that has
-  always supported it. Dawn runs the same scene single-sampled (its
-  frame-graph resolve step becomes a texture copy), so the two
-  backends now disagree about the diagnostic itself.
+- [x] **CLOSED.** `BBLITE_MSAA=1` under SDL_GPU. The entry named scene 116,
+  but the flag was refused by *every* frame-graph scene carrying an explicit
+  resolve task — 116, 145 and 146 all died with
+  `SDL_SubmitGPUCommandBufferAndAcquireFence: Failed to close command list`.
+  Running the binary under `BBLITE_GPU_DEBUG=1` named it outright:
+  `'!"Store op is RESOLVE or RESOLVE_AND_STORE but texture is not
+  multisample!"'`. The frame graph's resolve step asked for
+  `SDL_GPU_STOREOP_RESOLVE` unconditionally, and single-sampling makes its
+  source a 1x texture.
+  The entry had the answer in its own last sentence — "Dawn runs the same
+  scene single-sampled (its frame-graph resolve step becomes a texture
+  copy)" — so the fix is that degradation ported to SDL_GPU as a
+  `SDL_CopyGPUTextureToTexture`. All three scenes now run single-sampled and
+  their multisampled parity is unchanged (116 at 0.000/0.000 on both
+  backends, 145 and 146 at their published figures).
 - [ ] Improve missing-tool and stale-output diagnostics.
 - [ ] Add `--explain-feature` and generated-code-to-upstream inspection.
 - [ ] Document adding a lowerer and curated scene fixture.

@@ -4844,6 +4844,40 @@ bool run_gpu_engine(Engine& engine) {
                             throw std::runtime_error(
                                 "Resolve source must be a render target.");
                         }
+                        if (state.sample_count ==
+                            SDL_GPU_SAMPLECOUNT_1) {
+                            // Nothing to average: the pinned resolve of a
+                            // single-sample source is the source, so the
+                            // frame graph's resolve step is a texture copy
+                            // — the same degradation `pal_dawn.cpp` makes.
+                            // Asking for STOREOP_RESOLVE here instead
+                            // builds a command list D3D12 refuses to
+                            // close, which is why every geometry-output
+                            // scene failed under BBLITE_MSAA=1.
+                            const GpuRenderTarget& resolve_source =
+                                state.render_targets[
+                                    copy.source.target.value];
+                            SDL_GPUTextureLocation copy_source{};
+                            copy_source.texture = target_texture(
+                                copy.source.target,
+                                false);
+                            SDL_GPUTextureLocation copy_destination{};
+                            copy_destination.texture = target_texture(
+                                copy.resolve_target,
+                                false);
+                            SDL_GPUCopyPass* resolve_copy =
+                                SDL_BeginGPUCopyPass(command);
+                            SDL_CopyGPUTextureToTexture(
+                                resolve_copy,
+                                &copy_source,
+                                &copy_destination,
+                                resolve_source.width,
+                                resolve_source.height,
+                                1,
+                                false);
+                            SDL_EndGPUCopyPass(resolve_copy);
+                            continue;
+                        }
                         SDL_GPUColorTargetInfo resolve_info{};
                         resolve_info.texture =
                             target_texture(copy.source.target, false);
