@@ -316,34 +316,17 @@ comparison, and the empirical guards. What is left:
 
 ## P1 — Runtime and validation
 
-- [ ] Match pinned per-sample image processing on the multisampled
-  transmission target **on the SDL_GPU backend**, once SDL ships
-  [libsdl-org/SDL#15838](https://github.com/libsdl-org/SDL/pull/15838).
-  Upstream's `image-processing-task.ts` applies exposure/tonemap/gamma per
-  MSAA sample and then averages; SDL_GPU refuses a multisample texture
-  carrying any read usage, so its pass processes the resolved pixel once.
-  That PR — the SDL_GPU maintainer's own, still a draft — relaxes the rule
-  to `COMPUTE_STORAGE_WRITE` only and gives D3D12 a `TEXTURE2DMS`
-  shader-resource view.
-
+- [ ] Drop the vendored SDL patch once upstream ships it.
   `native/vcpkg-overlay-ports/sdl3` is the registry's own port at the
-  manifest's `builtin-baseline` with that patch appended to its `PATCHES`
-  list, selected by `native/vcpkg-configuration.json`. Going through vcpkg
-  rather than a side build is what keeps SDL3_image compiled against the same
-  library instead of trusted to stay ABI-compatible with it.
-
-  **The exit criterion is an SDL release containing the patch** — 3.6.0 is the
-  one to watch. When it lands: move `builtin-baseline` to a registry commit
-  carrying it, then delete `native/vcpkg-configuration.json` and
-  `native/vcpkg-overlay-ports`. Nothing else changes; the renderer side is
-  already written and measured.
-
-  The renderer side: the multisampled colour target takes
-  `GRAPHICS_STORAGE_READ`, and the pinned per-sample fragment binds through
-  `SDL_BindGPUFragmentStorageTextures` — a `Texture2DMS` is `Load()`-ed and
-  carries no sampler. Every transmission scene's SDL_GPU column converges on
-  Dawn's — scene 33 foreground 1.457 → 0.125 against Dawn's 0.123, scene 253
-  0.681 → 0.030, scene 212 0.181 → 0.029 — with no other cell moving.
+  manifest's `builtin-baseline` with
+  [libsdl-org/SDL#15838](https://github.com/libsdl-org/SDL/pull/15838)
+  appended to its `PATCHES` list, selected by
+  `native/vcpkg-configuration.json`. Without it SDL refuses a multisample
+  texture carrying a read usage, and the SDL_GPU backend cannot run the
+  pinned per-sample image-processing pass. **3.6.0 is the release to watch**;
+  when it carries the patch, move `builtin-baseline` to a registry commit
+  containing it and delete both paths. Nothing else changes — the renderer
+  side is in place and measured.
 - [ ] Draw the pinned solid-colour skybox. `load-env.ts` pushes
   `buildSolidSkyboxRenderable` — a cube shaded from the primary and clear
   colours, with `WGSL_DITHER` prefixed unconditionally — for any scene that
