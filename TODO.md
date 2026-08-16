@@ -259,11 +259,12 @@ comparison, and the empirical guards. What is left:
   transcribed fallback.
 
   *The composer is driven correctly.* `pinnedMaterialInputFromGltf` maps a
-  glTF material to the shape `_computePbrMaterialFeatures` reads, and 30 of
-  the 31 materials across the six instrumented-capture scenes now compose
-  **byte-identically** to the fragment the browser recorded — scenes 37, 39,
-  244 and 253 at 100%. The one exception is Scene 21's cloth, whose sheen
-  comes from `setPbrSheen` in scene code, not from its asset.
+  glTF material to the shape `_computePbrMaterialFeatures` reads, and **all
+  31 materials across the seven instrumented-capture scenes compose
+  byte-identically** to the fragment the browser recorded. Scene 21's cloth —
+  the one material built by scene code rather than loaded — is covered by a
+  test that hand-writes its shape, since the compiler does not yet carry
+  those records; see the second bullet below.
 
   *What remains is the variant model itself* — the third piece, below.
 
@@ -307,6 +308,17 @@ comparison, and the empirical guards. What is left:
     the scene's own lowered material calls — `compileSheenOptions` in
     `src/compiler/intrinsics/material.ts` already resolves those values at
     compile time, so the input exists; it is not yet carried to the composer.
+    `Value` is spread whole across a `const` binding (`{ ...value, cpp }`),
+    so the shape can ride the material value from `createPbrMaterial` to each
+    `setPbr*` and be keyed by the generated C++ name.
+
+    Two defaults differ from the glTF path and both are load-bearing, which
+    is why the test pins them rather than leaving them to be inferred:
+    `enableSpecularAA` is set unconditionally by `assemblePbrPropsExt` — the
+    *glTF assembly* — and not by `createPbrMaterial`, so a scene-code
+    material has it **off**; and `setPbrSheen` keeps the legacy sheen model
+    where `gltf-ext-sheen.ts` always asks for the albedo-scaling one. Scene
+    21 composes byte-identically only with both.
 
   Two contracts found while probing, both worth keeping: the environment bit is
   read from `sceneFeatures`, not `features` (`_hasIbl = hasScene(PBR_HAS_ENV)`),
@@ -375,6 +387,21 @@ comparison, and the empirical guards. What is left:
   before-render callbacks, the per-mesh uploads and the topology update all
   have to move below the acquisition together, since the uploads read the
   state the callbacks write and splitting them would render a frame late.
+  Verified while measuring: `++frame` is the last statement of the loop body
+  on both backends (`pal_sdl_gpu.cpp`, `pal_dawn.cpp`), so the `continue`
+  really does skip it, and the drift is exactly one scene frame per skipped
+  iteration. Incrementing before the `continue` would make the two counters
+  agree, but it is not the same fix — it keeps the scene advancing at full
+  speed behind a minimized window, where the reorder stops time the way a
+  throttled `requestAnimationFrame` does. Prefer the reorder.
+
+  A cheaper shape than moving the prologue down: move the acquisition *and*
+  `start` up to the top of the loop body instead, which is a few lines rather
+  than several hundred and lands the prologue inside the bracket identically.
+  It has its own cost — the swapchain image is then held across the whole
+  prologue, which is latency the late acquisition currently avoids — so it is
+  a trade to make deliberately, not a simplification.
+
   What makes that more than a mechanical move is the benchmark bracket:
   `start` sits immediately before the acquisition on both backends and
   [backends](docs/backends.md) publishes the pair as "frame CPU time from
