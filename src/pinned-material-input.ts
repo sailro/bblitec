@@ -286,6 +286,12 @@ export interface PinnedMaterialSceneContext {
      */
     animatedUvTransform?: boolean;
     /**
+     * The `animation-pointer-ext.ts` pointer families targeting this material,
+     * from `gltfAnimatedExtensionTargets`. Each one makes `seedExtMaterials`
+     * change the material's shape so the animation has somewhere to write.
+     */
+    animatedExtensionTargets?: PinnedAnimatedExtensionTargets;
+    /**
      * True when `KHR_animation_pointer` drives this material's emissive factor
      * or its `KHR_materials_emissive_strength`. The emissive extension reads
      * `_emissiveColor` for `PBR_HAS_EMISSIVE_COLOR`, and an animated emissive
@@ -299,6 +305,17 @@ export interface PinnedMaterialSceneContext {
 export function gltfAnimatedMaterialPointers(
     document: JsonObject,
     pointerSuffix: string,
+): ReadonlySet<number> {
+    return gltfAnimatedPointers(
+        document,
+        new RegExp(`^/materials/(\\d+)/${pointerSuffix}$`),
+    );
+}
+
+/** Material indices whose animated pointer matches `pattern`. */
+function gltfAnimatedPointers(
+    document: JsonObject,
+    pattern: RegExp,
 ): ReadonlySet<number> {
     const animated = new Set<number>();
     const animations = Array.isArray(document["animations"])
@@ -315,13 +332,133 @@ export function gltfAnimatedMaterialPointers(
                 ],
             )?.["pointer"];
             if (typeof pointer !== "string") continue;
-            const match = new RegExp(
-                `^/materials/(\\d+)/${pointerSuffix}$`,
-            ).exec(pointer);
+            const match = pattern.exec(pointer);
             if (match) animated.add(Number(match[1]));
         }
     }
     return animated;
+}
+
+/**
+ * Which of `animation-pointer-ext.ts`'s pointer families target a material.
+ *
+ * These are not the same list as the plain pointers: `animatedTargets` picks
+ * out five specific ones because each makes `seedExtMaterials` *change the
+ * material's shape* so the animation has a UBO field to write into. That is a
+ * second-order effect the material alone cannot show — Scene 253's
+ * OcclusionStrength sphere is an ordinary occlusion material whose composed
+ * fragment reads no occlusion at all, purely because its strength animates.
+ */
+export interface PinnedAnimatedExtensionTargets {
+    occlusionStrength?: boolean;
+    transmission?: boolean;
+    ior?: boolean;
+    volumeThickness?: boolean;
+    volumeTint?: boolean;
+}
+
+const extensionPointerFamilies: ReadonlyArray<
+    readonly [keyof PinnedAnimatedExtensionTargets, RegExp]
+> = [
+    ["occlusionStrength", /^\/materials\/(\d+)\/occlusionTexture\/strength$/],
+    [
+        "transmission",
+        /^\/materials\/(\d+)\/extensions\/KHR_materials_transmission\/transmissionFactor$/,
+    ],
+    ["ior", /^\/materials\/(\d+)\/extensions\/KHR_materials_ior\/ior$/],
+    [
+        "volumeThickness",
+        /^\/materials\/(\d+)\/extensions\/KHR_materials_volume\/thicknessFactor$/,
+    ],
+    [
+        "volumeTint",
+        /^\/materials\/(\d+)\/extensions\/KHR_materials_volume\/(?:attenuationColor|attenuationDistance)$/,
+    ],
+];
+
+/** `animatedTargets`, by material index. */
+export function gltfAnimatedExtensionTargets(
+    document: JsonObject,
+): ReadonlyMap<number, PinnedAnimatedExtensionTargets> {
+    const targets = new Map<number, PinnedAnimatedExtensionTargets>();
+    for (const [family, pattern] of extensionPointerFamilies) {
+        for (const material of gltfAnimatedPointers(document, pattern)) {
+            const entry = targets.get(material) ?? {};
+            entry[family] = true;
+            targets.set(material, entry);
+        }
+    }
+    return targets;
+}
+
+/**
+ * `seedExtMaterials`, ported term for term.
+ *
+ * Runs after the ordinary mapping and uses the same "only if absent" merges
+ * upstream does, so a material that already declares transmission or volume
+ * keeps what the builder gave it and only gains what the animation needs.
+ */
+function seedAnimatedExtensions(
+    input: PinnedMaterialInput,
+    material: JsonObject,
+    animated: PinnedAnimatedExtensionTargets,
+): void {
+    const extensions = asObject(material["extensions"]) ?? {};
+    const subsurface = (): JsonObject =>
+        (input["_subsurface"] ??= {}) as JsonObject;
+
+    if (animated.occlusionStrength) {
+        input.occlusionStrength =
+            asNumber(asObject(material["occlusionTexture"])?.["strength"]) ?? 1;
+        // `setReflectance(pm, {})` registers the reflectance extension without
+        // setting a single property, and `_occlStrengthAnimated` is what that
+        // extension's own `detect` reads for PBR2_HAS_REFLECTANCE_FACTORS.
+        // The reflectance arm then *takes over* occlusion: `pbr-compose.ts`
+        // forces `_hasOcclusion` false whenever it composes.
+        input["_occlStrengthAnimated"] = true;
+    }
+    if (animated.transmission) {
+        input["_transmissive"] = true;
+        const surface = subsurface();
+        surface["refraction"] ??= {
+            intensity:
+                asNumber(
+                    asObject(extensions["KHR_materials_transmission"])?.[
+                        "transmissionFactor"
+                    ],
+                ) ?? 0,
+            indexOfRefraction:
+                asNumber(asObject(extensions["KHR_materials_ior"])?.["ior"]) ??
+                    1.5,
+        };
+    }
+    if (animated.ior) {
+        const ior =
+            asNumber(asObject(extensions["KHR_materials_ior"])?.["ior"]) ?? 1.5;
+        const surface = subsurface();
+        surface["refraction"] ??= { intensity: 0, indexOfRefraction: ior };
+        input["_metallicF0Factor"] = ((ior - 1) / (ior + 1)) ** 2 / 0.04;
+        input["_specularWeight"] = 1;
+    }
+    if (animated.volumeThickness || animated.volumeTint) {
+        const surface = subsurface();
+        const volume = asObject(extensions["KHR_materials_volume"]) ?? {};
+        if (animated.volumeThickness) {
+            surface["thickness"] ??= {
+                min: 0,
+                max: asNumber(volume["thicknessFactor"]) ?? 0,
+                useGlTFChannel: true,
+            };
+            const refraction = asObject(surface["refraction"]);
+            if (refraction) refraction["useThicknessAsDepth"] = true;
+        }
+        if (animated.volumeTint) {
+            surface["tint"] ??= {
+                color: asNumbers(volume["attenuationColor"]) ?? [1, 1, 1],
+                atDistance: asNumber(volume["attenuationDistance"]) ?? 1,
+            };
+        }
+    }
 }
 
 /** Builds an `imageOf` resolver from a glTF document's `textures` array. */
@@ -489,6 +626,10 @@ export function pinnedMaterialInputFromGltf(
             }
             input["_subsurface"] = subsurface;
         }
+    }
+
+    if (scene.animatedExtensionTargets) {
+        seedAnimatedExtensions(input, material, scene.animatedExtensionTargets);
     }
 
     if (asObject(extensions["KHR_materials_specular"])) {
