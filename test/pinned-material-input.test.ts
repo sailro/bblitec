@@ -44,7 +44,7 @@ test("a non-zero factor reaches the extension's own detect", async () => {
                 },
             })
         ).fragmentKey,
-        "ibl|clearcoat",
+        "ibl|clearcoat-A",
     );
     assert.equal(
         (

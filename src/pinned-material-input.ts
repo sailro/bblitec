@@ -129,8 +129,21 @@ function gltfMaterialHasTextureTransform(material: JsonObject): boolean {
  * `alphaBlend === true || ((_alphaCutOff ?? 0) <= 0 && alpha < 1)`, so a MASK
  * material carries its cutoff and a BLEND material carries its alpha.
  */
+export interface PinnedMaterialSceneContext {
+    /**
+     * True when the scene renders linear because some material transmits.
+     * Upstream this is a property of the material, but it is decided by the
+     * scene: enabling transmission retargets the frame graph's colour buffer to
+     * a linear one, so *every* material in that scene composes the linear
+     * image-processing arm, not just the transmissive ones. The refraction
+     * extension reads it as `_linearImageProcessing`.
+     */
+    linearImageProcessing?: boolean;
+}
+
 export function pinnedMaterialInputFromGltf(
     material: JsonObject,
+    scene: PinnedMaterialSceneContext = {},
 ): PinnedMaterialInput {
     const pbr = asObject(material["pbrMetallicRoughness"]) ?? {};
     const baseColorFactor = asNumbers(pbr["baseColorFactor"]);
@@ -142,13 +155,31 @@ export function pinnedMaterialInputFromGltf(
         emissiveTexture: asObject(material["emissiveTexture"]),
         normalTexture: asObject(material["normalTexture"]),
         doubleSided: material["doubleSided"] === true,
+        // `gltf-pbr-builder.ts` and its slow-path sibling both set this
+        // unconditionally, so it is a property of the glTF loader rather than
+        // of the material: every glTF PBR material composes the specular-AA
+        // block that derives `alphaG` from the normal's screen-space slope.
+        enableSpecularAA: true,
+        // `_computePbrMaterialFeatures` sets PBR_HAS_OCCLUSION from
+        // `(occlusionStrength ?? 1) > 0`, so a material with no occlusion
+        // texture has to carry zero rather than the glTF slot default of one:
+        // otherwise the fragment samples `orm.r` for an occlusion the material
+        // does not have, where the pin composes a constant `1.0`.
         occlusionStrength: occlusion
             ? asNumber(occlusion["strength"]) ?? 1
-            : 1,
+            : 0,
     };
-    if (occlusion) {
-        // The uv-transform extension splits occlusion onto its own UV unless the
-        // slot is on TEXCOORD_1, so it reads both the carrier and the texCoord.
+    // `occlusionTexture` on the pinned material is a *separate* carrier, and
+    // the uv-transform extension splits occlusion onto its own UV whenever one
+    // exists. A glTF material normally packs occlusion into the same image as
+    // metallic-roughness, where the pin keeps reading the ORM slot and adds no
+    // split — so the carrier exists only when the two reference different
+    // images, which is the same distinction `buildDefaultPbrTexturesExt` draws.
+    const metallicRoughness = asObject(pbr["metallicRoughnessTexture"]);
+    if (
+        occlusion &&
+        occlusion["index"] !== metallicRoughness?.["index"]
+    ) {
         input["occlusionTexture"] = occlusion;
         const texCoord = asNumber(occlusion["texCoord"]);
         if (texCoord) input["occlusionTexCoord"] = texCoord;
@@ -157,6 +188,7 @@ export function pinnedMaterialInputFromGltf(
     // detect, which reads `_hasUvTx` — the marker the pinned loader sets on a
     // material any of whose slots carries KHR_texture_transform.
     if (gltfMaterialHasTextureTransform(material)) input["_hasUvTx"] = true;
+    if (scene.linearImageProcessing) input["_linearImageProcessing"] = true;
     if (baseColorFactor) {
         input.baseColorFactor = baseColorFactor;
         input.alpha = baseColorFactor[3] ?? 1;
@@ -188,6 +220,37 @@ export function pinnedMaterialInputFromGltf(
             props["texture"] = declared["anisotropyTexture"];
         }
         input[entry.property] = props;
+    }
+
+    // Transmission is not a material extension upstream: `set-transmission.ts`
+    // registers a scene hook, because enabling it retargets the frame graph's
+    // colour buffer. Its extension still reads the material, through
+    // `_transmissive` and `_subsurface.refraction`, and it is that pair rather
+    // than the glTF extension's presence that decides whether a refraction
+    // fragment composes — `intensity <= 0` composes none.
+    const transmission = asObject(extensions["KHR_materials_transmission"]);
+    if (transmission) {
+        const intensity = asNumber(transmission["transmissionFactor"]) ?? 0;
+        if (intensity > 0) {
+            input["_transmissive"] = true;
+            const refraction: JsonObject = { intensity };
+            if (asObject(transmission["transmissionTexture"])) {
+                refraction["texture"] = transmission["transmissionTexture"];
+            }
+            const volume = asObject(extensions["KHR_materials_volume"]);
+            const subsurface: JsonObject = { refraction };
+            if (volume) {
+                const thickness: JsonObject = {
+                    value: asNumber(volume["thicknessFactor"]) ?? 0,
+                };
+                if (asObject(volume["thicknessTexture"])) {
+                    thickness["texture"] = volume["thicknessTexture"];
+                    thickness["useGlTFChannel"] = true;
+                }
+                subsurface["thickness"] = thickness;
+            }
+            input["_subsurface"] = subsurface;
+        }
     }
 
     if (asObject(extensions["KHR_materials_specular"])) {

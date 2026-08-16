@@ -108,6 +108,18 @@ async function registerPbrExtensions(): Promise<void> {
             }>(path);
             if (module.pbrExt) flags._registerPbrExt(module.pbrExt);
         }
+        // Transmission has no `pbrExt` export: `set-transmission.ts` registers a
+        // scene hook instead, because enabling it retargets the frame graph's
+        // colour buffer, and the hook builds the extension from a factory. Only
+        // the extension matters for composition, and its own `detect` returns
+        // nothing for a material that is not transmissive, so it is built here
+        // directly rather than by standing up a scene.
+        const refraction = await importPinnedModule<{
+            makeRefractionRttExt: (
+                dispersionSampleWgsl?: string,
+            ) => PbrExtDescriptor;
+        }>("material/pbr/fragments/refraction-rtt-fragment.js");
+        flags._registerPbrExt(refraction.makeRefractionRttExt());
     })();
     return registered;
 }
@@ -138,6 +150,13 @@ export async function pinnedMaterialFeatures(
 }
 
 export interface PinnedComposeOptions {
+    /**
+     * Bits the pin adds per renderable rather than per material.
+     * `_computePbrMaterialFeatures` says so itself — "Mesh/pass bits are added
+     * per renderable" — so tone mapping and fog, which are scene state, are
+     * OR-ed in here instead of being read off the material.
+     */
+    passFeatures?: number;
     /** Mesh bits (`MSH_HAS_TANGENTS`, morph targets, vertex colour, …). */
     meshFeatures?: number;
     /** Scene bits; the environment is read from here, not from the material. */
@@ -213,7 +232,7 @@ export async function composePinnedPbrVariant(
         _createThinInstanceFragment: null,
     });
     const composed = composer(
-        features,
+        features | (options.passFeatures ?? 0),
         features2,
         options.meshFeatures ?? 0,
         options.sceneFeatures ?? 0,

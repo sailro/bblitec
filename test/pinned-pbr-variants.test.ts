@@ -25,6 +25,7 @@ test("registers every PBR extension the pin owns", async () => {
         "ibl",
         "iridescence",
         "reflectance",
+        "refraction",
         "sheen",
         "skybox",
         "subsurface",
