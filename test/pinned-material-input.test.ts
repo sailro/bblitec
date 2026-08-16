@@ -16,70 +16,57 @@ const environmentVariant = async (material: Record<string, unknown>) => {
     });
 };
 
-test("an extension declared without its factor is disabled", async () => {
-    // Every one of these factors defaults to zero in glTF, so a material that
-    // merely declares the extension composes no layer. Defaulting the other way
-    // is not conservative — it adds a layer to the fragment, which is how
-    // Scene 253's Volume and IOR spheres both composed as iridescent.
-    for (const extension of [
-        "KHR_materials_clearcoat",
-        "KHR_materials_iridescence",
-        "KHR_materials_anisotropy",
-        "KHR_materials_sheen",
-    ]) {
-        const variant = await environmentVariant({
-            extensions: { [extension]: {} },
-        });
+test("a declared extension composes its layer, factor or not", async () => {
+    // Every one of the four loader extensions reads the same way —
+    // `if (!c) return null;` then `setPbrX(out, { isEnabled: true, ... })` —
+    // so presence alone enables the layer and the factor only sets its
+    // intensity. Scene 253's Volume and IOR spheres both declare
+    // `KHR_materials_iridescence: {}` with no factor at all, and both of
+    // their captured fragments carry `iridescenceParams`.
+    for (const [extension, key] of [
+        ["KHR_materials_clearcoat", "ibl|clearcoat-A"],
+        ["KHR_materials_iridescence", "ibl|iridescence"],
+        ["KHR_materials_sheen", "ibl|sheen"],
+    ] as const) {
         assert.equal(
-            variant.fragmentKey,
-            "ibl",
-            `${extension} with no factor should compose nothing`,
+            (await environmentVariant({ extensions: { [extension]: {} } }))
+                .fragmentKey,
+            key,
+            `${extension} with no factor should still compose its layer`,
         );
     }
 });
 
-test("a non-zero factor reaches the extension's own detect", async () => {
-    assert.equal(
-        (
-            await environmentVariant({
-                extensions: {
-                    KHR_materials_clearcoat: { clearcoatFactor: 1 },
+test("a factor changes the intensity, not the variant", async () => {
+    // The same key either way — what the factor decides is what gets written
+    // into the UBO, which is not this module's concern.
+    for (const extension of [
+        { KHR_materials_clearcoat: { clearcoatFactor: 1 } },
+        { KHR_materials_clearcoat: { clearcoatFactor: 0 } },
+    ]) {
+        assert.equal(
+            (await environmentVariant({ extensions: extension })).fragmentKey,
+            "ibl|clearcoat-A",
+        );
+    }
+});
+
+test("a sheen roughness map that is the tint map is dropped", async () => {
+    // `gltf-ext-sheen.ts` compares index *and* transform identity, because the
+    // legacy packing reads roughness out of the tint texture's alpha.
+    const imageOf = gltfImageResolver({ textures: [{ source: 0 }, { source: 1 }] });
+    const sheenOf = (roughIndex: number) =>
+        (pinnedMaterialInputFromGltf({
+            extensions: {
+                KHR_materials_sheen: {
+                    sheenColorFactor: [1, 1, 1],
+                    sheenColorTexture: { index: 0 },
+                    sheenRoughnessTexture: { index: roughIndex },
                 },
-            })
-        ).fragmentKey,
-        "ibl|clearcoat-A",
-    );
-    assert.equal(
-        (
-            await environmentVariant({
-                extensions: {
-                    KHR_materials_iridescence: { iridescenceFactor: 1 },
-                },
-            })
-        ).fragmentKey,
-        "ibl|iridescence",
-    );
-    // A vector factor counts as enabled when any channel is non-zero.
-    assert.equal(
-        (
-            await environmentVariant({
-                extensions: {
-                    KHR_materials_sheen: { sheenColorFactor: [0, 0, 0] },
-                },
-            })
-        ).fragmentKey,
-        "ibl",
-    );
-    assert.equal(
-        (
-            await environmentVariant({
-                extensions: {
-                    KHR_materials_sheen: { sheenColorFactor: [0, 0, 0.5] },
-                },
-            })
-        ).fragmentKey,
-        "ibl|sheen",
-    );
+            },
+        }, { imageOf })["_sheen"] as Record<string, unknown>)["roughnessTexture"];
+    assert.equal(sheenOf(0), undefined, "same texture: read from the tint alpha");
+    assert.ok(sheenOf(1), "a different texture is its own map");
 });
 
 test("an alpha-cutoff material reaches the alpha-test fragment", async () => {

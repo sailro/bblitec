@@ -31,15 +31,18 @@ const asNumbers = (value: unknown): number[] | undefined =>
  * The glTF extension that populates each pinned material property, and the
  * extension property whose presence upstream treats as "enabled".
  *
- * `KHR_materials_clearcoat` is enabled by a non-zero factor upstream, so the
- * factor decides `isEnabled` rather than the extension's mere presence — a
- * material declaring the extension at factor zero composes no coat, which is
- * the same gate `setPbrClearCoat`'s `isEnabled` expresses from scene code.
+ * Presence alone enables each of these. All four loader extensions read the
+ * same way — `if (!c) return null;` then `setPbrX(out, { isEnabled: true, ...
+ * })` — so `KHR_materials_iridescence: {}` with no factor at all still
+ * composes the iridescence arm; the factor only sets the intensity, which
+ * multiplies the layer to nothing without removing it. Gating on a non-zero
+ * factor instead drops the arm and changes the variant: Scene 253's Volume
+ * and IOR spheres both declare an empty iridescence extension and both of
+ * their captured fragments carry `iridescenceParams`.
  */
 const materialExtensions: ReadonlyArray<{
     gltf: string;
     property: string;
-    factor: string;
     /**
      * `[glTF slot, pinned property]` for each texture the extension's `detect`
      * tests. The two names differ per extension — the coat's normal map is
@@ -53,7 +56,6 @@ const materialExtensions: ReadonlyArray<{
     {
         gltf: "KHR_materials_clearcoat",
         property: "_clearCoat",
-        factor: "clearcoatFactor",
         // `CC_TEX` in clearcoat-fragment.ts.
         textures: [
             ["clearcoatTexture", "texture"],
@@ -64,7 +66,6 @@ const materialExtensions: ReadonlyArray<{
     {
         gltf: "KHR_materials_sheen",
         property: "_sheen",
-        factor: "sheenColorFactor",
         // sheen-fragment.ts reads `sh.texture` and `sh.roughnessTexture`.
         textures: [
             ["sheenColorTexture", "texture"],
@@ -74,7 +75,6 @@ const materialExtensions: ReadonlyArray<{
     {
         gltf: "KHR_materials_iridescence",
         property: "_iridescence",
-        factor: "iridescenceFactor",
         // `IRI_TEX` in iridescence-fragment.ts.
         textures: [
             ["iridescenceTexture", "texture"],
@@ -84,28 +84,26 @@ const materialExtensions: ReadonlyArray<{
     {
         gltf: "KHR_materials_anisotropy",
         property: "_anisotropy",
-        factor: "anisotropyStrength",
         textures: [["anisotropyTexture", "texture"]],
     },
 ];
 
 /**
- * True when an extension's enabling factor is present and non-zero.
- *
- * Every factor above defaults to zero in glTF — `clearcoatFactor`,
- * `iridescenceFactor` and `anisotropyStrength` are `0`, `sheenColorFactor` is
- * `[0,0,0]` — so an extension declared without its factor is *disabled*, not
- * enabled. Defaulting the other way is not a harmless over-approximation: it
- * composes an extra layer into the fragment and changes the variant, which is
- * how Scene 253's Volume and IOR spheres both came out as iridescent.
+ * The `KHR_materials_sheen` loader drops a roughness texture that is the same
+ * texture as the tint, because the legacy packing reads roughness from the
+ * tint's alpha. `gltf-ext-sheen.ts` compares the index *and* the transform
+ * object identity, so two slots naming one image through different transforms
+ * still build two textures.
  */
-function extensionEnabled(extension: JsonObject, factor: string): boolean {
-    const value = extension[factor];
-    const scalar = asNumber(value);
-    if (scalar !== undefined) return scalar !== 0;
-    const vector = asNumbers(value);
-    if (vector !== undefined) return vector.some((entry) => entry !== 0);
-    return false;
+function sheenRoughnessIsTint(extension: JsonObject): boolean {
+    const rough = asObject(extension["sheenRoughnessTexture"]);
+    const tint = asObject(extension["sheenColorTexture"]);
+    if (!rough || !tint) return false;
+    return (
+        rough["index"] === tint["index"] &&
+        asObject(rough["extensions"])?.["KHR_texture_transform"] ===
+            asObject(tint["extensions"])?.["KHR_texture_transform"]
+    );
 }
 
 /**
@@ -461,6 +459,165 @@ function seedAnimatedExtensions(
     }
 }
 
+/**
+ * `gltf-ext-dielectric.ts`, ported.
+ *
+ * Upstream handles `KHR_materials_ior`, `_specular`, `_volume`, `_transmission`
+ * and `_dispersion` in *one* extension, because they interact: the ior seeds
+ * the refraction and can turn the reflectance layer on by itself, the volume
+ * decides whether thickness is a depth, and transmission is what actually
+ * registers the scene hook. Handling them separately means re-deriving those
+ * interactions, and the one that costs a variant is the quietest:
+ * `needsReflectance` is true for any `ior !== 1.5`, so Scene 253's
+ * Transmission sphere composes a reflectance arm purely because its ior is
+ * 1.209.
+ */
+function applyDielectric(
+    input: PinnedMaterialInput,
+    extensions: JsonObject,
+    imageOf: (textureIndex: unknown) => number | undefined,
+): void {
+    const eIor = asObject(extensions["KHR_materials_ior"]);
+    const eSp = asObject(extensions["KHR_materials_specular"]);
+    const eVol = asObject(extensions["KHR_materials_volume"]);
+    const eTx = asObject(extensions["KHR_materials_transmission"]);
+    const eDisp = asObject(extensions["KHR_materials_dispersion"]);
+    if (!eIor && !eSp && !eVol && !eTx && !eDisp) return;
+
+    // A texture slot only counts once an image stands behind it, the same rule
+    // the base slots follow; upstream reaches this by `ctx._texture` returning
+    // nothing for a slot it cannot build.
+    const texture = (slot: unknown): JsonObject | undefined => {
+        const info = asObject(slot);
+        if (!info || imageOf(info["index"]) === undefined) return undefined;
+        return { ...info, ...pinnedTexturePatch(info) };
+    };
+
+    const ior = asNumber(eIor?.["ior"]) ?? 1.5;
+    const intensity = asNumber(eTx?.["transmissionFactor"]) ?? 0;
+    const thicknessFactor = asNumber(eVol?.["thicknessFactor"]) ?? 0;
+    const dispersion = asNumber(eDisp?.["dispersion"]) ?? 0;
+    const specularFactor = asNumber(eSp?.["specularFactor"]);
+    const specularColorFactor = asNumbers(eSp?.["specularColorFactor"]);
+    const specularTexture = texture(eSp?.["specularTexture"]);
+    const specularColorTexture = texture(eSp?.["specularColorTexture"]);
+    const thicknessTexture = texture(eVol?.["thicknessTexture"]);
+    const transmissionTexture = texture(eTx?.["transmissionTexture"]);
+
+    const needsTransmission =
+        eTx !== undefined && (intensity > 0 || transmissionTexture !== undefined);
+    const needsDispersion =
+        dispersion > 0 &&
+        (eIor !== undefined || needsTransmission) &&
+        eVol !== undefined &&
+        (thicknessFactor > 0 || thicknessTexture !== undefined);
+
+    const subsurface: JsonObject = {};
+    const reflectance: JsonObject = {};
+    let hasReflectance = false;
+
+    if (eIor) {
+        if (ior !== 1.5) {
+            reflectance["f0Factor"] = ((ior - 1) / (ior + 1)) ** 2 / 0.04;
+            reflectance["specularWeight"] = 1;
+            hasReflectance = true;
+        }
+        subsurface["refraction"] = { indexOfRefraction: ior };
+    }
+    if (eSp) {
+        if (specularFactor !== undefined) {
+            if (Math.abs(specularFactor - 1) > 1e-6) {
+                reflectance["f0Factor"] = specularFactor;
+                reflectance["specularWeight"] = specularFactor;
+                hasReflectance = true;
+            } else {
+                // An explicit factor of 1 *clears* what the ior set above.
+                delete reflectance["f0Factor"];
+                delete reflectance["specularWeight"];
+            }
+        }
+        if (specularColorFactor?.length === 3) {
+            const [red, green, blue] = specularColorFactor as [
+                number,
+                number,
+                number,
+            ];
+            if (red !== 1 || green !== 1 || blue !== 1) {
+                reflectance["color"] = [red, green, blue];
+                hasReflectance = true;
+            }
+        }
+        if (specularTexture) {
+            reflectance["texture"] = specularTexture;
+            reflectance["useOnlyMetallicFromTexture"] = true;
+        }
+        if (specularColorTexture) {
+            reflectance["reflectanceTexture"] = specularColorTexture;
+        }
+    }
+    if (eVol) {
+        if (thicknessFactor > 0 || thicknessTexture) {
+            subsurface["thickness"] = {
+                min: 0,
+                max: thicknessFactor || 1,
+                useGlTFChannel: true,
+                ...(thicknessTexture ? { texture: thicknessTexture } : {}),
+            };
+        }
+        const color = asNumbers(eVol["attenuationColor"])?.length === 3
+            ? asNumbers(eVol["attenuationColor"])
+            : undefined;
+        const atDistance = asNumber(eVol["attenuationDistance"]);
+        if (color || atDistance !== undefined) {
+            subsurface["tint"] = {
+                ...(color ? { color } : {}),
+                ...(atDistance !== undefined ? { atDistance } : {}),
+            };
+        } else if (subsurface["thickness"]) {
+            subsurface["tint"] = { color: [1, 1, 1], atDistance: 1 };
+        }
+    }
+
+    if (needsTransmission) {
+        // `setPbrTransmission` — the one that registers the scene hook, because
+        // enabling transmission retargets the frame graph's colour buffer.
+        input["_transmissive"] = true;
+        subsurface["refraction"] = {
+            ...(asObject(subsurface["refraction"]) ?? {}),
+            intensity,
+            useThicknessAsDepth: subsurface["thickness"] !== undefined,
+            ...(transmissionTexture ? { texture: transmissionTexture } : {}),
+        };
+    }
+    if (needsDispersion && subsurface["refraction"] && subsurface["thickness"]) {
+        (subsurface["refraction"] as JsonObject)["dispersion"] =
+            20 / dispersion;
+    }
+    if (Object.keys(subsurface).length > 0) input["_subsurface"] = subsurface;
+    if (
+        reflectance["texture"] ||
+        reflectance["reflectanceTexture"] ||
+        hasReflectance
+    ) {
+        // `setPbrMetallicReflectance` writes each option under its own
+        // underscore-prefixed name, which is what the ext's `detect` reads.
+        const names: Record<string, string> = {
+            color: "_metallicReflectanceColor",
+            texture: "_metallicReflectanceTexture",
+            reflectanceTexture: "_reflectanceTexture",
+            f0Factor: "_metallicF0Factor",
+            specularWeight: "_specularWeight",
+            useOnlyMetallicFromTexture:
+                "_useOnlyMetallicFromMetallicReflectanceTexture",
+        };
+        for (const [option, property] of Object.entries(names)) {
+            if (reflectance[option] !== undefined) {
+                input[property] = reflectance[option];
+            }
+        }
+    }
+}
+
 /** Builds an `imageOf` resolver from a glTF document's `textures` array. */
 export function gltfImageResolver(
     document: JsonObject,
@@ -581,9 +738,16 @@ export function pinnedMaterialInputFromGltf(
 
     for (const entry of materialExtensions) {
         const declared = asObject(extensions[entry.gltf]);
-        if (!declared || !extensionEnabled(declared, entry.factor)) continue;
+        if (!declared) continue;
         const props: JsonObject = { isEnabled: true, ...declared };
         for (const [gltfSlot, pinnedProperty] of entry.textures) {
+            if (
+                entry.property === "_sheen" &&
+                gltfSlot === "sheenRoughnessTexture" &&
+                sheenRoughnessIsTint(declared)
+            ) {
+                continue;
+            }
             const slot = asObject(declared[gltfSlot]);
             // A slot with no image behind it builds no texture, so the pin
             // has nothing to test — the same rule `pinnedTextureSlots`
@@ -597,50 +761,21 @@ export function pinnedMaterialInputFromGltf(
         input[entry.property] = props;
     }
 
-    // Transmission is not a material extension upstream: `set-transmission.ts`
-    // registers a scene hook, because enabling it retargets the frame graph's
-    // colour buffer. Its extension still reads the material, through
-    // `_transmissive` and `_subsurface.refraction`, and it is that pair rather
-    // than the glTF extension's presence that decides whether a refraction
-    // fragment composes — `intensity <= 0` composes none.
-    const transmission = asObject(extensions["KHR_materials_transmission"]);
-    if (transmission) {
-        const intensity = asNumber(transmission["transmissionFactor"]) ?? 0;
-        if (intensity > 0) {
-            input["_transmissive"] = true;
-            const refraction: JsonObject = { intensity };
-            if (asObject(transmission["transmissionTexture"])) {
-                refraction["texture"] = transmission["transmissionTexture"];
-            }
-            const volume = asObject(extensions["KHR_materials_volume"]);
-            const subsurface: JsonObject = { refraction };
-            if (volume) {
-                const thickness: JsonObject = {
-                    value: asNumber(volume["thicknessFactor"]) ?? 0,
-                };
-                if (asObject(volume["thicknessTexture"])) {
-                    thickness["texture"] = volume["thicknessTexture"];
-                    thickness["useGlTFChannel"] = true;
-                }
-                subsurface["thickness"] = thickness;
-            }
-            input["_subsurface"] = subsurface;
+    applyDielectric(input, extensions, imageOf);
+
+    // `gltf-ext-unlit.ts`: presence sets `_unlit`, and the tint is carried
+    // only over a base colour image — the same reason `baseColorFactor` is,
+    // since without one the factor is already baked into the texel.
+    if (asObject(extensions["KHR_materials_unlit"])) {
+        input["_unlit"] = true;
+        if (hasBaseColorImage) {
+            const factor = baseColorFactor ?? [1, 1, 1, 1];
+            input["_unlitColor"] = [factor[0], factor[1], factor[2]];
         }
     }
 
     if (scene.animatedExtensionTargets) {
         seedAnimatedExtensions(input, material, scene.animatedExtensionTargets);
-    }
-
-    if (asObject(extensions["KHR_materials_specular"])) {
-        // The reflectance ext reads these two directly off the material.
-        const specular = asObject(extensions["KHR_materials_specular"]) ?? {};
-        if (asObject(specular["specularTexture"])) {
-            input["_metallicReflectanceTexture"] = specular["specularTexture"];
-        }
-        if (asObject(specular["specularColorTexture"])) {
-            input["_reflectanceTexture"] = specular["specularColorTexture"];
-        }
     }
     return input;
 }
