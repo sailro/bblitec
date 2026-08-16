@@ -358,42 +358,6 @@ comparison, and the empirical guards. What is left:
   baked-bounds shortcut and the pinned OBB-to-AABB transform coincide there as
   well as at the reference pose. The port must keep all sized scenes
   bit-identical at their gated poses.
-- [ ] Stop advancing scene before-render callbacks on null-swapchain
-  iterations (the loop `continue`s without counting the frame, so the scene
-  frame counter can drift ahead of the native frame counter and shift
-  frame-indexed events such as Scene 273's runtime add). The bounded capture
-  grace makes captures immune, but deterministic frame accounting is the
-  real contract. It is an SDL_GPU-only path — `pal_dawn.cpp` treats a surface
-  it cannot acquire as an error and so never skips an advanced frame — and
-  the fix is a loop reorder rather than a guard: SDL only reports the null
-  texture *from* `SDL_WaitAndAcquireGPUSwapchainTexture`, and it documents
-  minimization as one example rather than the condition, so the availability
-  cannot be tested before the acquisition. The clock advance, the
-  before-render callbacks, the per-mesh uploads and the topology update all
-  have to move below the acquisition together, since the uploads read the
-  state the callbacks write and splitting them would render a frame late.
-  Verified while measuring: `++frame` is the last statement of the loop body
-  on both backends (`pal_sdl_gpu.cpp`, `pal_dawn.cpp`), so the `continue`
-  really does skip it, and the drift is exactly one scene frame per skipped
-  iteration. Incrementing before the `continue` would make the two counters
-  agree, but it is not the same fix — it keeps the scene advancing at full
-  speed behind a minimized window, where the reorder stops time the way a
-  throttled `requestAnimationFrame` does. Prefer the reorder.
-
-  A cheaper shape than moving the prologue down: move the acquisition *and*
-  `start` up to the top of the loop body instead, which is a few lines rather
-  than several hundred and lands the prologue inside the bracket identically.
-  It has its own cost — the swapchain image is then held across the whole
-  prologue, which is latency the late acquisition currently avoids — so it is
-  a trade to make deliberately, not a simplification.
-
-  What makes that more than a mechanical move is the benchmark bracket:
-  `start` sits immediately before the acquisition on both backends and
-  [backends](docs/backends.md) publishes the pair as "frame CPU time from
-  surface acquire through submit and present", so reordering SDL_GPU alone
-  puts the callbacks and uploads inside its bracket and not Dawn's. Land the
-  reorder together with a re-measurement of both backends, or move Dawn's
-  acquisition to the same place so the two loops stay comparable.
 - [ ] Close Scene 7's last sub-pixel silhouette epsilon (~0.5% of
   foreground pixels beyond 5, concentrated on the tongue and eye
   contours). Instrumented bone-texture captures now compare bit for

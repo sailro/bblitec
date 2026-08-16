@@ -4892,6 +4892,15 @@ bool run_dawn_engine(Engine& engine) {
                     pointer_state);
             }
         }
+        // The benchmark bracket mirrors the SDL backend: frame CPU time
+        // across the whole loop body -- scene callbacks and uploads, surface
+        // acquire, submit and present -- under the immediate present mode
+        // both backends configure. It starts here rather than at the
+        // acquisition because SDL_GPU has to acquire before it may advance
+        // the scene at all (a null swapchain must skip the frame entirely),
+        // and a bracket that began at each backend's acquisition would then
+        // cover a different span on each.
+        const double benchmark_start = monotonic_milliseconds();
         const float delta_ms =
             frame_clock.advance(scene.fixed_delta_ms);
         for (const auto& callback : scene.before_render) {
@@ -5381,10 +5390,6 @@ bool run_dawn_engine(Engine& engine) {
             }
         }
 
-        // The benchmark bracket mirrors the SDL backend: frame CPU
-        // time from surface acquire through submit and present, under
-        // the immediate present mode both backends configure.
-        const double benchmark_start = monotonic_milliseconds();
         WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
         wgpuSurfaceGetCurrentTexture(state.surface, &surface_texture);
         if (
