@@ -91,35 +91,49 @@ function extensionEnabled(extension: JsonObject, factor: string): boolean {
     return false;
 }
 
-/** Every texture-info slot a glTF material can carry, including its extensions'. */
-function* gltfTextureSlots(material: JsonObject): Generator<JsonObject> {
+/**
+ * `needsGltfEmissive`: whether a glTF material's emissive is applied at all.
+ *
+ * `emissiveFactor` multiplies the emissive texture, so `[1,1,1]` alongside a
+ * texture is a no-op and the pin attaches nothing — which is why an emissive
+ * texture alone does not put `PBR_HAS_EMISSIVE` on the material, and why the
+ * composed UBO then declares no `emissiveUVm` pair. With no texture, `[1,1,1]`
+ * is a real full-white emissive and does apply; the glTF default is `[0,0,0]`,
+ * which never does.
+ */
+function gltfEmissiveApplies(material: JsonObject): boolean {
+    const factor = asNumbers(material["emissiveFactor"]) ?? [0, 0, 0];
+    const hasTexture = asObject(material["emissiveTexture"]) !== undefined;
+    const black =
+        factor[0] === 0 && factor[1] === 0 && factor[2] === 0;
+    const neutralOverTexture =
+        hasTexture && factor[0] === 1 && factor[1] === 1 && factor[2] === 1;
+    return !(black || neutralOverTexture);
+}
+
+/**
+ * True when any slot carries `KHR_texture_transform`.
+ *
+ * `needsGltfUvTransform` in `gltf-pbr-builder-ext.ts` tests exactly five slots
+ * — base colour, normal, ORM, emissive and occlusion — and no extension's own
+ * textures, so a clearcoat or transmission texture carrying a transform does
+ * not make the material reach the uv-transform extension.
+ */
+function gltfMaterialHasTextureTransform(material: JsonObject): boolean {
     const pbr = asObject(material["pbrMetallicRoughness"]);
-    const direct = [
+    const slots = [
         asObject(pbr?.["baseColorTexture"]),
         asObject(pbr?.["metallicRoughnessTexture"]),
         asObject(material["normalTexture"]),
-        asObject(material["occlusionTexture"]),
         asObject(material["emissiveTexture"]),
+        asObject(material["occlusionTexture"]),
     ];
-    for (const slot of direct) if (slot) yield slot;
-    for (const extension of Object.values(
-        asObject(material["extensions"]) ?? {},
-    )) {
-        const declared = asObject(extension);
-        if (!declared) continue;
-        for (const value of Object.values(declared)) {
-            const slot = asObject(value);
-            if (slot && slot["index"] !== undefined) yield slot;
-        }
-    }
-}
-
-/** True when any slot carries `KHR_texture_transform`. */
-function gltfMaterialHasTextureTransform(material: JsonObject): boolean {
-    for (const slot of gltfTextureSlots(material)) {
-        if (asObject(slot["extensions"])?.["KHR_texture_transform"]) return true;
-    }
-    return false;
+    return slots.some(
+        (slot) =>
+            slot !== undefined &&
+            asObject(slot["extensions"])?.["KHR_texture_transform"] !==
+                undefined,
+    );
 }
 
 /**
@@ -152,7 +166,9 @@ export function pinnedMaterialInputFromGltf(
     const extensions = asObject(material["extensions"]) ?? {};
 
     const input: PinnedMaterialInput = {
-        emissiveTexture: asObject(material["emissiveTexture"]),
+        emissiveTexture: gltfEmissiveApplies(material)
+            ? asObject(material["emissiveTexture"])
+            : undefined,
         normalTexture: asObject(material["normalTexture"]),
         doubleSided: material["doubleSided"] === true,
         // `gltf-pbr-builder.ts` and its slow-path sibling both set this
@@ -189,12 +205,26 @@ export function pinnedMaterialInputFromGltf(
     // material any of whose slots carries KHR_texture_transform.
     if (gltfMaterialHasTextureTransform(material)) input["_hasUvTx"] = true;
     if (scene.linearImageProcessing) input["_linearImageProcessing"] = true;
-    if (baseColorFactor) {
+    // `assemblePbrPropsExt` skips a default `[1,1,1,1]` factor, which is the
+    // identity, so the presence of `baseColorFactor` — and with it
+    // `PBR2_HAS_BASE_COLOR_FACTOR` — is narrower than the glTF slot.
+    const defaultBaseColorFactor =
+        baseColorFactor !== undefined &&
+        baseColorFactor[0] === 1 &&
+        baseColorFactor[1] === 1 &&
+        baseColorFactor[2] === 1 &&
+        baseColorFactor[3] === 1;
+    if (baseColorFactor && !defaultBaseColorFactor) {
         input.baseColorFactor = baseColorFactor;
-        input.alpha = baseColorFactor[3] ?? 1;
     }
-    if (alphaMode === "BLEND") input.alphaBlend = true;
+    // The pin takes alpha from the factor for both blended and masked
+    // materials, and carries the cutoff through the alpha-test setter.
+    if (alphaMode === "BLEND") {
+        input.alphaBlend = true;
+        input.alpha = baseColorFactor?.[3] ?? 1;
+    }
     if (alphaMode === "MASK") {
+        input.alpha = baseColorFactor?.[3] ?? 1;
         input._alphaCutOff = asNumber(material["alphaCutoff"]) ?? 0.5;
     }
     if (asObject(pbr["metallicRoughnessTexture"])) {

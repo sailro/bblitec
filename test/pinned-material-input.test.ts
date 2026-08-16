@@ -93,7 +93,10 @@ test("maps the material fields the base feature derivation reads", async () => {
         doubleSided: true,
         alphaMode: "BLEND",
         normalTexture: { index: 0 },
+        // A factor that is neither black nor neutral-over-texture, so the pin's
+        // own predicate applies the emissive.
         emissiveTexture: { index: 1 },
+        emissiveFactor: [0.5, 0.5, 0.5],
         occlusionTexture: { index: 2, strength: 0.5, texCoord: 1 },
         pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 0.25] },
     });
@@ -104,6 +107,41 @@ test("maps the material fields the base feature derivation reads", async () => {
     assert.equal(input["occlusionTexCoord"], 1);
     assert.ok(input.normalTexture);
     assert.ok(input.emissiveTexture);
+    assert.equal(input.baseColorFactor?.[3], 0.25);
+});
+
+test("drops an emissive the pin would not apply", async () => {
+    // `[1,1,1]` multiplying a texture is the identity, and `[0,0,0]` is the
+    // glTF default; neither reaches setPbrEmissive, so neither puts
+    // PBR_HAS_EMISSIVE on the material or an emissiveUVm pair in its UBO.
+    for (const emissiveFactor of [undefined, [0, 0, 0], [1, 1, 1]]) {
+        const input = pinnedMaterialInputFromGltf({
+            emissiveTexture: { index: 1 },
+            ...(emissiveFactor ? { emissiveFactor } : {}),
+        });
+        assert.equal(input.emissiveTexture, undefined);
+    }
+    // With no texture, a full-white factor is a real emissive.
+    assert.equal(
+        pinnedMaterialInputFromGltf({ emissiveFactor: [1, 1, 1] })
+            .emissiveTexture,
+        undefined,
+    );
+});
+
+test("skips a default base colour factor", async () => {
+    assert.equal(
+        pinnedMaterialInputFromGltf({
+            pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] },
+        }).baseColorFactor,
+        undefined,
+    );
+    assert.deepEqual(
+        pinnedMaterialInputFromGltf({
+            pbrMetallicRoughness: { baseColorFactor: [1, 0.5, 1, 1] },
+        }).baseColorFactor,
+        [1, 0.5, 1, 1],
+    );
 });
 
 test("marks a material whose slot carries KHR_texture_transform", async () => {
