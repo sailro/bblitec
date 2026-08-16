@@ -415,8 +415,10 @@ wait for submitted work before rebuilding the mesh set.
 ### Diagnostics and capture
 
 Screenshot and benchmark modes, draw-ID and triangle-cluster buffers, the PBR
-diagnostic MRT set, deformation dumps, and the build stamp the parity harness
-checks before it trusts a measurement.
+diagnostic MRT set, deformation dumps, the render capture that writes the
+frame's whole CPU-side description for diffing against the browser
+([debugging](debugging.md)), and the build stamp the parity harness checks
+before it trusts a measurement.
 
 ## Where the boundary falls inside a family
 
@@ -448,7 +450,8 @@ of a measurement that does not mean what it looks like.
 `BBLITE_MSAA`, `BBLITE_BACKGROUND`, `BBLITE_GROUND`, `BBLITE_MAX_FRAMES`,
 `BBLITE_SCREENSHOT(_FRAME)`, `BBLITE_BENCHMARK_FRAMES`,
 `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`,
-`BBLITE_DEFORMATION_DUMP`, and `BBLITE_BUILD_STAMP_OUT`.
+`BBLITE_DEFORMATION_DUMP`, `BBLITE_RENDER_CAPTURE`, and
+`BBLITE_BUILD_STAMP_OUT`.
 
 Requested environment grounds and DDS/HDR skyboxes render by default and are
 disabled independently with `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0`.

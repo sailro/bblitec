@@ -29,6 +29,7 @@
 #include "pal_camera_controls.hpp"
 #include "pal_dawn_shared.hpp"
 #include "pal_gpu_shared.hpp"
+#include "pal_render_capture.hpp"
 
 #include <algorithm>
 #include <array>
@@ -4755,6 +4756,27 @@ bool run_dawn_engine(Engine& engine) {
             upstream::build_view_projection(
                 camera,
                 static_cast<float>(width) / height);
+        // Written from the same plan, camera and matrix the uploads
+        // below read, so the two backends' captures are comparable to
+        // each other as well as to the browser's.
+        if (
+            frame >= screenshot_frame &&
+            !topology_updated &&
+            !captures.render_capture_saved &&
+            !frame_options.render_capture_path.empty()) {
+            write_render_capture(
+                frame_options.render_capture_path,
+                "dawn",
+                scene,
+                engine,
+                camera,
+                render_plan,
+                matrix,
+                static_cast<int>(width),
+                static_cast<int>(height),
+                frame);
+            captures.render_capture_saved = true;
+        }
         wgpuQueueWriteBuffer(
             state.queue,
             state.view_projection,

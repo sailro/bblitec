@@ -74,6 +74,7 @@ generator-specific.
 | [Architecture](docs/architecture.md) | Compiler pipeline, ownership boundaries, runtime, renderer |
 | [Features](docs/features.md) | Supported feature families, compile-time versus run-time, boundaries |
 | [Development](docs/development.md) | Setup, commands, builds, switches, parity, troubleshooting |
+| [Debugging](docs/debugging.md) | The diagnostic ladder: capturing both renderers and diffing them |
 | [Fidelity](docs/fidelity.md) | Semantic adaptations, shader contracts, diagnostics |
 | [Status](docs/status.md) | Measured baselines, parity scenes, diagnostics |
 | [Backends](docs/backends.md) | The two GPU render backends: architecture, comparison, porting contracts |
