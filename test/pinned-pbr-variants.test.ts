@@ -13,13 +13,23 @@ const normalize = (source: string): string =>
     source.replace(/\s+/g, " ").trim();
 
 test("registers every PBR extension the pin owns", async () => {
+    // Sorted by id, which is the order `_getPbrExtsSorted` returns; the
+    // registration order that decides the UBO and bind-group layout is the
+    // separate insertion order in `materialExtensionModules`.
     assert.deepEqual(await registeredPbrExtensionIds(), [
+        "alpha-test",
         "anisotropy",
         "clearcoat",
+        "emissive-color",
+        "gamma-albedo",
         "ibl",
         "iridescence",
         "reflectance",
         "sheen",
+        "skybox",
+        "subsurface",
+        "unlit",
+        "uv-transform",
     ]);
 });
 

@@ -63,8 +63,15 @@ const materialExtensionModules = [
     "material/pbr/fragments/clearcoat-fragment.js",
     "material/pbr/fragments/sheen-fragment.js",
     "material/pbr/fragments/iridescence-fragment.js",
+    "material/pbr/fragments/subsurface-fragment.js",
     "material/pbr/fragments/reflectance-fragment.js",
     "material/pbr/fragments/anisotropy-fragment.js",
+    "material/pbr/fragments/emissive-fragment.js",
+    "material/pbr/fragments/alpha-test-fragment.js",
+    "material/pbr/fragments/gamma-fragment.js",
+    "material/pbr/fragments/unlit-fragment.js",
+    "material/pbr/fragments/uv-transform-fragment.js",
+    "material/pbr/fragments/skybox-fragment.js",
 ] as const;
 
 /** Registered after the material extensions, where `buildPbrRenderables` puts it. */
