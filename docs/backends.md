@@ -411,7 +411,9 @@ the authority if a regression appears:
   the PNG with `flipY: false`.
 - **DDS skybox**: rgba16f payload at `skybox_data_offset`, face-major
   mip-minor, no flips; cube of 8 vertices/36 indices from
-  `build_skybox_plan`; cull none, blend off, depth writes off; the
+  `build_skybox_plan`; cull back (the pinned
+  `createDefaultPipelineDescriptor` default the background skyboxes take, as
+  against the `"none"` the image skybox asks for), blend off, depth writes off; the
   vertex matrix is `build_skybox_view_projection` when
   `skybox_uses_environment`, else the scene view-projection;
   `SkyboxUniforms` from `build_skybox_uniforms(environment,
