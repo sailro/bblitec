@@ -1,4 +1,5 @@
 import {
+    existsSync,
     mkdirSync,
     readFileSync,
     writeFileSync,
@@ -27,31 +28,83 @@ interface GeometryDiagnosticResult {
     maxDiff: number;
 }
 
-const copyTaskPattern =
-    /    addTask\(scene, createCopyToTextureTask\(\{[\s\S]*?    \}, engine, scene\)\);\r?\n/g;
+const impostorNamePattern = /"([A-Za-z0-9_]+-impostor-[A-Za-z0-9_]+)"/g;
 
-function geometryCopyTasks(source: string): string[] {
+/**
+ * The impostor copy tasks are discovered from the generated tree rather than
+ * from the scene source. Scenes 145, 146 and 149 build theirs in a loop over a
+ * texture array, so the names exist only as
+ * `` `sceneNNN-impostor-${entry.name}` `` and never appear literally in the
+ * source; the compiler unrolls that loop, so the generated entry point carries
+ * every name in the order the scene adds them.
+ */
+function geometryCopyTasks(generatedDirectory: string): string[] {
+    const entryPoint = resolve(generatedDirectory, "main.cpp");
+    if (!existsSync(entryPoint)) {
+        throw new Error(
+            `Generated entry point '${entryPoint}' is missing; ` +
+                "compile the scene before running geometry diagnostics.",
+        );
+    }
+    const generated = readFileSync(entryPoint, "utf8");
     const result: string[] = [];
-    for (const match of source.matchAll(copyTaskPattern)) {
-        const name = match[0].match(/name:\s*"([^"]+-impostor-[^"]+)"/)?.[1];
-        if (name) result.push(name);
+    for (const match of generated.matchAll(impostorNamePattern)) {
+        const name = match[1];
+        if (name !== undefined && !result.includes(name)) result.push(name);
     }
     return result;
 }
 
-function fullScreenCopyTransform(selected: string): SuiteSourceTransform {
-    return (source) => source.replace(
-        copyTaskPattern,
-        (block) => {
-            const name = block.match(/name:\s*"([^"]+)"/)?.[1];
-            if (!name?.includes("-impostor-")) return block;
-            if (name !== selected) return "";
-            return block.replace(
-                /viewport:\s*\{[^}]+\}/,
-                "viewport: { x: 0, y: 0, width: 1, height: 1 }",
-            );
-        },
-    );
+const impostorShimPath = "/__bbl-geometry-impostor-shim.js";
+const pinnedModulePath = "/node_modules/@babylonjs/lite/lib/index.js";
+
+/**
+ * Selects one impostor in the browser the way the native frame loop selects it
+ * from `BBLITE_COPY_TASK`: by task name, dropping the other impostor copies and
+ * giving the selected one the full viewport. Doing it by name rather than by
+ * rewriting the source is what reaches the loop-built tasks, whose viewport is
+ * computed from the loop index and has no per-task literal to replace.
+ *
+ * `export *` skips names a module exports explicitly, so the scene still binds
+ * every other pinned export directly.
+ */
+function impostorShimModule(selected: string): string {
+    return `import * as pinned from ${JSON.stringify(pinnedModulePath)};
+export * from ${JSON.stringify(pinnedModulePath)};
+
+const selected = ${JSON.stringify(selected)};
+const skipped = Symbol("bblite-skipped-copy-task");
+
+export function createCopyToTextureTask(options, engine, scene) {
+    const name = options && options.name;
+    if (typeof name === "string" && name.includes("-impostor-")) {
+        if (name !== selected) return skipped;
+        return pinned.createCopyToTextureTask(
+            { ...options, viewport: { x: 0, y: 0, width: 1, height: 1 } },
+            engine,
+            scene,
+        );
+    }
+    return pinned.createCopyToTextureTask(options, engine, scene);
+}
+
+export function addTask(scene, task) {
+    if (task === skipped) return undefined;
+    return pinned.addTask(scene, task);
+}
+
+export function addTaskAtStart(scene, task) {
+    if (task === skipped) return undefined;
+    return pinned.addTaskAtStart(scene, task);
+}
+`;
+}
+
+function impostorShimTransform(): SuiteSourceTransform {
+    return (source) =>
+        source
+            .replaceAll('"babylon-lite"', JSON.stringify(impostorShimPath))
+            .replaceAll('"@babylonjs/lite"', JSON.stringify(impostorShimPath));
 }
 
 function taskSlug(task: string): string {
@@ -63,8 +116,7 @@ export async function runGeometryOutputDiagnostics(
     recaptureReference: boolean,
 ): Promise<void> {
     const scene = resolveScene(idOrSource);
-    const source = readFileSync(resolve(scene.source), "utf8");
-    const tasks = geometryCopyTasks(source);
+    const tasks = geometryCopyTasks(resolve(scene.output));
     if (tasks.length === 0) {
         throw new Error(
             `Scene '${scene.id}' has no geometry-output copy tasks.`,
@@ -96,7 +148,11 @@ export async function runGeometryOutputDiagnostics(
             scene.source,
             reference,
             recaptureReference,
-            fullScreenCopyTransform(task),
+            impostorShimTransform(),
+            undefined,
+            undefined,
+            undefined,
+            { virtualModules: { [impostorShimPath]: impostorShimModule(task) } },
         );
         runNative(
             defaultExecutable(scene.buildDirectory),

@@ -100,6 +100,13 @@ export const seededRandomScript =
 export interface SuiteCaptureOptions {
     seededRandom?: boolean;
     sourcePath?: string;
+    /**
+     * Extra modules served by path, ahead of the repository lookup. A
+     * diagnostic that has to intercept a pinned entry point re-exports the
+     * pinned module from one of these instead of editing the package, so the
+     * capture still runs the pinned code.
+     */
+    virtualModules?: Readonly<Record<string, string>>;
 }
 
 export function createSuiteSceneServer(
@@ -134,6 +141,12 @@ ${seedScript}<script type="module" src="${entryPath}"></script></body></html>`;
         if (url.pathname === entryPath) {
             response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
             response.end(moduleSource);
+            return;
+        }
+        const virtualModule = options.virtualModules?.[url.pathname];
+        if (virtualModule !== undefined) {
+            response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
+            response.end(virtualModule);
             return;
         }
         const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
