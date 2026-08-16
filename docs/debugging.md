@@ -325,25 +325,27 @@ These are the diagnostic ones:
 | `BBLITE_RENDER_CAPTURE=<path>` | write the frame's full CPU-side description as JSON |
 | `BBLITE_DEFORMATION_DUMP=<path>` | append first-frame bone palettes and morph weights as hexfloats |
 | `BBLITE_GPU_BACKEND=dawn` | select Dawn in a dual-backend build |
-| `BBLITE_GPU_DEBUG=1` | enable the backend debug layer |
+| `BBLITE_GPU_DEBUG=1` | enable the backend debug layer (prefer `parity --gpu-debug`, which also defuses SDL's assertion handler) |
 | `BBLITE_MSAA=1` | render single-sampled |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | drive a headless measured run |
 
 **A backend error message is rarely the error.** `SDL_GPU` reports a bad
 render pass only when the command list is submitted
 (`SDL_SubmitGPUCommandBufferAndAcquireFence: Failed to close command list`),
-which names neither the pass nor the parameter. Re-run the *binary* with the
-debug layer and it names both:
+which names neither the pass nor the parameter. Add `--gpu-debug` and it
+names both:
 
 ```bash
-BBLITE_GPU_DEBUG=1 BBLITE_TEST_PASS=1 BBLITE_SCREENSHOT=out.png ./bblite_native.exe
+npm run scene -- parity scene116 --gpu-debug
 ```
 
 That turned "scene 116 refuses `BBLITE_MSAA=1`" into `'!"Store op is RESOLVE
-or RESOLVE_AND_STORE but texture is not multisample!"'` in one run — and
-into a three-line fix. Go through the binary rather than `scene -- parity`:
-the harness swallows the assertion, and the debug layer is slow enough that
-the scene command's own timeout can fire first.
+or RESOLVE_AND_STORE but texture is not multisample!"'` — and into a
+three-line fix. The flag does two things, and the second is why setting
+`BBLITE_GPU_DEBUG=1` by hand used to hang instead of answering: SDL's default
+assertion handler *prompts*, so the run blocks forever waiting for an input
+nothing will give it. `--gpu-debug` sets `SDL_ASSERT=always_ignore` as well,
+which makes the assertion print and the run continue.
 
 **`BBLITE_MSAA=1` is a bisection tool, not just a diagnostic.** Comparing a
 backend against *itself* at one sample separates multisampling from
