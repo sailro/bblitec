@@ -117,7 +117,11 @@ test("maps the material fields the base feature derivation reads", async () => {
     assert.equal(input["occlusionTexCoord"], 1);
     assert.ok(input.normalTexture);
     assert.ok(input.emissiveTexture);
-    assert.equal(input.baseColorFactor?.[3], 0.25);
+    // No base colour image, so the factor is baked into the uploaded texel
+    // and the material declares no `baseColorFactor` field — `alpha` above
+    // still comes from it, because the blend predicate reads the factor
+    // whether or not the field survives.
+    assert.equal(input.baseColorFactor, undefined);
 });
 
 test("attaches the emissive texture but gates the emissive colour", async () => {
@@ -154,18 +158,16 @@ test("attaches the emissive texture but gates the emissive colour", async () => 
 });
 
 test("skips a default base colour factor", async () => {
-    assert.equal(
+    const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
+    const withFactor = (baseColorFactor: number[]) =>
         pinnedMaterialInputFromGltf({
-            pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] },
-        }).baseColorFactor,
-        undefined,
-    );
-    assert.deepEqual(
-        pinnedMaterialInputFromGltf({
-            pbrMetallicRoughness: { baseColorFactor: [1, 0.5, 1, 1] },
-        }).baseColorFactor,
-        [1, 0.5, 1, 1],
-    );
+            pbrMetallicRoughness: {
+                baseColorFactor,
+                baseColorTexture: { index: 0 },
+            },
+        }, { imageOf }).baseColorFactor;
+    assert.equal(withFactor([1, 1, 1, 1]), undefined);
+    assert.deepEqual(withFactor([1, 0.5, 1, 1]), [1, 0.5, 1, 1]);
 });
 
 test("marks a material whose built texture carries KHR_texture_transform", async () => {
@@ -297,5 +299,91 @@ test("an extension texture reaches the pin under the pin's own property name", a
     assert.equal(
         (noImage["_sheen"] as Record<string, unknown>)["texture"],
         undefined,
+    );
+});
+
+test("a texture transform counts only when it patches a field", async () => {
+    // `gltf-ext-uv-transform.ts` builds a patch from scale/offset/rotation and
+    // stamps `_hasTx` only if the patch is non-empty. Scene 39's Grass
+    // material declares `KHR_texture_transform: {}` — the values would arrive
+    // by animation if at all — and the browser's fragment for it has no
+    // `txfUV` helper and no UV matrix fields.
+    const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
+    const transformed = (transform: unknown) =>
+        pinnedMaterialInputFromGltf({
+            pbrMetallicRoughness: {
+                baseColorTexture: {
+                    index: 0,
+                    extensions: { KHR_texture_transform: transform },
+                },
+            },
+        }, { imageOf })["_hasUvTx"];
+
+    assert.equal(transformed({}), undefined, "an empty transform patches nothing");
+    // `rotation` is read for truthiness upstream, so zero is the same as absent.
+    assert.equal(transformed({ rotation: 0 }), undefined);
+    assert.equal(transformed({ rotation: 0.5 }), true);
+    assert.equal(transformed({ scale: [1, 1] }), true);
+    assert.equal(transformed({ offset: [0, 0] }), true);
+});
+
+test("an animated transform forces the UV fields the animation writes into", async () => {
+    // `gltf-feature-animation-pointer.ts` calls `enableMaterialUvTransform`
+    // for any material an animated `KHR_texture_transform` pointer targets,
+    // which sets `_hasUvTx` outright. Scene 253's TextureTransform material
+    // declares an empty transform and animates offset and scale, so the
+    // static rule and this one disagree exactly where it matters.
+    const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
+    const material = {
+        pbrMetallicRoughness: {
+            baseColorTexture: {
+                index: 0,
+                extensions: { KHR_texture_transform: {} },
+            },
+        },
+    };
+    assert.equal(
+        pinnedMaterialInputFromGltf(material, { imageOf })["_hasUvTx"],
+        undefined,
+    );
+    assert.equal(
+        pinnedMaterialInputFromGltf(material, {
+            imageOf,
+            animatedUvTransform: true,
+        })["_hasUvTx"],
+        true,
+    );
+});
+
+test("a base colour factor is carried only over a base colour image", async () => {
+    // `gltf-pbr-builder-ext.ts`: `_baseColorImage && !isDefaultBaseColorFactor`.
+    // With no image the factor is baked into the 1x1 texel the slot samples,
+    // so the material declares no field — Scene 39's Rock is coloured and
+    // textureless, and the browser's fragment reads `baseColorSample.rgb`
+    // with nothing multiplied in.
+    const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
+    const factor = [0.78, 0.78, 0.78, 1];
+    assert.equal(
+        pinnedMaterialInputFromGltf({
+            pbrMetallicRoughness: { baseColorFactor: factor },
+        }, { imageOf }).baseColorFactor,
+        undefined,
+        "no image: the factor is baked into the texel",
+    );
+    assert.deepEqual(
+        pinnedMaterialInputFromGltf({
+            pbrMetallicRoughness: {
+                baseColorFactor: factor,
+                baseColorTexture: { index: 0 },
+            },
+        }, { imageOf }).baseColorFactor,
+        factor,
+    );
+    // An animated factor needs the field however the load-time value reads.
+    assert.deepEqual(
+        pinnedMaterialInputFromGltf({
+            pbrMetallicRoughness: { baseColorFactor: factor },
+        }, { imageOf, animatedBaseColorFactor: true }).baseColorFactor,
+        factor,
     );
 });

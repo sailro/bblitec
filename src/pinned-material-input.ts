@@ -128,9 +128,45 @@ function gltfEmissiveApplies(material: JsonObject): boolean {
     return !(black || neutralOverTexture);
 }
 
+/**
+ * The markers `KHR_texture_transform`'s loader extension stamps on a texture,
+ * ported term for term from `loader-gltf/gltf-ext-uv-transform.ts`.
+ *
+ * The distinctions here are all load-bearing and none of them are guessable:
+ *
+ * - `_hasTx` is set only when the transform contributes a *field*. A declared
+ *   but empty `KHR_texture_transform: {}` patches nothing, so it composes no
+ *   UV-transform arm — Scene 39's Grass material is exactly that case, and
+ *   treating the extension's presence as the test composed four UBO fields
+ *   and a `txfUV` helper the browser's fragment does not have.
+ * - `rotation` is read for truthiness, so a rotation of `0` also patches
+ *   nothing, the same as omitting it.
+ * - `_texCoord` comes from the transform's own `texCoord` when it has one and
+ *   the slot's otherwise, and only a value of exactly `1` is stamped.
+ */
+function pinnedTexturePatch(slot: JsonObject | undefined): {
+    _hasTx?: true;
+    _texCoord?: 1;
+} {
+    if (slot === undefined) return {};
+    const transform = asObject(
+        asObject(slot["extensions"])?.["KHR_texture_transform"],
+    );
+    const patched =
+        transform !== undefined &&
+        (transform["scale"] !== undefined ||
+            transform["offset"] !== undefined ||
+            Boolean(transform["rotation"]));
+    const texCoord = asNumber(transform?.["texCoord"]) ??
+        asNumber(slot["texCoord"]);
+    return {
+        ...(patched ? { _hasTx: true as const } : {}),
+        ...(texCoord === 1 ? { _texCoord: 1 as const } : {}),
+    };
+}
+
 const hasTransform = (slot: JsonObject | undefined): boolean =>
-    slot !== undefined &&
-    asObject(slot["extensions"])?.["KHR_texture_transform"] !== undefined;
+    pinnedTexturePatch(slot)._hasTx === true;
 
 /**
  * Which of the pinned texture slots `buildDefaultPbrTexturesExt` actually
@@ -236,6 +272,19 @@ export interface PinnedMaterialSceneContext {
      * browser's fragment still declares `baseColorFactor`.
      */
     animatedBaseColorFactor?: boolean;
+    /**
+     * True when `KHR_animation_pointer` drives a `KHR_texture_transform` on
+     * this material. `gltf-feature-animation-pointer.ts` calls
+     * `enableMaterialUvTransform`, which sets `_hasUvTx` outright — the same
+     * shape as the base-colour exception above, and for the same reason: the
+     * animation writes into a UBO field, so the field has to exist.
+     *
+     * The load-time transform is typically the *empty* object in this case —
+     * Scene 253's NormalScale and TextureTransform materials both declare
+     * `KHR_texture_transform: {}` and animate offset and scale — so the
+     * static rule and this one disagree exactly where it matters.
+     */
+    animatedUvTransform?: boolean;
     /**
      * True when `KHR_animation_pointer` drives this material's emissive factor
      * or its `KHR_materials_emissive_strength`. The emissive extension reads
@@ -349,19 +398,27 @@ export function pinnedMaterialInputFromGltf(
     // `PBR2_HAS_UV_TRANSFORM` is contributed by the uv-transform extension's own
     // detect, which reads `_hasUvTx` — the marker the pinned loader stamps on
     // the textures it actually built.
-    if (slots.hasUvTransform) input["_hasUvTx"] = true;
+    if (slots.hasUvTransform || scene.animatedUvTransform) {
+        input["_hasUvTx"] = true;
+    }
     if (scene.linearImageProcessing) input["_linearImageProcessing"] = true;
-    // `assemblePbrPropsExt` skips a default `[1,1,1,1]` factor, which is the
-    // identity, so the presence of `baseColorFactor` — and with it
-    // `PBR2_HAS_BASE_COLOR_FACTOR` — is narrower than the glTF slot.
+    // `gltf-pbr-builder-ext.ts` states the rule outright:
+    //   `mat._baseColorImage && !isDefaultBaseColorFactor(...)`
+    // Both halves matter. A default `[1,1,1,1]` is the identity and is
+    // skipped; and a factor with *no image* behind it is not carried either,
+    // because `uploadBaseColorFactorTexture` bakes it into the 1x1 texel the
+    // slot samples instead — so a coloured, textureless material like Scene
+    // 39's Rock declares no `baseColorFactor` field at all.
     const defaultBaseColorFactor =
-        baseColorFactor !== undefined &&
-        baseColorFactor[0] === 1 &&
-        baseColorFactor[1] === 1 &&
-        baseColorFactor[2] === 1 &&
-        baseColorFactor[3] === 1;
+        baseColorFactor === undefined ||
+        (baseColorFactor[0] === 1 &&
+            baseColorFactor[1] === 1 &&
+            baseColorFactor[2] === 1 &&
+            baseColorFactor[3] === 1);
+    const hasBaseColorImage =
+        imageOf(asObject(pbr["baseColorTexture"])?.["index"]) !== undefined;
     if (
-        (baseColorFactor && !defaultBaseColorFactor) ||
+        (hasBaseColorImage && !defaultBaseColorFactor) ||
         scene.animatedBaseColorFactor
     ) {
         input.baseColorFactor = baseColorFactor ?? [1, 1, 1, 1];
@@ -395,14 +452,10 @@ export function pinnedMaterialInputFromGltf(
             // has nothing to test — the same rule `pinnedTextureSlots`
             // applies to the base slots.
             if (!slot || imageOf(slot["index"]) === undefined) continue;
-            props[pinnedProperty] = {
-                ...slot,
-                // `detect` reads these off the built texture, not off the
-                // glTF slot: `_hasTx` selects the UV-transform arm and
-                // `_texCoord === 1` selects the second UV set.
-                ...(hasTransform(slot) ? { _hasTx: true } : {}),
-                _texCoord: asNumber(slot["texCoord"]) ?? 0,
-            };
+            // `detect` reads `_hasTx` and `_texCoord` off the built texture,
+            // not off the glTF slot, so the slot carries what the loader's
+            // own extension would have stamped on it.
+            props[pinnedProperty] = { ...slot, ...pinnedTexturePatch(slot) };
         }
         input[entry.property] = props;
     }
