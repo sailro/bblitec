@@ -52,14 +52,24 @@ npm run scene -- uniforms scene33 --size 96    # decode one browser buffer as na
 | Which draw owns the bad pixels? | attribution buffers under `artifacts/parity/<id>` |
 | Does removing the feature remove the residual? | copy the scene to `examples/`, strip it, `parity --recapture-reference` |
 
-Two rules that exist because sessions were lost to their absence:
+Three rules that exist because sessions were lost to their absence:
 
 - **Never call a residual a floor from statistics alone.** A floor claim
   is a claim about a mechanism and needs one: the pinned line that does
   something ours does not. Percentages of matching pixels are not that.
+  Look for that line in an *arm* rather than in the arithmetic — upstream
+  forks whole blocks on a boolean recording where an object came from
+  (`useF0Remap` from the glTF clearcoat loader, `hasAlbedoScaling` from
+  the sheen setter, `_cullMode` from a pipeline-descriptor default), and
+  an arm we never compose looks exactly like a small systematic bias.
 - **Measure the PNG, do not eyeball it.** "The sprites are in the wrong
   place" cost an hour; "exactly 7200 px at (640,180)-(719,269)" named the
   bug immediately.
+- **Bisect a defect before trusting the name it arrived with.** Toggle the
+  suspect off and re-measure; the element whose removal makes the number
+  *worse* is not the cause. A background quad filed against the
+  environment ground was the DDS skybox, and one `BBLITE_GROUND=0` run
+  said so.
 
 `docs/debugging.md` carries the full ladder, how to read a `diff` report,
 and the compile-probe method for sizing an unintegrated scene before
