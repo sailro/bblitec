@@ -123,19 +123,31 @@ land measurably closer.
 
 **Performance.** Scene 1 (BoomBox), Release, 1280x720, 2000 frames
 after 30 warmup, immediate present, same session
-(`BBLITE_BENCHMARK_FRAMES=2000`; frame CPU time from surface acquire
-through submit and present):
+(`BBLITE_BENCHMARK_FRAMES=2000`; frame CPU time across the whole loop
+body — scene callbacks and uploads, surface acquire, submit and
+present):
 
 | Backend | Average | Median |
 | --- | ---: | ---: |
-| SDL_GPU | 0.192 ms | 0.155 ms |
-| Dawn | 0.229 ms | 0.179 ms |
+| SDL_GPU | 0.127 ms | 0.085 ms |
+| Dawn | 0.208 ms | 0.141 ms |
 
-Dawn's ~15-20% higher CPU cost at this (sub-millisecond) scale comes
-from always-on validation and robustness — which must stay on, since
-the browser reference runs with both — and per-draw uniform-buffer
-writes where SDL_GPU uses push constants. Neither backend is close to
-being a frame-budget concern for the corpus.
+The bracket used to start at each backend's own surface acquire.
+SDL_GPU now has to acquire before it may advance the scene at all — a
+null swapchain must skip the whole frame, not just its draws — so an
+acquire-anchored bracket would have covered the scene half on one
+backend and not the other. Widening both to the loop body was measured
+against the old shape in one session before it was published: SDL_GPU
+0.136/0.0896 to 0.127/0.0852 and Dawn 0.216/0.1453 to 0.208/0.1414,
+both *down* despite covering strictly more work, so the scene half of
+a Scene 1 frame sits below run-to-run noise and the two definitions are
+continuous.
+
+Dawn's ~60% higher CPU cost at this (sub-millisecond) scale comes from
+always-on validation and robustness — which must stay on, since the
+browser reference runs with both — and per-draw uniform-buffer writes
+where SDL_GPU uses push constants. Neither backend is close to being a
+frame-budget concern for the corpus.
 
 **Portability.** Dawn the library targets D3D12, Vulkan, and Metal;
 bblitec's integration is Windows-only today by configuration, not

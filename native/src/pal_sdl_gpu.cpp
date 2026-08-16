@@ -3926,6 +3926,37 @@ bool run_gpu_engine(Engine& engine) {
                         pointer_state);
                 }
             }
+            // The swapchain is acquired before the scene advances, because
+            // SDL only reports an unavailable texture *from*
+            // `SDL_WaitAndAcquireGPUSwapchainTexture` -- it cannot be tested
+            // for first. An iteration that gets none produces no frame, so it
+            // must not advance the clock, run the before-render callbacks or
+            // upload anything either; those all live below the check now, and
+            // time stops behind a minimised window the way a throttled
+            // `requestAnimationFrame` stops it. The cost of the early acquire
+            // is holding the image across the scene half of the frame.
+            //
+            // The benchmark bracket therefore starts here, covering the whole
+            // loop body; `pal_dawn.cpp` starts its own at the same point so
+            // the published pair stays comparable.
+            const double start = monotonic_milliseconds();
+            SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(state.device);
+            if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
+            SDL_GPUTexture* swapchain = nullptr;
+            Uint32 width = 0;
+            Uint32 height = 0;
+            if (!SDL_WaitAndAcquireGPUSwapchainTexture(
+                    command,
+                    state.window,
+                    &swapchain,
+                    &width,
+                    &height)) {
+                gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture");
+            }
+            if (!swapchain) {
+                SDL_CancelGPUCommandBuffer(command);
+                continue;
+            }
             const float delta_ms =
                 frame_clock.advance(scene.fixed_delta_ms);
             for (const auto& callback : scene.before_render) {
@@ -4131,24 +4162,6 @@ bool run_gpu_engine(Engine& engine) {
                 render_plan.draw_lists.transparent,
                 engine,
                 camera);
-            const double start = monotonic_milliseconds();
-            SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(state.device);
-            if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
-            SDL_GPUTexture* swapchain = nullptr;
-            Uint32 width = 0;
-            Uint32 height = 0;
-            if (!SDL_WaitAndAcquireGPUSwapchainTexture(
-                    command,
-                    state.window,
-                    &swapchain,
-                    &width,
-                    &height)) {
-                gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture");
-            }
-            if (!swapchain) {
-                SDL_CancelGPUCommandBuffer(command);
-                continue;
-            }
             const bool capture_ready =
                 frame >= screenshot_frame &&
                 !topology_updated;
