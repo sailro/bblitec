@@ -1043,6 +1043,16 @@ inline void write_render_capture(
                 scene.environment, scene.transmission_enabled);
         write_uniform_block(json, "fragment", 0, "SkyboxUniforms", skybox);
     }
+#if BBLITE_SOLID_SKYBOX
+    if (scene.environment.has_solid_skybox) {
+        // The pinned 96-byte mesh block, so a capture pairs against the
+        // browser's own skybox buffer by size.
+        const upstream::SolidSkyboxUniforms solid_skybox =
+            upstream::build_solid_skybox_uniforms(scene);
+        write_uniform_block(
+            json, "fragment", 0, "SolidSkyboxUniforms", solid_skybox);
+    }
+#endif
     if (scene.environment.has_ground) {
         const upstream::BackgroundUniforms background =
             upstream::build_background_uniforms(scene.environment, camera);

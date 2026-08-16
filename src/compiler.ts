@@ -101,6 +101,7 @@ const featureSources: Record<Feature, string[]> = {
     "background:ground": [],
     "background:skybox": [],
     "background:image-skybox": [],
+    "background:solid-skybox": [],
     "light:hemispheric": [],
     "light:directional": [],
     "light:point": [],
@@ -3071,24 +3072,63 @@ class Compiler
         return `${value}u`;
     }
 
-    public compileEnvironmentOptions(expression: ts.Expression): [string, string, string, string] {
+    public compileEnvironmentOptions(expression: ts.Expression): {
+        groundTextureUrl: string;
+        skyboxUrl: string;
+        skyboxSize: string;
+        brdfUrl: string;
+        skipSkybox: boolean;
+        skipGround: boolean;
+    } {
         const object = this.expectObjectLiteral(expression);
+        this.validateObjectProperties(
+            object,
+            [
+                "groundTextureUrl",
+                "skyboxUrl",
+                "skyboxSize",
+                "brdfUrl",
+                "skipSkybox",
+                "skipGround",
+            ],
+            "Reached environment options support groundTextureUrl, skyboxUrl, skyboxSize, brdfUrl, skipSkybox, and skipGround.",
+        );
         const groundTextureUrl = this.objectProperty(object, "groundTextureUrl");
         const skyboxUrl = this.objectProperty(object, "skyboxUrl");
         const skyboxSize = this.objectProperty(object, "skyboxSize");
         const brdfUrl = this.objectProperty(object, "brdfUrl");
-        return [
-            groundTextureUrl ? this.compileStringLiteral(groundTextureUrl) : "",
-            skyboxUrl ? this.compileStringLiteral(skyboxUrl) : "",
+        // `skipSkybox` and `skipGround` decide whether `loadEnvironment`'s
+        // deferred builder pushes a background renderable at all, so they are
+        // read rather than tolerated: the solid-colour skybox is what a scene
+        // gets when it sets neither.
+        const skipFlag = (name: "skipSkybox" | "skipGround"): boolean => {
+            const property = this.objectProperty(object, name);
+            if (!property) {
+                return false;
+            }
+            const compiled = this.compileBoolean(property);
+            if (compiled !== "true" && compiled !== "false") {
+                this.fail(
+                    property,
+                    `${name} must be a static boolean.`,
+                );
+            }
+            return compiled === "true";
+        };
+        return {
+            groundTextureUrl: groundTextureUrl ? this.compileStringLiteral(groundTextureUrl) : "",
+            skyboxUrl: skyboxUrl ? this.compileStringLiteral(skyboxUrl) : "",
             // Zero asks the loader for the pinned default rather than
             // inventing one here: `createDefaultEnvironment`'s skyboxSize is
             // 20, and the generated loader already resolves it. Passing a
             // size of our own produced a skybox large enough for the camera's
             // far plane to clip it, which shows as a straight-edged hole in
             // the background once the camera moves off the reference pose.
-            skyboxSize ? this.compileNumber(skyboxSize) : "0.0f",
-            brdfUrl ? this.compileStringLiteral(brdfUrl) : "",
-        ];
+            skyboxSize: skyboxSize ? this.compileNumber(skyboxSize) : "0.0f",
+            brdfUrl: brdfUrl ? this.compileStringLiteral(brdfUrl) : "",
+            skipSkybox: skipFlag("skipSkybox"),
+            skipGround: skipFlag("skipGround"),
+        };
     }
 
     /**

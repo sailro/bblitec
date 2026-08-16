@@ -382,6 +382,41 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
             "scene.imageProcessing.contrast",
             file,
         );
+        // Which background renderables the deferred builder pushes is the
+        // contract the compiler decides from the two URLs and the two skip
+        // flags, so assert the pin still composes it that way.
+        for (const called of [
+            "buildSolidSkyboxRenderable",
+            "buildGroundRenderable",
+            "buildDdsSkyboxRenderable",
+            "buildHdrSkyboxRenderable",
+            "computeSceneSize",
+        ]) {
+            if (!this.context.hasCall(declaration, called)) {
+                this.context.contractError(
+                    declaration,
+                    `Expected loadEnvironment to call ${called}.`,
+                );
+            }
+        }
+        this.assertSceneSizeContract();
+        if (
+            !this.context.hasNode(
+                declaration,
+                (node) =>
+                    ts.isPropertyAssignment(node) &&
+                    ts.isIdentifier(node.name) &&
+                    node.name.text === "skipSkybox" &&
+                    /^skyboxIsDds \|\| skyboxIsEnv \|\| options\?\.skipSkybox$/.test(
+                        node.initializer.getText(file).trim(),
+                    ),
+            )
+        ) {
+            this.context.contractError(
+                declaration,
+                "Expected the pinned solid-skybox condition (skyboxIsDds || skyboxIsEnv || skipSkybox).",
+            );
+        }
         return {
             modulePath,
             symbolName,
@@ -392,6 +427,7 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
 #include <bblite/upstream/env_parse.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -400,6 +436,36 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
 namespace bbl {
 
 namespace {
+
+// src/mesh/mesh-world-bounds.ts expandWorldAabbForMesh, for the world matrix
+// a loader-baked static primitive presents: identity rotation and no
+// translation, so every coefficient is 0 or 1 and the abs-radius reduces to
+// the extent. The centre/extent round-trip is kept rather than shortcut to
+// min/max because it is what the pin evaluates, and it is exact in double.
+void expand_world_aabb_for_box(
+    std::array<double, 3>& minimum,
+    std::array<double, 3>& maximum,
+    const Vec3& box_min,
+    const Vec3& box_max) {
+    const std::array<double, 3> low{box_min.x, box_min.y, box_min.z};
+    const std::array<double, 3> high{box_max.x, box_max.y, box_max.z};
+    std::array<double, 3> center{};
+    std::array<double, 3> extent{};
+    for (int axis = 0; axis < 3; ++axis) {
+        center[axis] = (low[axis] + high[axis]) * 0.5;
+        extent[axis] = (high[axis] - low[axis]) * 0.5;
+    }
+    for (int row = 0; row < 3; ++row) {
+        const double transformed_center = center[row];
+        const double transformed_radius = extent[row];
+        minimum[row] = std::min(
+            minimum[row],
+            transformed_center - transformed_radius);
+        maximum[row] = std::max(
+            maximum[row],
+            transformed_center + transformed_radius);
+    }
+}
 
 std::uint32_t read_u32(const std::vector<std::uint8_t>& bytes, std::size_t offset) {
     if (offset + 4 > bytes.size()) {
@@ -430,7 +496,17 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
     if (!options.ground_texture_url.empty()) {
         scene.environment.ground_texture.bytes =
             pal::read_binary_file(options.ground_texture_url);
-        scene.environment.has_ground = true;
+    }
+    // buildGroundRenderable takes the texture URL as optional and uploads a
+    // 1x1 white texel when it has none, so the ground follows skipGround
+    // alone; the PAL already carries that same white fallback.
+    scene.environment.has_ground = options.ground;
+    // src/loader-env/load-env.ts, the !bgOptions.skipSkybox arm: the cube is
+    // pushed before the DDS and .env arms and is the only background this
+    // scene reaches when neither of those applies.
+    scene.environment.has_solid_skybox = options.solid_skybox;
+    if (options.solid_skybox) {
+        scene.environment.background_enabled_by_default = true;
     }
     if (options.skybox_uses_environment) {
         // src/loader-env/load-env.ts, the skyboxIsEnv branch: the skybox is
@@ -459,15 +535,25 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
         options.skybox_size > 0.0f ? options.skybox_size : 20.0f;
     scene.deferred_builders.push_back(
         [&scene, requested_skybox_size]() {
-            Vec3 bounds_min{
-                std::numeric_limits<float>::infinity(),
-                std::numeric_limits<float>::infinity(),
-                std::numeric_limits<float>::infinity(),
+            // src/material/pbr/scene-size.ts computeSceneSize over
+            // src/mesh/mesh-world-bounds.ts expandWorldAabbForMesh. Both run
+            // in JavaScript doubles over Float32Array boxes, and the box is
+            // re-derived as a centre plus a per-row abs-coefficient radius
+            // rather than taken as min/max -- which returns the same bounds
+            // through an identity world matrix only because every term of
+            // that round-trip is exact in double. Accumulating in float
+            // instead moved the root by one ULP, and the background dither
+            // seeds on the world position it places, so the whole ground
+            // decorrelated.
+            std::array<double, 3> bounds_min{
+                std::numeric_limits<double>::infinity(),
+                std::numeric_limits<double>::infinity(),
+                std::numeric_limits<double>::infinity(),
             };
-            Vec3 bounds_max{
-                -std::numeric_limits<float>::infinity(),
-                -std::numeric_limits<float>::infinity(),
-                -std::numeric_limits<float>::infinity(),
+            std::array<double, 3> bounds_max{
+                -std::numeric_limits<double>::infinity(),
+                -std::numeric_limits<double>::infinity(),
+                -std::numeric_limits<double>::infinity(),
             };
             for (const MeshHandle handle : scene.meshes) {
                 if (handle.value >= scene.engine->meshes.size()) continue;
@@ -479,42 +565,40 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
                 }
                 const ModelGeometry& geometry =
                     scene.engine->geometries[mesh.geometry];
-                bounds_min.x =
-                    std::min(bounds_min.x, geometry.bounds_min.x);
-                bounds_min.y =
-                    std::min(bounds_min.y, geometry.bounds_min.y);
-                bounds_min.z =
-                    std::min(bounds_min.z, geometry.bounds_min.z);
-                bounds_max.x =
-                    std::max(bounds_max.x, geometry.bounds_max.x);
-                bounds_max.y =
-                    std::max(bounds_max.y, geometry.bounds_max.y);
-                bounds_max.z =
-                    std::max(bounds_max.z, geometry.bounds_max.z);
+                expand_world_aabb_for_box(
+                    bounds_min,
+                    bounds_max,
+                    geometry.bounds_min,
+                    geometry.bounds_max);
             }
             scene.environment.ground_size = 15.0f;
             scene.environment.skybox_size =
                 requested_skybox_size;
             scene.environment.ground_position = Vec3{};
             scene.environment.skybox_position = Vec3{};
-            if (!std::isfinite(bounds_min.x)) return;
-            const float dx = bounds_max.x - bounds_min.x;
-            const float dy = bounds_max.y - bounds_min.y;
-            const float dz = bounds_max.z - bounds_min.z;
-            const float diagonal =
+            if (!std::isfinite(bounds_min[0])) return;
+            const double dx = bounds_max[0] - bounds_min[0];
+            const double dy = bounds_max[1] - bounds_min[1];
+            const double dz = bounds_max[2] - bounds_min[2];
+            const double diagonal =
                 std::sqrt(dx * dx + dy * dy + dz * dz);
-            if (diagonal > scene.environment.ground_size) {
-                scene.environment.ground_size =
-                    diagonal * 2.0f;
-                scene.environment.skybox_size =
-                    scene.environment.ground_size;
+            double ground_size = 15.0;
+            double skybox_size =
+                static_cast<double>(requested_skybox_size);
+            if (diagonal > ground_size) {
+                ground_size = diagonal * 2.0;
+                skybox_size = ground_size;
             }
-            scene.environment.ground_size *= 1.1f;
-            scene.environment.skybox_size *= 1.5f;
+            ground_size *= 1.1;
+            skybox_size *= 1.5;
+            scene.environment.ground_size =
+                static_cast<float>(ground_size);
+            scene.environment.skybox_size =
+                static_cast<float>(skybox_size);
             scene.environment.ground_position = Vec3{
-                bounds_min.x + dx * 0.5f,
-                bounds_min.y - 0.00001f,
-                bounds_min.z + dz * 0.5f,
+                static_cast<float>(bounds_min[0] + dx * 0.5),
+                static_cast<float>(bounds_min[1] - 0.00001),
+                static_cast<float>(bounds_min[2] + dz * 0.5),
             };
             scene.environment.skybox_position =
                 scene.environment.ground_position;
@@ -889,6 +973,84 @@ void load_hdr_environment(
 } // namespace bbl
 `,
         };
+    }
+
+    /**
+     * The sizing the deferred builder above reproduces. Its numbers are the
+     * pin's own literals and its rootPosition is composed in JavaScript
+     * doubles; both are asserted here so a changed upstream formula stops
+     * generation instead of leaving a copy that agrees only today.
+     */
+    private assertSceneSizeContract(): void {
+        const sizeModule = "src/material/pbr/scene-size.ts";
+        const boundsModule = "src/mesh/mesh-world-bounds.ts";
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                sizeModule,
+                "computeSceneSize",
+            );
+        for (const call of [
+            "emptyWorldAabb",
+            "expandWorldAabbForMesh",
+        ]) {
+            if (!this.context.hasCall(declaration, call)) {
+                this.context.contractError(
+                    declaration,
+                    `Expected computeSceneSize to call ${call}.`,
+                );
+            }
+        }
+        const literals = [15, 20, 2, 1.1, 1.5, 0.00001];
+        for (const literal of literals) {
+            if (
+                !this.context.hasNode(
+                    declaration,
+                    (node) =>
+                        ts.isNumericLiteral(node) &&
+                        this.context.numericValue(node, file) ===
+                            literal,
+                )
+            ) {
+                this.context.contractError(
+                    declaration,
+                    `Expected the pinned scene-size constant ${literal}.`,
+                );
+            }
+        }
+        // The root is the box centre on x and z and the box floor minus an
+        // epsilon on y; the native builder stores exactly those three.
+        for (const marker of [
+            "minX + dx * 0.5",
+            "minY - 0.00001",
+            "minZ + dz * 0.5",
+        ]) {
+            if (
+                !this.context.store
+                    .getSource(sizeModule)
+                    .includes(marker)
+            ) {
+                this.context.contractError(
+                    declaration,
+                    `Expected the pinned rootPosition term '${marker}'.`,
+                );
+            }
+        }
+        const { declaration: expand } =
+            this.context.functionDeclaration(
+                boundsModule,
+                "expandWorldAabbForMesh",
+            );
+        for (const marker of [
+            "transformedCenter += coefficient * center[column]!",
+            "transformedRadius += Math.abs(coefficient) * extent[column]!",
+        ]) {
+            if (!expand.getText().includes(marker)) {
+                this.context.contractError(
+                    expand,
+                    `Expected the pinned OBB-to-AABB term '${marker}'.`,
+                );
+            }
+        }
     }
 
     private extractConstants(): EnvironmentConstants {

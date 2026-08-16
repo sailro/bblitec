@@ -406,10 +406,12 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - ChibiRex Default Camera",
         parity: {
             referenceTimeSeconds: 1,
-            // The pinned solid-colour skybox this scene reaches is not
-            // drawn natively (TODO); its ground carries the dither.
-            maxFullMad: 0.22,
-            maxForegroundMad: 0.21,
+            // The sky is byte-identical; what is left is the ground, whose
+            // root position differs from the pin's by one ULP on two axes
+            // (the sizing entry in TODO.md), and the foreground's sub-pixel
+            // silhouette epsilon.
+            maxFullMad: 0.065,
+            maxForegroundMad: 0.19,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: {

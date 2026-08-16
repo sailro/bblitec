@@ -266,6 +266,17 @@ struct GpuImageSkybox {
 };
 #endif
 
+#if BBLITE_SOLID_SKYBOX
+// The clear-colour cube samples nothing, so it carries no texture: its
+// fragment writes scene.clearColor plus the pinned dither.
+struct GpuSolidSkybox {
+    SDL_GPUBuffer* vertices = nullptr;
+    SDL_GPUBuffer* indices = nullptr;
+    SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    bool enabled = false;
+};
+#endif
+
 struct IdUniforms {
     float id_color[4];
     float alpha_options[4];
@@ -386,6 +397,9 @@ struct GpuState {
     GpuSkybox skybox;
 #if BBLITE_IMAGE_SKYBOX
     GpuImageSkybox image_skybox;
+#endif
+#if BBLITE_SOLID_SKYBOX
+    GpuSolidSkybox solid_skybox;
 #endif
 #if BBLITE_GPU_INSTANCING
     // Identity per-instance matrix shared by the background ground and
@@ -1736,6 +1750,23 @@ void release(GpuState& state) {
         SDL_ReleaseGPUBuffer(
             state.device,
             state.image_skybox.vertices);
+    }
+#endif
+#if BBLITE_SOLID_SKYBOX
+    if (state.solid_skybox.pipeline) {
+        SDL_ReleaseGPUGraphicsPipeline(
+            state.device,
+            state.solid_skybox.pipeline);
+    }
+    if (state.solid_skybox.indices) {
+        SDL_ReleaseGPUBuffer(
+            state.device,
+            state.solid_skybox.indices);
+    }
+    if (state.solid_skybox.vertices) {
+        SDL_ReleaseGPUBuffer(
+            state.device,
+            state.solid_skybox.vertices);
     }
 #endif
 #if BBLITE_GPU_INSTANCING
@@ -3115,6 +3146,78 @@ bool run_gpu_engine(Engine& engine) {
                 image_skybox_fragment_shader);
         }
 #endif
+#if BBLITE_SOLID_SKYBOX
+        if (
+            scene.environment.has_solid_skybox &&
+            background_enabled) {
+            SDL_GPUShader* solid_skybox_vertex_shader =
+                load_shader(
+                    state.device,
+                    "solid-skybox.vert",
+                    SDL_GPU_SHADERSTAGE_VERTEX,
+                    0,
+                    2,
+                    "mainVertex");
+            SDL_GPUShader* solid_skybox_fragment_shader =
+                load_shader(
+                    state.device,
+                    "solid-skybox.frag",
+                    SDL_GPU_SHADERSTAGE_FRAGMENT,
+                    0,
+                    1,
+                    "mainFragment");
+            const SDL_GPUVertexBufferDescription
+                solid_skybox_buffer{
+                    0,
+                    sizeof(float) * 3,
+                    SDL_GPU_VERTEXINPUTRATE_VERTEX,
+                    0,
+                };
+            const SDL_GPUVertexAttribute
+                solid_skybox_attribute{
+                    0,
+                    0,
+                    SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+                    0,
+                };
+            // The ground arm above leaves the shared color target blending;
+            // the solid skybox composes none (createDefaultPipelineDescriptor
+            // is given no _blend).
+            color_target.blend_state.enable_blend = false;
+            SDL_GPUGraphicsPipelineCreateInfo
+                solid_skybox_info = pipeline_info;
+            solid_skybox_info.vertex_shader =
+                solid_skybox_vertex_shader;
+            solid_skybox_info.fragment_shader =
+                solid_skybox_fragment_shader;
+            solid_skybox_info.vertex_input_state =
+                SDL_GPUVertexInputState{
+                    &solid_skybox_buffer,
+                    1,
+                    &solid_skybox_attribute,
+                    1,
+                };
+            // createDefaultPipelineDescriptor's own default, which
+            // background-solid-skybox.ts does not override: back faces
+            // culled, counter-clockwise front, depth writes off.
+            solid_skybox_info.rasterizer_state.cull_mode =
+                SDL_GPU_CULLMODE_BACK;
+            state.solid_skybox.pipeline =
+                SDL_CreateGPUGraphicsPipeline(
+                    state.device,
+                    &solid_skybox_info);
+            if (!state.solid_skybox.pipeline) {
+                gpu_error(
+                    "SDL_CreateGPUGraphicsPipeline solid skybox");
+            }
+            SDL_ReleaseGPUShader(
+                state.device,
+                solid_skybox_vertex_shader);
+            SDL_ReleaseGPUShader(
+                state.device,
+                solid_skybox_fragment_shader);
+        }
+#endif
         SDL_ReleaseGPUShader(state.device, vertex_shader);
         SDL_ReleaseGPUShader(state.device, fragment_shader);
         if (image_processing_vertex_shader) {
@@ -3361,6 +3464,27 @@ bool run_gpu_engine(Engine& engine) {
                 state.device,
                 &scene.environment.image_skybox_faces);
             state.image_skybox.enabled = true;
+        }
+#endif
+#if BBLITE_SOLID_SKYBOX
+        if (
+            scene.environment.has_solid_skybox &&
+            background_enabled &&
+            state.solid_skybox.pipeline) {
+            const upstream::SolidSkyboxPlan solid_skybox_plan =
+                upstream::build_solid_skybox_plan(
+                    scene.environment);
+            state.solid_skybox.vertices = upload_buffer(
+                state.device,
+                SDL_GPU_BUFFERUSAGE_VERTEX,
+                solid_skybox_plan.positions.data(),
+                sizeof(solid_skybox_plan.positions));
+            state.solid_skybox.indices = upload_buffer(
+                state.device,
+                SDL_GPU_BUFFERUSAGE_INDEX,
+                solid_skybox_plan.indices.data(),
+                sizeof(solid_skybox_plan.indices));
+            state.solid_skybox.enabled = true;
         }
 #endif
 #if BBLITE_GPU_INSTANCING
@@ -5199,6 +5323,60 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
                 scene_matrix_bound = false;
             };
+#if BBLITE_SOLID_SKYBOX
+            const auto draw_solid_skybox = [&] {
+                if (!state.solid_skybox.enabled) return;
+                // The pinned vertex stage reads scene.viewProjection and
+                // scene.vEyePosition and offsets the cube by the eye itself,
+                // so this draw builds its own view-projection rather than
+                // binding the frame's: it needs the pin's reverse-Z clip row
+                // for the near-plane clipping its dither seed rides on.
+                const upstream::SolidSkyboxSceneUniforms
+                    solid_skybox_scene =
+                        upstream::build_solid_skybox_scene_uniforms(
+                            camera,
+                            aspect);
+                const upstream::SolidSkyboxUniforms solid_skybox_mesh =
+                    upstream::build_solid_skybox_uniforms(scene);
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    0,
+                    &solid_skybox_scene,
+                    sizeof(solid_skybox_scene));
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    1,
+                    &solid_skybox_mesh,
+                    sizeof(solid_skybox_mesh));
+                SDL_PushGPUFragmentUniformData(
+                    command,
+                    0,
+                    &solid_skybox_mesh,
+                    sizeof(solid_skybox_mesh));
+                SDL_BindGPUGraphicsPipeline(
+                    pass,
+                    state.solid_skybox.pipeline);
+                const SDL_GPUBufferBinding vertex_binding{
+                    state.solid_skybox.vertices,
+                    0,
+                };
+                const SDL_GPUBufferBinding index_binding{
+                    state.solid_skybox.indices,
+                    0,
+                };
+                SDL_BindGPUVertexBuffers(
+                    pass,
+                    0,
+                    &vertex_binding,
+                    1);
+                SDL_BindGPUIndexBuffer(
+                    pass,
+                    &index_binding,
+                    SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
+                scene_matrix_bound = false;
+            };
+#endif
 #if BBLITE_IMAGE_SKYBOX
             const auto draw_image_skybox = [&] {
                 if (!state.image_skybox.enabled) return;
@@ -5724,6 +5902,12 @@ bool run_gpu_engine(Engine& engine) {
             for (const upstream::RenderStage stage : render_plan.stages) {
                 switch (stage) {
                     case upstream::RenderStage::skybox:
+#if BBLITE_SOLID_SKYBOX
+                        // load-env.ts pushes the solid cube before the DDS
+                        // and .env arms, and every background renderable
+                        // carries order 0, so it draws first here too.
+                        draw_solid_skybox();
+#endif
                         draw_skybox();
 #if BBLITE_IMAGE_SKYBOX
                         draw_image_skybox();
