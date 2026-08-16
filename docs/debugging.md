@@ -290,7 +290,33 @@ These are the diagnostic ones:
 | `BBLITE_DEFORMATION_DUMP=<path>` | append first-frame bone palettes and morph weights as hexfloats |
 | `BBLITE_GPU_BACKEND=dawn` | select Dawn in a dual-backend build |
 | `BBLITE_GPU_DEBUG=1` | enable the backend debug layer |
+| `BBLITE_MSAA=1` | render single-sampled |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | drive a headless measured run |
+
+**A backend error message is rarely the error.** `SDL_GPU` reports a bad
+render pass only when the command list is submitted
+(`SDL_SubmitGPUCommandBufferAndAcquireFence: Failed to close command list`),
+which names neither the pass nor the parameter. Re-run the *binary* with the
+debug layer and it names both:
+
+```bash
+BBLITE_GPU_DEBUG=1 BBLITE_TEST_PASS=1 BBLITE_SCREENSHOT=out.png ./bblite_native.exe
+```
+
+That turned "scene 116 refuses `BBLITE_MSAA=1`" into `'!"Store op is RESOLVE
+or RESOLVE_AND_STORE but texture is not multisample!"'` in one run — and
+into a three-line fix. Go through the binary rather than `scene -- parity`:
+the harness swallows the assertion, and the debug layer is slow enough that
+the scene command's own timeout can fire first.
+
+**`BBLITE_MSAA=1` is a bisection tool, not just a diagnostic.** Comparing a
+backend against *itself* at one sample separates multisampling from
+everything else. It is what localised the scenes 9/37 run-to-run wobble:
+SDL_GPU and single-sampled Dawn are both bit-identical across runs, and only
+4x Dawn is not, which excluded the scene, the assets and the shading math in
+three commands. Compare backend-to-backend or run-to-run when you do this —
+the goldens are multisampled, so every scene looks worse against them at one
+sample and that number means nothing.
 
 Comparing native bone palettes against the browser's requires the mirror
 similarity map — negate column-major indexes 1, 2, 3, 4, 8 and 12 — which
