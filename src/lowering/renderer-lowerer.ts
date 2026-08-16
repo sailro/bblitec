@@ -31,7 +31,10 @@ import {
 import {
     backgroundGroundFragmentWgsl,
     backgroundSkyboxFragmentWgsl,
+    solidSkyboxFragmentWgsl,
+    solidSkyboxVertexWgsl,
 } from "../shader-builtins-background.js";
+import type { PinnedSolidSkyboxSource } from "../shader-builtins-background.js";
 import { materialVertexWgsl } from "../shader-builtins-material.js";
 import { applyMaterialExtensionWgsl } from "../shader-builtins-material-extensions.js";
 import { standardFragmentWgsl } from "../shader-builtins-standard.js";
@@ -350,6 +353,8 @@ const standardRenderableModule =
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
 const backgroundHdrModule = "src/material/pbr/background-hdr-skybox.ts";
+const backgroundSolidModule =
+    "src/material/pbr/background-solid-skybox.ts";
 const rgbdDecodeModule = "src/loader-env/rgbd-decode.ts";
 const surfaceModule = "src/engine/surface.ts";
 const shaderPipelineModule = "src/material/shader/shader-pipeline.ts";
@@ -368,6 +373,7 @@ export class RendererLowerer {
         transmission?: boolean;
         fog?: boolean;
         imageSkybox?: boolean;
+        solidSkybox?: boolean;
         textureTransform?: boolean;
         materialSpecular?: boolean;
         occlusionUv2?: boolean;
@@ -1195,6 +1201,35 @@ struct SkyboxUniforms {
     std::array<float, 4> background_center{};
     std::array<float, 4> image_parameters{};
 };
+${options.solidSkybox
+    ? `
+struct SolidSkyboxPlan {
+    std::array<std::array<float, 3>, 8> positions{};
+    std::array<std::uint32_t, 36> indices{};
+};
+
+// src/material/pbr/background-solid-skybox.ts createSkyMeshUBO: the pinned
+// 96-byte mesh block, field for field, so a native capture pairs against the
+// browser's own buffer.
+struct SolidSkyboxUniforms {
+    std::array<float, 16> world{};
+    std::array<float, 3> primary_color{};
+    float pad = 0.0f;
+    std::array<float, 3> sky_output_color{};
+    float pad2 = 0.0f;
+};
+
+// src/shader/scene-uniforms.ts SCENE_UBO_WGSL, truncated at the last member
+// the pinned skybox stages read. The vertex stage keeps the pin's own
+// scene.viewProjection and scene.vEyePosition references, so this block is the
+// pin's per-pass prefix rather than a native invention.
+struct SolidSkyboxSceneUniforms {
+    std::array<float, 16> view_projection{};
+    std::array<float, 16> view{};
+    std::array<float, 4> eye_position{};
+};
+`
+    : ""}\
 ${options.imageSkybox
     ? `
 struct ImageSkyboxPlan {
@@ -1279,6 +1314,16 @@ SkyboxPlan build_skybox_plan(const EnvironmentState& environment);
 SkyboxUniforms build_skybox_uniforms(
     const EnvironmentState& environment,
     bool linear_image_processing);
+${options.solidSkybox
+    ? `SolidSkyboxPlan build_solid_skybox_plan(
+    const EnvironmentState& environment);
+SolidSkyboxUniforms build_solid_skybox_uniforms(
+    const Scene& scene);
+SolidSkyboxSceneUniforms build_solid_skybox_scene_uniforms(
+    const CameraRecord& camera,
+    double aspect);
+`
+    : ""}\
 ${options.imageSkybox
     ? `ImageSkyboxPlan build_image_skybox_plan(
     const EnvironmentState& environment);
@@ -2587,6 +2632,83 @@ SkyboxUniforms build_skybox_uniforms(
     };
     return result;
 }
+${options.solidSkybox
+    ? `
+SolidSkyboxPlan build_solid_skybox_plan(
+    const EnvironmentState& environment) {
+    // createSkyboxBuffers(engine, skyHalfSize): the cube is authored around
+    // the model origin and reaches world space through mesh.world, which the
+    // vertex stage applies with w = 0 -- so the root translation drops out and
+    // only the half extent reaches the buffer.
+    const float half = environment.skybox_size * 0.5f;
+    SolidSkyboxPlan result;
+    result.positions = {{
+        {-half, -half, -half},
+        {half, -half, -half},
+        {-half, half, -half},
+        {half, half, -half},
+        {-half, -half, half},
+        {half, -half, half},
+        {-half, half, half},
+        {half, half, half},
+    }};
+    result.indices = {
+        6, 4, 5, 7, 6, 5,
+        0, 2, 3, 1, 0, 3,
+        5, 1, 3, 7, 5, 3,
+        0, 4, 6, 2, 0, 6,
+        3, 2, 6, 7, 3, 6,
+        0, 1, 5, 4, 0, 5,
+    };
+    return result;
+}
+
+SolidSkyboxUniforms build_solid_skybox_uniforms(const Scene& scene) {
+    const EnvironmentState& environment = scene.environment;
+    SolidSkyboxUniforms result;
+    result.world[0] = 1.0f;
+    result.world[5] = 1.0f;
+    result.world[10] = 1.0f;
+    result.world[15] = 1.0f;
+    result.world[12] = environment.skybox_position.x;
+    result.world[13] = environment.skybox_position.y;
+    result.world[14] = environment.skybox_position.z;
+    result.primary_color = {
+        environment.primary_color.r,
+        environment.primary_color.g,
+        environment.primary_color.b,
+    };
+    // skyOutputColor is the scene clear colour, which this fragment writes
+    // directly: the solid arm applies no image processing at all.
+    result.sky_output_color = {
+        scene.clear_color.r,
+        scene.clear_color.g,
+        scene.clear_color.b,
+    };
+    return result;
+}
+
+SolidSkyboxSceneUniforms build_solid_skybox_scene_uniforms(
+    const CameraRecord& camera,
+    double aspect) {
+    const Vec3 eye = camera_basis(camera).eye;
+    SolidSkyboxSceneUniforms result;
+    // This one draw binds the pin's own reverse-Z clip row rather than the
+    // renderer's. The cube is centred on the eye, so its side faces straddle
+    // the near plane and are clipped -- and the clipper interpolates the
+    // attributes of the vertices it generates from clip space, including z.
+    // The dither seeds on that interpolated positionW, so a differing z row
+    // decorrelates the noise across every clipped face while leaving the
+    // unclipped one exact. The draw writes no depth and is first in the pass,
+    // so the convention cannot reach the depth test.
+    result.view_projection =
+        build_view_projection(camera, aspect, true);
+    result.view = build_view_matrix(camera_world_matrix(camera));
+    result.eye_position = {eye.x, eye.y, eye.z, 0.0f};
+    return result;
+}
+`
+    : ""}\
 ${options.imageSkybox
     ? `
 ImageSkyboxPlan build_image_skybox_plan(
@@ -2656,6 +2778,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         ground: boolean;
         skybox: boolean;
         imageSkybox?: boolean;
+        solidSkybox?: boolean;
         transmission?: boolean;
         fog?: boolean;
         normalTextureScale?: boolean;
@@ -3556,6 +3679,30 @@ ${directMarker}`,
                 ),
             });
         }
+        if (options.solidSkybox) {
+            const pinned = this.pinnedSolidSkyboxSource();
+            this.context.functionDeclaration(
+                backgroundSolidModule,
+                "buildSolidSkyboxRenderable",
+            );
+            const provenance = this.context.provenance(
+                backgroundSolidModule,
+                "buildSolidSkyboxRenderable",
+                "shaders/skybox.vertex.wgsl and the module's own skyboxFragSrc",
+            );
+            result.push(
+                {
+                    output:
+                        "upstream/shaders/solid-skybox.vert.native.wgsl",
+                    data: solidSkyboxVertexWgsl(provenance, pinned),
+                },
+                {
+                    output:
+                        "upstream/shaders/solid-skybox.frag.native.wgsl",
+                    data: solidSkyboxFragmentWgsl(provenance, pinned),
+                },
+            );
+        }
         if (options.imageSkybox) {
             // The skybox-cubemap WGSL ships as inlined string literals
             // in the compiled module (raw imports carry no source-map
@@ -4150,7 +4297,80 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
                     nativeBehavior: "Compiled HDR RGBA16F cubemap mip zero is reused for the generated cubemap skybox with exposure, gamma, and contrast.",
                     validation: ["source marker assertions", "scene 8 GPU parity"],
                 },
+                {
+                    id: "solid-skybox",
+                    upstreamModule: backgroundSolidModule,
+                    upstreamMarker: "buildSolidSkyboxRenderable",
+                    nativeBehavior: "The clear-colour skybox an .env scene reaches without a DDS or HDR skybox is drawn as the pin's own cube, with its infinite-distance vertex stage and unconditional dither taken from the packaged WGSL.",
+                    validation: ["packaged WGSL extraction", "scene 7 background attribution"],
+                },
             ],
         };
     }
+
+    /**
+     * The solid skybox's two WGSL stages ship as `?raw` string literals with no
+     * source-map entry, so they are read out of the packaged module text — the
+     * vertex stage from the shared chunk `background-solid-skybox.js` imports,
+     * which keeps the pin's content hash out of this file.
+     */
+    private pinnedSolidSkyboxSource(): PinnedSolidSkyboxSource {
+        const packageRoot = this.context.store.packageRoot;
+        const modulePath = resolve(
+            packageRoot,
+            "lib/material/pbr/background-solid-skybox.js",
+        );
+        const module = readFileSync(modulePath, "utf8");
+        const chunk =
+            /import \{ s as skyboxVertSrc \} from '(\.\.\/\.\.\/_chunks\/[^']+)'/.exec(
+                module,
+            );
+        if (!chunk) {
+            throw new Error(
+                "Pinned Babylon Lite solid skybox no longer imports the shared skybox vertex chunk.",
+            );
+        }
+        const vertexModule = readFileSync(
+            resolve(packageRoot, "lib/material/pbr", chunk[1]!),
+            "utf8",
+        );
+        return {
+            vertex: rawWgslLiteral(vertexModule, "skyboxVertSrc"),
+            fragment: rawWgslLiteral(module, "skyboxFragSrc"),
+            sceneUniforms: this.compiledSceneUniformsWgsl(),
+        };
+    }
+}
+
+/**
+ * Read one `const <name> = "...";` WGSL literal out of a packaged module. The
+ * bundler emits these as single-line double-quoted JavaScript strings, so the
+ * value is recovered by scanning to the closing quote and parsing it as JSON
+ * rather than by a regex that would have to model every escape.
+ */
+function rawWgslLiteral(source: string, name: string): string {
+    const marker = `const ${name} = "`;
+    const start = source.indexOf(marker);
+    if (start < 0) {
+        throw new Error(
+            `Pinned Babylon Lite WGSL literal '${name}' was not found.`,
+        );
+    }
+    let index = start + marker.length;
+    let escaped = "";
+    while (index < source.length && source[index] !== '"') {
+        if (source[index] === "\\") {
+            escaped += source[index]! + (source[index + 1] ?? "");
+            index += 2;
+            continue;
+        }
+        escaped += source[index];
+        index += 1;
+    }
+    if (index >= source.length) {
+        throw new Error(
+            `Pinned Babylon Lite WGSL literal '${name}' is unterminated.`,
+        );
+    }
+    return JSON.parse(`"${escaped}"`) as string;
 }

@@ -255,7 +255,8 @@ export type Feature =
     | "renderer:transmission"
     | "renderer:fog"
     | "renderer:geometry-output"
-    | "background:image-skybox";
+    | "background:image-skybox"
+    | "background:solid-skybox";
 
 export interface ResolvedCompileOptions {
     fileName: string;

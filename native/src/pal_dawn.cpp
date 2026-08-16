@@ -331,6 +331,19 @@ struct DawnState : DawnDevice {
     WGPUBindGroup ground_morph_group = nullptr;
     WGPUBindGroup skybox_morph_group = nullptr;
 #endif
+#if BBLITE_SOLID_SKYBOX
+    // The clear-colour cube samples nothing: no texture, no texture group.
+    WGPUShaderModule solid_skybox_vertex_module = nullptr;
+    WGPUShaderModule solid_skybox_fragment_module = nullptr;
+    WGPURenderPipeline solid_skybox_pipeline = nullptr;
+    WGPUBuffer solid_skybox_vertices = nullptr;
+    WGPUBuffer solid_skybox_indices = nullptr;
+    WGPUBuffer solid_skybox_scene_uniforms = nullptr;
+    WGPUBuffer solid_skybox_mesh_uniforms = nullptr;
+    WGPUBindGroup solid_skybox_scene_group = nullptr;
+    WGPUBindGroup solid_skybox_material_group = nullptr;
+    bool solid_skybox_enabled = false;
+#endif
 #if BBLITE_IMAGE_SKYBOX
     WGPUShaderModule image_skybox_vertex_module = nullptr;
     WGPUShaderModule image_skybox_fragment_module = nullptr;
@@ -619,6 +632,35 @@ struct DawnState : DawnDevice {
                 wgpuRenderPipelineRelease(pipeline.pipeline);
             }
         }
+#if BBLITE_SOLID_SKYBOX
+        if (solid_skybox_material_group) {
+            wgpuBindGroupRelease(solid_skybox_material_group);
+        }
+        if (solid_skybox_scene_group) {
+            wgpuBindGroupRelease(solid_skybox_scene_group);
+        }
+        if (solid_skybox_mesh_uniforms) {
+            wgpuBufferRelease(solid_skybox_mesh_uniforms);
+        }
+        if (solid_skybox_scene_uniforms) {
+            wgpuBufferRelease(solid_skybox_scene_uniforms);
+        }
+        if (solid_skybox_indices) {
+            wgpuBufferRelease(solid_skybox_indices);
+        }
+        if (solid_skybox_vertices) {
+            wgpuBufferRelease(solid_skybox_vertices);
+        }
+        if (solid_skybox_pipeline) {
+            wgpuRenderPipelineRelease(solid_skybox_pipeline);
+        }
+        if (solid_skybox_fragment_module) {
+            wgpuShaderModuleRelease(solid_skybox_fragment_module);
+        }
+        if (solid_skybox_vertex_module) {
+            wgpuShaderModuleRelease(solid_skybox_vertex_module);
+        }
+#endif
 #if BBLITE_IMAGE_SKYBOX
         if (image_skybox_material_group) {
             wgpuBindGroupRelease(image_skybox_material_group);
@@ -4330,6 +4372,125 @@ bool run_dawn_engine(Engine& engine) {
         state.skybox_enabled = true;
     }
 
+#if BBLITE_SOLID_SKYBOX
+    if (
+        scene.environment.has_solid_skybox &&
+        background_enabled) {
+        state.solid_skybox_vertex_module =
+            load_wgsl_module(state, "solid-skybox.vert");
+        state.solid_skybox_fragment_module =
+            load_wgsl_module(state, "solid-skybox.frag");
+        const upstream::SolidSkyboxPlan solid_skybox_plan =
+            upstream::build_solid_skybox_plan(scene.environment);
+        state.solid_skybox_vertices = create_buffer(
+            state,
+            WGPUBufferUsage_Vertex,
+            solid_skybox_plan.positions.data(),
+            sizeof(solid_skybox_plan.positions));
+        state.solid_skybox_indices = create_buffer(
+            state,
+            WGPUBufferUsage_Index,
+            solid_skybox_plan.indices.data(),
+            sizeof(solid_skybox_plan.indices));
+        state.solid_skybox_scene_uniforms = create_buffer(
+            state,
+            WGPUBufferUsage_Uniform,
+            nullptr,
+            (sizeof(upstream::SolidSkyboxSceneUniforms) + 15) & ~15ull);
+        state.solid_skybox_mesh_uniforms = create_buffer(
+            state,
+            WGPUBufferUsage_Uniform,
+            nullptr,
+            (sizeof(upstream::SolidSkyboxUniforms) + 15) & ~15ull);
+
+        WGPUVertexAttribute position_attribute{};
+        position_attribute.format = WGPUVertexFormat_Float32x3;
+        position_attribute.offset = 0;
+        position_attribute.shaderLocation = 0;
+        WGPUVertexBufferLayout vertex_layout{};
+        vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
+        vertex_layout.arrayStride = sizeof(float) * 3;
+        vertex_layout.attributeCount = 1;
+        vertex_layout.attributes = &position_attribute;
+        WGPURenderPipelineDescriptor descriptor =
+            WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+        descriptor.vertex.module = state.solid_skybox_vertex_module;
+        descriptor.vertex.entryPoint = string_view("mainVertex");
+        descriptor.vertex.bufferCount = 1;
+        descriptor.vertex.buffers = &vertex_layout;
+        descriptor.primitive.topology =
+            WGPUPrimitiveTopology_TriangleList;
+        descriptor.primitive.frontFace = WGPUFrontFace_CCW;
+        // createDefaultPipelineDescriptor's "back" default, which
+        // background-solid-skybox.ts does not override.
+        descriptor.primitive.cullMode = WGPUCullMode_Back;
+        WGPUDepthStencilState depth_stencil =
+            WGPU_DEPTH_STENCIL_STATE_INIT;
+        depth_stencil.format =
+            WGPUTextureFormat_Depth24PlusStencil8;
+        depth_stencil.depthWriteEnabled = WGPUOptionalBool_False;
+        depth_stencil.depthCompare = WGPUCompareFunction_Less;
+        descriptor.depthStencil = &depth_stencil;
+        descriptor.multisample.count = state.sample_count;
+        descriptor.multisample.mask = ~0u;
+        WGPUColorTargetState color_target =
+            WGPU_COLOR_TARGET_STATE_INIT;
+        color_target.format = state.frame_color_format;
+        WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+        fragment.module = state.solid_skybox_fragment_module;
+        fragment.entryPoint = string_view("mainFragment");
+        fragment.targetCount = 1;
+        fragment.targets = &color_target;
+        descriptor.fragment = &fragment;
+        state.solid_skybox_pipeline =
+            wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+        if (!state.solid_skybox_pipeline) {
+            dawn_error("solid skybox pipeline creation failed.");
+        }
+
+        WGPUBindGroupLayout scene_layout =
+            wgpuRenderPipelineGetBindGroupLayout(
+                state.solid_skybox_pipeline, 1);
+        std::array<WGPUBindGroupEntry, 2> scene_entries{};
+        scene_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entries[0].binding = 0;
+        scene_entries[0].buffer = state.solid_skybox_scene_uniforms;
+        scene_entries[0].size =
+            sizeof(upstream::SolidSkyboxSceneUniforms);
+        scene_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entries[1].binding = 1;
+        scene_entries[1].buffer = state.solid_skybox_mesh_uniforms;
+        scene_entries[1].size = sizeof(upstream::SolidSkyboxUniforms);
+        WGPUBindGroupDescriptor scene_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        scene_descriptor.layout = scene_layout;
+        scene_descriptor.entryCount = scene_entries.size();
+        scene_descriptor.entries = scene_entries.data();
+        state.solid_skybox_scene_group =
+            wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
+        wgpuBindGroupLayoutRelease(scene_layout);
+
+        WGPUBindGroupLayout material_layout =
+            wgpuRenderPipelineGetBindGroupLayout(
+                state.solid_skybox_pipeline, 3);
+        WGPUBindGroupEntry material_entry =
+            WGPU_BIND_GROUP_ENTRY_INIT;
+        material_entry.binding = 0;
+        material_entry.buffer = state.solid_skybox_mesh_uniforms;
+        material_entry.size = sizeof(upstream::SolidSkyboxUniforms);
+        WGPUBindGroupDescriptor material_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        material_descriptor.layout = material_layout;
+        material_descriptor.entryCount = 1;
+        material_descriptor.entries = &material_entry;
+        state.solid_skybox_material_group =
+            wgpuDeviceCreateBindGroup(
+                state.device,
+                &material_descriptor);
+        wgpuBindGroupLayoutRelease(material_layout);
+        state.solid_skybox_enabled = true;
+    }
+#endif
 #if BBLITE_IMAGE_SKYBOX
     if (
         scene.environment.has_image_skybox &&
@@ -5077,6 +5238,33 @@ bool run_dawn_engine(Engine& engine) {
                 &background,
                 sizeof(background));
         }
+#if BBLITE_SOLID_SKYBOX
+        if (state.solid_skybox_enabled) {
+            // The pinned vertex stage offsets the cube by the eye itself, so
+            // it builds its own view-projection rather than binding the
+            // frame's: it needs the pin's reverse-Z clip row for the
+            // near-plane clipping its dither seed rides on.
+            const upstream::SolidSkyboxSceneUniforms
+                solid_skybox_scene =
+                    upstream::build_solid_skybox_scene_uniforms(
+                        camera,
+                        static_cast<double>(width) / height);
+            wgpuQueueWriteBuffer(
+                state.queue,
+                state.solid_skybox_scene_uniforms,
+                0,
+                &solid_skybox_scene,
+                sizeof(solid_skybox_scene));
+            const upstream::SolidSkyboxUniforms solid_skybox_mesh =
+                upstream::build_solid_skybox_uniforms(scene);
+            wgpuQueueWriteBuffer(
+                state.queue,
+                state.solid_skybox_mesh_uniforms,
+                0,
+                &solid_skybox_mesh,
+                sizeof(solid_skybox_mesh));
+        }
+#endif
 #if BBLITE_IMAGE_SKYBOX
         if (state.image_skybox_enabled) {
             const upstream::ImageSkyboxUniforms
@@ -5460,6 +5648,32 @@ bool run_dawn_engine(Engine& engine) {
                 WGPU_WHOLE_SIZE);
             wgpuRenderPassEncoderDrawIndexed(pass, 36, 1, 0, 0, 0);
         };
+#if BBLITE_SOLID_SKYBOX
+        const auto draw_solid_skybox = [&] {
+            if (!state.solid_skybox_enabled) return;
+            wgpuRenderPassEncoderSetPipeline(
+                pass,
+                state.solid_skybox_pipeline);
+            bound_pipeline = state.solid_skybox_pipeline;
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 1, state.solid_skybox_scene_group, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 3, state.solid_skybox_material_group, 0, nullptr);
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass,
+                0,
+                state.solid_skybox_vertices,
+                0,
+                WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderSetIndexBuffer(
+                pass,
+                state.solid_skybox_indices,
+                WGPUIndexFormat_Uint32,
+                0,
+                WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderDrawIndexed(pass, 36, 1, 0, 0, 0);
+        };
+#endif
 #if BBLITE_IMAGE_SKYBOX
         const auto draw_image_skybox = [&] {
             if (!state.image_skybox_enabled) return;
@@ -5491,6 +5705,12 @@ bool run_dawn_engine(Engine& engine) {
         for (const upstream::RenderStage stage : render_plan.stages) {
             switch (stage) {
                 case upstream::RenderStage::skybox:
+#if BBLITE_SOLID_SKYBOX
+                    // load-env.ts pushes the solid cube before the DDS and
+                    // .env arms, and every background renderable carries
+                    // order 0, so it draws first here too.
+                    draw_solid_skybox();
+#endif
                     draw_skybox();
 #if BBLITE_IMAGE_SKYBOX
                     draw_image_skybox();

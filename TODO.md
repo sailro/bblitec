@@ -327,25 +327,24 @@ comparison, and the empirical guards. What is left:
   when it carries the patch, move `builtin-baseline` to a registry commit
   containing it and delete both paths. Nothing else changes — the renderer
   side is in place and measured.
-- [ ] Draw the pinned solid-colour skybox. `load-env.ts` pushes
-  `buildSolidSkyboxRenderable` — a cube shaded from the primary and clear
-  colours, with `WGSL_DITHER` prefixed unconditionally — for any scene that
-  loads an `.env` environment without a DDS or HDR skybox of its own; the
-  native environment reduces it to the clear colour instead. Scene 7 is the
-  gated scene behind it and the only one whose background residual this
-  explains: with its ground dithered it measures 0.211/0.204 where the other
-  dithered scenes sit at 0.001-0.087. `background-solid-skybox.ts` builds the
-  same 8-vertex/36-index cube as the DDS arm, so this is an
-  environment-lowerer record plus one fragment rather than new geometry.
 - [ ] Compose environment/camera sizing from object-local bounds through the
   pinned abs-matrix OBB-to-AABB world transform and add the
   `upperRadiusLimit` ground/skybox override (upstream `scene-size.ts`,
   `mesh-world-bounds.ts`, PR #532). No corpus scene sets `upperRadiusLimit`.
+  **The precision half is done and the remaining half is the input, not the
+  arithmetic.** `computeSceneSize` now runs in double against the pin's own
+  centre/abs-radius round-trip, which took Scene 7's ground root from one ULP
+  off on two axes to bit-identical with the browser's own upload
+  (`a03588b9 / c182ccb8 / 3b77963b`); it is image-neutral, because that ULP
+  sits below the dither's sensitivity on a ground whose seed is constant in
+  `y`. Porting `create_default_camera`'s framing the same way was measured and
+  **reverted**: it moved Scene 14 from 0.088 to 0.091, because
   `expandWorldAabbForMesh` composes each object-local box through the mesh
-  world matrix as a centre plus an abs-coefficient radius per row, in
-  JavaScript doubles; `create_default_camera` accumulates eight transformed
-  corners in float instead, so a default-framed camera's radius and target
-  are not the pin's. That is now measurable rather than theoretical: the
+  world matrix while we feed it the tight AABB of already-baked vertices — a
+  strictly smaller box wherever a node carries rotation, which Flight Helmet's
+  do. Exact arithmetic over the wrong box lands on a different wrong answer,
+  so this closes only once the loader records each primitive's local box
+  beside its node matrix. That is now measurable rather than theoretical: the
   background dither reproduces only against a bit-exact view-projection, so
   Scene 14 — whose camera scalars all come from the framing — sits at 0.087
   full MAD where Scene 6, which sets its own, is at 0.001, and

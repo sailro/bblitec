@@ -5,6 +5,15 @@ import type {
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
+interface CompiledEnvironmentOptions {
+    groundTextureUrl: string;
+    skyboxUrl: string;
+    skyboxSize: string;
+    brdfUrl: string;
+    skipSkybox: boolean;
+    skipGround: boolean;
+}
+
 interface CompiledHdrEnvironmentOptions {
     faceSize: number;
     useCubemapSkybox: boolean;
@@ -27,7 +36,7 @@ export interface AssetIntrinsicContext
     ): string;
     compileEnvironmentOptions(
         expression: ts.Expression,
-    ): [string, string, string, string];
+    ): CompiledEnvironmentOptions;
     compileHdrEnvironmentOptions(
         expression: ts.Expression,
     ): CompiledHdrEnvironmentOptions;
@@ -332,19 +341,22 @@ export function compileAssetIntrinsic(
                     environmentUrl,
                     "environment",
                 );
-            const options: [
-                string,
-                string,
-                string,
-                string,
-            ] = call.arguments[2]
-                ? context.compileEnvironmentOptions(
-                      call.arguments[2],
-                  )
-                : ["", "", "0.0f", ""];
-            const groundAsset = options[0]
+            const options: CompiledEnvironmentOptions =
+                call.arguments[2]
+                    ? context.compileEnvironmentOptions(
+                          call.arguments[2],
+                      )
+                    : {
+                        groundTextureUrl: "",
+                        skyboxUrl: "",
+                        skyboxSize: "0.0f",
+                        brdfUrl: "",
+                        skipSkybox: false,
+                        skipGround: false,
+                    };
+            const groundAsset = options.groundTextureUrl
                 ? context.registerAsset(
-                      options[0],
+                      options.groundTextureUrl,
                       "texture",
                   )
                 : undefined;
@@ -354,31 +366,46 @@ export function compileAssetIntrinsic(
             // DDS. That is decided by the two URLs alone, so it is decided
             // here.
             const skyboxUsesEnvironment =
-                options[1] !== "" &&
-                (options[1] === environmentUrl ||
-                    options[1]
+                options.skyboxUrl !== "" &&
+                (options.skyboxUrl === environmentUrl ||
+                    options.skyboxUrl
                         .toLowerCase()
                         .endsWith(".env"));
             const skyboxAsset =
-                options[1] && !skyboxUsesEnvironment
+                options.skyboxUrl && !skyboxUsesEnvironment
                     ? context.registerAsset(
-                          options[1],
+                          options.skyboxUrl,
                           "texture",
                       )
                     : undefined;
-            const brdfAsset = options[3]
+            const brdfAsset = options.brdfUrl
                 ? context.registerAsset(
-                      context.resolveBundledAsset(options[3]),
+                      context.resolveBundledAsset(options.brdfUrl),
                       "texture",
                   )
                 : undefined;
             context.reachFeature("environment:ibl");
             context.reachFeature("environment:env");
-            if (groundAsset) {
+            // The deferred builder's ground arm is `!bgOptions.skipGround`
+            // alone: `buildGroundRenderable` takes the texture URL as
+            // optional and falls back to a 1x1 white texel, so a scene that
+            // names no ground texture and skips no ground still gets a
+            // ground.
+            if (!options.skipGround) {
                 context.reachFeature("background:ground");
             }
             if (skyboxAsset || skyboxUsesEnvironment) {
                 context.reachFeature("background:skybox");
+            }
+            // The deferred builder's own condition: a scene that names no DDS
+            // or .env skybox and does not skip one gets the solid-colour cube
+            // shaded from the clear colour.
+            const solidSkybox =
+                !skyboxAsset &&
+                !skyboxUsesEnvironment &&
+                !options.skipSkybox;
+            if (solidSkybox) {
+                context.reachFeature("background:solid-skybox");
             }
             return {
                 kind: "void",
@@ -390,9 +417,11 @@ export function compileAssetIntrinsic(
                     )}), ` +
                     `${groundAsset ? `bbl::asset_path(${context.cppString(groundAsset.output)})` : context.cppString("")}, ` +
                     `${skyboxAsset ? `bbl::asset_path(${context.cppString(skyboxAsset.output)})` : context.cppString("")}, ` +
-                    `${options[2]}, ` +
+                    `${options.skyboxSize}, ` +
                     `${brdfAsset ? `bbl::asset_path(${context.cppString(brdfAsset.output)})` : context.cppString("")}, ` +
-                    `${skyboxUsesEnvironment ? "true" : "false"}})`,
+                    `${skyboxUsesEnvironment ? "true" : "false"}, ` +
+                    `${solidSkybox ? "true" : "false"}, ` +
+                    `${options.skipGround ? "false" : "true"}})`,
             };
         }
 

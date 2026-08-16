@@ -130,7 +130,7 @@ different questions:
 | List | Source of truth | Decides |
 | --- | --- | --- |
 | `BBLITE_RUNTIME_FEATURES` in `features.cmake` | the scene's own TypeScript | which generated modules and PAL translation units compile |
-| `render_capabilities.hpp` | the materialized assets, after specialization | transmission, deformation, morph storage, instancing, material extensions, uv2 occlusion, Standard bump, image skybox |
+| `render_capabilities.hpp` | the materialized assets, after specialization | transmission, deformation, morph storage, instancing, material extensions, uv2 occlusion, Standard bump, image and solid-colour skyboxes |
 | `BBLITE_IMAGE_CODECS` in `features.cmake` | the materialized assets' image types | which image decoders link and ship |
 
 The feature list is finalized during compilation, before remote assets are
@@ -469,8 +469,13 @@ of a measurement that does not mean what it looks like.
 `BBLITE_DEFORMATION_DUMP`, `BBLITE_RENDER_CAPTURE`, and
 `BBLITE_BUILD_STAMP_OUT`.
 
-Requested environment grounds and DDS/HDR skyboxes render by default and are
-disabled independently with `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0`.
+Requested environment grounds and DDS/HDR/solid-colour skyboxes render by
+default and are disabled independently with `BBLITE_GROUND=0` and
+`BBLITE_BACKGROUND=0`. Which skybox a scene gets is decided at generation from
+the two URLs and the pinned `skipSkybox` flag, exactly as `load-env.ts`'s
+deferred builder decides it: a `.dds` URL takes the DDS arm, a URL naming the
+`.env` itself takes the environment cubemap, and a scene naming neither and
+skipping neither gets the solid-colour cube.
 
 ## Boundaries
 

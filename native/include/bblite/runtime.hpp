@@ -846,6 +846,11 @@ struct EnvironmentState {
     bool has_image_skybox = false;
     bool has_ground = false;
     bool has_skybox = false;
+    // src/loader-env/load-env.ts: the deferred builder pushes
+    // buildSolidSkyboxRenderable whenever the scene names no DDS or .env
+    // skybox and does not skip one. It shades from the clear colour and
+    // shares nothing with the cubemap arms above.
+    bool has_solid_skybox = false;
     bool background_enabled_by_default = false;
     bool skybox_uses_environment = false;
     float ground_size = 15.0f;
@@ -930,6 +935,13 @@ struct EnvironmentOptions {
     // cubemap rather than a separate DDS, which is the pinned loader's
     // `skyboxIsEnv` branch. Decided at compile time from the two URLs.
     bool skybox_uses_environment = false;
+    // The pinned `!bgOptions.skipSkybox` arm: no DDS, no .env skybox and no
+    // `skipSkybox` leaves the solid-colour cube. Decided at compile time
+    // alongside the flag above.
+    bool solid_skybox = false;
+    // The pinned `!bgOptions.skipGround` arm, which does not consult the
+    // texture URL: `buildGroundRenderable` falls back to a 1x1 white texel.
+    bool ground = false;
 };
 
 struct HdrEnvironmentOptions {

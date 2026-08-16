@@ -101,6 +101,7 @@ class GeneratedSourceWriter {
 #define BBLITE_MATERIAL_OCCLUSION_UV2 ${options.occlusionUv2 ? 1 : 0}
 #define BBLITE_MATERIAL_STANDARD_BUMP ${options.standardBump ? 1 : 0}
 #define BBLITE_IMAGE_SKYBOX ${features.includes("background:image-skybox") ? 1 : 0}
+#define BBLITE_SOLID_SKYBOX ${features.includes("background:solid-skybox") ? 1 : 0}
 `,
         );
 
@@ -342,6 +343,9 @@ class GeneratedSourceWriter {
                     imageSkybox: features.includes(
                         "background:image-skybox",
                     ),
+                    solidSkybox: features.includes(
+                        "background:solid-skybox",
+                    ),
                     textureTransform:
                         options.textureTransform,
                     materialSpecular: options.materialSpecular,
@@ -385,6 +389,9 @@ class GeneratedSourceWriter {
                         ) ||
                         features.includes(
                             "background:image-skybox",
+                        ) ||
+                        features.includes(
+                            "background:solid-skybox",
                         ),
                     shaderPrograms: options.shaderPrograms,
                 }),
@@ -396,6 +403,9 @@ class GeneratedSourceWriter {
                 skybox: features.includes("background:skybox"),
                 imageSkybox: features.includes(
                     "background:image-skybox",
+                ),
+                solidSkybox: features.includes(
+                    "background:solid-skybox",
                 ),
                 transmission: transmission,
                 fog: features.includes("renderer:fog"),

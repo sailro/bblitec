@@ -196,11 +196,31 @@ pinned perspective maps `near -> 1` and `far -> 0`; the native main pass
 keeps `near -> 0`. `mat4PerspectiveLHToRef` writes only `[0]`, `[5]`,
 `[10]`, `[11]` and `[14]`, so in the composed view-projection clip `x`,
 `y` and `w` are products of rows `[0]`, `[5]` and the view's own `z` row,
-and `[10]`/`[14]` reach clip `z` alone. A depth convention therefore
-cannot move a coverage mask or a perspective-correct varying. Against the
-browser's uploaded matrix, that is the whole of the difference: thirteen
-of the sixteen elements are equal bit for bit and the three that are not
-are that row.
+and `[10]`/`[14]` reach clip `z` alone. Against the browser's uploaded
+matrix, that is the whole of the difference: thirteen of the sixteen
+elements are equal bit for bit and the three that are not are that row.
+
+**A depth convention cannot move a coverage mask, but it can move a
+varying — through the near-plane clipper.** Unclipped geometry is
+unaffected, which is why the position-seeded dither reproduces without
+adopting reverse-Z. A triangle that straddles the eye plane is another
+matter: the clipper generates new vertices and interpolates their
+attributes from clip space, `z` included, so a differing `z` row shifts
+the interpolated varying in its last bits across the whole clipped
+triangle. Scene 7's solid skybox measures it exactly. Its cube is centred
+on the eye, so the `-Z` face is entirely in front and its two side faces
+straddle; against the golden the front face was byte-identical over
+129240 sky pixels while the `+X` face differed on 9.3% of its 24360,
+every one of them ±1 and thinning to zero at the shared edge — the
+signature of an error that vanishes at the untouched vertices. Binding
+the pin's own reverse-Z row for that draw takes the `+X` face to zero and
+the scene from 0.069 to 0.059 full MAD. That is why
+`build_solid_skybox_scene_uniforms` builds its own view-projection: the
+draw writes no depth and is first in the pass, so the convention reaches
+its clipping without reaching any depth test. Grounds cannot take the
+same route — they test against the opaque pass — so a ground quad the
+camera stands inside keeps this residual until the renderer adopts the
+pinned convention outright.
 
 **The pinned background dither reproduces on both backends, and which
 fragment carries it is a pinned fork.** `WGSL_DITHER` seeds
@@ -218,11 +238,29 @@ The fork is upstream's. `background-ground.ts` and
 `enableNoise`, whose default is `true` and which no corpus scene sets),
 `background-solid-skybox.ts` prefixes it unconditionally, and
 `background-hdr-skybox.ts` — the arm an environment cubemap skybox takes
-— composes none at all. One generated fragment serves both skyboxes, so
-each PAL picks the dithered variant except when
+— composes none at all. One generated fragment serves the DDS and
+environment skyboxes, so each PAL picks the dithered variant except when
 `skybox_uses_environment`. Dithering the environment arm is not a small
 error: it puts ±1 on roughly half the background pixels of Scenes 8 and
 21, which is 0.129 to 0.343 and 0.330 to 0.537 full MAD.
+
+**The solid-colour skybox is a third arm and carries its own pair of
+stages, taken from the pinned package rather than composed here.** A scene
+that loads an `.env` environment and names no DDS or `.env` skybox — and
+does not pass `skipSkybox` — reaches `buildSolidSkyboxRenderable`, a cube
+shaded from the scene clear colour with the dither added unconditionally
+and no image processing at all. Its vertex stage is the one arm that is
+not root-positioned: `(mesh.world * vec4(pos, 0)) + scene.vEyePosition`
+drops the world translation through `w = 0` and follows the camera, so
+the dither seed is `pos + eye` rather than the DDS arm's
+`pos + rootPosition`. Both stages ship as `?raw` string literals with no
+source-map entry, so generation reads them out of the packaged module and
+re-emits the pin's own struct members and statement bodies; only the
+`@group`/`@binding` declarations are re-addressed, because SDL_GPU fixes
+vertex uniforms at register space 1 and fragment uniforms at space 3
+where the pin binds at WebGPU groups 0 and 1. The native mesh block is
+the pin's 96-byte layout field for field, which is why a render capture
+pairs against the browser's own upload. Scenes 7 and 146 reach it.
 glTF occlusion follows Babylon's `buildDefaultPbrTexturesExt` contract: an
 `occlusionTexture` on TEXCOORD_1 without a metallic-roughness image keeps the
 factor-driven ORM slot and binds the occlusion image through a dedicated
