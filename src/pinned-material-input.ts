@@ -27,9 +27,12 @@ const asNumbers = (value: unknown): number[] | undefined =>
         ? (value as number[])
         : undefined;
 
+/** A glTF texture slot resolved to the texture the loader would have built. */
+type TextureBuilder = (slot: unknown) => JsonObject | undefined;
+
 /**
  * The glTF extension that populates each pinned material property, and the
- * extension property whose presence upstream treats as "enabled".
+ * option object its loader builds.
  *
  * Presence alone enables each of these. All four loader extensions read the
  * same way — `if (!c) return null;` then `setPbrX(out, { isEnabled: true, ...
@@ -44,47 +47,79 @@ const materialExtensions: ReadonlyArray<{
     gltf: string;
     property: string;
     /**
-     * `[glTF slot, pinned property]` for each texture the extension's `detect`
-     * tests. The two names differ per extension — the coat's normal map is
-     * `bumpTexture` upstream, the sheen tint is plain `texture` — so they are
-     * listed rather than derived. Copying under the glTF name instead leaves
-     * every map bit clear, which composes a variant that looks plausible and
-     * is missing an arm.
+     * The option object the loader's `setPbrX` call builds, term for term.
+     *
+     * Spreading the glTF extension instead is wrong twice over. Property
+     * names differ — the coat's normal map is `bumpTexture` upstream, the
+     * sheen tint is plain `texture` — so every map bit stays clear and the
+     * arm that samples it never composes. And the loaders set options the
+     * glTF does not mention at all: `albedoScaling: true` picks which of the
+     * two sheen models composes, and `useF0Remap: false` is what makes a glTF
+     * coat a different fragment from a scene-code one.
      */
-    textures: ReadonlyArray<readonly [string, string]>;
+    props: (extension: JsonObject, texture: TextureBuilder) => JsonObject;
 }> = [
     {
         gltf: "KHR_materials_clearcoat",
         property: "_clearCoat",
-        // `CC_TEX` in clearcoat-fragment.ts.
-        textures: [
-            ["clearcoatTexture", "texture"],
-            ["clearcoatRoughnessTexture", "roughnessTexture"],
-            ["clearcoatNormalTexture", "bumpTexture"],
-        ],
+        props: (c, texture) => ({
+            isEnabled: true,
+            intensity: asNumber(c["clearcoatFactor"]) ??
+                (c["clearcoatTexture"] ? 1 : 0),
+            roughness: asNumber(c["clearcoatRoughnessFactor"]) ??
+                (c["clearcoatRoughnessTexture"] ? 1 : 0),
+            texture: texture(c["clearcoatTexture"]),
+            roughnessTexture: texture(c["clearcoatRoughnessTexture"]),
+            bumpTexture: texture(c["clearcoatNormalTexture"]),
+            bumpTextureScale:
+                asNumber(asObject(c["clearcoatNormalTexture"])?.["scale"]) ?? 1,
+            useF0Remap: false,
+        }),
     },
     {
         gltf: "KHR_materials_sheen",
         property: "_sheen",
-        // sheen-fragment.ts reads `sh.texture` and `sh.roughnessTexture`.
-        textures: [
-            ["sheenColorTexture", "texture"],
-            ["sheenRoughnessTexture", "roughnessTexture"],
-        ],
+        props: (s, texture) => ({
+            isEnabled: true,
+            color: asNumbers(s["sheenColorFactor"]) ?? [0, 0, 0],
+            roughness: asNumber(s["sheenRoughnessFactor"]) ?? 0,
+            intensity: 1,
+            texture: texture(s["sheenColorTexture"]),
+            // Dropped when it is the same texture object as the tint, because
+            // that packing reads roughness out of the tint's alpha.
+            ...(sheenRoughnessIsTint(s)
+                ? {}
+                : { roughnessTexture: texture(s["sheenRoughnessTexture"]) }),
+            albedoScaling: true,
+        }),
     },
     {
         gltf: "KHR_materials_iridescence",
         property: "_iridescence",
-        // `IRI_TEX` in iridescence-fragment.ts.
-        textures: [
-            ["iridescenceTexture", "texture"],
-            ["iridescenceThicknessTexture", "thicknessTexture"],
-        ],
+        props: (iri, texture) => ({
+            isEnabled: true,
+            intensity: asNumber(iri["iridescenceFactor"]) ?? 0,
+            indexOfRefraction: asNumber(iri["iridescenceIor"]) ?? 1.3,
+            minimumThickness:
+                asNumber(iri["iridescenceThicknessMinimum"]) ?? 100,
+            maximumThickness:
+                asNumber(iri["iridescenceThicknessMaximum"]) ?? 400,
+            texture: texture(iri["iridescenceTexture"]),
+            thicknessTexture: texture(iri["iridescenceThicknessTexture"]),
+        }),
     },
     {
         gltf: "KHR_materials_anisotropy",
         property: "_anisotropy",
-        textures: [["anisotropyTexture", "texture"]],
+        props: (a, texture) => {
+            const rotation = asNumber(a["anisotropyRotation"]) ?? 0;
+            return {
+                isEnabled: true,
+                intensity: asNumber(a["anisotropyStrength"]) ?? 0,
+                direction: [Math.cos(rotation), Math.sin(rotation)],
+                texture: texture(a["anisotropyTexture"]),
+            };
+        },
     },
 ];
 
@@ -475,7 +510,7 @@ function seedAnimatedExtensions(
 function applyDielectric(
     input: PinnedMaterialInput,
     extensions: JsonObject,
-    imageOf: (textureIndex: unknown) => number | undefined,
+    texture: TextureBuilder,
 ): void {
     const eIor = asObject(extensions["KHR_materials_ior"]);
     const eSp = asObject(extensions["KHR_materials_specular"]);
@@ -483,15 +518,6 @@ function applyDielectric(
     const eTx = asObject(extensions["KHR_materials_transmission"]);
     const eDisp = asObject(extensions["KHR_materials_dispersion"]);
     if (!eIor && !eSp && !eVol && !eTx && !eDisp) return;
-
-    // A texture slot only counts once an image stands behind it, the same rule
-    // the base slots follow; upstream reaches this by `ctx._texture` returning
-    // nothing for a slot it cannot build.
-    const texture = (slot: unknown): JsonObject | undefined => {
-        const info = asObject(slot);
-        if (!info || imageOf(info["index"]) === undefined) return undefined;
-        return { ...info, ...pinnedTexturePatch(info) };
-    };
 
     const ior = asNumber(eIor?.["ior"]) ?? 1.5;
     const intensity = asNumber(eTx?.["transmissionFactor"]) ?? 0;
@@ -736,32 +762,26 @@ export function pinnedMaterialInputFromGltf(
         input["baseColorTexture"] = asObject(pbr["baseColorTexture"]);
     }
 
+    // `ctx._texture` returns nothing for a slot it cannot build, so a slot
+    // with no image behind it contributes no texture — the same rule the base
+    // slots follow. `detect` then reads `_hasTx` and `_texCoord` off the
+    // *built* texture, so the slot carries what the loader would have stamped.
+    const buildTexture: TextureBuilder = (slot) => {
+        const info = asObject(slot);
+        if (!info || imageOf(info["index"]) === undefined) return undefined;
+        return { ...info, ...pinnedTexturePatch(info) };
+    };
     for (const entry of materialExtensions) {
         const declared = asObject(extensions[entry.gltf]);
         if (!declared) continue;
-        const props: JsonObject = { isEnabled: true, ...declared };
-        for (const [gltfSlot, pinnedProperty] of entry.textures) {
-            if (
-                entry.property === "_sheen" &&
-                gltfSlot === "sheenRoughnessTexture" &&
-                sheenRoughnessIsTint(declared)
-            ) {
-                continue;
-            }
-            const slot = asObject(declared[gltfSlot]);
-            // A slot with no image behind it builds no texture, so the pin
-            // has nothing to test — the same rule `pinnedTextureSlots`
-            // applies to the base slots.
-            if (!slot || imageOf(slot["index"]) === undefined) continue;
-            // `detect` reads `_hasTx` and `_texCoord` off the built texture,
-            // not off the glTF slot, so the slot carries what the loader's
-            // own extension would have stamped on it.
-            props[pinnedProperty] = { ...slot, ...pinnedTexturePatch(slot) };
+        const props = entry.props(declared, buildTexture);
+        for (const [name, value] of Object.entries(props)) {
+            if (value === undefined) delete props[name];
         }
         input[entry.property] = props;
     }
 
-    applyDielectric(input, extensions, imageOf);
+    applyDielectric(input, extensions, buildTexture);
 
     // `gltf-ext-unlit.ts`: presence sets `_unlit`, and the tint is carried
     // only over a base colour image — the same reason `baseColorFactor` is,

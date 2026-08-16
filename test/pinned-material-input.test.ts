@@ -24,7 +24,10 @@ test("a declared extension composes its layer, factor or not", async () => {
     // `KHR_materials_iridescence: {}` with no factor at all, and both of
     // their captured fragments carry `iridescenceParams`.
     for (const [extension, key] of [
-        ["KHR_materials_clearcoat", "ibl|clearcoat-A"],
+        // `-X` is the no-remap arm: `gltf-ext-clearcoat.ts` is the one caller
+        // that passes `useF0Remap: false`, so a glTF coat and a scene-code
+        // coat compose different fragments.
+        ["KHR_materials_clearcoat", "ibl|clearcoat-XA"],
         ["KHR_materials_iridescence", "ibl|iridescence"],
         ["KHR_materials_sheen", "ibl|sheen"],
     ] as const) {
@@ -46,7 +49,7 @@ test("a factor changes the intensity, not the variant", async () => {
     ]) {
         assert.equal(
             (await environmentVariant({ extensions: extension })).fragmentKey,
-            "ibl|clearcoat-A",
+            "ibl|clearcoat-XA",
         );
     }
 });
