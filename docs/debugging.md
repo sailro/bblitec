@@ -44,6 +44,7 @@ meaningful, and stopping early is how a wrong branch gets taken.
 | 4 | What exactly did the browser upload into that buffer? | `scene -- capture <id>` then `scene -- uniforms <id> --size N` |
 | 5 | Which draw owns the bad pixels? | attribution buffers in `artifacts/parity/<id>` |
 | 6 | Does removing the feature remove the residual? | copy the scene to `examples/`, strip it, `parity --recapture-reference` |
+| 7 | Did we derive the material's features right at all? | `scene -- compose <id>` — composes each material through the pin and checks the whole fragment against the captured one |
 
 ### 1. Is the measurement real?
 
@@ -278,6 +279,41 @@ attribution buffers confirm it against the browser's own state.
 | `artifacts/capture/<id>/tex-uploads.json` | `capture` | texture uploads, with raw bytes for small texels |
 | `artifacts/capture/<id>/native-<backend>.json` | `capture --native` | our scene model, draw list and uniform blocks |
 | `artifacts/capture/<id>/diff-<backend>.json` | `diff` | the paired report |
+
+## `compose` — is the feature derivation right?
+
+`scene -- compose <id|all>` runs every glTF material the scene loads through
+Babylon Lite's own `_computePbrMaterialFeatures` and `composeShader`, and
+checks the result against the fragments `scene -- capture` recorded from the
+browser. Byte-for-byte, not bit-by-bit: a fragment that matches proves the
+whole derivation at once, and one that does not prints the line where it
+stops agreeing, which names the arm.
+
+```
+scene253: 14 material(s), 15 captured PBR fragment(s)
+  ok   "PBRProperties-OcclusionStrength" [ibl|linear|reflectance] == 13-module-13.wgsl  (lights 2 +tonemap)
+  GAP  "Fringe" [ibl|reflectance|sheen] matches no captured fragment
+       closest 07-module-7.wgsl, diverges at line 60:
+         ours   ["@group(1)@binding(8) var brdfLUT:texture_2d<f32>;"]
+         theirs ["@group(1)@binding(8) var occlusionTexture:texture_2d<f32>;"]
+```
+
+That divergence is the finding: the reference binds a dedicated occlusion
+texture we do not, so the uv2 mask is wrong. Every material-mapping defect
+this was built for reads that way.
+
+Two things it deliberately does not derive, because they belong to the scene
+rather than to its asset and guessing them is wrong in both directions: the
+**light mode** — Scene 39's glTF declares two punctual lights and none of its
+captured fragments composes a light path at all — and **tone mapping**, which
+Scene 21 disables in scene code after `loadEnvironment` turned it on. Both are
+swept and the combination that reproduces the capture is reported, so the
+`(lights 2 +tonemap)` suffix is a measurement of the scene rather than an
+assumption about it.
+
+Its one blind spot is a material the *scene* built rather than the asset —
+`createPbrMaterial` plus a `setPbr*` call — which it flags rather than
+reporting as a bare gap.
 
 ## Runtime switches worth knowing
 

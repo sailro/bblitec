@@ -20,6 +20,7 @@ import {
     formatDecodedUniforms,
 } from "./capture-uniforms.js";
 import { resolveScene, scenes } from "./scene-registry.js";
+import { runComposeReport } from "./scene-compose-report.js";
 import { readCacheConfiguration } from "./build-stamp.js";
 
 function run(
@@ -868,8 +869,12 @@ async function main(): Promise<void> {
         await runRenderDiff(id, rest);
         return;
     }
+    if (command === "compose" && id) {
+        await runComposeReport(id, scenes, resolveScene);
+        return;
+    }
     throw new Error(
-        "Usage: scene-command <list | show <id|source.ts> | compile|build|process|parity|geometry|capture|uniforms|diff <id|source.ts|all> [options]>",
+        "Usage: scene-command <list | show <id|source.ts> | compile|build|process|parity|geometry|capture|uniforms|diff|compose <id|source.ts|all> [options]>",
     );
 }
 

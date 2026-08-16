@@ -32,12 +32,15 @@ npm run scene -- process scene1
 npm run scene -- parity scene1
 npm run scene -- geometry scene145 --recapture-reference
 npm run scene -- diff scene1
+npm run scene -- compose scene1
 ```
 
 `process` runs compile, scene-local shader compilation, CMake configure, and
 parallel native build in order.
-`diff` captures both renderers and reports where they disagree; see
-[debugging](debugging.md) for the ladder it sits in.
+`diff` captures both renderers and reports where they disagree; `compose`
+checks our material feature derivation by composing each material through
+Babylon Lite's own pipeline and comparing the whole fragment against the
+captured one. See [debugging](debugging.md) for the ladder they sit in.
 `geometry` captures each existing geometry-output copy task full-screen in
 Babylon Lite and native without changing the curated scene source.
 
