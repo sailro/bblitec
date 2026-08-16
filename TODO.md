@@ -590,22 +590,44 @@ runtime gaps may remain hidden behind it.
   Sponza's 16 parented and 29 geometry-less nodes are all bones and camera
   targets carrying no geometry, so gated Scene 9 already draws all 32 of its
   visible meshes. Reached by the ungated Scene 143.
-- [ ] Close Scene 253's iridescence sphere. The scene is a measured gate but
-  its region figure carries a defect rather than a floor. The material is the
-  only one in the corpus whose `metallicFactor` is animated — which the pin
-  routes to ROUGHNESS — and correcting the factor bake below took the scene
-  from 0.251/3.841 to 0.128/1.936 on SDL_GPU and 0.086/1.328 on Dawn. What
-  remains is a structured interior difference on that sphere alone, with
-  iridescence at factor 1 and its index of refraction and maximum thickness
-  also animated. Both backends agree with each other to one channel step,
-  which places the cause CPU-side.
+- [ ] Close Scene 253's **transparency** sphere. The scene is a measured gate
+  but its region figure carries a defect rather than a floor: 0.128/1.936 on
+  SDL_GPU and 0.086/1.328 on Dawn, and both backends agree with each other to
+  one channel step, which places the cause CPU-side.
+  **The sphere is the one labelled Transparency, not the iridescence one this
+  entry named until it was measured per object.** Boxing every object in the
+  grid and taking its own MAD puts that sphere at **20.582** and leaves every
+  other object at or below 1.346 — the iridescence sphere is 0.644 — so it
+  carries essentially the whole region figure on its own. Re-measure per
+  object before reading any of the history below; the earlier attributions to
+  the iridescence and IOR spheres were made from crops.
+  Inverting the pinned image processing (exposure 0.8, contrast 1.2, tonemap
+  on) and comparing the sphere against the background it composites over, the
+  native contribution above that background is **0.5052 / 0.5051 / 0.5054** of
+  the browser's across R/G/B. A scalar that constant across channels is the
+  alpha composition rather than the shading.
+  Both sides carry the same input: the browser's animated material buffer
+  (`buffers.json` #230, eight writes) decodes to `baseColorFactor
+  (1, 1, 1, 0.647995174)` with `materialAlpha` 1, and the native capture's
+  material 4 is `BLEND` with base color `(1, 1, 1, 0.647995174)`. So the
+  animated value is not the divergence.
+  One asymmetry is found and not yet explained: the generated fragment's BLEND
+  arm outputs `clamp(baseAlpha + luminance(specular)^2, 0, 1)`, while every
+  pinned module in this capture ends `return vec4(color, alpha *
+  materialAlpha)` with no specular term at all. Establish which pinned slot
+  emits that boost and when the composer includes it — but note the sign does
+  not obviously work out, since a boost makes native *more* opaque where it
+  measures darker, so treat it as a lead rather than the answer.
   Eliminated by measurement, so do not retry: every material uniform (read
   back with `scene -- uniforms scene253 --size 48 --module 21`), the
   refraction parameters, the horizon-occlusion term the reference itself
-  emits as 1.0, occlusion strength, the unlit path, environment rotation at 0,
-  the image-processing pass, and the animation clock. Note the spheres are
-  laid out Volume, Transmission, Iridescence, IOR by node translation — NOT
-  in label order, which cost real time.
+  emits as 1.0 (our `v_99 * v_99` is the pin's `eho` — it squares inside
+  `environmentHorizonOcclusion`, we square at the use site), occlusion
+  strength, the unlit path, environment rotation at 0, the image-processing
+  pass, and the animation clock. `scene -- diff scene253` adds that 65 of 98
+  native uniform fields agree exactly and the rest are layout artifacts, so
+  the inputs are not it. Note the row-1 spheres are laid out Volume,
+  Transmission, Iridescence, IOR by node translation — NOT in label order.
 - [ ] Extend `KHR_materials_specular` past its two factors. Scene 244
   measures `specularFactor` and `specularColorFactor`; `specularTexture` and
   `specularColorTexture` fail explicitly at load rather than being folded
