@@ -270,6 +270,15 @@ Regression guards from the migration; each was measured, not assumed:
   remains there is not multisampling. Each backend's own 4x-versus-1x
   difference agrees with the other's to 0.0001, which is the check that
   the two resolve paths behave alike.
+- **The single-sample diagnostic reaches the frame-graph scenes too.**
+  SDL_GPU used to refuse `BBLITE_MSAA=1` on every scene carrying an
+  explicit resolve task — 116, 145 and 146 — because the resolve step
+  asked for `SDL_GPU_STOREOP_RESOLVE` whatever the source's sample
+  count was, and D3D12 will not close a command list containing that.
+  It now makes the same degradation Dawn always made: with nothing to
+  average, the resolve of a single-sample source is the source, so the
+  step becomes a texture copy. The two backends no longer disagree
+  about the diagnostic itself.
 
 ## Dawn backend architecture (`native/src/pal_dawn.cpp`)
 
