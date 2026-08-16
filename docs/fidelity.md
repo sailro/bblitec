@@ -105,7 +105,8 @@ Clearcoat, sheen, and iridescence are metadata-driven PBR layers selected by
 - clearcoat adds a GGX/Kelemen direct lobe plus a Jones analytical IBL lobe and
   attenuates the base layer by `1 - F(ccF0) * intensity`; the glTF loader
   disables Babylon's base-F0 remap, so intensity zero degenerates exactly to
-  the base composition (Scene 28)
+  the base composition (Scene 28), while a coat created in scene code keeps it
+  (Scene 19) — see the fork below
 - sheen uses the Charlie distribution with Ashikhmin visibility, samples the
   BRDF LUT blue channel at sheen roughness, and scales the base layer by
   `1 - maxSheenColor * brdf.b` (Scene 29)
@@ -187,6 +188,24 @@ distinction. Requested DDS skyboxes use Babylon's finite root-positioned cube
 and normal scene view-projection. Grounds and DDS/HDR skyboxes can be disabled
 independently with `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0`.
 
+**The background skybox cube culls back faces; only the image skybox does
+not.** The DDS, HDR, and solid background skyboxes build their pipeline through
+the pinned `createDefaultPipelineDescriptor`, whose `_cullMode` default is
+`"back"`, and none of them overrides it; `skybox-cubemap.ts` is the one that
+passes `_cullMode: "none"` explicitly, so the `loadSkybox` image skybox keeps
+it. The distinction only becomes visible once the camera leaves the cube. From
+inside, each ray meets exactly one face and the near plane clips the rest, so
+an unculled cube renders identically; from outside, the entry and the exit face
+are both rasterized, and because the skybox writes no depth the later face in
+index order wins rather than the nearer one. The two faces last in that order
+are `+Y` and `-Y`, which is what an unculled cube showed: a hard-edged
+quadrilateral of `-Y` — the projection of the plane through the cube centre —
+over a `+Y` surround, where the pinned cube shows one continuous sky. No gated
+pose reaches it, because every gated camera sits inside its own skybox; Scene
+14 at `cam.beta = 0.55` puts the camera above the cube and measured background
+MAD 7.312 before the cull mode was carried over and 0.339 after, on both
+backends.
+
 Embedded image-based lights evaluate SH without the transcription's former
 `[0,4]` clamp. Environment rotation affects SH and cubemap lookup directions,
 while horizon occlusion intentionally uses the unrotated reflection vector.
@@ -262,6 +281,23 @@ emissive transform, which in this corpus means Scene 39, whose water animates
 one: sampling through the transform scrolled an emissive texture the browser
 holds still, and cost 0.581 of region MAD until the sample was put back on the
 raw UV.
+
+**A coat rewrites the base F0 unless the coat came from glTF.** A layer over a
+base changes the interface the base reflects off, so `createClearcoatFragment`
+composes a `makeF0Remap` slot that runs before the base shades: it takes
+`colorF0` through `getR0RemappedForClearCoat` with the coat's
+`(1 - ior, 1 + ior)` pair and mixes by the coat intensity. The slot is dropped
+only for the `PBR2_CC_F0_REMAP_OFF` bit, and the single thing that sets it is
+`gltf-ext-clearcoat.ts` passing `useF0Remap: false`, so the choice is decided
+by where the coat came from rather than by any value. `setPbrClearCoat` does
+not expose `useF0Remap`, which is why the generated fragment carries the remap
+for a scene-code coat and omits it for a glTF one, and why the two are
+different fragments rather than one fragment with a uniform. It is worth a
+material amount of light: Scene 19's white dielectric sphere has a base F0 of
+0.04, and its ior-2.0 coat remaps that to 0.0204, so omitting the slot left
+every sphere pixel one channel step bright. Scene 19 gates the remap and Scene
+28 gates its absence; composing the remap with iridescence, which rewrites the
+same base Fresnel lines through its own slot, fails at generation.
 
 **Sheen is composed as one of two pinned models, chosen at generation.**
 `createSheenFragment` takes a `hasAlbedoScaling` flag and builds materially
@@ -422,7 +458,17 @@ former hardcoded D16 adaptation.
 The `scene geometry` diagnostic command selects each existing copy task
 full-screen in the capture harness and native PAL without modifying curated
 scene sources. It emits per-attachment Babylon Lite/native/diff images and a
-JSON report under `artifacts/parity/<scene>/geometry`.
+JSON report under `artifacts/parity/<scene>/geometry`. Both sides select by
+task *name*: the native frame loop reads `BBLITE_COPY_TASK` and the capture
+harness serves a module that re-exports the pinned package with
+`createCopyToTextureTask` wrapped, so a name carries the same meaning through
+either path. Selecting by name rather than by rewriting the scene source is
+what reaches Scenes 145, 146, and 149, whose copy tasks are built in a loop
+over a texture array — their names exist only as
+`` `sceneNNN-impostor-${entry.name}` `` and their viewports are computed from
+the loop index, so no per-task literal exists to rewrite. The task list comes
+from the generated entry point, where the compiler has already unrolled that
+loop.
 Standard double-sided materials disable culling but do not flip fragment
 normals. Matching that pinned distinction reduced scene 145 full-resolution
 view/world-normal MAD from `1.459`/`1.446` to `0.002`/`0.003`.
