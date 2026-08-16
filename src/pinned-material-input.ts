@@ -211,6 +211,51 @@ export interface PinnedMaterialSceneContext {
      * not enough on their own.
      */
     imageOf?: (textureIndex: unknown) => number | undefined;
+    /**
+     * True when `KHR_animation_pointer` drives this material's base colour
+     * factor. An animated factor has to live in the material UBO, so the field
+     * exists even when its load-time value is the default the assembly would
+     * otherwise skip — Scene 242's material carries `[1,1,1,1]` at load and the
+     * browser's fragment still declares `baseColorFactor`.
+     */
+    animatedBaseColorFactor?: boolean;
+    /**
+     * True when `KHR_animation_pointer` drives this material's emissive factor
+     * or its `KHR_materials_emissive_strength`. The emissive extension reads
+     * `_emissiveColor` for `PBR_HAS_EMISSIVE_COLOR`, and an animated emissive
+     * needs that field however the load-time factor reads — Scene 242 animates
+     * both halves and its captured fragment declares `emissiveColor`.
+     */
+    animatedEmissive?: boolean;
+}
+
+/** The material indices a `KHR_animation_pointer` channel drives a pointer into. */
+export function gltfAnimatedMaterialPointers(
+    document: JsonObject,
+    pointerSuffix: string,
+): ReadonlySet<number> {
+    const animated = new Set<number>();
+    const animations = Array.isArray(document["animations"])
+        ? (document["animations"] as JsonObject[])
+        : [];
+    for (const animation of animations) {
+        const channels = Array.isArray(animation["channels"])
+            ? (animation["channels"] as JsonObject[])
+            : [];
+        for (const channel of channels) {
+            const pointer = asObject(
+                asObject(asObject(channel["target"])?.["extensions"])?.[
+                    "KHR_animation_pointer"
+                ],
+            )?.["pointer"];
+            if (typeof pointer !== "string") continue;
+            const match = new RegExp(
+                `^/materials/(\\d+)/${pointerSuffix}$`,
+            ).exec(pointer);
+            if (match) animated.add(Number(match[1]));
+        }
+    }
+    return animated;
 }
 
 /** Builds an `imageOf` resolver from a glTF document's `textures` array. */
@@ -239,9 +284,13 @@ export function pinnedMaterialInputFromGltf(
     const extensions = asObject(material["extensions"]) ?? {};
 
     const input: PinnedMaterialInput = {
-        emissiveTexture: gltfEmissiveApplies(material)
-            ? asObject(material["emissiveTexture"])
-            : undefined,
+        // `buildDefaultPbrTexturesExt` attaches the emissive texture from the
+        // image alone; `needsGltfEmissive` gates only `setPbrEmissive`, which
+        // writes `_emissiveColor`. So the texture — and with it
+        // `PBR_HAS_EMISSIVE` and the emissive binding pair — is unconditional,
+        // and Scene 253's module 9 shows exactly that: an emissive texture
+        // bound, and no `emissiveUVm` beside it.
+        emissiveTexture: asObject(material["emissiveTexture"]),
         normalTexture: asObject(material["normalTexture"]),
         doubleSided: material["doubleSided"] === true,
         // `gltf-pbr-builder.ts` and its slow-path sibling both set this
@@ -266,6 +315,13 @@ export function pinnedMaterialInputFromGltf(
         // capture explains which materials actually reach `_occlusionImage`.
         occlusionStrength: occlusion ? 1 : 0,
     };
+    // `setPbrEmissive` writes `_emissiveColor`, which is what the emissive
+    // extension reads for its bit. The load-time factor decides it through
+    // `needsGltfEmissive`, and an animated one needs the field regardless.
+    const emissiveFactor = asNumbers(material["emissiveFactor"]);
+    if (scene.animatedEmissive || gltfEmissiveApplies(material)) {
+        input["_emissiveColor"] = emissiveFactor ?? [1, 1, 1];
+    }
     const slots = pinnedTextureSlots(material, scene.imageOf ?? (() => undefined));
     if (slots.hasOcclusionCarrier && occlusion) {
         input["occlusionTexture"] = occlusion;
@@ -286,8 +342,11 @@ export function pinnedMaterialInputFromGltf(
         baseColorFactor[1] === 1 &&
         baseColorFactor[2] === 1 &&
         baseColorFactor[3] === 1;
-    if (baseColorFactor && !defaultBaseColorFactor) {
-        input.baseColorFactor = baseColorFactor;
+    if (
+        (baseColorFactor && !defaultBaseColorFactor) ||
+        scene.animatedBaseColorFactor
+    ) {
+        input.baseColorFactor = baseColorFactor ?? [1, 1, 1, 1];
     }
     // The pin takes alpha from the factor for both blended and masked
     // materials, and carries the cutoff through the alpha-test setter.

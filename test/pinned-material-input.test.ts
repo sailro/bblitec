@@ -120,22 +120,36 @@ test("maps the material fields the base feature derivation reads", async () => {
     assert.equal(input.baseColorFactor?.[3], 0.25);
 });
 
-test("drops an emissive the pin would not apply", async () => {
-    // `[1,1,1]` multiplying a texture is the identity, and `[0,0,0]` is the
-    // glTF default; neither reaches setPbrEmissive, so neither puts
-    // PBR_HAS_EMISSIVE on the material or an emissiveUVm pair in its UBO.
+test("attaches the emissive texture but gates the emissive colour", async () => {
+    // The texture comes from the image alone, so PBR_HAS_EMISSIVE and the
+    // emissive binding pair are unconditional — Scene 253's module 9 binds an
+    // emissive texture. `needsGltfEmissive` gates only `setPbrEmissive`, which
+    // writes `_emissiveColor` and contributes PBR_HAS_EMISSIVE_COLOR.
     for (const emissiveFactor of [undefined, [0, 0, 0], [1, 1, 1]]) {
         const input = pinnedMaterialInputFromGltf({
             emissiveTexture: { index: 1 },
             ...(emissiveFactor ? { emissiveFactor } : {}),
         });
-        assert.equal(input.emissiveTexture, undefined);
+        assert.ok(input.emissiveTexture, "the texture is always attached");
+        assert.equal(
+            input["_emissiveColor"],
+            undefined,
+            `factor ${JSON.stringify(emissiveFactor)} over a texture applies nothing`,
+        );
     }
-    // With no texture, a full-white factor is a real emissive.
-    assert.equal(
-        pinnedMaterialInputFromGltf({ emissiveFactor: [1, 1, 1] })
-            .emissiveTexture,
-        undefined,
+    // With no texture, a full-white factor is a real emissive colour.
+    assert.deepEqual(
+        pinnedMaterialInputFromGltf({ emissiveFactor: [1, 1, 1] })[
+            "_emissiveColor"
+        ],
+        [1, 1, 1],
+    );
+    // An animated emissive needs the field however the load-time factor reads.
+    assert.ok(
+        pinnedMaterialInputFromGltf(
+            { emissiveTexture: { index: 1 }, emissiveFactor: [1, 1, 1] },
+            { animatedEmissive: true },
+        )["_emissiveColor"],
     );
 });
 
