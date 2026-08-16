@@ -111,29 +111,80 @@ function gltfEmissiveApplies(material: JsonObject): boolean {
     return !(black || neutralOverTexture);
 }
 
+const hasTransform = (slot: JsonObject | undefined): boolean =>
+    slot !== undefined &&
+    asObject(slot["extensions"])?.["KHR_texture_transform"] !== undefined;
+
 /**
- * True when any slot carries `KHR_texture_transform`.
+ * Which of the pinned texture slots `buildDefaultPbrTexturesExt` actually
+ * builds, and whether each carries a UV transform.
  *
- * `needsGltfUvTransform` in `gltf-pbr-builder-ext.ts` tests exactly five slots
- * — base colour, normal, ORM, emissive and occlusion — and no extension's own
- * textures, so a clearcoat or transmission texture carrying a transform does
- * not make the material reach the uv-transform extension.
+ * This is the half that cannot be read off the glTF material alone, because
+ * occlusion and metallic-roughness share one ORM slot and which of them fills
+ * it depends on the *images* behind them:
+ *
+ * - occlusion on a non-zero texCoord with no metallic-roughness image becomes
+ *   its own carrier and the ORM slot falls back to a factor texel;
+ * - occlusion with no metallic-roughness image otherwise *becomes* the ORM
+ *   texture, and there is no separate carrier at all;
+ * - a separate carrier appears alongside metallic-roughness only when the two
+ *   name the same image through different texture objects, or occlusion has a
+ *   transform of its own — the orm-unpack case, so the two can be animated
+ *   apart.
  */
-function gltfMaterialHasTextureTransform(material: JsonObject): boolean {
-    const pbr = asObject(material["pbrMetallicRoughness"]);
-    const slots = [
-        asObject(pbr?.["baseColorTexture"]),
-        asObject(pbr?.["metallicRoughnessTexture"]),
-        asObject(material["normalTexture"]),
-        asObject(material["emissiveTexture"]),
-        asObject(material["occlusionTexture"]),
-    ];
-    return slots.some(
-        (slot) =>
-            slot !== undefined &&
-            asObject(slot["extensions"])?.["KHR_texture_transform"] !==
-                undefined,
-    );
+function pinnedTextureSlots(
+    material: JsonObject,
+    imageOf: (textureIndex: unknown) => number | undefined,
+): {
+    hasOcclusionCarrier: boolean;
+    hasUvTransform: boolean;
+} {
+    const pbr = asObject(material["pbrMetallicRoughness"]) ?? {};
+    const baseColor = asObject(pbr["baseColorTexture"]);
+    const metallicRoughness = asObject(pbr["metallicRoughnessTexture"]);
+    const normal = asObject(material["normalTexture"]);
+    const emissive = gltfEmissiveApplies(material)
+        ? asObject(material["emissiveTexture"])
+        : undefined;
+    const occlusion = asObject(material["occlusionTexture"]);
+
+    const occlusionImage = imageOf(occlusion?.["index"]);
+    const metallicRoughnessImage = imageOf(metallicRoughness?.["index"]);
+    const occlusionTexCoord = asNumber(occlusion?.["texCoord"]) ?? 0;
+
+    const occlusionOnUv2 =
+        occlusionTexCoord !== 0 &&
+        occlusionImage !== undefined &&
+        metallicRoughnessImage === undefined;
+    const sharesOrmImage =
+        occlusionImage !== undefined &&
+        occlusionImage === metallicRoughnessImage &&
+        (occlusion?.["index"] !== metallicRoughness?.["index"] ||
+            hasTransform(occlusion));
+    const hasOcclusionCarrier = occlusionOnUv2 || sharesOrmImage;
+
+    // The ORM slot is whichever texture built it, so its transform is that
+    // texture's — metallic-roughness when there is one, otherwise the occlusion
+    // image standing in for it.
+    const ormSlot = metallicRoughnessImage !== undefined
+        ? metallicRoughness
+        : occlusionOnUv2
+            ? undefined
+            : occlusion;
+
+    // `needsGltfUvTransform` reads `_hasTx` off the *built* textures, so a
+    // transform on a slot the assembly never builds does not count — and a
+    // factor-only base colour is an uploaded texel carrying none.
+    const hasUvTransform =
+        (imageOf(baseColor?.["index"]) !== undefined &&
+            hasTransform(baseColor)) ||
+        (imageOf(normal?.["index"]) !== undefined && hasTransform(normal)) ||
+        hasTransform(ormSlot) ||
+        (imageOf(emissive?.["index"]) !== undefined &&
+            hasTransform(emissive)) ||
+        (hasOcclusionCarrier && hasTransform(occlusion));
+
+    return { hasOcclusionCarrier, hasUvTransform };
 }
 
 /**
@@ -153,6 +204,28 @@ export interface PinnedMaterialSceneContext {
      * extension reads it as `_linearImageProcessing`.
      */
     linearImageProcessing?: boolean;
+    /**
+     * Resolves a glTF texture index to the image index behind it. The texture
+     * assembly branches on whether occlusion and metallic-roughness share an
+     * *image*, which two distinct texture objects can, so the slot indices are
+     * not enough on their own.
+     */
+    imageOf?: (textureIndex: unknown) => number | undefined;
+}
+
+/** Builds an `imageOf` resolver from a glTF document's `textures` array. */
+export function gltfImageResolver(
+    document: JsonObject,
+): (textureIndex: unknown) => number | undefined {
+    const textures = Array.isArray(document["textures"])
+        ? (document["textures"] as JsonObject[])
+        : [];
+    return (textureIndex) => {
+        if (typeof textureIndex !== "number") return undefined;
+        const texture = textures[textureIndex];
+        const source = texture?.["source"];
+        return typeof source === "number" ? source : textureIndex;
+    };
 }
 
 export function pinnedMaterialInputFromGltf(
@@ -181,29 +254,28 @@ export function pinnedMaterialInputFromGltf(
         // texture has to carry zero rather than the glTF slot default of one:
         // otherwise the fragment samples `orm.r` for an occlusion the material
         // does not have, where the pin composes a constant `1.0`.
-        occlusionStrength: occlusion
-            ? asNumber(occlusion["strength"]) ?? 1
-            : 0,
+        // `assemblePbrPropsExt` writes `mat._occlusionImage ? 1.0 : 0` — the
+        // glTF `strength` is not what this field carries, only whether an
+        // occlusion image was decoded at all.
+        //
+        // Scene 253 disagrees and is left disagreeing rather than tuned away:
+        // its one occlusion-textured material composes `occlusion = orm.r`
+        // here, while all fifteen captured fragments carry `occlusion = 1.0`.
+        // Forcing the field to zero matches that but costs a distinct variant
+        // and gains no exact match, so the source keeps the vote until a
+        // capture explains which materials actually reach `_occlusionImage`.
+        occlusionStrength: occlusion ? 1 : 0,
     };
-    // `occlusionTexture` on the pinned material is a *separate* carrier, and
-    // the uv-transform extension splits occlusion onto its own UV whenever one
-    // exists. A glTF material normally packs occlusion into the same image as
-    // metallic-roughness, where the pin keeps reading the ORM slot and adds no
-    // split — so the carrier exists only when the two reference different
-    // images, which is the same distinction `buildDefaultPbrTexturesExt` draws.
-    const metallicRoughness = asObject(pbr["metallicRoughnessTexture"]);
-    if (
-        occlusion &&
-        occlusion["index"] !== metallicRoughness?.["index"]
-    ) {
+    const slots = pinnedTextureSlots(material, scene.imageOf ?? (() => undefined));
+    if (slots.hasOcclusionCarrier && occlusion) {
         input["occlusionTexture"] = occlusion;
         const texCoord = asNumber(occlusion["texCoord"]);
         if (texCoord) input["occlusionTexCoord"] = texCoord;
     }
     // `PBR2_HAS_UV_TRANSFORM` is contributed by the uv-transform extension's own
-    // detect, which reads `_hasUvTx` — the marker the pinned loader sets on a
-    // material any of whose slots carries KHR_texture_transform.
-    if (gltfMaterialHasTextureTransform(material)) input["_hasUvTx"] = true;
+    // detect, which reads `_hasUvTx` — the marker the pinned loader stamps on
+    // the textures it actually built.
+    if (slots.hasUvTransform) input["_hasUvTx"] = true;
     if (scene.linearImageProcessing) input["_linearImageProcessing"] = true;
     // `assemblePbrPropsExt` skips a default `[1,1,1,1]` factor, which is the
     // identity, so the presence of `baseColorFactor` — and with it

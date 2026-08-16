@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { pinnedMaterialInputFromGltf } from "../src/pinned-material-input.js";
+import {
+    gltfImageResolver,
+    pinnedMaterialInputFromGltf,
+} from "../src/pinned-material-input.js";
 import { composePinnedPbrVariant } from "../src/pinned-pbr-variants.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 
@@ -99,11 +102,18 @@ test("maps the material fields the base feature derivation reads", async () => {
         emissiveFactor: [0.5, 0.5, 0.5],
         occlusionTexture: { index: 2, strength: 0.5, texCoord: 1 },
         pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 0.25] },
+    }, {
+        imageOf: gltfImageResolver({
+            textures: [{ source: 0 }, { source: 1 }, { source: 2 }],
+        }),
     });
     assert.equal(input.doubleSided, true);
     assert.equal(input.alphaBlend, true);
     assert.equal(input.alpha, 0.25);
-    assert.equal(input.occlusionStrength, 0.5);
+    // The pin carries "was an occlusion image decoded", not the glTF strength.
+    assert.equal(input.occlusionStrength, 1);
+    // texCoord 1 with no metallic-roughness image makes occlusion its own
+    // carrier rather than the ORM texture.
     assert.equal(input["occlusionTexCoord"], 1);
     assert.ok(input.normalTexture);
     assert.ok(input.emissiveTexture);
@@ -144,13 +154,33 @@ test("skips a default base colour factor", async () => {
     );
 });
 
-test("marks a material whose slot carries KHR_texture_transform", async () => {
-    const plain = pinnedMaterialInputFromGltf({
-        pbrMetallicRoughness: { baseColorTexture: { index: 0 } },
-    });
+test("marks a material whose built texture carries KHR_texture_transform", async () => {
+    // `_hasUvTx` reads `_hasTx` off the textures the assembly actually built,
+    // so it needs an image behind the slot, not just a transform on it.
+    const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
+
+    const plain = pinnedMaterialInputFromGltf(
+        { pbrMetallicRoughness: { baseColorTexture: { index: 0 } } },
+        { imageOf },
+    );
     assert.equal(plain["_hasUvTx"], undefined);
 
-    const transformed = pinnedMaterialInputFromGltf({
+    const transformed = pinnedMaterialInputFromGltf(
+        {
+            pbrMetallicRoughness: {
+                baseColorTexture: {
+                    index: 0,
+                    extensions: { KHR_texture_transform: { scale: [2, 2] } },
+                },
+            },
+        },
+        { imageOf },
+    );
+    assert.equal(transformed["_hasUvTx"], true);
+
+    // A transform on a slot with no image behind it builds no texture, so it
+    // stamps nothing — a factor-only base colour is an uploaded texel.
+    const noImage = pinnedMaterialInputFromGltf({
         pbrMetallicRoughness: {
             baseColorTexture: {
                 index: 0,
@@ -158,5 +188,25 @@ test("marks a material whose slot carries KHR_texture_transform", async () => {
             },
         },
     });
-    assert.equal(transformed["_hasUvTx"], true);
+    assert.equal(noImage["_hasUvTx"], undefined);
+});
+
+test("occlusion becomes the ORM texture when there is no metallic-roughness image", async () => {
+    const imageOf = gltfImageResolver({
+        textures: [{ source: 0 }, { source: 1 }],
+    });
+    // No metallic-roughness image and texCoord 0: occlusion fills the ORM slot
+    // and there is no separate carrier.
+    const folded = pinnedMaterialInputFromGltf(
+        { occlusionTexture: { index: 0 } },
+        { imageOf },
+    );
+    assert.equal(folded["occlusionTexture"], undefined);
+
+    // texCoord 1 with no metallic-roughness image: occlusion is its own carrier.
+    const uv2 = pinnedMaterialInputFromGltf(
+        { occlusionTexture: { index: 0, texCoord: 1 } },
+        { imageOf },
+    );
+    assert.ok(uv2["occlusionTexture"]);
 });
