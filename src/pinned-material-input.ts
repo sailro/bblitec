@@ -224,6 +224,7 @@ function pinnedTextureSlots(
 ): {
     hasOcclusionCarrier: boolean;
     hasUvTransform: boolean;
+    uv2Mask: number;
 } {
     const pbr = asObject(material["pbrMetallicRoughness"]) ?? {};
     const baseColor = asObject(pbr["baseColorTexture"]);
@@ -270,7 +271,22 @@ function pinnedTextureSlots(
             hasTransform(emissive)) ||
         (hasOcclusionCarrier && hasTransform(occlusion));
 
-    return { hasOcclusionCarrier, hasUvTransform };
+    // `assemblePbrPropsExt`'s own mask, bit for bit. It is read off the *built*
+    // textures' `_texCoord`, except occlusion, which is read off the material
+    // — so a UV2 occlusion that becomes its own carrier still sets bit 32 and
+    // the reflectance fragment samples a dedicated occlusion binding.
+    const onUv2 = (slot: JsonObject | undefined): boolean =>
+        slot !== undefined &&
+        imageOf(slot["index"]) !== undefined &&
+        pinnedTexturePatch(slot)._texCoord === 1;
+    const uv2Mask =
+        (onUv2(baseColor) ? 1 : 0) |
+        (onUv2(ormSlot) ? 2 : 0) |
+        (onUv2(normal) ? 4 : 0) |
+        (onUv2(emissive) ? 8 : 0) |
+        (occlusionTexCoord === 1 ? 32 : 0);
+
+    return { hasOcclusionCarrier, hasUvTransform, uv2Mask };
 }
 
 /**
@@ -718,6 +734,7 @@ export function pinnedMaterialInputFromGltf(
     // `PBR2_HAS_UV_TRANSFORM` is contributed by the uv-transform extension's own
     // detect, which reads `_hasUvTx` — the marker the pinned loader stamps on
     // the textures it actually built.
+    if (slots.uv2Mask !== 0) input["_uv2Mask"] = slots.uv2Mask;
     if (slots.hasUvTransform || scene.animatedUvTransform) {
         input["_hasUvTx"] = true;
     }
