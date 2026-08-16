@@ -224,3 +224,78 @@ test("occlusion becomes the ORM texture when there is no metallic-roughness imag
     );
     assert.ok(uv2["occlusionTexture"]);
 });
+
+test("an extension texture reaches the pin under the pin's own property name", async () => {
+    // Each `detect` reads its own names — the coat's normal map is
+    // `bumpTexture`, the sheen tint and the iridescence map are both plain
+    // `texture` — so copying under the glTF name leaves every map bit clear.
+    // That composes a variant that looks plausible and samples nothing.
+    const imageOf = gltfImageResolver({
+        textures: [{ source: 0 }, { source: 1 }, { source: 2 }],
+    });
+    const iridescence = pinnedMaterialInputFromGltf({
+        extensions: {
+            KHR_materials_iridescence: {
+                iridescenceFactor: 1,
+                iridescenceTexture: { index: 0 },
+                iridescenceThicknessTexture: { index: 1, texCoord: 1 },
+            },
+        },
+    }, { imageOf });
+    const iri = iridescence["_iridescence"] as Record<string, unknown>;
+    assert.ok(iri["texture"], "iridescenceTexture becomes `texture`");
+    assert.ok(
+        iri["thicknessTexture"],
+        "iridescenceThicknessTexture becomes `thicknessTexture`",
+    );
+    assert.equal(
+        (iri["thicknessTexture"] as Record<string, unknown>)["_texCoord"],
+        1,
+        "`detect` reads _texCoord off the built texture",
+    );
+
+    const clearcoat = pinnedMaterialInputFromGltf({
+        extensions: {
+            KHR_materials_clearcoat: {
+                clearcoatFactor: 1,
+                clearcoatNormalTexture: {
+                    index: 2,
+                    extensions: { KHR_texture_transform: { scale: [2, 2] } },
+                },
+            },
+        },
+    }, { imageOf });
+    const coat = clearcoat["_clearCoat"] as Record<string, unknown>;
+    assert.ok(coat["bumpTexture"], "clearcoatNormalTexture becomes `bumpTexture`");
+    assert.equal(
+        (coat["bumpTexture"] as Record<string, unknown>)["_hasTx"],
+        true,
+    );
+
+    // The map arms then really compose: the fragment samples them.
+    const { PBR_HAS_ENV } = await importPinnedModule<{ PBR_HAS_ENV: number }>(
+        "material/pbr/pbr-flag-bits.js",
+    );
+    const variant = await composePinnedPbrVariant(iridescence, {
+        sceneFeatures: PBR_HAS_ENV,
+    });
+    assert.match(variant.fragmentWgsl, /textureSample\(iridescenceTexture/);
+    assert.match(
+        variant.fragmentWgsl,
+        /textureSample\(iridescenceThicknessTexture/,
+    );
+
+    // A slot with no image behind it builds no texture, so it stamps nothing.
+    const noImage = pinnedMaterialInputFromGltf({
+        extensions: {
+            KHR_materials_sheen: {
+                sheenColorFactor: [1, 1, 1],
+                sheenColorTexture: { index: 0 },
+            },
+        },
+    });
+    assert.equal(
+        (noImage["_sheen"] as Record<string, unknown>)["texture"],
+        undefined,
+    );
+});

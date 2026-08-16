@@ -40,35 +40,52 @@ const materialExtensions: ReadonlyArray<{
     gltf: string;
     property: string;
     factor: string;
-    textures: readonly string[];
+    /**
+     * `[glTF slot, pinned property]` for each texture the extension's `detect`
+     * tests. The two names differ per extension — the coat's normal map is
+     * `bumpTexture` upstream, the sheen tint is plain `texture` — so they are
+     * listed rather than derived. Copying under the glTF name instead leaves
+     * every map bit clear, which composes a variant that looks plausible and
+     * is missing an arm.
+     */
+    textures: ReadonlyArray<readonly [string, string]>;
 }> = [
     {
         gltf: "KHR_materials_clearcoat",
         property: "_clearCoat",
         factor: "clearcoatFactor",
+        // `CC_TEX` in clearcoat-fragment.ts.
         textures: [
-            "clearcoatTexture",
-            "clearcoatRoughnessTexture",
-            "clearcoatNormalTexture",
+            ["clearcoatTexture", "texture"],
+            ["clearcoatRoughnessTexture", "roughnessTexture"],
+            ["clearcoatNormalTexture", "bumpTexture"],
         ],
     },
     {
         gltf: "KHR_materials_sheen",
         property: "_sheen",
         factor: "sheenColorFactor",
-        textures: ["sheenColorTexture", "sheenRoughnessTexture"],
+        // sheen-fragment.ts reads `sh.texture` and `sh.roughnessTexture`.
+        textures: [
+            ["sheenColorTexture", "texture"],
+            ["sheenRoughnessTexture", "roughnessTexture"],
+        ],
     },
     {
         gltf: "KHR_materials_iridescence",
         property: "_iridescence",
         factor: "iridescenceFactor",
-        textures: ["iridescenceTexture", "iridescenceThicknessTexture"],
+        // `IRI_TEX` in iridescence-fragment.ts.
+        textures: [
+            ["iridescenceTexture", "texture"],
+            ["iridescenceThicknessTexture", "thicknessTexture"],
+        ],
     },
     {
         gltf: "KHR_materials_anisotropy",
         property: "_anisotropy",
         factor: "anisotropyStrength",
-        textures: ["anisotropyTexture"],
+        textures: [["anisotropyTexture", "texture"]],
     },
 ];
 
@@ -322,7 +339,8 @@ export function pinnedMaterialInputFromGltf(
     if (scene.animatedEmissive || gltfEmissiveApplies(material)) {
         input["_emissiveColor"] = emissiveFactor ?? [1, 1, 1];
     }
-    const slots = pinnedTextureSlots(material, scene.imageOf ?? (() => undefined));
+    const imageOf = scene.imageOf ?? ((): undefined => undefined);
+    const slots = pinnedTextureSlots(material, imageOf);
     if (slots.hasOcclusionCarrier && occlusion) {
         input["occlusionTexture"] = occlusion;
         const texCoord = asNumber(occlusion["texCoord"]);
@@ -371,14 +389,20 @@ export function pinnedMaterialInputFromGltf(
         const declared = asObject(extensions[entry.gltf]);
         if (!declared || !extensionEnabled(declared, entry.factor)) continue;
         const props: JsonObject = { isEnabled: true, ...declared };
-        // Each ext's `detect` tests its own texture properties for the map
-        // bits, and the pinned property names differ from the glTF ones only
-        // in that the pin drops the extension prefix on the first slot.
-        for (const texture of entry.textures) {
-            if (asObject(declared[texture])) props[texture] = declared[texture];
-        }
-        if (entry.property === "_anisotropy" && props["texture"] === undefined) {
-            props["texture"] = declared["anisotropyTexture"];
+        for (const [gltfSlot, pinnedProperty] of entry.textures) {
+            const slot = asObject(declared[gltfSlot]);
+            // A slot with no image behind it builds no texture, so the pin
+            // has nothing to test — the same rule `pinnedTextureSlots`
+            // applies to the base slots.
+            if (!slot || imageOf(slot["index"]) === undefined) continue;
+            props[pinnedProperty] = {
+                ...slot,
+                // `detect` reads these off the built texture, not off the
+                // glTF slot: `_hasTx` selects the UV-transform arm and
+                // `_texCoord === 1` selects the second UV set.
+                ...(hasTransform(slot) ? { _hasTx: true } : {}),
+                _texCoord: asNumber(slot["texCoord"]) ?? 0,
+            };
         }
         input[entry.property] = props;
     }
