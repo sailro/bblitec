@@ -236,7 +236,45 @@ comparison, and the empirical guards. What is left:
 ### Shader provenance
 
 - [ ] Replace the pinned converted native PBR WGSL with direct extraction from
-  Babylon Lite's full feature composer.
+  Babylon Lite's full feature composer. **This is the entry every hand-written
+  shader arm is a symptom of, and it is not a text swap — it is a variant-model
+  change.**
+
+  The mechanism is available and proved: `src/shader/shader-composer.ts` is a
+  pure function over a `ShaderTemplate` and a `ShaderFragment[]` with no device
+  and no browser globals, the pinned package ships it as an ES module, and
+  `src/pinned-shader-composer.ts` executes it under test — composing the
+  clearcoat permutation emits the pin's own `getR0RemappedForClearCoat`, the
+  helper the renderer otherwise hand-writes. `createPbrComposer` in
+  `material/pbr/pbr-compose.ts` is the pin's own material-to-shader entry
+  point, taking `(features, features2, meshFeatures, sceneFeatures, lightMode,
+  singleLightType, ...)` over the `pbr-flag-bits.ts` bits.
+
+  What makes it structural is the shape on each side. Babylon composes **one
+  fragment per material feature set**: the instrumented capture of Scene 253
+  holds 17 distinct fragment bodies for that scene's 14 materials. The
+  generated renderer composes **one fragment per scene** and selects behaviour
+  inside it from `materialOptions`/`normalOptions` uniform lanes. A single
+  fragment cannot express a per-material fork, so every fork upstream makes —
+  `useF0Remap`, `hasAlbedoScaling`, `hasSpecularAA`, `hasBaseNormalMap`, the
+  `hasIbl`/`hasNormalMap` arms inside each ext — has to be re-expressed here as
+  a uniform branch somebody writes by hand. That is why formulas keep getting
+  re-derived, and why a missed arm reads as a small systematic shading bias
+  rather than as a failure.
+
+  So the work is: adopt per-material shader variants, then let the composer
+  produce each one. The native side already carries the machinery — scene-local
+  WGSL variants are a measured gate (Scenes 159/161/163) and
+  `RenderPipelineKind` already keys pipelines — so the missing piece is
+  variant selection per material rather than per scene.
+
+  Two contracts found while probing, both worth keeping: the environment bit is
+  read from `sceneFeatures`, not `features` (`_hasIbl = hasScene(PBR_HAS_ENV)`),
+  and the ext fragments reach the composer through the registry `_getPbrExts()`
+  that the `setPbr*` entry points populate, not from the feature bits — so
+  driving the composer faithfully means reproducing that registration, which is
+  the same "an enable\* entry point installs a factory" shape Scene 267 already
+  documented.
 
 ### Packed native assets
 
