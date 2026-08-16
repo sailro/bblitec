@@ -22,6 +22,13 @@ export interface MaterialExtensionOptions {
      * off the remapped one. Scene 28 gates the first, Scene 19 the second.
      */
     clearcoatF0Remap: boolean;
+    /**
+     * The pin's own helper declarations, keyed by the pin's own name, from
+     * `pinnedShaderHelpers()`. Required whenever any of the layers above is
+     * set: there is deliberately no transcribed fallback, because a fallback
+     * is exactly the copy that drifts.
+     */
+    pinnedHelpers?: Readonly<Record<string, string>>;
     iridescence: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
@@ -148,30 +155,52 @@ function uniformFields(options: MaterialExtensionOptions): string {
     return fields.length > 0 ? `${fields.join("\n")}\n` : "";
 }
 
-function clearcoatHelpers(f0Remap: boolean): string {
-    return `fn bblVisibilityKelemen(VdotH_kl : f32) -> f32 {
-  return 0.25f / (VdotH_kl * VdotH_kl + 0.0000001f);
+/**
+ * One declaration from the pinned helper table, by the pin's own name.
+ *
+ * Every formula here used to be typed out in this file. They are now lifted
+ * verbatim from real compositions — see `pinnedShaderHelpers` in
+ * `pinned-pbr-variants.ts` — so the generated shader calls what upstream
+ * calls, under upstream's names, and a formula the pin changes arrives here
+ * instead of silently disagreeing. There is deliberately no transcribed
+ * fallback: a fallback is exactly the copy that drifts.
+ */
+function pinnedHelper(
+    options: MaterialExtensionOptions,
+    name: string,
+): string {
+    const text = options.pinnedHelpers?.[name];
+    if (text === undefined) {
+        throw new Error(
+            `Shader lowering needs the pinned declaration '${name}'; ` +
+                "pass `pinnedHelpers` from `pinnedShaderHelpers()`.",
+        );
+    }
+    return text;
 }
 
-fn bblClearcoatSchlick(f0 : f32, cosTheta : f32) -> f32 {
-  let t = 1.0f - cosTheta;
-  let t2 = t * t;
-  return f0 + (1.0f - f0) * (t2 * t2 * t);
+function joinHelpers(
+    options: MaterialExtensionOptions,
+    names: readonly string[],
+): string {
+    return `${names
+        .map((name) => pinnedHelper(options, name))
+        .join("\n\n")}\n`;
 }
-${f0Remap
-        ? `
-fn bblClearcoatRemappedF0(
-  f0_rc : vec3<f32>,
-  ccA : f32,
-  ccB : f32,
-) -> vec3<f32> {
-  let sf0 = sqrt(f0_rc);
-  let num = ccA + ccB * sf0;
-  let den = ccB + ccA * sf0;
-  return clamp((num / den) * (num / den), vec3<f32>(0.0f), vec3<f32>(1.0f));
-}
-`
-        : ""}`;
+
+/**
+ * The coat's helpers. The base-F0 remap is composed only when the coat asks
+ * for it — a glTF coat passes `useF0Remap: false` — so it is left out rather
+ * than emitted as a function nothing calls.
+ */
+function clearcoatHelpers(options: MaterialExtensionOptions): string {
+    return joinHelpers(options, [
+        "visibility_Kelemen",
+        ...(options.clearcoatF0Remap
+            ? ["getR0RemappedForClearCoat"]
+            : []),
+        "ccSchlick",
+    ]);
 }
 
 /**
@@ -190,171 +219,70 @@ const clearcoatF0RemapReplacement =
     "    textureSample(clearcoatTexture, clearcoatSampler, v_4).r;\n" +
     "  let v_75 = mix(\n" +
     "    bblBaseColorF0,\n" +
-    "    bblClearcoatRemappedF0(\n" +
+    "    getR0RemappedForClearCoat(\n" +
     "      bblBaseColorF0,\n" +
     "      FragmentUniforms.clearcoatRefractionParams.z,\n" +
     "      FragmentUniforms.clearcoatRefractionParams.w),\n" +
     "    vec3<f32>(bblCcRemapIntensity));\n" +
     "  let v_76 = (vec3<f32>(1.0f) - v_75);";
 
-const sheenHelpers =
-    `fn bblCharlieSheenDistribution(NdotH_sh : f32, alphaG_sh : f32) -> f32 {
-  let invR = 1.0f / alphaG_sh;
-  let cos2h = NdotH_sh * NdotH_sh;
-  let sin2h = 1.0f - cos2h;
-  return (2.0f + invR) * pow(sin2h, invR * 0.5f) /
-    (2.0f * 3.14159265358979323846f);
+/** The sheen lobe's distribution and visibility terms. */
+function sheenHelpers(options: MaterialExtensionOptions): string {
+    return joinHelpers(options, [
+        "normalDistributionFunction_CharlieSheen",
+        "visibility_Ashikhmin",
+    ]);
 }
 
-fn bblVisibilityAshikhmin(NdotL_sh : f32, NdotV_sh : f32) -> f32 {
-  return 1.0f / (4.0f * (NdotL_sh + NdotV_sh - NdotL_sh * NdotV_sh));
-}
-`;
-
-const iridescenceHelpers = `const bblIridescenceXyzToRec709 : mat3x3<f32> = mat3x3<f32>(
-  3.2404542f, -0.9692660f, 0.0556434f,
-  -1.5371385f, 1.8760108f, -0.2040259f,
-  -0.4985314f, 0.0415560f, 1.0572252f,
-);
-
-fn bblIridescenceSquare3(x : vec3<f32>) -> vec3<f32> {
-  return x * x;
-}
-
-fn bblIridescenceIorFromAirF0(f0 : vec3<f32>) -> vec3<f32> {
-  let s = sqrt(clamp(f0, vec3<f32>(0.0f), vec3<f32>(0.9999f)));
-  return (vec3<f32>(1.0f) + s) / (vec3<f32>(1.0f) - s);
+/**
+ * The thin-film stack, including its XYZ→Rec.709 matrix: nine literals a
+ * transcription can only get right by luck.
+ */
+function iridescenceHelpers(options: MaterialExtensionOptions): string {
+    return joinHelpers(options, [
+        "IRI_XYZ_TO_REC709",
+        "iri_square3",
+        "iri_iorFromAirF0",
+        "iri_r0FromIor3",
+        "iri_r0FromIor",
+        "iri_fresSchlick",
+        "iri_evalSensitivity",
+        "iri_eval",
+    ]);
 }
 
-fn bblIridescenceR0FromIor3(
-  iorT : vec3<f32>,
-  iorI : f32,
-) -> vec3<f32> {
-  return bblIridescenceSquare3(
-    (iorT - vec3<f32>(iorI)) / (iorT + vec3<f32>(iorI)));
-}
+/**
+ * The environment rotation, as the pin's `rotateY` plus the plumbing that
+ * supplies its angle.
+ *
+ * Upstream takes the angle as a parameter and the renderable passes it in;
+ * here the layers reach the environment from inside one fragment, so the
+ * wrapper reads the same value out of the uniform block. Only the wrapper is
+ * ours — the rotation itself is the pin's text.
+ */
+function environmentRotationHelper(
+    options: MaterialExtensionOptions,
+): string {
+    return `${pinnedHelper(options, "rotateY")}
 
-fn bblIridescenceR0FromIor(iorT : f32, iorI : f32) -> f32 {
-  let r = (iorT - iorI) / (iorT + iorI);
-  return r * r;
-}
-
-fn bblIridescenceFresnelSchlick(
-  c : f32,
-  F0 : vec3<f32>,
-  F90 : vec3<f32>,
-) -> vec3<f32> {
-  let t = 1.0f - c;
-  let t2 = t * t;
-  return F0 + (F90 - F0) * (t2 * t2 * t);
-}
-
-fn bblIridescenceEvalSensitivity(
-  opd : f32,
-  shift : vec3<f32>,
-) -> vec3<f32> {
-  let phase = 6.283185307179586f * opd * 1.0e-9f;
-  let val = vec3<f32>(5.4856e-13f, 4.4201e-13f, 5.2481e-13f);
-  let pos = vec3<f32>(1.6810e+06f, 1.7953e+06f, 2.2084e+06f);
-  let vr = vec3<f32>(4.3278e+09f, 9.3046e+09f, 6.6121e+09f);
-  var xyz = val * sqrt(6.283185307179586f * vr) *
-    cos(pos * phase + shift) * exp(-(phase * phase) * vr);
-  xyz.x = xyz.x + 9.7470e-14f *
-    sqrt(6.283185307179586f * 4.5282e+09f) *
-    cos(2.2399e+06f * phase + shift.x) *
-    exp(-4.5282e+09f * phase * phase);
-  xyz = xyz / 1.0685e-7f;
-  return bblIridescenceXyzToRec709 * xyz;
-}
-
-fn bblIridescenceEval(
-  outsideIor : f32,
-  eta2 : f32,
-  cosTheta1 : f32,
-  thickness : f32,
-  baseF0 : vec3<f32>,
-) -> vec3<f32> {
-  let iridescenceIor =
-    mix(outsideIor, eta2, smoothstep(0.0f, 0.03f, thickness));
-  let eta = outsideIor / iridescenceIor;
-  let sinTheta2Sq = eta * eta * (1.0f - cosTheta1 * cosTheta1);
-  let cosTheta2Sq = 1.0f - sinTheta2Sq;
-  if (cosTheta2Sq < 0.0f) {
-    return vec3<f32>(1.0f);
-  }
-  let cosTheta2 = sqrt(cosTheta2Sq);
-  let r0 = bblIridescenceR0FromIor(iridescenceIor, outsideIor);
-  let r12 = bblIridescenceFresnelSchlick(
-    cosTheta1,
-    vec3<f32>(r0),
-    vec3<f32>(1.0f)).x;
-  let t121 = 1.0f - r12;
-  var phi12 = 0.0f;
-  if (iridescenceIor < outsideIor) {
-    phi12 = 3.141592653589793f;
-  }
-  let phi21 = 3.141592653589793f - phi12;
-  let baseIor = bblIridescenceIorFromAirF0(baseF0);
-  let r1 = bblIridescenceR0FromIor3(baseIor, iridescenceIor);
-  let r23 = bblIridescenceFresnelSchlick(
-    cosTheta2,
-    r1,
-    vec3<f32>(1.0f));
-  var phi23 = vec3<f32>(0.0f);
-  if (baseIor.x < iridescenceIor) {
-    phi23.x = 3.141592653589793f;
-  }
-  if (baseIor.y < iridescenceIor) {
-    phi23.y = 3.141592653589793f;
-  }
-  if (baseIor.z < iridescenceIor) {
-    phi23.z = 3.141592653589793f;
-  }
-  let opd = 2.0f * iridescenceIor * thickness * cosTheta2;
-  let phi = vec3<f32>(phi21) + phi23;
-  let r123 = clamp(
-    vec3<f32>(r12) * r23,
-    vec3<f32>(1e-5f),
-    vec3<f32>(0.9999f));
-  let smallR123 = sqrt(r123);
-  let rs = (t121 * t121) * r23 / (vec3<f32>(1.0f) - r123);
-  var outI = vec3<f32>(r12) + rs;
-  var cm = rs - vec3<f32>(t121);
-  for (var m : i32 = 1; m <= 2; m = m + 1) {
-    cm = cm * smallR123;
-    outI = outI + cm * (2.0f * bblIridescenceEvalSensitivity(
-      f32(m) * opd,
-      f32(m) * phi));
-  }
-  return max(outI, vec3<f32>(0.0f));
+fn bblRotateEnvironmentDirection(direction : vec3<f32>) -> vec3<f32> {
+  return rotateY(direction, FragmentUniforms.imageProcessingOptions.y);
 }
 `;
-
-const environmentRotationHelper =
-    `fn bblRotateEnvironmentDirection(direction : vec3<f32>) -> vec3<f32> {
-  let angle = FragmentUniforms.imageProcessingOptions.y;
-  let c = cos(angle);
-  let s = sin(angle);
-  return vec3<f32>(
-    direction.x * c + direction.z * s,
-    direction.y,
-    -direction.x * s + direction.z * c,
-  );
 }
-`;
 
 function moduleHelpers(options: MaterialExtensionOptions): string {
     const helpers: string[] = [];
     if (options.clearcoat) {
-        helpers.push(clearcoatHelpers(options.clearcoatF0Remap));
+        helpers.push(clearcoatHelpers(options));
     }
-    if (options.sheen) helpers.push(sheenHelpers);
-    if (options.iridescence) helpers.push(iridescenceHelpers);
+    if (options.sheen) helpers.push(sheenHelpers(options));
+    if (options.iridescence) helpers.push(iridescenceHelpers(options));
     if (
         options.environmentRotation &&
         (options.clearcoat || options.sheen)
     ) {
-        helpers.push(environmentRotationHelper);
+        helpers.push(environmentRotationHelper(options));
     }
     return helpers.length > 0 ? `${helpers.join("\n")}\n` : "";
 }
@@ -416,8 +344,8 @@ function clearcoatLayer(options: MaterialExtensionOptions): string {
   let ccDenominator_dl = ccNdotH_dl * ccNdotH_dl * (ccA2_dl - 1.0f) + 1.0f;
   let ccD_dl = ccA2_dl /
     (3.14159265358979323846f * ccDenominator_dl * ccDenominator_dl);
-  let ccVis_dl = bblVisibilityKelemen(ccVdotH_dl);
-  let ccFresnel_dl = bblClearcoatSchlick(ccF0, ccVdotH_dl);
+  let ccVis_dl = visibility_Kelemen(ccVdotH_dl);
+  let ccFresnel_dl = ccSchlick(ccF0, ccVdotH_dl);
   let ccDirectSpecularTerm =
     vec3<f32>(ccFresnel_dl * ccD_dl * ccVis_dl * ccNdotL_dl) *
     FragmentUniforms.lightColor.xyz * v_69 * v_81 * ccIntensity;
@@ -458,7 +386,7 @@ function clearcoatLayer(options: MaterialExtensionOptions): string {
   let ccSpecEnvRefl = (vec3<f32>(ccF0) * ccBrdf_ibl.y +
     (vec3<f32>(1.0f) - vec3<f32>(ccF0)) * ccBrdf_ibl.x) *
     ccIntensity * ccEho_ibl;
-  let ccFresnelIBL = bblClearcoatSchlick(ccF0, ccNdotV_ibl);
+  let ccFresnelIBL = ccSchlick(ccF0, ccNdotV_ibl);
   let ccConservation_ibl = 1.0f - ccFresnelIBL * ccIntensity;
   let ccFinalRadiance_ibl = ccEnvRadiance_ibl * ccSpecEnvRefl;
 `;
@@ -487,8 +415,8 @@ function sheenLayer(albedoScaling: boolean): string {
   let shColorScaled = sheenColorFinal * shIntensity;
   let shRoughness_clamped = max(sheenRoughnessAdjusted, v_47);
   let shAlphaG = shRoughness_clamped * shRoughness_clamped + 0.0005f;
-  let shD = bblCharlieSheenDistribution(v_73, shAlphaG);
-  let shV = bblVisibilityAshikhmin(v_68, v_43);
+  let shD = normalDistributionFunction_CharlieSheen(v_73, shAlphaG);
+  let shV = visibility_Ashikhmin(v_68, v_43);
   let sheenDirectTerm = shColorScaled * shD * shV * v_68 *
     FragmentUniforms.lightColor.xyz * v_69 * v_81;
   let shRoughness_ibl = sheenRoughnessAdjusted;
@@ -601,7 +529,7 @@ function iridescenceFresnel(): string {
     ),
     0.0f,
   );
-  let iriF0 = bblIridescenceEval(
+  let iriF0 = iri_eval(
     1.0f,
     max(FragmentUniforms.iridescenceParams.y, 1.0001f),
     v_43,

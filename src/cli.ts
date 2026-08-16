@@ -25,6 +25,7 @@ import {
 } from "./sprite-atlas-packager.js";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
+import { pinnedShaderHelpers } from "./pinned-pbr-variants.js";
 
 interface CliOptions {
     input: string;
@@ -580,6 +581,9 @@ async function main(): Promise<void> {
         clearcoatF0Remap: result.manifest.features.includes(
             "material:clearcoat-f0-remap",
         ),
+        // Taken from a real composition rather than transcribed, so the coat's
+        // formulas are the pin's own text under the pin's own names.
+        pinnedHelpers: await pinnedShaderHelpers(),
         iridescence: specializationFeatures.iridescence,
         dispersion: specializationFeatures.dispersion,
         occlusionUv2: specializationFeatures.occlusionUv2,

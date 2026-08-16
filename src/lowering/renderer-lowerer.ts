@@ -377,6 +377,7 @@ export class RendererLowerer {
         sheen?: boolean;
         sheenAlbedoScaling?: boolean;
         clearcoatF0Remap?: boolean;
+        pinnedHelpers?: Readonly<Record<string, string>>;
         iridescence?: boolean;
         dispersion?: boolean;
         nodeVisibility?: boolean;
@@ -2641,6 +2642,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         sheen?: boolean;
         sheenAlbedoScaling?: boolean;
         clearcoatF0Remap?: boolean;
+        pinnedHelpers?: Readonly<Record<string, string>>;
         iridescence?: boolean;
         dispersion?: boolean;
         occlusionUv2?: boolean;
@@ -3416,6 +3418,12 @@ ${directMarker}`,
                 options.sheenAlbedoScaling === true,
             clearcoatF0Remap:
                 options.clearcoatF0Remap === true,
+            ...(options.pinnedHelpers === undefined
+                ? {}
+                : {
+                    pinnedHelpers:
+                        options.pinnedHelpers,
+                }),
             iridescence: options.iridescence === true,
             dispersion: options.dispersion === true,
             occlusionUv2: options.occlusionUv2 === true,

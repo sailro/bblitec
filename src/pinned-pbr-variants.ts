@@ -17,7 +17,10 @@
  * registering the extensions the scene reaches — the same registration the
  * `setPbr*` entry points perform upstream.
  */
-import { importPinnedModule } from "./pinned-shader-composer.js";
+import {
+    extractWgslDeclaration,
+    importPinnedModule,
+} from "./pinned-shader-composer.js";
 
 /** The material fields the pin's feature derivation and extensions read. */
 export interface PinnedMaterialInput {
@@ -122,6 +125,103 @@ async function registerPbrExtensions(): Promise<void> {
         flags._registerPbrExt(refraction.makeRefractionRttExt());
     })();
     return registered;
+}
+
+/**
+ * Which glTF extension makes the pin compose each helper the renderer needs,
+ * and which declarations to take from that composition.
+ *
+ * The renderer's generated PBR fragment is a transcription, so every formula
+ * the pinned composer emits used to be re-expressed here by hand — and a
+ * re-typed formula only agrees until the pin changes it. Naming the extension
+ * rather than the fragment factory keeps this honest in a second way: the
+ * variant is reached the way a real material reaches it, through each
+ * extension's own `detect`, so a helper that stops being composed fails here
+ * loudly instead of quietly going stale.
+ */
+const helperSources: ReadonlyArray<{
+    extensions: Record<string, unknown>;
+    declarations: readonly string[];
+}> = [
+    {
+        extensions: {},
+        // Not extension-specific: the environment fragment composes it, and
+        // the renderer wraps it to read the rotation from its own uniform.
+        declarations: ["rotateY"],
+    },
+    {
+        extensions: { KHR_materials_clearcoat: { clearcoatFactor: 1 } },
+        declarations: [
+            "visibility_Kelemen",
+            "getR0RemappedForClearCoat",
+            "ccSchlick",
+        ],
+    },
+    {
+        extensions: {
+            KHR_materials_sheen: {
+                sheenColorFactor: [1, 1, 1],
+                sheenRoughnessFactor: 0.5,
+            },
+        },
+        declarations: [
+            "normalDistributionFunction_CharlieSheen",
+            "visibility_Ashikhmin",
+        ],
+    },
+    {
+        extensions: { KHR_materials_iridescence: { iridescenceFactor: 1 } },
+        declarations: [
+            "IRI_XYZ_TO_REC709",
+            "iri_square3",
+            "iri_iorFromAirF0",
+            "iri_r0FromIor3",
+            "iri_r0FromIor",
+            "iri_fresSchlick",
+            "iri_evalSensitivity",
+            "iri_eval",
+        ],
+    },
+];
+
+let helperText: Promise<Readonly<Record<string, string>>> | undefined;
+
+/**
+ * The helper declarations the generated shader needs, verbatim from the pin.
+ *
+ * Keyed by the pin's own name, so the generated fragment calls what upstream
+ * calls, and a renamed or re-derived helper is a build failure rather than a
+ * shading bias. Composed once per process: the text is a pure function of the
+ * pinned package.
+ */
+export async function pinnedShaderHelpers(): Promise<
+    Readonly<Record<string, string>>
+> {
+    helperText ??= (async () => {
+        const [{ PBR_HAS_ENV }, materialInput] = await Promise.all([
+            importPinnedModule<{ PBR_HAS_ENV: number }>(
+                "material/pbr/pbr-flag-bits.js",
+            ),
+            import("./pinned-material-input.js"),
+        ]);
+        const result: Record<string, string> = {};
+        for (const source of helperSources) {
+            const variant = await composePinnedPbrVariant(
+                materialInput.pinnedMaterialInputFromGltf({
+                    extensions: source.extensions,
+                }),
+                { sceneFeatures: PBR_HAS_ENV },
+            );
+            for (const name of source.declarations) {
+                result[name] = extractWgslDeclaration(
+                    variant.fragmentWgsl,
+                    name,
+                );
+            }
+        }
+        return result;
+    })();
+    return helperText;
 }
 
 /** The extension ids the pin has registered, in its own sorted order. */

@@ -93,6 +93,80 @@ async function pinnedComposer(): Promise<PinnedComposerModules> {
 }
 
 /**
+ * Extracts one top-level `fn` definition from composed WGSL, verbatim.
+ *
+ * Used to take a helper the renderer would otherwise transcribe — the coat's
+ * `getR0RemappedForClearCoat` was the first — straight out of the pin's own
+ * composed fragment, so a changed formula arrives here instead of drifting.
+ * Braces nest only through the body, so a depth scan is enough.
+ */
+export function extractWgslFunction(
+    source: string,
+    name: string,
+): string {
+    const start = source.indexOf(`fn ${name}(`);
+    if (start < 0) {
+        throw new Error(
+            `Pinned composed WGSL declares no function '${name}'.`,
+        );
+    }
+    let depth = 0;
+    let seenBody = false;
+    for (let index = start; index < source.length; index++) {
+        const character = source[index];
+        if (character === "{") {
+            depth++;
+            seenBody = true;
+        } else if (character === "}") {
+            depth--;
+            if (seenBody && depth === 0) {
+                return source.slice(start, index + 1);
+            }
+        }
+    }
+    throw new Error(
+        `Pinned composed WGSL function '${name}' is unterminated.`,
+    );
+}
+
+/**
+ * Extracts one top-level `const` declaration from composed WGSL, verbatim.
+ *
+ * The iridescence fragment's XYZ→Rec.709 matrix is the case that needs this:
+ * it is nine literals a transcription can only get right by luck.
+ */
+export function extractWgslConst(source: string, name: string): string {
+    const start = source.indexOf(`const ${name}`);
+    if (start < 0) {
+        throw new Error(
+            `Pinned composed WGSL declares no const '${name}'.`,
+        );
+    }
+    const end = source.indexOf(";", start);
+    if (end < 0) {
+        throw new Error(
+            `Pinned composed WGSL const '${name}' is unterminated.`,
+        );
+    }
+    return source.slice(start, end + 1);
+}
+
+/**
+ * Extracts a named declaration, whichever kind the pin used.
+ *
+ * Callers name what they need, not how it happens to be spelled upstream — a
+ * helper that becomes a `const` (or stops being one) then still resolves.
+ */
+export function extractWgslDeclaration(
+    source: string,
+    name: string,
+): string {
+    return source.includes(`fn ${name}(`)
+        ? extractWgslFunction(source, name)
+        : extractWgslConst(source, name);
+}
+
+/**
  * Composes the pinned PBR shader for a template configuration and a set of
  * already-built pinned fragments.
  *
