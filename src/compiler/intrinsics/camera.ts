@@ -4,8 +4,14 @@ import type { IntrinsicCallContext } from "./context.js";
 
 export interface CameraIntrinsicContext
     extends IntrinsicCallContext {
-    compileVec3(expression: ts.Expression): string;
-    compileNumber(expression: ts.Expression): string;
+    compileVec3(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
+    compileNumber(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -31,12 +37,16 @@ export function compileCameraIntrinsic(
             return {
                 kind: "camera",
                 cpp:
+                    // The four arguments are JavaScript numbers upstream
+                    // and stay doubles here: `Math.PI / 2` is not its own
+                    // float32 neighbour, and the difference reaches the
+                    // composed view matrix (see CameraRecord).
                     `bbl::create_arc_rotate_camera(` +
                     `${engine}, ` +
-                    `${context.compileNumber(call.arguments[0]!)}, ` +
-                    `${context.compileNumber(call.arguments[1]!)}, ` +
-                    `${context.compileNumber(call.arguments[2]!)}, ` +
-                    `${context.compileVec3(call.arguments[3]!)})`,
+                    `${context.compileNumber(call.arguments[0]!, "double")}, ` +
+                    `${context.compileNumber(call.arguments[1]!, "double")}, ` +
+                    `${context.compileNumber(call.arguments[2]!, "double")}, ` +
+                    `${context.compileVec3(call.arguments[3]!, "double")})`,
                 engineCpp: engine,
                 cameraKind: "arc-rotate",
             };
@@ -73,8 +83,8 @@ export function compileCameraIntrinsic(
                 cpp:
                     `bbl::create_free_camera(` +
                     `${engine}, ` +
-                    `${context.compileVec3(call.arguments[0]!)}, ` +
-                    `${context.compileVec3(call.arguments[1]!)})`,
+                    `${context.compileVec3(call.arguments[0]!, "double")}, ` +
+                    `${context.compileVec3(call.arguments[1]!, "double")})`,
                 engineCpp: engine,
                 cameraKind: "free",
             };
@@ -95,7 +105,7 @@ export function compileCameraIntrinsic(
                 "camera",
                 call.arguments[0]!,
             );
-            let halfHeight = "1.0f";
+            let halfHeight = "1.0";
             const options = call.arguments[1];
             if (options) {
                 const object =
@@ -124,7 +134,7 @@ export function compileCameraIntrinsic(
                 );
                 if (value) {
                     halfHeight =
-                        context.compileNumber(value);
+                        context.compileNumber(value, "double");
                 }
             }
             context.reachFeature("camera:orthographic");

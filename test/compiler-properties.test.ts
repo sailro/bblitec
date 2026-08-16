@@ -180,12 +180,12 @@ test("names the same camera fields for reads and both write paths", () => {
     );
 
     const cameraRecord = /v_engine\.cameras\[v_camera\.value\]/;
-    assert.match(result.cpp, /\.speed = 2\.0f;/);
+    assert.match(result.cpp, /\.speed = 2\.0;/);
     assert.match(
         result.cpp,
-        /v_engine\.cameras\[v_scene\.camera\.value\]\.speed = 3\.0f;/,
+        /v_engine\.cameras\[v_scene\.camera\.value\]\.speed = 3\.0;/,
     );
-    assert.match(result.cpp, /\.angular_sensibility = 500\.0f;/);
+    assert.match(result.cpp, /\.angular_sensibility = 500\.0;/);
     assert.match(result.cpp, cameraRecord);
     assert.match(
         result.cpp,

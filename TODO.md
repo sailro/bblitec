@@ -17,20 +17,6 @@ Both backends are complete and stay long-term as mutually validating
 implementations; [backends](docs/backends.md) carries the rationale, the
 comparison, and the empirical guards. What is left:
 
-- [ ] Re-enable the pinned position-seeded background dither on Dawn
-  (scenes 6/14; scene 7's solid skybox and ground share the same
-  disabled dither and reduce to the clear color without it — its
-  0.247 full MAD is this floor). The dithered ground/skybox variants
-  are now emitted at generation time, but enabling them on Dawn
-  measurably regressed scene 6 (0.283 → 0.333 full MAD): the pinned
-  dither hash seeds on interpolated world positions whose low bits
-  follow the barycentrics, so it only reproduces once the native
-  camera view-projection matches the pinned engine bit for bit. The real
-  dependency is porting Babylon's camera composition (view from the
-  camera world matrix, `mat4PerspectiveLHToRef` reverse-Z, JS-double
-  multiply) — which also implies adopting reverse-Z in the native
-  main pass (previously verified image-neutral) and would kill the
-  VP epsilon differences recorded by the instrumented captures.
 - [ ] Extend the Dawn integration beyond Windows: the platform surface
   is one HWND branch plus the adapter backend selection and the per-OS
   Dawn library build — the WGSL feeds Dawn directly on every backend,
@@ -345,10 +331,30 @@ comparison, and the empirical guards. What is left:
   whole of it. Scene 253 is a second scene behind it: it transmits, and its
   backends split at MAD 0.044 once the alpha defect that dominated both was
   removed.
+- [ ] Draw the pinned solid-colour skybox. `load-env.ts` pushes
+  `buildSolidSkyboxRenderable` — a cube shaded from the primary and clear
+  colours, with `WGSL_DITHER` prefixed unconditionally — for any scene that
+  loads an `.env` environment without a DDS or HDR skybox of its own; the
+  native environment reduces it to the clear colour instead. Scene 7 is the
+  gated scene behind it and the only one whose background residual this
+  explains: with its ground dithered it measures 0.211/0.204 where the other
+  dithered scenes sit at 0.001-0.087. `background-solid-skybox.ts` builds the
+  same 8-vertex/36-index cube as the DDS arm, so this is an
+  environment-lowerer record plus one fragment rather than new geometry.
 - [ ] Compose environment/camera sizing from object-local bounds through the
   pinned abs-matrix OBB-to-AABB world transform and add the
   `upperRadiusLimit` ground/skybox override (upstream `scene-size.ts`,
   `mesh-world-bounds.ts`, PR #532). No corpus scene sets `upperRadiusLimit`.
+  `expandWorldAabbForMesh` composes each object-local box through the mesh
+  world matrix as a centre plus an abs-coefficient radius per row, in
+  JavaScript doubles; `create_default_camera` accumulates eight transformed
+  corners in float instead, so a default-framed camera's radius and target
+  are not the pin's. That is now measurable rather than theoretical: the
+  background dither reproduces only against a bit-exact view-projection, so
+  Scene 14 — whose camera scalars all come from the framing — sits at 0.087
+  full MAD where Scene 6, which sets its own, is at 0.001, and
+  `scene -- diff scene14` puts the disagreement in its view-projection
+  translation column, at the seventh digit, rather than in the clip-z row.
   The sizing itself now has one moved-camera measurement behind it: an
   instrumented capture of Scene 14 at `cam.beta = 0.55` decodes the browser's
   own ground vertex buffer at half-extent `52.8457298` and its mesh UBO at
@@ -413,16 +419,6 @@ comparison, and the empirical guards. What is left:
 - [ ] Add headless renderer tests.
 - [ ] Add differential tests for camera, environment, material, and transform
   functions.
-- [ ] Chase the last sub-0.02 foreground residuals on Scenes 243
-  (0.005) and 247 (0.014) only if a structural cause surfaces; both
-  former floors are closed by ported pinned contracts (the dedicated
-  uv2 occlusion pair, the factor-texture bake at its exact precision
-  boundaries, JS-double matrix composition, and the normal-map
-  horizon-occlusion gate — see [backends](docs/backends.md) and
-  [fidelity](docs/fidelity.md)). What remains is scattered one-LSB
-  rounding on sparkle pixels with no directional bias; treat it as
-  the same-browser raster floor unless an instrumented capture says
-  otherwise.
 - [ ] Find why Scenes 9 and 37 do not render bit-identically on Dawn across
   runs. **Localised to Dawn's multisampled path; the scene, the assets, the
   CPU side and the image-processing average are all excluded by measurement.**

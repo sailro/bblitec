@@ -1242,13 +1242,16 @@ RenderItem bind_render_item(
     const Engine& engine,
     MaterialHandle material);
 std::uint32_t preferred_sample_count();
+// The aspect ratio is a JavaScript number in
+// src/camera/camera.ts getEffectiveAspectRatio, and the pinned
+// projection writer divides by it before its single float32 store.
 std::array<float, 16> build_view_projection(
     const CameraRecord& camera,
-    float aspect,
+    double aspect,
     bool reverse_depth = false);
 std::array<float, 16> build_skybox_view_projection(
     const CameraRecord& camera,
-    float aspect);
+    double aspect);
 ${options.gpuInstancing
     ? `std::array<float, 16> build_instance_parent_world(
     const MeshRecord& mesh);
@@ -1346,19 +1349,65 @@ Vec3 rotate_euler(Vec3 value, const Vec3& rotation) {
     };
 }
 
-std::array<float, 16> multiply(
-    const std::array<float, 16>& left,
-    const std::array<float, 16>& right) {
-    std::array<float, 16> result{};
+// src/camera/camera.ts getViewMatrix: the rotation is the transpose of
+// the world matrix's basis and the translation is that basis applied to
+// the negated eye, computed from the float32 world matrix in JavaScript
+// doubles and stored once into the float32 view cache.
+std::array<float, 16> build_view_matrix(
+    const std::array<float, 16>& world) {
+    const double cx = static_cast<double>(world[12]);
+    const double cy = static_cast<double>(world[13]);
+    const double cz = static_cast<double>(world[14]);
+    std::array<float, 16> view{};
+    view[0] = world[0];
+    view[1] = world[4];
+    view[2] = world[8];
+    view[3] = 0.0f;
+    view[4] = world[1];
+    view[5] = world[5];
+    view[6] = world[9];
+    view[7] = 0.0f;
+    view[8] = world[2];
+    view[9] = world[6];
+    view[10] = world[10];
+    view[11] = 0.0f;
+    view[12] = static_cast<float>(
+        -(static_cast<double>(world[0]) * cx +
+          static_cast<double>(world[1]) * cy +
+          static_cast<double>(world[2]) * cz));
+    view[13] = static_cast<float>(
+        -(static_cast<double>(world[4]) * cx +
+          static_cast<double>(world[5]) * cy +
+          static_cast<double>(world[6]) * cz));
+    view[14] = static_cast<float>(
+        -(static_cast<double>(world[8]) * cx +
+          static_cast<double>(world[9]) * cy +
+          static_cast<double>(world[10]) * cz));
+    view[15] = 1.0f;
+    return view;
+}
+
+// src/math/mat4-multiply-into.ts mat4MultiplyInto: the pinned writer
+// accumulates each term in double from two float32 matrices and stores
+// once, where a float accumulator rounds after every product.
+std::array<float, 16> multiply_into(
+    const std::array<float, 16>& a,
+    const std::array<float, 16>& b) {
+    std::array<float, 16> out{};
     for (int column = 0; column < 4; ++column) {
+        const double b0 = static_cast<double>(b[column * 4]);
+        const double b1 = static_cast<double>(b[column * 4 + 1]);
+        const double b2 = static_cast<double>(b[column * 4 + 2]);
+        const double b3 = static_cast<double>(b[column * 4 + 3]);
         for (int row = 0; row < 4; ++row) {
-            for (int index = 0; index < 4; ++index) {
-                result[column * 4 + row] +=
-                    left[index * 4 + row] * right[column * 4 + index];
-            }
+            out[column * 4 + row] = static_cast<float>(
+                static_cast<double>(a[row]) * b0 +
+                static_cast<double>(a[4 + row]) * b1 +
+                static_cast<double>(a[8 + row]) * b2 +
+                static_cast<double>(a[12 + row]) * b3);
         }
     }
-    return result;
+    return out;
 }
 
 } // namespace
@@ -1647,15 +1696,19 @@ RenderDrawLists build_render_task_draw_lists(
 // looking at its target. Written once because a camera feature that
 // changes it -- an orthographic volume, a different up axis -- has to
 // change it everywhere at once.
+// The basis is read out of the pinned camera world matrix rather than
+// recomputed: src/math/mat4-look-at-world-lh.ts writes columns
+// [xAxis, yAxis, zAxis, eye] and src/camera/camera.ts getCameraPosition
+// reads the eye straight back out of column 3, so these are the same
+// float32 values every pinned consumer sees.
 CameraBasis camera_basis(const CameraRecord& camera) {
-    const Vec3 eye = arc_rotate_eye_position(camera);
-    const Vec3 forward = normalize(Vec3{
-        camera.target.x - eye.x,
-        camera.target.y - eye.y,
-        camera.target.z - eye.z,
-    });
-    const Vec3 right = normalize(cross(Vec3{0.0f, 1.0f, 0.0f}, forward));
-    return CameraBasis{eye, forward, right, cross(forward, right)};
+    const std::array<float, 16> world = camera_world_matrix(camera);
+    return CameraBasis{
+        Vec3{world[12], world[13], world[14]},
+        Vec3{world[8], world[9], world[10]},
+        Vec3{world[0], world[1], world[2]},
+        Vec3{world[4], world[5], world[6]},
+    };
 }
 
 void sort_transparent_draws(
@@ -1741,27 +1794,10 @@ std::uint32_t preferred_sample_count() {
 
 std::array<float, 16> build_view_projection(
     const CameraRecord& camera,
-    float aspect,
+    double aspect,
     bool reverse_depth) {
-    const CameraBasis basis = camera_basis(camera);
-    const Vec3& eye = basis.eye;
-    const Vec3& forward = basis.forward;
-    const Vec3& right = basis.right;
-    const Vec3& up = basis.up;
-    std::array<float, 16> view{};
-    view[0] = right.x;
-    view[4] = right.y;
-    view[8] = right.z;
-    view[12] = -dot(right, eye);
-    view[1] = up.x;
-    view[5] = up.y;
-    view[9] = up.z;
-    view[13] = -dot(up, eye);
-    view[2] = forward.x;
-    view[6] = forward.y;
-    view[10] = forward.z;
-    view[14] = -dot(forward, eye);
-    view[15] = 1.0f;
+    const std::array<float, 16> view =
+        build_view_matrix(camera_world_matrix(camera));
 
 ${options.orthographicCamera
     ? `    if (camera.orthographic) {
@@ -1799,61 +1835,58 @@ ${options.orthographicCamera
             reverse_depth ? far_plane / range
                           : -near_plane / range);
         projection[15] = 1.0f;
-        return multiply(projection, view);
+        return multiply_into(projection, view);
     }
 `
     : ""}\
-    const float focal = 1.0f / std::tan(camera.fov * 0.5f);
+    // src/math/mat4-perspective-lh-to-ref.ts mat4PerspectiveLHToRef, in
+    // the same double-then-store-once shape as the rest of the chain.
+    // Rows [10] and [14] are the one deliberate departure: the pin maps
+    // near -> 1 and far -> 0, and the native main pass keeps its recorded
+    // forward-Z convention. That row reaches clip z alone -- with
+    // projection[11] = 1 and every other off-diagonal term zero, clip x,
+    // y and w are products of rows [0], [5] and the view's z row -- so it
+    // moves no interpolated varying and no coverage.
+    const double focal = 1.0 / std::tan(camera.fov * 0.5);
+    const double range = camera.far_plane - camera.near_plane;
     std::array<float, 16> projection{};
-    projection[0] = focal / aspect;
-    projection[5] = focal;
-    projection[10] = reverse_depth
-        ? camera.near_plane /
-            (camera.near_plane - camera.far_plane)
-        : camera.far_plane /
-            (camera.far_plane - camera.near_plane);
+    projection[0] = static_cast<float>(focal / aspect);
+    projection[5] = static_cast<float>(focal);
+    projection[10] = static_cast<float>(
+        reverse_depth ? -camera.near_plane / range
+                      : camera.far_plane / range);
     projection[11] = 1.0f;
-    projection[14] = reverse_depth
-        ? (camera.near_plane * camera.far_plane) /
-            (camera.far_plane - camera.near_plane)
-        : (-camera.near_plane * camera.far_plane) /
-            (camera.far_plane - camera.near_plane);
-    return multiply(projection, view);
+    projection[14] = static_cast<float>(
+        reverse_depth
+            ? (camera.far_plane * camera.near_plane) / range
+            : (-camera.near_plane * camera.far_plane) / range);
+    return multiply_into(projection, view);
 }
 
 std::array<float, 16> build_skybox_view_projection(
     const CameraRecord& camera,
-    float aspect) {
+    double aspect) {
     // A skybox follows the camera, so this view keeps the rotation and
-    // drops the eye translation the other builders apply.
-    const CameraBasis basis = camera_basis(camera);
-    const Vec3& forward = basis.forward;
-    const Vec3& right = basis.right;
-    const Vec3& up = basis.up;
-    std::array<float, 16> view{};
-    view[0] = right.x;
-    view[4] = right.y;
-    view[8] = right.z;
-    view[1] = up.x;
-    view[5] = up.y;
-    view[9] = up.z;
-    view[2] = forward.x;
-    view[6] = forward.y;
-    view[10] = forward.z;
-    view[15] = 1.0f;
+    // drops the eye translation the other builders apply. The rotation
+    // is the same transpose getViewMatrix writes, so it is taken from
+    // the pinned world matrix rather than recomposed.
+    std::array<float, 16> view =
+        build_view_matrix(camera_world_matrix(camera));
+    view[12] = 0.0f;
+    view[13] = 0.0f;
+    view[14] = 0.0f;
 
-    const float focal = 1.0f / std::tan(camera.fov * 0.5f);
+    const double focal = 1.0 / std::tan(camera.fov * 0.5);
+    const double range = camera.far_plane - camera.near_plane;
     std::array<float, 16> projection{};
-    projection[0] = focal / aspect;
-    projection[5] = focal;
+    projection[0] = static_cast<float>(focal / aspect);
+    projection[5] = static_cast<float>(focal);
     projection[10] =
-        camera.far_plane /
-        (camera.far_plane - camera.near_plane);
+        static_cast<float>(camera.far_plane / range);
     projection[11] = 1.0f;
-    projection[14] =
-        (-camera.near_plane * camera.far_plane) /
-        (camera.far_plane - camera.near_plane);
-    return multiply(projection, view);
+    projection[14] = static_cast<float>(
+        (-camera.near_plane * camera.far_plane) / range);
+    return multiply_into(projection, view);
 }
 
 ${options.gpuInstancing
@@ -2040,12 +2073,17 @@ ${secondAnalyticLightFill}    const CameraBasis basis = camera_basis(camera);
     const Vec3& forward = basis.forward;
     const Vec3& right = basis.right;
     const Vec3& up = basis.up;
-    result.camera_position = {eye.x, eye.y, eye.z, camera.far_plane};
+    result.camera_position = {
+        eye.x,
+        eye.y,
+        eye.z,
+        static_cast<float>(camera.far_plane),
+    };
     result.camera_forward_near = {
         forward.x,
         forward.y,
         forward.z,
-        camera.near_plane,
+        static_cast<float>(camera.near_plane),
     };
     result.view_right = {right.x, right.y, right.z, 0.0f};
     result.view_up = {up.x, up.y, up.z, 0.0f};
@@ -2158,13 +2196,13 @@ StandardUniforms build_standard_uniforms(
         eye.x,
         eye.y,
         eye.z,
-        camera.far_plane,
+        static_cast<float>(camera.far_plane),
     };
     result.camera_forward_near = {
         forward.x,
         forward.y,
         forward.z,
-        camera.near_plane,
+        static_cast<float>(camera.near_plane),
     };
     result.view_right = {right.x, right.y, right.z, 0.0f};
     result.view_up = {up.x, up.y, up.z, 0.0f};

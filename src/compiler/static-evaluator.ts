@@ -39,12 +39,23 @@ export class StaticEvaluator {
         private readonly onJsData: () => void,
     ) {}
 
-    public compileVec3(expression: ts.Expression): string {
+    /**
+     * `precision` selects the native vector the components land in. The
+     * camera is the one sink that asks for `double`: upstream keeps its
+     * position and target as plain JavaScript numbers and rounds only at
+     * the `Float32Array` matrix caches, so a float literal here would
+     * round a scene's own target a step early.
+     */
+    public compileVec3(
+        expression: ts.Expression,
+        precision: "float" | "double" = "float",
+    ): string {
+        const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
         const unwrapped = this.unwrap(expression);
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = this.resolveProperty(unwrapped);
             if (value?.kind === "record") {
-                return `bbl::Vec3{${["x", "y", "z"]
+                return `${type}{${["x", "y", "z"]
                     .map((name) =>
                         this.numberValue(
                             value.recordProperties?.[name] ??
@@ -60,7 +71,7 @@ export class StaticEvaluator {
         }
         const tuple = this.tupleElements(unwrapped, 3);
         if (tuple) {
-            return `bbl::Vec3{${tuple
+            return `${type}{${tuple
                 .map((value) =>
                     this.numberValue(value, unwrapped),
                 )
@@ -70,20 +81,25 @@ export class StaticEvaluator {
             ts.isArrayLiteralExpression(unwrapped) &&
             unwrapped.elements.length === 3
         ) {
-            return `bbl::Vec3{${unwrapped.elements
-                .map((element) => this.compileNumber(element))
+            return `${type}{${unwrapped.elements
+                .map((element) =>
+                    this.compileNumber(element, precision),
+                )
                 .join(", ")}}`;
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
-            return `bbl::Vec3{${this.requiredObjectNumber(
+            return `${type}{${this.requiredObjectNumber(
                 unwrapped,
                 "x",
+                precision,
             )}, ${this.requiredObjectNumber(
                 unwrapped,
                 "y",
+                precision,
             )}, ${this.requiredObjectNumber(
                 unwrapped,
                 "z",
+                precision,
             )}}`;
         }
         this.fail(
@@ -749,6 +765,7 @@ export class StaticEvaluator {
     private requiredObjectNumber(
         object: ts.ObjectLiteralExpression,
         name: string,
+        precision: "float" | "double" = "float",
     ): string {
         const value = this.objectProperty(object, name);
         if (!value) {
@@ -757,7 +774,7 @@ export class StaticEvaluator {
                 `Object literal is missing numeric property '${name}'.`,
             );
         }
-        return this.compileNumber(value);
+        return this.compileNumber(value, precision);
     }
 
     private propertyName(

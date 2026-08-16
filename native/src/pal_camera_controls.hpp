@@ -60,12 +60,12 @@ inline void handle_camera_pointer_event(
     }
 
     if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-        float delta = event.wheel.y;
+        double delta = event.wheel.y;
         if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
             delta = -delta;
         }
         camera.inertial_radius_offset -=
-            (delta * camera.radius) / std::max(camera.wheel_precision * 10.0f, 1.0f);
+            (delta * camera.radius) / std::max(camera.wheel_precision * 10.0, 1.0);
     }
 }
 
@@ -80,8 +80,8 @@ inline void update_camera(CameraRecord& camera) {
         return index >= 0 && index < key_count && keys[index];
     };
     if (camera.kind == CameraKind::free) {
-        constexpr float nominal_frame_scale = 0.05270463f;
-        const float movement = camera.speed * nominal_frame_scale;
+        constexpr double nominal_frame_scale = 0.05270463;
+        const double movement = camera.speed * nominal_frame_scale;
         if (pressed(SDL_SCANCODE_W) || pressed(SDL_SCANCODE_UP)) {
             camera.inertial_direction.z += movement;
         }
@@ -107,12 +107,12 @@ inline void update_camera(CameraRecord& camera) {
         return;
     }
     upstream::apply_arc_rotate_inertia(camera);
-    if (pressed(SDL_SCANCODE_LEFT)) camera.alpha -= 0.02f;
-    if (pressed(SDL_SCANCODE_RIGHT)) camera.alpha += 0.02f;
-    if (pressed(SDL_SCANCODE_UP)) camera.beta = std::max(0.1f, camera.beta - 0.02f);
-    if (pressed(SDL_SCANCODE_DOWN)) camera.beta = std::min(pi - 0.1f, camera.beta + 0.02f);
-    if (pressed(SDL_SCANCODE_W)) camera.radius = std::max(0.25f, camera.radius - 0.08f);
-    if (pressed(SDL_SCANCODE_S)) camera.radius += 0.08f;
+    if (pressed(SDL_SCANCODE_LEFT)) camera.alpha -= 0.02;
+    if (pressed(SDL_SCANCODE_RIGHT)) camera.alpha += 0.02;
+    if (pressed(SDL_SCANCODE_UP)) camera.beta = std::max(0.1, camera.beta - 0.02);
+    if (pressed(SDL_SCANCODE_DOWN)) camera.beta = std::min(pi_double - 0.1, camera.beta + 0.02);
+    if (pressed(SDL_SCANCODE_W)) camera.radius = std::max(0.25, camera.radius - 0.08);
+    if (pressed(SDL_SCANCODE_S)) camera.radius += 0.08;
 }
 
 } // namespace bbl::pal

@@ -32,7 +32,10 @@ export interface MaterialIntrinsicContext
     ): void;
     requireDefaultEngine(node: ts.Node): string;
     requireEngine(value: Value, node: ts.Node): string;
-    compileNumber(expression: ts.Expression): string;
+    compileNumber(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
     compileBoolean(expression: ts.Expression): string;
     compileVec2(expression: ts.Expression): string;
     compileColor3(expression: ts.Expression): string;

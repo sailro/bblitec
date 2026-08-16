@@ -21,7 +21,10 @@ export interface AssetIntrinsicContext
     compileStringLiteral(
         expression: ts.Expression,
     ): string;
-    compileNumber(expression: ts.Expression): string;
+    compileNumber(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
     compileEnvironmentOptions(
         expression: ts.Expression,
     ): [string, string, string, string];

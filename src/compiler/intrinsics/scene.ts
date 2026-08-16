@@ -4,7 +4,10 @@ import type { IntrinsicCallContext } from "./context.js";
 
 export interface SceneIntrinsicContext
     extends IntrinsicCallContext {
-    compileNumber(expression: ts.Expression): string;
+    compileNumber(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
     compileColor3(expression: ts.Expression): string;
     expectObjectLiteral(
         expression: ts.Expression,

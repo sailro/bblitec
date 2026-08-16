@@ -3,8 +3,14 @@ import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 export interface LightIntrinsicContext extends IntrinsicCallContext {
-    compileVec3(expression: ts.Expression): string;
-    compileNumber(expression: ts.Expression): string;
+    compileVec3(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
+    compileNumber(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
     requireDefaultEngine(node: ts.Node): string;
 }
 

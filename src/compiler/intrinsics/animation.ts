@@ -19,7 +19,10 @@ export interface AnimationIntrinsicContext
         expression: ts.Expression | undefined,
         clip: Value,
     ): string;
-    compileNumber(expression: ts.Expression): string;
+    compileNumber(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
     requireDefaultScene(node: ts.Node): Value;
     requireEngine(value: Value, node: ts.Node): string;
 }

@@ -2187,10 +2187,15 @@ bool run_gpu_engine(Engine& engine) {
                     "mainFragment");
             }
         }
+        // The pinned position-seeded dither. background-ground.ts and
+        // background-dds-skybox.ts prefix WGSL_DITHER; the environment
+        // cubemap arm (background-hdr-skybox.ts) composes none, and one
+        // generated fragment serves both skyboxes, so the variant is
+        // selected here.
         SDL_GPUShader* background_fragment_shader = use_ground
             ? load_shader(
                   state.device,
-                  "background-ground.frag",
+                  "background-ground-dither.frag",
                   SDL_GPU_SHADERSTAGE_FRAGMENT,
                   1,
                   1,
@@ -2199,7 +2204,9 @@ bool run_gpu_engine(Engine& engine) {
         SDL_GPUShader* skybox_fragment_shader = use_skybox
             ? load_shader(
                   state.device,
-                  "background-skybox.frag",
+                  scene.environment.skybox_uses_environment
+                      ? "background-skybox.frag"
+                      : "background-skybox-dither.frag",
                   SDL_GPU_SHADERSTAGE_FRAGMENT,
                   1,
                   1,
@@ -4010,14 +4017,17 @@ bool run_gpu_engine(Engine& engine) {
                 capture_ready &&
                 !captures.diagnostics_saved &&
                 !diagnostic_directory.empty();
+            // getEffectiveAspectRatio divides two JavaScript numbers,
+            // so the ratio reaches the projection writer in double.
+            const double aspect =
+                static_cast<double>(width) /
+                static_cast<double>(height);
             const std::array<float, 16> matrix =
-                upstream::build_view_projection(
-                    camera,
-                    static_cast<float>(width) / height);
+                upstream::build_view_projection(camera, aspect);
             const std::array<float, 16> skybox_matrix =
                 upstream::build_skybox_view_projection(
                     camera,
-                    static_cast<float>(width) / height);
+                    aspect);
             // The render capture describes CPU state alone, so it is
             // written as soon as the frame's plan, camera and matrix are
             // final rather than after the passes -- the values it reads
@@ -4529,12 +4539,12 @@ bool run_gpu_engine(Engine& engine) {
                                         engine.cameras.size()
                                 ? engine.cameras[task.render.camera.value]
                                 : camera;
-                        const float task_aspect =
+                        const double task_aspect =
                             task.render.canvas_size
-                                ? static_cast<float>(width) /
-                                    static_cast<float>(height)
-                                : static_cast<float>(target.width) /
-                                    static_cast<float>(target.height);
+                                ? static_cast<double>(width) /
+                                    static_cast<double>(height)
+                                : static_cast<double>(target.width) /
+                                    static_cast<double>(target.height);
                         const std::array<float, 16> task_matrix =
                             upstream::build_view_projection(
                                 task_camera,

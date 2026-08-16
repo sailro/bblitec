@@ -1025,13 +1025,17 @@ class Compiler
                         "Reached camera world-matrix access supports translation indices 12-14.",
                     );
                 }
-                const component =
-                    ({ 12: "x", 13: "y", 14: "z" } as const)[
-                        index.staticNumber as 12 | 13 | 14
-                    ];
+                // The pinned `getCameraPosition` reads these three back out
+                // of the camera's float32 world matrix, so the rounded
+                // stored value is what a scene observes -- not the double
+                // the eye was composed at.
+                const element = index.staticNumber as
+                    | 12
+                    | 13
+                    | 14;
                 return {
                     kind: "number",
-                    cpp: `bbl::upstream::arc_rotate_eye_position(${this.requireEngine(owner, unwrapped)}.cameras[${owner.cpp}.value]).${component}`,
+                    cpp: `bbl::upstream::camera_world_matrix(${this.requireEngine(owner, unwrapped)}.cameras[${owner.cpp}.value])[${element}]`,
                     ...(owner.engineCpp
                         ? { engineCpp: owner.engineCpp }
                         : {}),
@@ -3186,8 +3190,14 @@ class Compiler
         };
     }
 
-    public compileVec3(expression: ts.Expression): string {
-        return this.evaluator.compileVec3(expression);
+    public compileVec3(
+        expression: ts.Expression,
+        precision: "float" | "double" = "float",
+    ): string {
+        return this.evaluator.compileVec3(
+            expression,
+            precision,
+        );
     }
 
     public compileVec2(expression: ts.Expression): string {
@@ -4877,23 +4887,6 @@ class Compiler
                 validation: [
                     "default render-task compiler test",
                     "scene 116 exact-source parity",
-                ],
-            });
-        }
-        if (
-            features.includes("background:skybox") ||
-            features.includes("background:ground")
-        ) {
-            adaptations.push({
-                id: "background-dither-sdl-gpu-disabled",
-                category: "rendering",
-                sourceSemantics: "Babylon Lite adds position-seeded ±0.5/255 dither to generated background fragments.",
-                nativeSemantics: "The Dawn backend compiles the pinned dither variant bit-reproducibly (same compiler as the reference); SDL_GPU backgrounds omit the dither because offline compilation decorrelates the position-seeded noise.",
-                risk: "medium",
-                validation: [
-                    "pinned dither formula experiment",
-                    "Scene 1 background attribution",
-                    "scenes 6/14 Dawn dither parity",
                 ],
             });
         }

@@ -4,6 +4,81 @@ import { LoweredSource, LoweringContext } from "./context.js";
 export class CameraLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
+    /**
+     * The camera-to-world writer both factories reach, and the two
+     * constants the generated copy needs from it: the degenerate-length
+     * epsilon that decides the identity fallback, and the up vector the
+     * cross product is taken against. Reading them here is what makes the
+     * generated matrix a port rather than a transcription — if upstream
+     * moves either, generation fails instead of shading slightly wrong.
+     */
+    private readLookAtWorldContract(): {
+        module: string;
+        symbol: string;
+        degenerateEpsilon: number;
+        upVector: { x: number; y: number; z: number };
+    } {
+        const module = "src/math/mat4-look-at-world-lh.ts";
+        const symbol = "mat4LookAtWorldLHToRef";
+        const { file, declaration } =
+            this.context.functionDeclaration(module, symbol);
+        const epsilons = this.context
+            .findNodes(
+                declaration,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node),
+            )
+            .filter(
+                (expression) =>
+                    (expression.operatorToken.kind ===
+                        ts.SyntaxKind.GreaterThanEqualsToken ||
+                        expression.operatorToken.kind ===
+                            ts.SyntaxKind.LessThanToken) &&
+                    ts.isIdentifier(expression.left) &&
+                    /^[zx]Len$/.test(expression.left.text),
+            )
+            .map((expression) =>
+                this.context.numericValue(expression.right, file),
+            );
+        if (
+            epsilons.length !== 2 ||
+            epsilons[0] !== epsilons[1]
+        ) {
+            this.context.contractError(
+                declaration,
+                "Expected one shared degenerate-length epsilon for the look-at basis.",
+            );
+        }
+        const upModule = "src/math/vec3-up.ts";
+        const upFile = this.context.sourceFile(upModule);
+        const upInitializer = this.context.variableInitializer(
+            upFile,
+            "Vec3Up",
+        );
+        const up = this.context.unwrapExpression(upInitializer);
+        if (!ts.isObjectLiteralExpression(up)) {
+            this.context.contractError(
+                upInitializer,
+                "Expected Vec3Up to be an object literal.",
+            );
+        }
+        const component = (name: "x" | "y" | "z"): number =>
+            this.context.numericValue(
+                this.context.propertyInitializer(up, name),
+                upFile,
+            );
+        return {
+            module,
+            symbol,
+            degenerateEpsilon: epsilons[0]!,
+            upVector: {
+                x: component("x"),
+                y: component("y"),
+                z: component("z"),
+            },
+        };
+    }
+
     public lowerArcRotateFactory(): LoweredSource {
         const modulePath = "src/camera/arc-rotate.ts";
         const symbolName = "createArcRotateCamera";
@@ -32,9 +107,15 @@ export class CameraLowerer {
             poleAssignments[0]!.right,
             file,
         );
+        const {
+            module: lookAtModule,
+            symbol: lookAtSymbol,
+            degenerateEpsilon,
+            upVector,
+        } = this.readLookAtWorldContract();
         const camera = this.context.objectInitializer(declaration, "cam");
         const number = (name: string): string =>
-            this.context.floatLiteral(
+            this.context.doubleLiteral(
                 this.context.numericValue(this.context.propertyInitializer(camera, name), file),
             );
         return {
@@ -44,9 +125,12 @@ export class CameraLowerer {
 
 #include <bblite/runtime.hpp>
 
+#include <array>
+
 namespace bbl::upstream {
 
-Vec3 arc_rotate_eye_position(const CameraRecord& camera);
+Vec3d arc_rotate_eye_position(const CameraRecord& camera);
+std::array<float, 16> camera_world_matrix(const CameraRecord& camera);
 
 } // namespace bbl::upstream
 `,
@@ -58,18 +142,80 @@ Vec3 arc_rotate_eye_position(const CameraRecord& camera);
 
 namespace bbl::upstream {
 
-Vec3 arc_rotate_eye_position(const CameraRecord& camera) {
+Vec3d arc_rotate_eye_position(const CameraRecord& camera) {
     if (camera.kind == CameraKind::free) return camera.position;
-    const float cosine_alpha = std::cos(camera.alpha);
-    const float sine_alpha = std::sin(camera.alpha);
-    const float cosine_beta = std::cos(camera.beta);
-    float sine_beta = std::sin(camera.beta);
-    if (sine_beta == 0.0f) sine_beta = ${this.context.floatLiteral(poleEpsilon)};
-    return Vec3{
+    const double cosine_alpha = std::cos(camera.alpha);
+    const double sine_alpha = std::sin(camera.alpha);
+    const double cosine_beta = std::cos(camera.beta);
+    double sine_beta = std::sin(camera.beta);
+    if (sine_beta == 0.0) sine_beta = ${this.context.doubleLiteral(poleEpsilon)};
+    return Vec3d{
         camera.target.x + camera.radius * cosine_alpha * sine_beta,
         camera.target.y + camera.radius * cosine_beta,
         camera.target.z + camera.radius * sine_alpha * sine_beta,
     };
+}
+
+// ${this.context.provenance(lookAtModule, lookAtSymbol)}
+// The camera-to-world matrix both factories write through
+// \`createWorldMatrixState\`; with no parent the world matrix *is* this
+// local one (\`src/scene/world-matrix-state.ts\` getWorldMatrix), and the
+// storage is the \`allocateMat4()\` Float32Array. So every term is
+// computed in double and stored once as float, and \`getViewMatrix\`
+// downstream reads these rounded values exactly as the pin does.
+std::array<float, 16> camera_world_matrix(const CameraRecord& camera) {
+    const Vec3d eye = arc_rotate_eye_position(camera);
+    std::array<float, 16> out{};
+    out[3] = 0.0f;
+    out[7] = 0.0f;
+    out[11] = 0.0f;
+    out[12] = static_cast<float>(eye.x);
+    out[13] = static_cast<float>(eye.y);
+    out[14] = static_cast<float>(eye.z);
+    out[15] = 1.0f;
+
+    // Left-handed: +Z points from the eye towards the target.
+    double zx = camera.target.x - eye.x;
+    double zy = camera.target.y - eye.y;
+    double zz = camera.target.z - eye.z;
+    const double z_length = std::sqrt(zx * zx + zy * zy + zz * zz);
+    double xx = 0.0;
+    double xy = 0.0;
+    double xz = 0.0;
+    double x_length = 0.0;
+    if (z_length >= ${this.context.doubleLiteral(degenerateEpsilon)}) {
+        const double inverse_z = 1.0 / z_length;
+        zx *= inverse_z;
+        zy *= inverse_z;
+        zz *= inverse_z;
+        // xAxis = cross(up, zAxis), against the pinned Vec3Up.
+        xx = ${this.context.doubleLiteral(upVector.y)} * zz - ${this.context.doubleLiteral(upVector.z)} * zy;
+        xy = ${this.context.doubleLiteral(upVector.z)} * zx - ${this.context.doubleLiteral(upVector.x)} * zz;
+        xz = ${this.context.doubleLiteral(upVector.x)} * zy - ${this.context.doubleLiteral(upVector.y)} * zx;
+        x_length = std::sqrt(xx * xx + xy * xy + xz * xz);
+    }
+    if (x_length < ${this.context.doubleLiteral(degenerateEpsilon)}) {
+        out[0] = 1.0f;
+        out[5] = 1.0f;
+        out[10] = 1.0f;
+        return out;
+    }
+    const double inverse_x = 1.0 / x_length;
+    xx *= inverse_x;
+    xy *= inverse_x;
+    xz *= inverse_x;
+
+    out[0] = static_cast<float>(xx);
+    out[1] = static_cast<float>(xy);
+    out[2] = static_cast<float>(xz);
+    // yAxis = cross(zAxis, xAxis) -- already unit, both operands are.
+    out[4] = static_cast<float>(zy * xz - zz * xy);
+    out[5] = static_cast<float>(zz * xx - zx * xz);
+    out[6] = static_cast<float>(zx * xy - zy * xx);
+    out[8] = static_cast<float>(zx);
+    out[9] = static_cast<float>(zy);
+    out[10] = static_cast<float>(zz);
+    return out;
 }
 
 } // namespace bbl::upstream
@@ -78,10 +224,10 @@ namespace bbl {
 
 CameraHandle create_arc_rotate_camera(
     Engine& engine,
-    float alpha,
-    float beta,
-    float radius,
-    Vec3 target) {
+    double alpha,
+    double beta,
+    double radius,
+    Vec3d target) {
     CameraRecord camera;
     camera.alpha = alpha;
     camera.beta = beta;
@@ -214,7 +360,7 @@ namespace bbl {
 CameraHandle enable_orthographic_camera(
     Engine& engine,
     CameraHandle camera,
-    float half_height) {
+    double half_height) {
     CameraRecord& record = engine.cameras[camera.value];
     record.orthographic = true;
     record.ortho_half_height = half_height;
@@ -239,7 +385,7 @@ CameraHandle enable_orthographic_camera(
             "cam",
         );
         const number = (name: string): string =>
-            this.context.floatLiteral(
+            this.context.doubleLiteral(
                 this.context.numericValue(
                     this.context.propertyInitializer(
                         camera,
@@ -261,11 +407,11 @@ namespace bbl {
 
 CameraHandle create_free_camera(
     Engine& engine,
-    Vec3 position,
-    Vec3 target) {
-    const float dx = target.x - position.x;
-    const float dy = target.y - position.y;
-    const float dz = target.z - position.z;
+    Vec3d position,
+    Vec3d target) {
+    const double dx = target.x - position.x;
+    const double dy = target.y - position.y;
+    const double dz = target.z - position.z;
     CameraRecord camera;
     camera.kind = CameraKind::free;
     camera.position = position;
@@ -412,6 +558,7 @@ CameraHandle create_free_camera(
             file,
         );
         const value = (input: number): string => this.context.floatLiteral(input);
+        const dvalue = (input: number): string => this.context.doubleLiteral(input);
         return {
             modulePath,
             symbolName,
@@ -536,10 +683,21 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             center = Vec3{};
         }
     }
-    const CameraHandle camera = create_arc_rotate_camera(engine, -pi / 2.0f, pi / 2.0f, radius, center);
+    // The framing box above is still accumulated in float from the baked
+    // mesh bounds, where the pinned pass composes each object-local box
+    // through its world matrix in JavaScript doubles. That difference is
+    // the sizing entry in TODO.md; the camera scalars it feeds are
+    // doubles here so the pinned view/projection chain below is exact for
+    // every camera whose scalars the scene sets itself.
+    const CameraHandle camera = create_arc_rotate_camera(
+        engine,
+        -pi_double / 2.0,
+        pi_double / 2.0,
+        radius,
+        Vec3d{center.x, center.y, center.z});
     CameraRecord& record = engine.cameras[camera.value];
-    record.near_plane = radius * ${value(nearScale)};
-    record.far_plane = radius * ${value(farScale)};
+    record.near_plane = radius * ${dvalue(nearScale)};
+    record.far_plane = radius * ${dvalue(farScale)};
     scene.camera = camera;
     return camera;
 }
@@ -652,7 +810,7 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             "inertia",
             "FreeCamera movement inertia",
         );
-        const value = (input: number): string => this.context.floatLiteral(input);
+        const dvalue = (input: number): string => this.context.doubleLiteral(input);
         return {
             modulePath,
             symbolName,
@@ -700,59 +858,59 @@ void attach_free_control(
 namespace bbl::upstream {
 
 void apply_arc_rotate_inertia(CameraRecord& camera) {
-    constexpr float rotation_epsilon = ${value(rotationEpsilon)};
-    constexpr float radius_epsilon = ${value(radiusEpsilon)};
-    constexpr float panning_epsilon = ${value(panningEpsilon)};
-    if (camera.inertial_alpha_offset != 0.0f || camera.inertial_beta_offset != 0.0f) {
+    constexpr double rotation_epsilon = ${dvalue(rotationEpsilon)};
+    constexpr double radius_epsilon = ${dvalue(radiusEpsilon)};
+    constexpr double panning_epsilon = ${dvalue(panningEpsilon)};
+    if (camera.inertial_alpha_offset != 0.0 || camera.inertial_beta_offset != 0.0) {
         camera.alpha += camera.inertial_alpha_offset;
         camera.beta += camera.inertial_beta_offset;
-        constexpr float epsilon = 0.01f;
-        camera.beta = std::max(epsilon, std::min(pi - epsilon, camera.beta));
+        constexpr double epsilon = 0.01;
+        camera.beta = std::max(epsilon, std::min(pi_double - epsilon, camera.beta));
         camera.inertial_alpha_offset *= camera.inertia;
         camera.inertial_beta_offset *= camera.inertia;
-        if (std::abs(camera.inertial_alpha_offset) < rotation_epsilon) camera.inertial_alpha_offset = 0.0f;
-        if (std::abs(camera.inertial_beta_offset) < rotation_epsilon) camera.inertial_beta_offset = 0.0f;
+        if (std::abs(camera.inertial_alpha_offset) < rotation_epsilon) camera.inertial_alpha_offset = 0.0;
+        if (std::abs(camera.inertial_beta_offset) < rotation_epsilon) camera.inertial_beta_offset = 0.0;
     }
 
-    if (camera.inertial_radius_offset != 0.0f) {
+    if (camera.inertial_radius_offset != 0.0) {
         camera.radius -= camera.inertial_radius_offset;
-        camera.radius = std::max(0.01f, camera.radius);
+        camera.radius = std::max(0.01, camera.radius);
         camera.inertial_radius_offset *= camera.inertia;
-        if (std::abs(camera.inertial_radius_offset) < radius_epsilon) camera.inertial_radius_offset = 0.0f;
+        if (std::abs(camera.inertial_radius_offset) < radius_epsilon) camera.inertial_radius_offset = 0.0;
     }
-    if (camera.inertial_panning_x != 0.0f || camera.inertial_panning_y != 0.0f) {
-        const float cosine = std::cos(camera.alpha);
-        const float sine = std::sin(camera.alpha);
-        const float pan_scale = camera.radius * 0.001f;
+    if (camera.inertial_panning_x != 0.0 || camera.inertial_panning_y != 0.0) {
+        const double cosine = std::cos(camera.alpha);
+        const double sine = std::sin(camera.alpha);
+        const double pan_scale = camera.radius * 0.001;
         camera.target.x += -sine * camera.inertial_panning_x * pan_scale;
         camera.target.y += camera.inertial_panning_y * pan_scale;
         camera.target.z += cosine * camera.inertial_panning_x * pan_scale;
         camera.inertial_panning_x *= camera.panning_inertia;
         camera.inertial_panning_y *= camera.panning_inertia;
-        if (std::abs(camera.inertial_panning_x) < panning_epsilon) camera.inertial_panning_x = 0.0f;
-        if (std::abs(camera.inertial_panning_y) < panning_epsilon) camera.inertial_panning_y = 0.0f;
+        if (std::abs(camera.inertial_panning_x) < panning_epsilon) camera.inertial_panning_x = 0.0;
+        if (std::abs(camera.inertial_panning_y) < panning_epsilon) camera.inertial_panning_y = 0.0;
     }
 }
 
 void apply_free_camera_inertia(CameraRecord& camera) {
     const bool has_rotation =
-        camera.inertial_yaw_offset != 0.0f ||
-        camera.inertial_pitch_offset != 0.0f;
+        camera.inertial_yaw_offset != 0.0 ||
+        camera.inertial_pitch_offset != 0.0;
     const bool has_movement =
-        camera.inertial_direction.x != 0.0f ||
-        camera.inertial_direction.y != 0.0f ||
-        camera.inertial_direction.z != 0.0f;
+        camera.inertial_direction.x != 0.0 ||
+        camera.inertial_direction.y != 0.0 ||
+        camera.inertial_direction.z != 0.0;
     if (has_rotation) {
         camera.free_yaw += camera.inertial_yaw_offset;
         camera.free_pitch += camera.inertial_pitch_offset;
-        constexpr float max_pitch = pi / 2.0f - 0.01f;
+        constexpr double max_pitch = pi_double / 2.0 - 0.01;
         camera.free_pitch =
             std::max(-max_pitch, std::min(max_pitch, camera.free_pitch));
     }
-    const float cosine_yaw = std::cos(camera.free_yaw);
-    const float sine_yaw = std::sin(camera.free_yaw);
-    const float cosine_pitch = std::cos(camera.free_pitch);
-    const float sine_pitch = std::sin(camera.free_pitch);
+    const double cosine_yaw = std::cos(camera.free_yaw);
+    const double sine_yaw = std::sin(camera.free_yaw);
+    const double cosine_pitch = std::cos(camera.free_pitch);
+    const double sine_pitch = std::sin(camera.free_pitch);
     if (has_movement) {
         camera.position.x +=
             sine_yaw * cosine_pitch * camera.inertial_direction.z +
@@ -765,7 +923,7 @@ void apply_free_camera_inertia(CameraRecord& camera) {
             sine_yaw * camera.inertial_direction.x;
     }
     if (has_movement || has_rotation) {
-        camera.target = Vec3{
+        camera.target = Vec3d{
             camera.position.x + sine_yaw * cosine_pitch,
             camera.position.y + sine_pitch,
             camera.position.z + cosine_yaw * cosine_pitch,
@@ -776,21 +934,21 @@ void apply_free_camera_inertia(CameraRecord& camera) {
     camera.inertial_direction.z *= camera.inertia;
     camera.inertial_yaw_offset *= camera.inertia;
     camera.inertial_pitch_offset *= camera.inertia;
-    const float epsilon = camera.speed * 0.001f;
+    const double epsilon = camera.speed * 0.001;
     if (std::abs(camera.inertial_direction.x) < epsilon) {
-        camera.inertial_direction.x = 0.0f;
+        camera.inertial_direction.x = 0.0;
     }
     if (std::abs(camera.inertial_direction.y) < epsilon) {
-        camera.inertial_direction.y = 0.0f;
+        camera.inertial_direction.y = 0.0;
     }
     if (std::abs(camera.inertial_direction.z) < epsilon) {
-        camera.inertial_direction.z = 0.0f;
+        camera.inertial_direction.z = 0.0;
     }
     if (std::abs(camera.inertial_yaw_offset) < epsilon) {
-        camera.inertial_yaw_offset = 0.0f;
+        camera.inertial_yaw_offset = 0.0;
     }
     if (std::abs(camera.inertial_pitch_offset) < epsilon) {
-        camera.inertial_pitch_offset = 0.0f;
+        camera.inertial_pitch_offset = 0.0;
     }
 }
 

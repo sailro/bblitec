@@ -104,8 +104,8 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene6.ts",
         title: "Babylon Lite Native - PBR Gold Sphere",
         parity: {
-            maxFullMad: 0.3,
-            maxForegroundMad: 0.03,
+            maxFullMad: 0.005,
+            maxForegroundMad: 0.02,
             backgroundColor: [53, 53, 82],
             backgroundThreshold: 30,
         },
@@ -116,8 +116,8 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene14.ts",
         title: "Babylon Lite Native - Flight Helmet",
         parity: {
-            maxFullMad: 0.35,
-            maxForegroundMad: 0.07,
+            maxFullMad: 0.1,
+            maxForegroundMad: 0.055,
             backgroundColor: [61, 61, 94],
             backgroundThreshold: 30,
         },
@@ -406,8 +406,10 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - ChibiRex Default Camera",
         parity: {
             referenceTimeSeconds: 1,
-            maxFullMad: 0.3,
-            maxForegroundMad: 0.3,
+            // The pinned solid-colour skybox this scene reaches is not
+            // drawn natively (TODO); its ground carries the dither.
+            maxFullMad: 0.22,
+            maxForegroundMad: 0.21,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: {
@@ -605,8 +607,8 @@ const sceneInputs: readonly SceneInput[] = [
                 "artifacts/parity/regression-instanced-ground-native.png",
             outputDirectory:
                 "artifacts/parity/regression-instanced-ground",
-            maxFullMad: 0.2,
-            maxForegroundMad: 0.15,
+            maxFullMad: 0.1,
+            maxForegroundMad: 0.06,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },
@@ -630,8 +632,8 @@ const sceneInputs: readonly SceneInput[] = [
                 "artifacts/parity/regression-morph-ground-native.png",
             outputDirectory:
                 "artifacts/parity/regression-morph-ground",
-            maxFullMad: 0.2,
-            maxForegroundMad: 0.25,
+            maxFullMad: 0.05,
+            maxForegroundMad: 0.07,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: {
