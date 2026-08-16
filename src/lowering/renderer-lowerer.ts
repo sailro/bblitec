@@ -26,6 +26,7 @@ import {
     diagnosticIdFragmentWgsl,
     fogFactorWgsl,
     imageProcessingFragmentWgsl,
+    imageProcessingMultisampledFragmentWgsl,
 } from "../shader-builtins-utility.js";
 import {
     backgroundGroundFragmentWgsl,
@@ -3678,6 +3679,11 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
                     output:
                         "upstream/shaders/image-processing.frag.native.wgsl",
                     data: imageProcessingFragmentWgsl(),
+                },
+                {
+                    output:
+                        "upstream/shaders/image-processing-ms.frag.native.wgsl",
+                    data: imageProcessingMultisampledFragmentWgsl(),
                 },
             );
         }

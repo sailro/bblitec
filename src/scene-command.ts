@@ -651,6 +651,16 @@ async function runSceneBuild(
         generator,
     ];
     configureArguments.push(`-DBBLITE_BACKEND=${backend}`);
+    // An SDL3 install to use instead of the toolchain's. Forwarded like
+    // BBLITE_BACKEND so a whole-matrix run can be pointed at one build,
+    // and included in the cache comparison below so switching it always
+    // reconfigures rather than silently keeping the previous SDL3.
+    const sdlDirectory = process.env.BBLITE_SDL_DIR;
+    if (sdlDirectory) {
+        configureArguments.push(
+            `-DBBLITE_SDL_DIR=${resolve(sdlDirectory)}`,
+        );
+    }
     if (ninja) {
         configureArguments.push(
             `-DCMAKE_MAKE_PROGRAM=${ninja.ninja}`,

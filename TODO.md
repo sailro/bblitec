@@ -317,20 +317,25 @@ comparison, and the empirical guards. What is left:
 ## P1 — Runtime and validation
 
 - [ ] Match pinned per-sample image processing on the multisampled
-  transmission target **on the SDL_GPU backend**: upstream's
-  `image-processing-task.ts` applies exposure/tonemap/gamma per MSAA
-  sample and then averages, while SDL_GPU cannot bind a multisampled
-  texture for sampling, so its pass processes the resolved pixel once.
-  The Dawn backend now runs the pinned per-sample pass verbatim (scene
-  33 foreground 1.457 → 0.123), so this entry tracks only the SDL_GPU
-  side of the keep-both-backends direction; it requires SDL_GPU
-  multisampled-texture sampling (vendored patch) or an equivalent
-  custom per-sample resolve. The gap is now measured rather than
-  argued: running both backends single-sampled collapses scene 33's
-  backend delta from 0.058/1.365 to 0.000/0.002, so this pass is the
-  whole of it. Scene 253 is a second scene behind it: it transmits, and its
-  backends split at MAD 0.044 once the alpha defect that dominated both was
-  removed.
+  transmission target **on the SDL_GPU backend**, once SDL ships
+  [libsdl-org/SDL#15838](https://github.com/libsdl-org/SDL/pull/15838).
+  Upstream's `image-processing-task.ts` applies exposure/tonemap/gamma per
+  MSAA sample and then averages; SDL_GPU refuses a multisample texture
+  carrying any read usage, so its pass processes the resolved pixel once.
+  That PR — the SDL_GPU maintainer's own, still a draft — relaxes the rule
+  to `COMPUTE_STORAGE_WRITE` only and gives D3D12 a `TEXTURE2DMS`
+  shader-resource view.
+
+  The port itself is written and measured on the `claude/sdl-multisample-read`
+  branch: `tools/build-sdl-multisample.ps1` builds the pinned SDL version with
+  the patch applied, `BBLITE_SDL_DIR` points a build at it, the multisampled
+  colour target takes `GRAPHICS_STORAGE_READ`, and the pinned per-sample
+  fragment binds through `SDL_BindGPUFragmentStorageTextures` (a `Texture2DMS`
+  is `Load()`-ed and carries no sampler). Every transmission scene's SDL_GPU
+  column converges on Dawn's — scene 33 foreground 1.457 → 0.125 against
+  Dawn's 0.123, scene 253 0.681 → 0.030, scene 212 0.181 → 0.029 — with no
+  other cell moving. What remains here is only the SDL version bump; the
+  branch cannot merge before it because a stock SDL asserts on the texture.
 - [ ] Draw the pinned solid-colour skybox. `load-env.ts` pushes
   `buildSolidSkyboxRenderable` — a cube shaded from the primary and clear
   colours, with `WGSL_DITHER` prefixed unconditionally — for any scene that
