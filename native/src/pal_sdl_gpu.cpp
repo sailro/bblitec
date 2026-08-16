@@ -338,6 +338,7 @@ struct GpuState {
     SDL_GPUGraphicsPipeline* blit_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* blit_msaa_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* image_processing_pipeline = nullptr;
+    bool per_sample_image_processing = false;
     std::array<SDL_GPUGraphicsPipeline*, 2> depth_only_pipelines{};
     std::array<SDL_GPUGraphicsPipeline*, 2>
         depth_only_double_sided_pipelines{};
@@ -890,7 +891,13 @@ void create_msaa_color(
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
     info.format = format;
-    info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    // GRAPHICS_STORAGE_READ is what lets the final pass process each
+    // sample instead of the resolved pixel. Stock SDL rejects a
+    // multisample texture carrying any read usage; libsdl-org/SDL#15838
+    // relaxes that to COMPUTE_STORAGE_WRITE only and gives D3D12 a
+    // TEXTURE2DMS shader-resource view.
+    info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+        SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ;
     info.width = width;
     info.height = height;
     info.layer_count_or_depth = 1;
@@ -2089,15 +2096,33 @@ bool run_gpu_engine(Engine& engine) {
                       0,
                       "mainVertex")
                 : nullptr;
+        // The pinned image-processing task samples the multisampled
+        // attachment and averages after `ip()`. That needs a texture SDL
+        // refuses to create with a read usage until libsdl-org/SDL#15838
+        // lands, so the single-sample fragment stays as the fallback for
+        // BBLITE_MSAA=1 and for a build against stock SDL.
+        const bool per_sample_image_processing =
+            transmission_enabled &&
+            state.sample_count != SDL_GPU_SAMPLECOUNT_1;
         SDL_GPUShader* image_processing_fragment_shader =
             transmission_enabled
-                ? load_shader(
-                      state.device,
-                      "image-processing.frag",
-                      SDL_GPU_SHADERSTAGE_FRAGMENT,
-                      1,
-                      1,
-                      "mainFragment")
+                ? (per_sample_image_processing
+                       ? load_shader(
+                             state.device,
+                             "image-processing-ms.frag",
+                             SDL_GPU_SHADERSTAGE_FRAGMENT,
+                             0,
+                             1,
+                             "mainFragment",
+                             0,
+                             1)
+                       : load_shader(
+                             state.device,
+                             "image-processing.frag",
+                             SDL_GPU_SHADERSTAGE_FRAGMENT,
+                             1,
+                             1,
+                             "mainFragment"))
                 : nullptr;
         const upstream::RenderFeatures render_features =
             upstream::build_render_features(scene, engine);
@@ -2402,6 +2427,8 @@ bool run_gpu_engine(Engine& engine) {
             image_processing_info.target_info.color_target_descriptions =
                 &image_processing_target;
             image_processing_info.target_info.num_color_targets = 1;
+            state.per_sample_image_processing =
+                per_sample_image_processing;
             state.image_processing_pipeline =
                 SDL_CreateGPUGraphicsPipeline(
                     state.device,
@@ -5745,15 +5772,26 @@ bool run_gpu_engine(Engine& engine) {
                     0,
                     &image_processing,
                     sizeof(image_processing));
-                const SDL_GPUTextureSamplerBinding source_binding{
-                    state.color,
-                    state.background_sampler,
-                };
-                SDL_BindGPUFragmentSamplers(
-                    image_processing_pass,
-                    0,
-                    &source_binding,
-                    1);
+                if (state.per_sample_image_processing) {
+                    // A Texture2DMS is Load()-ed and carries no sampler,
+                    // so it binds as a storage texture rather than as a
+                    // sampler pair.
+                    SDL_BindGPUFragmentStorageTextures(
+                        image_processing_pass,
+                        0,
+                        &state.msaa_color,
+                        1);
+                } else {
+                    const SDL_GPUTextureSamplerBinding source_binding{
+                        state.color,
+                        state.background_sampler,
+                    };
+                    SDL_BindGPUFragmentSamplers(
+                        image_processing_pass,
+                        0,
+                        &source_binding,
+                        1);
+                }
                 SDL_DrawGPUPrimitives(
                     image_processing_pass,
                     3,

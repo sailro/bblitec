@@ -316,21 +316,17 @@ comparison, and the empirical guards. What is left:
 
 ## P1 — Runtime and validation
 
-- [ ] Match pinned per-sample image processing on the multisampled
-  transmission target **on the SDL_GPU backend**: upstream's
-  `image-processing-task.ts` applies exposure/tonemap/gamma per MSAA
-  sample and then averages, while SDL_GPU cannot bind a multisampled
-  texture for sampling, so its pass processes the resolved pixel once.
-  The Dawn backend now runs the pinned per-sample pass verbatim (scene
-  33 foreground 1.457 → 0.123), so this entry tracks only the SDL_GPU
-  side of the keep-both-backends direction; it requires SDL_GPU
-  multisampled-texture sampling (vendored patch) or an equivalent
-  custom per-sample resolve. The gap is now measured rather than
-  argued: running both backends single-sampled collapses scene 33's
-  backend delta from 0.058/1.365 to 0.000/0.002, so this pass is the
-  whole of it. Scene 253 is a second scene behind it: it transmits, and its
-  backends split at MAD 0.044 once the alpha defect that dominated both was
-  removed.
+- [ ] Drop the vendored SDL patch once upstream ships it.
+  `native/vcpkg-overlay-ports/sdl3` is the registry's own port at the
+  manifest's `builtin-baseline` with
+  [libsdl-org/SDL#15838](https://github.com/libsdl-org/SDL/pull/15838)
+  appended to its `PATCHES` list, selected by
+  `native/vcpkg-configuration.json`. Without it SDL refuses a multisample
+  texture carrying a read usage, and the SDL_GPU backend cannot run the
+  pinned per-sample image-processing pass. **3.6.0 is the release to watch**;
+  when it carries the patch, move `builtin-baseline` to a registry commit
+  containing it and delete both paths. Nothing else changes — the renderer
+  side is in place and measured.
 - [ ] Draw the pinned solid-colour skybox. `load-env.ts` pushes
   `buildSolidSkyboxRenderable` — a cube shaded from the primary and clear
   colours, with `WGSL_DITHER` prefixed unconditionally — for any scene that

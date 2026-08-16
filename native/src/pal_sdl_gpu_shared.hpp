@@ -166,7 +166,11 @@ inline SDL_GPUShader* load_shader(
     std::uint32_t samplers,
     std::uint32_t uniform_buffers,
     const char* entrypoint_override = nullptr,
-    std::uint32_t storage_buffers = 0) {
+    std::uint32_t storage_buffers = 0,
+    // A texture read without a sampler. SDL packs these after the
+    // sampler pairs in the same register space, which is why the count
+    // belongs to the shader rather than to the bind call.
+    std::uint32_t storage_textures = 0) {
     const SDL_GPUShaderFormat supported = SDL_GetGPUShaderFormats(device);
     SDL_GPUShaderFormat format = SDL_GPU_SHADERFORMAT_INVALID;
     const char* extension = nullptr;
@@ -207,6 +211,7 @@ inline SDL_GPUShader* load_shader(
     info.num_samplers = samplers;
     info.num_uniform_buffers = uniform_buffers;
     info.num_storage_buffers = storage_buffers;
+    info.num_storage_textures = storage_textures;
     SDL_GPUShader* shader = SDL_CreateGPUShader(device, &info);
     if (!shader) gpu_error("SDL_CreateGPUShader");
     return shader;

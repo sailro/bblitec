@@ -1,0 +1,32 @@
+diff --git a/src/gpu/SDL_gpu.c b/src/gpu/SDL_gpu.c
+index 01e1eb5e9cfa7..f186848b0c51a 100644
+--- a/src/gpu/SDL_gpu.c
++++ b/src/gpu/SDL_gpu.c
+@@ -1287,11 +1287,8 @@ SDL_GPUTexture *SDL_CreateGPUTexture(
+             failed = true;
+         }
+         if (createinfo->sample_count > SDL_GPU_SAMPLECOUNT_1 &&
+-            (createinfo->usage & (SDL_GPU_TEXTUREUSAGE_SAMPLER |
+-                                  SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ |
+-                                  SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ |
+-                                  SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE))) {
+-            SDL_assert_release(!"For multisample textures: usage cannot contain SAMPLER or STORAGE flags");
++            (createinfo->usage & SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE)) {
++            SDL_assert_release(!"For multisample textures: usage cannot contain COMPUTE_STORAGE_WRITE flag");
+             failed = true;
+         }
+         if (IsDepthFormat(createinfo->format) && (createinfo->usage & ~(SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER))) {
+diff --git a/src/gpu/d3d12/SDL_gpu_d3d12.c b/src/gpu/d3d12/SDL_gpu_d3d12.c
+index e7fefa3e815c7..eef73a17955a8 100644
+--- a/src/gpu/d3d12/SDL_gpu_d3d12.c
++++ b/src/gpu/d3d12/SDL_gpu_d3d12.c
+@@ -3585,6 +3585,9 @@ static D3D12Texture *D3D12_INTERNAL_CreateTexture(
+             srvDesc.Texture3D.MipLevels = createinfo->num_levels;
+             srvDesc.Texture3D.MostDetailedMip = 0;
+             srvDesc.Texture3D.ResourceMinLODClamp = 0; // default behavior
++        } else if (createinfo->sample_count > SDL_GPU_SAMPLECOUNT_1) {
++            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
++            srvDesc.Texture2DMS.UnusedField_NothingToDefine = 0;
+         } else {
+             srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+             srvDesc.Texture2D.MipLevels = createinfo->num_levels;

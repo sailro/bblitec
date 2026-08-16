@@ -47,11 +47,9 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
 `;
 }
 
-export function imageProcessingFragmentWgsl(): string {
-    return `@group(2) @binding(0) var sourceTexture: texture_2d<f32>;
-@group(2) @binding(1) var sourceSampler: sampler;
-
-struct ImageProcessingUniforms {
+/** The pinned `ip()` — exposure, optional Reinhard tonemap, gamma, contrast. */
+function imageProcessingFunctionWgsl(): string {
+    return `struct ImageProcessingUniforms {
     parameters: vec4<f32>,
 }
 @group(3) @binding(0) var<uniform> uniforms: ImageProcessingUniforms;
@@ -61,14 +59,7 @@ struct FragmentInput {
     @location(0) uv: vec2<f32>,
 };
 
-@fragment
-fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
-    let source = textureSampleLevel(
-        sourceTexture,
-        sourceSampler,
-        input.uv,
-        0.0,
-    );
+fn imageProcess(source: vec4<f32>) -> vec4<f32> {
     var color = source.rgb * uniforms.parameters.x;
     if (uniforms.parameters.z > 0.5) {
         color = vec3<f32>(1.0) - exp2(-1.590579 * color);
@@ -90,6 +81,56 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
         );
     }
     return vec4<f32>(max(color, vec3<f32>(0.0)), source.a);
+}
+`;
+}
+
+export function imageProcessingFragmentWgsl(): string {
+    return `@group(2) @binding(0) var sourceTexture: texture_2d<f32>;
+@group(2) @binding(1) var sourceSampler: sampler;
+
+${imageProcessingFunctionWgsl()}
+@fragment
+fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
+    return imageProcess(textureSampleLevel(
+        sourceTexture,
+        sourceSampler,
+        input.uv,
+        0.0,
+    ));
+}
+`;
+}
+
+/**
+ * The pinned `image-processing-task.ts` shape: `ip()` per MSAA sample,
+ * averaged after the loop rather than before it. Because tone mapping and
+ * gamma are concave, processing the resolved pixel once is brighter than
+ * this exactly on raster edges.
+ *
+ * The source is bound as a fragment *storage* texture, not a sampler pair:
+ * a `Texture2DMS` is `Load()`-ed and has no sampler, so SDL_GPU takes it
+ * through `SDL_BindGPUFragmentStorageTextures`.
+ */
+export function imageProcessingMultisampledFragmentWgsl(): string {
+    return `@group(2) @binding(0) var sourceTexture: texture_multisampled_2d<f32>;
+
+${imageProcessingFunctionWgsl()}
+@fragment
+fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
+    let bounds = vec2<i32>(textureDimensions(sourceTexture)) - vec2<i32>(1);
+    let coordinate = clamp(
+        vec2<i32>(input.position.xy),
+        vec2<i32>(0),
+        bounds,
+    );
+    let sampleCount = i32(textureNumSamples(sourceTexture));
+    var accumulated = vec4<f32>(0.0);
+    for (var index = 0; index < sampleCount; index = index + 1) {
+        accumulated = accumulated +
+            imageProcess(textureLoad(sourceTexture, coordinate, index));
+    }
+    return accumulated / f32(sampleCount);
 }
 `;
 }
