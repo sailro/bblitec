@@ -177,9 +177,9 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene33.ts",
         title: "Babylon Lite Native - Punctual Lights",
         parity: {
-            maxFullMad: 0.08,
-            maxForegroundMad: 1.7,
-            dawnThresholds: { maxFullMad: 0.02, maxForegroundMad: 0.2 },
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.14,
+            dawnThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.13 },
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },
@@ -256,9 +256,9 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene212.ts",
         title: "Babylon Lite Native - Dispersion Test",
         parity: {
-            maxFullMad: 0.25,
-            maxForegroundMad: 0.28,
-            dawnThresholds: { maxFullMad: 0.05, maxForegroundMad: 0.05 },
+            maxFullMad: 0.03,
+            maxForegroundMad: 0.035,
+            dawnThresholds: { maxFullMad: 0.025, maxForegroundMad: 0.03 },
             backgroundColor: [255, 255, 255],
             backgroundThreshold: 30,
         },
@@ -689,9 +689,9 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene176.ts",
         title: "Babylon Lite Native - Mosquito In Amber",
         parity: {
-            maxFullMad: 0.12,
-            maxForegroundMad: 0.12,
-            dawnThresholds: { maxFullMad: 0.06, maxForegroundMad: 0.06 },
+            maxFullMad: 0.05,
+            maxForegroundMad: 0.05,
+            dawnThresholds: { maxFullMad: 0.045, maxForegroundMad: 0.045 },
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             attribution: {
@@ -955,9 +955,9 @@ const sceneInputs: readonly SceneInput[] = [
             // SDL_GPU carries the transmission scene's per-sample
             // image-processing gap (the same one scene 33 measures), so it
             // gates looser than Dawn, which runs the pinned pass.
-            maxFullMad: 0.17,
-            maxForegroundMad: 0.21,
-            dawnThresholds: { maxFullMad: 0.05, maxForegroundMad: 0.07 },
+            maxFullMad: 0.055,
+            maxForegroundMad: 0.07,
+            dawnThresholds: { maxFullMad: 0.05, maxForegroundMad: 0.065 },
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },
@@ -1084,13 +1084,13 @@ const sceneInputs: readonly SceneInput[] = [
             // 2*PI*(1 - t/4). They rotate in opposite directions, so a single
             // shared material transform cannot produce this frame.
             referenceTimeSeconds: 1.0,
-            maxFullMad: 0.01,
-            maxForegroundMad: 0.06,
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.02,
             // The SDL_GPU column carries the recorded per-sample image
             // processing gap on a multisampled transmission target, which is
             // why its residual sits on the dome's edges; Dawn runs the pinned
             // per-sample pass and lands within one channel step everywhere.
-            dawnThresholds: { maxFullMad: 0.002, maxForegroundMad: 0.02 },
+            dawnThresholds: { maxFullMad: 0.002, maxForegroundMad: 0.015 },
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: {
@@ -1135,9 +1135,9 @@ const sceneInputs: readonly SceneInput[] = [
             // resolved pixel once where the pin processes each sample — and
             // this scene transmits, so the SDL_GPU threshold stays looser
             // than Dawn's for that reason rather than for a defect.
-            maxFullMad: 0.06,
-            maxForegroundMad: 0.8,
-            dawnThresholds: { maxFullMad: 0.005, maxForegroundMad: 0.05 },
+            maxFullMad: 0.005,
+            maxForegroundMad: 0.04,
+            dawnThresholds: { maxFullMad: 0.005, maxForegroundMad: 0.035 },
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: {
