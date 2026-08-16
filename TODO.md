@@ -243,12 +243,35 @@ comparison, and the empirical guards. What is left:
   The mechanism is available and proved: `src/shader/shader-composer.ts` is a
   pure function over a `ShaderTemplate` and a `ShaderFragment[]` with no device
   and no browser globals, the pinned package ships it as an ES module, and
-  `src/pinned-shader-composer.ts` executes it under test — composing the
-  clearcoat permutation emits the pin's own `getR0RemappedForClearCoat`, the
-  helper the renderer otherwise hand-writes. `createPbrComposer` in
-  `material/pbr/pbr-compose.ts` is the pin's own material-to-shader entry
+  `src/pinned-shader-composer.ts` executes it under test. `createPbrComposer`
+  in `material/pbr/pbr-compose.ts` is the pin's own material-to-shader entry
   point, taking `(features, features2, meshFeatures, sceneFeatures, lightMode,
   singleLightType, ...)` over the `pbr-flag-bits.ts` bits.
+
+  **Two of the three pieces are done.**
+
+  *The formulas come from the pin.* The clearcoat, sheen and iridescence
+  helpers are no longer transcribed: `pinnedShaderHelpers()` composes real
+  variants and lifts the declarations out verbatim, so the emitted fragment
+  calls `visibility_Kelemen`, `iri_eval` and
+  `normalDistributionFunction_CharlieSheen` under the pin's own names and a
+  renamed or removed helper is a build failure. There is deliberately no
+  transcribed fallback.
+
+  *The composer is driven correctly.* `pinnedMaterialInputFromGltf` maps a
+  glTF material to the shape `_computePbrMaterialFeatures` reads, and 30 of
+  the 31 materials across the six instrumented-capture scenes now compose
+  **byte-identically** to the fragment the browser recorded — scenes 37, 39,
+  244 and 253 at 100%. The one exception is Scene 21's cloth, whose sheen
+  comes from `setPbrSheen` in scene code, not from its asset.
+
+  *What remains is the variant model itself* — the third piece, below.
+
+  Meanwhile `src/pinned-material-arms.ts` turns the failure mode into a build
+  error: generation composes every glTF material and refuses to emit a
+  fragment missing an arm one of them reaches, naming the material. That does
+  not make the fragment per-material, but it stops a missed arm from shipping
+  silently while it is not.
 
   What makes it structural is the shape on each side. Babylon composes **one
   fragment per material feature set**: the instrumented capture of Scene 253
@@ -262,11 +285,28 @@ comparison, and the empirical guards. What is left:
   re-derived, and why a missed arm reads as a small systematic shading bias
   rather than as a failure.
 
-  So the work is: adopt per-material shader variants, then let the composer
-  produce each one. The native side already carries the machinery — scene-local
-  WGSL variants are a measured gate (Scenes 159/161/163) and
-  `RenderPipelineKind` already keys pipelines — so the missing piece is
-  variant selection per material rather than per scene.
+  So the remaining work is: adopt per-material shader variants, then let the
+  composer produce each one. `pal_dawn.cpp` and `pal_sdl_gpu.cpp` hold a
+  single `geometry.pbr_fragment` per scene, so this needs a fragment per
+  variant, a variant recorded per renderable, and — the part with real cost —
+  the pin's **per-variant material UBO** in place of the monolithic
+  `PbrUniforms`, since each variant declares only the fields its own
+  extensions contribute, in registration order. `composePinnedPbrVariant`
+  already returns that layout as `materialUboSpec`.
+
+  Two inputs the composer needs that the asset cannot supply, both found by
+  measurement rather than reasoning:
+
+  - **The light mode is a scene property, not an asset one.** Scene 39's glTF
+    declares two `KHR_lights_punctual` lights and *none* of its captured
+    fragments composes a light path at all; it only matches at `lightMode 0`.
+    Deriving it from the asset is wrong.
+  - **Scene-code materials are a second input.** Scene 21's cloth material
+    declares no glTF extensions whatsoever and its captured fragment carries
+    `sheenParams`, because the scene calls `setPbrSheen`. Reaching it needs
+    the scene's own lowered material calls — `compileSheenOptions` in
+    `src/compiler/intrinsics/material.ts` already resolves those values at
+    compile time, so the input exists; it is not yet carried to the composer.
 
   Two contracts found while probing, both worth keeping: the environment bit is
   read from `sceneFeatures`, not `features` (`_hasIbl = hasScene(PBR_HAS_ENV)`),
@@ -275,6 +315,17 @@ comparison, and the empirical guards. What is left:
   driving the composer faithfully means reproducing that registration, which is
   the same "an enable\* entry point installs a factory" shape Scene 267 already
   documented.
+
+  A third, learned the expensive way: **the loader is the specification, not
+  the glTF format.** Every rule re-derived from what the format "means" was
+  wrong, and each one composed a plausible variant missing an arm. A declared
+  extension is enabled even with no factor (`isEnabled: true` unconditionally);
+  a `KHR_texture_transform: {}` patches nothing so composes no transform; a
+  `baseColorFactor` with no image behind it is baked into the texel and
+  declares no UBO field; `ior !== 1.5` alone turns the reflectance layer on;
+  and an animated pointer can change a material's *shape* — an animated
+  occlusion strength registers the reflectance extension, which then takes
+  occlusion over entirely.
 
 ### Packed native assets
 
@@ -628,7 +679,30 @@ runtime gaps may remain hidden behind it.
   Sponza's 16 parented and 29 geometry-less nodes are all bones and camera
   targets carrying no geometry, so gated Scene 9 already draws all 32 of its
   visible meshes. Reached by the ungated Scene 143.
-- [ ] Close Scene 253's **transparency** sphere. The scene is a measured gate
+- [x] **CLOSED.** Scene 253's **transparency** sphere. `whiteFallback` in
+  `loader-gltf/animation-pointer-basecolor.ts` is the predicate this entry
+  asked for: a base colour factor that is *animated*, on a material with *no
+  base colour image*, bakes a fully white `[1,1,1,1]` texel and keeps the real
+  factor — alpha included — in the uniform for the pointer writer. Our loader
+  baked the factor into the texel *and* left its alpha in the uniform, so the
+  0.502 authored alpha multiplied the 0.648 animated one to 0.326 against the
+  browser's 0.648. That ratio, 0.5019, is the 0.5052 the images measured.
+  Ported as a `collect_animated_base_color` pre-pass — a pre-pass upstream too,
+  and for the same reason: materials are built before animations are read.
+
+  Dawn **0.086/1.328 → 0.002/0.030**, SDL_GPU **0.128/1.936 → 0.047/0.681**;
+  thresholds tightened to 0.06/0.8 and 0.005/0.05.
+
+  It leaves one thing behind, which is a new entry rather than a residue of
+  this one: the backends agreed to one channel step while the alpha defect
+  dominated both, and now disagree at MAD 0.044. Scene 253 transmits, and
+  SDL_GPU's transmission pass processes the resolved pixel once where the pin
+  processes each MSAA sample — the same gap Scene 33 measures — so the SDL_GPU
+  side of that entry now has a second scene behind it.
+
+  The original diagnosis, kept because the method is reusable:
+
+  The scene is a measured gate
   but its region figure carries a defect rather than a floor: 0.128/1.936 on
   SDL_GPU and 0.086/1.328 on Dawn, and both backends agree with each other to
   one channel step, which places the cause CPU-side.
@@ -677,19 +751,16 @@ runtime gaps may remain hidden behind it.
   reverts only `.r/.g/.b` to one, leaving `.a` in the uniform for the pointer
   writer to overwrite.
 
-  What is left is which arm the pin takes, because it cannot be taking ours:
-  `uploadBaseColorFactorTexture` does bake alpha (`Math.round(clamp(f[3]) *
-  255)`), so the bake itself matches, but baking leaves the uniform at its
-  defaults — and the browser's uniform for this material carries the animated
-  `(1, 1, 1, 0.647995174)`, and no 1x1 texel in the capture carries alpha 128.
-  So an animated base-colour factor evidently does not reach the factor-texture
-  path at all upstream. Find that predicate in the pinned glTF material setup
-  and gate our bake on it. Note the ORM branch immediately above ours documents
-  the *opposite* resolution for its own factors — the pointer drives the
-  uniform and the texel keeps the authored value — so the two factors do not
-  share an answer and the base-colour one has to be read rather than assumed.
-  Materials 2 and 11 animate the same pointer with non-unit RGB, so they are
-  the second and third test cases.
+  The answer — `uploadBaseColorFactorTexture` does bake alpha
+  (`Math.round(clamp(f[3]) * 255)`), so the bake itself matched, but the
+  capture carried no 1x1 texel with alpha 128, which said the animated factor
+  was not reaching that path at all. It reaches a *different* one:
+  `whiteFallback` swaps the factor for `[1,1,1,1]` before the bake and returns
+  the real one to be carried as a uniform field. Note the ORM branch
+  immediately above ours documents the *opposite* resolution for its own
+  factors — the pointer drives the uniform and the texel keeps the authored
+  value — so the two factors did not share an answer, which is exactly why
+  this had to be read rather than assumed.
   Eliminated by measurement, so do not retry: every material uniform (read
   back with `scene -- uniforms scene253 --size 48 --module 21`), the
   refraction parameters, the horizon-occlusion term the reference itself

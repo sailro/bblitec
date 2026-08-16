@@ -1119,14 +1119,23 @@ const sceneInputs: readonly SceneInput[] = [
             // animates at once: node transforms, light colour and cone, and
             // the material factors and extensions.
             referenceTimeSeconds: 1.0,
-            // The region threshold still accommodates a KNOWN DEFECT rather
-            // than a floor: the iridescence sphere — the only material whose
-            // metallic factor is animated — retains a structured interior
-            // difference after its roughness was corrected. Tighten this as
-            // that closes; it is not evidence of a raster floor.
-            maxFullMad: 0.15,
-            maxForegroundMad: 2.0,
-            dawnThresholds: { maxFullMad: 0.1, maxForegroundMad: 1.4 },
+            // The Transparency sphere's double-applied alpha is closed — an
+            // animated base colour factor with no base colour image bakes a
+            // white texel upstream, not the factor — which took Dawn from
+            // 0.086/1.328 to 0.002/0.030 and SDL_GPU from 0.128/1.936 to
+            // 0.047/0.681.
+            //
+            // What that uncovers is a backend split this scene did not show
+            // before: the two backends agreed to one channel step while the
+            // alpha defect dominated both, and now disagree at MAD 0.044.
+            // Scene 33 documents the same shape — SDL_GPU cannot sample a
+            // multisampled texture, so its transmission pass processes the
+            // resolved pixel once where the pin processes each sample — and
+            // this scene transmits, so the SDL_GPU threshold stays looser
+            // than Dawn's for that reason rather than for a defect.
+            maxFullMad: 0.06,
+            maxForegroundMad: 0.8,
+            dawnThresholds: { maxFullMad: 0.005, maxForegroundMad: 0.05 },
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: {
