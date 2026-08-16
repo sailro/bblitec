@@ -495,6 +495,10 @@ export function compileMaterialIntrinsic(
                 call.arguments[1]!,
             );
             context.reachFeature("material:clearcoat");
+            // `useF0Remap` is not a reached option, so a scene-code coat
+            // always takes the pin's default: the remap is composed. Only
+            // `gltf-ext-clearcoat.ts` turns it off.
+            context.reachFeature("material:clearcoat-f0-remap");
             return {
                 kind: "void",
                 cpp:

@@ -861,6 +861,48 @@ test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", ()
         clearcoat,
         /select\(\(bblLayeredColor \+ \(bblExtraDiffuse \+ bblExtraSpecular\)\), v_31/,
     );
+    // A glTF coat takes createClearcoatFragment's PBR2_CC_F0_REMAP_OFF arm,
+    // so the base F0 reaches the base layer unchanged.
+    assert.doesNotMatch(clearcoat, /bblClearcoatRemappedF0/);
+    assert.match(
+        clearcoat,
+        /let v_75 = mix\(vec3<f32>\(v_51, v_51, v_51\), v_31, vec3<f32>\(v_36, v_36, v_36\)\);/,
+    );
+
+    // A scene-code coat keeps the pin's default and composes makeF0Remap,
+    // which rewrites colorF0 before the base layer shades.
+    const clearcoatRemapped = fragmentOf(
+        new RendererLowerer(new LoweringContext()).lowerShaders({
+            ...options,
+            transmission: false,
+            clearcoat: true,
+            clearcoatF0Remap: true,
+        }),
+    );
+    assert.match(clearcoatRemapped, /fn bblClearcoatRemappedF0\(/);
+    assert.match(
+        clearcoatRemapped,
+        /let num = ccA \+ ccB \* sf0;/,
+    );
+    assert.match(
+        clearcoatRemapped,
+        /let bblBaseColorF0 = mix\(vec3<f32>\(v_51, v_51, v_51\), v_31, vec3<f32>\(v_36, v_36, v_36\)\);/,
+    );
+    assert.match(
+        clearcoatRemapped,
+        /FragmentUniforms\.clearcoatRefractionParams\.z,\s*\r?\n\s*FragmentUniforms\.clearcoatRefractionParams\.w\),/,
+    );
+    assert.throws(
+        () =>
+            new RendererLowerer(new LoweringContext()).lowerShaders({
+                ...options,
+                transmission: false,
+                clearcoat: true,
+                clearcoatF0Remap: true,
+                iridescence: true,
+            }),
+        /Iridescence composed with a clearcoat F0 remap is not lowered\./,
+    );
 
     // The glTF arm of createSheenFragment: hasAlbedoScaling scales the base
     // layer, keeps the tint texture linear, and multiplies the environment

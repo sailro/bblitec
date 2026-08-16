@@ -1171,14 +1171,8 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene19.ts",
         title: "Babylon Lite Native - PBR Clearcoat",
         parity: {
-            maxFullMad: 0.11,
-            // The region figure is the clearcoat layer alone, and it is a
-            // one-step rounding bias rather than a floor: every pixel of the
-            // sphere is within one channel step and the difference is always
-            // in the same direction. The environment underneath is exact —
-            // the same scene with the coat removed measures 0.000 with 99.98%
-            // of its pixels byte-identical.
-            maxForegroundMad: 0.45,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
             backgroundColor: [0, 0, 0],
             backgroundThreshold: 30,
         },

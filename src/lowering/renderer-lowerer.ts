@@ -376,6 +376,7 @@ export class RendererLowerer {
         clearcoat?: boolean;
         sheen?: boolean;
         sheenAlbedoScaling?: boolean;
+        clearcoatF0Remap?: boolean;
         iridescence?: boolean;
         dispersion?: boolean;
         nodeVisibility?: boolean;
@@ -2639,6 +2640,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         clearcoat?: boolean;
         sheen?: boolean;
         sheenAlbedoScaling?: boolean;
+        clearcoatF0Remap?: boolean;
         iridescence?: boolean;
         dispersion?: boolean;
         occlusionUv2?: boolean;
@@ -3412,6 +3414,8 @@ ${directMarker}`,
             sheen: options.sheen === true,
             sheenAlbedoScaling:
                 options.sheenAlbedoScaling === true,
+            clearcoatF0Remap:
+                options.clearcoatF0Remap === true,
             iridescence: options.iridescence === true,
             dispersion: options.dispersion === true,
             occlusionUv2: options.occlusionUv2 === true,
@@ -3834,6 +3838,9 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
         const transmissionFrameGraph = this.context.store.getSource(
             transmissionFrameGraphModule,
         );
+        const clearcoatLoader = this.context.store.getSource(
+            clearcoatLoaderModule,
+        );
         if (!rgbd.includes("select(g.y,d.y-1u-g.y,f)")) {
             throw new Error("Pinned Babylon Lite RGBD vertical flip semantics changed.");
         }
@@ -3870,6 +3877,21 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
                 clearcoatFragment,
                 "let ccConservation_ibl = 1.0 - ccFresnelIBL * ccInt_ibl;",
                 "clearcoat energy conservation",
+            ],
+            [
+                clearcoatFragment,
+                "colorF0 = mix(colorF0, remappedF0, ccInt_r);",
+                "clearcoat base F0 remap",
+            ],
+            [
+                clearcoatFragment,
+                "return saturate((num / den) * (num / den));",
+                "clearcoat F0 remap interface term",
+            ],
+            [
+                clearcoatLoader,
+                "useF0Remap: false",
+                "glTF clearcoat F0 remap opt-out",
             ],
             [
                 sheenFragment,

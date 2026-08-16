@@ -233,6 +233,7 @@ export type Feature =
     | "material:clearcoat"
     | "material:sheen"
     | "material:sheen-albedo-scaling"
+    | "material:clearcoat-f0-remap"
     | "material:no-color-view"
     | "material:grid"
     | "material:shader"

@@ -13,6 +13,15 @@ export interface MaterialExtensionOptions {
      * by `1 - dielectricF0` instead.
      */
     sheenAlbedoScaling: boolean;
+    /**
+     * Whether the coat rewrites the base F0 before the base layer shades.
+     * `createClearcoatFragment` composes `makeF0Remap` unless its
+     * `PBR2_CC_F0_REMAP_OFF` bit is set, and the only thing that sets it is
+     * `gltf-ext-clearcoat.ts` passing `useF0Remap: false` — so a glTF coat
+     * reflects off the base's own F0 and a `setPbrClearCoat` coat reflects
+     * off the remapped one. Scene 28 gates the first, Scene 19 the second.
+     */
+    clearcoatF0Remap: boolean;
     iridescence: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
@@ -139,7 +148,8 @@ function uniformFields(options: MaterialExtensionOptions): string {
     return fields.length > 0 ? `${fields.join("\n")}\n` : "";
 }
 
-const clearcoatHelpers = `fn bblVisibilityKelemen(VdotH_kl : f32) -> f32 {
+function clearcoatHelpers(f0Remap: boolean): string {
+    return `fn bblVisibilityKelemen(VdotH_kl : f32) -> f32 {
   return 0.25f / (VdotH_kl * VdotH_kl + 0.0000001f);
 }
 
@@ -148,7 +158,44 @@ fn bblClearcoatSchlick(f0 : f32, cosTheta : f32) -> f32 {
   let t2 = t * t;
   return f0 + (1.0f - f0) * (t2 * t2 * t);
 }
-`;
+${f0Remap
+        ? `
+fn bblClearcoatRemappedF0(
+  f0_rc : vec3<f32>,
+  ccA : f32,
+  ccB : f32,
+) -> vec3<f32> {
+  let sf0 = sqrt(f0_rc);
+  let num = ccA + ccB * sf0;
+  let den = ccB + ccA * sf0;
+  return clamp((num / den) * (num / den), vec3<f32>(0.0f), vec3<f32>(1.0f));
+}
+`
+        : ""}`;
+}
+
+/**
+ * The pinned `makeF0Remap` slot, which runs before the base layer shades:
+ * a coat over a base changes the interface the base reflects off, so
+ * `createClearcoatFragment` rewrites the base F0 through
+ * `getR0RemappedForClearCoat` and mixes by the coat intensity.
+ * `gltf-ext-clearcoat.ts` is the one caller that turns it off
+ * (`useF0Remap: false`), which is why a glTF coat and a `setPbrClearCoat`
+ * coat compose different fragments.
+ */
+const clearcoatF0RemapReplacement =
+    "  let bblBaseColorF0 = mix(vec3<f32>(v_51, v_51, v_51), v_31, " +
+    "vec3<f32>(v_36, v_36, v_36));\n" +
+    "  let bblCcRemapIntensity = FragmentUniforms.clearcoatParams.x *\n" +
+    "    textureSample(clearcoatTexture, clearcoatSampler, v_4).r;\n" +
+    "  let v_75 = mix(\n" +
+    "    bblBaseColorF0,\n" +
+    "    bblClearcoatRemappedF0(\n" +
+    "      bblBaseColorF0,\n" +
+    "      FragmentUniforms.clearcoatRefractionParams.z,\n" +
+    "      FragmentUniforms.clearcoatRefractionParams.w),\n" +
+    "    vec3<f32>(bblCcRemapIntensity));\n" +
+    "  let v_76 = (vec3<f32>(1.0f) - v_75);";
 
 const sheenHelpers =
     `fn bblCharlieSheenDistribution(NdotH_sh : f32, alphaG_sh : f32) -> f32 {
@@ -298,7 +345,9 @@ const environmentRotationHelper =
 
 function moduleHelpers(options: MaterialExtensionOptions): string {
     const helpers: string[] = [];
-    if (options.clearcoat) helpers.push(clearcoatHelpers);
+    if (options.clearcoat) {
+        helpers.push(clearcoatHelpers(options.clearcoatF0Remap));
+    }
     if (options.sheen) helpers.push(sheenHelpers);
     if (options.iridescence) helpers.push(iridescenceHelpers);
     if (
@@ -696,12 +745,28 @@ export function applyMaterialExtensionWgsl(
             "module helpers",
         );
     }
+    if (options.iridescence && options.clearcoatF0Remap) {
+        // Both rewrite the base F0 lines, and the pin composes them into one
+        // fragment through separate slots rather than one after the other, so
+        // stacking the two text rewrites would not be the pinned arithmetic.
+        throw new Error(
+            "Iridescence composed with a clearcoat F0 remap is not lowered.",
+        );
+    }
     if (options.iridescence) {
         result = replaceOnce(
             result,
             baseFresnelMarker,
             iridescenceFresnel(),
             "base Fresnel reflectance",
+        );
+    }
+    if (options.clearcoatF0Remap) {
+        result = replaceOnce(
+            result,
+            baseFresnelMarker,
+            clearcoatF0RemapReplacement,
+            "clearcoat base F0 remap",
         );
     }
     if (options.clearcoat || options.sheen) {
