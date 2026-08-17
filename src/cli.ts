@@ -33,6 +33,7 @@ import {
     composeGltfMaterials,
     composeRenderableVariants,
     composeScenePbrVariants,
+    gltfMaterialCount,
     type PinnedRenderableVariant,
 } from "./pinned-material-arms.js";
 import {
@@ -562,33 +563,44 @@ async function main(): Promise<void> {
         toneMapping: hasEnvironment ? [false, true] : [false],
         environment: hasEnvironment,
     });
+    // The runtime keys the variant table by material handle, which is
+    // creation order: each glTF load appends its materials, and a scene
+    // material appends where its `createPbrMaterial` runs. Every reached
+    // scene creates its materials after every load, so the sequence is the
+    // assets' materials in load order followed by the scene's; a material
+    // created before a later load would interleave, and stays a named error.
     const composedVariants: PinnedRenderableVariant[] = [];
-    for (const asset of result.manifest.assets) {
-        if (asset.kind !== "gltf") continue;
+    const gltfAssets = result.manifest.assets.filter(
+        (asset) => asset.kind === "gltf",
+    );
+    let materialIndexBase = 0;
+    for (const asset of gltfAssets) {
         const path = resolve(outputPath, "assets", asset.output);
         const composed = await composeGltfMaterials(path);
         assertArmsCovered(composed, emittedArms, asset.output);
-        composedVariants.push(
-            ...(await composeRenderableVariants(path, sceneArms)),
+        const variants = await composeRenderableVariants(
+            path,
+            sceneArms,
+            materialIndexBase,
         );
+        composedVariants.push(...variants);
+        materialIndexBase += gltfMaterialCount(path);
     }
-    // The scene's own `createPbrMaterial(...)` calls, composed from the
-    // recorded option values. The runtime keys the variant table by material
-    // handle, which is creation order; a scene mixing asset materials with
-    // scene-code ones would interleave the two sequences, so that combination
-    // stays a named generation error until a scene reaches it.
     if (result.manifest.scenePbrMaterials.length > 0) {
-        if (composedVariants.length > 0) {
-            throw new Error(
-                "Scene-code PBR materials beside glTF PBR materials would " +
-                    "interleave the variant table's creation-order key; no " +
-                    "scene reaches this yet.",
-            );
+        for (const material of result.manifest.scenePbrMaterials) {
+            if (material.gltfAssetsBefore !== gltfAssets.length) {
+                throw new Error(
+                    "A scene-code PBR material created before a later glTF " +
+                        "load would interleave the variant table's " +
+                        "creation-order key; no scene reaches this yet.",
+                );
+            }
         }
         composedVariants.push(
             ...(await composeScenePbrVariants(
                 result.manifest.scenePbrMaterials,
                 sceneArms,
+                materialIndexBase,
             )),
         );
     }

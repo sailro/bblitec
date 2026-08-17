@@ -354,6 +354,7 @@ export interface PinnedRenderableVariant {
 export async function composeRenderableVariants(
     path: string,
     arms: readonly PinnedSceneArm[],
+    materialIndexBase = 0,
 ): Promise<readonly PinnedRenderableVariant[]> {
     const document = glbDocument(path);
     if (!document?.materials?.length || arms.length === 0) return [];
@@ -393,7 +394,7 @@ export async function composeRenderableVariants(
                     uv2Mask: subject.uv2Mask,
                 });
                 variants.push({
-                    materialIndex: subject.index,
+                    materialIndex: materialIndexBase + subject.index,
                     materialName: subject.name,
                     meshFeatures,
                     lightMode: arm.lightMode,
@@ -424,9 +425,15 @@ export async function composeRenderableVariants(
  * scene-code material never sees, which is why this does not share the glTF
  * input builder.
  */
+/** The number of materials a glTF document declares; the creation-order key. */
+export function gltfMaterialCount(path: string): number {
+    return glbDocument(path)?.materials?.length ?? 0;
+}
+
 export async function composeScenePbrVariants(
     materials: readonly ScenePbrMaterialManifest[],
     arms: readonly PinnedSceneArm[],
+    materialIndexBase = 0,
 ): Promise<readonly PinnedRenderableVariant[]> {
     if (materials.length === 0 || arms.length === 0) return [];
     // The procedural mesh builders emit position, normal and uv, so the mesh
@@ -458,8 +465,8 @@ export async function composeScenePbrVariants(
                 meshFeatures,
             });
             variants.push({
-                materialIndex: index,
-                materialName: `scene-material-${index}`,
+                materialIndex: materialIndexBase + index,
+                materialName: `scene-material-${materialIndexBase + index}`,
                 meshFeatures,
                 lightMode: arm.lightMode,
                 singleLightType: arm.singleLightType,

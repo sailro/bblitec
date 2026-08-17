@@ -2168,6 +2168,9 @@ class Compiler
         // above compiles from a static literal, which is why parsing the C++
         // text back is exact.
         this.scenePbrMaterials.push({
+            gltfAssetsBefore: [...this.assets.values()].filter(
+                (asset) => asset.kind === "gltf",
+            ).length,
             hasBaseColorTexture: true,
             hasOrmTexture: true,
             metallicFactor: Number.parseFloat(metallicCpp),

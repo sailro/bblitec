@@ -31,6 +31,14 @@ export interface CompileManifest {
  * every option to a static value.
  */
 export interface ScenePbrMaterialManifest {
+    /**
+     * How many glTF assets the program had loaded when this material was
+     * created. The runtime keys the variant table by material handle, which
+     * is creation order, so a scene material created after every load simply
+     * appends to the assets' materials; one created before a load would
+     * interleave, which no reached scene does.
+     */
+    gltfAssetsBefore: number;
     hasBaseColorTexture: boolean;
     hasOrmTexture: boolean;
     metallicFactor: number;

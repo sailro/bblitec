@@ -5895,33 +5895,28 @@ bool run_dawn_engine(Engine& engine) {
                                 draw_mesh.material_uniforms);
                         }
                     } else {
-                        const upstream::PbrUniforms fragment =
-                            upstream::build_pbr_uniforms(
-                                scene,
-                                engine,
-                                camera,
-                                draw.item);
-                        wgpuQueueWriteBuffer(
-                            state.queue,
-                            state.meshes[draw.item_index]
-                                .material_uniforms,
-                            0,
-                            &fragment,
-                            sizeof(fragment));
 #if BBLITE_PBR_VARIANTS > 0
-                        // The pin's own per-draw blocks for the variant this
-                        // draw composes. Written beside the transcribed block
-                        // rather than instead of it while the draw path can
-                        // still fall back: a draw whose variant does not
-                        // resolve keeps the block it has always had.
+                        // The pin's own per-draw blocks. The transcribed
+                        // block is retired: a PBR draw that resolves no
+                        // variant is an error naming the mesh, matching the
+                        // SDL_GPU backend.
                         const std::size_t variant =
                             pinned_variant_for_draw(
                                 scene,
                                 engine,
                                 draw);
                         if (
-                            variant !=
+                            variant ==
                             std::numeric_limits<std::size_t>::max()) {
+                            dawn_error(
+                                ("PBR draw for mesh " +
+                                 std::to_string(draw.item.mesh.value) +
+                                 ", material " +
+                                 std::to_string(draw.item.material.value) +
+                                 " resolves no pinned variant.")
+                                    .c_str());
+                        }
+                        {
                             DawnMesh& variant_mesh =
                                 state.meshes[draw.item_index];
                             write_pinned_bone_texture(
@@ -5984,6 +5979,10 @@ bool run_dawn_engine(Engine& engine) {
                                 material_block.data(),
                                 material_bytes);
                         }
+#else
+                        dawn_error(
+                            "PBR draw in a build with no composed variant "
+                            "table; the transcribed fragment is retired.");
 #endif
                     }
                 }
