@@ -1293,6 +1293,13 @@ ${options.gpuInstancing
     const MeshRecord& mesh);
 `
     : ""}\
+// src/render/lights-ubo.ts affectsMesh: a light applies to the meshes its
+// includedOnlyMeshesIds names, or to every mesh its excludedMeshesIds does
+// not. One definition, because both the Standard slot writer and the pinned
+// per-draw mesh block need the same per-mesh light set.
+bool light_affects_mesh(
+    const LightRecord& light,
+    std::uint32_t mesh_index);
 PbrUniforms build_pbr_uniforms(
     const Scene& scene,
     const Engine& engine,
@@ -2034,6 +2041,22 @@ std::array<float, 16> build_instance_parent_world(
 
 `
     : ""}\
+// src/render/lights-ubo.ts affectsMesh.
+bool light_affects_mesh(
+    const LightRecord& light,
+    std::uint32_t mesh_index) {
+    if (light.included_meshes.empty()) {
+        return std::find(
+                   light.excluded_meshes.begin(),
+                   light.excluded_meshes.end(),
+                   mesh_index) == light.excluded_meshes.end();
+    }
+    return std::find(
+               light.included_meshes.begin(),
+               light.included_meshes.end(),
+               mesh_index) != light.included_meshes.end();
+}
+
 PbrUniforms build_pbr_uniforms(
     const Scene& scene,
     const Engine& engine,
@@ -2341,16 +2364,7 @@ ${options.standardLightLists ? `    // A light can name the meshes it applies to
     for (const LightHandle handle : scene.lights) {
         if (handle.value >= engine.lights.size()) continue;
         const LightRecord& light = engine.lights[handle.value];
-        const bool applies = light.included_meshes.empty()
-            ? std::find(
-                  light.excluded_meshes.begin(),
-                  light.excluded_meshes.end(),
-                  item.mesh.value) == light.excluded_meshes.end()
-            : std::find(
-                  light.included_meshes.begin(),
-                  light.included_meshes.end(),
-                  item.mesh.value) != light.included_meshes.end();
-        if (!applies) continue;
+        if (!light_affects_mesh(light, item.mesh.value)) continue;
         switch (light_slot) {
             case 0:
                 write_light(

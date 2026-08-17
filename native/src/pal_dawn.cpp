@@ -1815,6 +1815,37 @@ void ensure_pinned_frame_buffers(DawnState& state) {
 // Every value is placed by generated code: `write_<kind>_light` is each light's
 // own `_writeLightUbo`, and the scene block's members are the ones the pin's
 // declaration names. Only the plumbing is here.
+// The pin's per-draw mesh block.
+//
+// `writeMeshLightSelection` decides its shape: the world matrix, the count of
+// lights affecting this mesh, then their indices. Which lights those are comes
+// from the generated `light_affects_mesh`, lowered from the pin's own
+// `affectsMesh`, so this walks exactly the set the Standard slot writer walks.
+upstream::MeshUniforms pinned_mesh_block(
+    const Scene& scene,
+    const Engine& engine,
+    const std::array<float, 16>& world,
+    std::uint32_t mesh_index) {
+    upstream::MeshUniforms block{};
+    block.world = world;
+    std::uint32_t count = 0;
+    std::uint32_t light_index = 0;
+    for (const LightHandle handle : scene.lights) {
+        if (light_index >= upstream::pinned_max_lights) break;
+        if (handle.value >= engine.lights.size()) continue;
+        if (
+            upstream::light_affects_mesh(
+                engine.lights[handle.value],
+                mesh_index)) {
+            block.li[count / 4][count % 4] = light_index;
+            ++count;
+        }
+        ++light_index;
+    }
+    block.lc = count;
+    return block;
+}
+
 void write_pinned_frame_blocks(
     DawnState& state,
     const Scene& scene,
