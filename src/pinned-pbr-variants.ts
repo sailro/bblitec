@@ -325,12 +325,20 @@ export async function composePinnedPbrVariant(
     options: PinnedComposeOptions = {},
 ): Promise<PinnedPbrVariant> {
     const { features, features2 } = await pinnedMaterialFeatures(material);
-    const [compose, templateExt] = await Promise.all([
+    const [compose, templateExt, flatNormal] = await Promise.all([
         importPinnedModule<{
             createPbrComposer: (deps: Record<string, unknown>) => PinnedComposeFn;
         }>("material/pbr/pbr-compose.js"),
         importPinnedModule<{ createPbrTemplateExt: unknown }>(
             "material/pbr/pbr-template-ext.js",
+        ),
+        // The pin imports this only when a primitive lacks normals; passing it
+        // unconditionally is identical because insertion is governed by the
+        // `MSH_FLAT_NORMAL` mesh bit, the way `_fogHelper` is governed by the
+        // fog bit. Scene 255's captured fragment carried these lines while the
+        // empty string here composed the smooth-normal arm against them.
+        importPinnedModule<{ FLAT_NORMAL_WGSL: string }>(
+            "material/pbr/fragments/flat-normal-wgsl.js",
         ),
     ]);
     const composer = compose.createPbrComposer({
@@ -345,7 +353,7 @@ export async function composePinnedPbrVariant(
         _fogHelper: "",
         _fogBlock: "",
         _createPbrTemplateExt: templateExt.createPbrTemplateExt,
-        _flatNormalWgsl: "",
+        _flatNormalWgsl: flatNormal.FLAT_NORMAL_WGSL,
         _createPbrShadowFragment: null,
         _shadowLights: [],
         _createThinInstanceFragment: null,
