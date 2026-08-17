@@ -375,7 +375,12 @@ interface VariantBinding {
     binding: number;
     /** The pin's own name for it -- baseColorTexture, iblSampler, ... */
     name: string;
-    kind: "texture2d" | "texture2dLoad" | "textureCube" | "sampler";
+    kind:
+        | "texture2d"
+        | "texture2dLoad"
+        | "textureCube"
+        | "sampler"
+        | "storageBuffer";
     /** Which stages declare it; group 1 is shared by both. */
     vertex: boolean;
     fragment: boolean;
@@ -400,19 +405,24 @@ function variantBindings(
     fragmentWgsl: string,
 ): readonly VariantBinding[] {
     const pattern =
-        /@group\(1\)\s*@binding\((\d+)\)\s*var\s+([A-Za-z0-9_]+)\s*:\s*([A-Za-z0-9_<>]+)/g;
+        /@group\(1\)\s*@binding\((\d+)\)\s*var(?:<([^>]*)>)?\s*([A-Za-z0-9_]+)\s*:\s*([A-Za-z0-9_<>]+)/g;
     const byBinding = new Map<number, VariantBinding>();
     for (const [text, isVertex] of [
         [vertexWgsl, true],
         [fragmentWgsl, false],
     ] as const) {
         for (const match of text.matchAll(pattern)) {
-            const type = match[3]!;
-            const name = match[2]!;
+            const addressSpace = match[2] ?? "";
+            const type = match[4]!;
+            const name = match[3]!;
             const sampled = new RegExp(
                 `textureSample[A-Za-z]*\\(\\s*${name}\\b`,
             ).test(text);
-            const kind = type.startsWith("texture_cube")
+            // The morph arms read their deltas and weights through read-only
+            // storage buffers in the vertex stage.
+            const kind = addressSpace.startsWith("storage")
+                ? "storageBuffer"
+                : type.startsWith("texture_cube")
                 ? "textureCube"
                 : type.startsWith("texture_")
                 ? (sampled ? "texture2d" : "texture2dLoad")
@@ -1219,6 +1229,8 @@ enum class PbrBindingKind {
     texture2dLoad,
     textureCube,
     sampler,
+    // A read-only storage buffer; the morph arms' deltas and weights.
+    storageBuffer,
 };
 
 struct PbrVariantBinding {

@@ -131,6 +131,9 @@ struct DawnMesh {
     // pin's own vertex stage comes out negated unless the conversion is undone.
     WGPUBuffer pinned_vertices = nullptr;
     WGPUTexture pinned_bone_texture = nullptr;
+    // Whether this frame's pinned draw reads the mirrored buffer: skinned
+    // draws and palette-world animated meshes both do.
+    bool pinned_mirrored_vertices = false;
     WGPUTextureView pinned_bone_view = nullptr;
     std::uint32_t pinned_bone_count = 0;
 #endif
@@ -1854,6 +1857,11 @@ WGPUBindGroupLayout pinned_draw_layout_for(
         }
         if (binding.kind == upstream::PbrBindingKind::sampler) {
             layout_entry.sampler.type = WGPUSamplerBindingType_Filtering;
+        } else if (
+            binding.kind == upstream::PbrBindingKind::storageBuffer) {
+            // The morph arms' deltas and weights.
+            layout_entry.buffer.type =
+                WGPUBufferBindingType_ReadOnlyStorage;
         } else {
             // An rgba32float texture read with textureLoad cannot be bound as
             // filterable; the pin's bone palette is exactly that.
@@ -2155,10 +2163,32 @@ void ensure_pinned_draw_bindings(
     for (std::size_t index = 0; index < entry.binding_count; ++index) {
         const upstream::PbrVariantBinding& binding =
             upstream::pbr_variant_bindings[entry.first_binding + index];
-        const PinnedResource resource =
-            pinned_resource_for(state, mesh, binding.name);
         WGPUBindGroupEntry group_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         group_entry.binding = binding.binding;
+        if (binding.kind == upstream::PbrBindingKind::storageBuffer) {
+            // The morph arms' storage, by the pin's own names. These are the
+            // same buffers the transcribed stage read: the upload loop
+            // maintains the deltas and the {count, vertexCount}-headed
+            // weights in the pin's own layout.
+#if BBLITE_GPU_MORPH_STORAGE
+            if (binding.name == "morphDeltas") {
+                group_entry.buffer = mesh.morph_deltas;
+            } else if (binding.name == "morph") {
+                group_entry.buffer = mesh.morph_weights;
+            }
+#endif
+            if (!group_entry.buffer) {
+                dawn_error(
+                    ("pinned variant declares an unmapped storage buffer '" +
+                     std::string(binding.name) + "'.")
+                        .c_str());
+            }
+            group_entry.size = WGPU_WHOLE_SIZE;
+            entries.push_back(group_entry);
+            continue;
+        }
+        const PinnedResource resource =
+            pinned_resource_for(state, mesh, binding.name);
         if (binding.kind == upstream::PbrBindingKind::sampler) {
             group_entry.sampler = resource.sampler;
         } else {
@@ -5927,10 +5957,16 @@ bool run_dawn_engine(Engine& engine) {
                         {
                             DawnMesh& variant_mesh =
                                 state.meshes[draw.item_index];
-                            write_pinned_bone_texture(
-                                state,
-                                variant_mesh,
-                                engine.meshes[draw.item.mesh.value]);
+                            const MeshRecord& variant_record =
+                                engine.meshes[draw.item.mesh.value];
+                            const bool skeleton_draw =
+                                pinned_variant_skeleton(variant);
+                            if (skeleton_draw) {
+                                write_pinned_bone_texture(
+                                    state,
+                                    variant_mesh,
+                                    variant_record);
+                            }
                             ensure_pinned_draw_bindings(
                                 state,
                                 variant_mesh,
@@ -5944,9 +5980,15 @@ bool run_dawn_engine(Engine& engine) {
                             // mirror world on top double-applies it, which the
                             // captured mesh blocks (world = bare mirror,
                             // palette translation 1.66 vs the browser's 0)
-                            // localised.
-                            const bool skinned_draw =
-                                variant_mesh.pinned_bone_view != nullptr;
+                            // localised. An animated no-skin mesh rides the
+                            // same convention with one matrix: its palette
+                            // entry is `M * world * M`, passed as the pin's
+                            // finalWorld against the mirrored buffer.
+                            const bool world_from_palette =
+                                !skeleton_draw &&
+                                !variant_record.bone_matrices.empty();
+                            variant_mesh.pinned_mirrored_vertices =
+                                skeleton_draw || world_from_palette;
                             const upstream::MeshUniforms mesh_block =
                                 pinned_mesh_block(
                                     scene,
@@ -5959,9 +6001,11 @@ bool run_dawn_engine(Engine& engine) {
                                     // whole of the pin's `finalWorld` — and
                                     // it is what the browser's own block for
                                     // Scene 7 holds: diag(-1, 1, 1, 1).
-                                    skinned_draw
+                                    skeleton_draw
                                         ? pinned_identity_world()
-                                        : pinned_mesh_world(),
+                                        : world_from_palette
+                                            ? variant_record.bone_matrices[0]
+                                            : pinned_mesh_world(),
                                     draw.item.mesh.value);
                             wgpuQueueWriteBuffer(
                                 state.queue,
@@ -6230,10 +6274,11 @@ bool run_dawn_engine(Engine& engine) {
                     wgpuRenderPassEncoderSetVertexBuffer(
                         list_pass,
                         0,
-                        // Skinned draws read the mirrored buffer; the palette
-                        // carries the mirror on both sides, so unmirrored
-                        // vertices would apply it three times.
-                        mesh.pinned_bone_view
+                        // Skinned and palette-world draws read the mirrored
+                        // buffer; the palette carries the mirror on both
+                        // sides, so unmirrored vertices would apply it three
+                        // times.
+                        mesh.pinned_mirrored_vertices
                             ? mesh.vertices
                             : mesh.pinned_vertices,
                         0,

@@ -613,6 +613,12 @@ inline upstream::MeshUniforms pinned_mesh_block(
  * property of the scene and the variant, not of the API binding them, so a
  * second copy could only drift.
  */
+/** Whether a variant's vertex stage samples the bone palette. */
+inline bool pinned_variant_skeleton(std::size_t variant) {
+    return upstream::pbr_variants[variant].key.find("skeleton") !=
+        std::string_view::npos;
+}
+
 inline bool pinned_variant_supported(std::size_t variant) {
     const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
     std::string_view key = entry.key;
@@ -745,13 +751,13 @@ inline std::size_t pinned_variant_for_draw(
         !pinned_variant_supported(variant)) {
         return std::numeric_limits<std::size_t>::max();
     }
-    // A mesh with bones needs a variant that samples the palette, and a
-    // skeleton variant needs the palette to exist; either half without the
-    // other loses the deformation.
-    const bool skeleton_variant =
-        upstream::pbr_variants[variant].key.find("skeleton") !=
-        std::string_view::npos;
-    if (has_bones != skeleton_variant) {
+    // A skeleton variant needs the palette to exist or the deformation is
+    // lost. The reverse -- a palette on a non-skeleton variant -- is the
+    // animated no-skin mesh, whose single palette entry is the mesh's own
+    // world; the draw passes it as the pin's finalWorld against the mirrored
+    // buffer, the same convention the skinned draw measured.
+    const bool skeleton_variant = pinned_variant_skeleton(variant);
+    if (skeleton_variant && !has_bones) {
         return std::numeric_limits<std::size_t>::max();
     }
     return variant;

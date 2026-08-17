@@ -4500,9 +4500,12 @@ bool run_gpu_engine(Engine& engine) {
                         if (draw.item.mesh.value >= engine.meshes.size()) {
                             continue;
                         }
+                        const std::size_t palette_variant =
+                            pinned_variant_for_draw(scene, engine, draw);
                         if (
-                            pinned_variant_for_draw(scene, engine, draw) ==
-                            std::numeric_limits<std::size_t>::max()) {
+                            palette_variant ==
+                                std::numeric_limits<std::size_t>::max() ||
+                            !pinned_variant_skeleton(palette_variant)) {
                             continue;
                         }
                         write_pinned_bone_texture(
@@ -5930,9 +5933,19 @@ bool run_gpu_engine(Engine& engine) {
                         // browser's own `M * jointWorld * IBM * v_unmirrored`,
                         // and adding the mirror world on top double-applies
                         // it -- the finding the Dawn backend's captured mesh
-                        // blocks localised.
-                        const bool skinned_draw =
-                            mesh.pinned_bone_texture != nullptr;
+                        // blocks localised. An animated no-skin mesh rides
+                        // the same convention with one matrix: its palette
+                        // entry is `M * world * M`, passed as the pin's
+                        // finalWorld against the mirrored buffer.
+                        const MeshRecord& pinned_record =
+                            engine.meshes[item.mesh.value];
+                        const bool skeleton_draw =
+                            pinned_variant_skeleton(pinned_variant);
+                        const bool world_from_palette =
+                            !skeleton_draw &&
+                            !pinned_record.bone_matrices.empty();
+                        const bool mirrored_vertices =
+                            skeleton_draw || world_from_palette;
                         const upstream::MeshUniforms pinned_mesh =
                             pinned_mesh_block(
                                 scene,
@@ -5941,9 +5954,11 @@ bool run_gpu_engine(Engine& engine) {
                                 // which the pinned vertex buffer no longer
                                 // carries; the node transform is already baked
                                 // into those vertices.
-                                skinned_draw
+                                skeleton_draw
                                     ? pinned_identity_world()
-                                    : pinned_mesh_world(),
+                                    : world_from_palette
+                                        ? pinned_record.bone_matrices[0]
+                                        : pinned_mesh_world(),
                                 item.mesh.value);
                         std::vector<std::uint8_t> pinned_material(
                             variant_entry.material_ubo_bytes,
@@ -6058,10 +6073,11 @@ bool run_gpu_engine(Engine& engine) {
                                 static_cast<Uint32>(vertex_textures.size()));
                         }
                         const SDL_GPUBufferBinding pinned_vertex_binding{
-                            // Skinned draws read the mirrored buffer; the
-                            // palette carries the mirror on both sides, so
-                            // unmirrored vertices would apply it three times.
-                            skinned_draw
+                            // Skinned and palette-world draws read the
+                            // mirrored buffer; the palette carries the mirror
+                            // on both sides, so unmirrored vertices would
+                            // apply it three times.
+                            mirrored_vertices
                                 ? mesh.vertices
                                 : mesh.pinned_vertices,
                             0,
