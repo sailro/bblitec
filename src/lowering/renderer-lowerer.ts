@@ -1285,6 +1285,11 @@ std::array<float, 16> build_view_projection(
     const CameraRecord& camera,
     double aspect,
     bool reverse_depth = false);
+// The pin's scene.view, from the camera's own world matrix. Declared because
+// the pinned PBR variants read it out of the scene block a PAL fills, where the
+// transcribed fragment never needed it.
+std::array<float, 16> build_view_matrix(
+    const std::array<float, 16>& camera_world);
 std::array<float, 16> build_skybox_view_projection(
     const CameraRecord& camera,
     double aspect);
@@ -1402,10 +1407,15 @@ Vec3 rotate_euler(Vec3 value, const Vec3& rotation) {
     };
 }
 
+} // namespace
+
 // src/camera/camera.ts getViewMatrix: the rotation is the transpose of
 // the world matrix's basis and the translation is that basis applied to
 // the negated eye, computed from the float32 world matrix in JavaScript
 // doubles and stored once into the float32 view cache.
+//
+// Outside the anonymous namespace because a PAL binding the pinned PBR
+// variants fills the pin's own scene block, which carries scene.view.
 std::array<float, 16> build_view_matrix(
     const std::array<float, 16>& world) {
     const double cx = static_cast<double>(world[12]);
@@ -1439,6 +1449,8 @@ std::array<float, 16> build_view_matrix(
     view[15] = 1.0f;
     return view;
 }
+
+namespace {
 
 // src/math/mat4-multiply-into.ts mat4MultiplyInto: the pinned writer
 // accumulates each term in double from two float32 matrices and stores

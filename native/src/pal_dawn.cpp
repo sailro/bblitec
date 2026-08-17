@@ -111,6 +111,22 @@ struct DawnMesh {
     std::uint32_t index_count = 0;
     WGPUBuffer material_uniforms = nullptr;
     std::uint64_t material_uniform_size = 0;
+#if BBLITE_PBR_VARIANTS > 0
+    // The pin's own per-draw blocks and the group-1 bind group for the variant
+    // this mesh composes. The material buffer is sized by that variant, which is
+    // what makes it carry only the fields its own extensions contribute.
+    WGPUBuffer pinned_mesh_uniforms = nullptr;
+    WGPUBuffer pinned_material_uniforms = nullptr;
+    WGPUBindGroup pinned_group = nullptr;
+    std::size_t pinned_variant = std::numeric_limits<std::size_t>::max();
+    // `create-skeleton.ts`: rgba32float, four texels per bone, one mat4 column
+    // each. The pin reads the palette with textureLoad rather than from a UBO,
+    // so a skinned variant needs the texture and not the DeformationUniforms
+    // array the transcribed stage takes.
+    WGPUTexture pinned_bone_texture = nullptr;
+    WGPUTextureView pinned_bone_view = nullptr;
+    std::uint32_t pinned_bone_count = 0;
+#endif
     std::array<WGPUTexture, mesh_texture_slots> owned_textures{};
     std::array<WGPUTextureView, mesh_texture_slots> owned_views{};
     std::array<WGPUTextureView, mesh_texture_slots> views{};
@@ -294,8 +310,17 @@ struct DawnState : DawnDevice {
     // the per-draw mesh and material blocks followed by the material's texture
     // pairs from binding 3. Kept beside the layouts above while the variant
     // path is brought up, so both can be measured against the same goldens.
-    std::array<WGPUBindGroupLayout, 2> pinned_group_layouts{};
-    WGPUPipelineLayout pinned_pipeline_layout = nullptr;
+    // Group 0 is shared by every variant; group 1 is not — the pin assigns its
+    // texture bindings densely per variant, so the same index names a different
+    // texture in two of them and each needs its own layout.
+    WGPUBindGroupLayout pinned_frame_layout = nullptr;
+    WGPUBindGroup pinned_frame_group = nullptr;
+    std::vector<WGPUBindGroupLayout> pinned_draw_layouts;
+    std::vector<WGPUPipelineLayout> pinned_pipeline_layouts;
+    std::vector<WGPUShaderModule> pinned_vertex_modules;
+    std::vector<WGPUShaderModule> pinned_fragment_modules;
+    std::map<std::uint32_t, std::map<std::size_t, WGPURenderPipeline>>
+        pinned_variant_pipelines;
     WGPUBuffer pinned_scene_uniforms = nullptr;
     WGPUBuffer pinned_lights_uniforms = nullptr;
 #endif
@@ -511,6 +536,26 @@ struct DawnState : DawnDevice {
                 if (binding.morph) wgpuBindGroupRelease(binding.morph);
 #endif
             }
+#if BBLITE_PBR_VARIANTS > 0
+            if (mesh.pinned_bone_view) {
+                wgpuTextureViewRelease(mesh.pinned_bone_view);
+            }
+            if (mesh.pinned_bone_texture) {
+                wgpuTextureRelease(mesh.pinned_bone_texture);
+            }
+            mesh.pinned_bone_view = nullptr;
+            mesh.pinned_bone_texture = nullptr;
+            if (mesh.pinned_group) wgpuBindGroupRelease(mesh.pinned_group);
+            if (mesh.pinned_mesh_uniforms) {
+                wgpuBufferRelease(mesh.pinned_mesh_uniforms);
+            }
+            if (mesh.pinned_material_uniforms) {
+                wgpuBufferRelease(mesh.pinned_material_uniforms);
+            }
+            mesh.pinned_group = nullptr;
+            mesh.pinned_mesh_uniforms = nullptr;
+            mesh.pinned_material_uniforms = nullptr;
+#endif
             if (mesh.material_uniforms) {
                 wgpuBufferRelease(mesh.material_uniforms);
             }
@@ -1714,80 +1759,135 @@ PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
 // itself, so the sizes here are those structs rather than numbers chosen at this
 // layer. Texture pairs start at binding 3 because the mesh and material blocks
 // take 0 and 1, which is the pin's numbering and not a convention of ours.
-WGPUPipelineLayout pinned_pipeline_layout_for(DawnState& state) {
-    if (state.pinned_pipeline_layout) return state.pinned_pipeline_layout;
-    // Group 0: the per-pass scene block, then the lights array.
-    {
-        std::array<WGPUBindGroupLayoutEntry, 2> entries{};
-        for (std::uint32_t binding = 0; binding < entries.size(); ++binding) {
-            entries[binding] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            entries[binding].binding = binding;
-            // The scene block is read by both stages; the pin's vertex template
-            // takes its viewProjection from the same struct the fragment reads.
-            entries[binding].visibility = binding == 0
-                ? WGPUShaderStage_Vertex | WGPUShaderStage_Fragment
-                : WGPUShaderStage_Fragment;
-            entries[binding].buffer.type = WGPUBufferBindingType_Uniform;
-        }
-        WGPUBindGroupLayoutDescriptor descriptor =
-            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        descriptor.entryCount = entries.size();
-        descriptor.entries = entries.data();
-        state.pinned_group_layouts[0] =
-            wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
+// Group 0: the per-pass scene block, then the lights array. One layout for
+// every variant, because the pin declares the same two bindings in all of them.
+WGPUBindGroupLayout pinned_frame_layout_for(DawnState& state) {
+    if (state.pinned_frame_layout) return state.pinned_frame_layout;
+    std::array<WGPUBindGroupLayoutEntry, 2> entries{};
+    for (std::uint32_t binding = 0; binding < entries.size(); ++binding) {
+        entries[binding] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        entries[binding].binding = binding;
+        // The scene block is read by both stages; the pin's vertex template
+        // takes its viewProjection from the same struct the fragment reads.
+        entries[binding].visibility = binding == 0
+            ? WGPUShaderStage_Vertex | WGPUShaderStage_Fragment
+            : WGPUShaderStage_Fragment;
+        entries[binding].buffer.type = WGPUBufferBindingType_Uniform;
     }
-    // Group 1: mesh block, material block, then this variant's texture pairs.
-    {
-        constexpr std::uint32_t first_texture_binding = 3;
-        constexpr std::size_t max_pairs = 8;
-        std::array<
-            WGPUBindGroupLayoutEntry,
-            2 + max_pairs * 2> entries{};
-        std::uint32_t count = 0;
-        const auto uniform = [&](std::uint32_t binding,
-                                 WGPUShaderStage visibility) {
-            entries[count] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            entries[count].binding = binding;
-            entries[count].visibility = visibility;
-            entries[count].buffer.type = WGPUBufferBindingType_Uniform;
-            ++count;
-        };
-        // `mesh.world` is read in the vertex stage and `mesh.li` in the
-        // fragment, so the mesh block is visible to both.
-        uniform(0, WGPUShaderStage_Vertex | WGPUShaderStage_Fragment);
-        uniform(1, WGPUShaderStage_Fragment);
-        for (std::uint32_t pair = 0; pair < max_pairs; ++pair) {
-            const std::uint32_t base = first_texture_binding + pair * 2;
-            entries[count] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            entries[count].binding = base;
-            entries[count].visibility = WGPUShaderStage_Fragment;
-            entries[count].texture.sampleType = WGPUTextureSampleType_Float;
-            entries[count].texture.viewDimension =
-                WGPUTextureViewDimension_2D;
-            ++count;
-            entries[count] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            entries[count].binding = base + 1;
-            entries[count].visibility = WGPUShaderStage_Fragment;
-            entries[count].sampler.type = WGPUSamplerBindingType_Filtering;
-            ++count;
-        }
-        WGPUBindGroupLayoutDescriptor descriptor =
-            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        descriptor.entryCount = count;
-        descriptor.entries = entries.data();
-        state.pinned_group_layouts[1] =
-            wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
+    WGPUBindGroupLayoutDescriptor descriptor =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    state.pinned_frame_layout =
+        wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
+    if (!state.pinned_frame_layout) {
+        dawn_error("pinned frame bind group layout creation failed.");
     }
+    return state.pinned_frame_layout;
+}
+
+/**
+ * Group 1 for one variant: the mesh block, the material block, then exactly the
+ * resources that variant's fragment declares.
+ *
+ * The bindings come from the generated table, which reads them off the composed
+ * fragment itself. Declaring a superset instead would force every variant to
+ * bind textures it never samples, and — because the indices are dense and
+ * per-variant — would bind them at the wrong slots.
+ */
+WGPUBindGroupLayout pinned_draw_layout_for(
+    DawnState& state,
+    std::size_t variant) {
+    if (state.pinned_draw_layouts.size() < upstream::pbr_variants.size()) {
+        state.pinned_draw_layouts.resize(
+            upstream::pbr_variants.size(),
+            nullptr);
+    }
+    if (state.pinned_draw_layouts[variant]) {
+        return state.pinned_draw_layouts[variant];
+    }
+    const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
+    std::vector<WGPUBindGroupLayoutEntry> entries;
+    entries.reserve(2 + entry.binding_count);
+    const auto uniform = [&](std::uint32_t binding,
+                             WGPUShaderStage visibility) {
+        WGPUBindGroupLayoutEntry layout_entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        layout_entry.binding = binding;
+        layout_entry.visibility = visibility;
+        layout_entry.buffer.type = WGPUBufferBindingType_Uniform;
+        entries.push_back(layout_entry);
+    };
+    // `mesh.world` is read in the vertex stage and `mesh.li` in the fragment,
+    // so the mesh block is visible to both.
+    uniform(0, WGPUShaderStage_Vertex | WGPUShaderStage_Fragment);
+    uniform(1, WGPUShaderStage_Fragment);
+    for (std::size_t index = 0; index < entry.binding_count; ++index) {
+        const upstream::PbrVariantBinding& binding =
+            upstream::pbr_variant_bindings[entry.first_binding + index];
+        WGPUBindGroupLayoutEntry layout_entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        layout_entry.binding = binding.binding;
+        // Group 1 is shared, so a binding declared only in the vertex stage --
+        // the bone palette is the one -- must not be visible to the fragment.
+        layout_entry.visibility = 0;
+        if (binding.vertex) layout_entry.visibility |= WGPUShaderStage_Vertex;
+        if (binding.fragment) {
+            layout_entry.visibility |= WGPUShaderStage_Fragment;
+        }
+        if (binding.kind == upstream::PbrBindingKind::sampler) {
+            layout_entry.sampler.type = WGPUSamplerBindingType_Filtering;
+        } else {
+            // An rgba32float texture read with textureLoad cannot be bound as
+            // filterable; the pin's bone palette is exactly that.
+            layout_entry.texture.sampleType =
+                binding.kind == upstream::PbrBindingKind::texture2dLoad
+                    ? WGPUTextureSampleType_UnfilterableFloat
+                    : WGPUTextureSampleType_Float;
+            layout_entry.texture.viewDimension =
+                binding.kind == upstream::PbrBindingKind::textureCube
+                    ? WGPUTextureViewDimension_Cube
+                    : WGPUTextureViewDimension_2D;
+        }
+        entries.push_back(layout_entry);
+    }
+    WGPUBindGroupLayoutDescriptor descriptor =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    state.pinned_draw_layouts[variant] =
+        wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
+    if (!state.pinned_draw_layouts[variant]) {
+        dawn_error("pinned variant draw bind group layout creation failed.");
+    }
+    return state.pinned_draw_layouts[variant];
+}
+
+WGPUPipelineLayout pinned_pipeline_layout_for(
+    DawnState& state,
+    std::size_t variant) {
+    if (state.pinned_pipeline_layouts.size() < upstream::pbr_variants.size()) {
+        state.pinned_pipeline_layouts.resize(
+            upstream::pbr_variants.size(),
+            nullptr);
+    }
+    if (state.pinned_pipeline_layouts[variant]) {
+        return state.pinned_pipeline_layouts[variant];
+    }
+    std::array<WGPUBindGroupLayout, 2> groups{
+        pinned_frame_layout_for(state),
+        pinned_draw_layout_for(state, variant),
+    };
     WGPUPipelineLayoutDescriptor descriptor =
         WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.bindGroupLayoutCount = state.pinned_group_layouts.size();
-    descriptor.bindGroupLayouts = state.pinned_group_layouts.data();
-    state.pinned_pipeline_layout =
+    descriptor.bindGroupLayoutCount = groups.size();
+    descriptor.bindGroupLayouts = groups.data();
+    state.pinned_pipeline_layouts[variant] =
         wgpuDeviceCreatePipelineLayout(state.device, &descriptor);
-    if (!state.pinned_pipeline_layout) {
+    if (!state.pinned_pipeline_layouts[variant]) {
         dawn_error("pinned variant pipeline layout creation failed.");
     }
-    return state.pinned_pipeline_layout;
+    return state.pinned_pipeline_layouts[variant];
 }
 
 // The per-pass scene and lights buffers, sized by the pin's own structs.
@@ -1808,6 +1908,256 @@ void ensure_pinned_frame_buffers(DawnState& state) {
     // what makes the entry stride the pin's rather than a guess.
     state.pinned_lights_uniforms = uniform_buffer(
         16 + upstream::pinned_max_lights * sizeof(upstream::LightEntry));
+}
+
+// Group 0, built once from the buffers the frame writer fills.
+WGPUBindGroup pinned_frame_group(DawnState& state) {
+    if (state.pinned_frame_group) return state.pinned_frame_group;
+    std::array<WGPUBindGroupEntry, 2> entries{};
+    entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+    entries[0].binding = 0;
+    entries[0].buffer = state.pinned_scene_uniforms;
+    entries[0].size = sizeof(upstream::SceneUniforms);
+    entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+    entries[1].binding = 1;
+    entries[1].buffer = state.pinned_lights_uniforms;
+    entries[1].size =
+        16 + upstream::pinned_max_lights * sizeof(upstream::LightEntry);
+    WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    descriptor.layout = pinned_frame_layout_for(state);
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    state.pinned_frame_group =
+        wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    if (!state.pinned_frame_group) {
+        dawn_error("pinned frame bind group creation failed.");
+    }
+    return state.pinned_frame_group;
+}
+
+/**
+ * Which of our resources the pin's own name for a binding refers to.
+ *
+ * The names are Babylon's, the slots are the PAL's, and this is where the two
+ * meet. A variant that declares a resource this does not know fails by name
+ * rather than drawing with whatever sat at that index.
+ */
+struct PinnedResource {
+    WGPUTextureView view = nullptr;
+    WGPUSampler sampler = nullptr;
+};
+
+PinnedResource pinned_resource_for(
+    DawnState& state,
+    const DawnMesh& mesh,
+    std::string_view name) {
+    const auto slot = [&](std::size_t index) {
+        return PinnedResource{mesh.views[index], mesh.samplers[index]};
+    };
+    if (name == "boneSampler") {
+        return PinnedResource{mesh.pinned_bone_view, nullptr};
+    }
+    // The material's own textures, in the slot order the loader fills.
+    if (name == "baseColorTexture" || name == "baseColorSampler") {
+        return slot(0);
+    }
+    if (name == "ormTexture" || name == "ormSampler") return slot(1);
+    if (name == "normalTexture" || name == "normalSampler_") return slot(2);
+    if (name == "emissiveTexture" || name == "emissiveSampler") {
+        return slot(3);
+    }
+    // Scene-wide resources.
+    if (name == "brdfLUT" || name == "brdfSampler_") {
+        return PinnedResource{state.brdf_view, state.clamp_sampler};
+    }
+    if (name == "iblTexture" || name == "iblSampler") {
+        return PinnedResource{
+            state.environment_cube_view,
+            state.default_sampler};
+    }
+#if BBLITE_RENDERER_TRANSMISSION
+    // The scene-colour grab the pin refracts through, and the material's own
+    // transmission and thickness maps.
+    if (name == "refractionTexture" || name == "refractionSampler_") {
+        return PinnedResource{
+            state.transmission_color_view
+                ? state.transmission_color_view
+                : mesh.views[0],
+            state.transmission_color_view
+                ? state.transmission_sampler
+                : mesh.samplers[0]};
+    }
+    if (name == "refractionMapTexture" || name == "refractionMapSampler") {
+        return slot(5);
+    }
+    if (name == "thicknessTexture_" || name == "thicknessSampler_") {
+        return slot(6);
+    }
+#endif
+    std::size_t extension_slot = material_extension_slot_base;
+#if BBLITE_MATERIAL_CLEARCOAT
+    if (name == "ccIntensityTexture" || name == "ccIntensitySampler_") {
+        return slot(extension_slot);
+    }
+    if (name == "ccRoughnessTexture" || name == "ccRoughnessSampler_") {
+        return slot(extension_slot + 1);
+    }
+    if (name == "ccNormalTexture" || name == "ccNormalSampler_") {
+        return slot(extension_slot + 2);
+    }
+    extension_slot += 3;
+#endif
+#if BBLITE_MATERIAL_SHEEN
+    if (name == "sheenTexture_" || name == "sheenSampler_") {
+        return slot(extension_slot);
+    }
+    if (name == "sheenRoughTexture_" || name == "sheenRoughSampler_") {
+        return slot(extension_slot + 1);
+    }
+    extension_slot += 2;
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+    if (name == "iridescenceTexture" || name == "iridescenceSampler_") {
+        return slot(extension_slot);
+    }
+    if (
+        name == "iridescenceThicknessTexture" ||
+        name == "iridescenceThicknessSampler_") {
+        return slot(extension_slot + 1);
+    }
+    extension_slot += 2;
+#endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+    if (name == "occlusionTexture" || name == "occlusionSampler_") {
+        return slot(extension_slot);
+    }
+    extension_slot += 1;
+#endif
+    (void)extension_slot;
+    dawn_error(
+        (std::string("pinned variant declares an unmapped resource '") +
+         std::string(name) + "'.")
+            .c_str());
+    return PinnedResource{};
+}
+
+/**
+ * The bone palette as the pin's own texture.
+ *
+ * `skeleton-updater.ts` writes `invMeshWorld * jointWorld * IBM` per bone into
+ * an rgba32float row, four texels each. Our MeshRecord::bone_matrices already
+ * holds that product -- the mesh world is conjugated into the palette, which is
+ * why the transcribed skin path needs no separate world matrix either -- so this
+ * uploads it unchanged.
+ */
+void write_pinned_bone_texture(
+    DawnState& state,
+    DawnMesh& mesh,
+    const MeshRecord& record) {
+    const std::uint32_t bones =
+        static_cast<std::uint32_t>(record.bone_matrices.size());
+    if (bones == 0) return;
+    if (mesh.pinned_bone_count != bones) {
+        if (mesh.pinned_bone_view) {
+            wgpuTextureViewRelease(mesh.pinned_bone_view);
+        }
+        if (mesh.pinned_bone_texture) {
+            wgpuTextureRelease(mesh.pinned_bone_texture);
+        }
+        WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+        descriptor.dimension = WGPUTextureDimension_2D;
+        descriptor.size = {bones * 4, 1, 1};
+        descriptor.format = WGPUTextureFormat_RGBA32Float;
+        descriptor.usage =
+            WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+        descriptor.mipLevelCount = 1;
+        descriptor.sampleCount = 1;
+        mesh.pinned_bone_texture =
+            wgpuDeviceCreateTexture(state.device, &descriptor);
+        if (!mesh.pinned_bone_texture) {
+            dawn_error("pinned bone texture creation failed.");
+        }
+        mesh.pinned_bone_view =
+            wgpuTextureCreateView(mesh.pinned_bone_texture, nullptr);
+        mesh.pinned_bone_count = bones;
+    }
+    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    destination.texture = mesh.pinned_bone_texture;
+    WGPUTexelCopyBufferLayout layout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
+    layout.bytesPerRow = bones * 4 * 16;
+    layout.rowsPerImage = 1;
+    WGPUExtent3D extent{bones * 4, 1, 1};
+    wgpuQueueWriteTexture(
+        state.queue,
+        &destination,
+        record.bone_matrices.data(),
+        record.bone_matrices.size() * sizeof(std::array<float, 16>),
+        &layout,
+        &extent);
+}
+
+/** The per-draw buffers and group-1 bind group for a mesh's own variant. */
+void ensure_pinned_draw_bindings(
+    DawnState& state,
+    DawnMesh& mesh,
+    std::size_t variant) {
+    if (mesh.pinned_group && mesh.pinned_variant == variant) return;
+    if (mesh.pinned_group) wgpuBindGroupRelease(mesh.pinned_group);
+    mesh.pinned_group = nullptr;
+    const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
+    const auto uniform_buffer = [&](std::size_t size) {
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.size = static_cast<std::uint64_t>(size);
+        descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        WGPUBuffer buffer = wgpuDeviceCreateBuffer(state.device, &descriptor);
+        if (!buffer) dawn_error("pinned draw buffer creation failed.");
+        return buffer;
+    };
+    if (!mesh.pinned_mesh_uniforms) {
+        mesh.pinned_mesh_uniforms =
+            uniform_buffer(sizeof(upstream::MeshUniforms));
+    }
+    // Sized by the variant, so a swap to one with more fields reallocates.
+    if (mesh.pinned_material_uniforms) {
+        wgpuBufferRelease(mesh.pinned_material_uniforms);
+    }
+    mesh.pinned_material_uniforms =
+        uniform_buffer(entry.material_ubo_bytes);
+    std::vector<WGPUBindGroupEntry> entries;
+    entries.reserve(2 + entry.binding_count);
+    WGPUBindGroupEntry mesh_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    mesh_entry.binding = 0;
+    mesh_entry.buffer = mesh.pinned_mesh_uniforms;
+    mesh_entry.size = sizeof(upstream::MeshUniforms);
+    entries.push_back(mesh_entry);
+    WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    material_entry.binding = 1;
+    material_entry.buffer = mesh.pinned_material_uniforms;
+    material_entry.size = entry.material_ubo_bytes;
+    entries.push_back(material_entry);
+    for (std::size_t index = 0; index < entry.binding_count; ++index) {
+        const upstream::PbrVariantBinding& binding =
+            upstream::pbr_variant_bindings[entry.first_binding + index];
+        const PinnedResource resource =
+            pinned_resource_for(state, mesh, binding.name);
+        WGPUBindGroupEntry group_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        group_entry.binding = binding.binding;
+        if (binding.kind == upstream::PbrBindingKind::sampler) {
+            group_entry.sampler = resource.sampler;
+        } else {
+            group_entry.textureView = resource.view;
+        }
+        entries.push_back(group_entry);
+    }
+    WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    descriptor.layout = pinned_draw_layout_for(state, variant);
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    mesh.pinned_group = wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    if (!mesh.pinned_group) {
+        dawn_error("pinned variant draw bind group creation failed.");
+    }
+    mesh.pinned_variant = variant;
 }
 
 // Fill and upload the pin's per-pass blocks.
@@ -1850,11 +2200,24 @@ void write_pinned_frame_blocks(
     DawnState& state,
     const Scene& scene,
     const Engine& engine,
+    const CameraRecord& camera,
     const std::array<float, 16>& view_projection) {
     ensure_pinned_frame_buffers(state);
 
     upstream::SceneUniforms scene_block{};
     scene_block.viewProjection = view_projection;
+    // The pin's fragment reads the view direction from `vEyePosition`, and its
+    // reflection path from `view`. Both come from the camera the pass renders
+    // with, the same one `build_pbr_uniforms` reads.
+    const std::array<float, 16> camera_world =
+        upstream::camera_world_matrix(camera);
+    scene_block.vEyePosition = {
+        camera_world[12],
+        camera_world[13],
+        camera_world[14],
+        1.0f,
+    };
+    scene_block.view = upstream::build_view_matrix(camera_world);
     scene_block.envRotationY = scene.environment.rotation_y;
     // `vImageInfos` is documented in the pin's own declaration as
     // exposureLinear, contrast, lodGenerationScale, toneMappingEnabled.
@@ -1911,20 +2274,9 @@ void write_pinned_frame_blocks(
         if (handle.value >= engine.lights.size()) continue;
         const LightRecord& light = engine.lights[handle.value];
         upstream::LightEntry& entry = entries[count];
-        switch (light.kind) {
-            case LightKind::point:
-                upstream::write_point_light(light, entry);
-                break;
-            case LightKind::directional:
-                upstream::write_directional_light(light, entry);
-                break;
-            case LightKind::spot:
-                upstream::write_spot_light(light, entry);
-                break;
-            case LightKind::hemispheric:
-                upstream::write_hemispheric_light(light, entry);
-                break;
-        }
+        // Which writer each kind takes is generated: the scene compiles arms
+        // only for the kinds it reaches, so the mapping cannot be restated here.
+        upstream::write_pinned_light(light, entry);
         ++count;
     }
     header[0] = count;
@@ -2212,6 +2564,308 @@ DawnPipeline& pipeline_for(
     slot.pipeline = pipeline;
     return slot;
 }
+
+#if BBLITE_PBR_VARIANTS > 0
+/**
+ * The render pipeline for one composed variant.
+ *
+ * The stages are the pin's own text, deployed under `upstream/shaders/` like
+ * every other module and entered at `main` — the name the pin gives both. Only
+ * the fixed-function state is the PAL's, and it is the same state the
+ * transcribed path uses for the same draw, so a difference between the two is a
+ * difference in the shader rather than in how it is run.
+ */
+WGPURenderPipeline pinned_variant_pipeline(
+    DawnState& state,
+    std::size_t variant,
+    upstream::RenderPipelineKind kind,
+    std::uint32_t samples,
+    bool has_depth) {
+    // The same traits the transcribed pipeline reads, from the same kind. The
+    // winding matters: a mesh whose node matrix mirrors draws through
+    // `pbr_*_none_clockwise`, and hardcoding counter-clockwise here inverted
+    // Scene 168's double-sided faces and Scene 266's negative-scale spheres.
+    const PipelineKindTraits traits = pipeline_traits(kind);
+    const std::size_t key = variant * 64 +
+        static_cast<std::size_t>(kind) * 2 + (has_depth ? 1 : 0);
+    auto& map = state.pinned_variant_pipelines[samples];
+    const auto existing = map.find(key);
+    if (existing != map.end()) return existing->second;
+    if (state.pinned_vertex_modules.size() < upstream::pbr_variants.size()) {
+        state.pinned_vertex_modules.resize(
+            upstream::pbr_variants.size(),
+            nullptr);
+        state.pinned_fragment_modules.resize(
+            upstream::pbr_variants.size(),
+            nullptr);
+    }
+    const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
+    if (!state.pinned_vertex_modules[variant]) {
+        // The deployed module name: generation prefixes the variant stages so
+        // they cannot collide with the scene's own modules.
+        const auto stem = [](std::string_view file) {
+            return "variant-" + std::string(file.substr(0, file.find(".wgsl")));
+        };
+        state.pinned_vertex_modules[variant] =
+            load_wgsl_module(state, stem(entry.vertex_shader).c_str());
+        state.pinned_fragment_modules[variant] =
+            load_wgsl_module(state, stem(entry.fragment_shader).c_str());
+    }
+    // The variant's own inputs, at the locations it declares them. The names
+    // are the pin's; where each sits in our vertex is the PAL's, so a variant
+    // asking for something we do not carry fails by name here.
+    std::vector<WGPUVertexAttribute> attributes;
+    attributes.reserve(entry.attribute_count);
+    for (std::size_t index = 0; index < entry.attribute_count; ++index) {
+        const upstream::PbrVariantAttribute& input =
+            upstream::pbr_variant_attributes[entry.first_attribute + index];
+        WGPUVertexAttribute attribute{};
+        attribute.shaderLocation = input.location;
+        if (input.name == "position") {
+            attribute.format = WGPUVertexFormat_Float32x3;
+            attribute.offset = offsetof(GpuVertex, position);
+        } else if (input.name == "normal") {
+            attribute.format = WGPUVertexFormat_Float32x3;
+            attribute.offset = offsetof(GpuVertex, normal);
+        } else if (input.name == "tangent") {
+            attribute.format = WGPUVertexFormat_Float32x4;
+            attribute.offset = offsetof(GpuVertex, tangent);
+        } else if (input.name == "uv") {
+            attribute.format = WGPUVertexFormat_Float32x2;
+            attribute.offset = offsetof(GpuVertex, uv);
+        } else if (input.name == "uv2") {
+            attribute.format = WGPUVertexFormat_Float32x2;
+            attribute.offset = offsetof(GpuVertex, uv2);
+        } else if (input.name == "color") {
+            attribute.format = WGPUVertexFormat_Float32x4;
+            attribute.offset = offsetof(GpuVertex, color);
+        }
+#if BBLITE_GPU_DEFORMATION
+        else if (input.name == "joints") {
+            // The pin takes joint indices as integers; the transcribed stage
+            // takes them as floats, so the vertex carries both while the two
+            // paths coexist.
+            attribute.format = WGPUVertexFormat_Uint32x4;
+            attribute.offset = offsetof(GpuVertex, joint_indices);
+        } else if (input.name == "weights") {
+            attribute.format = WGPUVertexFormat_Float32x4;
+            attribute.offset = offsetof(GpuVertex, weights);
+        }
+#endif
+        else {
+            dawn_error(
+                (std::string("pinned variant declares an unmapped vertex ") +
+                 "input '" + std::string(input.name) + "'.")
+                    .c_str());
+        }
+        attributes.push_back(attribute);
+    }
+    WGPUVertexBufferLayout vertex_layout{};
+    vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
+    vertex_layout.arrayStride = sizeof(GpuVertex);
+    vertex_layout.attributeCount = attributes.size();
+    vertex_layout.attributes = attributes.data();
+
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.layout = pinned_pipeline_layout_for(state, variant);
+    descriptor.vertex.module = state.pinned_vertex_modules[variant];
+    descriptor.vertex.entryPoint = string_view("main");
+    descriptor.vertex.bufferCount = 1;
+    descriptor.vertex.buffers = &vertex_layout;
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.frontFace = traits.front;
+    descriptor.primitive.cullMode = traits.cull;
+    WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
+    depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
+    depth_stencil.depthWriteEnabled = traits.transparent
+        ? WGPUOptionalBool_False
+        : WGPUOptionalBool_True;
+    depth_stencil.depthCompare = traits.transparent
+        ? WGPUCompareFunction_LessEqual
+        : WGPUCompareFunction_Less;
+    descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
+    descriptor.multisample.count = samples;
+    descriptor.multisample.mask = ~0u;
+    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
+    color_target.format = state.frame_color_format;
+    WGPUBlendState blend{};
+    if (traits.transparent) {
+        blend.color.operation = WGPUBlendOperation_Add;
+        blend.color.srcFactor = WGPUBlendFactor_SrcAlpha;
+        blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+        blend.alpha.operation = WGPUBlendOperation_Add;
+        blend.alpha.srcFactor = WGPUBlendFactor_One;
+        blend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+        color_target.blend = &blend;
+    }
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = state.pinned_fragment_modules[variant];
+    fragment.entryPoint = string_view("main");
+    fragment.targetCount = 1;
+    fragment.targets = &color_target;
+    descriptor.fragment = &fragment;
+    WGPURenderPipeline pipeline =
+        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    if (!pipeline) dawn_error("pinned variant pipeline creation failed.");
+    return map.emplace(key, pipeline).first->second;
+}
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0
+/**
+ * The variant a draw composes, or `npos` when this scene cannot resolve one.
+ *
+ * The key is the pin's own: the material, the mesh's attributes, the light mode
+ * with its single-light kind, and whether tone mapping is on. Two halves come
+ * from generation because a PAL cannot recover them — the glTF material index,
+ * which is a MaterialHandle only while every material comes from the composed
+ * asset, and the attribute set, because our geometry record does not carry uv2
+ * or vertex-colour presence. Both are checked rather than assumed: an
+ * unresolved draw returns `npos` and takes the transcribed path.
+ */
+/**
+ * Whether a composed variant has been measured to match, by property.
+ *
+ * The whole point of executing Babylon's own stages is that a difference is a
+ * difference in inputs, not in a formula -- so a variant runs here only once the
+ * inputs it needs have been measured against the browser's own buffers. Every
+ * disqualifier below names an open measurement rather than a scene:
+ *
+ *  - a `tangent` input: our vertices are pre-mirrored and Babylon's are not, so
+ *    the bitangent the pin's stage builds with `cross()` comes out negated. The
+ *    conversion exists (`pinned_convention_vertices`) and is not wired yet.
+ *  - an extension arm: each contributes its own material-UBO fields through a
+ *    lowered writer that no capture has been diffed against.
+ *  - refraction: needs the scene-colour grab bound through the pin's own
+ *    mid-pass break rather than our slot order.
+ *  - skeleton or morph: the palette and the morph deltas both carry the mirror.
+ *
+ * Everything else takes the transcribed path, so widening this list is a
+ * measurement rather than a rewrite.
+ */
+bool pinned_variant_supported(std::size_t variant) {
+    const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
+    for (std::size_t index = 0; index < entry.attribute_count; ++index) {
+        if (
+            upstream::pbr_variant_attributes[entry.first_attribute + index]
+                .name == "tangent") {
+            return false;
+        }
+    }
+    std::string_view key = entry.key;
+    while (!key.empty()) {
+        const std::size_t bar = key.find('|');
+        const std::string_view arm = key.substr(0, bar);
+        if (
+            arm != "base" && arm != "ibl" && arm != "alpha-test" &&
+            arm != "emissive-color") {
+            return false;
+        }
+        if (bar == std::string_view::npos) break;
+        key = key.substr(bar + 1);
+    }
+    return true;
+}
+
+std::size_t pinned_variant_for_draw(
+    DawnState& state,
+    const Scene& scene,
+    const Engine& engine,
+    const upstream::RenderDrawCommand& draw) {
+    if (upstream::pbr_variants.empty()) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    if (draw.item.material_kind != upstream::RenderMaterialKind::pbr) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    // Scene code that creates its own material shifts every handle away from
+    // the glTF index the table is keyed by, so the correspondence is only used
+    // when the engine holds exactly the asset's materials.
+    if (engine.materials.size() != upstream::pbr_variant_material_count) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    // A mesh whose node transform is not baked into its vertices needs the
+    // matrix the transcribed stage takes from elsewhere; until the pinned path
+    // carries it, those draws stay on the transcribed one.
+    if (draw.item.mesh.value < engine.meshes.size()) {
+        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        // An animated node needs no guard: the PAL re-transforms its vertices on
+        // the CPU when `transform_version` moves, so the GPU always sees world
+        // space and the pin's `finalWorld` stays the identity. Instancing is a
+        // different mechanism -- the transcribed stage reads per-instance
+        // columns from a second vertex buffer where the pin composes its own
+        // arm -- so those draws stay transcribed.
+        if (record.thin_instanced || !record.instance_matrices.empty()) {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        // Skinning is built but not yet correct: Scene 7 renders with an exact
+        // silhouette -- the palette and the bone texture are right -- and a
+        // shading difference over the whole surface, so one of the blocks this
+        // path fills disagrees with the browser's own. `artifacts/capture/
+        // scene7/buffers.json` holds that scene block (368 bytes) and lights
+        // block (1040) to diff against; until that is measured, a skinned draw
+        // takes the transcribed path.
+        if (!record.bone_matrices.empty()) {
+            return std::numeric_limits<std::size_t>::max();
+        }
+    }
+    const std::uint32_t material_index = draw.item.material.value;
+    if (material_index >= upstream::pbr_variant_mesh_features.size()) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    const std::size_t mesh_features =
+        upstream::pbr_variant_mesh_features[material_index];
+    if (mesh_features == std::numeric_limits<std::size_t>::max()) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    // The light mode, walked the way `writeMeshLightSelection` walks it: how
+    // many of the scene's lights affect this mesh decides which arm the pin
+    // composed. Shadow receivers always take the loop, which the corpus does
+    // not reach on this path yet.
+    std::uint32_t light_count = 0;
+    std::string_view single_light_type;
+    for (const LightHandle handle : scene.lights) {
+        if (handle.value >= engine.lights.size()) continue;
+        const LightRecord& light = engine.lights[handle.value];
+        if (!upstream::light_affects_mesh(light, draw.item.mesh.value)) {
+            continue;
+        }
+        ++light_count;
+        single_light_type = upstream::pinned_single_light_type(light);
+    }
+    const std::uint32_t light_mode =
+        light_count == 0 ? 0u : light_count == 1 ? 1u : 2u;
+    if (light_mode != 1) single_light_type = "";
+    // The unlit and single-light arms. The single-light block is the one diffed
+    // against the browser's own -- `artifacts/capture/scene7/buffers.json`, 1040
+    // bytes beside the 368-byte scene block -- and its writers read the pin's own
+    // light world matrix rather than a hand-mapped lane table. The multi-light
+    // loop indexes the same block but has not been measured.
+    if (light_mode == 2) return std::numeric_limits<std::size_t>::max();
+    // A transmission scene breaks its main pass in two around the scene-colour
+    // grab, and the pin binds that grab through its own refraction slot rather
+    // than our fixed one. Scene 30's non-refractive materials measured 17.8 MAD
+    // here against 0.05 transcribed even with the refraction arms excluded, so
+    // the pass structure -- not just the arm -- is the open measurement.
+    if (scene.transmission_enabled) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    const std::size_t variant = upstream::pbr_variant_for(
+        material_index,
+        static_cast<std::uint32_t>(mesh_features),
+        light_mode,
+        single_light_type,
+        scene.environment.tone_mapping_enabled);
+    (void)state;
+    if (
+        variant == std::numeric_limits<std::size_t>::max() ||
+        !pinned_variant_supported(variant)) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    return variant;
+}
+#endif
 
 // Depth-only pipelines mirror SDL: the scene vertex module with the
 // empty depth-only fragment, GREATER compare (reverse-depth matrix),
@@ -5220,6 +5874,17 @@ bool run_dawn_engine(Engine& engine) {
             0,
             matrix.data(),
             sizeof(matrix));
+#if BBLITE_PBR_VARIANTS > 0
+        // The pin's per-pass blocks, before anything reads them: the scene block
+        // the variants' vertex and fragment stages share, and the lights array
+        // their multi-light arm indexes.
+        write_pinned_frame_blocks(
+            state,
+            scene,
+            engine,
+            camera,
+            matrix);
+#endif
         const auto write_material_uniforms =
             [&](const upstream::RenderDrawList& list) {
                 for (const upstream::RenderDrawCommand& draw :
@@ -5454,6 +6119,70 @@ bool run_dawn_engine(Engine& engine) {
                             0,
                             &fragment,
                             sizeof(fragment));
+#if BBLITE_PBR_VARIANTS > 0
+                        // The pin's own per-draw blocks for the variant this
+                        // draw composes. Written beside the transcribed block
+                        // rather than instead of it while the draw path can
+                        // still fall back: a draw whose variant does not
+                        // resolve keeps the block it has always had.
+                        const std::size_t variant =
+                            pinned_variant_for_draw(
+                                state,
+                                scene,
+                                engine,
+                                draw);
+                        if (
+                            variant !=
+                            std::numeric_limits<std::size_t>::max()) {
+                            DawnMesh& variant_mesh =
+                                state.meshes[draw.item_index];
+                            write_pinned_bone_texture(
+                                state,
+                                variant_mesh,
+                                engine.meshes[draw.item.mesh.value]);
+                            ensure_pinned_draw_bindings(
+                                state,
+                                variant_mesh,
+                                variant);
+                            const upstream::MeshUniforms mesh_block =
+                                pinned_mesh_block(
+                                    scene,
+                                    engine,
+                                    // The loader bakes a static primitive's
+                                    // node transform into its vertices, so the
+                                    // pin's `finalWorld` is the identity for
+                                    // exactly the meshes this path accepts —
+                                    // `pinned_variant_for_draw` refuses the
+                                    // instanced and per-frame-transformed ones,
+                                    // whose matrix the transcribed stage takes
+                                    // from a vertex buffer instead.
+                                    upstream::pinned_identity_matrix,
+                                    draw.item.mesh.value);
+                            wgpuQueueWriteBuffer(
+                                state.queue,
+                                variant_mesh.pinned_mesh_uniforms,
+                                0,
+                                &mesh_block,
+                                sizeof(mesh_block));
+                            const std::size_t material_bytes =
+                                upstream::pbr_variants[variant]
+                                    .material_ubo_bytes;
+                            std::vector<std::uint8_t> material_block(
+                                material_bytes,
+                                0);
+                            upstream::write_pbr_variant_material(
+                                variant,
+                                engine.materials[draw.item.material.value],
+                                material_block.data(),
+                                material_bytes);
+                            wgpuQueueWriteBuffer(
+                                state.queue,
+                                variant_mesh.pinned_material_uniforms,
+                                0,
+                                material_block.data(),
+                                material_bytes);
+                        }
+#endif
                     }
                 }
             };
@@ -5665,6 +6394,43 @@ bool run_dawn_engine(Engine& engine) {
                  list.commands) {
                 if (draw.item_index >= state.meshes.size()) continue;
                 DawnMesh& mesh = state.meshes[draw.item_index];
+#if BBLITE_PBR_VARIANTS > 0
+                // Babylon's own composed stages for this draw, when the scene
+                // resolves a variant for it. Everything else — the Standard
+                // path, the shader materials, a scene whose material handles do
+                // not correspond to the composed asset — takes the transcribed
+                // pipeline below.
+                if (mesh.pinned_group) {
+                    const std::size_t variant = mesh.pinned_variant;
+                    WGPURenderPipeline variant_pipeline =
+                        pinned_variant_pipeline(
+                            state,
+                            variant,
+                            draw.pipeline,
+                            samples,
+                            pass_has_depth);
+                    if (variant_pipeline != bound_pipeline) {
+                        wgpuRenderPassEncoderSetPipeline(
+                            list_pass, variant_pipeline);
+                        bound_pipeline = variant_pipeline;
+                    }
+                    wgpuRenderPassEncoderSetBindGroup(
+                        list_pass, 0, pinned_frame_group(state), 0, nullptr);
+                    wgpuRenderPassEncoderSetBindGroup(
+                        list_pass, 1, mesh.pinned_group, 0, nullptr);
+                    wgpuRenderPassEncoderSetVertexBuffer(
+                        list_pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
+                    wgpuRenderPassEncoderSetIndexBuffer(
+                        list_pass,
+                        mesh.indices,
+                        WGPUIndexFormat_Uint32,
+                        0,
+                        WGPU_WHOLE_SIZE);
+                    wgpuRenderPassEncoderDrawIndexed(
+                        list_pass, mesh.index_count, 1, 0, 0, 0);
+                    continue;
+                }
+#endif
                 DawnPipeline& pipeline = pipeline_for(
                     state,
                     draw.pipeline,

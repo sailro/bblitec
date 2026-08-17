@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
+import { downloadCached } from "./asset-download-cache.js";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, resolve } from "node:path";
 
@@ -49,13 +50,7 @@ async function readResource(
     source: string,
     baseDirectory: string,
 ): Promise<Uint8Array> {
-    if (/^https?:\/\//i.test(source)) {
-        const response = await fetch(source);
-        if (!response.ok) {
-            throw new Error(`Failed to download ${source}: HTTP ${response.status}.`);
-        }
-        return new Uint8Array(await response.arrayBuffer());
-    }
+    if (/^https?:\/\//i.test(source)) return downloadCached(source);
     return new Uint8Array(await readFile(resolve(baseDirectory, source)));
 }
 

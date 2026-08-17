@@ -23,11 +23,12 @@ import {
     gltfImageResolver,
     pinnedMaterialInputFromGltf,
 } from "./pinned-material-input.js";
+import { composePinnedPbrVariant } from "./pinned-pbr-variants.js";
 import {
-    composePinnedPbrVariant,
-    type PinnedComposeOptions,
-} from "./pinned-pbr-variants.js";
-import { importPinnedModule } from "./pinned-shader-composer.js";
+    pinnedSceneArms,
+    pinnedSingleLightTypes,
+    type PinnedSceneArm,
+} from "./pinned-scene-arms.js";
 import {
     pinnedMeshFeaturesFromPrimitive,
     skinnedMeshIndices,
@@ -75,12 +76,6 @@ function glbDocument(scene: string): JsonObject | undefined {
 const normalize = (text: string): string =>
     text.replace(/\s+/g, " ").trim();
 
-/** A scene-shaped option set to try, and the name to report when it matches. */
-interface SceneCandidate {
-    label: string;
-    options: PinnedComposeOptions;
-}
-
 /**
  * The scene-shaped half of the composer's input, as candidates rather than a
  * derivation.
@@ -93,88 +88,20 @@ interface SceneCandidate {
  * combination is composed and the one that reproduces the capture is
  * reported — which makes the tool *measure* the scene's light mode instead of
  * assuming it.
+ *
+ * The arms themselves come from `pinned-scene-arms.ts`, the same builder
+ * generation composes its variant table from. Sweeping a different set than the
+ * one emitted would make a byte-identical match here prove nothing about the
+ * shaders in the generated tree.
  */
-async function sceneCandidates(): Promise<readonly SceneCandidate[]> {
-    const [bits, multiLight, toneMapping] = await Promise.all([
-        importPinnedModule<{ PBR_HAS_ENV: number; PBR_HAS_TONEMAP: number }>(
-            "material/pbr/pbr-flag-bits.js",
-        ),
-        importPinnedModule<{
-            MULTI_LIGHT_STRUCTS: () => string;
-            COMPUTE_PBR_LIGHT: string;
-            getMultiLightLoop: () => string;
-        }>("material/pbr/fragments/multilight-wgsl.js"),
-        importPinnedModule<{
-            StandardToneMapping: { helpersWGSL: string; callWGSL: string };
-        }>("material/pbr/tone-mapping.js"),
-    ]);
-    // `pbr-renderable.ts` assembles these exactly this way when it needs the
-    // multi-light path; supplying them any other way composes a different
-    // fragment.
-    const multi = {
-        multiLightWgsl:
-            multiLight.MULTI_LIGHT_STRUCTS() + multiLight.COMPUTE_PBR_LIGHT,
-        multiLightLoop: multiLight.getMultiLightLoop(),
-    };
-    const tone = {
-        toneMappingHelpers: toneMapping.StandardToneMapping.helpersWGSL,
-        toneMappingCall: toneMapping.StandardToneMapping.callWGSL,
-    };
-    // The single-light path is a separate module per light kind, assembled the
-    // way `importSingleLightWgsl` + `_getSingleLightBlock` do it. A scene with
-    // exactly one light composes through here, not through the multi-light
-    // loop, and its `lightsUniforms` differs from the multi-light one, so
-    // omitting this arm makes a one-light scene unmatchable.
-    const singleLightTypes = [
-        "hemispheric",
-        "directional",
-        "point",
-        "spot",
-    ] as const;
-    const singles = await Promise.all(
-        singleLightTypes.map(async (type) => {
-            const module = await importPinnedModule<{
-                SINGLE_LIGHT_STRUCTS: string;
-                getSingleLightBlock: () => string;
-            }>(`material/pbr/fragments/singlelight-${type}-wgsl.js`);
-            return {
-                type,
-                singleLightWgsl: module.SINGLE_LIGHT_STRUCTS,
-                singleLightBlock: module.getSingleLightBlock(),
-            };
-        }),
-    );
-    const candidates: SceneCandidate[] = [];
-    for (const [toneLabel, toneFeature, toneOptions] of [
-        ["", 0, {}],
-        [" +tonemap", bits.PBR_HAS_TONEMAP, tone],
-    ] as const) {
-        for (const lightMode of [0, 2] as const) {
-            candidates.push({
-                label: `lights ${lightMode}${toneLabel}`,
-                options: {
-                    sceneFeatures: bits.PBR_HAS_ENV | toneFeature,
-                    lightMode,
-                    ...(lightMode === 2 ? multi : {}),
-                    ...toneOptions,
-                },
-            });
-        }
-        for (const single of singles) {
-            candidates.push({
-                label: `light 1 ${single.type}${toneLabel}`,
-                options: {
-                    sceneFeatures: bits.PBR_HAS_ENV | toneFeature,
-                    lightMode: 1,
-                    singleLightType: single.type,
-                    singleLightWgsl: single.singleLightWgsl,
-                    singleLightBlock: single.singleLightBlock,
-                    ...toneOptions,
-                },
-            });
-        }
-    }
-    return candidates;
+function sceneCandidates(): Promise<readonly PinnedSceneArm[]> {
+    return pinnedSceneArms({
+        lightKinds: pinnedSingleLightTypes,
+        multiLight: true,
+        noLight: true,
+        toneMapping: [false, true],
+        environment: true,
+    });
 }
 
 export async function runComposeReport(

@@ -21,6 +21,7 @@ import { UpstreamSourceStore } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
 import { pinnedPbrVariantsHeader } from "./pinned-pbr-variant-cpp.js";
+import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
 
 /**
  * The byte count `shader/scene-uniforms-size.ts` publishes for the scene block.
@@ -116,15 +117,7 @@ export interface UpstreamEmitOptions {
      * them at startup, which is what the transcribed per-scene fragment is
      * being replaced with.
      */
-    pinnedVariants?: readonly {
-        fragmentKey: string;
-        materials: readonly string[];
-        vertex: string;
-        fragment: string;
-        vertexWgsl: string;
-        fragmentWgsl: string;
-        materialUbo: unknown;
-    }[];
+    pinnedVariants?: readonly PinnedVariantManifestEntry[];
     iridescence: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
@@ -655,6 +648,9 @@ class GeneratedSourceWriter {
                     pinnedMaxLights(context),
                     "src/pinned-pbr-variant-cpp.ts pinnedPbrVariantsHeader",
                     options.pinnedVariants!,
+                    ["hemispheric", "directional", "point", "spot"].filter(
+                        (kind) => features.includes(`light:${kind}`),
+                    ),
                 ),
             );
         }

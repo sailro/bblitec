@@ -196,6 +196,31 @@ const extensionWriters: ReadonlyArray<{
         },
         vectorProperties: {},
     },
+    {
+        modulePath: "src/material/pbr/fragments/emissive-fragment.ts",
+        symbolName: "writeEmissiveUBO",
+        sourceLocal: "",
+        baseField: "emissiveColor",
+        propertySources: {
+            // The pin's `_emissiveColor` is the factor times the strength; the
+            // loader folds the strength in at load and keeps the factor apart so
+            // a pointer track can rewrite either half.
+            _emissiveColor: "material.emissive_factor",
+        },
+        vectorProperties: { _emissiveColor: 3 },
+    },
+    {
+        // Declared inline on the extension's own literal rather than as a named
+        // function, so the lowerer is pointed at the member.
+        modulePath: "src/material/pbr/fragments/alpha-test-fragment.ts",
+        symbolName: "pbrExt.writeUbo",
+        sourceLocal: "",
+        baseField: "alphaCutOff",
+        propertySources: {
+            _alphaCutOff: "material.alpha_cutoff",
+        },
+        vectorProperties: {},
+    },
 ];
 
 /**
@@ -300,6 +325,111 @@ export function variantLayout(
 }
 
 /** A C++ identifier for a variant key such as `ibl|reflectance|refraction`. */
+/** One vertex input a variant's own vertex stage declares. */
+interface VariantAttribute {
+    location: number;
+    /** The pin's own name for it — `position`, `joints`, `uv2`, … */
+    name: string;
+    wgslType: string;
+}
+
+/**
+ * The vertex inputs a composed vertex stage declares.
+ *
+ * Read from the stage's own parameter list. The pin numbers these densely per
+ * variant — a skinned mesh puts `joints` at location 4 where an unskinned one
+ * puts nothing — so a fixed layout would feed the wrong attribute to every
+ * variant but the widest.
+ */
+function variantAttributes(vertexWgsl: string): readonly VariantAttribute[] {
+    const body = vertexWgsl.slice(vertexWgsl.indexOf("@vertex fn main("));
+    const list = body.slice(0, body.indexOf(") ->"));
+    const attributes: VariantAttribute[] = [];
+    const pattern =
+        /@location\((\d+)\)\s*([A-Za-z0-9_]+)\s*:\s*([A-Za-z0-9_<>]+)/g;
+    for (const match of list.matchAll(pattern)) {
+        attributes.push({
+            location: Number(match[1]),
+            name: match[2]!,
+            wgslType: match[3]!,
+        });
+    }
+    return attributes.sort((left, right) => left.location - right.location);
+}
+
+/** One resource a variant declares in group 1. */
+interface VariantBinding {
+    binding: number;
+    /** The pin's own name for it -- baseColorTexture, iblSampler, ... */
+    name: string;
+    kind: "texture2d" | "texture2dLoad" | "textureCube" | "sampler";
+    /** Which stages declare it; group 1 is shared by both. */
+    vertex: boolean;
+    fragment: boolean;
+}
+
+/**
+ * The group-1 resources a composed variant declares, across both its stages.
+ *
+ * Read from the stages' own declarations rather than rebuilt from the feature
+ * bits: the pin assigns these indices densely in extension registration order,
+ * so the same index names a different texture in two variants, and a table built
+ * from anything but the emitted text would be a second implementation of that
+ * order. Both stages are read because group 1 is shared -- a skinned variant
+ * declares its bone texture in the vertex stage and nothing else there.
+ *
+ * A texture the stage only `textureLoad`s is reported separately: WebGPU refuses
+ * to bind an rgba32float texture as filterable, and the pin's bone palette is
+ * exactly that.
+ */
+function variantBindings(
+    vertexWgsl: string,
+    fragmentWgsl: string,
+): readonly VariantBinding[] {
+    const pattern =
+        /@group\(1\)\s*@binding\((\d+)\)\s*var\s+([A-Za-z0-9_]+)\s*:\s*([A-Za-z0-9_<>]+)/g;
+    const byBinding = new Map<number, VariantBinding>();
+    for (const [text, isVertex] of [
+        [vertexWgsl, true],
+        [fragmentWgsl, false],
+    ] as const) {
+        for (const match of text.matchAll(pattern)) {
+            const type = match[3]!;
+            const name = match[2]!;
+            const sampled = new RegExp(
+                `textureSample[A-Za-z]*\\(\\s*${name}\\b`,
+            ).test(text);
+            const kind = type.startsWith("texture_cube")
+                ? "textureCube"
+                : type.startsWith("texture_")
+                ? (sampled ? "texture2d" : "texture2dLoad")
+                : type === "sampler"
+                ? "sampler"
+                : undefined;
+            if (!kind) continue;
+            const binding = Number(match[1]);
+            const existing = byBinding.get(binding);
+            if (existing) {
+                existing.vertex ||= isVertex;
+                existing.fragment ||= !isVertex;
+                // A texture sampled in either stage is filterable in both.
+                if (kind === "texture2d") existing.kind = kind;
+                continue;
+            }
+            byBinding.set(binding, {
+                binding,
+                name,
+                kind,
+                vertex: isVertex,
+                fragment: !isVertex,
+            });
+        }
+    }
+    return [...byBinding.values()].sort(
+        (left, right) => left.binding - right.binding,
+    );
+}
+
 export function variantCppName(fragmentKey: string): string {
     const parts = fragmentKey
         .split(/[^A-Za-z0-9]+/)
@@ -376,21 +506,22 @@ const lightSources: Readonly<Record<string, string>> = {
 };
 
 /**
- * The world-matrix lanes the light writers read, against what the record keeps.
+ * The world-matrix lanes the light writers read, from the pin's own builder.
  *
- * `LightRecord` stores the values those lanes carry rather than the matrix, and
- * the glTF loader applies the mirror as it fills them — `position` takes
- * `-w[12]`, `direction` takes `w[8]`, `-w[9]`, `-w[10]` — so reading the lanes
- * back means undoing that same convention here.
+ * Each light writer takes its direction and position out of `light.worldMatrix`
+ * rather than off the light, so the authority on what those lanes hold is
+ * `src/light/light-matrix.ts` — lowered into this scene as
+ * `local_matrix_from_direction`, which sets column 2 to the *normalized*
+ * direction and the translation to the position. Reading the lanes off that
+ * matrix rather than mapping them onto record fields by hand is what makes the
+ * normalization and the signs the pin's: a hand table had `-direction.y`,
+ * `-direction.z` and `-position.x` and no normalization, which the browser's own
+ * lights block for Scene 7 contradicts — `(0, 1, 0)` for a light created with
+ * direction `(0, 1, 0)`.
  */
-const lightMatrixLanes: Readonly<Record<number, string>> = {
-    8: "light.direction.x",
-    9: "-light.direction.y",
-    10: "-light.direction.z",
-    12: "-light.position.x",
-    13: "light.position.y",
-    14: "light.position.z",
-};
+const lightMatrixLanes: Readonly<Record<number, string>> = Object.fromEntries(
+    Array.from({ length: 16 }, (_unused, lane) => [lane, `world[${lane}]`]),
+);
 
 const lightVectors: Readonly<Record<string, number>> = {
     worldMatrix: 16,
@@ -412,6 +543,64 @@ const lightVectors: Readonly<Record<string, number>> = {
  * `writeMeshLightSelection` writes the count at word 16 and the indices from
  * `MSH_LIGHT_INDEX_WORD_OFFSET`, which those offsets have to agree with.
  */
+/**
+ * The C++ members for a mirrored block, padded to the pin's own offsets.
+ *
+ * WGSL and C++ do not agree on where a field lands: a `u32` followed by a
+ * `vec4<u32>` sits at byte 68 in a plain C++ struct and at byte 80 in WGSL,
+ * which is a silently wrong upload rather than a compile error. The padding is
+ * explicit and each field carries a static_assert on its own offset, so a block
+ * whose layout drifts fails the build at the field that moved.
+ */
+function mirroredMembers(
+    structName: string,
+    fields: readonly { name: string; cppType: string; wgslType: string; size: number }[],
+    offsets: readonly number[],
+    /** The pin's own total, which rounds up to 16 past the last field. */
+    totalBytes?: number,
+): { members: string; asserts: string } {
+    const members: string[] = [];
+    const asserts: string[] = [];
+    let cursor = 0;
+    fields.forEach((field, index) => {
+        const offset = offsets[index]!;
+        if (offset > cursor) {
+            members.push(
+                `    // ${offset - cursor} bytes of WGSL alignment padding.`,
+            );
+            members.push(
+                `    std::array<std::uint8_t, ${offset - cursor}> ` +
+                    `_pad${index}{};`,
+            );
+        }
+        members.push(`    // offset ${offset}, ${field.wgslType}`);
+        members.push(`    ${field.cppType} ${field.name}{};`);
+        asserts.push(
+            `static_assert(
+` +
+                `    offsetof(${structName}, ${field.name}) == ${offset},\n` +
+                `    "${structName}::${field.name} must sit where the pin ` +
+                `puts it.");`,
+        );
+        cursor = offset + field.size;
+    });
+    // WGSL rounds a uniform block up to 16 bytes, so the pin allocates past the
+    // last field. Without the tail the C++ struct is smaller than the binding
+    // the shader declares, which WebGPU refuses at draw time.
+    if (totalBytes !== undefined && totalBytes > cursor) {
+        members.push(
+            `    // ${totalBytes - cursor} bytes rounding the block up to 16.`,
+        );
+        members.push(
+            `    std::array<std::uint8_t, ${totalBytes - cursor}> _padEnd{};`,
+        );
+    }
+    return {
+        members: members.join("\n"),
+        asserts: asserts.join("\n"),
+    };
+}
+
 export function meshUniformsBlock(
     fragmentWgsl: string,
     lightIndexWordOffset: number,
@@ -436,12 +625,9 @@ export function meshUniformsBlock(
         .join("\n");
     const fields = parseVariantFields(scalarText);
     const { offsets, totalBytes } = variantLayout(fields);
-    let members = fields
-        .map((field, index) =>
-            `    // offset ${offsets[index]}, ${field.wgslType}\n` +
-            `    ${field.cppType} ${field.name}{};`
-        )
-        .join("\n");
+    const mirrored = mirroredMembers("MeshUniforms", fields, offsets);
+    let members = mirrored.members;
+    let asserts = mirrored.asserts;
     let end = totalBytes;
     if (arrayField) {
         // The array aligns to 16 like any vec4, after the scalars.
@@ -462,21 +648,46 @@ export function meshUniformsBlock(
                     `puts '${arrayField[1]}' at byte ${arrayOffset}.`,
             );
         }
+        const natural = fields.reduce(
+            (cursor, field, index) => Math.max(
+                cursor,
+                offsets[index]! + field.size,
+            ),
+            0,
+        );
+        if (arrayOffset > natural) {
+            members += `\n    // ${arrayOffset - natural} bytes of WGSL ` +
+                `alignment padding.\n` +
+                `    std::array<std::uint8_t, ${arrayOffset - natural}> ` +
+                `_padArray{};`;
+        }
         members += `\n    // offset ${arrayOffset}, ` +
             `array<vec4<u32>, ${arrayField[2]}>\n` +
             `    std::array<std::array<std::uint32_t, 4>, ${arrayField[2]}> ` +
             `${arrayField[1]}{};`;
+        asserts += `\nstatic_assert(\n` +
+            `    offsetof(MeshUniforms, ${arrayField[1]}) == ` +
+            `${arrayOffset},\n` +
+            `    "MeshUniforms::${arrayField[1]} must sit where the pin ` +
+            `puts it.");`;
         end = arrayOffset + Number.parseInt(arrayField[2]!, 10) * 16;
     }
     return `// src/render/lights-ubo.ts appendMeshLightUboFields\n` +
         `struct MeshUniforms {\n${members}\n};\n` +
-        `static_assert(\n    sizeof(MeshUniforms) <= ${end},\n` +
-        `    "MeshUniforms exceeds the pinned ${end} bytes.");`;
+        `static_assert(\n    sizeof(MeshUniforms) == ${end},\n` +
+        `    "MeshUniforms must be the pinned ${end} bytes.");\n${asserts}`;
 }
 
 export function lightUniformsBlock(
     context: LoweringContext,
     maxLights: number,
+    /**
+     * The light kinds the scene compiles. Only their writers are emitted: each
+     * reads the pin's own light world matrix, which is lowered into the scene
+     * only for the kinds it reaches, so emitting all four would reference a
+     * module a lightless scene does not build.
+     */
+    lightKinds: readonly string[],
 ): string {
     const slots: UboFieldSlot[] = [
         { name: "vLightData", offset: 0, lanes: 4 },
@@ -484,11 +695,25 @@ export function lightUniformsBlock(
         { name: "vLightSpecular", offset: 32, lanes: 4 },
         { name: "vLightDirection", offset: 48, lanes: 4 },
     ];
-    const writers = lightWriters.map((light) =>
+    const writers = lightWriters
+        .filter((light) => lightKinds.includes(light.kind.toLowerCase()))
+        .map((light) =>
         `// ${light.modulePath} ${light.symbolName}\n` +
         `inline void write_${light.kind.toLowerCase()}_light(\n` +
         `    const LightRecord& light,\n` +
         `    LightEntry& out) {\n` +
+        // The pin's own light world matrix, from the module this scene already
+        // lowers. Its column 2 is the normalized direction and its translation
+        // the position, which is what the writers' lane reads resolve against.
+        `    std::array<float, 16> world{};\n` +
+        `    local_matrix_from_direction(\n` +
+        `        light.direction.x,\n` +
+        `        light.direction.y,\n` +
+        `        light.direction.z,\n` +
+        `        light.position.x,\n` +
+        `        light.position.y,\n` +
+        `        light.position.z,\n` +
+        `        world);\n` +
         `${
             lowerPinnedUboWriter(context, {
                 modulePath: light.modulePath,
@@ -509,13 +734,40 @@ export function lightUniformsBlock(
             `    std::array<float, 4> ${slot.name}{};`
         )
         .join("\n");
+    // Which writer a kind takes is Babylon's own mapping, so it is emitted here
+    // rather than restated in each PAL — and a scene that compiles no light of a
+    // kind gets no arm for it, which is what keeps the lowered light matrix out
+    // of a lightless scene's header.
+    // Always declared, so a PAL needs no per-kind guard of its own; a scene that
+    // compiles no light gets a body that writes nothing, because it has no light
+    // to write.
+    const dispatch = [
+        "",
+        "",
+        "/** Fills one LightEntry, whichever kind the light is. */",
+        "inline void write_pinned_light(",
+        "    const LightRecord& light,",
+        "    LightEntry& out) {",
+        "    switch (light.kind) {",
+        ...lightWriters
+            .filter((light) => lightKinds.includes(light.kind.toLowerCase()))
+            .flatMap((light) => [
+                `        case LightKind::${light.kind.toLowerCase()}:`,
+                `            write_${light.kind.toLowerCase()}_light(light, out);`,
+                "            return;",
+            ]),
+        "        default:",
+        "            return;",
+        "    }",
+        "}",
+    ].join("\n");
     return `// src/light/types.ts MAX_LIGHTS\n` +
         `inline constexpr std::size_t pinned_max_lights = ${maxLights};\n\n` +
         `// src/render/lights-ubo.ts fillLightsData\n` +
         `struct LightEntry {\n${members}\n};\n` +
         `static_assert(\n    sizeof(LightEntry) == 64,\n` +
         `    "The pinned LightEntry is 4 x vec4.");\n\n` +
-        writers.join("\n\n");
+        writers.join("\n\n") + dispatch;
 }
 
 export function sceneUniformsStruct(
@@ -561,17 +813,18 @@ export function sceneUniformsStruct(
                 `layout computes ${totalBytes}.`,
         );
     }
-    const members = fields
-        .map((field, index) =>
-            `    // offset ${offsets[index]}, ${field.wgslType}\n` +
-            `    ${field.cppType} ${field.name}{};`
-        )
-        .join("\n");
+    const mirrored = mirroredMembers(
+        "SceneUniforms",
+        fields,
+        offsets,
+        totalBytes,
+    );
     return `// src/shader/scene-uniforms.ts SCENE_UBO_WGSL\n` +
-        `struct SceneUniforms {\n${members}\n};\n` +
+        `struct SceneUniforms {\n${mirrored.members}\n};\n` +
         `static_assert(\n` +
-        `    sizeof(SceneUniforms) <= ${totalBytes},\n` +
-        `    "SceneUniforms exceeds the pinned ${totalBytes} bytes.");`;
+        `    sizeof(SceneUniforms) == ${totalBytes},\n` +
+        `    "SceneUniforms must be the pinned ${totalBytes} bytes.");\n` +
+        mirrored.asserts;
 }
 
 /**
@@ -586,9 +839,43 @@ export function pinnedPbrVariantsHeader(
     pinnedMaxLights: number,
     provenance: string,
     variants: readonly PinnedVariantManifestEntry[],
+    lightKinds: readonly string[],
 ): string {
     const blocks: string[] = [];
     const table: string[] = [];
+    // Filled as the variants are emitted, so the indices match the table order.
+    const selectors: string[] = [];
+    const bindingRows: string[] = [];
+    const attributeRows: string[] = [];
+    // One case per variant for the type-erased material writer: each variant
+    // declares its own struct, so a PAL holding an opaque byte range needs a
+    // single entry point that knows which one to build.
+    const variantMaterialCases: string[] = [];
+    // Which attribute sets the asset draws each material on. One value is the
+    // missing half of a PAL's key; more than one means the PAL has to supply the
+    // bits itself, because our geometry record does not carry uv2 or vertex
+    // colour presence.
+    const meshFeaturesByMaterial = new Map<number, Set<number>>();
+    for (const variant of variants) {
+        for (const selector of variant.selectors) {
+            const set = meshFeaturesByMaterial.get(selector.materialIndex) ??
+                new Set<number>();
+            set.add(selector.meshFeatures);
+            meshFeaturesByMaterial.set(selector.materialIndex, set);
+        }
+    }
+    const materialCount = meshFeaturesByMaterial.size === 0
+        ? 0
+        : Math.max(...meshFeaturesByMaterial.keys()) + 1;
+    const meshFeatureRows = Array.from(
+        { length: materialCount },
+        (_unused, index) => {
+            const set = meshFeaturesByMaterial.get(index);
+            return set?.size === 1
+                ? `    ${[...set][0]},`
+                : "    std::numeric_limits<std::size_t>::max(),";
+        },
+    );
     for (const variant of variants) {
         const spec = variant.materialUbo as {
             _structBody?: string;
@@ -628,13 +915,20 @@ export function pinnedPbrVariantsHeader(
                 );
             }
         }
-        const name = variantCppName(variant.fragmentKey);
-        const members = fields
-            .map((field, index) =>
-                `    // offset ${offsets[index]}, ${field.wgslType}\n` +
-                `    ${field.cppType} ${field.name}{};`
-            )
-            .join("\n");
+        // Named after the emitted file, not the fragment key: the key names the
+        // material's feature set, and the same set composes a distinct variant
+        // per light mode and tone-mapping state, so keying the struct on it
+        // would declare one type several times.
+        const name = variantCppName(
+            variant.vertex.replace(/\.vert\.wgsl$/, ""),
+        );
+        const mirroredVariant = mirroredMembers(
+            `${name}MaterialUniforms`,
+            fields,
+            offsets,
+            totalBytes,
+        );
+        const members = mirroredVariant.members;
         const slots: UboFieldSlot[] = fields.map((field, index) => ({
             name: field.name,
             offset: offsets[index]!,
@@ -646,14 +940,68 @@ export function pinnedPbrVariantsHeader(
         }));
         // Every pinned extension writer whose base field this variant declares,
         // lowered from that declaration's own AST. The arithmetic is the pin's.
-        const lowered = extensionWriters
-            .filter((extension) =>
-                slots.some((slot) => slot.name === extension.baseField)
-            )
+        const reached = extensionWriters.filter((extension) =>
+            slots.some((slot) => slot.name === extension.baseField)
+        );
+        // Every field the variant declares has to be filled by some writer. A
+        // field with none uploads a zero, which is the exact failure mode this
+        // path exists to remove: the fragment compiles, binds and draws, and one
+        // term is missing. Scene 259's emissive colour was that -- 57.6 MAD
+        // against 0.001 on the transcribed path -- so an unwritten field is a
+        // build error naming the field and the extension that owns it.
+        //
+        // The base writer covers the fields `_writeMaterialData` names; each
+        // extension covers the block starting at its own base field, in
+        // declaration order, which is how the pin partitions them too.
+        {
+            const covered = new Set<string>();
+            const bases = [
+                ...reached.map((extension) => extension.baseField),
+            ];
+            let owner = "base";
+            for (const slot of slots) {
+                if (bases.includes(slot.name)) owner = slot.name;
+                if (owner === "base") {
+                    if (
+                        Object.prototype.hasOwnProperty.call(
+                            baseWriter.propertySources,
+                            slot.name,
+                        ) ||
+                        slot.name === "materialAlpha" ||
+                        slot.name === "lightFalloffMode" ||
+                        slot.name === "normalScale"
+                    ) {
+                        covered.add(slot.name);
+                    }
+                } else {
+                    covered.add(slot.name);
+                }
+            }
+            const unwritten = slots
+                .map((slot) => slot.name)
+                .filter((field) =>
+                    !covered.has(field) && !field.startsWith("_")
+                );
+            if (unwritten.length > 0) {
+                throw new Error(
+                    `Pinned variant '${variant.fragmentKey}' declares ` +
+                        `${unwritten.map((f) => `'${f}'`).join(", ")} with no ` +
+                        "writer. Add the owning extension to " +
+                        "`extensionWriters` in src/pinned-pbr-variant-cpp.ts; " +
+                        "an unwritten field uploads a zero and renders as a " +
+                        "missing term rather than a failure.",
+                );
+            }
+        }
+        const lowered = reached
             .map((extension) =>
                 `// ${extension.modulePath} ${extension.symbolName}\n` +
+                // Named after the field the writer starts at, not the symbol:
+                // several extensions expose their writer as `pbrExt.writeUbo`
+                // on their own literal, so the symbol is not unique within a
+                // variant while the base field is.
                 `inline void write_${name}_${
-                    extension.symbolName.replace(/\W+/g, "_")
+                    extension.baseField.replace(/\W+/g, "_")
                 }(\n` +
                 `    const MaterialRecord& material,\n` +
                 `    const TextureTransform& transform,\n` +
@@ -705,20 +1053,85 @@ export function pinnedPbrVariantsHeader(
         }
         blocks.push(
             `// ${variant.fragmentKey}\n` +
-                `// materials: ${variant.materials.join(", ")}\n` +
+                `// materials: ${
+                    [
+                        ...new Set(
+                            variant.selectors.map(
+                                (selector) => selector.materialName,
+                            ),
+                        ),
+                    ].join(", ")
+                }\n` +
                 `struct ${name}MaterialUniforms {\n${members}\n};\n` +
                 `static_assert(\n` +
-                `    sizeof(${name}MaterialUniforms) <= ${totalBytes},\n` +
-                `    "${variant.fragmentKey} material UBO exceeds the pin's ` +
-                `${totalBytes} bytes.");` + writer +
+                `    sizeof(${name}MaterialUniforms) == ${totalBytes},\n` +
+                `    "${variant.fragmentKey} material UBO must be the pin's ` +
+                `${totalBytes} bytes.");\n` + mirroredVariant.asserts + writer +
                 (lowered.length > 0
                     ? `\n\n${lowered.join("\n\n")}`
                     : ""),
         );
+        for (const selector of variant.selectors) {
+            selectors.push(
+                `    {${selector.materialIndex}, ${selector.meshFeatures}, ` +
+                    `${selector.lightMode}, ` +
+                    `"${selector.singleLightType}", ` +
+                    `${selector.toneMapping ? "true" : "false"}, ` +
+                    `${table.length}},`,
+            );
+        }
+        // Every writer the variant has, not just the base one. The pin fills its
+        // block the same way — `_writeMaterialData` first, then `ext.writeUbo`
+        // for each registered extension in registration order — and a writer
+        // that is emitted but never called leaves its fields zero. That is how
+        // Scene 259's emissive colour rendered 128 levels dark here while the
+        // transcribed path measured 0.000.
+        variantMaterialCases.push(
+            [
+                `        case ${table.length}: {`,
+                `            ${name}MaterialUniforms block{};`,
+                `            write_${name}_material(material, block);`,
+                ...reached.map((extension) =>
+                    `            write_${name}_${
+                        extension.baseField.replace(/\W+/g, "_")
+                    }(\n` +
+                    `                material,\n` +
+                    `                bblIdentityTransform,\n` +
+                    `                block);`
+                ),
+                "            std::memcpy(",
+                "                destination,",
+                "                &block,",
+                "                std::min(bytes, sizeof(block)));",
+                "            return;",
+                "        }",
+            ].join("\n"),
+        );
+        const attributes = variantAttributes(variant.vertexWgsl);
+        const bindings = variantBindings(
+            variant.vertexWgsl,
+            variant.fragmentWgsl,
+        );
         table.push(
             `    {"${variant.fragmentKey}", "${variant.vertex}", ` +
-                `"${variant.fragment}", ${totalBytes}},`,
+                `"${variant.fragment}", ${totalBytes}, ` +
+                `${bindingRows.length}, ${bindings.length}, ` +
+                `${attributeRows.length}, ${attributes.length}},`,
         );
+        for (const attribute of attributes) {
+            attributeRows.push(
+                `    {${attribute.location}, "${attribute.name}", ` +
+                    `"${attribute.wgslType}"},`,
+            );
+        }
+        for (const entry of bindings) {
+            bindingRows.push(
+                `    {${entry.binding}, "${entry.name}", ` +
+                    `PbrBindingKind::${entry.kind}, ` +
+                    `${entry.vertex ? "true" : "false"}, ` +
+                    `${entry.fragment ? "true" : "false"}},`,
+            );
+        }
     }
     return `// ${provenance}
 // Generated from the pin's own composed variants; see
@@ -729,40 +1142,217 @@ export function pinnedPbrVariantsHeader(
 #include <cstddef>
 #include <string_view>
 
+#include <algorithm>
 #include <cstdint>
+#include <cstddef>
+#include <cstring>
 #include <limits>
 
 #include <bblite/runtime.hpp>
-
+${
+        lightKinds.length > 0
+            ? "#include <bblite/upstream/light_matrix.hpp>\n"
+            : ""
+    }
 namespace bbl::upstream {
 
 using bbl::MaterialRecord;
 using bbl::LightRecord;
+using bbl::LightKind;
 using bbl::TextureTransform;
 
 // The pin reads an absent texture's transform through its own nullish
 // defaults, which is the identity a default-constructed TextureTransform is.
 inline constexpr TextureTransform bblIdentityTransform{};
 
+// The pin's finalWorld for a mesh whose node transform the loader baked into
+// its vertices.
+inline constexpr std::array<float, 16> pinned_identity_matrix{
+    1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f,
+};
+
 ${sceneUniformsStruct(sceneUniformsWgsl, pinnedSceneUboBytes)}
 
-${lightUniformsBlock(context, pinnedMaxLights)}
+${lightUniformsBlock(context, pinnedMaxLights, lightKinds)}
 
 ${meshUniformsBlock(variants[0]!.fragmentWgsl, meshLightIndexWordOffset)}
 
 ${blocks.join("\n\n")}
+
+// What the pin's fragment declares in group 1, beyond the two uniform blocks.
+//
+// The indices are dense and assigned in extension registration order, so the
+// same index names a different texture in two variants: a PAL builds this
+// variant's group-1 layout and bind group from its own row range, never from a
+// shared slot order.
+enum class PbrBindingKind {
+    texture2d,
+    // Read with textureLoad rather than sampled: rgba32float, which WebGPU
+    // refuses to bind as filterable. The pin's bone palette is one.
+    texture2dLoad,
+    textureCube,
+    sampler,
+};
+
+struct PbrVariantBinding {
+    std::uint32_t binding;
+    std::string_view name;
+    PbrBindingKind kind;
+    /** Which stages declare it; group 1 is shared by both. */
+    bool vertex;
+    bool fragment;
+};
+
+inline constexpr std::array<PbrVariantBinding, ${bindingRows.length}>
+    pbr_variant_bindings{{
+${bindingRows.join("\n")}
+}};
+
+// The vertex inputs one variant's stage declares, in location order. A PAL
+// resolves each name against its own vertex layout: the names are the pin's, the
+// offsets and formats are the PAL's, and a variant that asks for an input the
+// PAL does not carry fails by name.
+struct PbrVariantAttribute {
+    std::uint32_t location;
+    std::string_view name;
+    std::string_view wgsl_type;
+};
+
+inline constexpr std::array<PbrVariantAttribute, ${attributeRows.length}>
+    pbr_variant_attributes{{
+${attributeRows.join("\n")}
+}};
 
 struct PbrVariantEntry {
     std::string_view key;
     std::string_view vertex_shader;
     std::string_view fragment_shader;
     std::size_t material_ubo_bytes;
+    /** Half-open range into the binding table above. */
+    std::size_t first_binding;
+    std::size_t binding_count;
+    /** Half-open range into the attribute table above. */
+    std::size_t first_attribute;
+    std::size_t attribute_count;
 };
 
 inline constexpr std::array<PbrVariantEntry, ${variants.length}>
     pbr_variants{{
 ${table.join("\n")}
 }};
+
+// The pin's own composition key, per composed variant.
+//
+// \`pbr-renderable.ts\` builds it per renderable — the material's features, the
+// mesh's attributes, the light mode with its single-light kind, and whether tone
+// mapping is on — so this is a *renderable* lookup, not a material one: the same
+// material on a skinned mesh and on a static one takes two rows, and so does the
+// same mesh under one light and under three.
+struct PbrVariantSelector {
+    std::uint32_t material_index;
+    std::uint32_t mesh_features;
+    std::uint32_t light_mode;
+    std::string_view single_light_type;
+    bool tone_mapping;
+    std::size_t variant;
+};
+
+inline constexpr std::array<PbrVariantSelector, ${selectors.length}>
+    pbr_variant_selectors{{
+${selectors.join("\n")}
+}};
+
+/**
+ * How many materials the composed asset declares.
+ *
+ * The generated glTF loader appends one MaterialRecord per glTF material, in
+ * document order, so a scene whose materials all come from that asset has
+ * \`MaterialHandle::value\` equal to the glTF index this table is keyed by. A PAL
+ * checks that — \`engine.materials.size() == pbr_variant_material_count\` — before
+ * using a handle as a key, because scene code that creates its own material
+ * would shift the correspondence.
+ */
+inline constexpr std::size_t pbr_variant_material_count =
+    ${materialCount};
+
+/**
+ * The mesh attributes each material is drawn with, or \`npos\` when the asset
+ * draws it on more than one attribute set.
+ *
+ * Generation reads this off the asset. A PAL cannot: our ModelGeometry records
+ * tangents and morphs but not whether the primitive carried a second UV set or
+ * vertex colours, and the pin composes a different variant for each. Where the
+ * asset is unambiguous this is the missing half of the key; where it is not, the
+ * caller has to supply the bits itself.
+ */
+inline constexpr std::array<
+    std::size_t,
+    ${meshFeatureRows.length}> pbr_variant_mesh_features{{
+${meshFeatureRows.join("\n")}
+}};
+
+/**
+ * Fills a variant's material block, whichever variant it is.
+ *
+ * Each variant declares its own struct and its own writer, so a PAL holding an
+ * opaque byte range needs one entry point. The bytes written are the struct's,
+ * and the destination is checked against the pin's own total for that variant.
+ */
+inline void write_pbr_variant_material(
+    std::size_t variant,
+    const MaterialRecord& material,
+    void* destination,
+    std::size_t bytes) {
+    switch (variant) {
+${variantMaterialCases.join("\n")}
+        default:
+            return;
+    }
+}
+
+/**
+ * The pin's own name for a light's kind.
+ *
+ * \`getPackedSingleLightType\` returns these strings and the composer keys the
+ * single-light arm on them, so a selector row and a live light have to agree on
+ * the spelling. LightKind is our enum; the strings are the pin's.
+ */
+inline std::string_view pinned_single_light_type(const LightRecord& light) {
+    switch (light.kind) {
+        case LightKind::hemispheric:
+            return "hemispheric";
+        case LightKind::directional:
+            return "directional";
+        case LightKind::point:
+            return "point";
+        case LightKind::spot:
+            return "spot";
+    }
+    return "";
+}
+
+/** The variant a renderable composes, or \`npos\` when none was emitted. */
+inline std::size_t pbr_variant_for(
+    std::uint32_t material_index,
+    std::uint32_t mesh_features,
+    std::uint32_t light_mode,
+    std::string_view single_light_type,
+    bool tone_mapping) {
+    for (const PbrVariantSelector& selector : pbr_variant_selectors) {
+        if (
+            selector.material_index == material_index &&
+            selector.mesh_features == mesh_features &&
+            selector.light_mode == light_mode &&
+            selector.single_light_type == single_light_type &&
+            selector.tone_mapping == tone_mapping) {
+            return selector.variant;
+        }
+    }
+    return std::numeric_limits<std::size_t>::max();
+}
 
 } // namespace bbl::upstream
 `;

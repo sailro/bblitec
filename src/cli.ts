@@ -27,11 +27,17 @@ import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { pinnedShaderHelpers } from "./pinned-pbr-variants.js";
 import { writePinnedPbrVariants } from "./pinned-pbr-variant-output.js";
+import { downloadCached } from "./asset-download-cache.js";
 import {
     assertArmsCovered,
     composeGltfMaterials,
-    type PinnedComposedMaterial,
+    composeRenderableVariants,
+    type PinnedRenderableVariant,
 } from "./pinned-material-arms.js";
+import {
+    pinnedSceneArms,
+    pinnedSingleLightTypes,
+} from "./pinned-scene-arms.js";
 
 interface CliOptions {
     input: string;
@@ -126,13 +132,7 @@ async function assetBytes(
             readFileSync(resolve(dirname(inputPath), source)),
         );
     }
-    const response = await fetch(source);
-    if (!response.ok) {
-        throw new Error(
-            `Failed to download ${source}: HTTP ${response.status}.`,
-        );
-    }
-    return new Uint8Array(await response.arrayBuffer());
+    return downloadCached(source);
 }
 
 async function materializeAsset(asset: CompileAsset, inputPath: string, outputPath: string): Promise<void> {
@@ -197,14 +197,10 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
     }
 
     if (/^https?:\/\//i.test(source)) {
-        const response = await fetch(source);
-        if (!response.ok) {
-            throw new Error(`Failed to download ${source}: HTTP ${response.status}.`);
-        }
         writeFileSync(
             destination,
             await decompressGeometry(
-                new Uint8Array(await response.arrayBuffer()),
+                await downloadCached(source),
                 source,
             ),
         );
@@ -547,14 +543,33 @@ async function main(): Promise<void> {
     // pipeline. An arm it reaches that the emitted fragment does not carry is
     // refused here, where it names the material, rather than shipping as a
     // shading bias nothing points at.
-    const composedVariants: PinnedComposedMaterial[] = [];
+    // The scene arms a renderable can reach: the light modes the scene compiles
+    // support for, and — with an environment loaded, which is what turns tone
+    // mapping on upstream — both tone-mapping states. Generation cannot know how
+    // many lights will end up affecting a given mesh, so it composes the arms
+    // and the runtime selects the one its own light walk produces.
+    const hasEnvironment = result.manifest.features.includes(
+        "environment:ibl",
+    );
+    const lightKinds = pinnedSingleLightTypes.filter((kind) =>
+        result.manifest.features.includes(`light:${kind}`)
+    );
+    const sceneArms = await pinnedSceneArms({
+        lightKinds,
+        multiLight: lightKinds.length > 0,
+        noLight: true,
+        toneMapping: hasEnvironment ? [false, true] : [false],
+        environment: hasEnvironment,
+    });
+    const composedVariants: PinnedRenderableVariant[] = [];
     for (const asset of result.manifest.assets) {
         if (asset.kind !== "gltf") continue;
-        const composed = await composeGltfMaterials(
-            resolve(outputPath, "assets", asset.output),
-        );
+        const path = resolve(outputPath, "assets", asset.output);
+        const composed = await composeGltfMaterials(path);
         assertArmsCovered(composed, emittedArms, asset.output);
-        composedVariants.push(...composed);
+        composedVariants.push(
+            ...(await composeRenderableVariants(path, sceneArms)),
+        );
     }
     // The pin's own composed stages, one file per distinct variant. These are
     // the artifacts that replace `templates/renderer/pbr.frag.wgsl`: the

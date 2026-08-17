@@ -55,9 +55,18 @@ struct GpuVertex {
     float morph_normal_1[3];
     float morph_tangent_0[3];
     float morph_tangent_1[3];
+#if BBLITE_PBR_VARIANTS > 0
+    // The pin's own skinned vertex stage takes joint indices as integers where
+    // the transcribed one takes them as floats. Both are carried while the two
+    // paths coexist, and this sits last so no existing attribute offset moves;
+    // the float pair goes away with the transcription.
+    std::uint32_t joint_indices[4];
+#endif
 #endif
 };
-#if BBLITE_GPU_DEFORMATION
+#if BBLITE_GPU_DEFORMATION && BBLITE_PBR_VARIANTS > 0
+static_assert(sizeof(GpuVertex) == 216);
+#elif BBLITE_GPU_DEFORMATION
 static_assert(sizeof(GpuVertex) == 200);
 #else
 static_assert(sizeof(GpuVertex) == 96);
@@ -355,6 +364,14 @@ inline std::vector<GpuVertex> transformed_vertices(
                     ? geometry.morph_tangents[1][vertex_index].z
                     : 0.0f,
             },
+#if BBLITE_PBR_VARIANTS > 0
+            {
+                static_cast<std::uint32_t>(vertex.joints[0]),
+                static_cast<std::uint32_t>(vertex.joints[1]),
+                static_cast<std::uint32_t>(vertex.joints[2]),
+                static_cast<std::uint32_t>(vertex.joints[3]),
+            },
+#endif
 #endif
         });
     }

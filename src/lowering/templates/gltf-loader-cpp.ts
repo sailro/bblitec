@@ -2986,7 +2986,14 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
             });
             if (material_index < materials.size()) record.material = materials[material_index];
             record.clockwise_front_face =
-                clockwise_front_face;${nodeVisibility ? `
+                clockwise_front_face;
+            // The node matrix's handedness. Our vertices are stored in the
+            // native mirrored convention and the tangent sign is reconciled
+            // against it at load, where the pin keeps both unmirrored and puts
+            // the mirror in the mesh block's own world matrix. A PAL feeding
+            // the pin's composed stages has to undo one to supply the other,
+            // and the sign is only known here.
+            record.mirrored_x = determinant < 0.0f;${nodeVisibility ? `
             record.visible = node_visible[node_index];` : ""}
             record.instance_parent_matrix =
                 instance_parent_matrix;

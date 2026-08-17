@@ -106,3 +106,47 @@ test("refuses a pinned writer construct it cannot carry", () => {
         /has no source on our record/,
     );
 });
+
+/**
+ * The alpha-test extension binds the byte offset to a local and divides at the
+ * index — `data[off / 4] = …` — where every other writer binds the lane. The
+ * lowerer has to carry both shapes, because the alternative is a hand-written
+ * `alphaCutOff` assignment, which is the re-derivation this whole path removes.
+ */
+test("lowers a writer that divides at the data index", () => {
+    const lines = lowerPinnedUboWriter(context(), {
+        modulePath: "src/material/pbr/fragments/alpha-test-fragment.ts",
+        symbolName: "pbrExt.writeUbo",
+        sourceLocal: "",
+        baseField: "alphaCutOff",
+        slots: [{ name: "alphaCutOff", offset: 0, lanes: 1 }],
+        propertySources: { _alphaCutOff: "material.alpha_cutoff" },
+    });
+    const body = lines.join("\n");
+    assert.match(
+        body,
+        /out\.alphaCutOff = static_cast<float>\(material\.alpha_cutoff\)/,
+    );
+});
+
+/**
+ * The emissive extension's colour, which scene 259 rendered as black because no
+ * writer filled it: 57.6 MAD against 0.001 on the transcribed path. Pinned here
+ * so the field cannot go unwritten again.
+ */
+test("lowers the pinned emissive UBO writer", () => {
+    const lines = lowerPinnedUboWriter(context(), {
+        modulePath: "src/material/pbr/fragments/emissive-fragment.ts",
+        symbolName: "writeEmissiveUBO",
+        sourceLocal: "",
+        baseField: "emissiveColor",
+        slots: [{ name: "emissiveColor", offset: 0, lanes: 3 }],
+        propertySources: { _emissiveColor: "material.emissive_factor" },
+        vectorProperties: { _emissiveColor: 3 },
+    });
+    const body = lines.join("\n");
+    assert.match(body, /out\.emissiveColor\[0\] = /);
+    assert.match(body, /out\.emissiveColor\[1\] = /);
+    assert.match(body, /out\.emissiveColor\[2\] = /);
+    assert.match(body, /material\.emissive_factor/);
+});

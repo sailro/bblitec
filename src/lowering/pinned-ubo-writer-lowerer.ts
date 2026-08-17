@@ -195,12 +195,28 @@ function dataLane(state: WriterState, expression: ts.Expression): number {
         return Number.parseInt(expression.text, 10);
     }
     if (ts.isIdentifier(expression)) return base(expression);
+    // `data[off / 4]`: the local holds the byte offset and the writer divides at
+    // the index instead of at the binding. `offsetLocals` maps the local to its
+    // field either way, so the division carries no information and is unwrapped.
+    // The alpha-test extension is written this shape where the others bind the
+    // lane directly.
+    if (
+        ts.isBinaryExpression(expression) &&
+        expression.operatorToken.kind === ts.SyntaxKind.SlashToken &&
+        ts.isNumericLiteral(expression.right) &&
+        expression.right.text === "4"
+    ) {
+        return dataLane(state, expression.left);
+    }
+    if (ts.isParenthesizedExpression(expression)) {
+        return dataLane(state, expression.expression);
+    }
     if (
         ts.isBinaryExpression(expression) &&
         expression.operatorToken.kind === ts.SyntaxKind.PlusToken &&
         ts.isNumericLiteral(expression.right)
     ) {
-        return base(expression.left) +
+        return dataLane(state, expression.left) +
             Number.parseInt(expression.right.text, 10);
     }
     throw new Error(

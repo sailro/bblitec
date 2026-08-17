@@ -28,7 +28,13 @@ import {
 import {
     composePinnedPbrVariant,
     type PinnedComposeOptions,
+    type PinnedMaterialInput,
 } from "./pinned-pbr-variants.js";
+import type { PinnedSceneArm } from "./pinned-scene-arms.js";
+import {
+    pinnedMeshFeaturesFromPrimitive,
+    skinnedMeshIndices,
+} from "./pinned-mesh-features.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 
 /**
@@ -132,26 +138,26 @@ function glbDocument(path: string): GltfDocument | undefined {
     }
 }
 
-/**
- * Composes every material in a glTF document and reports the arms each needs.
- *
- * The scene-shaped inputs the composer also takes — the light mode, the
- * environment, tone mapping — are deliberately left at their defaults. None of
- * them changes *which extension arms* a material composes, and the ones that
- * would need the scene's own lowered state rather than its asset.
- */
-export async function composeGltfMaterials(
-    path: string,
-): Promise<readonly PinnedComposedMaterial[]> {
-    const document = glbDocument(path);
-    const materials = document?.materials;
-    if (!materials?.length) return [];
+/** One material's composer input, plus what it takes to name and place it. */
+interface MaterialSubject {
+    index: number;
+    name: string;
+    input: PinnedMaterialInput;
+    uv2Mask: number;
+}
 
-    const { PBR_HAS_ENV, PBR_HAS_SHEEN_ALBEDO_SCALING } =
-        await importPinnedModule<{
-            PBR_HAS_ENV: number;
-            PBR_HAS_SHEEN_ALBEDO_SCALING: number;
-        }>("material/pbr/pbr-flag-bits.js");
+/**
+ * The composer's material-shaped input for every material in a document.
+ *
+ * Shared by the arms scan and the variant space so both compose the same
+ * material: the animated-pointer scans decide whether a factor becomes a
+ * uniform or a constant, and a variant built without them is a different
+ * fragment.
+ */
+async function materialSubjects(
+    document: GltfDocument,
+): Promise<readonly MaterialSubject[]> {
+    const materials = document.materials ?? [];
     const record = document as unknown as Record<string, unknown>;
     const imageOf = gltfImageResolver(record);
     const animatedBaseColor = gltfAnimatedMaterialPointers(
@@ -170,9 +176,7 @@ export async function composeGltfMaterials(
         ),
     ]);
     const animatedExtensions = gltfAnimatedExtensionTargets(record);
-
-    const composed: PinnedComposedMaterial[] = [];
-    for (const [index, material] of materials.entries()) {
+    return materials.map((material, index) => {
         const input = pinnedMaterialInputFromGltf(material, {
             imageOf,
             animatedBaseColorFactor: animatedBaseColor.has(index),
@@ -182,17 +186,48 @@ export async function composeGltfMaterials(
                 ? { animatedExtensionTargets: animatedExtensions.get(index)! }
                 : {}),
         });
+        return {
+            index,
+            name: typeof material["name"] === "string"
+                ? material["name"]
+                : `material ${index}`,
+            input,
+            uv2Mask: (input["_uv2Mask"] as number | undefined) ?? 0,
+        };
+    });
+}
+
+/**
+ * Composes every material in a glTF document and reports the arms each needs.
+ *
+ * The scene-shaped inputs the composer also takes — the light mode, the
+ * environment, tone mapping — are deliberately left at their defaults. None of
+ * them changes *which extension arms* a material composes, and the ones that
+ * would need the scene's own lowered state rather than its asset.
+ */
+export async function composeGltfMaterials(
+    path: string,
+): Promise<readonly PinnedComposedMaterial[]> {
+    const document = glbDocument(path);
+    if (!document?.materials?.length) return [];
+    const { PBR_HAS_ENV, PBR_HAS_SHEEN_ALBEDO_SCALING } =
+        await importPinnedModule<{
+            PBR_HAS_ENV: number;
+            PBR_HAS_SHEEN_ALBEDO_SCALING: number;
+        }>("material/pbr/pbr-flag-bits.js");
+    const composed: PinnedComposedMaterial[] = [];
+    for (const { name, input, uv2Mask } of await materialSubjects(
+        document!,
+    )) {
         const options: PinnedComposeOptions = {
             sceneFeatures: PBR_HAS_ENV,
-            uv2Mask: (input["_uv2Mask"] as number | undefined) ?? 0,
+            uv2Mask,
         };
         const variant = await composePinnedPbrVariant(input, options);
         const key = variant.fragmentKey;
         const coat = key.includes("clearcoat");
         composed.push({
-            name: typeof material["name"] === "string"
-                ? material["name"]
-                : `material ${index}`,
+            name,
             fragmentKey: key,
             arms: {
                 clearcoat: coat,
@@ -209,8 +244,7 @@ export async function composeGltfMaterials(
                 sheenAlbedoScaling:
                     (variant.features & PBR_HAS_SHEEN_ALBEDO_SCALING) !== 0,
                 iridescence: key.includes("iridescence"),
-                occlusionUv2:
-                    ((input["_uv2Mask"] as number | undefined) ?? 0) !== 0,
+                occlusionUv2: uv2Mask !== 0,
                 transmission: key.includes("refraction"),
                 // Dispersion has no feature bit of its own. It rides on
                 // `_subsurface.refraction.dispersion`, which the refraction
@@ -278,4 +312,102 @@ export function assertArmsCovered(
             "Each of these would render as a shading bias rather than a " +
             "failure, so it is refused here instead.",
     );
+}
+
+/**
+ * One composed renderable variant: the stages to execute, and the tuple that
+ * selects it.
+ *
+ * The tuple is the pin's own composition key. `pbr-renderable.ts` builds it per
+ * renderable from `(features, features2, meshFeatures, sceneFeatures, lightMode,
+ * singleLightType, …)`, so a variant is not a property of a material: the same
+ * material on a skinned mesh and on a static one composes two fragments, and so
+ * does the same mesh under one light and under three.
+ */
+export interface PinnedRenderableVariant {
+    materialIndex: number;
+    materialName: string;
+    /** The pin's `MSH_*` bits for the primitive this material is drawn on. */
+    meshFeatures: number;
+    lightMode: 0 | 1 | 2;
+    singleLightType: string;
+    toneMapping: boolean;
+    /** The arm's label, for provenance and to disambiguate file names. */
+    armLabel: string;
+    fragmentKey: string;
+    vertexWgsl: string;
+    fragmentWgsl: string;
+    materialUboSpec: unknown;
+}
+
+/**
+ * Composes the variants a scene's renderables can reach.
+ *
+ * The mesh half of the key comes from the asset — which attributes each
+ * primitive carries, and whether its node is skinned — because that is what the
+ * pin reads off the mesh. The scene half comes from `arms`: generation cannot
+ * know at build time how many lights will end up affecting a given mesh, so
+ * every arm the scene compiles support for is composed and the runtime selects
+ * the one its own light walk produces, exactly as `rebuildSingle` does.
+ */
+export async function composeRenderableVariants(
+    path: string,
+    arms: readonly PinnedSceneArm[],
+): Promise<readonly PinnedRenderableVariant[]> {
+    const document = glbDocument(path);
+    if (!document?.materials?.length || arms.length === 0) return [];
+    const record = document as unknown as Record<string, unknown>;
+    const skinned = skinnedMeshIndices(record);
+    // The first primitive drawn with each material. A material used on two
+    // primitives with different attribute sets composes two variants; the
+    // renderable table keys on `(material, meshFeatures)` so both are reached.
+    const featureSets = new Map<number, Set<number>>();
+    for (const [mesh, entry] of (
+        Array.isArray(record["meshes"]) ? record["meshes"] : []
+    ).entries()) {
+        const primitives = (entry as Record<string, unknown>)["primitives"];
+        if (!Array.isArray(primitives)) continue;
+        for (const primitive of primitives as Record<string, unknown>[]) {
+            const material = primitive["material"];
+            if (typeof material !== "number") continue;
+            const features = await pinnedMeshFeaturesFromPrimitive(primitive, {
+                skinned: skinned.has(mesh),
+            });
+            const set = featureSets.get(material) ?? new Set<number>();
+            set.add(features);
+            featureSets.set(material, set);
+        }
+    }
+    const subjects = await materialSubjects(document);
+    const variants: PinnedRenderableVariant[] = [];
+    for (const subject of subjects) {
+        // A material no primitive references still composes, at the attribute
+        // set a primitive would have to have: scene code can assign it to a
+        // mesh the asset does not, and a missing variant is a missing draw.
+        for (const meshFeatures of featureSets.get(subject.index) ?? [0]) {
+            for (const arm of arms) {
+                const variant = await composePinnedPbrVariant(subject.input, {
+                    ...arm.options,
+                    meshFeatures,
+                    uv2Mask: subject.uv2Mask,
+                });
+                variants.push({
+                    materialIndex: subject.index,
+                    materialName: subject.name,
+                    meshFeatures,
+                    lightMode: arm.lightMode,
+                    singleLightType: arm.singleLightType,
+                    toneMapping: arm.toneMapping,
+                    armLabel: arm.label,
+                    fragmentKey: variant.fragmentKey,
+                    vertexWgsl: variant.vertexWgsl,
+                    fragmentWgsl: variant.fragmentWgsl,
+                    materialUboSpec: plainMaterialUboSpec(
+                        variant.materialUboSpec,
+                    ),
+                });
+            }
+        }
+    }
+    return variants;
 }

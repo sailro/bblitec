@@ -393,6 +393,11 @@ struct MeshRecord {
     bool has_rotation_quaternion = false;
     bool gpu_deformation = false;
     bool clockwise_front_face = false;
+    // Whether the loader stored this mesh's vertices through the native X
+    // mirror. Babylon composes its own vertex stage against unmirrored data and
+    // carries the mirror in the mesh block's world matrix, so a PAL binding
+    // those stages needs the sign to convert between the two.
+    bool mirrored_x = false;
     // glTF KHR_node_visibility, materialized per mesh the way the pinned
     // `setSubtreeVisible` materializes it per node: the extension cascades
     // through the subtree at set time so the render path and the camera

@@ -15,9 +15,14 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync } from "node:fs";
+import {
+    existsSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import test from "node:test";
 
 // Compiled to `dist/test/`, so the repository root is two levels up.
@@ -73,5 +78,59 @@ test("the pin's composed shaders compile through Tint unchanged", () => {
     console.log(
         `${stages.length} pinned composed stage(s) compile to HLSL, MSL and ` +
             "SPIR-V unchanged",
+    );
+});
+
+/**
+ * The gate that the emitted variants *are* Babylon's, not merely plausible.
+ *
+ * `scene -- capture` records the WGSL Babylon's own WebGPU renderer compiled in
+ * the browser. Every captured PBR fragment that generation composes an arm for
+ * has to appear in the generated tree byte-for-byte: same text, no whitespace
+ * normalization, no reordering. A variant that only nearly matches is the exact
+ * failure this whole path exists to remove — it compiles, binds and draws, and
+ * differs by a term.
+ */
+test("emitted variants reproduce the browser's own fragments byte-for-byte", () => {
+    const captures = resolve(root, "artifacts", "capture");
+    if (!existsSync(captures) || !existsSync(generated)) return;
+    const emitted = new Map<string, Set<string>>();
+    for (const stage of composedStages()) {
+        if (!stage.endsWith(".frag.wgsl")) continue;
+        const scene = stage.slice(generated.length + 1).split(sep)[0]!;
+        const set = emitted.get(scene) ?? new Set<string>();
+        set.add(readFileSync(stage, "utf8"));
+        emitted.set(scene, set);
+    }
+    let matched = 0;
+    const missing: string[] = [];
+    for (const scene of readdirSync(captures)) {
+        const shaders = resolve(captures, scene, "shaders");
+        if (!existsSync(shaders) || !emitted.has(scene)) continue;
+        for (const file of readdirSync(shaders)) {
+            if (!file.endsWith(".wgsl")) continue;
+            const text = readFileSync(resolve(shaders, file), "utf8");
+            // Only the PBR fragments: a capture also holds the vertex stages,
+            // the background arms and the post-process passes, none of which
+            // this path composes yet.
+            if (!/fn mainFragment|@fragment/.test(text)) continue;
+            if (!/pbr|MaterialUniforms/i.test(text)) continue;
+            if (emitted.get(scene)!.has(text)) {
+                matched++;
+            } else {
+                missing.push(`${scene}/${file}`);
+            }
+        }
+    }
+    console.log(
+        `${matched} captured PBR fragment(s) reproduced byte-for-byte` +
+            (missing.length > 0
+                ? `, ${missing.length} not composed yet: ${missing.join(", ")}`
+                : ""),
+    );
+    assert.ok(
+        matched > 0,
+        "No captured PBR fragment was reproduced byte-for-byte; the emitted " +
+            "variant space no longer reaches any measured arm.",
     );
 });
