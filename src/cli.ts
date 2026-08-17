@@ -562,6 +562,7 @@ async function main(): Promise<void> {
         noLight: true,
         toneMapping: hasEnvironment ? [false, true] : [false],
         environment: hasEnvironment,
+        fog: result.manifest.features.includes("renderer:fog"),
     });
     // The runtime keys the variant table by material handle, which is
     // creation order: each glTF load appends its materials, and a scene

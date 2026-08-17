@@ -47,6 +47,10 @@ export interface PinnedSceneArmRequest {
     toneMapping: readonly boolean[];
     /** Whether the scene has an environment (`PBR_HAS_ENV`). */
     environment: boolean;
+    /** Whether the scene reaches fog (`PBR_HAS_FOG`); the composed fog arm's
+     *  helper and block are lifted from the pin unconditionally, and this bit
+     *  is what makes the composer insert them. */
+    fog: boolean;
 }
 
 /**
@@ -63,9 +67,11 @@ export async function pinnedSceneArms(
     request: PinnedSceneArmRequest,
 ): Promise<readonly PinnedSceneArm[]> {
     const [bits, multiLight, toneMapping] = await Promise.all([
-        importPinnedModule<{ PBR_HAS_ENV: number; PBR_HAS_TONEMAP: number }>(
-            "material/pbr/pbr-flag-bits.js",
-        ),
+        importPinnedModule<{
+            PBR_HAS_ENV: number;
+            PBR_HAS_TONEMAP: number;
+            PBR_HAS_FOG: number;
+        }>("material/pbr/pbr-flag-bits.js"),
         importPinnedModule<{
             MULTI_LIGHT_STRUCTS: () => string;
             COMPUTE_PBR_LIGHT: string;
@@ -101,6 +107,7 @@ export async function pinnedSceneArms(
     for (const toneMappingOn of request.toneMapping) {
         const toneLabel = toneMappingOn ? " +tonemap" : "";
         const sceneFeatures = (request.environment ? bits.PBR_HAS_ENV : 0) |
+            (request.fog ? bits.PBR_HAS_FOG : 0) |
             (toneMappingOn ? bits.PBR_HAS_TONEMAP : 0);
         const toneOptions = toneMappingOn ? tone : {};
         const push = (

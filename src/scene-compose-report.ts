@@ -101,6 +101,7 @@ function sceneCandidates(): Promise<readonly PinnedSceneArm[]> {
         noLight: true,
         toneMapping: [false, true],
         environment: true,
+        fog: false,
     });
 }
 
