@@ -43,6 +43,13 @@ export interface UboWriterRequest {
     propertySources: Readonly<Record<string, string | null>>;
     /** The field the writer's `offsets.get(...)` names. */
     baseField: string;
+    /**
+     * The parameter carrying the base offset, where the pin passes it in rather
+     * than looking it up. The light writers take `(data, offset)` and index from
+     * there, so that parameter names the base field the same way an
+     * `offsets.get` local would.
+     */
+    offsetParameter?: string;
     /** Every field of the variant, so `off + n` resolves to a name. */
     slots: readonly UboFieldSlot[];
     /**
@@ -52,6 +59,14 @@ export interface UboWriterRequest {
      */
     vectorProperties?: Readonly<Record<string, number>>;
     /**
+     * Per-lane sources for a property our records do not store whole.
+     *
+     * The light writers read `light.worldMatrix` and take specific lanes from
+     * it; the record keeps the values those lanes carry — position and
+     * direction — rather than the matrix, so each lane names its own source.
+     */
+    laneSources?: Readonly<Record<string, Readonly<Record<number, string>>>>;
+    /**
      * Sibling writers this one calls, keyed by symbol name. Each pinned ext
      * writer ends by delegating its texture transforms to a shared helper
      * (`writeUvTransform(data, offsets, "iridescenceUV", iri.texture)`), whose
@@ -60,7 +75,10 @@ export interface UboWriterRequest {
      * to nothing here — the same outcome, reached the same way.
      */
     nestedWriters?: Readonly<
-        Record<string, Readonly<Record<string, string>>>
+        Record<
+            string,
+            (baseName: string) => Readonly<Record<string, string | null>>
+        >
     >;
 }
 
@@ -87,12 +105,19 @@ interface WriterState {
      */
     offsetLocals: Map<string, string>;
     locals: Set<string>;
-    /** Locals bound to a colour rather than a scalar, by lane count. */
-    vectorLocals: Map<string, number>;
+    /**
+     * Locals bound to a vector rather than a scalar, and how to index them: a
+     * record colour by member (`.r`), the pin's own array default by lane.
+     */
+    vectorLocals: Map<string, { lanes: number; kind: "colour" | "array" }>;
+    /** The property a vector local was bound from, for lane resolution. */
+    vectorLocalOrigins: Map<string, string>;
+    /** Resolves a lane of a vector local through the request's laneSources. */
+    laneSourceFor(local: string, lane: number): string | undefined;
     /** The sibling helper declarations, resolved once by the entry point. */
     nestedDeclarations: Record<
         string,
-        { declaration: ts.FunctionDeclaration }
+        { declaration: ts.FunctionLikeDeclarationBase & { body: ts.Block } }
     >;
 }
 
@@ -136,6 +161,22 @@ function offsetsLookupField(expression: ts.Expression): string | undefined {
     return match?.[1];
 }
 
+/**
+ * The field a templated `offsets.get(`${x}...m`)` names, resolved against the
+ * base field the caller passed for this helper.
+ */
+function templateOffsetField(
+    state: WriterState,
+    expression: ts.Expression,
+): string | undefined {
+    const match = /offsets\s*\.\s*get\s*\(\s*`\$\{\w+\}\w*([mt])`/.exec(
+        expression.getText(),
+    );
+    if (!match) return undefined;
+    const base = state.request.baseField;
+    return match[1] === "m" ? base : base.replace(/m$/, "t");
+}
+
 /** The absolute float lane a `data[...]` index refers to. */
 function dataLane(state: WriterState, expression: ts.Expression): number {
     const base = (local: ts.Expression): number => {
@@ -150,6 +191,9 @@ function dataLane(state: WriterState, expression: ts.Expression): number {
         if (field === undefined) return state.baseLane;
         return fieldLane(state.request, field);
     };
+    if (ts.isNumericLiteral(expression)) {
+        return Number.parseInt(expression.text, 10);
+    }
     if (ts.isIdentifier(expression)) return base(expression);
     if (
         ts.isBinaryExpression(expression) &&
@@ -178,6 +222,14 @@ function guardedField(
     if (!isComparison) return undefined;
     const local = ts.isIdentifier(condition.left) ? condition.left.text : '';
     return state.offsetLocals.get(local);
+}
+
+/** The field an `offsets.has("x")` guard tests. */
+function guardedFieldByHas(condition: ts.Expression): string | undefined {
+    const match = /offsets\s*\.\s*has\s*\(\s*["']([^"']+)["']/.exec(
+        condition.getText(),
+    );
+    return match?.[1];
 }
 
 /** The lane count if this initializer reads a colour property. */
@@ -233,6 +285,77 @@ function vectorDefaultLanes(
     return expression.right.elements.length;
 }
 
+/**
+ * How a comparison against a property our records do not carry evaluates.
+ *
+ * The pin guards some optional properties with a strict comparison rather than
+ * `??`. An absent one is `undefined`, so `=== anything` is false and
+ * `!== anything` is true; returning that lets the conditional fold at
+ * generation to the arm the pin would have taken.
+ */
+function absentComparisonResult(
+    state: WriterState,
+    condition: ts.Expression,
+): boolean | undefined {
+    if (!ts.isBinaryExpression(condition)) return undefined;
+    const equals = condition.operatorToken.kind ===
+            ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        condition.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken;
+    const notEquals = condition.operatorToken.kind ===
+            ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+        condition.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
+    if (!equals && !notEquals) return undefined;
+    if (!readsAbsentProperty(state, condition.left)) return undefined;
+    return notEquals;
+}
+
+/**
+ * Whether an initializer names the record itself rather than one of its values.
+ *
+ * A pinned writer walks down through sub-objects (`mat._subsurface`, then
+ * `ss.refraction`); those all correspond to the one flat record here, so the
+ * bindings are aliases and only the leaf reads carry data.
+ */
+function aliasesRecord(
+    state: WriterState,
+    expression: ts.Expression,
+): boolean {
+    let node = expression;
+    while (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+    ) {
+        node = node.left;
+    }
+    if (ts.isNonNullExpression(node)) node = node.expression;
+    if (
+        !ts.isPropertyAccessExpression(node) &&
+        !ts.isPropertyAccessChain(node)
+    ) {
+        return false;
+    }
+    const source = state.request.propertySources[node.name.getText()];
+    return typeof source === "string" && !source.includes(".");
+}
+
+/** The property name a vector local was bound from. */
+function vectorOriginProperty(
+    expression: ts.Expression,
+): string | undefined {
+    let node = expression;
+    while (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+    ) {
+        node = node.left;
+    }
+    if (ts.isNonNullExpression(node)) node = node.expression;
+    return ts.isPropertyAccessExpression(node) ||
+            ts.isPropertyAccessChain(node)
+        ? node.name.getText()
+        : undefined;
+}
+
 /** Colour members, in the order the pin indexes them. */
 const colourMembers = ["r", "g", "b", "a"] as const;
 
@@ -283,6 +406,8 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
             [ts.SyntaxKind.BarBarToken, "||"],
             [ts.SyntaxKind.GreaterThanToken, ">"],
             [ts.SyntaxKind.LessThanToken, "<"],
+            [ts.SyntaxKind.EqualsEqualsEqualsToken, "=="],
+            [ts.SyntaxKind.EqualsEqualsToken, "=="],
         ]);
         const operator = operators.get(node.operatorToken.kind);
         if (!operator) {
@@ -299,6 +424,17 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
     // that may be absent, which a native record never is, so the guard folds to
     // its present arm.
     if (ts.isConditionalExpression(node)) {
+        // A comparison against an absent property folds the way JavaScript
+        // evaluates it: `undefined === false` is false, so the pin's
+        // `usePhysicalLightFalloff === false ? 0 : 1` yields its else arm. The
+        // value is still the pin's, decided at generation rather than run time.
+        const staticResult = absentComparisonResult(state, node.condition);
+        if (staticResult !== undefined) {
+            return emitExpression(
+                state,
+                staticResult ? node.whenTrue : node.whenFalse,
+            );
+        }
         const condition = ts.isNonNullExpression(node.condition)
             ? node.condition.expression
             : node.condition;
@@ -313,9 +449,14 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
     }
     if (ts.isIdentifier(node)) {
         if (state.locals.has(node.text)) return node.text;
+        // A closure variable the factory computed and the writer captured — the
+        // spot light's `_cosHalfAngle` is one — is a value our record carries,
+        // so it resolves the same way a property read does.
+        const captured = state.request.propertySources[node.text];
+        if (typeof captured === "string") return captured;
         throw new Error(
             `Pinned ${state.request.symbolName} reads '${node.text}', which is ` +
-                "not a lowered local.",
+                "neither a lowered local nor a named source.",
         );
     }
     if (
@@ -345,6 +486,14 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
         ts.isNumericLiteral(node.argumentExpression)
     ) {
         const lane = Number.parseInt(node.argumentExpression.text, 10);
+        const laneSource = state.laneSourceFor(node.expression.text, lane);
+        if (laneSource !== undefined) return laneSource;
+        const local = state.vectorLocals.get(node.expression.text)!;
+        // A matrix or an array default indexes by lane; only a record colour
+        // has named members, and only up to four of them.
+        if (local.kind === "array" || local.lanes > 4) {
+            return `${node.expression.text}[${lane}]`;
+        }
         const member = colourMembers[lane];
         if (member === undefined) {
             throw new Error(
@@ -368,6 +517,34 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
             );
         }
         return source;
+    }
+    // `light.diffuse[0]` indexes a vector property directly rather than through
+    // a local, so the lane resolves against that property's own source.
+    if (
+        ts.isElementAccessExpression(node) &&
+        ts.isNumericLiteral(node.argumentExpression) &&
+        (ts.isPropertyAccessExpression(node.expression) ||
+            ts.isPropertyAccessChain(node.expression))
+    ) {
+        const owner = node.expression.name.getText();
+        const direct = state.request.laneSources?.[owner]?.[
+            Number.parseInt(node.argumentExpression.text, 10)
+        ];
+        if (direct !== undefined) return direct;
+        const lanes = state.request.vectorProperties?.[owner];
+        const source = state.request.propertySources[owner];
+        if (lanes !== undefined && typeof source === "string") {
+            const lane = Number.parseInt(node.argumentExpression.text, 10);
+            if (lanes > 4) return `${source}[${lane}]`;
+            const member = colourMembers[lane];
+            if (member === undefined) {
+                throw new Error(
+                    `Pinned ${state.request.symbolName} reads lane ${lane} of ` +
+                        `'${owner}', which a colour does not have.`,
+                );
+            }
+            return `${source}.${member}`;
+        }
     }
     if (
         ts.isPropertyAccessExpression(node) ||
@@ -409,7 +586,8 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
         // `if (vOff !== undefined) { ... }` guards a block on whether the
         // variant declares that field. Generation knows the answer, so the
         // block is inlined or dropped rather than becoming a runtime branch.
-        const guarded = guardedField(state, statement.expression);
+        const guarded = guardedField(state, statement.expression) ??
+            guardedFieldByHas(statement.expression);
         if (guarded !== undefined) {
             const declares = state.request.slots.some((slot) =>
                 slot.name === guarded
@@ -418,6 +596,24 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
             const body = ts.isBlock(then) ? then.statements : [then];
             return body.flatMap((inner) => emitStatement(state, inner));
         }
+    }
+    // A real branch the pin takes at write time — the UV transform picks its
+    // rotation-free form when the angle is zero — is a runtime condition here,
+    // because the angle is per-material data. Lowered as the branch it is.
+    if (ts.isIfStatement(statement) && statement.elseStatement) {
+        const thenBody = ts.isBlock(statement.thenStatement)
+            ? statement.thenStatement.statements
+            : [statement.thenStatement];
+        const elseBody = ts.isBlock(statement.elseStatement)
+            ? statement.elseStatement.statements
+            : [statement.elseStatement];
+        return [
+            `    if (${emitExpression(state, statement.expression)}) {`,
+            ...thenBody.flatMap((inner) => emitStatement(state, inner)),
+            "    } else {",
+            ...elseBody.flatMap((inner) => emitStatement(state, inner)),
+            "    }",
+        ];
     }
     if (ts.isVariableStatement(statement)) {
         const lines: string[] = [];
@@ -433,11 +629,27 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
             // `const off = offsets.get("x") / 4` is the pin's own indexing, and
             // the offsets are known at generation, so the local folds away.
             if (isOffsetsLookup(binding.initializer)) {
-                const field = offsetsLookupField(binding.initializer);
+                const field = offsetsLookupField(binding.initializer) ??
+                    // A shared helper builds its key from a template
+                    // (`offsets.get(`${texName}UVm`)`), so the literal name is
+                    // the caller's base field; only the trailing `m`/`t` says
+                    // which of the pair this local indexes.
+                    templateOffsetField(state, binding.initializer);
                 if (field !== undefined) state.offsetLocals.set(name, field);
                 continue;
             }
-            // `const o = off / 4` re-binds an offset local; carry its field.
+            // `const o = offset` and `const o = off / 4` both re-bind an
+            // offset local; carry its field across either way.
+            if (
+                ts.isIdentifier(binding.initializer) &&
+                state.offsetLocals.has(binding.initializer.text)
+            ) {
+                state.offsetLocals.set(
+                    name,
+                    state.offsetLocals.get(binding.initializer.text)!,
+                );
+                continue;
+            }
             if (
                 ts.isBinaryExpression(binding.initializer) &&
                 ts.isIdentifier(binding.initializer.left) &&
@@ -451,14 +663,50 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
             }
             // `const cc = material._clearCoat` is our record.
             if (name === state.request.sourceLocal) continue;
+            // A local bound to a sub-object of the record (`const refr =
+            // ss.refraction`) is an alias, not a value: the pin then reads
+            // `refr.intensity`, which resolves through propertySources on its
+            // own. Emitting it would try to copy the whole record into a float.
+            if (aliasesRecord(state, binding.initializer)) continue;
             // A colour local (`const mrc = material._metallicReflectanceColor`)
             // binds by reference; the pin then reads `mrc[0]`.
-            const vectorLanes = vectorPropertyLanes(state, binding.initializer) ??
-                vectorDefaultLanes(state, binding.initializer);
-            if (vectorLanes !== undefined) {
-                const value = emitExpression(state, binding.initializer);
-                state.vectorLocals.set(name, vectorLanes);
-                lines.push(`    const auto& ${name} = ${value};`);
+            const colourLanes = vectorPropertyLanes(state, binding.initializer);
+            const defaultLanes = vectorDefaultLanes(state, binding.initializer);
+            if (colourLanes !== undefined) {
+                const origin = vectorOriginProperty(binding.initializer);
+                if (origin !== undefined) {
+                    state.vectorLocalOrigins.set(name, origin);
+                }
+                state.vectorLocals.set(name, {
+                    lanes: colourLanes,
+                    kind: "colour",
+                });
+                // When every lane resolves to its own source, the alias itself
+                // is never read — and our records may not even carry the whole
+                // value it names.
+                if (
+                    origin !== undefined &&
+                    state.request.laneSources?.[origin] !== undefined
+                ) {
+                    continue;
+                }
+                lines.push(
+                    `    const auto& ${name} = ` +
+                        `${emitExpression(state, binding.initializer)};`,
+                );
+                continue;
+            }
+            if (defaultLanes !== undefined) {
+                // The pin's own vector default, as a typed array so the lanes
+                // index rather than an initializer list that cannot.
+                state.vectorLocals.set(name, {
+                    lanes: defaultLanes,
+                    kind: "array",
+                });
+                lines.push(
+                    `    const std::array<float, ${defaultLanes}> ${name}` +
+                        `${emitExpression(state, binding.initializer)};`,
+                );
                 continue;
             }
             const value = emitExpression(state, binding.initializer);
@@ -493,6 +741,10 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
             `${emitExpression(state, statement.expression.right)});`,
         ];
     }
+    // `for (const ext of _getPbrExts().values()) { ext.writeUbo(...) }` — each
+    // extension writer is lowered into its own function, so the pin's own
+    // delegation loop has no body to inline here.
+    if (ts.isForOfStatement(statement)) return [];
     if (
         ts.isExpressionStatement(statement) &&
         ts.isCallExpression(statement.expression) &&
@@ -500,8 +752,8 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
     ) {
         const call = statement.expression;
         const callee = (call.expression as ts.Identifier).text;
-        const nested = state.request.nestedWriters?.[callee];
-        if (nested !== undefined) {
+        const nestedSources = state.request.nestedWriters?.[callee];
+        if (nestedSources !== undefined) {
             // The pin passes the transform's base name as a string literal.
             const nameArgument = call.arguments.find((argument) =>
                 ts.isStringLiteral(argument)
@@ -513,13 +765,23 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
                 );
             }
             const base = nameArgument.text;
+            const suffix = nestedFieldSuffix(state, callee);
             const declares = state.request.slots.some((slot) =>
-                slot.name === `${base}m`
+                slot.name === `${base}${suffix}m`
             );
             if (!declares) return [];
+            // Each call is its own block: the pin calls the helper once per
+            // slot and its locals (`sx`, `ang`, ...) are function-scoped there,
+            // so they would collide once inlined side by side.
             return [
-                `    // ${callee}("${base}")`,
-                ...lowerNested(state, callee, base, nested),
+                `    { // ${callee}("${base}")`,
+                ...lowerNested(
+                    state,
+                    callee,
+                    `${base}${suffix}`,
+                    nestedSources(base),
+                ),
+                "    }",
             ];
         }
     }
@@ -529,12 +791,26 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
     );
 }
 
+/**
+ * The infix a helper puts between the base name and `m`/`t`.
+ *
+ * Taken from the helper's own `offsets.get(`${x}...m`)` template, because the
+ * pinned helpers disagree: `writeUvTransform` writes `<base>m`, while the
+ * uv-transform extension's `writeOne` writes `<base>UVm`.
+ */
+function nestedFieldSuffix(state: WriterState, callee: string): string {
+    const { declaration } = state.nestedDeclarations[callee]!;
+    const text = declaration.body.getText();
+    const match = /offsets\s*\.\s*get\s*\(\s*`\$\{\w+\}(\w*)m`/.exec(text);
+    return match?.[1] ?? "";
+}
+
 /** Lowers a shared transform helper against one variant's `<base>m`/`<base>t`. */
 function lowerNested(
     state: WriterState,
     symbolName: string,
     base: string,
-    propertySources: Readonly<Record<string, string>>,
+    propertySources: Readonly<Record<string, string | null>>,
 ): string[] {
     const nestedState: WriterState = {
         file: state.file,
@@ -547,12 +823,14 @@ function lowerNested(
         },
         baseLane: fieldLane(state.request, `${base}m`),
         locals: new Set<string>(),
-        vectorLocals: new Map<string, number>(),
+        vectorLocals: new Map(),
         offsetLocals: new Map<string, string>(),
+        vectorLocalOrigins: new Map<string, string>(),
+        laneSourceFor: () => undefined,
         nestedDeclarations: state.nestedDeclarations,
     };
     const { declaration } = state.nestedDeclarations[symbolName]!;
-    return declaration.body!.statements.flatMap((statement) =>
+    return declaration.body.statements.flatMap((statement) =>
         emitStatement(nestedState, statement)
     );
 }
@@ -567,30 +845,58 @@ export function lowerPinnedUboWriter(
     context: LoweringContext,
     request: UboWriterRequest,
 ): string[] {
-    const { file, declaration } = context.functionDeclaration(
-        request.modulePath,
-        request.symbolName,
-    );
-    if (!declaration.body) {
+    // Three shapes the pin uses: a top-level declaration, a member of a
+    // module-level object literal (`pbrExt.writeUbo`), and a property of an
+    // object a factory builds (`createPointLight#_writeLightUbo`).
+    const resolved = request.symbolName.includes("#")
+        ? context.propertyFunction(
+            request.modulePath,
+            request.symbolName.split("#")[0]!,
+            request.symbolName.split("#")[1]!,
+        )
+        : request.symbolName.includes(".")
+        ? context.methodDeclaration(request.modulePath, request.symbolName)
+        : context.functionDeclaration(request.modulePath, request.symbolName);
+    const { file } = resolved;
+    const declaration = resolved.declaration;
+    if (!declaration.body || !ts.isBlock(declaration.body)) {
         throw new Error(`Pinned ${request.symbolName} has no body.`);
     }
     const nestedDeclarations: Record<
         string,
-        { declaration: ts.FunctionDeclaration }
+        { declaration: ts.FunctionLikeDeclarationBase & { body: ts.Block } }
     > = {};
     for (const symbolName of Object.keys(request.nestedWriters ?? {})) {
-        nestedDeclarations[symbolName] = context.functionDeclaration(
-            request.modulePath,
-            symbolName,
-        );
+        const nested = symbolName.includes(".")
+            ? context.methodDeclaration(request.modulePath, symbolName)
+            : context.functionDeclaration(request.modulePath, symbolName);
+        if (!nested.declaration.body || !ts.isBlock(nested.declaration.body)) {
+            throw new Error(`Pinned ${symbolName} has no body.`);
+        }
+        nestedDeclarations[symbolName] = {
+            declaration: nested.declaration as ts.FunctionLikeDeclarationBase & {
+                body: ts.Block;
+            },
+        };
+    }
+    const offsetLocals = new Map<string, string>();
+    if (request.offsetParameter !== undefined) {
+        offsetLocals.set(request.offsetParameter, request.baseField);
     }
     const state: WriterState = {
         file,
         request,
         baseLane: fieldLane(request, request.baseField),
         locals: new Set<string>(),
-        vectorLocals: new Map<string, number>(),
-        offsetLocals: new Map<string, string>(),
+        vectorLocals: new Map(),
+        offsetLocals,
+        vectorLocalOrigins: new Map<string, string>(),
+        laneSourceFor(local, lane) {
+            const origin = this.vectorLocalOrigins.get(local);
+            return origin === undefined
+                ? undefined
+                : request.laneSources?.[origin]?.[lane];
+        },
         nestedDeclarations,
     };
     return declaration.body.statements.flatMap((statement) =>

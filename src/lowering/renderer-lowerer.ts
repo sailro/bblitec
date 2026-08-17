@@ -3974,7 +3974,7 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
         return result;
     }
 
-    private compiledSceneUniformsWgsl(): string {
+    public compiledSceneUniformsWgsl(): string {
         const path = resolve(
             this.context.store.packageRoot,
             "lib/shader/scene-uniforms.js",

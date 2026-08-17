@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import ts from "typescript";
 import { CameraLowerer } from "./lowering/camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
@@ -20,6 +21,43 @@ import { UpstreamSourceStore } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
 import { pinnedPbrVariantsHeader } from "./pinned-pbr-variant-cpp.js";
+
+/**
+ * The byte count `shader/scene-uniforms-size.ts` publishes for the scene block.
+ * Read rather than assumed, so the mirrored layout is checked against the pin's
+ * own allocation.
+ */
+/**
+ * The word offset `lights-ubo.ts` writes a mesh's light indices from, read so
+ * the mirrored mesh block is checked against the pin's own constant.
+ */
+function meshLightIndexWordOffset(context: LoweringContext): number {
+    const file = context.sourceFile("src/render/lights-ubo.ts");
+    const initializer = context.unwrapExpression(
+        context.variableInitializer(file, "MSH_LIGHT_INDEX_WORD_OFFSET"),
+    );
+    if (!ts.isNumericLiteral(initializer)) {
+        context.contractError(
+            initializer,
+            "Expected MSH_LIGHT_INDEX_WORD_OFFSET to be a numeric constant.",
+        );
+    }
+    return Number.parseInt(initializer.text, 10);
+}
+
+function sceneUboBytes(context: LoweringContext): number {
+    const file = context.sourceFile("src/shader/scene-uniforms-size.ts");
+    const initializer = context.unwrapExpression(
+        context.variableInitializer(file, "SCENE_UBO_BYTES"),
+    );
+    if (!ts.isNumericLiteral(initializer)) {
+        context.contractError(
+            initializer,
+            "Expected SCENE_UBO_BYTES to be a numeric constant.",
+        );
+    }
+    return Number.parseInt(initializer.text, 10);
+}
 import type {
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
@@ -596,6 +634,9 @@ class GeneratedSourceWriter {
                 "upstream/include/bblite/upstream/pbr_variants.hpp",
                 pinnedPbrVariantsHeader(
                     context,
+                    new RendererLowerer(context).compiledSceneUniformsWgsl(),
+                    sceneUboBytes(context),
+                    meshLightIndexWordOffset(context),
                     "src/pinned-pbr-variant-cpp.ts pinnedPbrVariantsHeader",
                     options.pinnedVariants!,
                 ),

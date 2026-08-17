@@ -38,13 +38,13 @@ test("lowers the pinned clearcoat UBO writer from its own AST", () => {
             bumpTextureScale: "material.clearcoat_bump_scale",
         },
         nestedWriters: {
-            "writeCcUvTransform": {
+            "writeCcUvTransform": () => ({
                 uScale: "transform.u_scale",
                 vScale: "transform.v_scale",
                 uAng: "transform.u_ang",
                 uOffset: "transform.u_offset",
                 vOffset: "transform.v_offset",
-            },
+            }),
         },
     });
     const body = lines.join("\n");
@@ -74,13 +74,13 @@ test("lowers the pinned iridescence UBO writer", () => {
             maximumThickness: "material.iridescence_maximum_thickness",
         },
         nestedWriters: {
-            "writeUvTransform": {
+            "writeUvTransform": () => ({
                 uScale: "transform.u_scale",
                 vScale: "transform.v_scale",
                 uAng: "transform.u_ang",
                 uOffset: "transform.u_offset",
                 vOffset: "transform.v_offset",
-            },
+            }),
         },
     });
     const body = lines.join("\n");

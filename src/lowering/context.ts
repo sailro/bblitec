@@ -136,6 +136,133 @@ export class LoweringContext {
         return { file, declaration };
     }
 
+    /**
+     * A function-like the pin declares as a method on a module-level object.
+     *
+     * Several pinned extensions expose their UBO writer that way — the
+     * uv-transform extension's `writeUbo` is a method on the exported `pbrExt`
+     * literal rather than a top-level declaration — so a lowerer that walks
+     * pinned bodies has to reach both shapes. Accepts `name.member`, e.g.
+     * `pbrExt.writeUbo`.
+     */
+    public methodDeclaration(modulePath: string, path: string): {
+        file: ts.SourceFile;
+        declaration: ts.FunctionLikeDeclarationBase & { body: ts.Block };
+    } {
+        const file = this.sourceFile(modulePath);
+        const [objectName, memberName] = path.split(".");
+        if (!objectName || !memberName) {
+            this.contractError(
+                file,
+                `Expected an object member path such as 'pbrExt.writeUbo', ` +
+                    `got '${path}'.`,
+            );
+        }
+        let found:
+            | (ts.FunctionLikeDeclarationBase & { body: ts.Block })
+            | undefined;
+        const visit = (node: ts.Node): void => {
+            if (
+                found === undefined &&
+                ts.isVariableDeclaration(node) &&
+                ts.isIdentifier(node.name) &&
+                node.name.text === objectName &&
+                node.initializer &&
+                ts.isObjectLiteralExpression(node.initializer)
+            ) {
+                for (const property of node.initializer.properties) {
+                    const named = property.name;
+                    if (!named || !ts.isIdentifier(named)) continue;
+                    if (named.text !== memberName) continue;
+                    // Either `writeUbo(...) {}` or `writeUbo: (...) => {}`.
+                    const candidate = ts.isMethodDeclaration(property)
+                        ? property
+                        : ts.isPropertyAssignment(property) &&
+                                (ts.isFunctionExpression(
+                                    property.initializer,
+                                ) ||
+                                    ts.isArrowFunction(property.initializer))
+                            ? property.initializer
+                            : undefined;
+                    if (candidate?.body && ts.isBlock(candidate.body)) {
+                        found = candidate as ts.FunctionLikeDeclarationBase & {
+                            body: ts.Block;
+                        };
+                    }
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(file);
+        if (!found) {
+            this.contractError(
+                file,
+                `Expected '${path}' to be a method with a body.`,
+            );
+        }
+        return { file, declaration: found };
+    }
+
+    /**
+     * A function-like the pin assigns to a property of an object literal built
+     * inside a named function.
+     *
+     * The light factories are shaped that way: `createPointLight` hands a
+     * factory an object carrying `_writeLightUbo: (data, offset) => { ... }`, so
+     * the writer is neither top-level nor a member of a module-level literal.
+     * Searches the whole declaration, because which object literal holds it is
+     * the pin's business rather than a contract worth pinning.
+     */
+    public propertyFunction(
+        modulePath: string,
+        functionName: string,
+        propertyName: string,
+    ): {
+        file: ts.SourceFile;
+        declaration: ts.FunctionLikeDeclarationBase & { body: ts.Block };
+    } {
+        const { file, declaration } = this.functionDeclaration(
+            modulePath,
+            functionName,
+        );
+        let found:
+            | (ts.FunctionLikeDeclarationBase & { body: ts.Block })
+            | undefined;
+        const visit = (node: ts.Node): void => {
+            if (found !== undefined) return;
+            if (
+                (ts.isPropertyAssignment(node) ||
+                    ts.isMethodDeclaration(node)) &&
+                node.name &&
+                ts.isIdentifier(node.name) &&
+                node.name.text === propertyName
+            ) {
+                const candidate = ts.isMethodDeclaration(node)
+                    ? node
+                    : ts.isFunctionExpression(node.initializer) ||
+                            ts.isArrowFunction(node.initializer)
+                        ? node.initializer
+                        : undefined;
+                if (candidate?.body && ts.isBlock(candidate.body)) {
+                    found = candidate as ts.FunctionLikeDeclarationBase & {
+                        body: ts.Block;
+                    };
+                    return;
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(declaration);
+        if (!found) {
+            this.contractError(
+                declaration,
+                `Expected '${functionName}' to build an object carrying ` +
+                    `'${propertyName}' as a function with a body.`,
+            );
+        }
+        return { file, declaration: found };
+    }
+
     public objectInitializer(
         declaration: ts.FunctionDeclaration,
         variableName: string,
