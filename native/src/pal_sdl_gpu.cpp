@@ -5942,10 +5942,20 @@ bool run_gpu_engine(Engine& engine) {
                         std::numeric_limits<std::size_t>::max()) {
                         ensure_pinned_slots(state, pinned_variant);
                     }
+                    // A variant whose vertex stage samples a texture -- the
+                    // skeleton arm's bone palette -- needs vertex samplers this
+                    // branch does not bind yet, so those draws stay transcribed
+                    // here while Dawn runs them.
+                    const bool pinned_vertex_textures =
+                        pinned_variant !=
+                            std::numeric_limits<std::size_t>::max() &&
+                        !state.pinned_vertex_slots[pinned_variant]
+                             .textures.empty();
                     if (
                         pinned_variant !=
                             std::numeric_limits<std::size_t>::max() &&
-                        mesh.pinned_vertices) {
+                        mesh.pinned_vertices &&
+                        !pinned_vertex_textures) {
                         SDL_GPUGraphicsPipeline* variant_pipeline =
                             pinned_variant_pipeline(
                                 state,

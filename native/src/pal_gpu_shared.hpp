@@ -419,6 +419,16 @@ inline std::vector<GpuVertex> pinned_convention_vertices(
     return result;
 }
 
+/** The identity, for a skinned draw whose palette already carries everything. */
+inline std::array<float, 16> pinned_identity_world() {
+    return {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
+}
+
 /** The pin's own per-mesh world matrix: the mirror its vertices do not carry. */
 inline std::array<float, 16> pinned_mesh_world() {
     return {
@@ -609,18 +619,11 @@ inline bool pinned_variant_supported(std::size_t variant) {
     while (!key.empty()) {
         const std::size_t bar = key.find('|');
         const std::string_view arm = key.substr(0, bar);
-        // Every arm the corpus reaches except sheen, measured: with all of them
-        // allowed, Scene 29 Sheen Cloth is the only scene that disagrees
-        // (0.193 full / 5.158 region against 0.001 / 0.01, identically on both
-        // backends, which places it in the shared material block).
-        //
-        // Its cause is known: the pin's `writeSheenUBO` calls its UV-transform
-        // helper twice, with the literal base names "sheenUVm"/"sheenUVt" and
-        // then "sheenRoughUVm"/"sheenRoughUVt", and the lowerer emits neither —
-        // all four fields upload zero, collapsing the sheen texture to one
-        // texel. The unwritten-field gate misses it because it attributes
-        // coverage by base-field range, so `sheenParams` is credited with every
-        // field up to the next base field.
+        // Every arm passes. Sheen was the last refusal and closed at
+        // 0.000 / 0.009 on both backends once the two-listing comparison
+        // (`scene -- uniforms` against the capture's `pinnedMaterialBlocks`)
+        // found the base UV transforms falling back to the identity.
+        (void)arm;
 
         if (bar == std::string_view::npos) break;
         key = key.substr(bar + 1);
@@ -647,6 +650,7 @@ inline std::size_t pinned_variant_for_draw(
     // A mesh whose node transform is not baked into its vertices needs the
     // matrix the transcribed stage takes from elsewhere; until the pinned path
     // carries it, those draws stay on the transcribed one.
+    bool has_bones = false;
     if (draw.item.mesh.value < engine.meshes.size()) {
         const MeshRecord& record = engine.meshes[draw.item.mesh.value];
         // An animated node needs no guard: the PAL re-transforms its vertices on
@@ -660,11 +664,25 @@ inline std::size_t pinned_variant_for_draw(
         }
         // `bone_matrices` is not only a skin: the glTF loader pushes the mesh's
         // own world matrix into it for an *animated* mesh with no skin at all,
-        // and the transcribed vertex stage takes the transform from there. The
-        // pin's non-skeleton variants read no palette, so such a draw would lose
-        // its animation — Scenes 39, 242 and 254 measured 4.2 to 11.9 MAD that
-        // way against 0.000 transcribed.
+        // and the transcribed vertex stage takes the transform from there. A
+        // non-skeleton variant reads no palette, so such a draw would lose its
+        // animation — Scenes 39, 242 and 254 measured 4.2 to 11.9 MAD that way
+        // against 0.000 transcribed. A skeleton variant reads the palette the
+        // pin's own stage samples, so the check keys on the resolved variant
+        // below rather than refusing every mesh that carries bones.
         if (!record.bone_matrices.empty()) {
+            has_bones = true;
+        }
+        // A node-animated skinned mesh stays transcribed. Scenes 255 and 245
+        // measure 2.5 and 4.5 through the pinned skinned path where Scenes 7
+        // and 5 measure 0.047 and 0.000, and `transform_version` is the
+        // property that separates the failing pair -- but it over-refuses:
+        // Scene 7 carries it too and measured 0.047 pinned, so this refusal
+        // costs its improvement (back to 0.056 transcribed, within threshold).
+        // Narrowing it needs the two-listing comparison at a matched frame;
+        // the palettes are frame-ambiguous for animated bones, which is what
+        // made Scene 255's bone1 listing inconclusive.
+        if (!record.bone_matrices.empty() && record.transform_version != 0) {
             return std::numeric_limits<std::size_t>::max();
         }
 
@@ -717,6 +735,15 @@ inline std::size_t pinned_variant_for_draw(
     if (
         variant == std::numeric_limits<std::size_t>::max() ||
         !pinned_variant_supported(variant)) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    // A mesh with bones needs a variant that samples the palette, and a
+    // skeleton variant needs the palette to exist; either half without the
+    // other loses the deformation.
+    const bool skeleton_variant =
+        upstream::pbr_variants[variant].key.find("skeleton") !=
+        std::string_view::npos;
+    if (has_bones != skeleton_variant) {
         return std::numeric_limits<std::size_t>::max();
     }
     return variant;

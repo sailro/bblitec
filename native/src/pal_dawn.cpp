@@ -5923,6 +5923,18 @@ bool run_dawn_engine(Engine& engine) {
                                 state,
                                 variant_mesh,
                                 variant);
+                            // A skinned draw takes the identity world with the
+                            // MIRRORED vertex buffer. The loader's palette is
+                            // the mirror-conjugated `jointWorld * IBM`
+                            // (`M A M`), so against mirrored vertices the
+                            // product collapses to the browser's own
+                            // `M * jointWorld * IBM * v_unmirrored`; adding the
+                            // mirror world on top double-applies it, which the
+                            // captured mesh blocks (world = bare mirror,
+                            // palette translation 1.66 vs the browser's 0)
+                            // localised.
+                            const bool skinned_draw =
+                                variant_mesh.pinned_bone_view != nullptr;
                             const upstream::MeshUniforms mesh_block =
                                 pinned_mesh_block(
                                     scene,
@@ -5935,7 +5947,9 @@ bool run_dawn_engine(Engine& engine) {
                                     // whole of the pin's `finalWorld` — and
                                     // it is what the browser's own block for
                                     // Scene 7 holds: diag(-1, 1, 1, 1).
-                                    pinned_mesh_world(),
+                                    skinned_draw
+                                        ? pinned_identity_world()
+                                        : pinned_mesh_world(),
                                     draw.item.mesh.value);
                             wgpuQueueWriteBuffer(
                                 state.queue,
@@ -6200,7 +6214,12 @@ bool run_dawn_engine(Engine& engine) {
                     wgpuRenderPassEncoderSetVertexBuffer(
                         list_pass,
                         0,
-                        mesh.pinned_vertices,
+                        // Skinned draws read the mirrored buffer; the palette
+                        // carries the mirror on both sides, so unmirrored
+                        // vertices would apply it three times.
+                        mesh.pinned_bone_view
+                            ? mesh.vertices
+                            : mesh.pinned_vertices,
                         0,
                         WGPU_WHOLE_SIZE);
                     wgpuRenderPassEncoderSetIndexBuffer(

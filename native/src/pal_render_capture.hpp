@@ -1101,7 +1101,57 @@ inline void write_render_capture(
         }
     }
     json.end_array();
+
+    // The pin's per-draw mesh block for every PBR draw, and each mesh's bone
+    // palette, from the same builders the draw path calls. The browser half is
+    // the capture's 144-byte buffers and its rgba32float texture upload; this
+    // is ours, so the skinning comparison is two listings like the material
+    // block's.
+    json.key("pinnedMeshBlocks");
+    json.begin_array();
+    {
+        const auto dump_list = [&](const upstream::RenderDrawList& list) {
+            for (const upstream::RenderDrawCommand& draw : list.commands) {
+                if (
+                    draw.item.material_kind !=
+                    upstream::RenderMaterialKind::pbr) {
+                    continue;
+                }
+                const upstream::MeshUniforms block = pinned_mesh_block(
+                    scene,
+                    engine,
+                    pinned_mesh_world(),
+                    draw.item.mesh.value);
+                json.begin_object();
+                json.field("meshIndex", draw.item.mesh.value);
+                json.field("world", block.world.data(), block.world.size());
+                json.field("lightCount", block.lc);
+                if (draw.item.mesh.value < engine.meshes.size()) {
+                    const MeshRecord& record =
+                        engine.meshes[draw.item.mesh.value];
+                    json.field("boneCount", record.bone_matrices.size());
+                    if (!record.bone_matrices.empty()) {
+                        json.field(
+                            "bone0",
+                            record.bone_matrices[0].data(),
+                            record.bone_matrices[0].size());
+                    }
+                    if (record.bone_matrices.size() > 1) {
+                        json.field(
+                            "bone1",
+                            record.bone_matrices[1].data(),
+                            record.bone_matrices[1].size());
+                    }
+                }
+                json.end_object();
+            }
+        };
+        dump_list(render_plan.draw_lists.opaque);
+        dump_list(render_plan.draw_lists.transparent);
+    }
+    json.end_array();
 #endif
+
 
     json.end_object();
     stream << '\n';
