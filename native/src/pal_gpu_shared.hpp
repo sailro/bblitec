@@ -609,6 +609,18 @@ inline bool pinned_variant_supported(std::size_t variant) {
     while (!key.empty()) {
         const std::size_t bar = key.find('|');
         const std::string_view arm = key.substr(0, bar);
+        // Sheen alone still disagrees, and the remaining difference is in the
+        // material block, not the shader: `scene -- compose scene29` reports the
+        // composed fragment byte-identical to the browser's own, and
+        // `scene -- uniforms scene29 --size 256` gives the block it should be
+        // filled with. Two sources were corrected against that measurement — the
+        // two sheen UV transforms now read `material.sheen_transform` and
+        // `material.sheen_roughness_transform` rather than the identity the
+        // dispatcher passes, and occlusion reads the ORM transform — and neither
+        // moved the number (1.029 full / 25.954 region). What is left is a
+        // field-by-field comparison of the block our writers produce against
+        // those 22 labelled values.
+        if (arm == "sheen") return false;
         // Every arm the corpus reaches except sheen, measured: with all of them
         // allowed, Scene 29 Sheen Cloth is the only scene that disagrees
         // (0.193 full / 5.158 region against 0.001 / 0.01, identically on both
@@ -621,16 +633,7 @@ inline bool pinned_variant_supported(std::size_t variant) {
         // texel. The unwritten-field gate misses it because it attributes
         // coverage by base-field range, so `sheenParams` is credited with every
         // field up to the next base field.
-        // Sheen alone still disagrees, and now for a narrower reason. Its two
-        // UV-transform calls do lower — the helper is keyed on a plain parameter
-        // and `parameterOffsetField` resolves it — and the emitted arithmetic is
-        // the pin's, writing the identity transform the pin also writes when a
-        // texture carries none. But enabling it moves Scene 29 from 0.193 to
-        // 1.178 full and 5.158 to 30.522 region, so the writes are landing
-        // somewhere they should not. The next step is dumping this variant's
-        // material block against the browser's, not another reading of the
-        // lowered code.
-        if (arm == "sheen") return false;
+
         if (bar == std::string_view::npos) break;
         key = key.substr(bar + 1);
     }

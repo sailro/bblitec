@@ -107,7 +107,17 @@ const extensionWriters: ReadonlyArray<{
             texture: "!material.sheen_color_texture.bytes.empty()",
         },
         vectorProperties: { color: 3 },
-        nestedWriters: { writeSheenUvTransform: uvTransformSources() },
+        // Each of the pin's two calls takes its own texture's transform. Left at
+        // the default they both read the writer's `transform` parameter, which
+        // the dispatcher fills with the identity — and Scene 29's asset carries
+        // `KHR_texture_transform` at u_scale 30 / v_scale -30 on every texture,
+        // measured with `scene -- uniforms scene29 --size 256`.
+        nestedWriters: {
+            writeSheenUvTransform: uvTransformSources({
+                sheenUV: "material.sheen_transform",
+                sheenRoughUV: "material.sheen_roughness_transform",
+            }),
+        },
     },
     {
         modulePath: "src/material/pbr/fragments/reflectance-fragment.ts",
@@ -164,7 +174,11 @@ const extensionWriters: ReadonlyArray<{
             ormTexture: "material.orm_transform",
             emissiveTexture: "material.emissive_transform",
             specGlossTexture: "bblIdentityTransform",
-            occlusionTexture: "bblIdentityTransform",
+            // Occlusion rides the ORM texture, so it carries that texture's
+            // transform. The browser's own block for Scene 29 has `occlUVm`
+            // equal to `ormUVm` at 30 / -30 (`scene -- uniforms scene29
+            // --size 256`), where the identity placeholder wrote 1 / 1.
+            occlusionTexture: "material.orm_transform",
         },
         nestedWriters: {
             writeOne: uvTransformSources({
