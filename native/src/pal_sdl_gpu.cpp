@@ -1929,6 +1929,12 @@ void save_pbr_diagnostic_buffers(
 // actual destruction until the GPU is done with them).
 void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
     SDL_ReleaseGPUBuffer(state.device, mesh.vertices);
+#if BBLITE_PBR_VARIANTS > 0
+    if (mesh.pinned_vertices) {
+        SDL_ReleaseGPUBuffer(state.device, mesh.pinned_vertices);
+        mesh.pinned_vertices = nullptr;
+    }
+#endif
     SDL_ReleaseGPUBuffer(state.device, mesh.indices);
     SDL_ReleaseGPUBuffer(state.device, mesh.instances);
 #if BBLITE_GPU_MORPH_STORAGE
@@ -3852,6 +3858,19 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_GPU_BUFFERUSAGE_VERTEX,
                 vertices.data(),
                 vertices.size() * sizeof(GpuVertex));
+#if BBLITE_PBR_VARIANTS > 0
+            {
+                const std::vector<GpuVertex> pinned =
+                    pinned_convention_vertices(
+                        vertices,
+                        mesh_record.mirrored_x);
+                gpu_mesh.pinned_vertices = upload_buffer(
+                    state.device,
+                    SDL_GPU_BUFFERUSAGE_VERTEX,
+                    pinned.data(),
+                    pinned.size() * sizeof(GpuVertex));
+            }
+#endif
             gpu_mesh.indices = upload_buffer(
                 state.device,
                 SDL_GPU_BUFFERUSAGE_INDEX,
@@ -4397,6 +4416,19 @@ bool run_gpu_engine(Engine& engine) {
                     gpu_mesh.vertices,
                     vertices.data(),
                     vertices.size() * sizeof(GpuVertex));
+#if BBLITE_PBR_VARIANTS > 0
+                if (gpu_mesh.pinned_vertices) {
+                    const std::vector<GpuVertex> pinned =
+                        pinned_convention_vertices(
+                            vertices,
+                            mesh.mirrored_x);
+                    update_buffer(
+                        state.device,
+                        gpu_mesh.pinned_vertices,
+                        pinned.data(),
+                        pinned.size() * sizeof(GpuVertex));
+                }
+#endif
                 gpu_mesh.transform_version =
                     mesh.transform_version;
             }
