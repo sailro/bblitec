@@ -609,11 +609,19 @@ inline bool pinned_variant_supported(std::size_t variant) {
     while (!key.empty()) {
         const std::size_t bar = key.find('|');
         const std::string_view arm = key.substr(0, bar);
-        if (
-            arm != "base" && arm != "ibl" && arm != "alpha-test" &&
-            arm != "emissive-color") {
-            return false;
-        }
+        // Every arm the corpus reaches except sheen, measured: with all of them
+        // allowed, Scene 29 Sheen Cloth is the only scene that disagrees
+        // (0.193 full / 5.158 region against 0.001 / 0.01, identically on both
+        // backends, which places it in the shared material block).
+        //
+        // Its cause is known: the pin's `writeSheenUBO` calls its UV-transform
+        // helper twice, with the literal base names "sheenUVm"/"sheenUVt" and
+        // then "sheenRoughUVm"/"sheenRoughUVt", and the lowerer emits neither —
+        // all four fields upload zero, collapsing the sheen texture to one
+        // texel. The unwritten-field gate misses it because it attributes
+        // coverage by base-field range, so `sheenParams` is credited with every
+        // field up to the next base field.
+        if (arm == "sheen") return false;
         if (bar == std::string_view::npos) break;
         key = key.substr(bar + 1);
     }
