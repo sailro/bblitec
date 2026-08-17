@@ -88,6 +88,12 @@ constexpr std::size_t pbr_texture_binding_capacity =
 
 struct GpuMesh {
     SDL_GPUBuffer* vertices = nullptr;
+#if BBLITE_PBR_VARIANTS > 0
+    // The same vertices in Babylon's own convention: X unmirrored and
+    // `tangent.w` back to its authored sign, paired with the mirroring world
+    // matrix in the pin's mesh block. `pinned_convention_vertices` states why.
+    SDL_GPUBuffer* pinned_vertices = nullptr;
+#endif
     SDL_GPUBuffer* indices = nullptr;
     SDL_GPUBuffer* instances = nullptr;
     std::uint64_t instance_version = 0;
@@ -314,6 +320,67 @@ struct GpuGeometryTask {
         standard_transparent_double_sided_pipeline = nullptr;
 };
 
+#if BBLITE_PBR_VARIANTS > 0
+/**
+ * What `Remap-PinnedVariantRegisters` assigned, read back at load.
+ *
+ * SDL_GPU addresses uniforms by a per-stage slot and textures by a per-stage
+ * index, so this backend needs the order the remap produced. It cannot be
+ * derived from the WGSL: a stage may declare a block it never reads -- the pin's
+ * unlit fragment declares its mesh block for the `mli()` helper and then takes
+ * no light path -- and Tint strips it, so the source over-counts. The remap
+ * writes a `.slots` file beside each stage naming every register by the pin's
+ * own identifier, and this reads it.
+ */
+struct PinnedStageSlots {
+    /** Uniform blocks in slot order: `scene`, `lights`, `mesh`, `material`. */
+    std::vector<std::string> uniforms;
+    /** Texture names in binding order; each one's sampler is bound with it. */
+    std::vector<std::string> textures;
+};
+
+/** A texture and its sampler, resolved from the pin's own name for a binding. */
+struct PinnedResource {
+    SDL_GPUTexture* texture = nullptr;
+    SDL_GPUSampler* sampler = nullptr;
+};
+
+PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
+    const std::string shader_override =
+        environment_variable("BBLITE_GPU_SHADER_DIR");
+    const std::string shader_root = shader_override.empty()
+        ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR)
+        : shader_override;
+    const std::vector<std::uint8_t> bytes =
+        read_binary_file(join_path(shader_root, base_name + ".slots"));
+    PinnedStageSlots slots;
+    std::string line;
+    const auto take = [&]() {
+        const std::size_t space = line.find(' ');
+        if (line.empty() || space == std::string::npos) return;
+        const std::string reg = line.substr(0, space);
+        std::string name = line.substr(space + 1);
+        while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) {
+            name.pop_back();
+        }
+        // `b` is a uniform slot and `t` a texture; `s` is the sampler paired
+        // with the texture of the same index, which SDL_GPU binds together.
+        if (reg[0] == 'b') slots.uniforms.push_back(name);
+        if (reg[0] == 't') slots.textures.push_back(name);
+    };
+    for (const std::uint8_t byte : bytes) {
+        if (byte == '\n') {
+            take();
+            line.clear();
+            continue;
+        }
+        line.push_back(static_cast<char>(byte));
+    }
+    take();
+    return slots;
+}
+#endif
+
 struct GpuState {
     SDL_Window* window = nullptr;
     SDL_GPUDevice* device = nullptr;
@@ -410,6 +477,87 @@ struct GpuState {
     SDL_GPUBuffer* background_instances = nullptr;
 #endif
 };
+
+#if BBLITE_PBR_VARIANTS > 0
+/**
+ * Which of our resources the pin's own name for a binding refers to.
+ *
+ * The names are Babylon's, the textures are the PAL's, and this is where the two
+ * meet — the same join the Dawn backend makes, against this backend's own named
+ * fields rather than its slot array. A variant that declares a resource this does
+ * not know fails by name instead of sampling whatever sat at that index.
+ */
+PinnedResource pinned_resource_for(
+    const GpuState& state,
+    const GpuMesh& mesh,
+    const std::string& name) {
+    if (name == "baseColorTexture" || name == "baseColorSampler") {
+        return {mesh.base_color, mesh.base_color_sampler};
+    }
+    if (name == "ormTexture" || name == "ormSampler") {
+        return {mesh.metallic_roughness, mesh.metallic_roughness_sampler};
+    }
+    if (name == "normalTexture" || name == "normalSampler_") {
+        return {mesh.normal, mesh.normal_sampler};
+    }
+    if (name == "emissiveTexture" || name == "emissiveSampler") {
+        return {mesh.emissive, mesh.emissive_sampler};
+    }
+    if (name == "brdfLUT" || name == "brdfSampler_") {
+        return {state.brdf_lut, state.background_sampler};
+    }
+    if (name == "iblTexture" || name == "iblSampler") {
+        return {state.environment, state.sampler};
+    }
+    if (name == "refractionMapTexture" || name == "refractionMapSampler") {
+        return {mesh.transmission, mesh.transmission_sampler};
+    }
+    if (name == "thicknessTexture_" || name == "thicknessSampler_") {
+        return {mesh.thickness, mesh.thickness_sampler};
+    }
+#if BBLITE_MATERIAL_CLEARCOAT
+    if (name == "ccIntensityTexture" || name == "ccIntensitySampler_") {
+        return {mesh.clearcoat, mesh.clearcoat_sampler};
+    }
+    if (name == "ccRoughnessTexture" || name == "ccRoughnessSampler_") {
+        return {mesh.clearcoat_roughness, mesh.clearcoat_roughness_sampler};
+    }
+    if (name == "ccNormalTexture" || name == "ccNormalSampler_") {
+        return {mesh.clearcoat_normal, mesh.clearcoat_normal_sampler};
+    }
+#endif
+#if BBLITE_MATERIAL_SHEEN
+    if (name == "sheenTexture_" || name == "sheenSampler_") {
+        return {mesh.sheen_color, mesh.sheen_color_sampler};
+    }
+    if (name == "sheenRoughTexture_" || name == "sheenRoughSampler_") {
+        return {mesh.sheen_roughness, mesh.sheen_roughness_sampler};
+    }
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+    if (name == "iridescenceTexture" || name == "iridescenceSampler_") {
+        return {mesh.iridescence, mesh.iridescence_sampler};
+    }
+    if (
+        name == "iridescenceThicknessTexture" ||
+        name == "iridescenceThicknessSampler_") {
+        return {
+            mesh.iridescence_thickness,
+            mesh.iridescence_thickness_sampler};
+    }
+#endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+    if (name == "occlusionTexture" || name == "occlusionSampler_") {
+        return {mesh.occlusion, mesh.occlusion_sampler};
+    }
+#endif
+    gpu_error(
+        ("pinned variant declares an unmapped resource '" + name + "'.")
+            .c_str());
+    return {};
+}
+#endif
+
 
 struct ImageProcessingUniforms {
     float parameters[4];
