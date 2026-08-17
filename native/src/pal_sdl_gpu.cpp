@@ -855,6 +855,252 @@ void write_pinned_bone_texture(
     }
     SDL_ReleaseGPUTransferBuffer(state.device, transfer);
 }
+
+/**
+ * Draws one PBR command through the pin's own composed stages.
+ *
+ * Shared by the main pass and the render-task passes: the blocks build from
+ * the pass's own camera and matrix, and everything else -- slots, textures,
+ * the skinned and palette-world conventions -- is per draw.
+ */
+void draw_pinned_variant(
+    GpuState& state,
+    SDL_GPUCommandBuffer* command,
+    SDL_GPURenderPass* pass,
+    const Scene& scene,
+    const Engine& engine,
+    const CameraRecord& camera,
+    const std::array<float, 16>& matrix,
+    const upstream::RenderDrawCommand& draw,
+    const GpuMesh& mesh,
+    const MaterialRecord* material,
+    std::size_t pinned_variant,
+    SDL_GPUGraphicsPipeline*& bound_pipeline) {
+    const upstream::RenderItem& item = draw.item;
+    SDL_GPUGraphicsPipeline* variant_pipeline =
+        pinned_variant_pipeline(
+            state,
+            pinned_variant,
+            draw.pipeline);
+    if (variant_pipeline != bound_pipeline) {
+        SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
+        bound_pipeline = variant_pipeline;
+    }
+    const upstream::PbrVariantEntry& variant_entry =
+        upstream::pbr_variants[pinned_variant];
+    const upstream::SceneUniforms pinned_scene =
+        pinned_scene_block(scene, camera, matrix);
+    const std::vector<std::uint8_t> pinned_lights =
+        pinned_lights_block(scene, engine);
+    // A skinned draw takes the identity world with the
+    // MIRRORED vertex buffer: the loader's palette is the
+    // mirror-conjugated `jointWorld * IBM`, so against
+    // mirrored vertices the product collapses to the
+    // browser's own `M * jointWorld * IBM * v_unmirrored`,
+    // and adding the mirror world on top double-applies
+    // it -- the finding the Dawn backend's captured mesh
+    // blocks localised. An animated no-skin mesh rides
+    // the same convention with one matrix: its palette
+    // entry is `M * world * M`, passed as the pin's
+    // finalWorld against the mirrored buffer.
+    const MeshRecord& pinned_record =
+        engine.meshes[item.mesh.value];
+    const bool skeleton_draw =
+        pinned_variant_skeleton(pinned_variant);
+    const bool world_from_palette =
+        !skeleton_draw &&
+        !pinned_record.bone_matrices.empty();
+    const bool mirrored_vertices =
+        skeleton_draw || world_from_palette;
+    const upstream::MeshUniforms pinned_mesh =
+        pinned_mesh_block(
+            scene,
+            engine,
+            // For everything else: the RH to LH mirror,
+            // which the pinned vertex buffer no longer
+            // carries; the node transform is already baked
+            // into those vertices.
+            skeleton_draw
+                ? pinned_identity_world()
+                : world_from_palette
+                    ? pinned_record.bone_matrices[0]
+                    : pinned_mesh_world(),
+            item.mesh.value);
+    std::vector<std::uint8_t> pinned_material(
+        variant_entry.material_ubo_bytes,
+        0);
+    if (material) {
+        upstream::write_pbr_variant_material(
+            pinned_variant,
+            *material,
+            pinned_material.data(),
+            pinned_material.size());
+    }
+    // Each block at the slot the remap assigned it. The
+    // order is the `.slots` map's, because a stage can
+    // declare a block it never reads and Tint strips it.
+    const auto push_blocks = [&](
+                                 const PinnedStageSlots&
+                                     slots,
+                                 bool fragment_stage) {
+        for (
+            std::size_t slot = 0;
+            slot < slots.uniforms.size();
+            ++slot) {
+            const std::string& block = slots.uniforms[slot];
+            const void* data = nullptr;
+            std::size_t size = 0;
+            if (block == "scene") {
+                data = &pinned_scene;
+                size = sizeof(pinned_scene);
+            } else if (block == "lights") {
+                data = pinned_lights.data();
+                size = pinned_lights.size();
+            } else if (block == "mesh") {
+                data = &pinned_mesh;
+                size = sizeof(pinned_mesh);
+            } else if (block == "material") {
+                data = pinned_material.data();
+                size = pinned_material.size();
+            } else {
+                gpu_error(
+                    ("pinned variant declares an unmapped "
+                     "uniform block '" + block + "'.")
+                        .c_str());
+            }
+            if (fragment_stage) {
+                SDL_PushGPUFragmentUniformData(
+                    command,
+                    static_cast<Uint32>(slot),
+                    data,
+                    static_cast<Uint32>(size));
+            } else {
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    static_cast<Uint32>(slot),
+                    data,
+                    static_cast<Uint32>(size));
+            }
+        }
+    };
+    push_blocks(
+        state.pinned_vertex_slots[pinned_variant],
+        false);
+    push_blocks(
+        state.pinned_fragment_slots[pinned_variant],
+        true);
+    const PinnedStageSlots& pinned_fragment =
+        state.pinned_fragment_slots[pinned_variant];
+    std::vector<SDL_GPUTextureSamplerBinding>
+        pinned_textures;
+    pinned_textures.reserve(
+        pinned_fragment.textures.size());
+    for (const std::string& name :
+         pinned_fragment.textures) {
+        const PinnedResource resource =
+            pinned_resource_for(state, mesh, name);
+        pinned_textures.push_back(
+            SDL_GPUTextureSamplerBinding{
+                resource.texture,
+                resource.sampler,
+            });
+    }
+    if (!pinned_textures.empty()) {
+        SDL_BindGPUFragmentSamplers(
+            pass,
+            0,
+            pinned_textures.data(),
+            static_cast<Uint32>(pinned_textures.size()));
+    }
+    // The vertex stage's own textures -- the skeleton
+    // arm's bone palette -- in the same `.slots` order as
+    // the fragment's, and its storage buffers -- the
+    // morph arms' deltas and weights, the same buffers
+    // the transcribed stage read.
+    const PinnedStageSlots& pinned_vertex =
+        state.pinned_vertex_slots[pinned_variant];
+    if (!pinned_vertex.storage.empty()) {
+        std::vector<SDL_GPUBuffer*> storage_buffers;
+        storage_buffers.reserve(
+            pinned_vertex.storage.size());
+        for (const std::string& name :
+             pinned_vertex.storage) {
+            SDL_GPUBuffer* buffer = nullptr;
+#if BBLITE_GPU_MORPH_STORAGE
+            if (name == "morphDeltas") {
+                buffer = mesh.morph_deltas;
+            } else if (name == "morph") {
+                buffer = mesh.morph_weights;
+            }
+#endif
+            if (!buffer) {
+                gpu_error(
+                    ("pinned variant declares an "
+                     "unmapped storage buffer '" +
+                     name + "'.")
+                        .c_str());
+            }
+            storage_buffers.push_back(buffer);
+        }
+        SDL_BindGPUVertexStorageBuffers(
+            pass,
+            0,
+            storage_buffers.data(),
+            static_cast<Uint32>(
+                storage_buffers.size()));
+    }
+    if (!pinned_vertex.textures.empty()) {
+        std::vector<SDL_GPUTextureSamplerBinding>
+            vertex_textures;
+        vertex_textures.reserve(
+            pinned_vertex.textures.size());
+        for (const std::string& name :
+             pinned_vertex.textures) {
+            const PinnedResource resource =
+                pinned_resource_for(state, mesh, name);
+            vertex_textures.push_back(
+                SDL_GPUTextureSamplerBinding{
+                    resource.texture,
+                    resource.sampler,
+                });
+        }
+        SDL_BindGPUVertexSamplers(
+            pass,
+            0,
+            vertex_textures.data(),
+            static_cast<Uint32>(vertex_textures.size()));
+    }
+    const SDL_GPUBufferBinding pinned_vertex_binding{
+        // Skinned and palette-world draws read the
+        // mirrored buffer; the palette carries the mirror
+        // on both sides, so unmirrored vertices would
+        // apply it three times.
+        mirrored_vertices
+            ? mesh.vertices
+            : mesh.pinned_vertices,
+        0,
+    };
+    SDL_BindGPUVertexBuffers(
+        pass,
+        0,
+        &pinned_vertex_binding,
+        1);
+    const SDL_GPUBufferBinding pinned_index_binding{
+        mesh.indices,
+        0,
+    };
+    SDL_BindGPUIndexBuffer(
+        pass,
+        &pinned_index_binding,
+        SDL_GPU_INDEXELEMENTSIZE_32BIT);
+    SDL_DrawGPUIndexedPrimitives(
+        pass,
+        mesh.index_count,
+        1,
+        0,
+        0,
+        0);
+}
 #endif
 
 
@@ -4523,6 +4769,11 @@ bool run_gpu_engine(Engine& engine) {
                 };
                 stream_palettes(render_plan.draw_lists.opaque);
                 stream_palettes(render_plan.draw_lists.transparent);
+                for (const upstream::RenderDrawLists& task_lists :
+                     task_draw_lists) {
+                    stream_palettes(task_lists.opaque);
+                    stream_palettes(task_lists.transparent);
+                }
             }
 #endif
             const bool capture_ready =
@@ -4744,6 +4995,60 @@ bool run_gpu_engine(Engine& engine) {
                                 state.meshes.size()) {
                                 continue;
                             }
+                            const GpuMesh& mesh =
+                                state.meshes[draw.item_index];
+                            const upstream::RenderItem& draw_item =
+                                draw.item;
+                            const MaterialRecord* material =
+                                draw_item.material.value <
+                                        engine.materials.size()
+                                    ? &engine.materials[
+                                          draw_item.material.value]
+                                    : nullptr;
+#if BBLITE_PBR_VARIANTS > 0
+                            // The task pass draws PBR through the pin's own
+                            // stages exactly as the main pass does, from the
+                            // task's own camera and matrix.
+                            if (
+                                draw_item.material_kind ==
+                                upstream::RenderMaterialKind::pbr) {
+                                const std::size_t pinned_variant =
+                                    pinned_variant_for_draw(
+                                        scene,
+                                        engine,
+                                        draw);
+                                if (
+                                    pinned_variant ==
+                                    std::numeric_limits<
+                                        std::size_t>::max()) {
+                                    gpu_error(
+                                        ("PBR draw for mesh " +
+                                         std::to_string(
+                                             draw_item.mesh.value) +
+                                         ", material " +
+                                         std::to_string(
+                                             draw_item.material.value) +
+                                         " resolves no pinned variant in a "
+                                         "render task.")
+                                            .c_str());
+                                }
+                                ensure_pinned_slots(state, pinned_variant);
+                                draw_pinned_variant(
+                                    state,
+                                    command,
+                                    task_pass,
+                                    scene,
+                                    engine,
+                                    draw_camera,
+                                    draw_matrix,
+                                    draw,
+                                    mesh,
+                                    material,
+                                    pinned_variant,
+                                    bound_pipeline);
+                                continue;
+                            }
+#endif
                             SDL_GPUGraphicsPipeline* pipeline =
                                 pipeline_for(draw.pipeline, draw.item.shader_variant);
                             if (!pipeline) {
@@ -4756,16 +5061,6 @@ bool run_gpu_engine(Engine& engine) {
                                     pipeline);
                                 bound_pipeline = pipeline;
                             }
-                            const GpuMesh& mesh =
-                                state.meshes[draw.item_index];
-                            const upstream::RenderItem& draw_item =
-                                draw.item;
-                            const MaterialRecord* material =
-                                draw_item.material.value <
-                                        engine.materials.size()
-                                    ? &engine.materials[
-                                          draw_item.material.value]
-                                    : nullptr;
                             const bool standard_bucket =
                                 draw_item.material_kind ==
                                 upstream::RenderMaterialKind::standard;
@@ -5896,229 +6191,19 @@ bool run_gpu_engine(Engine& engine) {
                     if (
                         pinned_variant !=
                         std::numeric_limits<std::size_t>::max()) {
-                        SDL_GPUGraphicsPipeline* variant_pipeline =
-                            pinned_variant_pipeline(
-                                state,
-                                pinned_variant,
-                                draw.pipeline);
-                        if (variant_pipeline != bound_pipeline) {
-                            SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
-                            bound_pipeline = variant_pipeline;
-                        }
-                        const upstream::PbrVariantEntry& variant_entry =
-                            upstream::pbr_variants[pinned_variant];
-                        const upstream::SceneUniforms pinned_scene =
-                            pinned_scene_block(scene, camera, matrix);
-                        const std::vector<std::uint8_t> pinned_lights =
-                            pinned_lights_block(scene, engine);
-                        // A skinned draw takes the identity world with the
-                        // MIRRORED vertex buffer: the loader's palette is the
-                        // mirror-conjugated `jointWorld * IBM`, so against
-                        // mirrored vertices the product collapses to the
-                        // browser's own `M * jointWorld * IBM * v_unmirrored`,
-                        // and adding the mirror world on top double-applies
-                        // it -- the finding the Dawn backend's captured mesh
-                        // blocks localised. An animated no-skin mesh rides
-                        // the same convention with one matrix: its palette
-                        // entry is `M * world * M`, passed as the pin's
-                        // finalWorld against the mirrored buffer.
-                        const MeshRecord& pinned_record =
-                            engine.meshes[item.mesh.value];
-                        const bool skeleton_draw =
-                            pinned_variant_skeleton(pinned_variant);
-                        const bool world_from_palette =
-                            !skeleton_draw &&
-                            !pinned_record.bone_matrices.empty();
-                        const bool mirrored_vertices =
-                            skeleton_draw || world_from_palette;
-                        const upstream::MeshUniforms pinned_mesh =
-                            pinned_mesh_block(
-                                scene,
-                                engine,
-                                // For everything else: the RH to LH mirror,
-                                // which the pinned vertex buffer no longer
-                                // carries; the node transform is already baked
-                                // into those vertices.
-                                skeleton_draw
-                                    ? pinned_identity_world()
-                                    : world_from_palette
-                                        ? pinned_record.bone_matrices[0]
-                                        : pinned_mesh_world(),
-                                item.mesh.value);
-                        std::vector<std::uint8_t> pinned_material(
-                            variant_entry.material_ubo_bytes,
-                            0);
-                        if (material) {
-                            upstream::write_pbr_variant_material(
-                                pinned_variant,
-                                *material,
-                                pinned_material.data(),
-                                pinned_material.size());
-                        }
-                        // Each block at the slot the remap assigned it. The
-                        // order is the `.slots` map's, because a stage can
-                        // declare a block it never reads and Tint strips it.
-                        const auto push_blocks = [&](
-                                                     const PinnedStageSlots&
-                                                         slots,
-                                                     bool fragment_stage) {
-                            for (
-                                std::size_t slot = 0;
-                                slot < slots.uniforms.size();
-                                ++slot) {
-                                const std::string& block = slots.uniforms[slot];
-                                const void* data = nullptr;
-                                std::size_t size = 0;
-                                if (block == "scene") {
-                                    data = &pinned_scene;
-                                    size = sizeof(pinned_scene);
-                                } else if (block == "lights") {
-                                    data = pinned_lights.data();
-                                    size = pinned_lights.size();
-                                } else if (block == "mesh") {
-                                    data = &pinned_mesh;
-                                    size = sizeof(pinned_mesh);
-                                } else if (block == "material") {
-                                    data = pinned_material.data();
-                                    size = pinned_material.size();
-                                } else {
-                                    gpu_error(
-                                        ("pinned variant declares an unmapped "
-                                         "uniform block '" + block + "'.")
-                                            .c_str());
-                                }
-                                if (fragment_stage) {
-                                    SDL_PushGPUFragmentUniformData(
-                                        command,
-                                        static_cast<Uint32>(slot),
-                                        data,
-                                        static_cast<Uint32>(size));
-                                } else {
-                                    SDL_PushGPUVertexUniformData(
-                                        command,
-                                        static_cast<Uint32>(slot),
-                                        data,
-                                        static_cast<Uint32>(size));
-                                }
-                            }
-                        };
-                        push_blocks(
-                            state.pinned_vertex_slots[pinned_variant],
-                            false);
-                        push_blocks(
-                            state.pinned_fragment_slots[pinned_variant],
-                            true);
-                        const PinnedStageSlots& pinned_fragment =
-                            state.pinned_fragment_slots[pinned_variant];
-                        std::vector<SDL_GPUTextureSamplerBinding>
-                            pinned_textures;
-                        pinned_textures.reserve(
-                            pinned_fragment.textures.size());
-                        for (const std::string& name :
-                             pinned_fragment.textures) {
-                            const PinnedResource resource =
-                                pinned_resource_for(state, mesh, name);
-                            pinned_textures.push_back(
-                                SDL_GPUTextureSamplerBinding{
-                                    resource.texture,
-                                    resource.sampler,
-                                });
-                        }
-                        if (!pinned_textures.empty()) {
-                            SDL_BindGPUFragmentSamplers(
-                                pass,
-                                0,
-                                pinned_textures.data(),
-                                static_cast<Uint32>(pinned_textures.size()));
-                        }
-                        // The vertex stage's own textures -- the skeleton
-                        // arm's bone palette -- in the same `.slots` order as
-                        // the fragment's, and its storage buffers -- the
-                        // morph arms' deltas and weights, the same buffers
-                        // the transcribed stage read.
-                        const PinnedStageSlots& pinned_vertex =
-                            state.pinned_vertex_slots[pinned_variant];
-                        if (!pinned_vertex.storage.empty()) {
-                            std::vector<SDL_GPUBuffer*> storage_buffers;
-                            storage_buffers.reserve(
-                                pinned_vertex.storage.size());
-                            for (const std::string& name :
-                                 pinned_vertex.storage) {
-                                SDL_GPUBuffer* buffer = nullptr;
-#if BBLITE_GPU_MORPH_STORAGE
-                                if (name == "morphDeltas") {
-                                    buffer = mesh.morph_deltas;
-                                } else if (name == "morph") {
-                                    buffer = mesh.morph_weights;
-                                }
-#endif
-                                if (!buffer) {
-                                    gpu_error(
-                                        ("pinned variant declares an "
-                                         "unmapped storage buffer '" +
-                                         name + "'.")
-                                            .c_str());
-                                }
-                                storage_buffers.push_back(buffer);
-                            }
-                            SDL_BindGPUVertexStorageBuffers(
-                                pass,
-                                0,
-                                storage_buffers.data(),
-                                static_cast<Uint32>(
-                                    storage_buffers.size()));
-                        }
-                        if (!pinned_vertex.textures.empty()) {
-                            std::vector<SDL_GPUTextureSamplerBinding>
-                                vertex_textures;
-                            vertex_textures.reserve(
-                                pinned_vertex.textures.size());
-                            for (const std::string& name :
-                                 pinned_vertex.textures) {
-                                const PinnedResource resource =
-                                    pinned_resource_for(state, mesh, name);
-                                vertex_textures.push_back(
-                                    SDL_GPUTextureSamplerBinding{
-                                        resource.texture,
-                                        resource.sampler,
-                                    });
-                            }
-                            SDL_BindGPUVertexSamplers(
-                                pass,
-                                0,
-                                vertex_textures.data(),
-                                static_cast<Uint32>(vertex_textures.size()));
-                        }
-                        const SDL_GPUBufferBinding pinned_vertex_binding{
-                            // Skinned and palette-world draws read the
-                            // mirrored buffer; the palette carries the mirror
-                            // on both sides, so unmirrored vertices would
-                            // apply it three times.
-                            mirrored_vertices
-                                ? mesh.vertices
-                                : mesh.pinned_vertices,
-                            0,
-                        };
-                        SDL_BindGPUVertexBuffers(
+                        draw_pinned_variant(
+                            state,
+                            command,
                             pass,
-                            0,
-                            &pinned_vertex_binding,
-                            1);
-                        const SDL_GPUBufferBinding pinned_index_binding{
-                            mesh.indices,
-                            0,
-                        };
-                        SDL_BindGPUIndexBuffer(
-                            pass,
-                            &pinned_index_binding,
-                            SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                        SDL_DrawGPUIndexedPrimitives(
-                            pass,
-                            mesh.index_count,
-                            1,
-                            0,
-                            0,
-                            0);
+                            scene,
+                            engine,
+                            camera,
+                            matrix,
+                            draw,
+                            mesh,
+                            material,
+                            pinned_variant,
+                            bound_pipeline);
                         continue;
                     }
 #else
