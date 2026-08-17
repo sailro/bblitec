@@ -104,6 +104,11 @@ interface WriterState {
      * lane a `data[x + n]` write lands in depends on which local `x` is.
      */
     offsetLocals: Map<string, string>;
+    /**
+     * A nested helper's parameters bound to the field names its caller passed,
+     * for a helper keyed on a plain parameter rather than a literal or template.
+     */
+    parameterFields?: Readonly<Record<string, string>>;
     locals: Set<string>;
     /**
      * Locals bound to a vector rather than a scalar, and how to index them: a
@@ -159,6 +164,26 @@ function offsetsLookupField(expression: ts.Expression): string | undefined {
         expression.getText(),
     );
     return match?.[1];
+}
+
+/**
+ * The field an `offsets.get(param)` names, for a helper whose key is a plain
+ * parameter rather than a literal or a template.
+ *
+ * `writeSheenUvTransform(data, offsets, mName, tName, tex)` is this shape: the
+ * caller passes the field names themselves, so the parameter binding recorded at
+ * the call site is what says which field each local indexes. Without it the
+ * locals never register and the helper's writes resolve against nothing.
+ */
+function parameterOffsetField(
+    state: WriterState,
+    expression: ts.Expression,
+): string | undefined {
+    const match = /offsets\s*\.\s*get\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/.exec(
+        expression.getText(state.file),
+    );
+    if (!match) return undefined;
+    return state.parameterFields?.[match[1]!];
 }
 
 /**
@@ -650,7 +675,10 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
                     // (`offsets.get(`${texName}UVm`)`), so the literal name is
                     // the caller's base field; only the trailing `m`/`t` says
                     // which of the pair this local indexes.
-                    templateOffsetField(state, binding.initializer);
+                    templateOffsetField(state, binding.initializer) ??
+                    // And a helper keyed on a plain parameter takes the field
+                    // from the binding the call site recorded.
+                    parameterOffsetField(state, binding.initializer);
                 if (field !== undefined) state.offsetLocals.set(name, field);
                 continue;
             }
@@ -780,22 +808,54 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
                         "a literal transform name.",
                 );
             }
-            const base = nameArgument.text;
+            const literal = nameArgument.text;
             const suffix = nestedFieldSuffix(state, callee);
-            const declares = state.request.slots.some((slot) =>
-                slot.name === `${base}${suffix}m`
-            );
-            if (!declares) return [];
+            const declares = (field: string): boolean =>
+                state.request.slots.some((slot) => slot.name === field);
+            // Two shapes reach here. The uv-transform helper is passed a base its
+            // key is built from — `writeOne(..., "baseColor")` fills
+            // `baseColorUVm`/`baseColorUVt` — while the sheen helper is passed
+            // the field names themselves: `writeSheenUvTransform(..., "sheenUVm",
+            // "sheenUVt", ...)`. Appending the suffix to the second shape looks
+            // for `sheenUVmUVm`, which used to resolve to nothing and emit
+            // nothing, leaving four fields at zero.
+            const base = declares(`${literal}${suffix}m`)
+                ? `${literal}${suffix}`
+                : declares(literal) && literal.endsWith("m")
+                ? literal.slice(0, -1)
+                : undefined;
+            if (base === undefined) return [];
+            // Every string literal the call passes, against the helper's own
+            // parameter names, so a key read off a parameter resolves.
+            const nested = state.nestedDeclarations[callee];
+            const parameterFields: Record<string, string> = {};
+            if (nested) {
+                const literals = call.arguments.filter((argument) =>
+                    ts.isStringLiteral(argument)
+                ) as ts.StringLiteral[];
+                const named = nested.declaration.parameters.filter(
+                    (parameter) => ts.isIdentifier(parameter.name),
+                );
+                // The literals fill the trailing name parameters in order.
+                const offset = named.length - literals.length - 1;
+                literals.forEach((value, index) => {
+                    const parameter = named[offset + index];
+                    if (parameter && ts.isIdentifier(parameter.name)) {
+                        parameterFields[parameter.name.text] = value.text;
+                    }
+                });
+            }
             // Each call is its own block: the pin calls the helper once per
             // slot and its locals (`sx`, `ang`, ...) are function-scoped there,
             // so they would collide once inlined side by side.
             return [
-                `    { // ${callee}("${base}")`,
+                `    { // ${callee}("${literal}")`,
                 ...lowerNested(
                     state,
                     callee,
-                    `${base}${suffix}`,
+                    base,
                     nestedSources(base),
+                    parameterFields,
                 ),
                 "    }",
             ];
@@ -827,6 +887,7 @@ function lowerNested(
     symbolName: string,
     base: string,
     propertySources: Readonly<Record<string, string | null>>,
+    parameterFields: Readonly<Record<string, string>> = {},
 ): string[] {
     const nestedState: WriterState = {
         file: state.file,
@@ -838,6 +899,7 @@ function lowerNested(
             propertySources,
         },
         baseLane: fieldLane(state.request, `${base}m`),
+        parameterFields,
         locals: new Set<string>(),
         vectorLocals: new Map(),
         offsetLocals: new Map<string, string>(),

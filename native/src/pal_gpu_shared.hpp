@@ -621,6 +621,15 @@ inline bool pinned_variant_supported(std::size_t variant) {
         // texel. The unwritten-field gate misses it because it attributes
         // coverage by base-field range, so `sheenParams` is credited with every
         // field up to the next base field.
+        // Sheen alone still disagrees, and now for a narrower reason. Its two
+        // UV-transform calls do lower — the helper is keyed on a plain parameter
+        // and `parameterOffsetField` resolves it — and the emitted arithmetic is
+        // the pin's, writing the identity transform the pin also writes when a
+        // texture carries none. But enabling it moves Scene 29 from 0.193 to
+        // 1.178 full and 5.158 to 30.522 region, so the writes are landing
+        // somewhere they should not. The next step is dumping this variant's
+        // material block against the browser's, not another reading of the
+        // lowered code.
         if (arm == "sheen") return false;
         if (bar == std::string_view::npos) break;
         key = key.substr(bar + 1);
