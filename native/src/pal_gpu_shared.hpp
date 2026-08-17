@@ -723,6 +723,15 @@ inline std::size_t pinned_variant_for_draw(
     // than our fixed one. Scene 30's non-refractive materials measured 17.8 MAD
     // here against 0.05 transcribed even with the refraction arms excluded, so
     // the pass structure -- not just the arm -- is the open measurement.
+    // A transmission scene stays transcribed, and the two-listing comparison
+    // now bounds why: every refraction material block matches the browser's
+    // byte for byte (`scene -- uniforms scene30` against the capture's
+    // `pinnedMaterialBlocks`), yet Scene 30 measures 24.4 with background
+    // attribution 1.576 -- a pass-level divergence. The pin renders refraction
+    // through its own 1024x1024 rgba16float target where this backend binds the
+    // mid-pass scene-colour grab, so opening this is frame-graph work, not a
+    // block fix. Scene 253 measuring 0.002 through the probe proves only
+    // tolerance: it never enables `renderer:transmission`.
     if (scene.transmission_enabled) {
         return std::numeric_limits<std::size_t>::max();
     }
