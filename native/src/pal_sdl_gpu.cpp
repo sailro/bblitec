@@ -5585,7 +5585,6 @@ bool run_gpu_engine(Engine& engine) {
             depth_info.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
             SDL_GPURenderPass* pass =
                 SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info);
-            bool transmission_copied = false;
             bool scene_matrix_bound = true;
 #if BBLITE_GPU_INSTANCING
             const std::array<float, 16> identity_parent_world{

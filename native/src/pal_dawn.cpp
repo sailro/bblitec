@@ -1436,12 +1436,18 @@ void upload_brdf(DawnState& state, const EnvironmentState& environment) {
 WGPUShaderModule& fragment_module_for(
     DawnState& state,
     bool standard) {
-    WGPUShaderModule& module =
-        standard ? state.standard_module : state.pbr_module;
+    // The transcribed PBR fragment is retired: PBR draws run the pin's own
+    // composed stages, and the remaining requesters -- the diagnostic passes
+    // -- have no pinned arm yet, so asking for it is an error rather than a
+    // missing-file crash.
+    if (!standard) {
+        dawn_error(
+            "transcribed PBR fragment requested; the pinned path owns "
+            "every PBR draw.");
+    }
+    WGPUShaderModule& module = state.standard_module;
     if (!module) {
-        module = load_wgsl_module(
-            state,
-            standard ? "standard.frag" : "pbr.frag");
+        module = load_wgsl_module(state, "standard.frag");
     }
     return module;
 }
@@ -2689,11 +2695,12 @@ WGPURenderPipeline geometry_pipeline_for(
     if (traits.grid || traits.shader) {
         dawn_error("geometry tasks reached a non-mesh pipeline kind.");
     }
-    if (!geometry.pbr_fragment) {
-        geometry.pbr_fragment = load_wgsl_module(
-            state,
-            "pbr-geometry-" +
-                std::to_string(task.geometry.shader_index) + ".frag");
+    // The transcribed pbr-geometry fragments are retired; a PBR mesh in a
+    // geometry task has no pinned arm yet, so only Standard pipelines build.
+    if (!traits.standard) {
+        dawn_error(
+            "PBR draw in a geometry task has no pinned path; the "
+            "transcribed pbr-geometry fragments are retired.");
     }
     if (traits.standard && !geometry.standard_fragment) {
         geometry.standard_fragment = load_wgsl_module(
@@ -2768,9 +2775,7 @@ WGPURenderPipeline geometry_pipeline_for(
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = traits.standard
-        ? geometry.standard_fragment
-        : geometry.pbr_fragment;
+    fragment.module = geometry.standard_fragment;
     fragment.entryPoint = string_view("mainFragment");
     fragment.targetCount = color_targets.size();
     fragment.targets = color_targets.data();

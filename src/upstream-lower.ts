@@ -273,7 +273,12 @@ class GeneratedSourceWriter {
         if (
             features.includes("light:hemispheric") ||
             features.includes("light:directional") ||
-            features.includes("light:spot")
+            features.includes("light:spot") ||
+            // The pinned point-light block writer also indexes the light's
+            // world matrix (`write_point_light` calls
+            // `local_matrix_from_direction`), so a point-only scene that
+            // composes variants needs the builder too.
+            features.includes("light:point")
         ) {
             const light = new LightLowerer(context);
             this.writeSource(
