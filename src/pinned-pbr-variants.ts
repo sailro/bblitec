@@ -325,21 +325,28 @@ export async function composePinnedPbrVariant(
     options: PinnedComposeOptions = {},
 ): Promise<PinnedPbrVariant> {
     const { features, features2 } = await pinnedMaterialFeatures(material);
-    const [compose, templateExt, flatNormal] = await Promise.all([
+    const [compose, templateExt, flatNormal, fog] = await Promise.all([
         importPinnedModule<{
             createPbrComposer: (deps: Record<string, unknown>) => PinnedComposeFn;
         }>("material/pbr/pbr-compose.js"),
         importPinnedModule<{ createPbrTemplateExt: unknown }>(
             "material/pbr/pbr-template-ext.js",
         ),
-        // The pin imports this only when a primitive lacks normals; passing it
-        // unconditionally is identical because insertion is governed by the
-        // `MSH_FLAT_NORMAL` mesh bit, the way `_fogHelper` is governed by the
-        // fog bit. Scene 255's captured fragment carried these lines while the
-        // empty string here composed the smooth-normal arm against them.
+        // The pin imports these only when a primitive lacks normals or the
+        // scene enables fog; passing them unconditionally is identical because
+        // insertion is governed by the `MSH_FLAT_NORMAL` mesh bit and the
+        // `PBR_HAS_FOG` scene bit. An empty string here is the transcribed
+        // fallback in another shape: Scene 255's captured fragment carried the
+        // flat-normal lines while "" composed the smooth-normal arm against
+        // them, and the byte-for-byte gate only logs a fragment nothing
+        // matches.
         importPinnedModule<{ FLAT_NORMAL_WGSL: string }>(
             "material/pbr/fragments/flat-normal-wgsl.js",
         ),
+        importPinnedModule<{
+            PBR_FOG_HELPER: string;
+            PBR_FOG_BLOCK: string;
+        }>("material/pbr/pbr-fog-wgsl.js"),
     ]);
     const composer = compose.createPbrComposer({
         _singleLightWGSL: options.singleLightWgsl ?? "",
@@ -350,8 +357,8 @@ export async function composePinnedPbrVariant(
         _multiLightLoop: options.multiLightLoop ?? "",
         _toneMappingHelpers: options.toneMappingHelpers ?? "",
         _toneMappingCall: options.toneMappingCall ?? "",
-        _fogHelper: "",
-        _fogBlock: "",
+        _fogHelper: fog.PBR_FOG_HELPER,
+        _fogBlock: fog.PBR_FOG_BLOCK,
         _createPbrTemplateExt: templateExt.createPbrTemplateExt,
         _flatNormalWgsl: flatNormal.FLAT_NORMAL_WGSL,
         _createPbrShadowFragment: null,
