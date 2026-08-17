@@ -171,6 +171,103 @@ function Move-IfDifferent {
     Move-Item -LiteralPath $Temporary -Destination $Destination -Force
 }
 
+function Remap-PinnedVariantRegisters {
+    <#
+    .SYNOPSIS
+    Moves a pinned composed variant's registers into SDL_GPU's spaces.
+
+    .DESCRIPTION
+    Tint maps `@group(N)` to `spaceN`, and the shaders this repository
+    specializes are authored in the groups that make that land where SDL_GPU's
+    D3D12 backend looks: vertex uniforms in space1 with its textures in space0,
+    fragment textures in space2 with its uniforms in space3.
+
+    Babylon Lite's own variants are not authored for us. They use group 0 for the
+    per-pass scene and lights blocks and group 1 for the per-draw mesh block, the
+    material block and every texture, which Tint puts in space0 and space1. This
+    moves them, and renumbers each class densely in the pin's own group-then-
+    binding order, so the shader text stays the pin's and only its addressing
+    changes -- the transformation that made emitting the pin's stages viable for
+    this backend at all.
+
+    The resulting slot order is what a PAL pushes against: vertex uniforms are
+    scene then mesh; fragment uniforms are scene, lights, then material.
+    #>
+    param([string]$Path, [bool]$IsVertex)
+
+    $source = Get-Content $Path -Raw
+    $uniformSpace = if ($IsVertex) { 1 } else { 3 }
+    $resourceSpace = if ($IsVertex) { 0 } else { 2 }
+    $pattern = "register\(([tsbu])(\d+)(?:, space(\d+))?\)"
+    $matches = [regex]::Matches($source, $pattern)
+    $mapping = @{}
+    foreach ($registerClass in @("b", "t", "s", "u")) {
+        $ordered = @(
+            $matches |
+                Where-Object { $_.Groups[1].Value -eq $registerClass } |
+                ForEach-Object {
+                    [PSCustomObject]@{
+                        Space = if ($_.Groups[3].Success) {
+                            [int]$_.Groups[3].Value
+                        } else {
+                            0
+                        }
+                        Index = [int]$_.Groups[2].Value
+                    }
+                } |
+                Sort-Object Space, Index -Unique
+        )
+        for ($index = 0; $index -lt $ordered.Count; $index += 1) {
+            $key = "$registerClass`:$($ordered[$index].Space)`:" +
+                "$($ordered[$index].Index)"
+            $mapping[$key] = $index
+        }
+    }
+    $normalized = [regex]::Replace(
+        $source,
+        $pattern,
+        {
+            param($match)
+            $registerClass = $match.Groups[1].Value
+            $original = [int]$match.Groups[2].Value
+            $space = if ($match.Groups[3].Success) {
+                [int]$match.Groups[3].Value
+            } else {
+                0
+            }
+            $mapped = $mapping["$registerClass`:$space`:$original"]
+            $target = if ($registerClass -eq "b") {
+                $uniformSpace
+            } else {
+                $resourceSpace
+            }
+            return "register($registerClass$mapped, space$target)"
+        }
+    )
+    Set-Content $Path $normalized
+    # What the remap produced, by the pin's own names, for a backend that binds
+    # by slot. Nothing else can publish this: the WGSL over-counts, because a
+    # stage can declare a block it never reads and Tint strips it, and Tint's
+    # own inspector dump lists sampled textures and samplers but no uniform
+    # buffers. The pass that assigns the slots is the only authority on them.
+    $slots = @(
+        [regex]::Matches(
+            $normalized,
+            "(?:cbuffer\s+cbuffer_(\w+)|(?:Texture\w*<[^>]+>|SamplerState)\s+(\w+))\s*:\s*register\(([tsb])(\d+)"
+        ) |
+            ForEach-Object {
+                $name = if ($_.Groups[1].Success) {
+                    $_.Groups[1].Value
+                } else {
+                    $_.Groups[2].Value
+                }
+                "$($_.Groups[3].Value)$($_.Groups[4].Value) $name"
+            }
+    )
+    $slotPath = [System.IO.Path]::ChangeExtension($Path, ".slots")
+    Set-Content $slotPath ($slots -join [Environment]::NewLine)
+}
+
 function Normalize-TintHlslBindings {
     param([string]$Path)
 
@@ -361,7 +458,13 @@ foreach ($shaderDirectory in $shaderDirectories) {
             ) {
                 throw "Tint binding reflection differs from native WGSL for $($source.FullName)."
             }
-            Normalize-TintHlslBindings $pendingHlsl
+            if ($isPinnedVariant) {
+                Remap-PinnedVariantRegisters `
+                    $pendingHlsl `
+                    $outputBase.EndsWith(".vert")
+            } else {
+                Normalize-TintHlslBindings $pendingHlsl
+            }
             Move-IfDifferent $pendingHlsl "$outputBase.hlsl"
             $pendingMsl = "$outputBase.pending-msl"
             & $Tint $source.FullName --entry-point $entryPoint --format msl --output-name $pendingMsl

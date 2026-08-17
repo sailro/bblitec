@@ -1116,7 +1116,17 @@ export function pinnedPbrVariantsHeader(
             `    {"${variant.fragmentKey}", "${variant.vertex}", ` +
                 `"${variant.fragment}", ${totalBytes}, ` +
                 `${bindingRows.length}, ${bindings.length}, ` +
-                `${attributeRows.length}, ${attributes.length}},`,
+                `${attributeRows.length}, ${attributes.length}, ` +
+                `${
+                    bindings.filter((binding) =>
+                        binding.kind === "sampler" && binding.vertex
+                    ).length
+                }, ` +
+                `${
+                    bindings.filter((binding) =>
+                        binding.kind === "sampler" && binding.fragment
+                    ).length
+                }},`,
         );
         for (const attribute of attributes) {
             attributeRows.push(
@@ -1237,6 +1247,18 @@ struct PbrVariantEntry {
     /** Half-open range into the attribute table above. */
     std::size_t first_attribute;
     std::size_t attribute_count;
+    /**
+     * Texture/sampler pairs each stage declares, for the shader create info.
+     *
+     * The *uniform* slot order is deliberately absent. A stage can declare a
+     * block it never reads — the pin's unlit fragment declares its mesh block
+     * for the mli() helper and then takes no light path — and Tint strips it, so the
+     * compiled HLSL carries fewer uniform registers than the WGSL declares. A
+     * backend that binds by slot has to read the order out of the compiled
+     * shader, not out of the source.
+     */
+    std::size_t vertex_sampler_count;
+    std::size_t fragment_sampler_count;
 };
 
 inline constexpr std::array<PbrVariantEntry, ${variants.length}>
