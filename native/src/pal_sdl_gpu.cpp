@@ -363,10 +363,22 @@ PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
         while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) {
             name.pop_back();
         }
+        // Placed at its own register index rather than appended: the sidecar
+        // lists declarations in the order they appear in the HLSL, which is not
+        // register order. A lit fragment's reads `b0 scene`, `b3 material`,
+        // `b2 mesh`, `b1 lights`, and appending pushed `material` where the
+        // shader wanted `lights` -- 9.238 MAD, while an unlit fragment happened
+        // to declare its two blocks in index order and so looked correct.
+        const std::size_t index =
+            static_cast<std::size_t>(std::stoul(reg.substr(1)));
         // `b` is a uniform slot and `t` a texture; `s` is the sampler paired
         // with the texture of the same index, which SDL_GPU binds together.
-        if (reg[0] == 'b') slots.uniforms.push_back(name);
-        if (reg[0] == 't') slots.textures.push_back(name);
+        std::vector<std::string>* target = reg[0] == 'b'
+            ? &slots.uniforms
+            : reg[0] == 't' ? &slots.textures : nullptr;
+        if (!target) return;
+        if (target->size() <= index) target->resize(index + 1);
+        (*target)[index] = name;
     };
     for (const std::uint8_t byte : bytes) {
         if (byte == '\n') {
@@ -5920,29 +5932,31 @@ bool run_gpu_engine(Engine& engine) {
                     // transcribed pipeline already bound above.
                     const std::size_t pinned_variant =
                         pinned_variant_for_draw(scene, engine, draw);
-                    // This backend has measured fewer arms than Dawn has. A lit
-                    // draw pushes the pin's 1040-byte lights block at the slot
-                    // the remap assigned it, and Scene 13 measures 9.238 MAD
-                    // that way against 0.001 on Dawn with the same shared
-                    // blocks -- so the difference is in how this backend
-                    // delivers them, not in what they contain. Until that is
-                    // measured, a lit draw stays on the transcribed pipeline.
                     if (
                         pinned_variant !=
                         std::numeric_limits<std::size_t>::max()) {
                         ensure_pinned_slots(state, pinned_variant);
                     }
-                    const bool pinned_lit =
-                        pinned_variant !=
-                            std::numeric_limits<std::size_t>::max() &&
-                        state
-                            .pinned_fragment_slots[pinned_variant]
-                            .uniforms.size() > 2;
+                    // A mirrored node's draw stays transcribed on this
+                    // backend. Scene 168 measures 11.948 MAD through the pinned
+                    // pipeline here against 0.000 on Dawn, with both deriving
+                    // the clockwise winding from the same `RenderPipelineKind`
+                    // and both feeding the same unmirrored vertices through the
+                    // same mirroring mesh block -- so the difference is in this
+                    // backend's own front-face handling, and naming it needs a
+                    // capture rather than a third reading of the mapping.
+                    const bool pinned_clockwise =
+                        draw.pipeline ==
+                            upstream::RenderPipelineKind::
+                                pbr_opaque_none_clockwise ||
+                        draw.pipeline ==
+                            upstream::RenderPipelineKind::
+                                pbr_transparent_none_clockwise;
                     if (
                         pinned_variant !=
                             std::numeric_limits<std::size_t>::max() &&
                         mesh.pinned_vertices &&
-                        !pinned_lit) {
+                        !pinned_clockwise) {
                         SDL_GPUGraphicsPipeline* variant_pipeline =
                             pinned_variant_pipeline(
                                 state,

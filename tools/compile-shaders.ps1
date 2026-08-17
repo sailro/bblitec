@@ -261,8 +261,14 @@ function Remap-PinnedVariantRegisters {
                 } else {
                     $_.Groups[2].Value
                 }
-                "$($_.Groups[3].Value)$($_.Groups[4].Value) $name"
-            }
+                [PSCustomObject]@{
+                    Class = $_.Groups[3].Value
+                    Index = [int]$_.Groups[4].Value
+                    Name = $name
+                }
+            } |
+            Sort-Object Class, Index |
+            ForEach-Object { "$($_.Class)$($_.Index) $($_.Name)" }
     )
     $slotPath = [System.IO.Path]::ChangeExtension($Path, ".slots")
     Set-Content $slotPath ($slots -join [Environment]::NewLine)
