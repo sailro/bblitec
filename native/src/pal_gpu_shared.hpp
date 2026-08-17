@@ -609,18 +609,6 @@ inline bool pinned_variant_supported(std::size_t variant) {
     while (!key.empty()) {
         const std::size_t bar = key.find('|');
         const std::string_view arm = key.substr(0, bar);
-        // Sheen alone still disagrees, and the remaining difference is in the
-        // material block, not the shader: `scene -- compose scene29` reports the
-        // composed fragment byte-identical to the browser's own, and
-        // `scene -- uniforms scene29 --size 256` gives the block it should be
-        // filled with. Two sources were corrected against that measurement — the
-        // two sheen UV transforms now read `material.sheen_transform` and
-        // `material.sheen_roughness_transform` rather than the identity the
-        // dispatcher passes, and occlusion reads the ORM transform — and neither
-        // moved the number (1.029 full / 25.954 region). What is left is a
-        // field-by-field comparison of the block our writers produce against
-        // those 22 labelled values.
-        if (arm == "sheen") return false;
         // Every arm the corpus reaches except sheen, measured: with all of them
         // allowed, Scene 29 Sheen Cloth is the only scene that disagrees
         // (0.193 full / 5.158 region against 0.001 / 0.01, identically on both

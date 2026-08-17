@@ -1061,6 +1061,48 @@ inline void write_render_capture(
     }
     json.end_array();
 
+#if BBLITE_PBR_VARIANTS > 0
+    // The material block our writers produce for every (material, variant) the
+    // selector table names, straight from the same `write_pbr_variant_material`
+    // the draw path calls. `scene -- uniforms <id> --size N` prints the
+    // browser's own block field-labelled; this is the native half of that
+    // comparison, so a disagreeing field is read off two listings instead of
+    // reasoned about. Built on the CPU, so it captures variants the draw gate
+    // currently refuses too.
+    json.key("pinnedMaterialBlocks");
+    json.begin_array();
+    {
+        std::vector<std::uint64_t> seen;
+        for (const upstream::PbrVariantSelector& selector :
+             upstream::pbr_variant_selectors) {
+            if (selector.material_index >= engine.materials.size()) continue;
+            const std::uint64_t pair =
+                (static_cast<std::uint64_t>(selector.material_index) << 32) |
+                selector.variant;
+            if (std::find(seen.begin(), seen.end(), pair) != seen.end()) {
+                continue;
+            }
+            seen.push_back(pair);
+            const upstream::PbrVariantEntry& entry =
+                upstream::pbr_variants[selector.variant];
+            std::vector<float> block(entry.material_ubo_bytes / 4, 0.0f);
+            upstream::write_pbr_variant_material(
+                selector.variant,
+                engine.materials[selector.material_index],
+                block.data(),
+                entry.material_ubo_bytes);
+            json.begin_object();
+            json.field("materialIndex", selector.material_index);
+            json.field("variant", selector.variant);
+            json.field("key", std::string(entry.key));
+            json.field("bytes", entry.material_ubo_bytes);
+            json.field("values", block.data(), block.size());
+            json.end_object();
+        }
+    }
+    json.end_array();
+#endif
+
     json.end_object();
     stream << '\n';
 }

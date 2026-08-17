@@ -174,11 +174,7 @@ const extensionWriters: ReadonlyArray<{
             ormTexture: "material.orm_transform",
             emissiveTexture: "material.emissive_transform",
             specGlossTexture: "bblIdentityTransform",
-            // Occlusion rides the ORM texture, so it carries that texture's
-            // transform. The browser's own block for Scene 29 has `occlUVm`
-            // equal to `ormUVm` at 30 / -30 (`scene -- uniforms scene29
-            // --size 256`), where the identity placeholder wrote 1 / 1.
-            occlusionTexture: "material.orm_transform",
+            occlusionTexture: "bblIdentityTransform",
         },
         nestedWriters: {
             writeOne: uvTransformSources({
@@ -186,13 +182,16 @@ const extensionWriters: ReadonlyArray<{
                 normal: "material.normal_transform",
                 orm: "material.orm_transform",
                 emissive: "material.emissive_transform",
-                // Neither slot carries a transform of its own here: occlusion
-                // binds through the ORM slot (docs/fidelity.md), and the
-                // specular-glossiness pair has no transform in the loader. The
-                // pin reads `tex?.uScale ?? 1` for an absent texture, which is
-                // the identity a default-constructed TextureTransform gives.
+                // Occlusion rides the ORM texture, so it carries that
+                // texture's transform: the browser's block for Scene 29 has
+                // `occlUVm` equal to `ormUVm` at 30 / -30 where the identity
+                // stood here (`scene -- uniforms scene29 --size 256` against
+                // the native capture's `pinnedMaterialBlocks`).
+                occl: "material.orm_transform",
+                // Specular-glossiness has no transform in the loader; the pin
+                // reads `tex?.uScale ?? 1` for an absent texture, which is the
+                // identity a default-constructed TextureTransform gives.
                 specGloss: "bblIdentityTransform",
-                occl: "bblIdentityTransform",
             }),
         },
     },

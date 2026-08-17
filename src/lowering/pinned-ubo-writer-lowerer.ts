@@ -854,7 +854,17 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
                     state,
                     callee,
                     base,
-                    nestedSources(base),
+                    // The sources map is keyed on what the caller passed, not on
+                    // the derived field base: `writeOne(..., "baseColor")` maps
+                    // under "baseColor" where the field base is "baseColorUV".
+                    // Passing the suffixed base here missed every entry and fell
+                    // back to the identity `transform` parameter — which zeroed
+                    // no field, so only a captured-block diff (Scene 29, all
+                    // four base UV transforms at 1/1 against the browser's
+                    // 30/-30) made it visible.
+                    nestedSources(
+                        base === `${literal}${suffix}` ? literal : base,
+                    ),
                     parameterFields,
                 ),
                 "    }",
