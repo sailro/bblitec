@@ -2758,6 +2758,11 @@ bool run_gpu_engine(Engine& engine) {
         color_target.format = transmission_enabled
             ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
             : swapchain_format;
+#if BBLITE_PBR_VARIANTS > 0
+        // The pinned pipelines are built lazily on first use, long after this
+        // point, and they target the same attachment as the transcribed ones.
+        state.pinned_color_format = color_target.format;
+#endif
         SDL_GPUGraphicsPipelineCreateInfo pipeline_info{};
         pipeline_info.vertex_shader = vertex_shader;
         pipeline_info.fragment_shader = fragment_shader;
@@ -5937,26 +5942,10 @@ bool run_gpu_engine(Engine& engine) {
                         std::numeric_limits<std::size_t>::max()) {
                         ensure_pinned_slots(state, pinned_variant);
                     }
-                    // A mirrored node's draw stays transcribed on this
-                    // backend. Scene 168 measures 11.948 MAD through the pinned
-                    // pipeline here against 0.000 on Dawn, with both deriving
-                    // the clockwise winding from the same `RenderPipelineKind`
-                    // and both feeding the same unmirrored vertices through the
-                    // same mirroring mesh block -- so the difference is in this
-                    // backend's own front-face handling, and naming it needs a
-                    // capture rather than a third reading of the mapping.
-                    const bool pinned_clockwise =
-                        draw.pipeline ==
-                            upstream::RenderPipelineKind::
-                                pbr_opaque_none_clockwise ||
-                        draw.pipeline ==
-                            upstream::RenderPipelineKind::
-                                pbr_transparent_none_clockwise;
                     if (
                         pinned_variant !=
                             std::numeric_limits<std::size_t>::max() &&
-                        mesh.pinned_vertices &&
-                        !pinned_clockwise) {
+                        mesh.pinned_vertices) {
                         SDL_GPUGraphicsPipeline* variant_pipeline =
                             pinned_variant_pipeline(
                                 state,
