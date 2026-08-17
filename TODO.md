@@ -151,36 +151,36 @@ Both backends stay long-term as mutually validating implementations;
 
 ### Shader provenance
 
-- [ ] Bring the remaining red scenes back through the pinned-only PBR path.
-  The hand-written PBR shader text is DELETED -- both PALs draw Babylon
-  Lite's own composed variants for every PBR draw, keyed per renderable in
-  loader creation order (scene-code builders, from-data streams and the
-  runtime fallback included), with scene-code materials, setters, the
-  default material, fog, morph storage and the animated world transport all
-  composing from the pin. A draw the shared gate refuses is an error naming
-  the mesh. What remains is pass structure, one arm, and one design bound:
+- [ ] Bring the last 13 scenes back through the pinned-only PBR path. The
+  hand-written PBR shader text is DELETED; 59 of 72 scenes draw Babylon
+  Lite's own composed variants on both backends, keyed per renderable and
+  per creation-ordered material handle across every family, with scene-code
+  materials, setters, no-color views, the default material, fog, morph
+  storage, the animated world transport and the runtime-spawn fallback all
+  composing from the pin. What remains:
 
-  - transmission scenes (30, 33, 176, 212, 244, 246, 247, 253, 265, 273):
-    the pin renders refraction through its own 1024x1024 rgba16float RTT
-    with image processing toggled off (`refraction-rtt-fragment.js`
-    registers `LINEAR_IMAGE_PROCESSING_SLOTS`, wrapping every fragment's
-    processing tail in `if(scene.vImageInfos.w>=0.0)`); this backend has no
-    pinned pass for it
+  - transmission scenes (30, 33, 176, 212, 244, 247, 253, 265): the pin
+    renders refraction through its own 1024x1024 rgba16float RTT with image
+    processing toggled off (`refraction-rtt-fragment.js` registers
+    `LINEAR_IMAGE_PROCESSING_SLOTS`, wrapping every fragment's processing
+    tail in `if(scene.vImageInfos.w>=0.0)`); this backend has no pinned pass
+    for it
   - instanced meshes (35, regression-instanced-ground): the pin's
     thin-instance arm (`_createThinInstanceFragment`, the remaining null
     composer dep) plus the per-instance vertex buffer in both PALs' pinned
-    pipelines; both scenes now stop at the instancing gate itself
-  - PBR draws in render and geometry tasks (116, 146, 178): the task passes
-    have no pinned branch
-  - regression-runtime-sweep: splices mesh handles at runtime, the designed
-    boundary of creation-order keying; stays a named refusal until a
-    runtime renderable walk exists
+    pipelines; both scenes stop at the instancing gate itself
+  - scene 116 at 12.996: the depth task's pinned scene block disagrees with
+    the browser's buffer#19 -- the task camera's reverse-Z matrix; two-list
+    the task blocks next
+  - scene 146 at 19.7: PBR meshes in a geometry task need the pin's
+    geometry-view MRT arm (`geometry-view.js`)
+  - scene 178 at 46.3: undiagnosed; capture first
 
   Diagnosis is two listings, never inspection -- `scene -- uniforms <id>
   --size N` against the capture's `pinnedMaterialBlocks` /
-  `pinnedMeshBlocks`, and hash the capture's `shaders/` against the
-  composed variants -- and the branch history first: both stalls this
-  session were facts already recorded in commit messages.
+  `pinnedMeshBlocks`, hash the capture's `shaders/` against the composed
+  variants -- and the branch history first (`git log -S`): repeated stalls
+  were facts already recorded in commit messages.
 
 ### Packed native assets
 
