@@ -173,6 +173,14 @@ Both backends stay long-term as mutually validating implementations;
     byte-for-byte (Scenes 30/244/253 and 21) are this arm plus the scene-code
     sheen below.
   - instanced meshes — the pin composes its own thin-instance arm
+    (`_createThinInstanceFragment`, the remaining null composer dep). Sized:
+    `regression-instanced-ground`'s SimpleInstancing.glb declares zero
+    materials, so `composeRenderableVariants` bails at
+    `!document?.materials?.length` before instancing is even reached — the
+    default-material renderable composes first, then the arm, then the
+    second per-instance vertex buffer in both PALs' pinned pipelines. No
+    browser capture exists for an instanced scene yet; take one before
+    writing anything.
   - materials drawn under more than one attribute set — the variant key is
     per-material, so Scene 5's material maps to `npos` and its meshes stay
     transcribed (0.000 there). The morph arms are also unopenable until then:
