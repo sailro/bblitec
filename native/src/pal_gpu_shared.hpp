@@ -669,23 +669,19 @@ inline std::size_t pinned_variant_for_draw(
         // animation — Scenes 39, 242 and 254 measured 4.2 to 11.9 MAD that way
         // against 0.000 transcribed. A skeleton variant reads the palette the
         // pin's own stage samples, so the check keys on the resolved variant
-        // below rather than refusing every mesh that carries bones.
+        // below rather than refusing every mesh that carries bones. Skins need
+        // no `transform_version` guard either, animated node or not: the
+        // pin's updater conjugates `invMeshWorld` into the palette at bind
+        // time and excludes skinned-mesh nodes from scene-graph animation, so
+        // every node motion a skin can see arrives through the joint worlds
+        // our palette already carries. The 2.5 and 4.5 MAD once filed against
+        // node-animated skins were the missing flat-normal fragment arm --
+        // Scenes 255 and 245 measure 0.000 on both backends through this path
+        // with the arm composed, and Scene 7 measures its pinned 0.047
+        // against 0.056 transcribed.
         if (!record.bone_matrices.empty()) {
             has_bones = true;
         }
-        // A node-animated skinned mesh stays transcribed. Scenes 255 and 245
-        // measure 2.5 and 4.5 through the pinned skinned path where Scenes 7
-        // and 5 measure 0.047 and 0.000, and `transform_version` is the
-        // property that separates the failing pair -- but it over-refuses:
-        // Scene 7 carries it too and measured 0.047 pinned, so this refusal
-        // costs its improvement (back to 0.056 transcribed, within threshold).
-        // Narrowing it needs the two-listing comparison at a matched frame;
-        // the palettes are frame-ambiguous for animated bones, which is what
-        // made Scene 255's bone1 listing inconclusive.
-        if (!record.bone_matrices.empty() && record.transform_version != 0) {
-            return std::numeric_limits<std::size_t>::max();
-        }
-
     }
     const std::uint32_t material_index = draw.item.material.value;
     if (material_index >= upstream::pbr_variant_mesh_features.size()) {

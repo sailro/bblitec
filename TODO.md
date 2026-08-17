@@ -157,19 +157,28 @@ Both backends stay long-term as mutually validating implementations;
   `src/shader-builtins-pbr.ts` — 1,647 lines). Generation composes one fragment
   per renderable feature set through the pin's own composer
   (`upstream/pbr-variants/`, `pbr_variants.hpp`), and both PALs draw them for
-  every extension arm, every light mode, tangent frames and bone-only-animated
-  skins. Four draw classes still take the transcribed text, each bounded in
+  every extension arm, every light mode, tangent frames, flat-normal
+  primitives, and skins — bone-only and node-animated alike (Scenes 245/255 at
+  0.000/0.000 both backends, Scene 7 at 0.047 against 0.056 transcribed). The
+  draws still taking the transcribed text, each bounded in
   `pinned_variant_for_draw`'s comments with its measurement:
 
-  - transmission scenes — refraction material blocks verified byte-identical;
-    the divergence is pass-level (the pin's 1024x1024 refraction RTT versus the
-    mid-pass scene-colour grab)
-  - node-animated skinned meshes — Scenes 245/255 at 4.5/2.5; the
-    `transform_version` refusal over-refuses Scene 7 (0.047 pinned), and
-    narrowing it needs a frame-matched palette diff
+  - transmission scenes — every refraction material block matches the
+    browser's byte for byte; the divergence is pass structure. The pin renders
+    refraction through its own 1024x1024 rgba16float RTT with image processing
+    toggled off (`refraction-rtt-fragment.js` registers
+    `LINEAR_IMAGE_PROCESSING_SLOTS`, wrapping every fragment's processing tail
+    in `if(scene.vImageInfos.w>=0.0)`), where this backend binds the mid-pass
+    scene-colour grab. The 28 captured fragments not yet reproduced
+    byte-for-byte (Scenes 30/244/253 and 21) are this arm plus the scene-code
+    sheen below.
   - instanced meshes — the pin composes its own thin-instance arm
-  - SDL_GPU vertex samplers — the skeleton arm's bone palette needs
-    `SDL_BindGPUVertexSamplers` plus per-frame texture streaming
+  - materials drawn under more than one attribute set — the variant key is
+    per-material, so Scene 5's material maps to `npos` and its meshes stay
+    transcribed (0.000 there). The morph arms are also unopenable until then:
+    their vertex stages read storage buffers neither PAL binds on the pinned
+    path (SDL_GPU refuses them by their unnamed SRV registers; Dawn's draw
+    layout would reject the pipeline).
 
   Scene-code materials are a second composer input the variant table does not
   carry: Scene 21's cloth gets `sheenParams` from `setPbrSheen`, not its asset
@@ -178,7 +187,9 @@ Both backends stay long-term as mutually validating implementations;
 
   Diagnosis is two listings, never inspection: `scene -- uniforms <id> --size N`
   for the browser's block, the native capture's `pinnedMaterialBlocks` /
-  `pinnedMeshBlocks` for ours.
+  `pinnedMeshBlocks` for ours — and for a fragment, hash the capture's
+  `shaders/` against the composed variants (Scene 255's 2.5 MAD was a missing
+  flat-normal arm found that way, never a skinning term).
 
 ### Packed native assets
 
