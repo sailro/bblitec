@@ -32,6 +32,7 @@ import {
     assertArmsCovered,
     composeGltfMaterials,
     composeRenderableVariants,
+    composeScenePbrVariants,
     type PinnedRenderableVariant,
 } from "./pinned-material-arms.js";
 import {
@@ -569,6 +570,26 @@ async function main(): Promise<void> {
         assertArmsCovered(composed, emittedArms, asset.output);
         composedVariants.push(
             ...(await composeRenderableVariants(path, sceneArms)),
+        );
+    }
+    // The scene's own `createPbrMaterial(...)` calls, composed from the
+    // recorded option values. The runtime keys the variant table by material
+    // handle, which is creation order; a scene mixing asset materials with
+    // scene-code ones would interleave the two sequences, so that combination
+    // stays a named generation error until a scene reaches it.
+    if (result.manifest.scenePbrMaterials.length > 0) {
+        if (composedVariants.length > 0) {
+            throw new Error(
+                "Scene-code PBR materials beside glTF PBR materials would " +
+                    "interleave the variant table's creation-order key; no " +
+                    "scene reaches this yet.",
+            );
+        }
+        composedVariants.push(
+            ...(await composeScenePbrVariants(
+                result.manifest.scenePbrMaterials,
+                sceneArms,
+            )),
         );
     }
     // The pin's own composed stages, one file per distinct variant. These are

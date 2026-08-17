@@ -3914,6 +3914,7 @@ bool run_gpu_engine(Engine& engine) {
                 255, 255, 255, 255};
             std::array<std::uint8_t, 4> base_color_fallback{
                 255, 255, 255, 255};
+            bool base_color_fallback_srgb = true;
             const bool standard_material =
                 item.material_kind == upstream::RenderMaterialKind::standard;
             if (item.material.value < engine.materials.size()) {
@@ -3936,6 +3937,8 @@ bool run_gpu_engine(Engine& engine) {
                 if (!standard_material) {
                     base_color_fallback =
                         material.base_color_fallback;
+                    base_color_fallback_srgb =
+                        material.base_color_fallback_srgb;
                     orm_fallback = material.orm_fallback;
                 }
                 transmission = standard_material
@@ -4002,7 +4005,13 @@ bool run_gpu_engine(Engine& engine) {
             gpu_mesh.base_color = upload_texture(
                 state.device,
                 texture ? *texture : TextureData{},
-                !standard_material,
+                // A slot with image bytes keeps the sRGB contract; a bare
+                // fallback texel takes the material's own encoding -- the
+                // pin's scene-code solid textures are rgba8unorm, sampled
+                // without decode.
+                texture && !texture->bytes.empty()
+                    ? !standard_material
+                    : !standard_material && base_color_fallback_srgb,
                 base_color_fallback);
             gpu_mesh.base_color_sampler = create_texture_sampler(
                 state.device,

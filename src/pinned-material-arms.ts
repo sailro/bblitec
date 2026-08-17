@@ -31,6 +31,7 @@ import {
     type PinnedMaterialInput,
 } from "./pinned-pbr-variants.js";
 import type { PinnedSceneArm } from "./pinned-scene-arms.js";
+import type { ScenePbrMaterialManifest } from "./compiler/types.js";
 import {
     pinnedMeshFeaturesFromPrimitive,
     skinnedMeshIndices,
@@ -407,6 +408,70 @@ export async function composeRenderableVariants(
                     ),
                 });
             }
+        }
+    }
+    return variants;
+}
+
+/**
+ * Composes the variants for a scene's own `createPbrMaterial(...)` calls.
+ *
+ * The pin's `createPbrMaterial(props)` is `{...props}` — the props ARE the
+ * material record its feature derivation and extension detects read — so the
+ * composer input carries the recorded option values verbatim under the pin's
+ * own names, textures as presence. Nothing loader-side is stamped: specular
+ * AA, `_hasUvTx` and the per-loader option sets are glTF-loader properties a
+ * scene-code material never sees, which is why this does not share the glTF
+ * input builder.
+ */
+export async function composeScenePbrVariants(
+    materials: readonly ScenePbrMaterialManifest[],
+    arms: readonly PinnedSceneArm[],
+): Promise<readonly PinnedRenderableVariant[]> {
+    if (materials.length === 0 || arms.length === 0) return [];
+    // The procedural mesh builders emit position, normal and uv, so the mesh
+    // half of the key runs the same primitive walk the glTF path uses over
+    // exactly that attribute set.
+    const meshFeatures = await pinnedMeshFeaturesFromPrimitive({
+        attributes: { POSITION: 0, NORMAL: 0, TEXCOORD_0: 0 },
+    });
+    const variants: PinnedRenderableVariant[] = [];
+    for (const [index, material] of materials.entries()) {
+        const input: PinnedMaterialInput = {};
+        if (material.hasBaseColorTexture) input["baseColorTexture"] = {};
+        if (material.hasOrmTexture) input["ormTexture"] = {};
+        if (material.doubleSided) input.doubleSided = true;
+        // The pin reads `mat.alpha < 1` for the blend bit; a material that
+        // never passed alpha carries no field, and one that passed 1 composes
+        // identically, so only a blending alpha is carried.
+        if (material.alpha < 1) input.alpha = material.alpha;
+        if (material.transmission > 0) {
+            throw new Error(
+                "A scene-code transmissive material has no composed arm yet; " +
+                    "the refraction pass structure is the open transmission " +
+                    "item.",
+            );
+        }
+        for (const arm of arms) {
+            const variant = await composePinnedPbrVariant(input, {
+                ...arm.options,
+                meshFeatures,
+            });
+            variants.push({
+                materialIndex: index,
+                materialName: `scene-material-${index}`,
+                meshFeatures,
+                lightMode: arm.lightMode,
+                singleLightType: arm.singleLightType,
+                toneMapping: arm.toneMapping,
+                armLabel: arm.label,
+                fragmentKey: variant.fragmentKey,
+                vertexWgsl: variant.vertexWgsl,
+                fragmentWgsl: variant.fragmentWgsl,
+                materialUboSpec: plainMaterialUboSpec(
+                    variant.materialUboSpec,
+                ),
+            });
         }
     }
     return variants;

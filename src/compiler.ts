@@ -54,6 +54,7 @@ import type {
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
     ResolvedCompileOptions,
+    ScenePbrMaterialManifest,
     Value,
     ValueKind,
 } from "./compiler/types.js";
@@ -224,6 +225,7 @@ class Compiler
     private readonly erasedBrowserInstrumentation = new Set<number>();
     private readonly unwrappedAwaitExpressions = new Set<number>();
     private readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
+    private readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
     private hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
     private indentLevel = 2;
@@ -316,6 +318,7 @@ class Compiler
                     ),
                 geometryOutputTasks: this.geometryOutputTasks,
                 adaptations: this.compileAdaptations(features),
+                scenePbrMaterials: this.scenePbrMaterials,
             },
         };
     }
@@ -2142,17 +2145,53 @@ class Compiler
                     : attenuationDistance;
             }
         }
+        const metallicCpp = metallic
+            ? this.compileNumber(metallic)
+            : "1.0f";
+        const roughnessCpp = roughness
+            ? this.compileNumber(roughness)
+            : "1.0f";
+        const directCpp = direct ? this.compileNumber(direct) : "1.0f";
+        const environmentCpp = environment
+            ? this.compileNumber(environment)
+            : "1.0f";
+        const alphaCpp = alpha ? this.compileNumber(alpha) : "1.0f";
+        const reflectanceCpp = reflectance
+            ? this.compileNumber(reflectance)
+            : "0.04f";
+        const doubleSidedCpp = doubleSided
+            ? this.compileBoolean(doubleSided)
+            : "false";
+        // The resolved option values, in creation order, for the pinned
+        // composer: the pin's `createPbrMaterial` is `{...props}`, so these
+        // ARE the material record its feature derivation reads. Every value
+        // above compiles from a static literal, which is why parsing the C++
+        // text back is exact.
+        this.scenePbrMaterials.push({
+            hasBaseColorTexture: true,
+            hasOrmTexture: true,
+            metallicFactor: Number.parseFloat(metallicCpp),
+            roughnessFactor: Number.parseFloat(roughnessCpp),
+            directIntensity: Number.parseFloat(directCpp),
+            environmentIntensity: Number.parseFloat(environmentCpp),
+            alpha: Number.parseFloat(alphaCpp),
+            reflectance: Number.parseFloat(reflectanceCpp),
+            doubleSided: doubleSidedCpp === "true",
+            transmission: Number.parseFloat(transmission),
+            ior: Number.parseFloat(ior),
+            thickness: Number.parseFloat(thickness),
+        });
         return [
             baseColor,
             orm,
-            metallic ? this.compileNumber(metallic) : "1.0f",
-            roughness ? this.compileNumber(roughness) : "1.0f",
-            direct ? this.compileNumber(direct) : "1.0f",
-            environment ? this.compileNumber(environment) : "1.0f",
-            alpha ? this.compileNumber(alpha) : "1.0f",
-            reflectance ? this.compileNumber(reflectance) : "0.04f",
+            metallicCpp,
+            roughnessCpp,
+            directCpp,
+            environmentCpp,
+            alphaCpp,
+            reflectanceCpp,
             "false",
-            doubleSided ? this.compileBoolean(doubleSided) : "false",
+            doubleSidedCpp,
             "false",
             transmission,
             ior,

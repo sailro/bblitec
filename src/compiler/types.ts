@@ -19,6 +19,30 @@ export interface CompileManifest {
     customShaderPrograms: CompiledShaderProgram[];
     geometryOutputTasks: GeometryOutputTaskManifest[];
     adaptations: CompileAdaptation[];
+    scenePbrMaterials: ScenePbrMaterialManifest[];
+}
+
+/**
+ * One scene-code `createPbrMaterial(...)` call's resolved options, in creation
+ * order. The pin's own `createPbrMaterial` is `{...props}` — the props ARE the
+ * material record its feature derivation and extension detects read — so this
+ * carries the reached option values verbatim for the composer, textures as
+ * presence. Recorded by `compilePbrMaterialOptions`, which already resolves
+ * every option to a static value.
+ */
+export interface ScenePbrMaterialManifest {
+    hasBaseColorTexture: boolean;
+    hasOrmTexture: boolean;
+    metallicFactor: number;
+    roughnessFactor: number;
+    directIntensity: number;
+    environmentIntensity: number;
+    alpha: number;
+    reflectance: number;
+    doubleSided: boolean;
+    transmission: number;
+    ior: number;
+    thickness: number;
 }
 
 /**

@@ -4568,11 +4568,14 @@ bool run_dawn_engine(Engine& engine) {
         std::array<std::uint8_t, 4> orm_fallback{255, 255, 255, 255};
         std::array<std::uint8_t, 4> base_color_fallback{
             255, 255, 255, 255};
+        bool base_color_fallback_srgb = true;
         if (item.material.value < engine.materials.size()) {
             const MaterialRecord& material =
                 engine.materials[item.material.value];
             if (!standard_material) {
                 base_color_fallback = material.base_color_fallback;
+                base_color_fallback_srgb =
+                    material.base_color_fallback_srgb;
                 orm_fallback = material.orm_fallback;
             }
             if (
@@ -4641,7 +4644,13 @@ bool run_dawn_engine(Engine& engine) {
                 (void)extension_slot;
             }
         }
-        slot_srgb[0] = !standard_material;
+        // A base-color slot with image bytes keeps the sRGB contract; a bare
+        // fallback texel takes the material's own encoding -- the pin's
+        // scene-code solid textures are rgba8unorm, sampled without decode.
+        slot_srgb[0] = !standard_material &&
+            (slot_data[0] && !slot_data[0]->bytes.empty()
+                 ? true
+                 : base_color_fallback_srgb);
         slot_srgb[3] = !standard_material;
 #if BBLITE_MATERIAL_STANDARD_BUMP
         // A flat tangent-space normal, so a material with no bump map reads

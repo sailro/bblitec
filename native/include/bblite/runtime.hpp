@@ -714,6 +714,11 @@ struct MaterialRecord {
     // bytes is the browser's effective base color.
     std::array<std::uint8_t, 4> base_color_fallback{
         255, 255, 255, 255};
+    // False for a scene-code solid texture: the pin's createSolidTexture2D
+    // writes its rounded texel into a 1x1 rgba8unorm sampled without decode,
+    // where the glTF factor bake above targets the sRGB view. The slot's
+    // upload honours this when no image bytes exist.
+    bool base_color_fallback_srgb = true;
     // Texture-less metallic/roughness baked to the pinned 8-bit texel
     // (uploadOrmFactorTexture writes [255, roughness, metallic, 255]) with the
     // uniform factors left at one. Keeping the factor in the texel rather than
