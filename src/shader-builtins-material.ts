@@ -85,6 +85,8 @@ ${morphAccumulation}        let skin =
         }
         worldTangent =
             (skin * vec4<f32>(normalize(worldTangent), 0.0)).xyz;
+        worldBitangent =
+            (skin * vec4<f32>(worldBitangent, 0.0)).xyz;
     }
 `
         : "";
@@ -121,6 +123,7 @@ struct InstanceUniforms {
     );
     worldNormal = instanceNormal * worldNormal;
     worldTangent = instanceNormal * worldTangent;
+    worldBitangent = instanceNormal * worldBitangent;
 `
         : "";
     return `struct VertexUniforms {
@@ -151,6 +154,7 @@ struct VertexOutput {
     @location(4) localPosition: vec3<f32>,
     @location(5) uv2: vec2<f32>,
     @location(6) color: vec4<f32>,
+    @location(7) bitangent: vec3<f32>,
 };
 
 @vertex
@@ -158,6 +162,17 @@ fn mainVertex(input: VertexInput) -> VertexOutput {
     var worldPosition = input.position;
     var worldNormal = input.normal;
     var worldTangent = input.tangent.xyz;
+    // src/material/pbr/pbr-template.ts tangentBlock:
+    //   let B_local=cross(N_local,T_local)*tangent.w;
+    //   out.worldBitangent=(finalWorld*vec4<f32>(B_local,0.0)).xyz;
+    // The pin builds the bitangent before the world/skin transform and
+    // carries it as its own varying. cross() is not preserved by a transform
+    // that is not a similarity, and a blended skin matrix never is, so
+    // rebuilding it in the fragment from the already-transformed pair
+    // disagrees wherever joints blend — measurably, on Scene 7's belly.
+    var worldBitangent =
+        cross(normalize(worldNormal), normalize(worldTangent)) *
+        input.tangent.w;
 ${deformationBody}
 ${instanceBody}
     var output: VertexOutput;
@@ -173,6 +188,7 @@ ${instanceBody}
     output.localPosition = input.localPosition;
     output.uv2 = input.uv2;
     output.color = input.color;
+    output.bitangent = worldBitangent;
     return output;
 }
 `;

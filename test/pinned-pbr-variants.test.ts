@@ -24,9 +24,13 @@ test("registers every PBR extension the pin owns", async () => {
         "gamma-albedo",
         "ibl",
         "iridescence",
+        // Mesh extensions: `pbr-renderable.ts` drains these from its own scan
+        // over the scene's meshes, after the environment and the scene hooks.
+        "morph",
         "reflectance",
         "refraction",
         "sheen",
+        "skeleton",
         "skybox",
         "subsurface",
         "unlit",

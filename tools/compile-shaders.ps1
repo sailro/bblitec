@@ -304,7 +304,13 @@ foreach ($shaderDirectory in $shaderDirectories) {
                 0,
                 $source.FullName.Length - ".native.wgsl".Length
             )
-            $entryPoint = if ($outputBase.EndsWith(".vert")) {
+            # Babylon Lite's own composed stages name both entry points
+            # `main`; only the shaders this repository specializes carry the
+            # mainVertex/mainFragment convention.
+            $isPinnedVariant = $source.Name.StartsWith("variant-")
+            $entryPoint = if ($isPinnedVariant) {
+                "main"
+            } elseif ($outputBase.EndsWith(".vert")) {
                 "mainVertex"
             } else {
                 "mainFragment"
@@ -343,8 +349,15 @@ foreach ($shaderDirectory in $shaderDirectories) {
                     } |
                     Sort-Object -Unique
             )
+            # The cross-check validates *this repository's* binding
+            # specialization survived Tint. A pinned composed variant is not
+            # specialized here — its groups and bindings are the pin's own, and
+            # Tint validates them by compiling the module — and the inspector
+            # dump lists only sampled textures and samplers, so comparing it
+            # against every declared binding would compare unlike sets.
             if (
-                Compare-Object $expectedBindings $actualBindings
+                (-not $isPinnedVariant) -and
+                (Compare-Object $expectedBindings $actualBindings)
             ) {
                 throw "Tint binding reflection differs from native WGSL for $($source.FullName)."
             }
@@ -362,7 +375,14 @@ foreach ($shaderDirectory in $shaderDirectories) {
         $profile = if ($source.Name.EndsWith(".vert.hlsl")) { "vs_6_0" } else { "ps_6_0" }
         $outputBase = $source.FullName.Substring(0, $source.FullName.Length - ".hlsl".Length)
         $nativeWgsl = "$outputBase.native.wgsl"
-        $entryPoint = if (Test-Path $nativeWgsl) {
+        # A pinned composed variant keeps Babylon Lite's own `main` entry point
+        # in the HLSL Tint emits, like a hand-authored .hlsl without a native
+        # WGSL beside it; only shaders this repository specializes carry the
+        # mainVertex/mainFragment convention.
+        $entryPoint = if (
+            (Test-Path $nativeWgsl) -and
+            (-not $source.Name.StartsWith("variant-"))
+        ) {
             if ($profile -eq "vs_6_0") { "mainVertex" } else { "mainFragment" }
         } else {
             "main"

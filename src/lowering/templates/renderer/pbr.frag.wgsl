@@ -68,7 +68,7 @@ struct S {
 
 var<private> v : vec4<f32>;
 
-fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>, v_5 : vec4<f32>, v_6 : bool) {
+fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>, v_5 : vec4<f32>, v_6 : bool, bblBitangent : vec3<f32>) {
   let v_7 = normalize(v_2);
   let v_8_raw = ((textureSample(normalTexture, normalSampler, v_4).xyz * 2.0f) - vec3<f32>(1.0f));
   let v_8 = vec3<f32>(
@@ -99,9 +99,14 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
       let v_21 = v_20;
       v_10 = normalize(((((v_17 * v_21) * v_8.x) + ((v_18 * v_21) * v_8.y)) + (v_7 * v_8.z)));
     } else {
-      let v_22 = v_3.xyz;
-      let v_23 = normalize((v_22 - (v_7 * dot(v_22, v_7))));
-      v_10 = normalize((((v_23 * v_8.x) + ((normalize(cross(v_7, v_23)) * v_3.w) * v_8.y)) + (v_7 * v_8.z)));
+      // src/material/pbr/pbr-template.ts normalBlock, hasNormal arm:
+      //   let TBN=mat3x3<f32>(input.worldTangent,input.worldBitangent,input.worldNormal);
+      //   var N=normalize(TBN*normalMapNorm);
+      // The columns are the raw varyings and the sample is normalized before
+      // the frame, not after it — neither holds for an orthonormalized frame,
+      // which is what this arm used to build.
+      let v_22 = mat3x3<f32>(v_3.xyz, bblBitangent, v_2);
+      v_10 = normalize((v_22 * normalize(v_8)));
     }
     v_9 = v_10;
   }
@@ -156,7 +161,7 @@ fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>
   let v_46 = max(dot(v_44, v_44), dot(v_45, v_45));
   let v_47 = select(
     0.0f,
-    pow(clamp(v_46, 0.0f, 1.0f), 0.3333333432674407959f),
+    pow(clamp(v_46, 0.0f, 1.0f), 0.333f),
     FragmentUniforms.normalOptions.y > 0.5f ||
       FragmentUniforms.emissiveFactor.w > 0.5f,
   );

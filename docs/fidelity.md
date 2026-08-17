@@ -399,6 +399,17 @@ one: sampling through the transform scrolled an emissive texture the browser
 holds still, and cost 0.581 of region MAD until the sample was put back on the
 raw UV.
 
+**The bitangent is a varying.** `pbr-template.ts`'s `tangentBlock` builds
+`B_local = cross(N_local, T_local) * tangent.w` before the world and skin
+transform and carries it as `worldBitangent`; the fragment composes
+`mat3x3(worldTangent, worldBitangent, worldNormal)` from the raw varyings and
+normalizes the sampled normal before the frame. `cross` is preserved only by a
+similarity and a weight-blended skin matrix is not one, so the frame cannot be
+rebuilt from the transformed pair. The mesh world is baked into the vertices
+here and conjugated into the palette (`native_matrix`) rather than uploaded as
+`MeshUniforms.world`, so the vertex stage reaches the same value by
+`M·I·M⁻¹ · M·B = M·I·B`. Scenes 1, 5, 7, 14, 29, 33, 146, and 176 measure it.
+
 **A coat rewrites the base F0 unless the coat came from glTF.** A layer over a
 base changes the interface the base reflects off, so `createClearcoatFragment`
 composes a `makeF0Remap` slot that runs before the base shades: it takes

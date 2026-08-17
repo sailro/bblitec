@@ -81,6 +81,19 @@ const materialExtensionModules = [
 const environmentExtensionModule =
     "material/pbr/fragments/ibl-fragment.js";
 
+/**
+ * `pbr-renderable.ts` drains these last, after the environment extension and
+ * after the scene hooks, from its own single scan over the scene's meshes:
+ * `_drainPbrExts([[hasSomeSkeletons, skeleton], [hasSomeMorphs, morph]])`.
+ * They are mesh properties rather than material ones, so they carry no
+ * `setPbr*` entry point, and their position decides the bind-group order for
+ * every slot after them.
+ */
+const meshExtensionModules = [
+    "material/pbr/fragments/skeleton-fragment.js",
+    "material/pbr/fragments/morph-fragment.js",
+] as const;
+
 interface PbrExtDescriptor {
     id: string;
 }
@@ -123,6 +136,12 @@ async function registerPbrExtensions(): Promise<void> {
             ) => PbrExtDescriptor;
         }>("material/pbr/fragments/refraction-rtt-fragment.js");
         flags._registerPbrExt(refraction.makeRefractionRttExt());
+        for (const path of meshExtensionModules) {
+            const module = await importPinnedModule<{
+                pbrExt?: PbrExtDescriptor;
+            }>(path);
+            if (module.pbrExt) flags._registerPbrExt(module.pbrExt);
+        }
     })();
     return registered;
 }

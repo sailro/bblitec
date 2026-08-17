@@ -120,6 +120,30 @@ async function sceneCandidates(): Promise<readonly SceneCandidate[]> {
         toneMappingHelpers: toneMapping.StandardToneMapping.helpersWGSL,
         toneMappingCall: toneMapping.StandardToneMapping.callWGSL,
     };
+    // The single-light path is a separate module per light kind, assembled the
+    // way `importSingleLightWgsl` + `_getSingleLightBlock` do it. A scene with
+    // exactly one light composes through here, not through the multi-light
+    // loop, and its `lightsUniforms` differs from the multi-light one, so
+    // omitting this arm makes a one-light scene unmatchable.
+    const singleLightTypes = [
+        "hemispheric",
+        "directional",
+        "point",
+        "spot",
+    ] as const;
+    const singles = await Promise.all(
+        singleLightTypes.map(async (type) => {
+            const module = await importPinnedModule<{
+                SINGLE_LIGHT_STRUCTS: string;
+                getSingleLightBlock: () => string;
+            }>(`material/pbr/fragments/singlelight-${type}-wgsl.js`);
+            return {
+                type,
+                singleLightWgsl: module.SINGLE_LIGHT_STRUCTS,
+                singleLightBlock: module.getSingleLightBlock(),
+            };
+        }),
+    );
     const candidates: SceneCandidate[] = [];
     for (const [toneLabel, toneFeature, toneOptions] of [
         ["", 0, {}],
@@ -132,6 +156,19 @@ async function sceneCandidates(): Promise<readonly SceneCandidate[]> {
                     sceneFeatures: bits.PBR_HAS_ENV | toneFeature,
                     lightMode,
                     ...(lightMode === 2 ? multi : {}),
+                    ...toneOptions,
+                },
+            });
+        }
+        for (const single of singles) {
+            candidates.push({
+                label: `light 1 ${single.type}${toneLabel}`,
+                options: {
+                    sceneFeatures: bits.PBR_HAS_ENV | toneFeature,
+                    lightMode: 1,
+                    singleLightType: single.type,
+                    singleLightWgsl: single.singleLightWgsl,
+                    singleLightBlock: single.singleLightBlock,
                     ...toneOptions,
                 },
             });
@@ -252,17 +289,36 @@ async function reportScene(scene: string): Promise<boolean> {
         let hit: { file: string; label: string } | undefined;
         let composed = "";
         let key = "";
+        let closest = -1;
         for (const candidate of candidates) {
             const variant = await composePinnedPbrVariant(input, {
                 ...candidate.options,
                 meshFeatures,
                 uv2Mask,
             });
-            if (composed === "") {
-                composed = variant.fragmentWgsl;
-                key = variant.fragmentKey;
-            }
             const body = normalize(variant.fragmentWgsl);
+            // Keep the candidate that agrees with some capture for longest, not
+            // the first one composed: the reported divergence line is only a
+            // finding if it belongs to the nearest variant.
+            const mine = variant.fragmentWgsl.split("\n");
+            let reach = 0;
+            for (const [, text] of captured) {
+                const theirs = text.split("\n");
+                let line = 0;
+                while (
+                    line < mine.length &&
+                    line < theirs.length &&
+                    mine[line] === theirs[line]
+                ) {
+                    line++;
+                }
+                if (line > reach) reach = line;
+            }
+            if (reach > closest) {
+                closest = reach;
+                composed = variant.fragmentWgsl;
+                key = `${variant.fragmentKey} (${candidate.label})`;
+            }
             for (const [file, text] of captured) {
                 if (normalize(text) === body) {
                     hit = { file, label: candidate.label };

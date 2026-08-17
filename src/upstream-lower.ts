@@ -19,6 +19,7 @@ import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
+import { pinnedPbrVariantsHeader } from "./pinned-pbr-variant-cpp.js";
 import type {
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
@@ -56,6 +57,21 @@ export interface UpstreamEmitOptions {
     clearcoatF0Remap: boolean;
     /** The pin's own helper declarations; see `pinnedShaderHelpers()`. */
     pinnedHelpers?: Readonly<Record<string, string>>;
+    /**
+     * The pin's own composed PBR variants. Emitted into the deployed shader
+     * directory so the offline path compiles them for SDL_GPU and Dawn reads
+     * them at startup, which is what the transcribed per-scene fragment is
+     * being replaced with.
+     */
+    pinnedVariants?: readonly {
+        fragmentKey: string;
+        materials: readonly string[];
+        vertex: string;
+        fragment: string;
+        vertexWgsl: string;
+        fragmentWgsl: string;
+        materialUbo: unknown;
+    }[];
     iridescence: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
@@ -102,6 +118,10 @@ class GeneratedSourceWriter {
 #define BBLITE_MATERIAL_STANDARD_BUMP ${options.standardBump ? 1 : 0}
 #define BBLITE_IMAGE_SKYBOX ${features.includes("background:image-skybox") ? 1 : 0}
 #define BBLITE_SOLID_SKYBOX ${features.includes("background:solid-skybox") ? 1 : 0}
+
+// How many of Babylon Lite's own composed PBR variants this scene reaches.
+// Zero for a scene with no glTF materials, which emits no variant header.
+#define BBLITE_PBR_VARIANTS ${(options.pinnedVariants ?? []).length}
 `,
         );
 
@@ -566,6 +586,31 @@ class GeneratedSourceWriter {
             );
         }
 
+        // The pin's composed variants join the deployed shader set. They need
+        // no specialization: the pinned Tint consumes their own
+        // `@group`/`@binding` scheme unchanged for HLSL, MSL and SPIR-V, and
+        // the HLSL register normalization already re-addresses them for
+        // SDL_GPU's dense convention.
+        if ((options.pinnedVariants ?? []).length > 0) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/pbr_variants.hpp",
+                pinnedPbrVariantsHeader(
+                    context,
+                    "src/pinned-pbr-variant-cpp.ts pinnedPbrVariantsHeader",
+                    options.pinnedVariants!,
+                ),
+            );
+        }
+        for (const variant of options.pinnedVariants ?? []) {
+            composedShaders.push({
+                output: `upstream/shaders/variant-${variant.vertex.replace(".wgsl", ".native.wgsl")}`,
+                data: variant.vertexWgsl,
+            });
+            composedShaders.push({
+                output: `upstream/shaders/variant-${variant.fragment.replace(".wgsl", ".native.wgsl")}`,
+                data: variant.fragmentWgsl,
+            });
+        }
         if (composedShaders.length > 0) {
             for (const shader of composedShaders) {
                 this.tree.write(shader.output, shader.data);

@@ -31,6 +31,32 @@ import {
 } from "./pinned-pbr-variants.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 
+/**
+ * The composer's material UBO spec as plain data.
+ *
+ * `_offsets` is a `Map<string, number>`, so it serializes to `{}` and any
+ * consumer reading the JSON would have to recompute the layout from WGSL
+ * alignment rules. The pin's own `_writeMaterialData` keys every field off this
+ * map, which makes it the authority on where each field sits.
+ */
+function plainMaterialUboSpec(spec: unknown): unknown {
+    const record = spec as
+        | { _totalBytes?: number; _offsets?: unknown; _structBody?: string }
+        | undefined;
+    if (!record) return spec;
+    const offsets: Record<string, number> = {};
+    if (record._offsets instanceof Map) {
+        for (const [name, offset] of record._offsets as Map<string, number>) {
+            offsets[name] = offset;
+        }
+    }
+    return {
+        _totalBytes: record._totalBytes,
+        _offsets: offsets,
+        _structBody: record._structBody,
+    };
+}
+
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
     typeof value === "object" && value !== null && !Array.isArray(value)
         ? (value as Record<string, unknown>)
@@ -65,6 +91,17 @@ export interface PinnedComposedMaterial {
     name: string;
     fragmentKey: string;
     arms: PinnedMaterialArms;
+    /**
+     * The pin's own composed stages and material UBO layout for this variant.
+     *
+     * The composer already runs here to derive the arms; keeping its output is
+     * what lets generation emit the pin's fragment instead of the transcription
+     * under `templates/renderer/`. One entry per distinct `fragmentKey` is the
+     * variant table the per-variant renderer needs.
+     */
+    vertexWgsl: string;
+    fragmentWgsl: string;
+    materialUboSpec: unknown;
 }
 
 interface GltfDocument {
@@ -186,6 +223,13 @@ export async function composeGltfMaterials(
                         )?.["dispersion"]
                     ) !== undefined,
             },
+            vertexWgsl: variant.vertexWgsl,
+            fragmentWgsl: variant.fragmentWgsl,
+            // `_offsets` is a Map, which serializes to `{}`. The pin's own
+            // `_writeMaterialData` keys every field off it, so it is the
+            // authority on where each field sits — carry it as an object rather
+            // than recomputing the layout from alignment rules here.
+            materialUboSpec: plainMaterialUboSpec(variant.materialUboSpec),
         });
     }
     return composed;

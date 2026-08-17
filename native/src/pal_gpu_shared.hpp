@@ -14,6 +14,14 @@
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #endif
+// Babylon Lite's own composed PBR variants: one entry per material feature
+// set the scene's assets reach, each naming its compiled stages and the byte
+// size of the per-variant material UBO the pin declares for it. Included here
+// because both backends will bind them; a scene with no glTF materials
+// reaches none and emits no header.
+#if BBLITE_PBR_VARIANTS > 0
+#include <bblite/upstream/pbr_variants.hpp>
+#endif
 
 #include <algorithm>
 #include <array>

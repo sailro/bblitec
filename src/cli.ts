@@ -26,9 +26,11 @@ import {
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { pinnedShaderHelpers } from "./pinned-pbr-variants.js";
+import { writePinnedPbrVariants } from "./pinned-pbr-variant-output.js";
 import {
     assertArmsCovered,
     composeGltfMaterials,
+    type PinnedComposedMaterial,
 } from "./pinned-material-arms.js";
 
 interface CliOptions {
@@ -545,16 +547,21 @@ async function main(): Promise<void> {
     // pipeline. An arm it reaches that the emitted fragment does not carry is
     // refused here, where it names the material, rather than shipping as a
     // shading bias nothing points at.
+    const composedVariants: PinnedComposedMaterial[] = [];
     for (const asset of result.manifest.assets) {
         if (asset.kind !== "gltf") continue;
-        assertArmsCovered(
-            await composeGltfMaterials(
-                resolve(outputPath, "assets", asset.output),
-            ),
-            emittedArms,
-            asset.output,
+        const composed = await composeGltfMaterials(
+            resolve(outputPath, "assets", asset.output),
         );
+        assertArmsCovered(composed, emittedArms, asset.output);
+        composedVariants.push(...composed);
     }
+    // The pin's own composed stages, one file per distinct variant. These are
+    // the artifacts that replace `templates/renderer/pbr.frag.wgsl`: the
+    // renderer selects per-material behaviour from uniform lanes inside one
+    // fragment where Babylon composes a fragment per feature set, and this is
+    // that set, written by the pin rather than transcribed here.
+    const pinnedVariants = writePinnedPbrVariants(tree, composedVariants);
     emitUpstreamGenerated(outputPath, result.manifest.features, {
         idDiagnostics: options.idDiagnostics,
         pbrDiagnostics: options.pbrDiagnostics,
@@ -616,6 +623,7 @@ async function main(): Promise<void> {
         // Taken from a real composition rather than transcribed, so the coat's
         // formulas are the pin's own text under the pin's own names.
         pinnedHelpers: await pinnedShaderHelpers(),
+        pinnedVariants,
         iridescence: emittedArms.iridescence,
         dispersion: emittedArms.dispersion,
         occlusionUv2: emittedArms.occlusionUv2,

@@ -184,6 +184,7 @@ fn mainFragment(
   @location(3u) v_117 : vec2<f32>,
   @location(4u) bblLocalPosition : vec3<f32>,
   @location(6u) v_118 : vec4<f32>,
+  @location(7u) bblBitangent : vec3<f32>,
   @builtin(front_facing) v_119 : bool,
 ) -> ${returnType} {
   main_inner(
@@ -192,7 +193,8 @@ fn mainFragment(
     v_116,
     v_117,
     v_118,
-    v_119${geometryArguments},
+    v_119,
+    bblBitangent${geometryArguments},
   );
   return bblOutput;
 }
@@ -213,9 +215,10 @@ fn mainFragment(
   @location(3u) v_117 : vec2<f32>,
   @location(4u) bblLocalPosition : vec3<f32>,${uv2Input}
   @location(6u) v_118 : vec4<f32>,
+  @location(7u) bblBitangent : vec3<f32>,
   @builtin(front_facing) v_119 : bool,
 ) -> @location(0u) vec4<f32> {
-  main_inner(v_114, v_115, v_116, v_117, v_118, v_119${uv2Argument});
+  main_inner(v_114, v_115, v_116, v_117, v_118, v_119, bblBitangent${uv2Argument});
   return v;
 }
 `;
@@ -251,8 +254,8 @@ export function pbrFragmentWgsl(
     let prefix = normalized.slice(0, markerIndex + marker.length);
     if (geometry) {
         prefix = prefix.replace(
-            "fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>, v_5 : vec4<f32>, v_6 : bool) {",
-            "fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>, v_5 : vec4<f32>, v_6 : bool, bblPosition : vec4<f32>, bblLocalPosition : vec3<f32>) {",
+            "fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>, v_5 : vec4<f32>, v_6 : bool, bblBitangent : vec3<f32>) {",
+            "fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, v_3 : vec4<f32>, v_4 : vec2<f32>, v_5 : vec4<f32>, v_6 : bool, bblBitangent : vec3<f32>, bblPosition : vec4<f32>, bblLocalPosition : vec3<f32>) {",
         );
     }
     const output = variant.kind === "diagnostic"

@@ -734,10 +734,11 @@ export function applyMaterialExtensionWgsl(
             result,
             "fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, " +
                 "v_3 : vec4<f32>, v_4 : vec2<f32>, v_5 : vec4<f32>, " +
-                "v_6 : bool) {",
+                "v_6 : bool, bblBitangent : vec3<f32>) {",
             "fn main_inner(v_1 : vec3<f32>, v_2 : vec3<f32>, " +
                 "v_3 : vec4<f32>, v_4 : vec2<f32>, v_5 : vec4<f32>, " +
-                "v_6 : bool, bblUv2 : vec2<f32>) {",
+                "v_6 : bool, bblBitangent : vec3<f32>, "  +
+                "bblUv2 : vec2<f32>) {",
             "occlusion uv2 inner signature",
         );
         // Babylon Lite's pbr-template-ext occlusionOverride: a material whose

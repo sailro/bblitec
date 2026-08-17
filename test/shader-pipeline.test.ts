@@ -303,13 +303,24 @@ test("generates Tint PBR color, diagnostics, and geometry WGSL", () => {
     assert.match(color, /@binding\(12u\) var sceneColorTexture/);
     assert.match(color, /refract\(/);
     assert.match(color, /exp\(FragmentUniforms\.volumeParams\.rgb \* thickness\)/);
-    assert.match(color, /v_119\);/);
+    assert.match(color, /v_119, bblBitangent\);/);
+    // The pinned tangent frame: pbr-template.ts composes
+    // mat3x3(worldTangent, worldBitangent, worldNormal) from the raw varyings
+    // and normalizes the sample before the frame. The bitangent arrives as its
+    // own varying rather than being rebuilt here, because cross() does not
+    // survive a blended skin matrix.
+    assert.match(
+        color,
+        /mat3x3<f32>\(v_3\.xyz, bblBitangent, v_2\)/,
+    );
+    assert.match(color, /v_22 \* normalize\(v_8\)/);
+    assert.doesNotMatch(color, /normalize\(cross\(v_7, v_23\)\)/);
     assert.match(diagnostic, /bblOutput\.preToneHdr/);
-    assert.match(diagnostic, /v_119,\s*\);/);
+    assert.match(diagnostic, /v_119,\s*bblBitangent,\s*\);/);
     assert.match(geometry, /bblLocalPosition/);
     assert.match(
         geometry,
-        /v_119,\s*bblPosition,\s*bblLocalPosition,/,
+        /v_119,\s*bblBitangent,\s*bblPosition,\s*bblLocalPosition,/,
     );
     assert.match(geometry, /bblOutput\.color/);
 });

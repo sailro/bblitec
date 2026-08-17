@@ -72,8 +72,8 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene1.ts",
         title: "Babylon Lite Native - BoomBox",
         parity: {
-            maxFullMad: 0.01,
-            maxForegroundMad: 0.03,
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.015,
             cpuThresholds: { maxFullMad: 2.2, maxForegroundMad: 21.5 },
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
@@ -116,8 +116,9 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene14.ts",
         title: "Babylon Lite Native - Flight Helmet",
         parity: {
-            maxFullMad: 0.1,
-            maxForegroundMad: 0.055,
+            maxFullMad: 0.09,
+            maxForegroundMad: 0.012,
+            dawnThresholds: { maxFullMad: 0.09, maxForegroundMad: 0.008 },
             backgroundColor: [61, 61, 94],
             backgroundThreshold: 30,
         },
@@ -153,8 +154,8 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene29.ts",
         title: "Babylon Lite Native - Sheen Cloth glTF",
         parity: {
-            maxFullMad: 0.02,
-            maxForegroundMad: 0.1,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.01,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },
@@ -177,9 +178,9 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene33.ts",
         title: "Babylon Lite Native - Punctual Lights",
         parity: {
-            maxFullMad: 0.01,
-            maxForegroundMad: 0.14,
-            dawnThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.13 },
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.012,
+            dawnThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.008 },
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },
@@ -410,8 +411,8 @@ const sceneInputs: readonly SceneInput[] = [
             // root position differs from the pin's by one ULP on two axes
             // (the sizing entry in TODO.md), and the foreground's sub-pixel
             // silhouette epsilon.
-            maxFullMad: 0.065,
-            maxForegroundMad: 0.19,
+            maxFullMad: 0.06,
+            maxForegroundMad: 0.16,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: {
@@ -438,8 +439,8 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Alien",
         parity: {
             referenceTimeSeconds: 2,
-            maxFullMad: 0.01,
-            maxForegroundMad: 0.03,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             nativeEnvironment: {
@@ -691,9 +692,9 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene176.ts",
         title: "Babylon Lite Native - Mosquito In Amber",
         parity: {
-            maxFullMad: 0.05,
-            maxForegroundMad: 0.05,
-            dawnThresholds: { maxFullMad: 0.045, maxForegroundMad: 0.045 },
+            maxFullMad: 0.018,
+            maxForegroundMad: 0.018,
+            dawnThresholds: { maxFullMad: 0.016, maxForegroundMad: 0.016 },
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             attribution: {
@@ -830,8 +831,8 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene146.ts",
         title: "Babylon Lite Native - PBR Geometry Outputs",
         parity: {
-            maxFullMad: 0.04,
-            maxForegroundMad: 0.04,
+            maxFullMad: 0.016,
+            maxForegroundMad: 0.014,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
         },
