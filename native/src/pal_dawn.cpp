@@ -2623,12 +2623,18 @@ WGPURenderPipeline pinned_variant_pipeline(
     descriptor.primitive.cullMode = traits.cull;
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
-    depth_stencil.depthWriteEnabled = traits.transparent
-        ? WGPUOptionalBool_False
-        : WGPUOptionalBool_True;
-    depth_stencil.depthCompare = traits.transparent
-        ? WGPUCompareFunction_LessEqual
-        : WGPUCompareFunction_Less;
+    // A no-color view draws in the depth-only tasks, whose matrices are
+    // reverse-depth: GREATER compare, depth writes on -- the same contract
+    // the depth-only pipelines carry.
+    depth_stencil.depthWriteEnabled =
+        !entry.no_color_output && traits.transparent
+            ? WGPUOptionalBool_False
+            : WGPUOptionalBool_True;
+    depth_stencil.depthCompare = entry.no_color_output
+        ? WGPUCompareFunction_Greater
+        : traits.transparent
+            ? WGPUCompareFunction_LessEqual
+            : WGPUCompareFunction_Less;
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
@@ -2647,8 +2653,10 @@ WGPURenderPipeline pinned_variant_pipeline(
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
     fragment.module = state.pinned_fragment_modules[variant];
     fragment.entryPoint = string_view("main");
-    fragment.targetCount = 1;
-    fragment.targets = &color_target;
+    // A depth-only view's fragment writes no colour target, and the pass it
+    // draws in carries none either.
+    fragment.targetCount = entry.no_color_output ? 0 : 1;
+    fragment.targets = entry.no_color_output ? nullptr : &color_target;
     descriptor.fragment = &fragment;
     WGPURenderPipeline pipeline =
         wgpuDeviceCreateRenderPipeline(state.device, &descriptor);

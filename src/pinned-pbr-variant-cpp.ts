@@ -865,6 +865,7 @@ export function pinnedPbrVariantsHeader(
     lightKinds: readonly string[],
     renderableMeshFeatures: readonly number[],
     runtimeMeshFeatures?: number,
+    pinnedMaterialCount?: number,
 ): string {
     const blocks: string[] = [];
     const table: string[] = [];
@@ -889,9 +890,10 @@ export function pinnedPbrVariantsHeader(
             meshFeaturesByMaterial.set(selector.materialIndex, set);
         }
     }
-    const materialCount = meshFeaturesByMaterial.size === 0
-        ? 0
-        : Math.max(...meshFeaturesByMaterial.keys()) + 1;
+    const materialCount = pinnedMaterialCount ??
+        (meshFeaturesByMaterial.size === 0
+            ? 0
+            : Math.max(...meshFeaturesByMaterial.keys()) + 1);
     const meshFeatureRows = Array.from(
         { length: materialCount },
         (_unused, index) => {
@@ -1151,6 +1153,11 @@ export function pinnedPbrVariantsHeader(
                     bindings.filter((binding) =>
                         binding.kind === "sampler" && binding.fragment
                     ).length
+                }, ` +
+                `${
+                    variant.fragmentWgsl.includes("@location(0)")
+                        ? "false"
+                        : "true"
                 }},`,
         );
         for (const attribute of attributes) {
@@ -1286,6 +1293,8 @@ struct PbrVariantEntry {
      */
     std::size_t vertex_sampler_count;
     std::size_t fragment_sampler_count;
+    /** A depth-only view's fragment writes no colour target. */
+    bool no_color_output;
 };
 
 inline constexpr std::array<PbrVariantEntry, ${variants.length}>

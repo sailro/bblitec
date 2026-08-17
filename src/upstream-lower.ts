@@ -118,6 +118,8 @@ export interface UpstreamEmitOptions {
      * being replaced with.
      */
     pinnedVariants?: readonly PinnedVariantManifestEntry[];
+    /** The runtime material-handle count the variant gate checks. */
+    pinnedMaterialCount?: number;
     /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
     renderableMeshFeatures?: readonly number[];
     /** The bits for meshes created past the static table, when one value
@@ -663,6 +665,7 @@ class GeneratedSourceWriter {
                     ),
                     options.renderableMeshFeatures ?? [],
                     options.runtimeMeshFeatures,
+                    options.pinnedMaterialCount,
                 ),
             );
         }

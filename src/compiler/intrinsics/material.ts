@@ -30,6 +30,8 @@ type CompiledPbrMaterialOptions = [
 export interface MaterialIntrinsicContext
     extends IntrinsicCallContext {
     recordScenePbrSheen(sheen: ScenePbrSheenManifest): void;
+    recordScenePbrNoColorView(): void;
+    recordSceneMaterialSlot(): number;
     recordScenePbrClearCoat(clearCoat: ScenePbrClearCoatManifest): void;
     expectSameEngine(
         left: Value,
@@ -276,6 +278,7 @@ export function compileMaterialIntrinsic(
         }
 
         case "createGridMaterial": {
+            context.recordSceneMaterialSlot();
             context.expectArgumentCount(call, 0, 1);
             const engine =
                 context.requireDefaultEngine(call);
@@ -319,6 +322,11 @@ export function compileMaterialIntrinsic(
                 "material",
                 call.arguments[0]!,
             );
+            if (importedName !== "createStandardNoColorMaterialView") {
+                context.recordScenePbrNoColorView();
+            } else {
+                context.recordSceneMaterialSlot();
+            }
             context.reachFeature("material:no-color-view");
             context.reachFeature("renderer:pbr");
             return {
@@ -356,6 +364,7 @@ export function compileMaterialIntrinsic(
         }
 
         case "createShaderMaterial": {
+            context.recordSceneMaterialSlot();
             context.expectArgumentCount(call, 1, 1);
             const engine =
                 context.requireDefaultEngine(call);
@@ -615,6 +624,7 @@ export function compileMaterialIntrinsic(
         }
 
         case "createStandardMaterial": {
+            context.recordSceneMaterialSlot();
             context.expectArgumentCount(call, 0, 0);
             const engine =
                 context.requireDefaultEngine(call);

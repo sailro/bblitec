@@ -276,6 +276,9 @@ export interface PinnedComposeOptions {
      * OR-ed in here instead of being read off the material.
      */
     passFeatures?: number;
+    /** Bits ORed into `features2` the same way; `PBR2_NO_COLOR_OUTPUT` for a
+     *  depth-only material view is the reached one. */
+    passFeatures2?: number;
     /** Mesh bits (`MSH_HAS_TANGENTS`, morph targets, vertex colour, …). */
     meshFeatures?: number;
     /** Scene bits; the environment is read from here, not from the material. */
@@ -367,7 +370,7 @@ export async function composePinnedPbrVariant(
     });
     const composed = composer(
         features | (options.passFeatures ?? 0),
-        features2,
+        features2 | (options.passFeatures2 ?? 0),
         options.meshFeatures ?? 0,
         options.sceneFeatures ?? 0,
         options.lightMode ?? 0,

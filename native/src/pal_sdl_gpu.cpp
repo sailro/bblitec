@@ -755,14 +755,23 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         ? SDL_GPU_FRONTFACE_CLOCKWISE
         : SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
-    info.depth_stencil_state.compare_op = transparent
-        ? SDL_GPU_COMPAREOP_LESS_OR_EQUAL
-        : SDL_GPU_COMPAREOP_LESS;
+    // A no-color view draws in the depth-only tasks, whose matrices are
+    // reverse-depth: GREATER compare, depth writes on -- the same contract
+    // the depth-only pipelines carry.
+    info.depth_stencil_state.compare_op = entry.no_color_output
+        ? SDL_GPU_COMPAREOP_GREATER
+        : transparent
+            ? SDL_GPU_COMPAREOP_LESS_OR_EQUAL
+            : SDL_GPU_COMPAREOP_LESS;
     info.depth_stencil_state.enable_depth_test = true;
-    info.depth_stencil_state.enable_depth_write = !transparent;
+    info.depth_stencil_state.enable_depth_write =
+        entry.no_color_output || !transparent;
     info.multisample_state.sample_count = state.sample_count;
-    info.target_info.color_target_descriptions = &color_target;
-    info.target_info.num_color_targets = 1;
+    // A depth-only view's fragment writes no colour target, and the pass it
+    // draws in carries none either.
+    info.target_info.color_target_descriptions =
+        entry.no_color_output ? nullptr : &color_target;
+    info.target_info.num_color_targets = entry.no_color_output ? 0 : 1;
     info.target_info.depth_stencil_format = state.depth_format;
     info.target_info.has_depth_stencil_target = true;
     SDL_GPUGraphicsPipeline* pipeline =

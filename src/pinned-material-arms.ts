@@ -497,8 +497,14 @@ export async function composeScenePbrVariants(
         ? meshFeatureSets
         : [await proceduralRenderableFeatures()];
     const variants: PinnedRenderableVariant[] = [];
-    for (const [index, material] of materials.entries()) {
-        const input: PinnedMaterialInput = {};
+    for (const material of materials) {
+        const input: PinnedMaterialInput = {
+            // No createPbrMaterial option carries an occlusion image, and a
+            // material without one composes the constant 1.0 rather than
+            // sampling orm.r -- the same `_occlusionImage ? 1 : 0` rule the
+            // glTF input builder documents.
+            occlusionStrength: 0,
+        };
         if (material.hasBaseColorTexture) input["baseColorTexture"] = {};
         if (material.hasOrmTexture) input["ormTexture"] = {};
         if (material.doubleSided) input.doubleSided = true;
@@ -538,15 +544,28 @@ export async function composeScenePbrVariants(
                     "item.",
             );
         }
+        const noColor = material.noColorView
+            ? {
+                  passFeatures2: (
+                      await importPinnedModule<{
+                          PBR2_NO_COLOR_OUTPUT: number;
+                      }>("material/pbr/pbr-flag-bits.js")
+                  ).PBR2_NO_COLOR_OUTPUT,
+              }
+            : {};
         for (const meshFeatures of featureSets) {
         for (const arm of arms) {
             const variant = await composePinnedPbrVariant(input, {
                 ...arm.options,
+                ...noColor,
                 meshFeatures,
             });
             variants.push({
-                materialIndex: materialIndexBase + index,
-                materialName: `scene-material-${materialIndexBase + index}`,
+                materialIndex:
+                    materialIndexBase + material.materialsBefore,
+                materialName: `scene-material-${
+                    materialIndexBase + material.materialsBefore
+                }`,
                 meshFeatures,
                 lightMode: arm.lightMode,
                 singleLightType: arm.singleLightType,

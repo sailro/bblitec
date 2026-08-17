@@ -20,6 +20,8 @@ export interface CompileManifest {
     geometryOutputTasks: GeometryOutputTaskManifest[];
     adaptations: CompileAdaptation[];
     scenePbrMaterials: ScenePbrMaterialManifest[];
+    /** Every scene-code material creation, any family, for the handle count. */
+    sceneMaterialCount: number;
     sceneMeshes: SceneMeshManifest[];
 }
 
@@ -67,6 +69,17 @@ export interface ScenePbrClearCoatManifest {
 }
 
 export interface ScenePbrMaterialManifest {
+    /**
+     * How many scene-code materials of any family the program had created
+     * when this one was, so the runtime handle is
+     * glTF-materials + this. Standard, grid and shader materials share the
+     * same handle sequence.
+     */
+    materialsBefore: number;
+    /** A `createPbrNoColorMaterialView` of the scene material before it:
+     *  the same record with the pin's `PBR2_NO_COLOR_OUTPUT` bit, drawn by
+     *  the depth-only render tasks. */
+    noColorView?: boolean;
     /** Stamped by the pin's own setter shape: `mat._sheen = sheen`. */
     sheen?: ScenePbrSheenManifest;
     /** Stamped by the pin's own setter shape: `mat._clearCoat = clearCoat`. */

@@ -741,6 +741,11 @@ async function main(): Promise<void> {
         // formulas are the pin's own text under the pin's own names.
         pinnedHelpers: await pinnedShaderHelpers(),
         pinnedVariants,
+        // The runtime's material-handle count: the assets' materials plus
+        // every scene-code creation of any family, since handles are
+        // creation-ordered across families.
+        pinnedMaterialCount:
+            materialIndexBase + result.manifest.sceneMaterialCount,
         renderableMeshFeatures,
         ...(runtimeMeshFeatures !== undefined
             ? { runtimeMeshFeatures }

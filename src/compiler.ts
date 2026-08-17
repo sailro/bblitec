@@ -230,6 +230,7 @@ class Compiler
     private readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
     private readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
     private readonly sceneMeshes: SceneMeshManifest[] = [];
+    private sceneMaterialCount = 0;
     private hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
     private indentLevel = 2;
@@ -323,6 +324,7 @@ class Compiler
                 geometryOutputTasks: this.geometryOutputTasks,
                 adaptations: this.compileAdaptations(features),
                 scenePbrMaterials: this.scenePbrMaterials,
+                sceneMaterialCount: this.sceneMaterialCount,
                 sceneMeshes: this.sceneMeshes,
             },
         };
@@ -2173,6 +2175,7 @@ class Compiler
         // above compiles from a static literal, which is why parsing the C++
         // text back is exact.
         this.scenePbrMaterials.push({
+            materialsBefore: this.recordSceneMaterialSlot(),
             gltfAssetsBefore: [...this.assets.values()].filter(
                 (asset) => asset.kind === "gltf",
             ).length,
@@ -5217,6 +5220,31 @@ class Compiler
             );
         }
         return this.scenePbrMaterials[0]!;
+    }
+
+    /**
+     * Records a no-color view of the one scene material: the pin's view is
+     * the same material record rendered with `PBR2_NO_COLOR_OUTPUT`, so the
+     * derived entry copies its source and appends in creation order.
+     */
+    public recordScenePbrNoColorView(): void {
+        const source = this.sceneMaterialForSetter(
+            "createPbrNoColorMaterialView",
+        );
+        this.scenePbrMaterials.push({
+            ...source,
+            materialsBefore: this.recordSceneMaterialSlot(),
+            noColorView: true,
+        });
+    }
+
+    /**
+     * Counts one scene-code material creation of any family. Every creator
+     * bumps this: material handles are creation-ordered across families, so
+     * a standard material shifts the next PBR handle.
+     */
+    public recordSceneMaterialSlot(): number {
+        return this.sceneMaterialCount++;
     }
 
     public recordScenePbrSheen(sheen: ScenePbrSheenManifest): void {
