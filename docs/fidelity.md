@@ -76,9 +76,19 @@ Ground and skybox fragments also use generated WGSL, gated by Scenes 1 and 8.
 The shared material vertex stage and Standard fragment variants use generated
 WGSL as well, gated by scenes 145 and 273.
 PBR color, diagnostic, and geometry-output variants now use WGSL through Tint.
-The PBR *body* is still a pinned DXC-SPIR-V/Tint transcription of the
-previously validated native shader, and replacing it with per-material
-variants from Babylon's own composer remains the next provenance improvement.
+
+The PBR body itself is now Babylon's own. Generation composes one fragment
+per renderable feature set through the pinned composer — the stages under
+`upstream/pbr-variants/` are its output byte for byte, gated by a test that
+matches them against the browser's captured fragments — and both backends
+execute them: every extension arm the corpus reaches, all three light modes,
+tangent frames, and bone-only-animated skins. Each variant carries the pin's
+own per-variant material UBO, mirrored field for field with a static_assert
+per offset, and filled by writers lowered from the pin's `_writeMaterialData`
+and each extension's `writeUbo`. The transcribed fragment remains only for
+the draw classes `pinned_variant_for_draw` refuses — transmission scenes,
+node-animated skins, instanced meshes, and skeleton variants on SDL_GPU —
+each recorded there with its measurement.
 
 The layer *formulas* no longer are. Every helper the clearcoat, sheen and
 iridescence arms call — `visibility_Kelemen`, `getR0RemappedForClearCoat`,
@@ -436,11 +446,11 @@ and multiplies the environment term by specular and horizon occlusion. The
 `false` arm, which is what `setPbrSheen` defaults to, reads the tint through
 `pow(rgb, 2.2)`, takes roughness from the tint texture's alpha because it
 declares no separate roughness map, attenuates the lobe by `1 - dielectricF0`,
-and leaves the base layer alone. The generated fragment carries whichever arm
-the scene reaches — the legacy one also drops the sheen roughness texture's
-binding pair and UV transform, since nothing samples them. Scene 29 gates the
-glTF arm and Scene 21 the legacy one; a scene composing both would need two
-fragments and fails at generation instead.
+and leaves the base layer alone. Each composed variant carries whichever arm
+its material reaches — the legacy one also drops the sheen roughness
+texture's binding pair and UV transform, since nothing samples them. Scene 29
+gates the glTF arm and Scene 21 the legacy one; a scene reaching both
+composes two variants, one per material, like any other fork.
 
 **A sprite atlas that is drawn rather than fetched is executed, not
 reimplemented.** `lab/lite/src/_shared/sprite-atlas-image.ts` builds its

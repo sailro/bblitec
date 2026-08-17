@@ -42,6 +42,7 @@ meaningful, and stopping early is how a wrong branch gets taken.
 | 2 | Is the difference on the CPU or the GPU side? | `scene -- parity <id> --differential` |
 | 3 | Which value differs from Babylon Lite's? | `scene -- diff <id>` |
 | 4 | What exactly did the browser upload into that buffer? | `scene -- capture <id>` then `scene -- uniforms <id> --size N` |
+| 4b | What did *we* put in the pinned variant's blocks? | `scene -- diff <id> --recapture`, then `pinnedMaterialBlocks` / `pinnedMeshBlocks` in `artifacts/capture/<id>/native-sdl_gpu.json` — built by the same writers the draw calls, CPU-side, so refused variants appear too. Diff the two listings field by field; a pinned-path residual is an input, never the shader, once `scene -- compose` matches byte-for-byte |
 | 5 | Which draw owns the bad pixels? | attribution buffers in `artifacts/parity/<id>` |
 | 6 | Does removing the feature remove the residual? | copy the scene to `examples/`, strip it, `parity --recapture-reference` |
 | 7 | Did we derive the material's features at all? | `scene -- compose <id>` — composes each material through the pin and checks the whole fragment against the captured one |

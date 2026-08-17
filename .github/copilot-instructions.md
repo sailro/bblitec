@@ -49,6 +49,7 @@ npm run scene -- uniforms scene33 --size 96    # decode one browser buffer as na
 | CPU side or GPU side? | `parity --differential` — backends agreeing to one LSB puts it on ours |
 | Which value differs from Babylon Lite's? | `diff` |
 | What did the browser actually upload? | `capture`, then `uniforms` |
+| What did *we* put in a pinned variant's blocks? | `diff --recapture`, then `pinnedMaterialBlocks`/`pinnedMeshBlocks` in the native capture — built by the draw path's own writers, refused variants included. When `compose` matches byte-for-byte, every pinned residual is an input: diff the two listings before touching any source |
 | Which draw owns the bad pixels? | attribution buffers under `artifacts/parity/<id>` |
 | Does removing the feature remove the residual? | copy the scene to `examples/`, strip it, `parity --recapture-reference` |
 

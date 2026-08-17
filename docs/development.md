@@ -276,7 +276,11 @@ compiler, keep binary payloads embedded and reference the `.gltf` from an
 Generation:
 
 - validates the entry TypeScript and reached APIs
-- materializes remote assets under `generated\<scene>\assets`
+- materializes remote assets under `generated\<scene>\assets`, through a
+  content-addressed cache in `.cache\assets` keyed by URL hash — every corpus
+  URL is commit-pinned, so the bytes never change, and a populated cache
+  builds the whole corpus offline. A clone of the pinned upstream commit can
+  seed it directly, since asset paths under the commit are paths in the clone
 - emits typed C++, headers, scene-local shaders, and CMake features
 - writes `manifest.json`, `fidelity.json`, and upstream provenance
 

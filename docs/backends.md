@@ -335,6 +335,26 @@ afterwards). Only the GPU API layer differs:
   binds the flat 6-float delta buffer and 16-byte-header weights
   buffer at group 0 bindings 0/1 with 4-byte/16-byte zero fallbacks;
   weights rewrite in place when `morph_weights_version` changes.
+- **Pinned PBR variants**: both backends also execute Babylon's own
+  composed stages (`variant-*.native.wgsl`, entered at `main` in both
+  stages, the pin's text unchanged). Selection is the shared
+  `pinned_variant_for_draw` in `pal_gpu_shared.hpp`; a refused draw
+  falls to the transcribed pipeline, and each refusal carries its
+  measurement in the comment. The pin's scheme is group 0 = scene +
+  lights, group 1 = mesh block, material block, then that variant's own
+  densely numbered textures — the same index names a different texture
+  in two variants, so Dawn builds a bind-group layout per variant from
+  the generated binding table, and SDL_GPU gets the addressing from
+  `Remap-PinnedVariantRegisters` in `tools/compile-shaders.ps1`, which
+  moves each register class into the SDL spaces and publishes the
+  result as a `.slots` sidecar. The PAL binds by that file, never by
+  the WGSL: a stage can declare a block it never reads — the unlit
+  fragment declares its mesh block for `mli()` — and Tint strips it,
+  so the source over-counts. Vertex convention: an unskinned pinned
+  draw reads the unmirrored buffer with `diag(-1,1,1,1)` in the mesh
+  block; a skinned draw reads the mirrored buffer with the identity,
+  because the palette is the mirror-conjugated `jointWorld * IBM` and
+  either other pairing applies the mirror twice.
 - **Frame graph**: tasks replace the main pass exactly like the SDL
   task loop. Color render tasks draw their
   `build_render_task_draw_lists` lists into render targets with
