@@ -54,6 +54,7 @@ import type {
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
     ResolvedCompileOptions,
+    SceneMeshManifest,
     ScenePbrMaterialManifest,
     Value,
     ValueKind,
@@ -226,6 +227,7 @@ class Compiler
     private readonly unwrappedAwaitExpressions = new Set<number>();
     private readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
     private readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
+    private readonly sceneMeshes: SceneMeshManifest[] = [];
     private hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
     private indentLevel = 2;
@@ -319,6 +321,7 @@ class Compiler
                 geometryOutputTasks: this.geometryOutputTasks,
                 adaptations: this.compileAdaptations(features),
                 scenePbrMaterials: this.scenePbrMaterials,
+                sceneMeshes: this.sceneMeshes,
             },
         };
     }
@@ -5195,6 +5198,16 @@ class Compiler
             this.fail(node, "This intrinsic requires createEngine to run first.");
         }
         return this.defaultEngineCpp;
+    }
+
+    /** Records a scene-code mesh creation for the per-renderable variant key. */
+    public recordSceneMesh(kind: string): void {
+        this.sceneMeshes.push({
+            kind,
+            gltfAssetsBefore: [...this.assets.values()].filter(
+                (asset) => asset.kind === "gltf",
+            ).length,
+        });
     }
 
     public reachFeature(feature: Feature): void {

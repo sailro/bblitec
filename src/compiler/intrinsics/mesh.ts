@@ -54,6 +54,7 @@ export function compileMeshIntrinsic(
 ): Value | undefined {
     switch (importedName) {
         case "createMeshFromData": {
+            context.recordSceneMesh("from-data");
             context.expectArgumentCount(call, 5, 9);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -200,6 +201,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createBox": {
+            context.recordSceneMesh("box");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -224,6 +226,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createGround": {
+            context.recordSceneMesh("ground");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -256,6 +259,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createPlane": {
+            context.recordSceneMesh("plane");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -280,6 +284,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createSphere": {
+            context.recordSceneMesh("sphere");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -516,6 +521,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createTorus": {
+            context.recordSceneMesh("torus");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);

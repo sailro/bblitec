@@ -20,6 +20,19 @@ export interface CompileManifest {
     geometryOutputTasks: GeometryOutputTaskManifest[];
     adaptations: CompileAdaptation[];
     scenePbrMaterials: ScenePbrMaterialManifest[];
+    sceneMeshes: SceneMeshManifest[];
+}
+
+/**
+ * One scene-code mesh creation, in creation order, so generation can key the
+ * per-renderable variant table the way the runtime keys mesh handles. The
+ * builders share one fixed attribute set; `kind` names the intrinsic so a
+ * builder with a different set fails by name instead of composing against the
+ * wrong bits.
+ */
+export interface SceneMeshManifest {
+    kind: string;
+    gltfAssetsBefore: number;
 }
 
 /**

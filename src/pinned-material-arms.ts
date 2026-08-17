@@ -483,3 +483,53 @@ export async function composeScenePbrVariants(
     }
     return variants;
 }
+
+/**
+ * The mesh bits for every renderable a glTF document creates, keyed by the
+ * runtime mesh handle.
+ *
+ * The pinned loader walks nodes in index order and each meshed node's
+ * primitives in order (`load-gltf.ts`), and the lowered loader pushes one
+ * MeshRecord per step of that same walk -- so index `i` here is runtime mesh
+ * handle `i` for a scene whose meshes all come from this asset. The skeleton
+ * bit is the node's: a skin sits on the node, not the mesh.
+ */
+export async function gltfRenderableFeatures(
+    path: string,
+): Promise<readonly number[]> {
+    const document = glbDocument(path) as
+        | (GltfDocument & Record<string, unknown>)
+        | undefined;
+    if (!document) return [];
+    const nodes = Array.isArray(document["nodes"])
+        ? (document["nodes"] as Record<string, unknown>[])
+        : [];
+    const meshes = Array.isArray(document["meshes"])
+        ? (document["meshes"] as Record<string, unknown>[])
+        : [];
+    const features: number[] = [];
+    for (const node of nodes) {
+        const meshIndex = node["mesh"];
+        if (typeof meshIndex !== "number") continue;
+        const primitives = meshes[meshIndex]?.["primitives"];
+        if (!Array.isArray(primitives)) continue;
+        for (const primitive of primitives as Record<string, unknown>[]) {
+            features.push(
+                await pinnedMeshFeaturesFromPrimitive(primitive, {
+                    skinned: node["skin"] !== undefined,
+                }),
+            );
+        }
+    }
+    return features;
+}
+
+/**
+ * The mesh bits of the procedural builders' fixed attribute set: position,
+ * normal and uv -- the same walk the glTF path runs, over that set.
+ */
+export function proceduralRenderableFeatures(): Promise<number> {
+    return pinnedMeshFeaturesFromPrimitive({
+        attributes: { POSITION: 0, NORMAL: 0, TEXCOORD_0: 0 },
+    });
+}

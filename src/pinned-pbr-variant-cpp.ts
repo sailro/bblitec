@@ -853,6 +853,7 @@ export function pinnedPbrVariantsHeader(
     provenance: string,
     variants: readonly PinnedVariantManifestEntry[],
     lightKinds: readonly string[],
+    renderableMeshFeatures: readonly number[],
 ): string {
     const blocks: string[] = [];
     const table: string[] = [];
@@ -1327,6 +1328,22 @@ inline constexpr std::array<
     std::size_t,
     ${meshFeatureRows.length}> pbr_variant_mesh_features{{
 ${meshFeatureRows.join("\n")}
+}};
+
+/**
+ * The mesh attribute bits per runtime mesh handle.
+ *
+ * Generation walks each asset's nodes in the pinned loader's own creation
+ * order -- nodes by index, a meshed node's primitives in order -- and appends
+ * one entry per scene-code builder mesh after them, which is exactly how the
+ * runtime hands out mesh handles. This is the mesh half of the variant key,
+ * per renderable rather than per material, so one material drawn under two
+ * attribute sets resolves each mesh's own variant.
+ */
+inline constexpr std::array<
+    std::size_t,
+    ${renderableMeshFeatures.length}> pbr_renderable_mesh_features{{
+${renderableMeshFeatures.map((bits) => `    ${bits},`).join("\n")}
 }};
 
 /**

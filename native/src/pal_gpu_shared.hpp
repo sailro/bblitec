@@ -684,14 +684,17 @@ inline std::size_t pinned_variant_for_draw(
         }
     }
     const std::uint32_t material_index = draw.item.material.value;
-    if (material_index >= upstream::pbr_variant_mesh_features.size()) {
+    // The mesh half of the key comes per renderable: generation writes one
+    // entry per runtime mesh handle in the loader's own creation order, so a
+    // material drawn under two attribute sets resolves each mesh's own
+    // variant instead of collapsing to the per-material ambiguity.
+    if (
+        draw.item.mesh.value >=
+        upstream::pbr_renderable_mesh_features.size()) {
         return std::numeric_limits<std::size_t>::max();
     }
     const std::size_t mesh_features =
-        upstream::pbr_variant_mesh_features[material_index];
-    if (mesh_features == std::numeric_limits<std::size_t>::max()) {
-        return std::numeric_limits<std::size_t>::max();
-    }
+        upstream::pbr_renderable_mesh_features[draw.item.mesh.value];
     // The light mode, walked the way `writeMeshLightSelection` walks it: how
     // many of the scene's lights affect this mesh decides which arm the pin
     // composed. Shadow receivers always take the loop, which the corpus does

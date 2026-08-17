@@ -34,6 +34,8 @@ import {
     composeRenderableVariants,
     composeScenePbrVariants,
     gltfMaterialCount,
+    gltfRenderableFeatures,
+    proceduralRenderableFeatures,
     type PinnedRenderableVariant,
 } from "./pinned-material-arms.js";
 import {
@@ -611,6 +613,39 @@ async function main(): Promise<void> {
     // fragment where Babylon composes a fragment per feature set, and this is
     // that set, written by the pin rather than transcribed here.
     const pinnedVariants = writePinnedPbrVariants(tree, composedVariants);
+    // The mesh half of the variant key, per runtime mesh handle: each glTF
+    // load appends its renderables in the pinned loader's node-order walk,
+    // and each scene-code builder appends one mesh of the fixed procedural
+    // attribute set, in the same creation order the runtime hands out
+    // handles.
+    const renderableMeshFeatures: number[] = [];
+    if (pinnedVariants.length > 0) {
+        for (const asset of gltfAssets) {
+            renderableMeshFeatures.push(
+                ...(await gltfRenderableFeatures(
+                    resolve(outputPath, "assets", asset.output),
+                )),
+            );
+        }
+        for (const mesh of result.manifest.sceneMeshes) {
+            if (mesh.gltfAssetsBefore !== gltfAssets.length) {
+                throw new Error(
+                    "A scene-code mesh created before a later glTF load " +
+                        "would interleave the renderable key; no scene " +
+                        "reaches this yet.",
+                );
+            }
+            if (mesh.kind === "from-data") {
+                throw new Error(
+                    "A createMeshFromData mesh has no modeled attribute set " +
+                        "for the per-renderable variant key yet.",
+                );
+            }
+            renderableMeshFeatures.push(
+                await proceduralRenderableFeatures(),
+            );
+        }
+    }
     emitUpstreamGenerated(outputPath, result.manifest.features, {
         idDiagnostics: options.idDiagnostics,
         pbrDiagnostics: options.pbrDiagnostics,
@@ -673,6 +708,7 @@ async function main(): Promise<void> {
         // formulas are the pin's own text under the pin's own names.
         pinnedHelpers: await pinnedShaderHelpers(),
         pinnedVariants,
+        renderableMeshFeatures,
         iridescence: emittedArms.iridescence,
         dispersion: emittedArms.dispersion,
         occlusionUv2: emittedArms.occlusionUv2,

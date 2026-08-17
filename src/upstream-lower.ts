@@ -118,6 +118,8 @@ export interface UpstreamEmitOptions {
      * being replaced with.
      */
     pinnedVariants?: readonly PinnedVariantManifestEntry[];
+    /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
+    renderableMeshFeatures?: readonly number[];
     iridescence: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
@@ -656,6 +658,7 @@ class GeneratedSourceWriter {
                     ["hemispheric", "directional", "point", "spot"].filter(
                         (kind) => features.includes(`light:${kind}`),
                     ),
+                    options.renderableMeshFeatures ?? [],
                 ),
             );
         }
