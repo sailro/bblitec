@@ -1,6 +1,10 @@
 import ts from "typescript";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import type {
+    ScenePbrClearCoatManifest,
+    ScenePbrSheenManifest,
+} from "../types.js";
 
 type CompiledPbrMaterialOptions = [
     Value,
@@ -25,6 +29,8 @@ type CompiledPbrMaterialOptions = [
 
 export interface MaterialIntrinsicContext
     extends IntrinsicCallContext {
+    recordScenePbrSheen(sheen: ScenePbrSheenManifest): void;
+    recordScenePbrClearCoat(clearCoat: ScenePbrClearCoatManifest): void;
     expectSameEngine(
         left: Value,
         right: Value,
@@ -497,6 +503,12 @@ export function compileMaterialIntrinsic(
             const clearCoat = context.compileClearCoatOptions(
                 call.arguments[1]!,
             );
+            context.recordScenePbrClearCoat({
+                isEnabled: clearCoat[0] === "true",
+                intensity: Number.parseFloat(clearCoat[1]!),
+                roughness: Number.parseFloat(clearCoat[2]!),
+                indexOfRefraction: Number.parseFloat(clearCoat[3]!),
+            });
             context.reachFeature("material:clearcoat");
             // `useF0Remap` is not a reached option, so a scene-code coat
             // always takes the pin's default: the remap is composed. Only
@@ -528,6 +540,23 @@ export function compileMaterialIntrinsic(
             const sheen = context.compileSheenOptions(
                 call.arguments[1]!,
             );
+            const sheenColor = sheen.color.match(
+                /([0-9.eE+-]+)f, ([0-9.eE+-]+)f, ([0-9.eE+-]+)f/,
+            );
+            context.recordScenePbrSheen({
+                isEnabled: sheen.enabled === "true",
+                color: sheenColor
+                    ? [
+                          Number.parseFloat(sheenColor[1]!),
+                          Number.parseFloat(sheenColor[2]!),
+                          Number.parseFloat(sheenColor[3]!),
+                      ]
+                    : [1, 1, 1],
+                roughness: Number.parseFloat(sheen.roughness),
+                intensity: Number.parseFloat(sheen.intensity),
+                hasTexture: sheen.texture !== undefined,
+                albedoScaling: sheen.albedoScaling,
+            });
             const engine = context.requireEngine(material, call);
             context.reachFeature("material:sheen");
             if (sheen.albedoScaling) {

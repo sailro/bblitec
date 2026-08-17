@@ -55,7 +55,9 @@ import type {
     GeometryTextureTypeName,
     ResolvedCompileOptions,
     SceneMeshManifest,
+    ScenePbrClearCoatManifest,
     ScenePbrMaterialManifest,
+    ScenePbrSheenManifest,
     Value,
     ValueKind,
 } from "./compiler/types.js";
@@ -5198,6 +5200,33 @@ class Compiler
             this.fail(node, "This intrinsic requires createEngine to run first.");
         }
         return this.defaultEngineCpp;
+    }
+
+    /**
+     * Stamps setter options on the one scene-code material, the way the
+     * pin's `setPbrSheen`/`setPbrClearCoat` stamp the props object onto the
+     * material record. Identity beyond a single scene material is not
+     * modeled, so more than one is a named failure rather than a guess.
+     */
+    private sceneMaterialForSetter(setter: string): ScenePbrMaterialManifest {
+        if (this.scenePbrMaterials.length !== 1) {
+            throw new Error(
+                `${setter} targets one of ${this.scenePbrMaterials.length} ` +
+                    "scene materials; setter identity beyond a single scene " +
+                    "material is not modeled yet.",
+            );
+        }
+        return this.scenePbrMaterials[0]!;
+    }
+
+    public recordScenePbrSheen(sheen: ScenePbrSheenManifest): void {
+        this.sceneMaterialForSetter("setPbrSheen").sheen = sheen;
+    }
+
+    public recordScenePbrClearCoat(
+        clearCoat: ScenePbrClearCoatManifest,
+    ): void {
+        this.sceneMaterialForSetter("setPbrClearCoat").clearCoat = clearCoat;
     }
 
     /** Records a scene-code mesh creation for the per-renderable variant key. */

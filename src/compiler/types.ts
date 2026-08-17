@@ -43,7 +43,29 @@ export interface SceneMeshManifest {
  * presence. Recorded by `compilePbrMaterialOptions`, which already resolves
  * every option to a static value.
  */
+/** The `setPbrSheen` options a scene stamps on a material, verbatim. */
+export interface ScenePbrSheenManifest {
+    isEnabled: boolean;
+    color: readonly number[];
+    roughness: number;
+    intensity: number;
+    hasTexture: boolean;
+    albedoScaling: boolean;
+}
+
+/** The `setPbrClearCoat` options a scene stamps on a material, verbatim. */
+export interface ScenePbrClearCoatManifest {
+    isEnabled: boolean;
+    intensity: number;
+    roughness: number;
+    indexOfRefraction: number;
+}
+
 export interface ScenePbrMaterialManifest {
+    /** Stamped by the pin's own setter shape: `mat._sheen = sheen`. */
+    sheen?: ScenePbrSheenManifest;
+    /** Stamped by the pin's own setter shape: `mat._clearCoat = clearCoat`. */
+    clearCoat?: ScenePbrClearCoatManifest;
     /**
      * How many glTF assets the program had loaded when this material was
      * created. The runtime keys the variant table by material handle, which

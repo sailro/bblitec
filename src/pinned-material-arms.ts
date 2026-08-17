@@ -434,14 +434,16 @@ export async function composeScenePbrVariants(
     materials: readonly ScenePbrMaterialManifest[],
     arms: readonly PinnedSceneArm[],
     materialIndexBase = 0,
+    meshFeatureSets?: readonly number[],
 ): Promise<readonly PinnedRenderableVariant[]> {
     if (materials.length === 0 || arms.length === 0) return [];
-    // The procedural mesh builders emit position, normal and uv, so the mesh
-    // half of the key runs the same primitive walk the glTF path uses over
-    // exactly that attribute set.
-    const meshFeatures = await pinnedMeshFeaturesFromPrimitive({
-        attributes: { POSITION: 0, NORMAL: 0, TEXCOORD_0: 0 },
-    });
+    // Scene code can assign its material to any renderable the scene has --
+    // Scene 21 stamps its sheen material across the asset's meshes -- so the
+    // variants compose over every distinct attribute set in the scene, the
+    // procedural builders' fixed set included.
+    const featureSets = meshFeatureSets && meshFeatureSets.length > 0
+        ? meshFeatureSets
+        : [await proceduralRenderableFeatures()];
     const variants: PinnedRenderableVariant[] = [];
     for (const [index, material] of materials.entries()) {
         const input: PinnedMaterialInput = {};
@@ -452,6 +454,31 @@ export async function composeScenePbrVariants(
         // never passed alpha carries no field, and one that passed 1 composes
         // identically, so only a blending alpha is carried.
         if (material.alpha < 1) input.alpha = material.alpha;
+        // The pin's setters stamp the props object verbatim; the extension
+        // detects read `_sheen` and `_clearCoat` off the material, so the
+        // recorded options land under those names, textures as presence.
+        // `useF0Remap` stays absent: only the glTF loader turns the pin's
+        // remap default off.
+        if (material.sheen) {
+            input["_sheen"] = {
+                isEnabled: material.sheen.isEnabled,
+                color: material.sheen.color,
+                roughness: material.sheen.roughness,
+                intensity: material.sheen.intensity,
+                ...(material.sheen.hasTexture ? { texture: {} } : {}),
+                ...(material.sheen.albedoScaling
+                    ? { albedoScaling: true }
+                    : {}),
+            };
+        }
+        if (material.clearCoat) {
+            input["_clearCoat"] = {
+                isEnabled: material.clearCoat.isEnabled,
+                intensity: material.clearCoat.intensity,
+                roughness: material.clearCoat.roughness,
+                indexOfRefraction: material.clearCoat.indexOfRefraction,
+            };
+        }
         if (material.transmission > 0) {
             throw new Error(
                 "A scene-code transmissive material has no composed arm yet; " +
@@ -459,6 +486,7 @@ export async function composeScenePbrVariants(
                     "item.",
             );
         }
+        for (const meshFeatures of featureSets) {
         for (const arm of arms) {
             const variant = await composePinnedPbrVariant(input, {
                 ...arm.options,
@@ -479,6 +507,7 @@ export async function composeScenePbrVariants(
                     variant.materialUboSpec,
                 ),
             });
+        }
         }
     }
     return variants;
