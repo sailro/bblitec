@@ -431,6 +431,106 @@ inline std::array<float, 16> pinned_mesh_world() {
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0
+/**
+ * The pin's per-pass scene block.
+ *
+ * Every member is the one the pin's own declaration names; the fragment reads
+ * its view direction from `vEyePosition` and its reflection path from `view`,
+ * both from the camera the pass renders with. Shared, because the block is the
+ * pin's rather than either backend's: Dawn uploads it to a buffer and SDL_GPU
+ * pushes it at a uniform slot, and neither should decide what is in it.
+ */
+inline upstream::SceneUniforms pinned_scene_block(
+    const Scene& scene,
+    const CameraRecord& camera,
+    const std::array<float, 16>& view_projection) {
+    upstream::SceneUniforms scene_block{};
+    scene_block.viewProjection = view_projection;
+    // The pin's fragment reads the view direction from `vEyePosition`, and its
+    // reflection path from `view`. Both come from the camera the pass renders
+    // with, the same one `build_pbr_uniforms` reads.
+    const std::array<float, 16> camera_world =
+        upstream::camera_world_matrix(camera);
+    scene_block.vEyePosition = {
+        camera_world[12],
+        camera_world[13],
+        camera_world[14],
+        1.0f,
+    };
+    scene_block.view = upstream::build_view_matrix(camera_world);
+    scene_block.envRotationY = scene.environment.rotation_y;
+    // `vImageInfos` is documented in the pin's own declaration as
+    // exposureLinear, contrast, lodGenerationScale, toneMappingEnabled.
+    scene_block.vImageInfos = {
+        scene.environment.exposure,
+        scene.environment.contrast,
+        scene.environment.lod_generation_scale,
+        scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
+    };
+    scene_block.vFogInfos = {
+        scene.fog_mode,
+        scene.fog_start,
+        scene.fog_end,
+        scene.fog_density,
+    };
+    scene_block.vFogColor = {
+        scene.fog_color.r,
+        scene.fog_color.g,
+        scene.fog_color.b,
+        1.0f,
+    };
+    const std::array<std::array<float, 4>*, 9> harmonics{
+        &scene_block.vSphericalL00,
+        &scene_block.vSphericalL1_1,
+        &scene_block.vSphericalL10,
+        &scene_block.vSphericalL11,
+        &scene_block.vSphericalL2_2,
+        &scene_block.vSphericalL2_1,
+        &scene_block.vSphericalL20,
+        &scene_block.vSphericalL21,
+        &scene_block.vSphericalL22,
+    };
+    for (std::size_t index = 0; index < harmonics.size(); ++index) {
+        const Color3& band = scene.environment.spherical_harmonics[index];
+        *harmonics[index] = {band.r, band.g, band.b, 0.0f};
+    }
+    return scene_block;
+}
+
+/**
+ * The pin's per-pass lights block: a u32 count, three words of padding, then
+ * MAX_LIGHTS entries.
+ *
+ * `fillLightsData` writes that count through a Float32Array view of the same
+ * buffer, so it lands in the first four bytes. Returned as bytes because that is
+ * what both a buffer upload and a uniform push take.
+ */
+inline std::vector<std::uint8_t> pinned_lights_block(
+    const Scene& scene,
+    const Engine& engine) {
+    std::array<std::uint32_t, 4> header{};
+    std::vector<upstream::LightEntry> entries(upstream::pinned_max_lights);
+    std::uint32_t count = 0;
+    for (const LightHandle handle : scene.lights) {
+        if (count >= upstream::pinned_max_lights) break;
+        if (handle.value >= engine.lights.size()) continue;
+        const LightRecord& light = engine.lights[handle.value];
+        // Which writer each kind takes is generated: the scene compiles arms
+        // only for the kinds it reaches, so the mapping cannot be restated here.
+        upstream::write_pinned_light(light, entries[count]);
+        ++count;
+    }
+    header[0] = count;
+    std::vector<std::uint8_t> bytes(
+        sizeof(header) + entries.size() * sizeof(upstream::LightEntry));
+    std::memcpy(bytes.data(), header.data(), sizeof(header));
+    std::memcpy(
+        bytes.data() + sizeof(header),
+        entries.data(),
+        entries.size() * sizeof(upstream::LightEntry));
+    return bytes;
+}
+
 // The pin's per-draw mesh block.
 //
 // `writeMeshLightSelection` decides its shape: the world matrix, the count of

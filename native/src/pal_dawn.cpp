@@ -2176,6 +2176,8 @@ void ensure_pinned_draw_bindings(
 // Every value is placed by generated code: `write_<kind>_light` is each light's
 // own `_writeLightUbo`, and the scene block's members are the ones the pin's
 // declaration names. Only the plumbing is here.
+// Upload the pin's per-pass blocks. Both are built by the shared builders, so
+// this backend decides only where they land.
 void write_pinned_frame_blocks(
     DawnState& state,
     const Scene& scene,
@@ -2183,95 +2185,22 @@ void write_pinned_frame_blocks(
     const CameraRecord& camera,
     const std::array<float, 16>& view_projection) {
     ensure_pinned_frame_buffers(state);
-
-    upstream::SceneUniforms scene_block{};
-    scene_block.viewProjection = view_projection;
-    // The pin's fragment reads the view direction from `vEyePosition`, and its
-    // reflection path from `view`. Both come from the camera the pass renders
-    // with, the same one `build_pbr_uniforms` reads.
-    const std::array<float, 16> camera_world =
-        upstream::camera_world_matrix(camera);
-    scene_block.vEyePosition = {
-        camera_world[12],
-        camera_world[13],
-        camera_world[14],
-        1.0f,
-    };
-    scene_block.view = upstream::build_view_matrix(camera_world);
-    scene_block.envRotationY = scene.environment.rotation_y;
-    // `vImageInfos` is documented in the pin's own declaration as
-    // exposureLinear, contrast, lodGenerationScale, toneMappingEnabled.
-    scene_block.vImageInfos = {
-        scene.environment.exposure,
-        scene.environment.contrast,
-        scene.environment.lod_generation_scale,
-        scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
-    };
-    scene_block.vFogInfos = {
-        scene.fog_mode,
-        scene.fog_start,
-        scene.fog_end,
-        scene.fog_density,
-    };
-    scene_block.vFogColor = {
-        scene.fog_color.r,
-        scene.fog_color.g,
-        scene.fog_color.b,
-        1.0f,
-    };
-    const std::array<std::array<float, 4>*, 9> harmonics{
-        &scene_block.vSphericalL00,
-        &scene_block.vSphericalL1_1,
-        &scene_block.vSphericalL10,
-        &scene_block.vSphericalL11,
-        &scene_block.vSphericalL2_2,
-        &scene_block.vSphericalL2_1,
-        &scene_block.vSphericalL20,
-        &scene_block.vSphericalL21,
-        &scene_block.vSphericalL22,
-    };
-    for (std::size_t index = 0; index < harmonics.size(); ++index) {
-        const Color3& band = scene.environment.spherical_harmonics[index];
-        *harmonics[index] = {band.r, band.g, band.b, 0.0f};
-    }
+    const upstream::SceneUniforms scene_block =
+        pinned_scene_block(scene, camera, view_projection);
     wgpuQueueWriteBuffer(
         state.queue,
         state.pinned_scene_uniforms,
         0,
         &scene_block,
         sizeof(scene_block));
-
-    // The pin's header is a u32 count followed by three words of padding, then
-    // the entries; `fillLightsData` writes that count through a Float32Array
-    // view of the same buffer, so it lands in the first four bytes.
-    std::array<
-        std::uint32_t,
-        4> header{};
-    std::vector<upstream::LightEntry> entries(upstream::pinned_max_lights);
-    std::uint32_t count = 0;
-    for (const LightHandle handle : scene.lights) {
-        if (count >= upstream::pinned_max_lights) break;
-        if (handle.value >= engine.lights.size()) continue;
-        const LightRecord& light = engine.lights[handle.value];
-        upstream::LightEntry& entry = entries[count];
-        // Which writer each kind takes is generated: the scene compiles arms
-        // only for the kinds it reaches, so the mapping cannot be restated here.
-        upstream::write_pinned_light(light, entry);
-        ++count;
-    }
-    header[0] = count;
+    const std::vector<std::uint8_t> lights =
+        pinned_lights_block(scene, engine);
     wgpuQueueWriteBuffer(
         state.queue,
         state.pinned_lights_uniforms,
         0,
-        header.data(),
-        sizeof(header));
-    wgpuQueueWriteBuffer(
-        state.queue,
-        state.pinned_lights_uniforms,
-        sizeof(header),
-        entries.data(),
-        entries.size() * sizeof(upstream::LightEntry));
+        lights.data(),
+        lights.size());
 }
 #endif
 
