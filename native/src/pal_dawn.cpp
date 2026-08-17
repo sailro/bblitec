@@ -288,6 +288,17 @@ struct DawnState : DawnDevice {
     // groups interchangeable across shader variants.
     std::array<WGPUBindGroupLayout, 4> mesh_group_layouts{};
     WGPUPipelineLayout mesh_pipeline_layout = nullptr;
+#if BBLITE_PBR_VARIANTS > 0
+    // Babylon Lite's own grouping, which its composed fragments declare:
+    // group 0 carries the per-pass scene block and the lights array, group 1
+    // the per-draw mesh and material blocks followed by the material's texture
+    // pairs from binding 3. Kept beside the layouts above while the variant
+    // path is brought up, so both can be measured against the same goldens.
+    std::array<WGPUBindGroupLayout, 2> pinned_group_layouts{};
+    WGPUPipelineLayout pinned_pipeline_layout = nullptr;
+    WGPUBuffer pinned_scene_uniforms = nullptr;
+    WGPUBuffer pinned_lights_uniforms = nullptr;
+#endif
     WGPUShaderModule ground_module = nullptr;
     WGPURenderPipeline ground_pipeline = nullptr;
     WGPUBuffer ground_vertices = nullptr;
@@ -1694,6 +1705,212 @@ PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
                 " is not implemented yet.");
     }
 }
+
+#if BBLITE_PBR_VARIANTS > 0
+// Babylon Lite's own bind groups, as its composed fragments declare them.
+//
+// The generated `pbr_variants.hpp` mirrors the four blocks -- SceneUniforms,
+// LightEntry, MeshUniforms and one MaterialUniforms per variant -- from the pin
+// itself, so the sizes here are those structs rather than numbers chosen at this
+// layer. Texture pairs start at binding 3 because the mesh and material blocks
+// take 0 and 1, which is the pin's numbering and not a convention of ours.
+WGPUPipelineLayout pinned_pipeline_layout_for(DawnState& state) {
+    if (state.pinned_pipeline_layout) return state.pinned_pipeline_layout;
+    // Group 0: the per-pass scene block, then the lights array.
+    {
+        std::array<WGPUBindGroupLayoutEntry, 2> entries{};
+        for (std::uint32_t binding = 0; binding < entries.size(); ++binding) {
+            entries[binding] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            entries[binding].binding = binding;
+            // The scene block is read by both stages; the pin's vertex template
+            // takes its viewProjection from the same struct the fragment reads.
+            entries[binding].visibility = binding == 0
+                ? WGPUShaderStage_Vertex | WGPUShaderStage_Fragment
+                : WGPUShaderStage_Fragment;
+            entries[binding].buffer.type = WGPUBufferBindingType_Uniform;
+        }
+        WGPUBindGroupLayoutDescriptor descriptor =
+            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+        descriptor.entryCount = entries.size();
+        descriptor.entries = entries.data();
+        state.pinned_group_layouts[0] =
+            wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
+    }
+    // Group 1: mesh block, material block, then this variant's texture pairs.
+    {
+        constexpr std::uint32_t first_texture_binding = 3;
+        constexpr std::size_t max_pairs = 8;
+        std::array<
+            WGPUBindGroupLayoutEntry,
+            2 + max_pairs * 2> entries{};
+        std::uint32_t count = 0;
+        const auto uniform = [&](std::uint32_t binding,
+                                 WGPUShaderStage visibility) {
+            entries[count] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            entries[count].binding = binding;
+            entries[count].visibility = visibility;
+            entries[count].buffer.type = WGPUBufferBindingType_Uniform;
+            ++count;
+        };
+        // `mesh.world` is read in the vertex stage and `mesh.li` in the
+        // fragment, so the mesh block is visible to both.
+        uniform(0, WGPUShaderStage_Vertex | WGPUShaderStage_Fragment);
+        uniform(1, WGPUShaderStage_Fragment);
+        for (std::uint32_t pair = 0; pair < max_pairs; ++pair) {
+            const std::uint32_t base = first_texture_binding + pair * 2;
+            entries[count] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            entries[count].binding = base;
+            entries[count].visibility = WGPUShaderStage_Fragment;
+            entries[count].texture.sampleType = WGPUTextureSampleType_Float;
+            entries[count].texture.viewDimension =
+                WGPUTextureViewDimension_2D;
+            ++count;
+            entries[count] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            entries[count].binding = base + 1;
+            entries[count].visibility = WGPUShaderStage_Fragment;
+            entries[count].sampler.type = WGPUSamplerBindingType_Filtering;
+            ++count;
+        }
+        WGPUBindGroupLayoutDescriptor descriptor =
+            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+        descriptor.entryCount = count;
+        descriptor.entries = entries.data();
+        state.pinned_group_layouts[1] =
+            wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
+    }
+    WGPUPipelineLayoutDescriptor descriptor =
+        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    descriptor.bindGroupLayoutCount = state.pinned_group_layouts.size();
+    descriptor.bindGroupLayouts = state.pinned_group_layouts.data();
+    state.pinned_pipeline_layout =
+        wgpuDeviceCreatePipelineLayout(state.device, &descriptor);
+    if (!state.pinned_pipeline_layout) {
+        dawn_error("pinned variant pipeline layout creation failed.");
+    }
+    return state.pinned_pipeline_layout;
+}
+
+// The per-pass scene and lights buffers, sized by the pin's own structs.
+void ensure_pinned_frame_buffers(DawnState& state) {
+    if (state.pinned_scene_uniforms) return;
+    const auto uniform_buffer = [&](std::size_t size) {
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.size = static_cast<std::uint64_t>(size);
+        descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        WGPUBuffer buffer = wgpuDeviceCreateBuffer(state.device, &descriptor);
+        if (!buffer) dawn_error("pinned uniform buffer creation failed.");
+        return buffer;
+    };
+    state.pinned_scene_uniforms =
+        uniform_buffer(sizeof(upstream::SceneUniforms));
+    // The pin's own header: 16 bytes of count and padding, then MAX_LIGHTS
+    // entries. `getLightsUboSize()` states it and the mirrored LightEntry is
+    // what makes the entry stride the pin's rather than a guess.
+    state.pinned_lights_uniforms = uniform_buffer(
+        16 + upstream::pinned_max_lights * sizeof(upstream::LightEntry));
+}
+
+// Fill and upload the pin's per-pass blocks.
+//
+// Every value is placed by generated code: `write_<kind>_light` is each light's
+// own `_writeLightUbo`, and the scene block's members are the ones the pin's
+// declaration names. Only the plumbing is here.
+void write_pinned_frame_blocks(
+    DawnState& state,
+    const Scene& scene,
+    const Engine& engine,
+    const std::array<float, 16>& view_projection) {
+    ensure_pinned_frame_buffers(state);
+
+    upstream::SceneUniforms scene_block{};
+    scene_block.viewProjection = view_projection;
+    scene_block.envRotationY = scene.environment.rotation_y;
+    // `vImageInfos` is documented in the pin's own declaration as
+    // exposureLinear, contrast, lodGenerationScale, toneMappingEnabled.
+    scene_block.vImageInfos = {
+        scene.environment.exposure,
+        scene.environment.contrast,
+        scene.environment.lod_generation_scale,
+        scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
+    };
+    scene_block.vFogInfos = {
+        scene.fog_mode,
+        scene.fog_start,
+        scene.fog_end,
+        scene.fog_density,
+    };
+    scene_block.vFogColor = {
+        scene.fog_color.r,
+        scene.fog_color.g,
+        scene.fog_color.b,
+        1.0f,
+    };
+    const std::array<std::array<float, 4>*, 9> harmonics{
+        &scene_block.vSphericalL00,
+        &scene_block.vSphericalL1_1,
+        &scene_block.vSphericalL10,
+        &scene_block.vSphericalL11,
+        &scene_block.vSphericalL2_2,
+        &scene_block.vSphericalL2_1,
+        &scene_block.vSphericalL20,
+        &scene_block.vSphericalL21,
+        &scene_block.vSphericalL22,
+    };
+    for (std::size_t index = 0; index < harmonics.size(); ++index) {
+        const Color3& band = scene.environment.spherical_harmonics[index];
+        *harmonics[index] = {band.r, band.g, band.b, 0.0f};
+    }
+    wgpuQueueWriteBuffer(
+        state.queue,
+        state.pinned_scene_uniforms,
+        0,
+        &scene_block,
+        sizeof(scene_block));
+
+    // The pin's header is a u32 count followed by three words of padding, then
+    // the entries; `fillLightsData` writes that count through a Float32Array
+    // view of the same buffer, so it lands in the first four bytes.
+    std::array<
+        std::uint32_t,
+        4> header{};
+    std::vector<upstream::LightEntry> entries(upstream::pinned_max_lights);
+    std::uint32_t count = 0;
+    for (const LightHandle handle : scene.lights) {
+        if (count >= upstream::pinned_max_lights) break;
+        if (handle.value >= engine.lights.size()) continue;
+        const LightRecord& light = engine.lights[handle.value];
+        upstream::LightEntry& entry = entries[count];
+        switch (light.kind) {
+            case LightKind::point:
+                upstream::write_point_light(light, entry);
+                break;
+            case LightKind::directional:
+                upstream::write_directional_light(light, entry);
+                break;
+            case LightKind::spot:
+                upstream::write_spot_light(light, entry);
+                break;
+            case LightKind::hemispheric:
+                upstream::write_hemispheric_light(light, entry);
+                break;
+        }
+        ++count;
+    }
+    header[0] = count;
+    wgpuQueueWriteBuffer(
+        state.queue,
+        state.pinned_lights_uniforms,
+        0,
+        header.data(),
+        sizeof(header));
+    wgpuQueueWriteBuffer(
+        state.queue,
+        state.pinned_lights_uniforms,
+        sizeof(header),
+        entries.data(),
+        entries.size() * sizeof(upstream::LightEntry));
+}
+#endif
 
 WGPUPipelineLayout mesh_pipeline_layout_for(DawnState& state) {
     if (state.mesh_pipeline_layout) return state.mesh_pipeline_layout;

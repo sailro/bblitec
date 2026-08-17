@@ -31,6 +31,21 @@ import { pinnedPbrVariantsHeader } from "./pinned-pbr-variant-cpp.js";
  * The word offset `lights-ubo.ts` writes a mesh's light indices from, read so
  * the mirrored mesh block is checked against the pin's own constant.
  */
+/** The pin's own MAX_LIGHTS, so the lights buffer is sized by it. */
+function pinnedMaxLights(context: LoweringContext): number {
+    const file = context.sourceFile("src/light/types.ts");
+    const initializer = context.unwrapExpression(
+        context.variableInitializer(file, "MAX_LIGHTS"),
+    );
+    if (!ts.isNumericLiteral(initializer)) {
+        context.contractError(
+            initializer,
+            "Expected MAX_LIGHTS to be a numeric constant.",
+        );
+    }
+    return Number.parseInt(initializer.text, 10);
+}
+
 function meshLightIndexWordOffset(context: LoweringContext): number {
     const file = context.sourceFile("src/render/lights-ubo.ts");
     const initializer = context.unwrapExpression(
@@ -637,6 +652,7 @@ class GeneratedSourceWriter {
                     new RendererLowerer(context).compiledSceneUniformsWgsl(),
                     sceneUboBytes(context),
                     meshLightIndexWordOffset(context),
+                    pinnedMaxLights(context),
                     "src/pinned-pbr-variant-cpp.ts pinnedPbrVariantsHeader",
                     options.pinnedVariants!,
                 ),

@@ -474,7 +474,10 @@ export function meshUniformsBlock(
         `    "MeshUniforms exceeds the pinned ${end} bytes.");`;
 }
 
-export function lightUniformsBlock(context: LoweringContext): string {
+export function lightUniformsBlock(
+    context: LoweringContext,
+    maxLights: number,
+): string {
     const slots: UboFieldSlot[] = [
         { name: "vLightData", offset: 0, lanes: 4 },
         { name: "vLightDiffuse", offset: 16, lanes: 4 },
@@ -506,10 +509,12 @@ export function lightUniformsBlock(context: LoweringContext): string {
             `    std::array<float, 4> ${slot.name}{};`
         )
         .join("\n");
-    return `// src/render/lights-ubo.ts fillLightsData\n` +
+    return `// src/light/types.ts MAX_LIGHTS\n` +
+        `inline constexpr std::size_t pinned_max_lights = ${maxLights};\n\n` +
+        `// src/render/lights-ubo.ts fillLightsData\n` +
         `struct LightEntry {\n${members}\n};\n` +
         `static_assert(\n    sizeof(LightEntry) == 64,\n` +
-        `    "The pin's LightEntry is 4 x vec4.");\n\n` +
+        `    "The pinned LightEntry is 4 x vec4.");\n\n` +
         writers.join("\n\n");
 }
 
@@ -578,6 +583,7 @@ export function pinnedPbrVariantsHeader(
     sceneUniformsWgsl: string,
     pinnedSceneUboBytes: number,
     meshLightIndexWordOffset: number,
+    pinnedMaxLights: number,
     provenance: string,
     variants: readonly PinnedVariantManifestEntry[],
 ): string {
@@ -740,7 +746,7 @@ inline constexpr TextureTransform bblIdentityTransform{};
 
 ${sceneUniformsStruct(sceneUniformsWgsl, pinnedSceneUboBytes)}
 
-${lightUniformsBlock(context)}
+${lightUniformsBlock(context, pinnedMaxLights)}
 
 ${meshUniformsBlock(variants[0]!.fragmentWgsl, meshLightIndexWordOffset)}
 
