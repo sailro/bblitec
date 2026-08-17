@@ -378,6 +378,58 @@ inline std::vector<GpuVertex> transformed_vertices(
     return result;
 }
 
+#if BBLITE_PBR_VARIANTS > 0
+/**
+ * The same vertices in Babylon's own convention.
+ *
+ * Two facts make this necessary rather than cosmetic. The loader stores a glTF
+ * mesh through the native X mirror and reconciles `tangent.w` against it, where
+ * Babylon keeps position, normal and tangent unmirrored and carries the mirror
+ * in the mesh block's world matrix -- the browser's own block for Scene 7 is
+ * `diag(-1, 1, 1, 1)`, not the identity. And a mirror flips handedness, so a
+ * bitangent built with `cross()` inside the pin's own vertex stage comes out
+ * negated when it is fed pre-mirrored data. Undoing the mirror here, and pairing
+ * it with the mirroring world matrix, is what lets the pin's stage run unedited.
+ *
+ * The morph deltas carry the same mirror and are undone with it.
+ */
+inline std::vector<GpuVertex> pinned_convention_vertices(
+    const std::vector<GpuVertex>& source,
+    bool mirrored_x) {
+    std::vector<GpuVertex> result = source;
+    for (GpuVertex& vertex : result) {
+        vertex.position[0] = -vertex.position[0];
+        vertex.normal[0] = -vertex.normal[0];
+        vertex.tangent[0] = -vertex.tangent[0];
+        vertex.local_position[0] = -vertex.local_position[0];
+        vertex.local_normal[0] = -vertex.local_normal[0];
+        // `gltf-loader` multiplies the authored sign by -1 for a right-handed
+        // node and by +1 for a mirrored one; the pin's stage wants the authored
+        // value, so the same factor undoes it.
+        vertex.tangent[3] *= mirrored_x ? 1.0f : -1.0f;
+#if BBLITE_GPU_DEFORMATION
+        vertex.morph_position_0[0] = -vertex.morph_position_0[0];
+        vertex.morph_position_1[0] = -vertex.morph_position_1[0];
+        vertex.morph_normal_0[0] = -vertex.morph_normal_0[0];
+        vertex.morph_normal_1[0] = -vertex.morph_normal_1[0];
+        vertex.morph_tangent_0[0] = -vertex.morph_tangent_0[0];
+        vertex.morph_tangent_1[0] = -vertex.morph_tangent_1[0];
+#endif
+    }
+    return result;
+}
+
+/** The pin's own per-mesh world matrix: the mirror its vertices do not carry. */
+inline std::array<float, 16> pinned_mesh_world() {
+    return {
+        -1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
+}
+#endif
+
 // Inverse image processing for the linear-frame clear color shared by
 // both render backends (moved verbatim from pal_sdl_gpu.cpp).
 inline float inverse_image_processed_channel(

@@ -123,6 +123,13 @@ struct DawnMesh {
     // each. The pin reads the palette with textureLoad rather than from a UBO,
     // so a skinned variant needs the texture and not the DeformationUniforms
     // array the transcribed stage takes.
+    // The same vertices unmirrored, paired with the mirroring world matrix in
+    // the mesh block. `load-gltf.ts` states the convention it expects: "Keep
+    // vertex data as-is from glTF — RH→LH conversion handled by root world
+    // matrix". Our loader instead mirrors X into the vertices and reconciles
+    // `tangent.w` against that, so a bitangent built with `cross()` inside the
+    // pin's own vertex stage comes out negated unless the conversion is undone.
+    WGPUBuffer pinned_vertices = nullptr;
     WGPUTexture pinned_bone_texture = nullptr;
     WGPUTextureView pinned_bone_view = nullptr;
     std::uint32_t pinned_bone_count = 0;
@@ -537,6 +544,10 @@ struct DawnState : DawnDevice {
 #endif
             }
 #if BBLITE_PBR_VARIANTS > 0
+            if (mesh.pinned_vertices) {
+                wgpuBufferRelease(mesh.pinned_vertices);
+                mesh.pinned_vertices = nullptr;
+            }
             if (mesh.pinned_bone_view) {
                 wgpuTextureViewRelease(mesh.pinned_bone_view);
             }
@@ -2732,11 +2743,17 @@ WGPURenderPipeline pinned_variant_pipeline(
  * inputs it needs have been measured against the browser's own buffers. Every
  * disqualifier below names an open measurement rather than a scene:
  *
- *  - a `tangent` input: our vertices are pre-mirrored and Babylon's are not, so
- *    the bitangent the pin's stage builds with `cross()` comes out negated. The
- *    conversion exists (`pinned_convention_vertices`) and is not wired yet.
  *  - an extension arm: each contributes its own material-UBO fields through a
  *    lowered writer that no capture has been diffed against.
+ *  - `skeleton`: measured, not resolved. The browser's own palette for Scene 7 is
+ *    `diag(100, 100, 100, 1)` (its bone texture upload in
+ *    `artifacts/capture/scene7/tex-uploads.json`, rgba32float 48x1), so it
+ *    carries no mirror and the loader's `native_matrix` conjugation is a no-op on
+ *    it; the mesh block carries the mirror instead. Both vertex conventions were
+ *    tried against that -- unmirrored 2.522 MAD, mirrored 1.954, against 0.056
+ *    transcribed -- so neither the palette nor the mirror is the remaining
+ *    difference. The next measurement is our own palette and mesh block dumped
+ *    and diffed against those two captured buffers, not more algebra.
  *  - refraction: needs the scene-colour grab bound through the pin's own
  *    mid-pass break rather than our slot order.
  *  - skeleton or morph: the palette and the morph deltas both carry the mirror.
@@ -2746,13 +2763,6 @@ WGPURenderPipeline pinned_variant_pipeline(
  */
 bool pinned_variant_supported(std::size_t variant) {
     const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
-    for (std::size_t index = 0; index < entry.attribute_count; ++index) {
-        if (
-            upstream::pbr_variant_attributes[entry.first_attribute + index]
-                .name == "tangent") {
-            return false;
-        }
-    }
     std::string_view key = entry.key;
     while (!key.empty()) {
         const std::size_t bar = key.find('|');
@@ -2799,16 +2809,16 @@ std::size_t pinned_variant_for_draw(
         if (record.thin_instanced || !record.instance_matrices.empty()) {
             return std::numeric_limits<std::size_t>::max();
         }
-        // Skinning is built but not yet correct: Scene 7 renders with an exact
-        // silhouette -- the palette and the bone texture are right -- and a
-        // shading difference over the whole surface, so one of the blocks this
-        // path fills disagrees with the browser's own. `artifacts/capture/
-        // scene7/buffers.json` holds that scene block (368 bytes) and lights
-        // block (1040) to diff against; until that is measured, a skinned draw
-        // takes the transcribed path.
+        // `bone_matrices` is not only a skin: the glTF loader pushes the mesh's
+        // own world matrix into it for an *animated* mesh with no skin at all,
+        // and the transcribed vertex stage takes the transform from there. The
+        // pin's non-skeleton variants read no palette, so such a draw would lose
+        // its animation — Scenes 39, 242 and 254 measured 4.2 to 11.9 MAD that
+        // way against 0.000 transcribed.
         if (!record.bone_matrices.empty()) {
             return std::numeric_limits<std::size_t>::max();
         }
+
     }
     const std::uint32_t material_index = draw.item.material.value;
     if (material_index >= upstream::pbr_variant_mesh_features.size()) {
@@ -2837,12 +2847,10 @@ std::size_t pinned_variant_for_draw(
     const std::uint32_t light_mode =
         light_count == 0 ? 0u : light_count == 1 ? 1u : 2u;
     if (light_mode != 1) single_light_type = "";
-    // The unlit and single-light arms. The single-light block is the one diffed
-    // against the browser's own -- `artifacts/capture/scene7/buffers.json`, 1040
-    // bytes beside the 368-byte scene block -- and its writers read the pin's own
-    // light world matrix rather than a hand-mapped lane table. The multi-light
-    // loop indexes the same block but has not been measured.
-    if (light_mode == 2) return std::numeric_limits<std::size_t>::max();
+    // Every light mode. All three read the same lights block, whose writers index
+    // the pin's own light world matrix; the block itself was diffed against the
+    // browser's (`artifacts/capture/scene7/buffers.json`, 1040 bytes beside the
+    // 368-byte scene block).
     // A transmission scene breaks its main pass in two around the scene-colour
     // grab, and the pin binds that grab through its own refraction slot rather
     // than our fixed one. Scene 30's non-refractive materials measured 17.8 MAD
@@ -4677,6 +4685,17 @@ bool run_dawn_engine(Engine& engine) {
             WGPUBufferUsage_Vertex,
             vertices.data(),
             vertices.size() * sizeof(GpuVertex));
+#if BBLITE_PBR_VARIANTS > 0
+        {
+            const std::vector<GpuVertex> pinned =
+                pinned_convention_vertices(vertices, mesh_record.mirrored_x);
+            mesh.pinned_vertices = create_buffer(
+                state,
+                WGPUBufferUsage_Vertex,
+                pinned.data(),
+                pinned.size() * sizeof(GpuVertex));
+        }
+#endif
         mesh.indices = create_buffer(
             state,
             WGPUBufferUsage_Index,
@@ -5917,6 +5936,20 @@ bool run_dawn_engine(Engine& engine) {
                             0,
                             vertices.data(),
                             vertices.size() * sizeof(GpuVertex));
+#if BBLITE_PBR_VARIANTS > 0
+                        if (draw_mesh.pinned_vertices) {
+                            const std::vector<GpuVertex> pinned =
+                                pinned_convention_vertices(
+                                    vertices,
+                                    draw_record.mirrored_x);
+                            wgpuQueueWriteBuffer(
+                                state.queue,
+                                draw_mesh.pinned_vertices,
+                                0,
+                                pinned.data(),
+                                pinned.size() * sizeof(GpuVertex));
+                        }
+#endif
                         draw_mesh.transform_version =
                             draw_record.transform_version;
                     }
@@ -6148,15 +6181,15 @@ bool run_dawn_engine(Engine& engine) {
                                 pinned_mesh_block(
                                     scene,
                                     engine,
-                                    // The loader bakes a static primitive's
-                                    // node transform into its vertices, so the
-                                    // pin's `finalWorld` is the identity for
-                                    // exactly the meshes this path accepts —
-                                    // `pinned_variant_for_draw` refuses the
-                                    // instanced and per-frame-transformed ones,
-                                    // whose matrix the transcribed stage takes
-                                    // from a vertex buffer instead.
-                                    upstream::pinned_identity_matrix,
+                                    // The RH→LH mirror, which the pinned
+                                    // vertex buffer no longer carries. The
+                                    // node transform is already baked into
+                                    // those vertices (or re-baked per frame
+                                    // for an animated node), so this is the
+                                    // whole of the pin's `finalWorld` — and
+                                    // it is what the browser's own block for
+                                    // Scene 7 holds: diag(-1, 1, 1, 1).
+                                    pinned_mesh_world(),
                                     draw.item.mesh.value);
                             wgpuQueueWriteBuffer(
                                 state.queue,
@@ -6419,7 +6452,11 @@ bool run_dawn_engine(Engine& engine) {
                     wgpuRenderPassEncoderSetBindGroup(
                         list_pass, 1, mesh.pinned_group, 0, nullptr);
                     wgpuRenderPassEncoderSetVertexBuffer(
-                        list_pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
+                        list_pass,
+                        0,
+                        mesh.pinned_vertices,
+                        0,
+                        WGPU_WHOLE_SIZE);
                     wgpuRenderPassEncoderSetIndexBuffer(
                         list_pass,
                         mesh.indices,
