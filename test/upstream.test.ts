@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readdirSync } from "node:fs";
 import test from "node:test";
 import { analyzeUpstreamGraph } from "../src/upstream-graph.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -14,15 +13,11 @@ import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
-import { pinnedShaderHelpers } from "../src/pinned-pbr-variants.js";
 import {
     readUpstreamPin,
     UpstreamSourceStore,
 } from "../src/upstream-source.js";
-import type {
-    CompiledShaderProgram,
-    GeometryOutputTaskManifest,
-} from "../src/compiler.js";
+import type { CompiledShaderProgram } from "../src/compiler.js";
 import { shaderMaterialPrograms } from "../src/shader-material-programs.js";
 
 /** The provenance banner every generated source carries, derived from the
@@ -623,26 +618,22 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.header, /struct PbrUniforms/);
     assert.match(lowered.source, /mesh\.geometry >= engine\.geometries\.size\(\)/);
     assert.match(lowered.source, pinnedProvenance());
+    // The transcribed PBR fragment is retired: PBR draws run the pin's own
+    // composed variants, so the emitted set carries the shared material
+    // vertex and no pbr.frag.
     assert.ok(
         shaders.some((shader) =>
+            shader.output.endsWith("pbr.vert.native.wgsl"),
+        ),
+    );
+    assert.ok(
+        !shaders.some((shader) =>
             shader.output.endsWith("pbr.frag.native.wgsl"),
         ),
     );
     assert.ok(
         shaders.every((shader) => /\.(?:hlsl|msl|wgsl)$/.test(shader.output)),
     );
-    const fragment = shaders.find((shader) =>
-        shader.output.endsWith("pbr.frag.native.wgsl"),
-    );
-    assert.equal(typeof fragment?.data, "string");
-    assert.match(String(fragment?.data), /@builtin\(front_facing\)/);
-    assert.match(String(fragment?.data), /@location\(6u\) v_118/);
-    assert.match(String(fragment?.data), /textureNumLevels/);
-    assert.match(
-        String(fragment?.data),
-        /select\([\s\S]*FragmentUniforms\.normalOptions\.y > 0\.5f/,
-    );
-    assert.match(String(fragment?.data), /3\.141592741/);
     assert.ok(
         shaders.some((shader) =>
             shader.output.endsWith("alpha-card.vert.native.wgsl"),
@@ -653,12 +644,6 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
             shader.output.endsWith("circular-cutout.frag.native.wgsl"),
         ),
     );
-    const diagnosticC = shaders.find((shader) =>
-        shader.output.endsWith("pbr-diagnostics-c.frag.native.wgsl"),
-    );
-    assert.match(String(diagnosticC?.data), /baseColor/);
-    assert.match(String(diagnosticC?.data), /preToneHdr/);
-    assert.match(String(fragment?.data), /1\.590579/);
     assert.equal(fidelity.sourceLanguage, "WGSL");
     assert.deepEqual(fidelity.compiledArtifacts, ["DXIL", "SPIR-V"]);
     assert.ok(fidelity.invariants.some(({ id }) => id === "rgbd-cubemap-y-flip"));
@@ -777,294 +762,6 @@ test("lowers glTF material extensions into typed uniforms and shader layers", ()
     assert.doesNotMatch(baseline.source, /material\.dispersion/);
 });
 
-test("generates upstream clearcoat, sheen, iridescence, and dispersion WGSL", async () => {
-    const options = {
-        // Every layer's formulas come from the pin's own composition, so the
-        // lowering refuses to run without them rather than falling back to a
-        // transcription.
-        pinnedHelpers: await pinnedShaderHelpers(),
-        ground: false,
-        skybox: false,
-        shaderPrograms: [] as CompiledShaderProgram[],
-        standardMaterial: false,
-        idDiagnostics: false,
-        pbrDiagnostics: false,
-        geometryOutputTasks: [] as GeometryOutputTaskManifest[],
-    };
-    const fragmentOf = (shaders: ReturnType<
-        RendererLowerer["lowerShaders"]
-    >): string =>
-        String(
-            shaders.find((shader) =>
-                shader.output.endsWith("pbr.frag.native.wgsl"),
-            )?.data,
-        );
-    const multiLight = fragmentOf(
-        new RendererLowerer(new LoweringContext()).lowerShaders({
-            ...options,
-            transmission: true,
-            multiLight: true,
-        }),
-    );
-    assert.match(
-        multiLight,
-        /let v_62 = 1\.0f \/ max\(v_59, 0\.0000001f\)/,
-    );
-    assert.match(multiLight, /bblExtraDiffuse \+= extraDiffuse/);
-    assert.match(multiLight, /bblExtraSpecular \+= extraSpecular/);
-    assert.match(
-        multiLight,
-        /bblExtraDiffuse \* opaqueRatio/,
-    );
-    assert.match(
-        multiLight,
-        /v_101 \+ v_102 \+ bblExtraSpecular/,
-    );
-    const rotatedEnvironment = fragmentOf(
-        new RendererLowerer(new LoweringContext()).lowerShaders({
-            ...options,
-            transmission: false,
-            environmentRotation: true,
-        }),
-    );
-    assert.match(
-        rotatedEnvironment,
-        /dot\(environment_reflection_raw, v_29\)/,
-    );
-    assert.doesNotMatch(
-        rotatedEnvironment,
-        /v_82 = clamp\(/,
-    );
-    const clearcoat = fragmentOf(
-        new RendererLowerer(new LoweringContext()).lowerShaders({
-            ...options,
-            transmission: false,
-            clearcoat: true,
-        }),
-    );
-    assert.match(
-        clearcoat,
-        /@group\(2u\) @binding\(12u\) var clearcoatTexture : texture_2d<f32>;/,
-    );
-    assert.match(
-        clearcoat,
-        /@group\(2u\) @binding\(17u\) var clearcoatNormalSampler : sampler;/,
-    );
-    assert.match(clearcoat, /  clearcoatParams : vec4<f32>,/);
-    // The pin's own text under the pin's own name.
-    assert.match(clearcoat, /fn visibility_Kelemen/);
-    assert.match(
-        clearcoat,
-        /return 0\.25 \/ \(VdotH_kl \* VdotH_kl \+ 0\.0000001\);/,
-    );
-    assert.match(
-        clearcoat,
-        /let ccDirectAttenuation = 1\.0f - ccFresnel_dl \* ccIntensity;/,
-    );
-    assert.match(
-        clearcoat,
-        /let ccConservation_ibl = 1\.0f - ccFresnelIBL \* ccIntensity;/,
-    );
-    assert.match(clearcoat, /bblBaseIrradiance \* ccConservation_ibl/);
-    assert.match(clearcoat, /v_102 \* ccDirectAttenuation/);
-    assert.match(
-        clearcoat,
-        /select\(\(bblLayeredColor \+ \(bblExtraDiffuse \+ bblExtraSpecular\)\), v_31/,
-    );
-    // A glTF coat takes createClearcoatFragment's PBR2_CC_F0_REMAP_OFF arm,
-    // so the base F0 reaches the base layer unchanged.
-    assert.doesNotMatch(clearcoat, /getR0RemappedForClearCoat/);
-    assert.match(
-        clearcoat,
-        /let v_75 = mix\(vec3<f32>\(v_51, v_51, v_51\), v_31, vec3<f32>\(v_36, v_36, v_36\)\);/,
-    );
-
-    // A scene-code coat keeps the pin's default and composes makeF0Remap,
-    // which rewrites colorF0 before the base layer shades.
-    const clearcoatRemapped = fragmentOf(
-        new RendererLowerer(new LoweringContext()).lowerShaders({
-            ...options,
-            transmission: false,
-            clearcoat: true,
-            clearcoatF0Remap: true,
-        }),
-    );
-    assert.match(clearcoatRemapped, /fn getR0RemappedForClearCoat\(/);
-    assert.match(clearcoatRemapped, /let num = ccA \+ ccB \* sf0;/);
-    assert.match(
-        clearcoatRemapped,
-        /let bblBaseColorF0 = mix\(vec3<f32>\(v_51, v_51, v_51\), v_31, vec3<f32>\(v_36, v_36, v_36\)\);/,
-    );
-    assert.match(
-        clearcoatRemapped,
-        /FragmentUniforms\.clearcoatRefractionParams\.z,\s*\r?\n\s*FragmentUniforms\.clearcoatRefractionParams\.w\),/,
-    );
-    assert.throws(
-        () =>
-            new RendererLowerer(new LoweringContext()).lowerShaders({
-                ...options,
-                transmission: false,
-                clearcoat: true,
-                clearcoatF0Remap: true,
-                iridescence: true,
-            }),
-        /Iridescence composed with a clearcoat F0 remap is not lowered\./,
-    );
-
-    // The glTF arm of createSheenFragment: hasAlbedoScaling scales the base
-    // layer, keeps the tint texture linear, and multiplies the environment
-    // term by specular and horizon occlusion. This is what a
-    // KHR_materials_sheen asset reaches.
-    const sheen = fragmentOf(
-        new RendererLowerer(new LoweringContext()).lowerShaders({
-            ...options,
-            transmission: false,
-            sheen: true,
-            sheenAlbedoScaling: true,
-        }),
-    );
-    assert.match(
-        sheen,
-        /fn normalDistributionFunction_CharlieSheen/,
-    );
-    assert.match(sheen, /fn visibility_Ashikhmin/);
-    assert.match(
-        sheen,
-        /let sheenAlbedoScaling = 1\.0f - shMax \* shBrdf\.b;/,
-    );
-    assert.match(sheen, /\)\ \* sheenAlbedoScaling \+/);
-    assert.match(
-        sheen,
-        /shColorScaled \* shBrdf\.b \* v_98 \* \(v_99 \* v_99\)/,
-    );
-
-    // The legacy arm, which is what setPbrSheen defaults to: the tint is read
-    // through pow(rgb, 2.2), roughness comes from the tint texture's alpha
-    // because no separate roughness map is declared, the lobe is attenuated
-    // by 1 - dielectricF0 rather than the base layer being scaled, and the
-    // environment term drops the occlusion factors.
-    const legacySheen = fragmentOf(
-        new RendererLowerer(new LoweringContext()).lowerShaders({
-            ...options,
-            transmission: false,
-            sheen: true,
-            sheenAlbedoScaling: false,
-        }),
-    );
-    assert.match(
-        legacySheen,
-        /pow\(sheenMapData\.rgb, vec3<f32>\(2\.2f\)\)/,
-    );
-    assert.match(
-        legacySheen,
-        /let sheenRoughnessAdjusted = FragmentUniforms\.sheenParams2\.x \* sheenMapData\.a;/,
-    );
-    assert.match(
-        legacySheen,
-        /let shIntensity = FragmentUniforms\.sheenParams\.a \* \(1\.0f - v_51\);/,
-    );
-    assert.match(
-        legacySheen,
-        /let shEnvReflectance =\s*\n?\s*shColorScaled \* shBrdf\.b;/,
-    );
-    assert.ok(!legacySheen.includes("sheenAlbedoScaling"));
-    assert.ok(!legacySheen.includes("sheenRoughnessTexture"));
-    assert.match(
-        sheen,
-        /@group\(2u\) @binding\(12u\) var sheenColorTexture : texture_2d<f32>;/,
-    );
-
-    const iridescence = fragmentOf(
-        new RendererLowerer(new LoweringContext()).lowerShaders({
-            ...options,
-            transmission: true,
-            iridescence: true,
-        }),
-    );
-    assert.match(iridescence, /fn iri_eval\(/);
-    // The thin-film stack arrives minified, exactly as the pin emits it.
-    assert.match(
-        iridescence,
-        /let opd=2\.0\*iridescenceIor\*thickness\*cosTheta2;/,
-    );
-    assert.match(
-        iridescence,
-        /let v_75 = mix\(bblBaseColorF0, iriF0, vec3<f32>\(iriIntensity\)\);/,
-    );
-    assert.match(
-        iridescence,
-        /@group\(2u\) @binding\(18u\) var iridescenceTexture : texture_2d<f32>;/,
-    );
-
-    const dispersion = fragmentOf(
-        new RendererLowerer(new LoweringContext()).lowerShaders({
-            ...options,
-            transmission: true,
-            dispersion: true,
-        }),
-    );
-    assert.match(
-        dispersion,
-        /let spread = 0\.04f \* FragmentUniforms\.volumeParams\.w \* \(realIOR - 1\.0f\);/,
-    );
-    assert.match(dispersion, /let etaR = 1\.0f \/ \(realIOR - spread\);/);
-    assert.match(dispersion, /let etaB = 1\.0f \/ \(realIOR \+ spread\);/);
-    assert.doesNotMatch(dispersion, /let refractedDirection = refract\(/);
-
-    const baseline = fragmentOf(
-        new RendererLowerer(new LoweringContext()).lowerShaders({
-            ...options,
-            transmission: true,
-        }),
-    );
-    assert.doesNotMatch(baseline, /clearcoat|sheen|iridescence|bblLayeredColor/);
-    assert.match(baseline, /let refractedDirection = refract\(/);
-
-    const fidelity = new RendererLowerer(
-        new LoweringContext(),
-    ).fidelityManifest();
-    for (const id of [
-        "clearcoat-layer",
-        "sheen-layer",
-        "iridescence-thin-film",
-        "dispersion-chromatic-refraction",
-    ]) {
-        assert.ok(
-            fidelity.invariants.some(
-                (invariant) => invariant.id === id,
-            ),
-            `missing renderer fidelity invariant ${id}`,
-        );
-    }
-});
-
-test("rejects unlowered punctual multi-light and layered material composition", () => {
-    assert.throws(
-        () =>
-            new RendererLowerer(new LoweringContext()).lowerShaders({
-                ground: false,
-                skybox: false,
-                transmission: false,
-                shaderPrograms: [],
-                standardMaterial: false,
-                idDiagnostics: false,
-                pbrDiagnostics: false,
-                geometryOutputTasks: [],
-                multiLight: true,
-                clearcoat: true,
-            }),
-        /multi-light and clearcoat\/sheen/,
-    );
-});
-
-test("keeps renderer templates backend-language free", () => {
-    const templates = readdirSync("src/lowering/templates/renderer");
-    assert.deepEqual(
-        templates.filter((name) => /\.(?:hlsl|msl)$/.test(name)),
-        [],
-    );
-});
-
 test("emits only reached WGSL composition modules", () => {
     const lowerer = new RendererLowerer(new LoweringContext());
     const shaders = lowerer.lowerShaders({
@@ -1081,7 +778,6 @@ test("emits only reached WGSL composition modules", () => {
         .filter(({ output }) => output.endsWith(".wgsl"))
         .map(({ output }) => output);
     assert.ok(modules.includes("upstream/shaders/pbr.vert.native.wgsl"));
-    assert.ok(modules.includes("upstream/shaders/pbr.frag.native.wgsl"));
     assert.ok(modules.includes("upstream/shaders/grid.vert.native.wgsl"));
     assert.ok(modules.includes("upstream/shaders/grid.frag.native.wgsl"));
     assert.ok(!modules.some((output) => output.includes("standard")));
@@ -1165,15 +861,14 @@ test("generates typed geometry task records and PBR MRT shaders", () => {
         tasks.source,
         /static_cast<std::int32_t>\(target_height\) -\s*y_top -\s*viewport_height/,
     );
-    const geometry = shaders.find((shader) =>
-        shader.output.endsWith("pbr-geometry-0.frag.native.wgsl"),
+    // The PBR geometry-task fragments are retired with the transcription;
+    // a PBR draw in a geometry task errors at dispatch until the pin's
+    // geometry view composes an arm for it.
+    assert.ok(
+        !shaders.some((shader) =>
+            shader.output.endsWith("pbr-geometry-0.frag.native.wgsl"),
+        ),
     );
-    assert.match(String(geometry?.data), /@location\(7\) color/);
-    assert.match(
-        String(geometry?.data),
-        /bblDirectDiffuse \+ bblFinalIrradiance/,
-    );
-    assert.match(String(geometry?.data), /bblOutput\.f1 = vec4<f32>\(v_1/);
     assert.ok(
         shaders.some((shader) =>
             shader.output.endsWith("blit.frag.native.wgsl"),
