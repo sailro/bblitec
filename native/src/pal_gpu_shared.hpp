@@ -430,6 +430,191 @@ inline std::array<float, 16> pinned_mesh_world() {
 }
 #endif
 
+#if BBLITE_PBR_VARIANTS > 0
+// The pin's per-draw mesh block.
+//
+// `writeMeshLightSelection` decides its shape: the world matrix, the count of
+// lights affecting this mesh, then their indices. Which lights those are comes
+// from the generated `light_affects_mesh`, lowered from the pin's own
+// `affectsMesh`, so this walks exactly the set the Standard slot writer walks.
+inline upstream::MeshUniforms pinned_mesh_block(
+    const Scene& scene,
+    const Engine& engine,
+    const std::array<float, 16>& world,
+    std::uint32_t mesh_index) {
+    upstream::MeshUniforms block{};
+    block.world = world;
+    std::uint32_t count = 0;
+    std::uint32_t light_index = 0;
+    for (const LightHandle handle : scene.lights) {
+        if (light_index >= upstream::pinned_max_lights) break;
+        if (handle.value >= engine.lights.size()) continue;
+        if (
+            upstream::light_affects_mesh(
+                engine.lights[handle.value],
+                mesh_index)) {
+            block.li[count / 4][count % 4] = light_index;
+            ++count;
+        }
+        ++light_index;
+    }
+    block.lc = count;
+    return block;
+}
+
+/**
+ * The variant a draw composes, or `npos` when this scene cannot resolve one.
+ *
+ * The key is the pin's own: the material, the mesh's attributes, the light mode
+ * with its single-light kind, and whether tone mapping is on. Two halves come
+ * from generation because a PAL cannot recover them — the glTF material index,
+ * which is a MaterialHandle only while every material comes from the composed
+ * asset, and the attribute set, because our geometry record does not carry uv2
+ * or vertex-colour presence. Both are checked rather than assumed: an
+ * unresolved draw returns `npos` and takes the transcribed path.
+ */
+/**
+ * Whether a composed variant has been measured to match, by property.
+ *
+ * The whole point of executing Babylon's own stages is that a difference is a
+ * difference in inputs, not in a formula -- so a variant runs here only once the
+ * inputs it needs have been measured against the browser's own buffers. Every
+ * disqualifier below names an open measurement rather than a scene:
+ *
+ *  - an extension arm: each contributes its own material-UBO fields through a
+ *    lowered writer that no capture has been diffed against.
+ *  - `skeleton`: measured, not resolved. The browser's own palette for Scene 7 is
+ *    `diag(100, 100, 100, 1)` (its bone texture upload in
+ *    `artifacts/capture/scene7/tex-uploads.json`, rgba32float 48x1), so it
+ *    carries no mirror and the loader's `native_matrix` conjugation is a no-op on
+ *    it; the mesh block carries the mirror instead. Both vertex conventions were
+ *    tried against that -- unmirrored 2.522 MAD, mirrored 1.954, against 0.056
+ *    transcribed -- so neither the palette nor the mirror is the remaining
+ *    difference. The next measurement is our own palette and mesh block dumped
+ *    and diffed against those two captured buffers, not more algebra.
+ *  - refraction: needs the scene-colour grab bound through the pin's own
+ *    mid-pass break rather than our slot order.
+ *  - skeleton or morph: the palette and the morph deltas both carry the mirror.
+ *
+ * Everything else takes the transcribed path, so widening this list is a
+ * measurement rather than a rewrite.
+ *
+ * Shared by both backends: which draws Babylon's own stages can run is a
+ * property of the scene and the variant, not of the API binding them, so a
+ * second copy could only drift.
+ */
+inline bool pinned_variant_supported(std::size_t variant) {
+    const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
+    std::string_view key = entry.key;
+    while (!key.empty()) {
+        const std::size_t bar = key.find('|');
+        const std::string_view arm = key.substr(0, bar);
+        if (
+            arm != "base" && arm != "ibl" && arm != "alpha-test" &&
+            arm != "emissive-color") {
+            return false;
+        }
+        if (bar == std::string_view::npos) break;
+        key = key.substr(bar + 1);
+    }
+    return true;
+}
+
+inline std::size_t pinned_variant_for_draw(
+    const Scene& scene,
+    const Engine& engine,
+    const upstream::RenderDrawCommand& draw) {
+    if (upstream::pbr_variants.empty()) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    if (draw.item.material_kind != upstream::RenderMaterialKind::pbr) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    // Scene code that creates its own material shifts every handle away from
+    // the glTF index the table is keyed by, so the correspondence is only used
+    // when the engine holds exactly the asset's materials.
+    if (engine.materials.size() != upstream::pbr_variant_material_count) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    // A mesh whose node transform is not baked into its vertices needs the
+    // matrix the transcribed stage takes from elsewhere; until the pinned path
+    // carries it, those draws stay on the transcribed one.
+    if (draw.item.mesh.value < engine.meshes.size()) {
+        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        // An animated node needs no guard: the PAL re-transforms its vertices on
+        // the CPU when `transform_version` moves, so the GPU always sees world
+        // space and the pin's `finalWorld` stays the identity. Instancing is a
+        // different mechanism -- the transcribed stage reads per-instance
+        // columns from a second vertex buffer where the pin composes its own
+        // arm -- so those draws stay transcribed.
+        if (record.thin_instanced || !record.instance_matrices.empty()) {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        // `bone_matrices` is not only a skin: the glTF loader pushes the mesh's
+        // own world matrix into it for an *animated* mesh with no skin at all,
+        // and the transcribed vertex stage takes the transform from there. The
+        // pin's non-skeleton variants read no palette, so such a draw would lose
+        // its animation — Scenes 39, 242 and 254 measured 4.2 to 11.9 MAD that
+        // way against 0.000 transcribed.
+        if (!record.bone_matrices.empty()) {
+            return std::numeric_limits<std::size_t>::max();
+        }
+
+    }
+    const std::uint32_t material_index = draw.item.material.value;
+    if (material_index >= upstream::pbr_variant_mesh_features.size()) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    const std::size_t mesh_features =
+        upstream::pbr_variant_mesh_features[material_index];
+    if (mesh_features == std::numeric_limits<std::size_t>::max()) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    // The light mode, walked the way `writeMeshLightSelection` walks it: how
+    // many of the scene's lights affect this mesh decides which arm the pin
+    // composed. Shadow receivers always take the loop, which the corpus does
+    // not reach on this path yet.
+    std::uint32_t light_count = 0;
+    std::string_view single_light_type;
+    for (const LightHandle handle : scene.lights) {
+        if (handle.value >= engine.lights.size()) continue;
+        const LightRecord& light = engine.lights[handle.value];
+        if (!upstream::light_affects_mesh(light, draw.item.mesh.value)) {
+            continue;
+        }
+        ++light_count;
+        single_light_type = upstream::pinned_single_light_type(light);
+    }
+    const std::uint32_t light_mode =
+        light_count == 0 ? 0u : light_count == 1 ? 1u : 2u;
+    if (light_mode != 1) single_light_type = "";
+    // Every light mode. All three read the same lights block, whose writers index
+    // the pin's own light world matrix; the block itself was diffed against the
+    // browser's (`artifacts/capture/scene7/buffers.json`, 1040 bytes beside the
+    // 368-byte scene block).
+    // A transmission scene breaks its main pass in two around the scene-colour
+    // grab, and the pin binds that grab through its own refraction slot rather
+    // than our fixed one. Scene 30's non-refractive materials measured 17.8 MAD
+    // here against 0.05 transcribed even with the refraction arms excluded, so
+    // the pass structure -- not just the arm -- is the open measurement.
+    if (scene.transmission_enabled) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    const std::size_t variant = upstream::pbr_variant_for(
+        material_index,
+        static_cast<std::uint32_t>(mesh_features),
+        light_mode,
+        single_light_type,
+        scene.environment.tone_mapping_enabled);
+    if (
+        variant == std::numeric_limits<std::size_t>::max() ||
+        !pinned_variant_supported(variant)) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    return variant;
+}
+#endif
+
 // Inverse image processing for the linear-frame clear color shared by
 // both render backends (moved verbatim from pal_sdl_gpu.cpp).
 inline float inverse_image_processed_channel(
