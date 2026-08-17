@@ -151,63 +151,34 @@ Both backends stay long-term as mutually validating implementations;
 
 ### Shader provenance
 
-- [ ] Replace the pinned converted native PBR WGSL with direct extraction from
-  Babylon Lite's full feature composer. **This is a variant-model change, not a
-  text swap, and every hand-written shader arm is a symptom of it.**
+- [ ] Finish retiring the hand-written PBR shader text
+  (`src/lowering/templates/renderer/pbr.frag.wgsl`,
+  `src/shader-builtins-material.ts`, `src/shader-builtins-material-extensions.ts`,
+  `src/shader-builtins-pbr.ts` — 1,647 lines). Generation composes one fragment
+  per renderable feature set through the pin's own composer
+  (`upstream/pbr-variants/`, `pbr_variants.hpp`), and both PALs draw them for
+  every extension arm, every light mode, tangent frames and bone-only-animated
+  skins. Four draw classes still take the transcribed text, each bounded in
+  `pinned_variant_for_draw`'s comments with its measurement:
 
-  Babylon composes **one fragment per material feature set** — the capture of
-  Scene 253 holds 17 fragment bodies for 14 materials. The generated renderer
-  composes **one fragment per scene** and selects behaviour from
-  `materialOptions`/`normalOptions` uniform lanes. A single fragment cannot
-  express a per-material fork, so every fork upstream makes — `useF0Remap`,
-  `hasAlbedoScaling`, `hasSpecularAA`, `hasBaseNormalMap`, the
-  `hasIbl`/`hasNormalMap` arms inside each ext — becomes a hand-written uniform
-  branch, and a missed arm reads as a shading bias rather than a failure.
+  - transmission scenes — refraction material blocks verified byte-identical;
+    the divergence is pass-level (the pin's 1024x1024 refraction RTT versus the
+    mid-pass scene-colour grab)
+  - node-animated skinned meshes — Scenes 245/255 at 4.5/2.5; the
+    `transform_version` refusal over-refuses Scene 7 (0.047 pinned), and
+    narrowing it needs a frame-matched palette diff
+  - instanced meshes — the pin composes its own thin-instance arm
+  - SDL_GPU vertex samplers — the skeleton arm's bone palette needs
+    `SDL_BindGPUVertexSamplers` plus per-frame texture streaming
 
-  The mechanism is available: `src/shader/shader-composer.ts` is a pure function
-  over a `ShaderTemplate` and a `ShaderFragment[]` with no device and no browser
-  globals, `src/pinned-shader-composer.ts` executes it, and `createPbrComposer`
-  in `material/pbr/pbr-compose.ts` is the pin's material-to-shader entry point
-  over the `pbr-flag-bits.ts` bits. `scene -- compose all` checks the derivation.
+  Scene-code materials are a second composer input the variant table does not
+  carry: Scene 21's cloth gets `sheenParams` from `setPbrSheen`, not its asset
+  (0.330 published on both paths). `compileSheenOptions` resolves the values at
+  compile time but does not reach the composer.
 
-  The work: adopt per-material shader variants, then let the composer produce
-  each one. `pal_dawn.cpp` and `pal_sdl_gpu.cpp` hold a single
-  `geometry.pbr_fragment` per scene, so this needs a fragment per variant, a
-  variant recorded per renderable, and the pin's **per-variant material UBO** in
-  place of the monolithic `PbrUniforms`, since each variant declares only the
-  fields its own extensions contribute, in registration order.
-  `composePinnedPbrVariant` returns that layout as `materialUboSpec`.
-
-  Two composer inputs the asset cannot supply:
-
-  - **The light mode is a scene property.** Scene 39's glTF declares two
-    `KHR_lights_punctual` lights and none of its captured fragments composes a
-    light path; it matches only at `lightMode 0`.
-  - **Scene-code materials are a second input.** Scene 21's cloth material
-    declares no glTF extensions and its fragment carries `sheenParams` from
-    `setPbrSheen`. `compileSheenOptions` in
-    `src/compiler/intrinsics/material.ts` resolves those values at compile time
-    but does not carry them to the composer. `Value` is spread whole across a
-    `const` binding (`{ ...value, cpp }`), so the shape can ride the material
-    value from `createPbrMaterial` to each `setPbr*`, keyed by generated C++
-    name. Two defaults differ from the glTF path and both are load-bearing:
-    `enableSpecularAA` is set by `assemblePbrPropsExt` and not by
-    `createPbrMaterial`, so a scene-code material has it off; and `setPbrSheen`
-    keeps the legacy sheen model where `gltf-ext-sheen.ts` asks for the
-    albedo-scaling one.
-
-  Two contracts to preserve: the environment bit is read from `sceneFeatures`,
-  not `features` (`_hasIbl = hasScene(PBR_HAS_ENV)`), and the ext fragments reach
-  the composer through the registry `_getPbrExts()` that the `setPbr*` entry
-  points populate, not from the feature bits.
-
-  **The loader is the specification, not the glTF format.** A declared extension
-  is enabled even with no factor (`isEnabled: true` unconditionally); a
-  `KHR_texture_transform: {}` patches nothing so composes no transform; a
-  `baseColorFactor` with no image behind it is baked into the texel and declares
-  no UBO field; `ior !== 1.5` alone turns the reflectance layer on; an animated
-  occlusion strength registers the reflectance extension, which then takes
-  occlusion over entirely.
+  Diagnosis is two listings, never inspection: `scene -- uniforms <id> --size N`
+  for the browser's block, the native capture's `pinnedMaterialBlocks` /
+  `pinnedMeshBlocks` for ours.
 
 ### Packed native assets
 
