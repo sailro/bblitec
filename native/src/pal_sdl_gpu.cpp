@@ -93,6 +93,11 @@ struct GpuMesh {
     // `tangent.w` back to its authored sign, paired with the mirroring world
     // matrix in the pin's mesh block. `pinned_convention_vertices` states why.
     SDL_GPUBuffer* pinned_vertices = nullptr;
+    // The bone palette as the pin's own rgba32float texture, streamed each
+    // frame before the passes open. `write_pinned_bone_texture` states the
+    // layout.
+    SDL_GPUTexture* pinned_bone_texture = nullptr;
+    std::uint32_t pinned_bone_count = 0;
 #endif
     SDL_GPUBuffer* indices = nullptr;
     SDL_GPUBuffer* instances = nullptr;
@@ -464,6 +469,10 @@ struct GpuState {
     std::vector<PinnedStageSlots> pinned_fragment_slots;
     SDL_GPUTextureFormat pinned_color_format =
         SDL_GPU_TEXTUREFORMAT_INVALID;
+    // Paired with every bone palette binding. The pin reads the palette with
+    // textureLoad, so the sampler is never consulted; SDL_GPU still binds the
+    // pair together.
+    SDL_GPUSampler* pinned_bone_sampler = nullptr;
 #endif
     SDL_GPUTextureFormat depth_format =
         SDL_GPU_TEXTUREFORMAT_D16_UNORM;
@@ -514,6 +523,9 @@ PinnedResource pinned_resource_for(
     const GpuState& state,
     const GpuMesh& mesh,
     const std::string& name) {
+    if (name == "boneSampler") {
+        return {mesh.pinned_bone_texture, state.pinned_bone_sampler};
+    }
     if (name == "baseColorTexture" || name == "baseColorSampler") {
         return {mesh.base_color, mesh.base_color_sampler};
     }
@@ -768,6 +780,89 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     SDL_ReleaseGPUShader(state.device, vertex_shader);
     SDL_ReleaseGPUShader(state.device, fragment_shader);
     return state.pinned_pipelines.emplace(key, pipeline).first->second;
+}
+
+/**
+ * The bone palette as the pin's own texture.
+ *
+ * `skeleton-updater.ts` writes `invMeshWorld * jointWorld * IBM` per bone into
+ * an rgba32float row, four texels each. Our MeshRecord::bone_matrices already
+ * holds that product -- the mesh world is conjugated into the palette, which is
+ * why the transcribed skin path needs no separate world matrix either -- so this
+ * uploads it unchanged. Where the Dawn backend writes the texture through its
+ * queue at resolve time, a copy pass cannot open inside a render pass, so this
+ * backend streams every resolved palette before the frame's passes begin, on
+ * its own submission the way the per-frame vertex re-uploads already do.
+ */
+void write_pinned_bone_texture(
+    GpuState& state,
+    GpuMesh& mesh,
+    const MeshRecord& record) {
+    const std::uint32_t bones =
+        static_cast<std::uint32_t>(record.bone_matrices.size());
+    if (bones == 0) return;
+    if (!state.pinned_bone_sampler) {
+        SDL_GPUSamplerCreateInfo sampler_info{};
+        sampler_info.min_filter = SDL_GPU_FILTER_NEAREST;
+        sampler_info.mag_filter = SDL_GPU_FILTER_NEAREST;
+        sampler_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+        sampler_info.address_mode_u =
+            SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        sampler_info.address_mode_v =
+            SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        sampler_info.address_mode_w =
+            SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        state.pinned_bone_sampler =
+            SDL_CreateGPUSampler(state.device, &sampler_info);
+        if (!state.pinned_bone_sampler) {
+            gpu_error("SDL_CreateGPUSampler pinned bone palette");
+        }
+    }
+    if (mesh.pinned_bone_count != bones) {
+        if (mesh.pinned_bone_texture) {
+            SDL_ReleaseGPUTexture(state.device, mesh.pinned_bone_texture);
+        }
+        SDL_GPUTextureCreateInfo texture_info{};
+        texture_info.type = SDL_GPU_TEXTURETYPE_2D;
+        texture_info.format = SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+        texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        texture_info.width = bones * 4;
+        texture_info.height = 1;
+        texture_info.layer_count_or_depth = 1;
+        texture_info.num_levels = 1;
+        texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        mesh.pinned_bone_texture =
+            SDL_CreateGPUTexture(state.device, &texture_info);
+        if (!mesh.pinned_bone_texture) {
+            gpu_error("SDL_CreateGPUTexture pinned bone palette");
+        }
+        mesh.pinned_bone_count = bones;
+    }
+    const std::size_t size =
+        record.bone_matrices.size() * sizeof(std::array<float, 16>);
+    SDL_GPUTransferBufferCreateInfo transfer_info{};
+    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    transfer_info.size = static_cast<Uint32>(size);
+    SDL_GPUTransferBuffer* transfer =
+        SDL_CreateGPUTransferBuffer(state.device, &transfer_info);
+    if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer");
+    void* mapped = SDL_MapGPUTransferBuffer(state.device, transfer, false);
+    if (!mapped) gpu_error("SDL_MapGPUTransferBuffer");
+    std::memcpy(mapped, record.bone_matrices.data(), size);
+    SDL_UnmapGPUTransferBuffer(state.device, transfer);
+    SDL_GPUCommandBuffer* command =
+        SDL_AcquireGPUCommandBuffer(state.device);
+    if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
+    SDL_GPUTextureTransferInfo source{transfer, 0, bones * 4, 1};
+    SDL_GPUTextureRegion destination{
+        mesh.pinned_bone_texture, 0, 0, 0, 0, 0, bones * 4, 1, 1};
+    SDL_UploadToGPUTexture(copy, &source, &destination, true);
+    SDL_EndGPUCopyPass(copy);
+    if (!SDL_SubmitGPUCommandBuffer(command)) {
+        gpu_error("SDL_SubmitGPUCommandBuffer");
+    }
+    SDL_ReleaseGPUTransferBuffer(state.device, transfer);
 }
 #endif
 
@@ -1963,6 +2058,11 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
         SDL_ReleaseGPUBuffer(state.device, mesh.pinned_vertices);
         mesh.pinned_vertices = nullptr;
     }
+    if (mesh.pinned_bone_texture) {
+        SDL_ReleaseGPUTexture(state.device, mesh.pinned_bone_texture);
+        mesh.pinned_bone_texture = nullptr;
+        mesh.pinned_bone_count = 0;
+    }
 #endif
     SDL_ReleaseGPUBuffer(state.device, mesh.indices);
     SDL_ReleaseGPUBuffer(state.device, mesh.instances);
@@ -2200,6 +2300,11 @@ void release(GpuState& state) {
     if (state.depth_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.depth_sampler);
     }
+#if BBLITE_PBR_VARIANTS > 0
+    if (state.pinned_bone_sampler) {
+        SDL_ReleaseGPUSampler(state.device, state.pinned_bone_sampler);
+    }
+#endif
     if (state.sampler) SDL_ReleaseGPUSampler(state.device, state.sampler);
     if (state.background_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.background_pipeline);
     if (state.skybox_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.skybox_pipeline);
@@ -4560,6 +4665,36 @@ bool run_gpu_engine(Engine& engine) {
                 render_plan.draw_lists.transparent,
                 engine,
                 camera);
+#if BBLITE_PBR_VARIANTS > 0
+            // The pin's bone palettes for every draw the gate resolves,
+            // streamed here because a copy pass cannot open inside the render
+            // pass. The draw branch below keys its skinned handling on the
+            // texture this leaves behind.
+            {
+                const auto stream_palettes =
+                    [&](const upstream::RenderDrawList& list) {
+                    for (
+                        const upstream::RenderDrawCommand& draw :
+                        list.commands) {
+                        if (draw.item_index >= state.meshes.size()) continue;
+                        if (draw.item.mesh.value >= engine.meshes.size()) {
+                            continue;
+                        }
+                        if (
+                            pinned_variant_for_draw(scene, engine, draw) ==
+                            std::numeric_limits<std::size_t>::max()) {
+                            continue;
+                        }
+                        write_pinned_bone_texture(
+                            state,
+                            state.meshes[draw.item_index],
+                            engine.meshes[draw.item.mesh.value]);
+                    }
+                };
+                stream_palettes(render_plan.draw_lists.opaque);
+                stream_palettes(render_plan.draw_lists.transparent);
+            }
+#endif
             const bool capture_ready =
                 frame >= screenshot_frame &&
                 !topology_updated;
@@ -5942,20 +6077,29 @@ bool run_gpu_engine(Engine& engine) {
                         std::numeric_limits<std::size_t>::max()) {
                         ensure_pinned_slots(state, pinned_variant);
                     }
-                    // A variant whose vertex stage samples a texture -- the
-                    // skeleton arm's bone palette -- needs vertex samplers this
-                    // branch does not bind yet, so those draws stay transcribed
-                    // here while Dawn runs them.
-                    const bool pinned_vertex_textures =
+                    // A vertex stage can hold SRV registers the slot map
+                    // cannot name: the morph arms read their deltas through
+                    // storage buffers, which share the texture registers on
+                    // this backend, so a palette bound at pair index 0 would
+                    // land on a storage register. Those draws stay transcribed
+                    // until vertex storage is wired; the named registers --
+                    // the skeleton arm's bone palette -- are bound below.
+                    bool pinned_vertex_unnamed = false;
+                    if (
                         pinned_variant !=
-                            std::numeric_limits<std::size_t>::max() &&
-                        !state.pinned_vertex_slots[pinned_variant]
-                             .textures.empty();
+                        std::numeric_limits<std::size_t>::max()) {
+                        for (
+                            const std::string& name :
+                            state.pinned_vertex_slots[pinned_variant]
+                                .textures) {
+                            if (name.empty()) pinned_vertex_unnamed = true;
+                        }
+                    }
                     if (
                         pinned_variant !=
                             std::numeric_limits<std::size_t>::max() &&
                         mesh.pinned_vertices &&
-                        !pinned_vertex_textures) {
+                        !pinned_vertex_unnamed) {
                         SDL_GPUGraphicsPipeline* variant_pipeline =
                             pinned_variant_pipeline(
                                 state,
@@ -5971,14 +6115,27 @@ bool run_gpu_engine(Engine& engine) {
                             pinned_scene_block(scene, camera, matrix);
                         const std::vector<std::uint8_t> pinned_lights =
                             pinned_lights_block(scene, engine);
+                        // A skinned draw takes the identity world with the
+                        // MIRRORED vertex buffer: the loader's palette is the
+                        // mirror-conjugated `jointWorld * IBM`, so against
+                        // mirrored vertices the product collapses to the
+                        // browser's own `M * jointWorld * IBM * v_unmirrored`,
+                        // and adding the mirror world on top double-applies
+                        // it -- the finding the Dawn backend's captured mesh
+                        // blocks localised.
+                        const bool skinned_draw =
+                            mesh.pinned_bone_texture != nullptr;
                         const upstream::MeshUniforms pinned_mesh =
                             pinned_mesh_block(
                                 scene,
                                 engine,
-                                // The RH to LH mirror, which the pinned vertex
-                                // buffer no longer carries; the node transform
-                                // is already baked into those vertices.
-                                pinned_mesh_world(),
+                                // For everything else: the RH to LH mirror,
+                                // which the pinned vertex buffer no longer
+                                // carries; the node transform is already baked
+                                // into those vertices.
+                                skinned_draw
+                                    ? pinned_identity_world()
+                                    : pinned_mesh_world(),
                                 item.mesh.value);
                         std::vector<std::uint8_t> pinned_material(
                             variant_entry.material_ubo_bytes,
@@ -6066,8 +6223,39 @@ bool run_gpu_engine(Engine& engine) {
                                 pinned_textures.data(),
                                 static_cast<Uint32>(pinned_textures.size()));
                         }
+                        // The vertex stage's own textures -- the skeleton
+                        // arm's bone palette -- in the same `.slots` order as
+                        // the fragment's.
+                        const PinnedStageSlots& pinned_vertex =
+                            state.pinned_vertex_slots[pinned_variant];
+                        if (!pinned_vertex.textures.empty()) {
+                            std::vector<SDL_GPUTextureSamplerBinding>
+                                vertex_textures;
+                            vertex_textures.reserve(
+                                pinned_vertex.textures.size());
+                            for (const std::string& name :
+                                 pinned_vertex.textures) {
+                                const PinnedResource resource =
+                                    pinned_resource_for(state, mesh, name);
+                                vertex_textures.push_back(
+                                    SDL_GPUTextureSamplerBinding{
+                                        resource.texture,
+                                        resource.sampler,
+                                    });
+                            }
+                            SDL_BindGPUVertexSamplers(
+                                pass,
+                                0,
+                                vertex_textures.data(),
+                                static_cast<Uint32>(vertex_textures.size()));
+                        }
                         const SDL_GPUBufferBinding pinned_vertex_binding{
-                            mesh.pinned_vertices,
+                            // Skinned draws read the mirrored buffer; the
+                            // palette carries the mirror on both sides, so
+                            // unmirrored vertices would apply it three times.
+                            skinned_draw
+                                ? mesh.vertices
+                                : mesh.pinned_vertices,
                             0,
                         };
                         SDL_BindGPUVertexBuffers(
