@@ -334,6 +334,8 @@ struct PinnedStageSlots {
     std::vector<std::string> uniforms;
     /** Texture names in binding order; each one's sampler is bound with it. */
     std::vector<std::string> textures;
+    /** Storage buffer names in storage-slot order -- the morph arms'. */
+    std::vector<std::string> storage;
 };
 
 /** A texture and its sampler, resolved from the pin's own name for a binding. */
@@ -370,9 +372,13 @@ PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
             static_cast<std::size_t>(std::stoul(reg.substr(1)));
         // `b` is a uniform slot and `t` a texture; `s` is the sampler paired
         // with the texture of the same index, which SDL_GPU binds together.
+        // `r` is a storage buffer at its storage slot, which shares the SRV
+        // space after the sampled textures.
         std::vector<std::string>* target = reg[0] == 'b'
             ? &slots.uniforms
-            : reg[0] == 't' ? &slots.textures : nullptr;
+            : reg[0] == 't'
+                ? &slots.textures
+                : reg[0] == 'r' ? &slots.storage : nullptr;
         if (!target) return;
         if (target->size() <= index) target->resize(index + 1);
         (*target)[index] = name;
@@ -633,7 +639,8 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         SDL_GPU_SHADERSTAGE_VERTEX,
         static_cast<Uint32>(vertex_slots.textures.size()),
         static_cast<Uint32>(vertex_slots.uniforms.size()),
-        "main");
+        "main",
+        static_cast<Uint32>(vertex_slots.storage.size()));
     SDL_GPUShader* fragment_shader = load_shader(
         state.device,
         fragment_name.c_str(),
@@ -5886,28 +5893,6 @@ bool run_gpu_engine(Engine& engine) {
                         std::numeric_limits<std::size_t>::max()) {
                         ensure_pinned_slots(state, pinned_variant);
                     }
-                    // A vertex stage can hold SRV registers the slot map
-                    // cannot name: the morph arms read their deltas through
-                    // storage buffers, which share the texture registers on
-                    // this backend, so a palette bound at pair index 0 would
-                    // land on a storage register. Until vertex storage is
-                    // wired, such a draw is an error; the named registers --
-                    // the skeleton arm's bone palette -- are bound below.
-                    if (
-                        pinned_variant !=
-                        std::numeric_limits<std::size_t>::max()) {
-                        for (
-                            const std::string& name :
-                            state.pinned_vertex_slots[pinned_variant]
-                                .textures) {
-                            if (name.empty()) {
-                                gpu_error(
-                                    "pinned variant's vertex stage holds an "
-                                    "SRV register the slot map cannot name "
-                                    "(vertex storage is not wired).");
-                            }
-                        }
-                    }
                     if (
                         pinned_variant !=
                         std::numeric_limits<std::size_t>::max()) {
@@ -6048,9 +6033,41 @@ bool run_gpu_engine(Engine& engine) {
                         }
                         // The vertex stage's own textures -- the skeleton
                         // arm's bone palette -- in the same `.slots` order as
-                        // the fragment's.
+                        // the fragment's, and its storage buffers -- the
+                        // morph arms' deltas and weights, the same buffers
+                        // the transcribed stage read.
                         const PinnedStageSlots& pinned_vertex =
                             state.pinned_vertex_slots[pinned_variant];
+                        if (!pinned_vertex.storage.empty()) {
+                            std::vector<SDL_GPUBuffer*> storage_buffers;
+                            storage_buffers.reserve(
+                                pinned_vertex.storage.size());
+                            for (const std::string& name :
+                                 pinned_vertex.storage) {
+                                SDL_GPUBuffer* buffer = nullptr;
+#if BBLITE_GPU_MORPH_STORAGE
+                                if (name == "morphDeltas") {
+                                    buffer = mesh.morph_deltas;
+                                } else if (name == "morph") {
+                                    buffer = mesh.morph_weights;
+                                }
+#endif
+                                if (!buffer) {
+                                    gpu_error(
+                                        ("pinned variant declares an "
+                                         "unmapped storage buffer '" +
+                                         name + "'.")
+                                            .c_str());
+                                }
+                                storage_buffers.push_back(buffer);
+                            }
+                            SDL_BindGPUVertexStorageBuffers(
+                                pass,
+                                0,
+                                storage_buffers.data(),
+                                static_cast<Uint32>(
+                                    storage_buffers.size()));
+                        }
                         if (!pinned_vertex.textures.empty()) {
                             std::vector<SDL_GPUTextureSamplerBinding>
                                 vertex_textures;

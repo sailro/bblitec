@@ -200,6 +200,26 @@ function Remap-PinnedVariantRegisters {
     $resourceSpace = if ($IsVertex) { 0 } else { 2 }
     $pattern = "register\(([tsbu])(\d+)(?:, space(\d+))?\)"
     $matches = [regex]::Matches($source, $pattern)
+    # SDL_GPU's D3D12 convention orders the shared SRV space by class:
+    # sampled textures first, then storage buffers (Tint's ByteAddressBuffer
+    # rows for the morph arms). Tint numbers them by declaration order
+    # instead, so the t-class renumbering has to know which registers are
+    # storage before it can put the palette at t0 where the sampler pair
+    # binds.
+    $storageRegisters = @{}
+    foreach (
+        $declaration in [regex]::Matches(
+            $source,
+            "(?:RW)?(?:ByteAddress|Structured)Buffer(?:<[^>]+>)?\s+\w+\s*:\s*register\(t(\d+)(?:, space(\d+))?\)"
+        )
+    ) {
+        $space = if ($declaration.Groups[2].Success) {
+            [int]$declaration.Groups[2].Value
+        } else {
+            0
+        }
+        $storageRegisters["$space`:$($declaration.Groups[1].Value)"] = $true
+    }
     $mapping = @{}
     foreach ($registerClass in @("b", "t", "s", "u")) {
         $ordered = @(
@@ -217,6 +237,18 @@ function Remap-PinnedVariantRegisters {
                 } |
                 Sort-Object Space, Index -Unique
         )
+        if ($registerClass -eq "t") {
+            $ordered = @(
+                @($ordered | Where-Object {
+                    -not $storageRegisters.ContainsKey(
+                        "$($_.Space)`:$($_.Index)")
+                }) +
+                @($ordered | Where-Object {
+                    $storageRegisters.ContainsKey(
+                        "$($_.Space)`:$($_.Index)")
+                })
+            )
+        }
         for ($index = 0; $index -lt $ordered.Count; $index += 1) {
             $key = "$registerClass`:$($ordered[$index].Space)`:" +
                 "$($ordered[$index].Index)"
@@ -250,20 +282,37 @@ function Remap-PinnedVariantRegisters {
     # stage can declare a block it never reads and Tint strips it, and Tint's
     # own inspector dump lists sampled textures and samplers but no uniform
     # buffers. The pass that assigns the slots is the only authority on them.
+    # Storage buffers share the t registers after the sampled textures under
+    # SDL_GPU's convention; the sidecar names them as their own `r` class,
+    # rebased to storage slot 0, which is the index
+    # SDL_BindGPUVertexStorageBuffers takes.
+    $sampledCount = [regex]::Matches(
+        $normalized,
+        "Texture\w*<[^>]+>\s+\w+\s*:\s*register\(t\d+"
+    ).Count
     $slots = @(
         [regex]::Matches(
             $normalized,
-            "(?:cbuffer\s+cbuffer_(\w+)|(?:Texture\w*<[^>]+>|SamplerState)\s+(\w+))\s*:\s*register\(([tsb])(\d+)"
+            "(?:cbuffer\s+cbuffer_(\w+)|(?:Texture\w*<[^>]+>|SamplerState)\s+(\w+)|(?:RW)?(?:ByteAddress|Structured)Buffer(?:<[^>]+>)?\s+(\w+))\s*:\s*register\(([tsb])(\d+)"
         ) |
             ForEach-Object {
+                $storage = $_.Groups[3].Success
                 $name = if ($_.Groups[1].Success) {
                     $_.Groups[1].Value
+                } elseif ($storage) {
+                    $_.Groups[3].Value
                 } else {
                     $_.Groups[2].Value
                 }
+                $class = if ($storage) { "r" } else { $_.Groups[4].Value }
+                $index = if ($storage) {
+                    [int]$_.Groups[5].Value - $sampledCount
+                } else {
+                    [int]$_.Groups[5].Value
+                }
                 [PSCustomObject]@{
-                    Class = $_.Groups[3].Value
-                    Index = [int]$_.Groups[4].Value
+                    Class = $class
+                    Index = $index
                     Name = $name
                 }
             } |
