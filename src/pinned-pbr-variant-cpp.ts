@@ -864,6 +864,7 @@ export function pinnedPbrVariantsHeader(
     variants: readonly PinnedVariantManifestEntry[],
     lightKinds: readonly string[],
     renderableMeshFeatures: readonly number[],
+    runtimeMeshFeatures?: number,
 ): string {
     const blocks: string[] = [];
     const table: string[] = [];
@@ -1357,6 +1358,14 @@ inline constexpr std::array<
     ${renderableMeshFeatures.length}> pbr_renderable_mesh_features{{
 ${renderableMeshFeatures.map((bits) => `    ${bits},`).join("\n")}
 }};
+
+/**
+ * The bits for meshes created past the static table -- scene code can keep
+ * creating meshes after registration, all from the fixed-set builders --
+ * or npos when the scene's builders disagree and such a draw must refuse.
+ */
+inline constexpr std::size_t pbr_runtime_mesh_features =
+    ${runtimeMeshFeatures ?? "std::numeric_limits<std::size_t>::max()"};
 
 /**
  * Fills a variant's material block, whichever variant it is.

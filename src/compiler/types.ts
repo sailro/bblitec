@@ -33,6 +33,11 @@ export interface CompileManifest {
 export interface SceneMeshManifest {
     kind: string;
     gltfAssetsBefore: number;
+    /** For `from-data` meshes: which optional streams the call passes, in
+     *  the pin's own argument order (uvs, uv2s, tangents, colors). */
+    hasUv2?: boolean;
+    hasTangents?: boolean;
+    hasColors?: boolean;
 }
 
 /**

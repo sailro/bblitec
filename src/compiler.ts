@@ -5230,12 +5230,20 @@ class Compiler
     }
 
     /** Records a scene-code mesh creation for the per-renderable variant key. */
-    public recordSceneMesh(kind: string): void {
+    public recordSceneMesh(
+        kind: string,
+        streams?: {
+            hasUv2: boolean;
+            hasTangents: boolean;
+            hasColors: boolean;
+        },
+    ): void {
         this.sceneMeshes.push({
             kind,
             gltfAssetsBefore: [...this.assets.values()].filter(
                 (asset) => asset.kind === "gltf",
             ).length,
+            ...(streams ?? {}),
         });
     }
 

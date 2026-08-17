@@ -54,7 +54,6 @@ export function compileMeshIntrinsic(
 ): Value | undefined {
     switch (importedName) {
         case "createMeshFromData": {
-            context.recordSceneMesh("from-data");
             context.expectArgumentCount(call, 5, 9);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -102,6 +101,13 @@ export function compileMeshIntrinsic(
                       )
                     : "{}",
             );
+            // The streams decide the mesh half of the variant key, in the
+            // pin's own argument order: uvs, uv2s, tangents, colors.
+            context.recordSceneMesh("from-data", {
+                hasUv2: optional[1] !== "{}",
+                hasTangents: optional[2] !== "{}",
+                hasColors: optional[3] !== "{}",
+            });
             context.reachFeature("mesh:from-data");
             return {
                 kind: "mesh",

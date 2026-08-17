@@ -120,6 +120,9 @@ export interface UpstreamEmitOptions {
     pinnedVariants?: readonly PinnedVariantManifestEntry[];
     /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
     renderableMeshFeatures?: readonly number[];
+    /** The bits for meshes created past the static table, when one value
+     *  covers every scene-code builder; undefined refuses them. */
+    runtimeMeshFeatures?: number;
     iridescence: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
@@ -659,6 +662,7 @@ class GeneratedSourceWriter {
                         (kind) => features.includes(`light:${kind}`),
                     ),
                     options.renderableMeshFeatures ?? [],
+                    options.runtimeMeshFeatures,
                 ),
             );
         }

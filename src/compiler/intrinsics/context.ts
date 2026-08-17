@@ -29,5 +29,12 @@ export interface IntrinsicCallContext {
     ): void;
     reachFeature(feature: Feature): void;
     /** Records a scene-code mesh creation for the per-renderable variant key. */
-    recordSceneMesh(kind: string): void;
+    recordSceneMesh(
+        kind: string,
+        streams?: {
+            hasUv2: boolean;
+            hasTangents: boolean;
+            hasColors: boolean;
+        },
+    ): void;
 }

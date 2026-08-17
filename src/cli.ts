@@ -42,6 +42,7 @@ import {
     pinnedSceneArms,
     pinnedSingleLightTypes,
 } from "./pinned-scene-arms.js";
+import { pinnedMeshFeaturesFromPrimitive } from "./pinned-mesh-features.js";
 
 interface CliOptions {
     input: string;
@@ -600,10 +601,22 @@ async function main(): Promise<void> {
             );
         }
         if (mesh.kind === "from-data") {
-            throw new Error(
-                "A createMeshFromData mesh has no modeled attribute set " +
-                    "for the per-renderable variant key yet.",
+            // The recorded streams, walked exactly the way a glTF primitive
+            // is: normals are a required argument, so the flat-normal arm is
+            // unreachable from this builder.
+            renderableMeshFeatures.push(
+                await pinnedMeshFeaturesFromPrimitive({
+                    attributes: {
+                        POSITION: 0,
+                        NORMAL: 0,
+                        TEXCOORD_0: 0,
+                        ...(mesh.hasUv2 ? { TEXCOORD_1: 0 } : {}),
+                        ...(mesh.hasTangents ? { TANGENT: 0 } : {}),
+                        ...(mesh.hasColors ? { COLOR_0: 0 } : {}),
+                    },
+                }),
             );
+            continue;
         }
         renderableMeshFeatures.push(await proceduralRenderableFeatures());
     }
@@ -650,6 +663,22 @@ async function main(): Promise<void> {
     // fragment where Babylon composes a fragment per feature set, and this is
     // that set, written by the pin rather than transcribed here.
     const pinnedVariants = writePinnedPbrVariants(tree, composedVariants);
+    // Scene code can keep creating meshes after registration -- the runtime
+    // sweep spawns per-frame boxes from one compiled call site -- so handles
+    // past the static table take this fallback when every scene-code mesh
+    // shares one attribute set, and refuse otherwise.
+    const sceneMeshFeatureValues = new Set(
+        renderableMeshFeatures.slice(
+            renderableMeshFeatures.length -
+                result.manifest.sceneMeshes.length,
+        ),
+    );
+    const runtimeMeshFeatures =
+        result.manifest.sceneMeshes.length === 0
+            ? await proceduralRenderableFeatures()
+            : sceneMeshFeatureValues.size === 1
+                ? [...sceneMeshFeatureValues][0]!
+                : undefined;
     emitUpstreamGenerated(outputPath, result.manifest.features, {
         idDiagnostics: options.idDiagnostics,
         pbrDiagnostics: options.pbrDiagnostics,
@@ -713,6 +742,9 @@ async function main(): Promise<void> {
         pinnedHelpers: await pinnedShaderHelpers(),
         pinnedVariants,
         renderableMeshFeatures,
+        ...(runtimeMeshFeatures !== undefined
+            ? { runtimeMeshFeatures }
+            : {}),
         iridescence: emittedArms.iridescence,
         dispersion: emittedArms.dispersion,
         occlusionUv2: emittedArms.occlusionUv2,
