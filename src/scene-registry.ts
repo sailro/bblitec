@@ -16,11 +16,13 @@ export interface SceneParityDefinition {
     backgroundColor: [number, number, number];
     backgroundThreshold: number;
     nativeEnvironment?: Record<string, string>;
+    // The draw-id and triangle-cluster attribution buffers; the PBR
+    // diagnostics instrument retired with the transcribed fragment it
+    // rendered through.
     attribution?: {
         specialization: string;
         drawIds: boolean;
         triangleClusters: boolean;
-        diagnostics: boolean;
     };
 }
 
@@ -82,7 +84,6 @@ const sceneInputs: readonly SceneInput[] = [
                     "generated/scene1/upstream/gltf-specialization.json",
                 drawIds: true,
                 triangleClusters: true,
-                diagnostics: true,
             },
         },
     },
@@ -474,7 +475,6 @@ const sceneInputs: readonly SceneInput[] = [
                 specialization: "generated/scene13/upstream/gltf-specialization.json",
                 drawIds: true,
                 triangleClusters: true,
-                diagnostics: true,
             },
         },
     },

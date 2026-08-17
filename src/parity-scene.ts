@@ -426,9 +426,9 @@ export async function runSceneParity(
             config.nativeEnvironment,
             idBufferPath,
             clusterBufferPath,
-            arguments_.gpu && config.attribution?.diagnostics
-                ? outputDirectory
-                : undefined,
+            // The PBR diagnostics instrument retired with the transcribed
+            // fragment it rendered through.
+            undefined,
             resolve(scene.output),
         );
     }
@@ -536,7 +536,7 @@ export async function runSceneParity(
             })),
         };
     });
-    const diagnosticFiles = arguments_.gpu && config.attribution?.diagnostics
+    const diagnosticFiles = false
         ? Object.fromEntries(
               [
                   ["normal", "normal-gpu.png"],

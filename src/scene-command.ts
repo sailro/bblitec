@@ -197,9 +197,6 @@ async function compile(idOrSource: string): Promise<void> {
         ) {
             arguments_.push("--id-diagnostics");
         }
-        if (scene.parity?.attribution?.diagnostics) {
-            arguments_.push("--pbr-diagnostics");
-        }
         return arguments_;
     };
     if (selected.length === 1) {
