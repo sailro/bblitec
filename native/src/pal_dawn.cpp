@@ -3191,8 +3191,11 @@ DawnMeshBindings& bindings_for(
     std::uint32_t shader_variant = 0) {
     const auto existing = mesh.bindings.find(kind);
     if (existing != mesh.bindings.end()) return existing->second;
-    DawnPipeline& pipeline =
-        pipeline_for(state, kind, shader_variant);
+    // The groups build from the explicit superset layout and the state's own
+    // resources; the pipeline is the draw's business. The diagnostic passes
+    // request PBR-kind groups for their own fragments, and creating the
+    // retired transcribed PBR pipeline here was the only thing that still
+    // asked for its fragment module.
     DawnMeshBindings bindings;
 
     const PipelineKindTraits binding_traits = pipeline_traits(kind);
@@ -6244,6 +6247,24 @@ bool run_dawn_engine(Engine& engine) {
                     wgpuRenderPassEncoderDrawIndexed(
                         list_pass, mesh.index_count, 1, 0, 0, 0);
                     continue;
+                }
+                // The write phase resolves and binds every PBR draw or
+                // errors; reaching here with one means its pinned bindings
+                // were never built for this frame.
+                if (
+                    draw.item.material_kind ==
+                    upstream::RenderMaterialKind::pbr) {
+                    dawn_error(
+                        ("PBR draw for mesh " +
+                         std::to_string(draw.item.mesh.value) +
+                         ", material " +
+                         std::to_string(draw.item.material.value) +
+                         ", pipeline kind " +
+                         std::to_string(
+                             static_cast<int>(draw.pipeline)) +
+                         " reached the transcribed dispatch with no "
+                         "pinned bindings.")
+                            .c_str());
                 }
 #endif
                 DawnPipeline& pipeline = pipeline_for(
