@@ -310,14 +310,6 @@ struct GpuGeometryTask {
     std::vector<SDL_GPUTexture*> colors;
     std::vector<SDL_GPUTexture*> sampled_colors;
     SDL_GPUTexture* depth = nullptr;
-    SDL_GPUGraphicsPipeline* pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* double_sided_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline*
-        clockwise_double_sided_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* transparent_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* transparent_double_sided_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline*
-        transparent_clockwise_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_transparent_pipeline = nullptr;
@@ -401,14 +393,6 @@ PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
 struct GpuState {
     SDL_Window* window = nullptr;
     SDL_GPUDevice* device = nullptr;
-    SDL_GPUGraphicsPipeline* pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* double_sided_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline*
-        clockwise_double_sided_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* transparent_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* transparent_double_sided_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline*
-        transparent_clockwise_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_transparent_pipeline = nullptr;
@@ -2137,34 +2121,6 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
 void release(GpuState& state) {
     release_frame_graph_textures(state);
     for (GpuGeometryTask& task : state.geometry_tasks) {
-        if (task.pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(state.device, task.pipeline);
-        }
-        if (task.double_sided_pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(
-                state.device,
-                task.double_sided_pipeline);
-        }
-        if (task.clockwise_double_sided_pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(
-                state.device,
-                task.clockwise_double_sided_pipeline);
-        }
-        if (task.transparent_pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(
-                state.device,
-                task.transparent_pipeline);
-        }
-        if (task.transparent_double_sided_pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(
-                state.device,
-                task.transparent_double_sided_pipeline);
-        }
-        if (task.transparent_clockwise_double_sided_pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(
-                state.device,
-                task.transparent_clockwise_double_sided_pipeline);
-        }
         if (task.standard_pipeline) {
             SDL_ReleaseGPUGraphicsPipeline(
                 state.device,
@@ -2343,23 +2299,6 @@ void release(GpuState& state) {
     for (SDL_GPUGraphicsPipeline* pipeline : state.diagnostics_double_sided_pipelines) {
         if (pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
     }
-    if (state.double_sided_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.double_sided_pipeline);
-    if (state.clockwise_double_sided_pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(
-            state.device,
-            state.clockwise_double_sided_pipeline);
-    }
-    if (state.transparent_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.transparent_pipeline);
-    if (state.transparent_double_sided_pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(
-            state.device,
-            state.transparent_double_sided_pipeline);
-    }
-    if (state.transparent_clockwise_double_sided_pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(
-            state.device,
-            state.transparent_clockwise_double_sided_pipeline);
-    }
     if (state.standard_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(state.device, state.standard_pipeline);
     }
@@ -2408,7 +2347,6 @@ void release(GpuState& state) {
             SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
         }
     }
-    if (state.pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.pipeline);
     if (state.window && state.device) SDL_ReleaseWindowFromGPUDevice(state.device, state.window);
     if (state.device) SDL_DestroyGPUDevice(state.device);
     if (state.window) SDL_DestroyWindow(state.window);
@@ -2581,14 +2519,6 @@ bool run_gpu_engine(Engine& engine) {
 #else
                 0);
 #endif
-        SDL_GPUShader* fragment_shader =
-            load_shader(
-                state.device,
-                "pbr.frag",
-                SDL_GPU_SHADERSTAGE_FRAGMENT,
-                pbr_texture_binding_count,
-                1,
-                "mainFragment");
         SDL_GPUShader* image_processing_vertex_shader =
             transmission_enabled
                 ? load_shader(
@@ -2868,9 +2798,12 @@ bool run_gpu_engine(Engine& engine) {
         // point, and they target the same attachment as the transcribed ones.
         state.pinned_color_format = color_target.format;
 #endif
+        // The shared material vertex with no fragment: the PBR fragment text
+        // is retired -- PBR draws run the pin's own composed stages -- so this
+        // info is only the base the standard, grid and diagnostic pipelines
+        // copy before setting their own fragment.
         SDL_GPUGraphicsPipelineCreateInfo pipeline_info{};
         pipeline_info.vertex_shader = vertex_shader;
-        pipeline_info.fragment_shader = fragment_shader;
         pipeline_info.vertex_input_state =
             SDL_GPUVertexInputState{
                 vertex_buffers.data(),
@@ -2893,27 +2826,6 @@ bool run_gpu_engine(Engine& engine) {
         pipeline_info.target_info.depth_stencil_format =
             state.depth_format;
         pipeline_info.target_info.has_depth_stencil_target = true;
-        state.pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
-        if (!state.pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline");
-        pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-        state.double_sided_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
-        if (!state.double_sided_pipeline) {
-            gpu_error("SDL_CreateGPUGraphicsPipeline double-sided");
-        }
-        if (use_clockwise_front_face) {
-            pipeline_info.rasterizer_state.front_face =
-                SDL_GPU_FRONTFACE_CLOCKWISE;
-            state.clockwise_double_sided_pipeline =
-                SDL_CreateGPUGraphicsPipeline(
-                    state.device,
-                    &pipeline_info);
-            if (!state.clockwise_double_sided_pipeline) {
-                gpu_error(
-                    "SDL_CreateGPUGraphicsPipeline clockwise double-sided");
-            }
-            pipeline_info.rasterizer_state.front_face =
-                SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
-        }
         if (
             image_processing_vertex_shader &&
             image_processing_fragment_shader) {
@@ -3129,17 +3041,6 @@ bool run_gpu_engine(Engine& engine) {
              ++task_index) {
             const FrameTaskRecord& task = engine.frame_tasks[task_index];
             if (task.kind != FrameTaskKind::geometry) continue;
-            const std::string shader_name =
-                "pbr-geometry-" +
-                std::to_string(task.geometry.shader_index) +
-                ".frag";
-            SDL_GPUShader* geometry_fragment_shader = load_shader(
-                state.device,
-                shader_name.c_str(),
-                SDL_GPU_SHADERSTAGE_FRAGMENT,
-                6,
-                1,
-                "mainFragment");
             const std::string standard_shader_name =
                 "standard-geometry-" +
                 std::to_string(task.geometry.shader_index) +
@@ -3169,9 +3070,12 @@ bool run_gpu_engine(Engine& engine) {
                 target.format = swapchain_format;
                 geometry_targets.push_back(target);
             }
+            // The task's PBR meshes have no pinned geometry arm yet, and the
+            // transcribed pbr-geometry fragments are retired with the rest of
+            // the transcription, so only the Standard pipelines are built; a
+            // PBR draw in the task errors at dispatch.
             SDL_GPUGraphicsPipelineCreateInfo geometry_pipeline_info =
                 pipeline_info;
-            geometry_pipeline_info.fragment_shader = geometry_fragment_shader;
             geometry_pipeline_info.rasterizer_state.cull_mode =
                 SDL_GPU_CULLMODE_BACK;
             geometry_pipeline_info.depth_stencil_state.compare_op =
@@ -3185,35 +3089,6 @@ bool run_gpu_engine(Engine& engine) {
             geometry_pipeline_info.target_info.num_color_targets =
                 static_cast<Uint32>(geometry_targets.size());
             GpuGeometryTask& gpu_task = state.geometry_tasks[task_index];
-            gpu_task.pipeline = SDL_CreateGPUGraphicsPipeline(
-                state.device,
-                &geometry_pipeline_info);
-            if (!gpu_task.pipeline) {
-                gpu_error("SDL_CreateGPUGraphicsPipeline geometry");
-            }
-            geometry_pipeline_info.rasterizer_state.cull_mode =
-                SDL_GPU_CULLMODE_NONE;
-            gpu_task.double_sided_pipeline =
-                SDL_CreateGPUGraphicsPipeline(
-                    state.device,
-                    &geometry_pipeline_info);
-            if (!gpu_task.double_sided_pipeline) {
-                gpu_error("SDL_CreateGPUGraphicsPipeline geometry double-sided");
-            }
-            if (use_clockwise_front_face) {
-                geometry_pipeline_info.rasterizer_state.front_face =
-                    SDL_GPU_FRONTFACE_CLOCKWISE;
-                gpu_task.clockwise_double_sided_pipeline =
-                    SDL_CreateGPUGraphicsPipeline(
-                        state.device,
-                        &geometry_pipeline_info);
-                if (!gpu_task.clockwise_double_sided_pipeline) {
-                    gpu_error(
-                        "SDL_CreateGPUGraphicsPipeline geometry clockwise double-sided");
-                }
-                geometry_pipeline_info.rasterizer_state.front_face =
-                    SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
-            }
             if (standard_geometry_fragment_shader) {
                 geometry_pipeline_info.fragment_shader =
                     standard_geometry_fragment_shader;
@@ -3255,39 +3130,6 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_GPU_CULLMODE_BACK;
             geometry_pipeline_info.depth_stencil_state.enable_depth_write =
                 false;
-            geometry_pipeline_info.fragment_shader =
-                geometry_fragment_shader;
-            gpu_task.transparent_pipeline =
-                SDL_CreateGPUGraphicsPipeline(
-                    state.device,
-                    &geometry_pipeline_info);
-            if (!gpu_task.transparent_pipeline) {
-                gpu_error("SDL_CreateGPUGraphicsPipeline geometry transparent");
-            }
-            geometry_pipeline_info.rasterizer_state.cull_mode =
-                SDL_GPU_CULLMODE_NONE;
-            gpu_task.transparent_double_sided_pipeline =
-                SDL_CreateGPUGraphicsPipeline(
-                    state.device,
-                    &geometry_pipeline_info);
-            if (!gpu_task.transparent_double_sided_pipeline) {
-                gpu_error(
-                    "SDL_CreateGPUGraphicsPipeline geometry transparent double-sided");
-            }
-            if (use_clockwise_front_face) {
-                geometry_pipeline_info.rasterizer_state.front_face =
-                    SDL_GPU_FRONTFACE_CLOCKWISE;
-                gpu_task.transparent_clockwise_double_sided_pipeline =
-                    SDL_CreateGPUGraphicsPipeline(
-                        state.device,
-                        &geometry_pipeline_info);
-                if (!gpu_task.transparent_clockwise_double_sided_pipeline) {
-                    gpu_error(
-                        "SDL_CreateGPUGraphicsPipeline geometry transparent clockwise double-sided");
-                }
-                geometry_pipeline_info.rasterizer_state.front_face =
-                    SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
-            }
             if (standard_geometry_fragment_shader) {
                 geometry_pipeline_info.fragment_shader =
                     standard_geometry_fragment_shader;
@@ -3314,7 +3156,6 @@ bool run_gpu_engine(Engine& engine) {
                         "SDL_CreateGPUGraphicsPipeline standard geometry transparent double-sided");
                 }
             }
-            SDL_ReleaseGPUShader(state.device, geometry_fragment_shader);
             if (standard_geometry_fragment_shader) {
                 SDL_ReleaseGPUShader(
                     state.device,
@@ -3461,34 +3302,6 @@ bool run_gpu_engine(Engine& engine) {
         pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
         pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
         pipeline_info.depth_stencil_state.enable_depth_write = false;
-        state.transparent_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
-        if (!state.transparent_pipeline) {
-            gpu_error(
-                "SDL_CreateGPUGraphicsPipeline transparent");
-        }
-        pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-        state.transparent_double_sided_pipeline =
-            SDL_CreateGPUGraphicsPipeline(
-                state.device,
-                &pipeline_info);
-        if (!state.transparent_double_sided_pipeline) {
-            gpu_error(
-                "SDL_CreateGPUGraphicsPipeline transparent double-sided");
-        }
-        if (use_clockwise_front_face) {
-            pipeline_info.rasterizer_state.front_face =
-                SDL_GPU_FRONTFACE_CLOCKWISE;
-            state.transparent_clockwise_double_sided_pipeline =
-                SDL_CreateGPUGraphicsPipeline(
-                    state.device,
-                    &pipeline_info);
-            if (!state.transparent_clockwise_double_sided_pipeline) {
-                gpu_error(
-                    "SDL_CreateGPUGraphicsPipeline transparent clockwise double-sided");
-            }
-            pipeline_info.rasterizer_state.front_face =
-                SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
-        }
         if (standard_fragment_shader) {
             pipeline_info.fragment_shader = standard_fragment_shader;
             pipeline_info.rasterizer_state.cull_mode =
@@ -3696,7 +3509,6 @@ bool run_gpu_engine(Engine& engine) {
         }
 #endif
         SDL_ReleaseGPUShader(state.device, vertex_shader);
-        SDL_ReleaseGPUShader(state.device, fragment_shader);
         if (image_processing_vertex_shader) {
             SDL_ReleaseGPUShader(
                 state.device,
@@ -3742,7 +3554,6 @@ bool run_gpu_engine(Engine& engine) {
         if (cluster_fragment_shader) {
             SDL_ReleaseGPUShader(state.device, cluster_fragment_shader);
         }
-        if (!state.transparent_pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline transparent");
         if (background_fragment_shader && !state.background_pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline background");
         }
@@ -4834,12 +4645,6 @@ bool run_gpu_engine(Engine& engine) {
                 };
                 const auto draw_scene = [&](
                                           SDL_GPURenderPass* task_pass,
-                                          SDL_GPUGraphicsPipeline* opaque,
-                                          SDL_GPUGraphicsPipeline* double_sided,
-                                          SDL_GPUGraphicsPipeline* clockwise_double_sided,
-                                          SDL_GPUGraphicsPipeline* transparent,
-                                          SDL_GPUGraphicsPipeline* transparent_double_sided,
-                                          SDL_GPUGraphicsPipeline* transparent_clockwise_double_sided,
                                           SDL_GPUGraphicsPipeline* standard_opaque,
                                           SDL_GPUGraphicsPipeline* standard_double_sided,
                                           SDL_GPUGraphicsPipeline* standard_transparent,
@@ -4859,18 +4664,22 @@ bool run_gpu_engine(Engine& engine) {
                             upstream::RenderPipelineKind kind,
                             std::uint32_t shader_variant) {
                         switch (kind) {
+                            // A PBR draw in a secondary pass has no pinned
+                            // branch wired yet, and the transcribed pipelines
+                            // it once fell back to are retired; no corpus
+                            // scene reaches this combination.
                             case upstream::RenderPipelineKind::pbr_opaque_back:
-                                return opaque;
                             case upstream::RenderPipelineKind::pbr_opaque_none:
-                                return double_sided;
                             case upstream::RenderPipelineKind::pbr_opaque_none_clockwise:
-                                return clockwise_double_sided;
                             case upstream::RenderPipelineKind::pbr_transparent_back:
-                                return transparent;
                             case upstream::RenderPipelineKind::pbr_transparent_none:
-                                return transparent_double_sided;
                             case upstream::RenderPipelineKind::pbr_transparent_none_clockwise:
-                                return transparent_clockwise_double_sided;
+                                gpu_error(
+                                    "PBR draw in a render task has no pinned "
+                                    "path; the transcribed pipelines are "
+                                    "retired.");
+                                return static_cast<
+                                    SDL_GPUGraphicsPipeline*>(nullptr);
                             case upstream::RenderPipelineKind::standard_opaque_back:
                                 return standard_opaque;
                             case upstream::RenderPipelineKind::standard_opaque_none:
@@ -5391,13 +5200,6 @@ bool run_gpu_engine(Engine& engine) {
                             task_camera);
                         draw_scene(
                             task_pass,
-                            state.pipeline,
-                            state.double_sided_pipeline,
-                            state.clockwise_double_sided_pipeline,
-                            state.transparent_pipeline,
-                            state.transparent_double_sided_pipeline,
-                            state
-                                .transparent_clockwise_double_sided_pipeline,
                             state.standard_pipeline,
                             state.standard_double_sided_pipeline,
                             state.standard_transparent_pipeline,
@@ -5503,13 +5305,6 @@ bool run_gpu_engine(Engine& engine) {
                             camera);
                         draw_scene(
                             task_pass,
-                            geometry.pipeline,
-                            geometry.double_sided_pipeline,
-                            geometry.clockwise_double_sided_pipeline,
-                            geometry.transparent_pipeline,
-                            geometry.transparent_double_sided_pipeline,
-                            geometry
-                                .transparent_clockwise_double_sided_pipeline,
                             geometry.standard_pipeline,
                             geometry.standard_double_sided_pipeline,
                             geometry.standard_transparent_pipeline,
@@ -5986,19 +5781,19 @@ bool run_gpu_engine(Engine& engine) {
                     upstream::RenderPipelineKind kind,
                     std::uint32_t shader_variant) {
                 switch (kind) {
+                    // The transcribed PBR pipelines are retired: every PBR
+                    // draw runs the pin's own composed stages, resolved
+                    // before this dispatch is consulted.
                     case upstream::RenderPipelineKind::pbr_opaque_back:
-                        return state.pipeline;
                     case upstream::RenderPipelineKind::pbr_opaque_none:
-                        return state.double_sided_pipeline;
                     case upstream::RenderPipelineKind::pbr_opaque_none_clockwise:
-                        return state.clockwise_double_sided_pipeline;
                     case upstream::RenderPipelineKind::pbr_transparent_back:
-                        return state.transparent_pipeline;
                     case upstream::RenderPipelineKind::pbr_transparent_none:
-                        return state.transparent_double_sided_pipeline;
                     case upstream::RenderPipelineKind::pbr_transparent_none_clockwise:
-                        return state
-                            .transparent_clockwise_double_sided_pipeline;
+                        gpu_error(
+                            "PBR draw reached the transcribed pipeline "
+                            "dispatch; the pinned path owns every PBR draw.");
+                        return static_cast<SDL_GPUGraphicsPipeline*>(nullptr);
                     case upstream::RenderPipelineKind::standard_opaque_back:
                         return state.standard_pipeline;
                     case upstream::RenderPipelineKind::standard_opaque_none:
@@ -6043,18 +5838,6 @@ bool run_gpu_engine(Engine& engine) {
                         state.meshes.size()) {
                         continue;
                     }
-                    SDL_GPUGraphicsPipeline* pipeline =
-                        pipeline_for(draw.pipeline, draw.item.shader_variant);
-                    if (!pipeline) {
-                        throw std::runtime_error(
-                            "Reached render pipeline was not created.");
-                    }
-                    if (pipeline != bound_pipeline) {
-                        SDL_BindGPUGraphicsPipeline(
-                            pass,
-                            pipeline);
-                        bound_pipeline = pipeline;
-                    }
                     const upstream::RenderItem& item = draw.item;
                     const GpuMesh& mesh =
                         state.meshes[draw.item_index];
@@ -6065,13 +5848,28 @@ bool run_gpu_engine(Engine& engine) {
                                   item.material.value]
                             : nullptr;
 #if BBLITE_PBR_VARIANTS > 0
-                    // Babylon Lite's own composed stages for this draw, when the
-                    // scene resolves a variant for it. The gate is shared with
-                    // the Dawn backend, so both answer that question the same
-                    // way; everything it refuses falls through to the
-                    // transcribed pipeline already bound above.
+                    // Babylon Lite's own composed stages own every PBR draw:
+                    // the transcribed fragment is retired, so a draw the
+                    // shared gate refuses is an error naming the mesh rather
+                    // than a silent fallback.
                     const std::size_t pinned_variant =
-                        pinned_variant_for_draw(scene, engine, draw);
+                        item.material_kind ==
+                            upstream::RenderMaterialKind::pbr
+                            ? pinned_variant_for_draw(scene, engine, draw)
+                            : std::numeric_limits<std::size_t>::max();
+                    if (
+                        item.material_kind ==
+                            upstream::RenderMaterialKind::pbr &&
+                        pinned_variant ==
+                            std::numeric_limits<std::size_t>::max()) {
+                        gpu_error(
+                            ("PBR draw for mesh " +
+                             std::to_string(item.mesh.value) +
+                             ", material " +
+                             std::to_string(item.material.value) +
+                             " resolves no pinned variant.")
+                                .c_str());
+                    }
                     if (
                         pinned_variant !=
                         std::numeric_limits<std::size_t>::max()) {
@@ -6081,10 +5879,9 @@ bool run_gpu_engine(Engine& engine) {
                     // cannot name: the morph arms read their deltas through
                     // storage buffers, which share the texture registers on
                     // this backend, so a palette bound at pair index 0 would
-                    // land on a storage register. Those draws stay transcribed
-                    // until vertex storage is wired; the named registers --
+                    // land on a storage register. Until vertex storage is
+                    // wired, such a draw is an error; the named registers --
                     // the skeleton arm's bone palette -- are bound below.
-                    bool pinned_vertex_unnamed = false;
                     if (
                         pinned_variant !=
                         std::numeric_limits<std::size_t>::max()) {
@@ -6092,14 +5889,17 @@ bool run_gpu_engine(Engine& engine) {
                             const std::string& name :
                             state.pinned_vertex_slots[pinned_variant]
                                 .textures) {
-                            if (name.empty()) pinned_vertex_unnamed = true;
+                            if (name.empty()) {
+                                gpu_error(
+                                    "pinned variant's vertex stage holds an "
+                                    "SRV register the slot map cannot name "
+                                    "(vertex storage is not wired).");
+                            }
                         }
                     }
                     if (
                         pinned_variant !=
-                            std::numeric_limits<std::size_t>::max() &&
-                        mesh.pinned_vertices &&
-                        !pinned_vertex_unnamed) {
+                        std::numeric_limits<std::size_t>::max()) {
                         SDL_GPUGraphicsPipeline* variant_pipeline =
                             pinned_variant_pipeline(
                                 state,
@@ -6280,55 +6080,26 @@ bool run_gpu_engine(Engine& engine) {
                             0);
                         continue;
                     }
-#endif
+#else
                     if (
-                        transmission_enabled &&
-                        !transmission_copied &&
-                        material &&
-                        (material->transmission_factor > 0.0f ||
-                         !material->transmission_texture.bytes.empty())) {
-                        SDL_EndGPURenderPass(pass);
-                        SDL_GPUBlitInfo transmission_blit{};
-                        transmission_blit.source = SDL_GPUBlitRegion{
-                            state.color,
-                            0,
-                            0,
-                            0,
-                            0,
-                            width,
-                            height,
-                        };
-                        transmission_blit.destination = SDL_GPUBlitRegion{
-                            state.transmission_color,
-                            0,
-                            0,
-                            0,
-                            0,
-                            state.transmission_width,
-                            state.transmission_height,
-                        };
-                        transmission_blit.load_op =
-                            SDL_GPU_LOADOP_DONT_CARE;
-                        transmission_blit.flip_mode = SDL_FLIP_NONE;
-                        transmission_blit.filter = SDL_GPU_FILTER_LINEAR;
-                        SDL_BlitGPUTexture(command, &transmission_blit);
-                        SDL_GenerateMipmapsForGPUTexture(
-                            command,
-                            state.transmission_color);
-                        color_info.load_op = SDL_GPU_LOADOP_LOAD;
-                        color_info.store_op =
-                            multisampled
-                                ? SDL_GPU_STOREOP_RESOLVE
-                                : SDL_GPU_STOREOP_STORE;
-                        depth_info.load_op = SDL_GPU_LOADOP_LOAD;
-                        pass = SDL_BeginGPURenderPass(
-                            command,
-                            &color_info,
-                            1,
-                            &depth_info);
-                        SDL_BindGPUGraphicsPipeline(pass, pipeline);
+                        item.material_kind ==
+                        upstream::RenderMaterialKind::pbr) {
+                        gpu_error(
+                            "PBR draw in a build with no composed variant "
+                            "table; the transcribed fragment is retired.");
+                    }
+#endif
+                    SDL_GPUGraphicsPipeline* pipeline =
+                        pipeline_for(draw.pipeline, draw.item.shader_variant);
+                    if (!pipeline) {
+                        throw std::runtime_error(
+                            "Reached render pipeline was not created.");
+                    }
+                    if (pipeline != bound_pipeline) {
+                        SDL_BindGPUGraphicsPipeline(
+                            pass,
+                            pipeline);
                         bound_pipeline = pipeline;
-                        transmission_copied = true;
                     }
                     if (
                         item.material_kind ==
@@ -6467,18 +6238,6 @@ bool run_gpu_engine(Engine& engine) {
                                 0,
                                 &fragment,
                                 sizeof(fragment));
-                        } else {
-                            const upstream::PbrUniforms fragment =
-                                upstream::build_pbr_uniforms(
-                                    scene,
-                                    engine,
-                                    camera,
-                                    item);
-                            SDL_PushGPUFragmentUniformData(
-                                command,
-                                0,
-                                &fragment,
-                                sizeof(fragment));
                         }
                     }
                     const SDL_GPUBufferBinding index_binding{
@@ -6494,12 +6253,7 @@ bool run_gpu_engine(Engine& engine) {
                         SDL_GPU_INDEXELEMENTSIZE_32BIT);
                     if (
                         item.material_kind ==
-                            upstream::RenderMaterialKind::pbr ||
-                        item.material_kind ==
-                            upstream::RenderMaterialKind::standard) {
-                        const bool standard =
-                            item.material_kind ==
-                            upstream::RenderMaterialKind::standard;
+                        upstream::RenderMaterialKind::standard) {
                         SDL_GPUTextureSamplerBinding
                             texture_bindings[pbr_texture_binding_capacity]{
                                 SDL_GPUTextureSamplerBinding{
@@ -6519,59 +6273,30 @@ bool run_gpu_engine(Engine& engine) {
                                     mesh.emissive_sampler,
                                 },
                                 SDL_GPUTextureSamplerBinding{
-                                    standard
-                                        ? mesh.reflection
-                                        : state.environment,
+                                    mesh.reflection,
                                     state.sampler,
                                 },
                                 SDL_GPUTextureSamplerBinding{
-                                    standard
-                                        ? mesh.standard_emissive
-                                        : state.brdf_lut,
-                                    standard
-                                        ? mesh
-                                              .standard_emissive_sampler
-                                        : state.background_sampler,
+                                    mesh.standard_emissive,
+                                    mesh.standard_emissive_sampler,
                                 },
                                 SDL_GPUTextureSamplerBinding{
-                                    transmission_enabled
-                                        ? state.transmission_color
-                                        : mesh.base_color,
-                                    transmission_enabled
-                                        ? state.transmission_sampler
-                                        : mesh.base_color_sampler,
-                                },
-                                SDL_GPUTextureSamplerBinding{
-                                    mesh.transmission,
-                                    mesh.transmission_sampler,
-                                },
-                                SDL_GPUTextureSamplerBinding{
-                                    mesh.thickness,
-                                    mesh.thickness_sampler,
+                                    mesh.base_color,
+                                    mesh.base_color_sampler,
                                 },
                             };
 #if BBLITE_MATERIAL_STANDARD_BUMP
-                        if (standard) {
-                            texture_bindings[standard_bump_binding] =
-                                SDL_GPUTextureSamplerBinding{
-                                    mesh.standard_bump,
-                                    mesh.standard_bump_sampler,
-                                };
-                        }
+                        texture_bindings[standard_bump_binding] =
+                            SDL_GPUTextureSamplerBinding{
+                                mesh.standard_bump,
+                                mesh.standard_bump_sampler,
+                            };
 #endif
-                        if (!standard) {
-                            append_material_extension_bindings(
-                                &texture_bindings[
-                                    pbr_base_texture_binding_count],
-                                mesh);
-                        }
                         SDL_BindGPUFragmentSamplers(
                             pass,
                             0,
                             texture_bindings,
-                            standard
-                                ? 6u + standard_bump_binding_count
-                                : pbr_texture_binding_count);
+                            6u + standard_bump_binding_count);
                     }
                     SDL_DrawGPUIndexedPrimitives(
                         pass,

@@ -18,11 +18,10 @@ import {
     backgroundGroundFragmentWgsl,
     backgroundSkyboxFragmentWgsl,
 } from "../src/shader-builtins-background.js";
-import { materialVertexWgsl } from "../src/shader-builtins-material.js";
-import { standardFragmentWgsl } from "../src/shader-builtins-standard.js";
-import { pbrFragmentWgsl } from "../src/shader-builtins-pbr.js";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+    materialVertexWgsl,
+    standardFragmentWgsl,
+} from "../src/shader-builtins-standard.js";
 
 test("lowers reached alpha-card WGSL through typed reflection", () => {
     const program = lowerWgslShaderProgram(
@@ -165,33 +164,6 @@ test("generates Tint background WGSL for 2D and cube textures", () => {
     assert.match(skybox, /imageParameters\.w < 0\.5/);
 });
 
-test("carries the three-kind analytic light contract in the PBR template", () => {
-    const template = readFileSync(
-        resolve(
-            "src/lowering/templates/renderer/pbr.frag.wgsl",
-        ),
-        "utf8",
-    );
-    // Primary slot: directional (w = 2), point (w = 1), hemispheric.
-    assert.match(
-        template,
-        /if \(\(FragmentUniforms\.lightDirection\.w > 1\.5f\)\) \{/,
-    );
-    assert.match(
-        template,
-        /let bblDirectionalL = normalize\(-\(FragmentUniforms\.lightDirection\.xyz\)\);/,
-    );
-    // Second analytic slot accumulates through the shared extra terms.
-    assert.match(
-        template,
-        /if \(\(FragmentUniforms\.lightColor2\.w > 0\.0f\)\) \{/,
-    );
-    assert.match(
-        template,
-        /\+ \(bblExtraDiffuse \+ bblExtraSpecular\)\) \+ v_40;/,
-    );
-});
-
 test("generates the shared Tint material vertex interface", () => {
     const staticVertex = materialVertexWgsl();
     const vertex = materialVertexWgsl(true);
@@ -276,51 +248,3 @@ test("adds the pinned Standard vertex-color slot only when reached", () => {
     );
 });
 
-test("generates Tint PBR color, diagnostics, and geometry WGSL", () => {
-    const converted = readFileSync(
-        resolve("src/lowering/templates/renderer/pbr.frag.wgsl"),
-        "utf8",
-    );
-    const color = pbrFragmentWgsl(converted, { kind: "color" });
-    const diagnostic = pbrFragmentWgsl(converted, {
-        kind: "diagnostic",
-        group: "c",
-    });
-    const geometry = pbrFragmentWgsl(converted, {
-        kind: "geometry",
-        task: {
-            shaderIndex: 0,
-            attachments: ["LOCAL_POSITION", "WORLD_NORMAL"],
-            emitColor: true,
-        },
-    });
-    assert.match(color, /fn mainFragment/);
-    assert.match(color, /@location\(6u\) v_118/);
-    assert.match(color, /normalOptions\.w/);
-    assert.doesNotMatch(color, /sceneTransmission = pow/);
-    assert.doesNotMatch(color, /sceneTransmission = -log2/);
-    assert.match(color, /imageProcessingOptions\.x/);
-    assert.match(color, /@binding\(12u\) var sceneColorTexture/);
-    assert.match(color, /refract\(/);
-    assert.match(color, /exp\(FragmentUniforms\.volumeParams\.rgb \* thickness\)/);
-    assert.match(color, /v_119, bblBitangent\);/);
-    // The pinned tangent frame: pbr-template.ts composes
-    // mat3x3(worldTangent, worldBitangent, worldNormal) from the raw varyings
-    // and normalizes the sample before the frame. The bitangent arrives as its
-    // own varying rather than being rebuilt here, because cross() does not
-    // survive a blended skin matrix.
-    assert.match(
-        color,
-        /mat3x3<f32>\(v_3\.xyz, bblBitangent, v_2\)/,
-    );
-    assert.match(color, /v_22 \* normalize\(v_8\)/);
-    assert.doesNotMatch(color, /normalize\(cross\(v_7, v_23\)\)/);
-    assert.match(diagnostic, /bblOutput\.preToneHdr/);
-    assert.match(diagnostic, /v_119,\s*bblBitangent,\s*\);/);
-    assert.match(geometry, /bblLocalPosition/);
-    assert.match(
-        geometry,
-        /v_119,\s*bblBitangent,\s*bblPosition,\s*bblLocalPosition,/,
-    );
-    assert.match(geometry, /bblOutput\.color/);
-});
