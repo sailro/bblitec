@@ -442,6 +442,17 @@ struct GpuState {
     SDL_GPUTexture* transmission_color = nullptr;
     SDL_GPUTexture* msaa_color = nullptr;
     SDL_GPUTexture* depth = nullptr;
+#if BBLITE_PBR_VARIANTS > 0
+    // One pipeline per (variant, pipeline kind): the kind carries the cull mode,
+    // the winding a mirrored node needs and the blend and depth state, exactly
+    // as it does for the transcribed pipelines.
+    std::map<std::size_t, SDL_GPUGraphicsPipeline*> pinned_pipelines;
+    // Each variant's stage slot maps, read once from the `.slots` sidecars.
+    std::vector<PinnedStageSlots> pinned_vertex_slots;
+    std::vector<PinnedStageSlots> pinned_fragment_slots;
+    SDL_GPUTextureFormat pinned_color_format =
+        SDL_GPU_TEXTUREFORMAT_INVALID;
+#endif
     SDL_GPUTextureFormat depth_format =
         SDL_GPU_TEXTUREFORMAT_D16_UNORM;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
@@ -555,6 +566,179 @@ PinnedResource pinned_resource_for(
         ("pinned variant declares an unmapped resource '" + name + "'.")
             .c_str());
     return {};
+}
+
+/** The stem the shader compiler deployed a variant's stage under. */
+std::string pinned_stage_name(std::string_view file) {
+    return "variant-" + std::string(file.substr(0, file.find(".wgsl")));
+}
+
+/**
+ * The graphics pipeline for one composed variant under one pipeline kind.
+ *
+ * The stages are Babylon's own text, entered at `main` -- the name the pin gives
+ * both -- with only their register addressing moved into this backend's spaces.
+ * The resource counts come from the variant table and its slot map rather than
+ * from a constant here, because they differ per variant: an unlit fragment binds
+ * two uniform slots where a lit one binds three.
+ */
+SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
+    GpuState& state,
+    std::size_t variant,
+    upstream::RenderPipelineKind kind,
+    const SDL_GPUVertexBufferDescription* vertex_buffers,
+    Uint32 vertex_buffer_count) {
+    const std::size_t key =
+        variant * 64 + static_cast<std::size_t>(kind);
+    const auto existing = state.pinned_pipelines.find(key);
+    if (existing != state.pinned_pipelines.end()) return existing->second;
+    if (state.pinned_vertex_slots.size() < upstream::pbr_variants.size()) {
+        state.pinned_vertex_slots.resize(upstream::pbr_variants.size());
+        state.pinned_fragment_slots.resize(upstream::pbr_variants.size());
+    }
+    const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
+    const std::string vertex_name = pinned_stage_name(entry.vertex_shader);
+    const std::string fragment_name = pinned_stage_name(entry.fragment_shader);
+    if (state.pinned_vertex_slots[variant].uniforms.empty()) {
+        state.pinned_vertex_slots[variant] =
+            read_pinned_stage_slots(vertex_name);
+        state.pinned_fragment_slots[variant] =
+            read_pinned_stage_slots(fragment_name);
+    }
+    const PinnedStageSlots& vertex_slots = state.pinned_vertex_slots[variant];
+    const PinnedStageSlots& fragment_slots =
+        state.pinned_fragment_slots[variant];
+    SDL_GPUShader* vertex_shader = load_shader(
+        state.device,
+        vertex_name.c_str(),
+        SDL_GPU_SHADERSTAGE_VERTEX,
+        static_cast<Uint32>(vertex_slots.textures.size()),
+        static_cast<Uint32>(vertex_slots.uniforms.size()),
+        "main");
+    SDL_GPUShader* fragment_shader = load_shader(
+        state.device,
+        fragment_name.c_str(),
+        SDL_GPU_SHADERSTAGE_FRAGMENT,
+        static_cast<Uint32>(fragment_slots.textures.size()),
+        static_cast<Uint32>(fragment_slots.uniforms.size()),
+        "main");
+
+    // The variant's own inputs, at the locations it declares them. The names are
+    // the pin's; where each sits in our vertex is this backend's.
+    std::vector<SDL_GPUVertexAttribute> attributes;
+    attributes.reserve(entry.attribute_count);
+    for (std::size_t index = 0; index < entry.attribute_count; ++index) {
+        const upstream::PbrVariantAttribute& input =
+            upstream::pbr_variant_attributes[entry.first_attribute + index];
+        SDL_GPUVertexAttribute attribute{};
+        attribute.location = input.location;
+        attribute.buffer_slot = 0;
+        if (input.name == "position") {
+            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+            attribute.offset = offsetof(GpuVertex, position);
+        } else if (input.name == "normal") {
+            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+            attribute.offset = offsetof(GpuVertex, normal);
+        } else if (input.name == "tangent") {
+            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+            attribute.offset = offsetof(GpuVertex, tangent);
+        } else if (input.name == "uv") {
+            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+            attribute.offset = offsetof(GpuVertex, uv);
+        } else if (input.name == "uv2") {
+            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+            attribute.offset = offsetof(GpuVertex, uv2);
+        } else if (input.name == "color") {
+            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+            attribute.offset = offsetof(GpuVertex, color);
+        }
+#if BBLITE_GPU_DEFORMATION
+        else if (input.name == "joints") {
+            // The pin takes joint indices as integers; the transcribed stage
+            // takes them as floats, so the vertex carries both while the two
+            // paths coexist.
+            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_UINT4;
+            attribute.offset = offsetof(GpuVertex, joint_indices);
+        } else if (input.name == "weights") {
+            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+            attribute.offset = offsetof(GpuVertex, weights);
+        }
+#endif
+        else {
+            gpu_error(
+                ("pinned variant declares an unmapped vertex input '" +
+                 std::string(input.name) + "'.")
+                    .c_str());
+        }
+        attributes.push_back(attribute);
+    }
+
+    // The kind carries the fixed-function state, the same way it does for the
+    // transcribed pipelines this backend builds from explicit fields. Reading it
+    // here rather than restating per-draw booleans is what keeps a mirrored
+    // node's clockwise winding from being lost.
+    using Kind = upstream::RenderPipelineKind;
+    const bool transparent =
+        kind == Kind::pbr_transparent_back ||
+        kind == Kind::pbr_transparent_none ||
+        kind == Kind::pbr_transparent_none_clockwise;
+    const bool double_sided =
+        kind == Kind::pbr_opaque_none ||
+        kind == Kind::pbr_opaque_none_clockwise ||
+        kind == Kind::pbr_transparent_none ||
+        kind == Kind::pbr_transparent_none_clockwise;
+    const bool clockwise =
+        kind == Kind::pbr_opaque_none_clockwise ||
+        kind == Kind::pbr_transparent_none_clockwise;
+    SDL_GPUColorTargetDescription color_target{};
+    color_target.format = state.pinned_color_format;
+    SDL_GPUColorTargetBlendState blend{};
+    if (transparent) {
+        blend.enable_blend = true;
+        blend.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        blend.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        blend.dst_color_blendfactor =
+            SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        blend.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+        blend.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        blend.dst_alpha_blendfactor =
+            SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        color_target.blend_state = blend;
+    }
+    SDL_GPUGraphicsPipelineCreateInfo info{};
+    info.vertex_shader = vertex_shader;
+    info.fragment_shader = fragment_shader;
+    info.vertex_input_state = SDL_GPUVertexInputState{
+        vertex_buffers,
+        vertex_buffer_count,
+        attributes.data(),
+        static_cast<Uint32>(attributes.size()),
+    };
+    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    info.rasterizer_state.cull_mode = double_sided
+        ? SDL_GPU_CULLMODE_NONE
+        : SDL_GPU_CULLMODE_BACK;
+    info.rasterizer_state.front_face = clockwise
+        ? SDL_GPU_FRONTFACE_CLOCKWISE
+        : SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+    info.rasterizer_state.enable_depth_clip = true;
+    info.depth_stencil_state.compare_op = transparent
+        ? SDL_GPU_COMPAREOP_LESS_OR_EQUAL
+        : SDL_GPU_COMPAREOP_LESS;
+    info.depth_stencil_state.enable_depth_test = true;
+    info.depth_stencil_state.enable_depth_write = !transparent;
+    info.multisample_state.sample_count = state.sample_count;
+    info.target_info.color_target_descriptions = &color_target;
+    info.target_info.num_color_targets = 1;
+    info.target_info.depth_stencil_format = state.depth_format;
+    info.target_info.has_depth_stencil_target = true;
+    SDL_GPUGraphicsPipeline* pipeline =
+        SDL_CreateGPUGraphicsPipeline(state.device, &info);
+    if (!pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline pinned variant");
+    SDL_ReleaseGPUShader(state.device, vertex_shader);
+    SDL_ReleaseGPUShader(state.device, fragment_shader);
+    return state.pinned_pipelines.emplace(key, pipeline).first->second;
 }
 #endif
 
