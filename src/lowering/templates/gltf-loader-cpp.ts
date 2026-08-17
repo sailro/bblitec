@@ -2548,7 +2548,19 @@ ${nonTrianglePrimitives
                 : compute_world(node_index);
             const float determinant = linear_determinant(matrix);
             const std::size_t material_index =
-                unsigned_or(primitive, "material", 0);
+                unsigned_or(primitive, "material", material_json.size());
+            // A primitive with no material index takes the pin's default
+            // material -- getMat(undefined) assembles one from an empty
+            // object -- created once and appended after the document's,
+            // which is where the composed variant table keys it.
+            if (
+                material_index == material_json.size() &&
+                materials.size() == material_json.size()) {
+                materials.push_back(load_material(
+                    engine, JsonObject{}, buffer, container, views,
+                    image_json, texture_json, sampler_json,
+                    false));
+            }
             const bool clockwise_front_face =
                 determinant < 0.0f &&
                 material_index < materials.size() &&

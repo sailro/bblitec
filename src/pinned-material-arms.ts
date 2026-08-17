@@ -177,7 +177,7 @@ async function materialSubjects(
         ),
     ]);
     const animatedExtensions = gltfAnimatedExtensionTargets(record);
-    return materials.map((material, index) => {
+    const subjects = materials.map((material, index) => {
         const input = pinnedMaterialInputFromGltf(material, {
             imageOf,
             animatedBaseColorFactor: animatedBaseColor.has(index),
@@ -196,6 +196,24 @@ async function materialSubjects(
             uv2Mask: (input["_uv2Mask"] as number | undefined) ?? 0,
         };
     });
+    if (documentHasDefaultMaterial(document)) {
+        // The pin's getMat(undefined) assembles the default material from an
+        // empty object; the same builder over the same empty object carries
+        // the glTF loader's own stamps, specular AA included.
+        const input = pinnedMaterialInputFromGltf({}, {
+            imageOf,
+            animatedBaseColorFactor: false,
+            animatedEmissive: false,
+            animatedUvTransform: false,
+        });
+        subjects.push({
+            index: materials.length,
+            name: "default material",
+            input,
+            uv2Mask: 0,
+        });
+    }
+    return subjects;
 }
 
 /**
@@ -210,7 +228,12 @@ export async function composeGltfMaterials(
     path: string,
 ): Promise<readonly PinnedComposedMaterial[]> {
     const document = glbDocument(path);
-    if (!document?.materials?.length) return [];
+    if (!document) return [];
+    if (
+        !document.materials?.length &&
+        !documentHasDefaultMaterial(document)) {
+        return [];
+    }
     const { PBR_HAS_ENV, PBR_HAS_SHEEN_ALBEDO_SCALING } =
         await importPinnedModule<{
             PBR_HAS_ENV: number;
@@ -357,7 +380,12 @@ export async function composeRenderableVariants(
     materialIndexBase = 0,
 ): Promise<readonly PinnedRenderableVariant[]> {
     const document = glbDocument(path);
-    if (!document?.materials?.length || arms.length === 0) return [];
+    if (!document || arms.length === 0) return [];
+    if (
+        !document.materials?.length &&
+        !documentHasDefaultMaterial(document)) {
+        return [];
+    }
     const record = document as unknown as Record<string, unknown>;
     const skinned = skinnedMeshIndices(record);
     // The first primitive drawn with each material. A material used on two
@@ -370,8 +398,9 @@ export async function composeRenderableVariants(
         const primitives = (entry as Record<string, unknown>)["primitives"];
         if (!Array.isArray(primitives)) continue;
         for (const primitive of primitives as Record<string, unknown>[]) {
-            const material = primitive["material"];
-            if (typeof material !== "number") continue;
+            const material = typeof primitive["material"] === "number"
+                ? (primitive["material"] as number)
+                : (document.materials?.length ?? 0);
             const features = await pinnedMeshFeaturesFromPrimitive(primitive, {
                 skinned: skinned.has(mesh),
             });
@@ -425,9 +454,32 @@ export async function composeRenderableVariants(
  * scene-code material never sees, which is why this does not share the glTF
  * input builder.
  */
-/** The number of materials a glTF document declares; the creation-order key. */
+/** Whether any meshed primitive omits its material index, which makes the
+ *  loader create the pin's default material after the document's. */
+function documentHasDefaultMaterial(document: GltfDocument): boolean {
+    const record = document as unknown as Record<string, unknown>;
+    const meshes = Array.isArray(record["meshes"])
+        ? (record["meshes"] as Record<string, unknown>[])
+        : [];
+    for (const mesh of meshes) {
+        const primitives = mesh["primitives"];
+        if (!Array.isArray(primitives)) continue;
+        for (const primitive of primitives as Record<string, unknown>[]) {
+            if (typeof primitive["material"] !== "number") return true;
+        }
+    }
+    return false;
+}
+
+/** The number of materials a glTF document creates -- the declared ones plus
+ *  the pin's default when any primitive omits its index. */
 export function gltfMaterialCount(path: string): number {
-    return glbDocument(path)?.materials?.length ?? 0;
+    const document = glbDocument(path);
+    if (!document) return 0;
+    return (
+        (document.materials?.length ?? 0) +
+        (documentHasDefaultMaterial(document) ? 1 : 0)
+    );
 }
 
 export async function composeScenePbrVariants(
