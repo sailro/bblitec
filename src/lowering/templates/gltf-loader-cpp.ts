@@ -59,6 +59,63 @@ export interface GltfLoaderLoweredSegments {
      * `src/loader-gltf/gltf-ext-iridescence.ts`.
      */
     extensionDefaults: GltfExtensionDefaults;
+    /**
+     * `multiply_matrix`, lowered from
+     * `src/math/mat4-multiply-into.ts#mat4MultiplyInto` — the pin's fully
+     * unrolled product sums verified term by term, emitted as the loop
+     * the loader has always carried.
+     */
+    matrixMultiply: string;
+    /**
+     * `trs_matrix`, lowered from
+     * `src/math/mat4-compose-into.ts#mat4ComposeInto` — every product
+     * local and store expression comes from the pin.
+     *
+     * `local_matrix` (below it) remains hand-written on purpose: it
+     * transcribes the same pinned compose, but in float arithmetic over
+     * `float_array` inputs where the pin computes JavaScript doubles over
+     * raw JSON numbers and rounds once at the Float32Array store — a
+     * transcription the lowering must not bless as the pin. See the
+     * round-3 notes in `gltf-lowerer.ts`.
+     */
+    matrixCompose: string;
+    /**
+     * `native_matrix`, anchored to
+     * `src/loader-gltf/gltf-parser.ts#RH_TO_LH_ROOT`. The function itself
+     * is the record's convention (the diagonal change of basis applied at
+     * consumption instead of the pin's root-level left multiply), so only
+     * the flip axis and sign flow from the pin.
+     *
+     * `inverse_affine` (above it) remains hand-written: it has no call
+     * site in any emitted loader and matches neither the pinned
+     * `mat4Invert` nor a caller's convention. See the round-3 notes in
+     * `gltf-lowerer.ts`.
+     */
+    matrixNative: string;
+    /**
+     * The EXT_lights_image_based SH9 → spherical-polynomial conversion of
+     * `load_image_based_environment`, lowered from
+     * `src/loader-gltf/gltf-ext-lights-image-based.ts#irradianceCoefficientsToPolynomial`
+     * (band constants, slot layout, the intensity/π prescale) plus the
+     * feature's `applyAsset` intensity default.
+     */
+    iblPolynomial: string;
+    /**
+     * The IBL environment scalars that follow it — the LOD generation
+     * scale, the rotation yaw, and the BRDF LUT width — lowered from the
+     * same feature's `applyAsset`/`envYawFromQuaternion` and from
+     * `src/loader-gltf/ibl-env-assembly.ts#generateBrdfLut`.
+     */
+    iblEnvironmentScalars: string;
+    /**
+     * The KHR_lights_punctual record build — type strings, the spot
+     * outer-cone default, the color/intensity/range defaults, and the
+     * position/direction sign convention — lowered from
+     * `src/loader-gltf/gltf-feature-lights-punctual.ts#applyAsset`,
+     * `src/light/spot-light.ts#createSpotLight`, and the parser's
+     * `RH_TO_LH_ROOT`.
+     */
+    punctualLightLoading: string;
 }
 
 /** One lowered glTF extension default: the JSON key and the C++ literal. */
@@ -603,24 +660,7 @@ Matrix identity_matrix() {
     return result;
 }
 
-Matrix multiply_matrix(const Matrix& left, const Matrix& right) {
-    // Pinned matrix multiplication runs in JavaScript double
-    // precision over float32 entries and rounds once per component
-    // at the Float32Array store; mirror that exactly.
-    Matrix result{};
-    for (int column = 0; column < 4; ++column) {
-        for (int row = 0; row < 4; ++row) {
-            double sum = 0.0;
-            for (int index = 0; index < 4; ++index) {
-                sum +=
-                    static_cast<double>(left[index * 4 + row]) *
-                    static_cast<double>(right[column * 4 + index]);
-            }
-            result[column * 4 + row] = static_cast<float>(sum);
-        }
-    }
-    return result;
-}
+${lowered.matrixMultiply}
 
 Matrix local_matrix(const JsonObject& node) {
     if (const ts::JsonValue* matrix_value = optional(node, "matrix")) {
@@ -659,44 +699,7 @@ Matrix local_matrix(const JsonObject& node) {
     return result;
 }
 
-Matrix trs_matrix(
-    Vec3 translation,
-    Vec4 rotation,
-    Vec3 scale) {
-    // Pinned mat4ComposeInto runs in JavaScript double precision and
-    // rounds once at the Float32Array store; mirror its products and
-    // association exactly.
-    const double x = rotation.x;
-    const double y = rotation.y;
-    const double z = rotation.z;
-    const double w = rotation.w;
-    const double xx = x * x;
-    const double yy = y * y;
-    const double zz = z * z;
-    const double xy = x * y;
-    const double xz = x * z;
-    const double yz = y * z;
-    const double wx = w * x;
-    const double wy = w * y;
-    const double wz = w * z;
-    const double sx = scale.x;
-    const double sy = scale.y;
-    const double sz = scale.z;
-    Matrix result = identity_matrix();
-    result[0] = static_cast<float>((1.0 - 2.0 * (yy + zz)) * sx);
-    result[1] = static_cast<float>(2.0 * (xy + wz) * sx);
-    result[2] = static_cast<float>(2.0 * (xz - wy) * sx);
-    result[4] = static_cast<float>(2.0 * (xy - wz) * sy);
-    result[5] = static_cast<float>((1.0 - 2.0 * (xx + zz)) * sy);
-    result[6] = static_cast<float>(2.0 * (yz + wx) * sy);
-    result[8] = static_cast<float>(2.0 * (xz + wy) * sz);
-    result[9] = static_cast<float>(2.0 * (yz - wx) * sz);
-    result[10] = static_cast<float>((1.0 - 2.0 * (xx + yy)) * sz);
-    result[12] = translation.x;
-    result[13] = translation.y;
-    result[14] = translation.z;
-    return result;
-}
+${lowered.matrixCompose}
 
 Matrix inverse_affine(const Matrix& matrix) {
     const float determinant =
@@ -732,21 +735,7 @@ Matrix inverse_affine(const Matrix& matrix) {
     return result;
 }
 
-Matrix native_matrix(const Matrix& matrix) {
-    Matrix result{};
-    for (std::size_t column = 0; column < 4; ++column) {
-        for (std::size_t row = 0; row < 4; ++row) {
-            const float row_sign = row == 0 ? -1.0f : 1.0f;
-            const float column_sign =
-                column == 0 ? -1.0f : 1.0f;
-            result[column * 4 + row] =
-                matrix[column * 4 + row] *
-                row_sign *
-                column_sign;
-        }
-    }
-    return result;
-}
+${lowered.matrixNative}
 
 Vec3 transform_point_raw(const Matrix& matrix, Vec3 value) {
     return Vec3{
@@ -918,95 +907,7 @@ bool load_image_based_environment(
         specular_images.empty()) {
         return false;
     }
-    const float intensity =
-        float_or(light, "intensity", 1.0f);
-    const float scale = intensity / pi;
-    const float inverse_pi = 1.0f / pi;
-    std::array<Color3, 9> source{};
-    for (
-        std::size_t coefficient = 0;
-        coefficient < source.size();
-        ++coefficient) {
-        const std::vector<float> values =
-            float_array(&coefficients[coefficient]);
-        if (values.size() != 3) {
-            throw std::runtime_error(
-                "Image-based light irradiance coefficient must be vec3.");
-        }
-        source[coefficient] = Color3{
-            values[0] * scale,
-            values[1] * scale,
-            values[2] * scale,
-        };
-    }
-    std::array<Color3, 9> polynomial{};
-    for (int channel = 0; channel < 3; ++channel) {
-        const float l00 =
-            color_channel(source[0], channel);
-        const float l1_1 =
-            color_channel(source[1], channel);
-        const float l10 =
-            color_channel(source[2], channel);
-        const float l11 =
-            color_channel(source[3], channel);
-        const float l2_2 =
-            color_channel(source[4], channel);
-        const float l2_1 =
-            color_channel(source[5], channel);
-        const float l20 =
-            color_channel(source[6], channel);
-        const float l21 =
-            color_channel(source[7], channel);
-        const float l22 =
-            color_channel(source[8], channel);
-        set_color_channel(
-            polynomial[0],
-            channel,
-            -1.02333f * l11 * inverse_pi);
-        set_color_channel(
-            polynomial[1],
-            channel,
-            -1.02333f * l1_1 * inverse_pi);
-        set_color_channel(
-            polynomial[2],
-            channel,
-            1.02333f * l10 * inverse_pi);
-        set_color_channel(
-            polynomial[3],
-            channel,
-            (
-                0.886277f * l00 -
-                0.247708f * l20 +
-                0.429043f * l22) *
-                inverse_pi);
-        set_color_channel(
-            polynomial[4],
-            channel,
-            (
-                0.886277f * l00 -
-                0.247708f * l20 -
-                0.429043f * l22) *
-                inverse_pi);
-        set_color_channel(
-            polynomial[5],
-            channel,
-            (
-                0.886277f * l00 +
-                0.495417f * l20) *
-                inverse_pi);
-        set_color_channel(
-            polynomial[6],
-            channel,
-            -0.858086f * l2_1 * inverse_pi);
-        set_color_channel(
-            polynomial[7],
-            channel,
-            -0.858086f * l21 * inverse_pi);
-        set_color_channel(
-            polynomial[8],
-            channel,
-            0.858086f * l2_2 * inverse_pi);
-    }
+${lowered.iblPolynomial}
     environment.has_irradiance = true;
     environment.spherical_harmonics =
         pre_scale_harmonics(polynomial);
@@ -1040,27 +941,7 @@ bool load_image_based_environment(
                     unsigned_value(face)));
         }
     }
-    environment.lod_generation_scale =
-        specular_images.size() > 1
-            ? static_cast<float>(
-                  specular_images.size() - 1) /
-                  std::log2(
-                      static_cast<float>(
-                          environment.specular_width))
-            : 0.0f;
-    const std::vector<float> rotation =
-        float_array(optional(light, "rotation"));
-    if (rotation.size() == 4) {
-        environment.rotation_y =
-            -2.0f *
-            std::atan2(rotation[1], rotation[3]);
-    }
-    environment.brdf_lut.bytes =
-        pal::read_binary_file(
-            asset_path(
-                "gltf-ibl-brdf-lut.rgba16f"));
-    environment.brdf_lut_width = 256;
-    environment.brdf_lut_rgba16f = true;
+${lowered.iblEnvironmentScalars}
 ${lowered.imageProcessingDefaults}
     return true;
 }
@@ -2001,75 +1882,7 @@ ${animationPointer ? `    // Runtime lights indexed by their KHR_lights_punctual
                 const JsonObject& definition =
                     light_definitions[light_index]
                         .as_object();
-                const std::string type =
-                    string_or(definition, "type");
-                if (
-                    type != "point" &&
-                    type != "directional" &&
-                    type != "spot") {
-                    continue;
-                }
-                const Matrix& light_world =
-                    compute_world(node_index);
-                LightRecord light;
-                light.kind = type == "point"
-                    ? LightKind::point
-                    : type == "spot"
-                        ? LightKind::spot
-                        : LightKind::directional;
-                if (type == "spot") {
-                    // createSpotLight(position, direction, outer * 2, 1,
-                    // intensity): the pinned loader passes twice the outer
-                    // cone angle as the full cone, and the light stores
-                    // cos(angle / 2). innerConeAngle is read by neither the
-                    // pinned light nor its pointer handlers.
-                    const ts::JsonValue* spot_value =
-                        optional(definition, "spot");
-                    const float outer_cone_angle = spot_value
-                        ? float_or(
-                              spot_value->as_object(),
-                              "outerConeAngle",
-                              0.7853981633974483f)
-                        : 0.7853981633974483f;
-                    light.cos_half_angle =
-                        std::cos(outer_cone_angle);
-                }
-                light.position = Vec3{
-                    -light_world[12],
-                    light_world[13],
-                    light_world[14],
-                };
-                const Vec3 forward{
-                    light_world[8],
-                    -light_world[9],
-                    -light_world[10],
-                };
-                light.direction =
-                    normalize(forward);
-                const std::vector<float> color =
-                    float_array(
-                        optional(
-                            definition,
-                            "color"));
-                light.diffuse_color = color.size() == 3
-                    ? Color3{
-                          color[0],
-                          color[1],
-                          color[2],
-                      }
-                    : Color3{1.0f, 1.0f, 1.0f};
-                light.specular_color =
-                    light.diffuse_color;
-                light.intensity =
-                    float_or(
-                        definition,
-                        "intensity",
-                        1.0f);
-                light.range =
-                    float_or(
-                        definition,
-                        "range",
-                        std::numeric_limits<float>::max());
+${lowered.punctualLightLoading}
                 engine.lights.push_back(light);
                 const LightHandle light_handle{
                     static_cast<std::uint32_t>(

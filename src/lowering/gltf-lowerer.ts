@@ -295,25 +295,52 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
             ),
             quantization,
         );
+        const assemblyFile = this.context.sourceFile(
+            "src/loader-gltf/ibl-env-assembly.ts",
+        );
+        const imageBasedFile = this.context.sourceFile(
+            "src/loader-gltf/gltf-ext-lights-image-based.ts",
+        );
         const shPrescale = lowerShPrescaleCpp(
-            this.context.sourceFile(
-                "src/loader-gltf/ibl-env-assembly.ts",
-            ),
+            assemblyFile,
             this.context.sourceFile(
                 "src/loader-env/load-env.ts",
             ),
         );
         const imageProcessingDefaults =
-            lowerImageProcessingDefaultsCpp(
-                this.context.sourceFile(
-                    "src/loader-gltf/gltf-ext-lights-image-based.ts",
-                ),
-            );
+            lowerImageProcessingDefaultsCpp(imageBasedFile);
         const extensionDefaults = lowerGltfExtensionDefaults(
             dielectric,
             this.context.sourceFile(
                 "src/loader-gltf/gltf-ext-iridescence.ts",
             ),
+        );
+        const parserFile = this.context.sourceFile(
+            "src/loader-gltf/gltf-parser.ts",
+        );
+        const matrixMultiply = lowerMatrixMultiplyCpp(
+            this.context.sourceFile(
+                "src/math/mat4-multiply-into.ts",
+            ),
+        );
+        const matrixCompose = lowerMatrixComposeCpp(
+            this.context.sourceFile(
+                "src/math/mat4-compose-into.ts",
+            ),
+        );
+        const matrixNative = lowerMatrixNativeCpp(parserFile);
+        const iblPolynomial = lowerIblPolynomialCpp(imageBasedFile);
+        const iblEnvironmentScalars =
+            lowerIblEnvironmentScalarsCpp(
+                imageBasedFile,
+                assemblyFile,
+            );
+        const punctualLightLoading = lowerPunctualLightsCpp(
+            this.context.sourceFile(
+                "src/loader-gltf/gltf-feature-lights-punctual.ts",
+            ),
+            this.context.sourceFile("src/light/spot-light.ts"),
+            parserFile,
         );
         return {
             modulePath,
@@ -332,6 +359,12 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     shPrescale,
                     imageProcessingDefaults,
                     extensionDefaults,
+                    matrixMultiply,
+                    matrixCompose,
+                    matrixNative,
+                    iblPolynomial,
+                    iblEnvironmentScalars,
+                    punctualLightLoading,
                 },
                 nonTrianglePrimitives,
                 nodeVisibility,
@@ -4245,4 +4278,2137 @@ export function lowerGltfExtensionDefaults(
             "iridescenceThicknessMaximum",
         ),
     };
+}
+
+/*
+ * ──────────────────── round-3 loader leaves ────────────────────
+ *
+ * Same contract again: the emitters own the translation, never the
+ * formula. Round 3 lowers the matrix family, the EXT_lights_image_based
+ * polynomial conversion and environment scalars, and the
+ * KHR_lights_punctual record build. Two members of the matrix family are
+ * deliberately NOT lowered, because their hand-written text does not
+ * match any pin under the documented translations:
+ *
+ *   - `local_matrix` transcribes the same pinned `mat4ComposeInto` that
+ *     `trs_matrix` lowers, but in float arithmetic over `float_array`
+ *     inputs. The pin composes raw JSON doubles and rounds once per
+ *     entry at the (default-F32) scratch store; the record rounds the
+ *     JSON values to float first and then rounds every intermediate.
+ *     The two differ in the last ulps (e.g. an exact 90-degree
+ *     quaternion yields m[0] = 5.96e-8f in the record against the pin's
+ *     -2.2e-16f). Lowering it would bless the divergence as the pin, so
+ *     it stays hand-written and reported as a candidate defect.
+ *
+ *   - `inverse_affine` has no call site in any emitted loader, and its
+ *     3x3-cofactor formula (epsilon 1e-6, identity fallback) matches
+ *     neither the pinned `mat4Invert` (full 4x4 cofactors in a different
+ *     association, epsilon 1e-10, null fallback) nor any caller's
+ *     convention. Dead and unpinnable; reported, not lowered.
+ *
+ * The translations round 3 does own, documented once here:
+ *   - `native_matrix` is the record's convention, not a pinned formula:
+ *     the pin left-multiplies `RH_TO_LH_ROOT` (diag(-1,1,1,1)) onto the
+ *     hierarchy root, while the record keeps node worlds in glTF space
+ *     and applies the equivalent diagonal change of basis D*M*D at the
+ *     consumption sites (`native_matrix`, the light position/direction
+ *     signs). Multiplying rows or columns by the diagonal's +-1 entries
+ *     is exact in IEEE arithmetic, and the anonymous-namespace multiply
+ *     forms `(-a)*b + (-c)*d = -(a*b + c*d)` exactly, so the folded form
+ *     is bit-identical to the pin's root multiply for finite inputs.
+ *     Only the flip axis and sign flow; they anchor to the pin's root
+ *     literal, and the light segment derives its lane signs from the
+ *     same diagonal.
+ *   - `Number.MAX_VALUE` becomes `std::numeric_limits<float>::max()`:
+ *     the record stores light ranges as float32, where the pin's double
+ *     max would round to +inf. Both mean "unattenuated" to the shader;
+ *     the substitution is fixed text gated on the pin actually reading
+ *     `Number.MAX_VALUE`.
+ *   - The punctual pin normalizes the fallback direction with
+ *     `Math.hypot(...) || 1`; the record routes it through the loader's
+ *     shared `normalize` (epsilon 1e-6, (0,1,0) fallback). They differ
+ *     only for a zero-length forward, which a finite rotation matrix
+ *     cannot produce; the emitter pins the pin's shape and keeps the
+ *     record's plumbing.
+ *   - The IBL polynomial segment, like the round-2 SH prescale beside
+ *     it, keeps the loader's float arithmetic over `float_array` inputs
+ *     as its fixed presentation of the pin's double math; the band
+ *     constants, slot layout, and prescale structure all flow.
+ */
+
+const pinnedFloatLiteral = (literal: ts.NumericLiteral): string =>
+    floatLiteral(Number(literal.text));
+
+function identifierText(
+    expression: ts.Expression,
+): string | undefined {
+    const node = unwrapPin(expression);
+    return ts.isIdentifier(node) ? node.text : undefined;
+}
+
+function collectNodes<T extends ts.Node>(
+    root: ts.Node,
+    predicate: (node: ts.Node) => node is T,
+): T[] {
+    const result: T[] = [];
+    const visit = (node: ts.Node): void => {
+        if (predicate(node)) result.push(node);
+        ts.forEachChild(node, visit);
+    };
+    visit(root);
+    return result;
+}
+
+/** `base[offset]` → 0, `base[offset + n]` → n, anything else undefined. */
+function offsetElementIndex(
+    expression: ts.Expression,
+    baseName: string,
+    offsetName: string,
+): number | undefined {
+    const read = unwrapPin(expression);
+    if (
+        !ts.isElementAccessExpression(read) ||
+        identifierText(read.expression) !== baseName
+    ) {
+        return undefined;
+    }
+    const index = unwrapPin(read.argumentExpression);
+    if (ts.isIdentifier(index)) {
+        return index.text === offsetName ? 0 : undefined;
+    }
+    if (
+        ts.isBinaryExpression(index) &&
+        index.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+        identifierText(index.left) === offsetName &&
+        ts.isNumericLiteral(unwrapPin(index.right))
+    ) {
+        return Number((unwrapPin(index.right) as ts.NumericLiteral).text);
+    }
+    return undefined;
+}
+
+/** A left-associated `a (+|-) b (+|-) c` chain as parts and operators. */
+function additiveChainParts(expression: ts.Expression): {
+    parts: ts.Expression[];
+    operators: ("+" | "-")[];
+} {
+    const node = unwrapPin(expression);
+    if (
+        ts.isBinaryExpression(node) &&
+        (node.operatorToken.kind === ts.SyntaxKind.PlusToken ||
+            node.operatorToken.kind === ts.SyntaxKind.MinusToken)
+    ) {
+        const left = additiveChainParts(node.left);
+        return {
+            parts: [...left.parts, node.right],
+            operators: [
+                ...left.operators,
+                node.operatorToken.kind === ts.SyntaxKind.PlusToken
+                    ? "+"
+                    : "-",
+            ],
+        };
+    }
+    return { parts: [expression], operators: [] };
+}
+
+/** `Math.<name>(...)` → the call, or undefined. */
+function mathCall(
+    expression: ts.Expression,
+    name: string,
+): ts.CallExpression | undefined {
+    const node = unwrapPin(expression);
+    return ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            identifierText(node.expression.expression) === "Math" &&
+            node.expression.name.text === name
+        ? node
+        : undefined;
+}
+
+function isMathPi(expression: ts.Expression): boolean {
+    const node = unwrapPin(expression);
+    return ts.isPropertyAccessExpression(node) &&
+        identifierText(node.expression) === "Math" &&
+        node.name.text === "PI";
+}
+
+/**
+ * Evaluates the constant subset the round-3 defaults use: literals, a
+ * leading minus, `Math.PI`, and products/quotients of those. The spot
+ * default `Math.PI / 4` evaluates here to the double the record bakes.
+ */
+function pinnedConstantValue(
+    symbol: string,
+    file: ts.SourceFile,
+    expression: ts.Expression,
+): number {
+    const node = unwrapPin(expression);
+    if (ts.isNumericLiteral(node)) return Number(node.text);
+    if (
+        ts.isPrefixUnaryExpression(node) &&
+        node.operator === ts.SyntaxKind.MinusToken
+    ) {
+        return -pinnedConstantValue(symbol, file, node.operand);
+    }
+    if (isMathPi(node)) return Math.PI;
+    if (ts.isBinaryExpression(node)) {
+        const left = pinnedConstantValue(symbol, file, node.left);
+        const right = pinnedConstantValue(symbol, file, node.right);
+        if (node.operatorToken.kind === ts.SyntaxKind.SlashToken) {
+            return left / right;
+        }
+        if (node.operatorToken.kind === ts.SyntaxKind.AsteriskToken) {
+            return left * right;
+        }
+    }
+    refuseNode(
+        symbol,
+        file,
+        expression,
+        "uses a default this lowering cannot evaluate",
+    );
+}
+
+/**
+ * The pin's RH→LH root conversion (`gltf-parser.ts#RH_TO_LH_ROOT`): the
+ * single sixteen-entry F32 literal, verified diagonal with exactly one
+ * axis flipped by -1 and a unit homogeneous lane, and verified to be the
+ * parent `computeNodeWorldMatrix` multiplies onto hierarchy roots. The
+ * record folds this diagonal into its consumption sites instead of
+ * multiplying it at the root — see the round-3 notes above.
+ */
+function pinnedRootFlip(
+    file: ts.SourceFile,
+): { lane: number; sign: number } {
+    const symbol = "RH_TO_LH_ROOT";
+    const candidates: { name: string; values: number[] }[] = [];
+    for (const statement of file.statements) {
+        if (!ts.isVariableStatement(statement)) continue;
+        for (const declaration of
+            statement.declarationList.declarations) {
+            if (
+                !ts.isIdentifier(declaration.name) ||
+                !declaration.initializer
+            ) {
+                continue;
+            }
+            const value = unwrapPin(declaration.initializer);
+            if (
+                !ts.isNewExpression(value) ||
+                identifierText(value.expression) !== "F32" ||
+                value.arguments?.length !== 1
+            ) {
+                continue;
+            }
+            const argument = unwrapPin(value.arguments[0]!);
+            if (
+                !ts.isArrayLiteralExpression(argument) ||
+                argument.elements.length !== 16
+            ) {
+                continue;
+            }
+            candidates.push({
+                name: declaration.name.text,
+                values: argument.elements.map((element) =>
+                    signedNumericValue(symbol, file, element)
+                ),
+            });
+        }
+    }
+    if (candidates.length !== 1) {
+        refuseModule(
+            symbol,
+            "is no longer the parser's single sixteen-entry F32 literal",
+        );
+    }
+    const root = candidates[0]!;
+    for (let index = 0; index < 16; index += 1) {
+        if (index % 5 !== 0 && root.values[index] !== 0) {
+            refuseModule(symbol, "is no longer a diagonal matrix");
+        }
+    }
+    if (root.values[15] !== 1) {
+        refuseModule(symbol, "no longer keeps a unit homogeneous lane");
+    }
+    const flips = [0, 1, 2].filter(
+        (lane) => root.values[lane * 5] !== 1,
+    );
+    if (flips.length !== 1 || root.values[flips[0]! * 5] !== -1) {
+        refuseModule(symbol, "no longer flips exactly one axis by -1");
+    }
+    const compute = topLevelFunction(file, "computeNodeWorldMatrix");
+    const usedAsRoot = collectNodes(
+        compute,
+        (node): node is ts.ConditionalExpression =>
+            ts.isConditionalExpression(node) &&
+            identifierText(node.whenFalse) === root.name,
+    ).length > 0;
+    if (!usedAsRoot) {
+        refuseNode(
+            symbol,
+            file,
+            compute,
+            "no longer parents hierarchy roots on the RH→LH conversion",
+        );
+    }
+    return { lane: flips[0]!, sign: -1 };
+}
+
+/**
+ * `mat4MultiplyInto` → `multiply_matrix`.
+ *
+ * The pin is fully unrolled: sixteen `dst[d + n] = a? * b? + …` stores
+ * over four reloaded right-hand column windows. The walk resolves every
+ * term back to its flat `a`/`b` element and requires exactly the
+ * canonical column-major product — `a[row + 4k] * b[4·column + k]` with
+ * k ascending in a left-associated plus chain — so a transposed or
+ * re-associated pin refuses. The emission is the loop the loader has
+ * always carried: the loop is presentation only, because `0.0 + x` is
+ * exact and the running double sum adds the pin's exact products in the
+ * pin's order before the one rounding at the float store.
+ */
+export function lowerMatrixMultiplyCpp(file: ts.SourceFile): string {
+    const symbol = "mat4MultiplyInto";
+    const declaration = topLevelFunction(file, symbol);
+    const parameters = identifierParameters(symbol, file, declaration);
+    if (parameters.length !== 6) {
+        refuseNode(
+            symbol,
+            file,
+            declaration,
+            "no longer takes (dst, d, a, i, b, j)",
+        );
+    }
+    const dstName = parameters[0]!;
+    const dstOffset = parameters[1]!;
+    const leftName = parameters[2]!;
+    const leftOffset = parameters[3]!;
+    const rightName = parameters[4]!;
+    const rightOffset = parameters[5]!;
+    const leftFlat = new Map<string, number>();
+    const rightFlat = new Map<string, number>();
+    let next = 0;
+    for (const statement of declaration.body.statements) {
+        if (ts.isVariableStatement(statement)) {
+            for (const binding of
+                statement.declarationList.declarations) {
+                if (
+                    !ts.isIdentifier(binding.name) ||
+                    !binding.initializer
+                ) {
+                    refuseNode(
+                        symbol,
+                        file,
+                        statement,
+                        "binds a local this lowering cannot carry",
+                    );
+                }
+                const leftIndex = offsetElementIndex(
+                    binding.initializer,
+                    leftName,
+                    leftOffset,
+                );
+                const rightIndex = offsetElementIndex(
+                    binding.initializer,
+                    rightName,
+                    rightOffset,
+                );
+                if (leftIndex !== undefined) {
+                    leftFlat.set(binding.name.text, leftIndex);
+                } else if (rightIndex !== undefined) {
+                    rightFlat.set(binding.name.text, rightIndex);
+                } else {
+                    refuseNode(
+                        symbol,
+                        file,
+                        binding,
+                        "no longer binds a matrix element read",
+                    );
+                }
+            }
+            continue;
+        }
+        const assignment = ts.isExpressionStatement(statement) &&
+                ts.isBinaryExpression(statement.expression) &&
+                statement.expression.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken
+            ? statement.expression
+            : undefined;
+        if (!assignment) {
+            refuseNode(
+                symbol,
+                file,
+                statement,
+                "carries a statement this lowering cannot carry",
+            );
+        }
+        const target = unwrapPin(assignment.left);
+        if (
+            ts.isIdentifier(target) &&
+            rightFlat.has(target.text)
+        ) {
+            const reloaded = offsetElementIndex(
+                assignment.right,
+                rightName,
+                rightOffset,
+            );
+            if (reloaded === undefined) {
+                refuseNode(
+                    symbol,
+                    file,
+                    assignment,
+                    "no longer reloads the right-hand column window",
+                );
+            }
+            rightFlat.set(target.text, reloaded);
+            continue;
+        }
+        const component = offsetElementIndex(
+            assignment.left,
+            dstName,
+            dstOffset,
+        );
+        if (component === undefined || component !== next) {
+            refuseNode(
+                symbol,
+                file,
+                assignment,
+                `no longer stores component ${next} in order`,
+            );
+        }
+        const terms = additiveTerms(assignment.right);
+        const row = component % 4;
+        const column = (component - row) / 4;
+        if (terms.length !== 4) {
+            refuseNode(
+                symbol,
+                file,
+                assignment,
+                `no longer sums four products for component ${component}`,
+            );
+        }
+        terms.forEach((term, k) => {
+            const product = unwrapPin(term);
+            const canonical = ts.isBinaryExpression(product) &&
+                product.operatorToken.kind ===
+                    ts.SyntaxKind.AsteriskToken &&
+                leftFlat.get(identifierText(product.left) ?? "") ===
+                    row + 4 * k &&
+                rightFlat.get(identifierText(product.right) ?? "") ===
+                    column * 4 + k;
+            if (!canonical) {
+                refuseNode(
+                    symbol,
+                    file,
+                    term,
+                    "no longer forms the canonical column-major product " +
+                        `for component ${component}`,
+                );
+            }
+        });
+        next += 1;
+    }
+    if (next !== 16) {
+        refuseModule(symbol, "no longer stores all sixteen components");
+    }
+    return [
+        "Matrix multiply_matrix(const Matrix& left, const Matrix& right) {",
+        "    // Pinned matrix multiplication runs in JavaScript double",
+        "    // precision over float32 entries and rounds once per component",
+        "    // at the Float32Array store; mirror that exactly.",
+        "    Matrix result{};",
+        "    for (int column = 0; column < 4; ++column) {",
+        "        for (int row = 0; row < 4; ++row) {",
+        "            double sum = 0.0;",
+        "            for (int index = 0; index < 4; ++index) {",
+        "                sum +=",
+        "                    static_cast<double>(left[index * 4 + row]) *",
+        "                    static_cast<double>(right[column * 4 + index]);",
+        "            }",
+        "            result[column * 4 + row] = static_cast<float>(sum);",
+        "        }",
+        "    }",
+        "    return result;",
+        "}",
+    ].join("\n");
+}
+
+/**
+ * `mat4ComposeInto` → `trs_matrix`.
+ *
+ * The quaternion parameters lift to double lanes named x..w, the
+ * product locals and every store expression render from the pin
+ * (doubles, one `static_cast<float>` per Float32Array store), the
+ * constant lanes 3/7/11/15 are verified 0/1 and folded into the
+ * identity seed, and the translation lanes must store the raw
+ * parameters (a float-to-float store, exact on both sides).
+ */
+export function lowerMatrixComposeCpp(file: ts.SourceFile): string {
+    const symbol = "mat4ComposeInto";
+    const declaration = topLevelFunction(file, symbol);
+    const parameters = identifierParameters(symbol, file, declaration);
+    if (parameters.length !== 12) {
+        refuseNode(
+            symbol,
+            file,
+            declaration,
+            "no longer takes (dst, off, translation, quaternion, scale)",
+        );
+    }
+    const dstName = parameters[0]!;
+    const offName = parameters[1]!;
+    const translationNames = parameters.slice(2, 5);
+    const quaternionNames = parameters.slice(5, 9);
+    const scaleNames = parameters.slice(9, 12);
+    const names = new Map<string, string>();
+    quaternionNames.forEach((name, lane) => {
+        names.set(name, laneMembers[lane]!);
+    });
+    for (const name of scaleNames) names.set(name, name);
+    const scope: CppExpressionScope = {
+        symbol,
+        file,
+        names,
+        numeric: pinnedDoubleLiteral,
+    };
+    const quaternionSet = new Set(quaternionNames);
+    const statements = declaration.body.statements;
+    let index = 0;
+    const productLines: string[] = [];
+    while (
+        index < statements.length &&
+        ts.isVariableStatement(statements[index]!)
+    ) {
+        const statement = statements[index] as ts.VariableStatement;
+        index += 1;
+        for (const binding of statement.declarationList.declarations) {
+            if (!ts.isIdentifier(binding.name) || !binding.initializer) {
+                refuseNode(
+                    symbol,
+                    file,
+                    statement,
+                    "binds a local this lowering cannot carry",
+                );
+            }
+            const product = unwrapPin(binding.initializer);
+            const quaternionProduct = ts.isBinaryExpression(product) &&
+                product.operatorToken.kind ===
+                    ts.SyntaxKind.AsteriskToken &&
+                quaternionSet.has(identifierText(product.left) ?? "") &&
+                quaternionSet.has(identifierText(product.right) ?? "");
+            if (!quaternionProduct) {
+                refuseNode(
+                    symbol,
+                    file,
+                    binding,
+                    "no longer binds a quaternion product",
+                );
+            }
+            productLines.push(
+                `    const double ${binding.name.text} = ` +
+                    `${
+                        renderCppExpression(scope, binding.initializer)
+                            .text
+                    };`,
+            );
+            names.set(binding.name.text, binding.name.text);
+        }
+    }
+    const storeLines: string[] = [];
+    let lane = 0;
+    for (; index < statements.length; index += 1, lane += 1) {
+        const statement = statements[index]!;
+        const assignment = ts.isExpressionStatement(statement) &&
+                ts.isBinaryExpression(statement.expression) &&
+                statement.expression.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken
+            ? statement.expression
+            : undefined;
+        const component = assignment
+            ? offsetElementIndex(assignment.left, dstName, offName)
+            : undefined;
+        if (!assignment || component === undefined || component !== lane) {
+            refuseNode(
+                symbol,
+                file,
+                statement,
+                `no longer stores component ${lane} in order`,
+            );
+        }
+        const value = unwrapPin(assignment.right);
+        if (lane === 3 || lane === 7 || lane === 11 || lane === 15) {
+            const expected = lane === 15 ? 1 : 0;
+            if (
+                !ts.isNumericLiteral(value) ||
+                Number(value.text) !== expected
+            ) {
+                refuseNode(
+                    symbol,
+                    file,
+                    assignment,
+                    `no longer keeps the identity value in lane ${lane}`,
+                );
+            }
+            continue;
+        }
+        if (lane >= 12 && lane <= 14) {
+            if (
+                identifierText(value) !== translationNames[lane - 12]
+            ) {
+                refuseNode(
+                    symbol,
+                    file,
+                    assignment,
+                    `no longer stores the raw translation in lane ${lane}`,
+                );
+            }
+            storeLines.push(
+                `    result[${lane}] = translation.` +
+                    `${laneMembers[lane - 12]!};`,
+            );
+            continue;
+        }
+        storeLines.push(
+            `    result[${lane}] = static_cast<float>(${
+                renderCppExpression(scope, assignment.right).text
+            });`,
+        );
+    }
+    if (lane !== 16) {
+        refuseModule(symbol, "no longer stores all sixteen components");
+    }
+    return [
+        "Matrix trs_matrix(",
+        "    Vec3 translation,",
+        "    Vec4 rotation,",
+        "    Vec3 scale) {",
+        "    // Pinned mat4ComposeInto runs in JavaScript double precision and",
+        "    // rounds once at the Float32Array store; mirror its products and",
+        "    // association exactly.",
+        ...quaternionNames.map(
+            (_, quaternionLane) =>
+                `    const double ${laneMembers[quaternionLane]!} = ` +
+                `rotation.${laneMembers[quaternionLane]!};`,
+        ),
+        ...productLines,
+        ...scaleNames.map(
+            (name, scaleLane) =>
+                `    const double ${name} = ` +
+                `scale.${laneMembers[scaleLane]!};`,
+        ),
+        "    Matrix result = identity_matrix();",
+        ...storeLines,
+        "    return result;",
+        "}",
+    ].join("\n");
+}
+
+/**
+ * `native_matrix`, anchored to the pin's `RH_TO_LH_ROOT`.
+ *
+ * The function is the record's convention — the diagonal change of
+ * basis D*M*D applied where a matrix enters a native record, instead of
+ * the pin's left multiply at the hierarchy root — so only the flip axis
+ * and its sign flow. See the round-3 notes for the exactness argument.
+ */
+export function lowerMatrixNativeCpp(file: ts.SourceFile): string {
+    const { lane, sign } = pinnedRootFlip(file);
+    const literal = floatLiteral(sign);
+    return [
+        "Matrix native_matrix(const Matrix& matrix) {",
+        "    Matrix result{};",
+        "    for (std::size_t column = 0; column < 4; ++column) {",
+        "        for (std::size_t row = 0; row < 4; ++row) {",
+        `            const float row_sign = row == ${lane} ? ` +
+        `${literal} : 1.0f;`,
+        "            const float column_sign =",
+        `                column == ${lane} ? ${literal} : 1.0f;`,
+        "            result[column * 4 + row] =",
+        "                matrix[column * 4 + row] *",
+        "                row_sign *",
+        "                column_sign;",
+        "        }",
+        "    }",
+        "    return result;",
+        "}",
+    ].join("\n");
+}
+
+/**
+ * Resolves an identifier argument back to its `const` declaration
+ * inside `root`, for tying a call argument to the binding whose
+ * initializer carries the pinned default.
+ */
+function declarationOf(
+    root: ts.Node,
+    name: string,
+): ts.VariableDeclaration | undefined {
+    return collectNodes(
+        root,
+        (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === name,
+    )[0];
+}
+
+/** `<base>.<key> ?? <default>` → the key and the default expression. */
+function coalescedPropertyDefault(
+    expression: ts.Expression,
+): { key: string; fallback: ts.Expression; read: ts.Expression } | undefined {
+    const node = unwrapPin(expression);
+    if (
+        !ts.isBinaryExpression(node) ||
+        node.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
+    ) {
+        return undefined;
+    }
+    const read = unwrapPin(node.left);
+    if (
+        !ts.isPropertyAccessExpression(read) &&
+        !ts.isPropertyAccessChain(read)
+    ) {
+        return undefined;
+    }
+    return { key: read.name.text, fallback: node.right, read };
+}
+
+/**
+ * The EXT_lights_image_based SH9 → spherical-polynomial conversion →
+ * the polynomial segment of `load_image_based_environment`.
+ *
+ * Everything numeric flows from `irradianceCoefficientsToPolynomial`:
+ * the intensity/π prescale, the folded Lambertian 1/π, the nine band
+ * expressions with their constants, and the slot layout (nine stride-3
+ * coefficient reads into nine stride-3 polynomial stores). The
+ * intensity default flows from the `applyAsset` binding that feeds the
+ * conversion call. The record's nine-`Color3` layout is a fixed
+ * contract (`pre_scale_harmonics` consumes exactly nine), so a pin
+ * whose coefficient count or channel count moves refuses rather than
+ * emitting a record the environment cannot carry.
+ */
+export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
+    const symbol = "irradianceCoefficientsToPolynomial";
+    const declaration = topLevelFunction(file, symbol);
+    const parameters = identifierParameters(symbol, file, declaration);
+    if (parameters.length !== 2) {
+        refuseNode(
+            symbol,
+            file,
+            declaration,
+            "no longer takes (coefficients, intensity)",
+        );
+    }
+    const coefficientsName = parameters[0]!;
+    const intensityName = parameters[1]!;
+    const statements = declaration.body.statements;
+    // `const s = intensity / Math.PI;` — the radiance prescale.
+    const scaleBinding = singleBinding(
+        symbol,
+        file,
+        statements[0],
+        declaration,
+    );
+    const scaleValue = unwrapPin(scaleBinding.initializer);
+    const scaleShape = ts.isBinaryExpression(scaleValue) &&
+        scaleValue.operatorToken.kind === ts.SyntaxKind.SlashToken &&
+        identifierText(scaleValue.left) === intensityName &&
+        isMathPi(scaleValue.right);
+    if (!scaleShape) {
+        refuseNode(
+            symbol,
+            file,
+            scaleBinding.statement,
+            "no longer scales the harmonics by intensity over pi",
+        );
+    }
+    // `const poly = new Float32Array(27);` — slots × channels.
+    const polyBinding = singleBinding(
+        symbol,
+        file,
+        statements[1],
+        declaration,
+    );
+    const polyNew = unwrapPin(polyBinding.initializer);
+    const polySize = ts.isNewExpression(polyNew) &&
+            identifierText(polyNew.expression) === "Float32Array" &&
+            polyNew.arguments?.length === 1 &&
+            ts.isNumericLiteral(unwrapPin(polyNew.arguments[0]!))
+        ? Number(
+            (unwrapPin(polyNew.arguments[0]!) as ts.NumericLiteral).text,
+        )
+        : undefined;
+    if (polySize === undefined) {
+        refuseNode(
+            symbol,
+            file,
+            polyBinding.statement,
+            "no longer stores a fixed-size polynomial",
+        );
+    }
+    // `for (let c = 0; c < 3; c++)` — one pass per color channel.
+    const loop = statements[2];
+    if (
+        !loop ||
+        !ts.isForStatement(loop) ||
+        !loop.initializer ||
+        !ts.isVariableDeclarationList(loop.initializer) ||
+        loop.initializer.declarations.length !== 1 ||
+        !ts.isIdentifier(loop.initializer.declarations[0]!.name) ||
+        !loop.condition ||
+        !ts.isBinaryExpression(loop.condition) ||
+        loop.condition.operatorToken.kind !==
+            ts.SyntaxKind.LessThanToken ||
+        !ts.isNumericLiteral(unwrapPin(loop.condition.right)) ||
+        !ts.isBlock(loop.statement)
+    ) {
+        refuseNode(
+            symbol,
+            file,
+            loop ?? declaration,
+            "no longer loops once per color channel",
+        );
+    }
+    const channelName = (
+        loop.initializer.declarations[0]!.name as ts.Identifier
+    ).text;
+    const channels = Number(
+        (unwrapPin(loop.condition.right) as ts.NumericLiteral).text,
+    );
+    // The record's Color3 lanes and nine-harmonic environment are fixed
+    // contracts; a pin that moves either cannot lower into them.
+    if (channels !== 3) {
+        refuseNode(
+            symbol,
+            file,
+            loop,
+            "no longer walks the three Color3 channels the record carries",
+        );
+    }
+    const slots = polySize / channels;
+    if (slots !== 9) {
+        refuseNode(
+            symbol,
+            file,
+            polyBinding.statement,
+            "no longer stores the nine harmonics the record carries",
+        );
+    }
+    const names = new Map<string, string>();
+    const scope: CppExpressionScope = {
+        symbol,
+        file,
+        names,
+        numeric: pinnedFloatLiteral,
+    };
+    const body = loop.statement.statements;
+    let cursor = 0;
+    const bindingLines: string[] = [];
+    for (let slot = 0; slot < slots; slot += 1) {
+        const binding = singleBinding(symbol, file, body[cursor], loop);
+        cursor += 1;
+        const value = unwrapPin(binding.initializer);
+        const scaled = ts.isBinaryExpression(value) &&
+                value.operatorToken.kind ===
+                    ts.SyntaxKind.AsteriskToken &&
+                identifierText(value.right) === scaleBinding.name
+            ? unwrapPin(value.left)
+            : undefined;
+        if (scaled === undefined) {
+            refuseNode(
+                symbol,
+                file,
+                binding.statement,
+                `no longer scales coefficient ${slot} by the prescale`,
+            );
+        }
+        const channelRead = ts.isElementAccessExpression(scaled) &&
+                identifierText(scaled.argumentExpression) === channelName
+            ? unwrapPin(scaled.expression)
+            : undefined;
+        const slotOk = channelRead !== undefined &&
+            ts.isElementAccessExpression(channelRead) &&
+            identifierText(channelRead.expression) ===
+                coefficientsName &&
+            ts.isNumericLiteral(
+                unwrapPin(channelRead.argumentExpression),
+            ) &&
+            Number(
+                (
+                    unwrapPin(
+                        channelRead.argumentExpression,
+                    ) as ts.NumericLiteral
+                ).text,
+            ) === slot;
+        if (!slotOk) {
+            refuseNode(
+                symbol,
+                file,
+                binding.statement,
+                `no longer reads coefficient ${slot} for the channel`,
+            );
+        }
+        names.set(binding.name, binding.name);
+        bindingLines.push(
+            `        const float ${binding.name} =`,
+            `            color_channel(source[${slot}], channel);`,
+        );
+    }
+    // `const k = 1 / Math.PI;` — the folded Lambertian normalization.
+    const inversePiBinding = singleBinding(
+        symbol,
+        file,
+        body[cursor],
+        loop,
+    );
+    cursor += 1;
+    const inversePiValue = unwrapPin(inversePiBinding.initializer);
+    const inversePiNumerator = ts.isBinaryExpression(inversePiValue) &&
+            inversePiValue.operatorToken.kind ===
+                ts.SyntaxKind.SlashToken &&
+            ts.isNumericLiteral(unwrapPin(inversePiValue.left)) &&
+            isMathPi(inversePiValue.right)
+        ? Number(
+            (unwrapPin(inversePiValue.left) as ts.NumericLiteral).text,
+        )
+        : undefined;
+    if (inversePiNumerator === undefined) {
+        refuseNode(
+            symbol,
+            file,
+            inversePiBinding.statement,
+            "no longer folds the Lambertian normalization over pi",
+        );
+    }
+    /** `0 + c` / `3 + c` / … → the polynomial slot, stride `channels`. */
+    const storeSlotOf = (
+        expression: ts.Expression,
+    ): number | undefined => {
+        const node = unwrapPin(expression);
+        if (ts.isIdentifier(node) && node.text === channelName) return 0;
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+            ts.isNumericLiteral(unwrapPin(node.left)) &&
+            identifierText(node.right) === channelName
+        ) {
+            const offset = Number(
+                (unwrapPin(node.left) as ts.NumericLiteral).text,
+            );
+            return offset % channels === 0
+                ? offset / channels
+                : undefined;
+        }
+        return undefined;
+    };
+    const storeLines: string[] = [];
+    for (let slot = 0; slot < slots; slot += 1) {
+        const statement = body[cursor];
+        cursor += 1;
+        const assignment = statement !== undefined &&
+                ts.isExpressionStatement(statement) &&
+                ts.isBinaryExpression(statement.expression) &&
+                statement.expression.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken
+            ? statement.expression
+            : undefined;
+        const target = assignment
+            ? unwrapPin(assignment.left)
+            : undefined;
+        if (
+            !assignment ||
+            target === undefined ||
+            !ts.isElementAccessExpression(target) ||
+            identifierText(target.expression) !== polyBinding.name ||
+            storeSlotOf(target.argumentExpression) !== slot
+        ) {
+            refuseNode(
+                symbol,
+                file,
+                statement ?? loop,
+                `no longer stores polynomial slot ${slot}`,
+            );
+        }
+        const value = unwrapPin(assignment.right);
+        const banded = ts.isBinaryExpression(value) &&
+                value.operatorToken.kind ===
+                    ts.SyntaxKind.AsteriskToken &&
+                identifierText(value.right) === inversePiBinding.name
+            ? value.left
+            : undefined;
+        if (banded === undefined) {
+            refuseNode(
+                symbol,
+                file,
+                assignment,
+                `no longer scales polynomial slot ${slot} by the folded ` +
+                    "normalization",
+            );
+        }
+        storeLines.push(
+            "        set_color_channel(",
+            `            polynomial[${slot}],`,
+            "            channel,",
+        );
+        const inner = unwrapPin(banded);
+        if (
+            ts.isBinaryExpression(inner) &&
+            (inner.operatorToken.kind === ts.SyntaxKind.PlusToken ||
+                inner.operatorToken.kind === ts.SyntaxKind.MinusToken)
+        ) {
+            // The pin parenthesizes the band sum; the segment's fixed
+            // layout splits one additive term per line.
+            const { parts, operators } = additiveChainParts(inner);
+            parts.forEach((part, partIndex) => {
+                const rendered = renderCppExpression(scope, part).text;
+                if (partIndex === 0) storeLines.push("            (");
+                storeLines.push(
+                    partIndex < parts.length - 1
+                        ? `                ${rendered} ` +
+                            `${operators[partIndex]!}`
+                        : `                ${rendered}) *`,
+                );
+            });
+            storeLines.push("                inverse_pi);");
+        } else {
+            storeLines.push(
+                `            ${
+                    renderCppExpression(scope, banded).text
+                } * inverse_pi);`,
+            );
+        }
+    }
+    if (cursor !== body.length) {
+        refuseNode(
+            symbol,
+            file,
+            body[cursor] ?? loop,
+            "carries statements after the polynomial stores",
+        );
+    }
+    const trailing = statements[3];
+    if (
+        !trailing ||
+        !ts.isReturnStatement(trailing) ||
+        !trailing.expression ||
+        identifierText(trailing.expression) !== polyBinding.name ||
+        statements.length !== 4
+    ) {
+        refuseNode(
+            symbol,
+            file,
+            trailing ?? declaration,
+            "no longer ends by returning the polynomial",
+        );
+    }
+    // The applyAsset binding that feeds the conversion call carries the
+    // intensity default the record substitutes for an absent property.
+    const applyAsset = featureMethod(
+        file,
+        "EXT_lights_image_based",
+        "applyAsset",
+    );
+    const conversionCall = collectNodes(
+        applyAsset.body,
+        (node): node is ts.CallExpression =>
+            ts.isCallExpression(node) &&
+            identifierText(node.expression) === symbol,
+    )[0];
+    if (!conversionCall || conversionCall.arguments.length !== 2) {
+        refuseModule(
+            symbol,
+            "is no longer called with (coefficients, intensity)",
+        );
+    }
+    const intensityArgument = identifierText(
+        conversionCall.arguments[1]!,
+    );
+    const intensityDeclaration = intensityArgument !== undefined
+        ? declarationOf(applyAsset.body, intensityArgument)
+        : undefined;
+    const intensityDefault = intensityDeclaration?.initializer
+        ? coalescedPropertyDefault(intensityDeclaration.initializer)
+        : undefined;
+    if (!intensityDefault) {
+        refuseModule(
+            symbol,
+            "no longer defaults the light intensity behind a coalesce",
+        );
+    }
+    const intensityValue = pinnedConstantValue(
+        symbol,
+        file,
+        intensityDefault.fallback,
+    );
+    const lines: string[] = [
+        "    const float intensity =",
+        `        float_or(light, "${intensityDefault.key}", ` +
+        `${floatLiteral(intensityValue)});`,
+        "    const float scale = intensity / pi;",
+        `    const float inverse_pi = ` +
+        `${floatLiteral(inversePiNumerator)} / pi;`,
+        `    std::array<Color3, ${slots}> source{};`,
+        "    for (",
+        "        std::size_t coefficient = 0;",
+        "        coefficient < source.size();",
+        "        ++coefficient) {",
+        "        const std::vector<float> values =",
+        "            float_array(&coefficients[coefficient]);",
+        `        if (values.size() != ${channels}) {`,
+        "            throw std::runtime_error(",
+        '                "Image-based light irradiance coefficient must be vec3.");',
+        "        }",
+        "        source[coefficient] = Color3{",
+    ];
+    for (let channel = 0; channel < channels; channel += 1) {
+        lines.push(`            values[${channel}] * scale,`);
+    }
+    lines.push(
+        "        };",
+        "    }",
+        `    std::array<Color3, ${slots}> polynomial{};`,
+        `    for (int channel = 0; channel < ${channels}; ++channel) {`,
+        ...bindingLines,
+        ...storeLines,
+        "    }",
+    );
+    return lines.join("\n");
+}
+
+/**
+ * The environment scalars that follow the polynomial: the LOD
+ * generation scale, the rotation yaw, and the BRDF LUT width.
+ *
+ * The LOD numerator's `- 1` and its guard bound flow from the pin's
+ * `(mipCount - 1) / Math.log2(specularImageSize)` — the record guards
+ * the quotient positive where the pin divides zero by a positive log —
+ * with both operands verified to read the pinned specularImages length
+ * and specularImageSize. The yaw factor and quaternion lanes flow from
+ * `envYawFromQuaternion`, gated exactly as the pin gates it on an
+ * authored rotation (the record's absent case leaves the zero default
+ * the pin's `: 0` arm writes). The LUT width flows from the pinned
+ * `generateBrdfLut`, whose `rgba16float` format anchors the record's
+ * `brdf_lut_rgba16f` arm.
+ */
+export function lowerIblEnvironmentScalarsCpp(
+    imageBasedFile: ts.SourceFile,
+    assemblyFile: ts.SourceFile,
+): string {
+    const symbol = "EXT_lights_image_based";
+    const applyAsset = featureMethod(
+        imageBasedFile,
+        symbol,
+        "applyAsset",
+    );
+    // (mipCount - 1) / Math.log2(specularImageSize)
+    const lodShapes = collectNodes(
+        applyAsset.body,
+        (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            node.initializer !== undefined &&
+            (() => {
+                const value = unwrapPin(node.initializer!);
+                return ts.isBinaryExpression(value) &&
+                    value.operatorToken.kind ===
+                        ts.SyntaxKind.SlashToken &&
+                    mathCall(value.right, "log2") !== undefined;
+            })(),
+    );
+    if (lodShapes.length !== 1) {
+        refuseModule(
+            symbol,
+            "no longer derives one LOD scale from a log2 quotient",
+        );
+    }
+    const lodValue = unwrapPin(
+        lodShapes[0]!.initializer!,
+    ) as ts.BinaryExpression;
+    const numerator = unwrapPin(lodValue.left);
+    const mipDrop = ts.isBinaryExpression(numerator) &&
+            numerator.operatorToken.kind === ts.SyntaxKind.MinusToken &&
+            ts.isNumericLiteral(unwrapPin(numerator.right))
+        ? Number((unwrapPin(numerator.right) as ts.NumericLiteral).text)
+        : undefined;
+    const mipName = mipDrop !== undefined && ts.isBinaryExpression(numerator)
+        ? identifierText(numerator.left)
+        : undefined;
+    const sizeName = identifierText(
+        mathCall(lodValue.right, "log2")!.arguments[0] ??
+            lodValue.right,
+    );
+    if (mipDrop === undefined || !mipName || !sizeName) {
+        refuseNode(
+            symbol,
+            imageBasedFile,
+            lodShapes[0]!,
+            "no longer fits the LOD scale to the mip count",
+        );
+    }
+    const readsProperty = (
+        name: string,
+        property: string,
+        tail?: string,
+    ): boolean => {
+        const declaration = declarationOf(applyAsset.body, name);
+        if (!declaration?.initializer) return false;
+        let value = unwrapPin(declaration.initializer);
+        if (tail !== undefined) {
+            if (
+                !ts.isPropertyAccessExpression(value) ||
+                value.name.text !== tail
+            ) {
+                return false;
+            }
+            value = unwrapPin(value.expression);
+        }
+        return (
+            ts.isPropertyAccessExpression(value) ||
+            ts.isPropertyAccessChain(value)
+        ) && value.name.text === property;
+    };
+    if (
+        !readsProperty(mipName, "specularImages", "length") ||
+        !readsProperty(sizeName, "specularImageSize")
+    ) {
+        refuseNode(
+            symbol,
+            imageBasedFile,
+            lodShapes[0]!,
+            "no longer derives the LOD scale from the pinned specular " +
+                "image properties",
+        );
+    }
+    // envYawFromQuaternion: -2 * Math.atan2(q[1], q[3]).
+    const yaw = topLevelFunction(imageBasedFile, "envYawFromQuaternion");
+    const yawParameters = identifierParameters(
+        "envYawFromQuaternion",
+        imageBasedFile,
+        yaw,
+    );
+    const yawReturn = yaw.body.statements.length === 1 &&
+            ts.isReturnStatement(yaw.body.statements[0]!) &&
+            (yaw.body.statements[0] as ts.ReturnStatement).expression
+        ? unwrapPin(
+            (yaw.body.statements[0] as ts.ReturnStatement).expression!,
+        )
+        : undefined;
+    const atan2 = yawReturn !== undefined &&
+            ts.isBinaryExpression(yawReturn) &&
+            yawReturn.operatorToken.kind === ts.SyntaxKind.AsteriskToken
+        ? mathCall(yawReturn.right, "atan2")
+        : undefined;
+    const yawLane = (argument: ts.Expression | undefined): number => {
+        const read = argument === undefined
+            ? undefined
+            : unwrapPin(argument);
+        const lane = read !== undefined &&
+                ts.isElementAccessExpression(read) &&
+                yawParameters.length === 1 &&
+                identifierText(read.expression) === yawParameters[0] &&
+                ts.isNumericLiteral(unwrapPin(read.argumentExpression))
+            ? Number(
+                (
+                    unwrapPin(
+                        read.argumentExpression,
+                    ) as ts.NumericLiteral
+                ).text,
+            )
+            : undefined;
+        if (lane === undefined || lane > 3) {
+            refuseNode(
+                "envYawFromQuaternion",
+                imageBasedFile,
+                read ?? yaw,
+                "no longer reads a quaternion lane",
+            );
+        }
+        return lane;
+    };
+    if (!atan2 || atan2.arguments.length !== 2) {
+        refuseNode(
+            "envYawFromQuaternion",
+            imageBasedFile,
+            yaw,
+            "no longer derives the yaw from an atan2 product",
+        );
+    }
+    const yawFactor = signedNumericValue(
+        "envYawFromQuaternion",
+        imageBasedFile,
+        (yawReturn as ts.BinaryExpression).left,
+    );
+    const yawLaneA = yawLane(atan2.arguments[0]);
+    const yawLaneB = yawLane(atan2.arguments[1]);
+    // The gate: light.rotation ? envYawFromQuaternion(light.rotation) : 0.
+    const gates = collectNodes(
+        applyAsset.body,
+        (node): node is ts.ConditionalExpression =>
+            ts.isConditionalExpression(node) &&
+            ts.isCallExpression(unwrapPin(node.whenTrue)) &&
+            identifierText(
+                (unwrapPin(node.whenTrue) as ts.CallExpression)
+                    .expression,
+            ) === yaw.name!.text,
+    );
+    const gate = gates.length === 1 ? gates[0]! : undefined;
+    const gateRead = gate ? unwrapPin(gate.condition) : undefined;
+    const rotationKey = gateRead !== undefined &&
+            (ts.isPropertyAccessExpression(gateRead) ||
+                ts.isPropertyAccessChain(gateRead))
+        ? gateRead.name.text
+        : undefined;
+    const gateFalse = gate ? unwrapPin(gate.whenFalse) : undefined;
+    if (
+        !gate ||
+        rotationKey === undefined ||
+        gateFalse === undefined ||
+        !ts.isNumericLiteral(gateFalse) ||
+        Number(gateFalse.text) !== 0
+    ) {
+        refuseModule(
+            symbol,
+            "no longer gates the yaw on an authored rotation with a " +
+                "zero fallback",
+        );
+    }
+    // The BRDF LUT width and format from the pinned generator.
+    const brdf = topLevelFunction(assemblyFile, "generateBrdfLut");
+    const numericBindings = collectNodes(
+        brdf,
+        (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            node.initializer !== undefined &&
+            ts.isNumericLiteral(unwrapPin(node.initializer!)),
+    );
+    if (numericBindings.length !== 1) {
+        refuseModule(
+            "generateBrdfLut",
+            "no longer binds the LUT size as its single numeric constant",
+        );
+    }
+    const lutWidth = Number(
+        (
+            unwrapPin(
+                numericBindings[0]!.initializer!,
+            ) as ts.NumericLiteral
+        ).text,
+    );
+    const lutFloat16 = collectNodes(
+        brdf,
+        (node): node is ts.StringLiteral =>
+            ts.isStringLiteral(node) && node.text === "rgba16float",
+    ).length > 0;
+    if (!lutFloat16) {
+        refuseModule(
+            "generateBrdfLut",
+            "no longer generates an rgba16float LUT",
+        );
+    }
+    return [
+        "    environment.lod_generation_scale =",
+        `        specular_images.size() > ${mipDrop}`,
+        "            ? static_cast<float>(",
+        `                  specular_images.size() - ${mipDrop}) /`,
+        "                  std::log2(",
+        "                      static_cast<float>(",
+        "                          environment.specular_width))",
+        "            : 0.0f;",
+        "    const std::vector<float> rotation =",
+        `        float_array(optional(light, "${rotationKey}"));`,
+        "    if (rotation.size() == 4) {",
+        "        environment.rotation_y =",
+        `            ${floatLiteral(yawFactor)} *`,
+        `            std::atan2(rotation[${yawLaneA}], ` +
+        `rotation[${yawLaneB}]);`,
+        "    }",
+        "    environment.brdf_lut.bytes =",
+        "        pal::read_binary_file(",
+        "            asset_path(",
+        '                "gltf-ibl-brdf-lut.rgba16f"));',
+        `    environment.brdf_lut_width = ${lutWidth};`,
+        "    environment.brdf_lut_rgba16f = true;",
+    ].join("\n");
+}
+
+/** Pinned light type string → the record's LightKind, by name only. */
+const lightKindByPin: Readonly<Record<string, string>> = {
+    point: "LightKind::point",
+    directional: "LightKind::directional",
+    spot: "LightKind::spot",
+};
+
+/** Pinned light type string → the factory its branch must invoke. */
+const lightFactoryByPin: Readonly<Record<string, string>> = {
+    point: "createPointLight",
+    directional: "createDirectionalLight",
+    spot: "createSpotLight",
+};
+
+function containsCall(root: ts.Node, calleeName: string): boolean {
+    return collectNodes(
+        root,
+        (node): node is ts.CallExpression =>
+            ts.isCallExpression(node) &&
+            identifierText(node.expression) === calleeName,
+    ).length > 0;
+}
+
+/**
+ * The KHR_lights_punctual record build.
+ *
+ * The type strings and their order, the spot cone default (`Math.PI/4`
+ * evaluated to the double the record bakes), the color/intensity
+ * defaults, the JSON keys, and the world-matrix lanes all flow from the
+ * pinned feature. The position/direction signs are derived, not typed:
+ * the pin's fallback branch reads `world[12..14]` and `-world[8..10]`
+ * from a world that includes the RH→LH root, while the record's
+ * `compute_world` stays in glTF space — so each emitted sign is the
+ * pin's sign times the root diagonal's lane sign (see the round-3
+ * notes). The spot arm's `std::cos(outer_cone_angle)` folds the pin's
+ * `outer * 2` against the light's `angle * 0.5`, verified to cancel
+ * exactly; `Number.MAX_VALUE` becomes the float maximum per the
+ * documented translation, and the pin must keep `range` off the
+ * directional branch, `innerConeAngle` unread, and a unit spot falloff
+ * exponent — record plumbing exists for none of them.
+ */
+export function lowerPunctualLightsCpp(
+    punctualFile: ts.SourceFile,
+    spotFile: ts.SourceFile,
+    parserFile: ts.SourceFile,
+): string {
+    const symbol = "KHR_lights_punctual";
+    const applyAsset = featureMethod(punctualFile, symbol, "applyAsset");
+    // The extension keys the record's JSON walk mirrors.
+    for (const property of [symbol, "lights", "light"]) {
+        const carried = collectNodes(
+            applyAsset.body,
+            (node): node is ts.Node =>
+                (ts.isPropertyAccessExpression(node) ||
+                    ts.isPropertyAccessChain(node)) &&
+                node.name.text === property,
+        ).length > 0;
+        if (!carried) {
+            refuseModule(
+                symbol,
+                `no longer reads the '${property}' extension property`,
+            );
+        }
+    }
+    if (
+        collectNodes(
+            applyAsset.body,
+            (node): node is ts.Node =>
+                (ts.isIdentifier(node) ||
+                    ts.isPropertyAccessExpression(node) ||
+                    ts.isPropertyAccessChain(node)) &&
+                (ts.isIdentifier(node)
+                        ? node.text
+                        : node.name.text) === "innerConeAngle",
+        ).length > 0
+    ) {
+        refuseModule(
+            symbol,
+            "now reads innerConeAngle, which the record does not carry",
+        );
+    }
+    // The type dispatch chain, in the pin's order.
+    const chainHead = collectNodes(
+        applyAsset.body,
+        (node): node is ts.IfStatement =>
+            ts.isIfStatement(node) &&
+            ts.isBinaryExpression(unwrapPin(node.expression)) &&
+            (unwrapPin(node.expression) as ts.BinaryExpression)
+                    .operatorToken.kind ===
+                ts.SyntaxKind.EqualsEqualsEqualsToken &&
+            ts.isStringLiteral(
+                unwrapPin(
+                    (unwrapPin(node.expression) as ts.BinaryExpression)
+                        .right,
+                ),
+            ),
+    )[0];
+    let typeKey: string | undefined;
+    let definitionName: string | undefined;
+    const branches: { value: string; block: ts.Block }[] = [];
+    let current: ts.Statement | undefined = chainHead;
+    while (current !== undefined) {
+        if (!ts.isIfStatement(current)) {
+            refuseNode(
+                symbol,
+                punctualFile,
+                current,
+                "no longer dispatches light types through an if chain",
+            );
+        }
+        const condition = unwrapPin(current.expression);
+        const read = ts.isBinaryExpression(condition) &&
+                condition.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsEqualsToken
+            ? unwrapPin(condition.left)
+            : undefined;
+        const value = ts.isBinaryExpression(condition)
+            ? unwrapPin(condition.right)
+            : undefined;
+        if (
+            read === undefined ||
+            value === undefined ||
+            !ts.isPropertyAccessExpression(read) ||
+            !ts.isStringLiteral(value) ||
+            !ts.isBlock(current.thenStatement)
+        ) {
+            refuseNode(
+                symbol,
+                punctualFile,
+                current,
+                "no longer compares the definition type to a string",
+            );
+        }
+        typeKey ??= read.name.text;
+        definitionName ??= identifierText(read.expression);
+        if (
+            read.name.text !== typeKey ||
+            identifierText(read.expression) !== definitionName
+        ) {
+            refuseNode(
+                symbol,
+                punctualFile,
+                current,
+                "no longer dispatches every branch on one definition type",
+            );
+        }
+        branches.push({
+            value: value.text,
+            block: current.thenStatement,
+        });
+        current = current.elseStatement;
+    }
+    if (
+        branches.length !== 3 ||
+        typeKey === undefined ||
+        definitionName === undefined
+    ) {
+        refuseModule(
+            symbol,
+            "no longer instantiates exactly three light types",
+        );
+    }
+    const consumedKinds = new Set<string>();
+    for (const branch of branches) {
+        const kind = lightKindByPin[branch.value];
+        const factory = lightFactoryByPin[branch.value];
+        if (kind === undefined || factory === undefined) {
+            refuseModule(
+                symbol,
+                `instantiates light type '${branch.value}', which has ` +
+                    "no record kind",
+            );
+        }
+        if (!containsCall(branch.block, factory)) {
+            refuseModule(
+                symbol,
+                `no longer builds '${branch.value}' lights through ` +
+                    `${factory}`,
+            );
+        }
+        consumedKinds.add(branch.value);
+    }
+    for (const name of Object.keys(lightKindByPin)) {
+        if (!consumedKinds.has(name)) {
+            refuseModule(symbol, `no longer instantiates '${name}' lights`);
+        }
+    }
+    const spotBranch = branches.find(
+        (branch) => lightFactoryByPin[branch.value] === "createSpotLight",
+    )!;
+    // The shared defaults: color, intensity, range.
+    const defaultConditional = (
+        shape: (node: ts.ConditionalExpression) => boolean,
+        reason: string,
+    ): ts.ConditionalExpression => {
+        const found = collectNodes(
+            applyAsset.body,
+            (node): node is ts.ConditionalExpression =>
+                ts.isConditionalExpression(node) && shape(node),
+        );
+        if (found.length !== 1) refuseModule(symbol, reason);
+        return found[0]!;
+    };
+    const propertyKeyOn = (
+        expression: ts.Expression,
+    ): string | undefined => {
+        const read = unwrapPin(expression);
+        return (ts.isPropertyAccessExpression(read) ||
+                ts.isPropertyAccessChain(read)) &&
+                identifierText(read.expression) === definitionName
+            ? read.name.text
+            : undefined;
+    };
+    // color: def.color ? [def.color[0], …] : [1, 1, 1]
+    const colorConditional = defaultConditional(
+        (node) =>
+            propertyKeyOn(node.condition) !== undefined &&
+            ts.isArrayLiteralExpression(unwrapPin(node.whenTrue)),
+        "no longer defaults the light color behind a presence test",
+    );
+    const colorKey = propertyKeyOn(colorConditional.condition)!;
+    const colorTuple = unwrapPin(
+        colorConditional.whenTrue,
+    ) as ts.ArrayLiteralExpression;
+    const colorLanes = colorTuple.elements.map((element, laneIndex) => {
+        const read = unwrapPin(element);
+        const lane = ts.isElementAccessExpression(read) &&
+                propertyKeyOn(read.expression) === colorKey &&
+                ts.isNumericLiteral(unwrapPin(read.argumentExpression))
+            ? Number(
+                (
+                    unwrapPin(
+                        read.argumentExpression,
+                    ) as ts.NumericLiteral
+                ).text,
+            )
+            : undefined;
+        if (lane === undefined || lane !== laneIndex) {
+            refuseNode(
+                symbol,
+                punctualFile,
+                element,
+                "no longer copies the color channels in order",
+            );
+        }
+        return lane;
+    });
+    const colorFallbackValue = unwrapPin(colorConditional.whenFalse);
+    if (
+        colorLanes.length !== 3 ||
+        !ts.isArrayLiteralExpression(colorFallbackValue) ||
+        colorFallbackValue.elements.length !== 3
+    ) {
+        refuseNode(
+            symbol,
+            punctualFile,
+            colorConditional,
+            "no longer carries a three-channel color default",
+        );
+    }
+    const colorFallback = colorFallbackValue.elements.map((element) =>
+        floatLiteral(
+            signedNumericValue(symbol, punctualFile, element),
+        )
+    );
+    const colorName = (() => {
+        const declaration = collectNodes(
+            applyAsset.body,
+            (node): node is ts.VariableDeclaration =>
+                ts.isVariableDeclaration(node) &&
+                node.initializer !== undefined &&
+                unwrapPin(node.initializer!) === colorConditional,
+        )[0];
+        return declaration && ts.isIdentifier(declaration.name)
+            ? declaration.name.text
+            : undefined;
+    })();
+    // intensity: def.intensity ?? 1, feeding every factory call.
+    const intensityDefaults = collectNodes(
+        applyAsset.body,
+        (node): node is ts.BinaryExpression =>
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken &&
+            propertyKeyOn(node.left) !== undefined &&
+            propertyKeyOn(node.left) !== "spot" &&
+            !ts.isPropertyAccessChain(unwrapPin(node.left)),
+    );
+    if (intensityDefaults.length !== 1) {
+        refuseModule(
+            symbol,
+            "no longer coalesces exactly the intensity default",
+        );
+    }
+    const intensityKey = propertyKeyOn(intensityDefaults[0]!.left)!;
+    const intensityValue = pinnedConstantValue(
+        symbol,
+        punctualFile,
+        intensityDefaults[0]!.right,
+    );
+    const intensityName = (() => {
+        const declaration = collectNodes(
+            applyAsset.body,
+            (node): node is ts.VariableDeclaration =>
+                ts.isVariableDeclaration(node) &&
+                node.initializer !== undefined &&
+                unwrapPin(node.initializer!) === intensityDefaults[0],
+        )[0];
+        return declaration && ts.isIdentifier(declaration.name)
+            ? declaration.name.text
+            : undefined;
+    })();
+    // range: def.range !== undefined ? def.range : Number.MAX_VALUE.
+    const rangeConditional = defaultConditional(
+        (node) => {
+            const condition = unwrapPin(node.condition);
+            return ts.isBinaryExpression(condition) &&
+                condition.operatorToken.kind ===
+                    ts.SyntaxKind.ExclamationEqualsEqualsToken &&
+                propertyKeyOn(condition.left) !== undefined &&
+                identifierText(condition.right) === "undefined";
+        },
+        "no longer defaults the light range behind a presence test",
+    );
+    const rangeKey = propertyKeyOn(
+        (unwrapPin(rangeConditional.condition) as ts.BinaryExpression)
+            .left,
+    )!;
+    const rangeFallback = unwrapPin(rangeConditional.whenFalse);
+    const rangeIsDoubleMax = ts.isPropertyAccessExpression(rangeFallback) &&
+        identifierText(rangeFallback.expression) === "Number" &&
+        rangeFallback.name.text === "MAX_VALUE";
+    if (
+        propertyKeyOn(rangeConditional.whenTrue) !== rangeKey ||
+        !rangeIsDoubleMax
+    ) {
+        refuseNode(
+            symbol,
+            punctualFile,
+            rangeConditional,
+            "no longer keeps the authored range with a MAX_VALUE default",
+        );
+    }
+    const rangeName = (() => {
+        const declaration = collectNodes(
+            applyAsset.body,
+            (node): node is ts.VariableDeclaration =>
+                ts.isVariableDeclaration(node) &&
+                node.initializer !== undefined &&
+                unwrapPin(node.initializer!) === rangeConditional,
+        )[0];
+        return declaration && ts.isIdentifier(declaration.name)
+            ? declaration.name.text
+            : undefined;
+    })();
+    // Every branch writes diffuse and specular from the color; range
+    // reaches point and spot but must stay off the directional light,
+    // and the intensity feeds every factory call.
+    for (const branch of branches) {
+        for (const property of ["diffuse", "specular"]) {
+            const written = colorName !== undefined &&
+                collectNodes(
+                    branch.block,
+                    (node): node is ts.BinaryExpression =>
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind ===
+                            ts.SyntaxKind.EqualsToken &&
+                        ts.isPropertyAccessExpression(
+                            unwrapPin(node.left),
+                        ) &&
+                        (
+                            unwrapPin(
+                                node.left,
+                            ) as ts.PropertyAccessExpression
+                        ).name.text === property &&
+                        identifierText(node.right) === colorName,
+                ).length === 1;
+            if (!written) {
+                refuseModule(
+                    symbol,
+                    `no longer writes the ${property} color on ` +
+                        `'${branch.value}' lights`,
+                );
+            }
+        }
+        const writesRange = rangeName !== undefined &&
+            collectNodes(
+                branch.block,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken &&
+                    ts.isPropertyAccessExpression(
+                        unwrapPin(node.left),
+                    ) &&
+                    (unwrapPin(node.left) as ts.PropertyAccessExpression)
+                            .name.text === "range" &&
+                    identifierText(node.right) === rangeName,
+            ).length > 0;
+        const directional =
+            lightFactoryByPin[branch.value] === "createDirectionalLight";
+        if (writesRange === directional) {
+            refuseModule(
+                symbol,
+                directional
+                    ? "now ranges directional lights, which the record " +
+                        "does not carry"
+                    : `no longer ranges '${branch.value}' lights`,
+            );
+        }
+        const factoryCall = collectNodes(
+            branch.block,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                identifierText(node.expression) ===
+                    lightFactoryByPin[branch.value],
+        )[0]!;
+        const lastArgument =
+            factoryCall.arguments[factoryCall.arguments.length - 1];
+        if (
+            intensityName === undefined ||
+            lastArgument === undefined ||
+            identifierText(lastArgument) !== intensityName
+        ) {
+            refuseModule(
+                symbol,
+                `no longer passes the defaulted intensity to ` +
+                    `'${branch.value}' lights`,
+            );
+        }
+    }
+    // The spot cone: def.spot?.outerConeAngle ?? Math.PI / 4, doubled
+    // into the factory and halved inside the pinned light's cosine.
+    const spotDefaults = collectNodes(
+        spotBranch.block,
+        (node): node is ts.BinaryExpression =>
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken &&
+            ts.isPropertyAccessChain(unwrapPin(node.left)),
+    );
+    if (spotDefaults.length !== 1) {
+        refuseModule(
+            symbol,
+            "no longer coalesces exactly the outer cone default",
+        );
+    }
+    const outerRead = unwrapPin(
+        spotDefaults[0]!.left,
+    ) as ts.PropertyAccessChain;
+    const outerKey = outerRead.name.text;
+    const spotRead = unwrapPin(outerRead.expression);
+    const spotKey = (ts.isPropertyAccessExpression(spotRead) ||
+            ts.isPropertyAccessChain(spotRead)) &&
+            identifierText(spotRead.expression) === definitionName
+        ? spotRead.name.text
+        : undefined;
+    if (spotKey === undefined) {
+        refuseNode(
+            symbol,
+            punctualFile,
+            spotDefaults[0]!,
+            "no longer reads the outer cone through the spot object",
+        );
+    }
+    const outerValue = pinnedConstantValue(
+        symbol,
+        punctualFile,
+        spotDefaults[0]!.right,
+    );
+    const outerName = (() => {
+        const declaration = collectNodes(
+            spotBranch.block,
+            (node): node is ts.VariableDeclaration =>
+                ts.isVariableDeclaration(node) &&
+                node.initializer !== undefined &&
+                unwrapPin(node.initializer!) === spotDefaults[0],
+        )[0];
+        return declaration && ts.isIdentifier(declaration.name)
+            ? declaration.name.text
+            : undefined;
+    })();
+    const spotCall = collectNodes(
+        spotBranch.block,
+        (node): node is ts.CallExpression =>
+            ts.isCallExpression(node) &&
+            identifierText(node.expression) === "createSpotLight",
+    )[0]!;
+    const angleArgument = spotCall.arguments.length === 5
+        ? unwrapPin(spotCall.arguments[2]!)
+        : undefined;
+    const outerScale = angleArgument !== undefined &&
+            ts.isBinaryExpression(angleArgument) &&
+            angleArgument.operatorToken.kind ===
+                ts.SyntaxKind.AsteriskToken &&
+            outerName !== undefined &&
+            identifierText(angleArgument.left) === outerName &&
+            ts.isNumericLiteral(unwrapPin(angleArgument.right))
+        ? Number(
+            (unwrapPin(angleArgument.right) as ts.NumericLiteral).text,
+        )
+        : undefined;
+    if (outerScale === undefined) {
+        refuseNode(
+            symbol,
+            punctualFile,
+            spotCall,
+            "no longer passes the doubled outer cone to the spot factory",
+        );
+    }
+    const exponentArgument = unwrapPin(spotCall.arguments[3]!);
+    if (
+        !ts.isNumericLiteral(exponentArgument) ||
+        Number(exponentArgument.text) !== 1
+    ) {
+        refuseNode(
+            symbol,
+            punctualFile,
+            spotCall,
+            "no longer passes a unit falloff exponent, which the record " +
+                "does not carry",
+        );
+    }
+    // The pinned spot light stores Math.cos(angle * 0.5).
+    const spotFactory = topLevelFunction(spotFile, "createSpotLight");
+    const spotParameters = identifierParameters(
+        "createSpotLight",
+        spotFile,
+        spotFactory,
+    );
+    if (spotParameters.length < 3) {
+        refuseNode(
+            "createSpotLight",
+            spotFile,
+            spotFactory,
+            "no longer takes the full cone angle third",
+        );
+    }
+    const angleName = spotParameters[2]!;
+    const halfFactors = collectNodes(
+        spotFactory,
+        (node): node is ts.CallExpression =>
+            mathCall(node as ts.Expression, "cos") !== undefined,
+    )
+        .map((call) => {
+            const argument = call.arguments.length === 1
+                ? unwrapPin(call.arguments[0]!)
+                : undefined;
+            return argument !== undefined &&
+                    ts.isBinaryExpression(argument) &&
+                    argument.operatorToken.kind ===
+                        ts.SyntaxKind.AsteriskToken &&
+                    identifierText(argument.left) === angleName &&
+                    ts.isNumericLiteral(unwrapPin(argument.right))
+                ? Number(
+                    (
+                        unwrapPin(argument.right) as ts.NumericLiteral
+                    ).text,
+                )
+                : undefined;
+        })
+        .filter((factor): factor is number => factor !== undefined);
+    if (halfFactors.length === 0) {
+        refuseNode(
+            "createSpotLight",
+            spotFile,
+            spotFactory,
+            "no longer stores the cosine of the scaled cone angle",
+        );
+    }
+    if (halfFactors.some((factor) => outerScale * factor !== 1)) {
+        refuseNode(
+            "createSpotLight",
+            spotFile,
+            spotFactory,
+            "no longer cancels the full-cone doubling against the " +
+                "half-angle cosine",
+        );
+    }
+    // The baked world-transform branch: position lanes 12..14 and the
+    // negated forward lanes 8..10, in order.
+    const worldDeclaration = collectNodes(
+        applyAsset.body,
+        (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.initializer !== undefined &&
+            ts.isCallExpression(unwrapPin(node.initializer!)) &&
+            identifierText(
+                (unwrapPin(node.initializer!) as ts.CallExpression)
+                    .expression,
+            ) === "computeNodeWorldMatrix",
+    )[0];
+    if (!worldDeclaration) {
+        refuseModule(
+            symbol,
+            "no longer bakes the node world through computeNodeWorldMatrix",
+        );
+    }
+    const worldName = (worldDeclaration.name as ts.Identifier).text;
+    const worldLane = (expression: ts.Expression): number | undefined => {
+        const read = unwrapPin(expression);
+        return ts.isElementAccessExpression(read) &&
+                identifierText(read.expression) === worldName &&
+                ts.isNumericLiteral(unwrapPin(read.argumentExpression))
+            ? Number(
+                (
+                    unwrapPin(
+                        read.argumentExpression,
+                    ) as ts.NumericLiteral
+                ).text,
+            )
+            : undefined;
+    };
+    const positionLanes = collectNodes(
+        applyAsset.body,
+        (node): node is ts.BinaryExpression =>
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isIdentifier(unwrapPin(node.left)) &&
+            worldLane(node.right) !== undefined,
+    ).map((assignment) => worldLane(assignment.right)!);
+    const forwardDeclarations = collectNodes(
+        applyAsset.body,
+        (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.initializer !== undefined &&
+            (() => {
+                const value = unwrapPin(node.initializer!);
+                return ts.isPrefixUnaryExpression(value) &&
+                    value.operator === ts.SyntaxKind.MinusToken &&
+                    worldLane(value.operand) !== undefined;
+            })(),
+    );
+    const forwardLanes = forwardDeclarations.map((declaration) =>
+        worldLane(
+            (
+                unwrapPin(
+                    declaration.initializer!,
+                ) as ts.PrefixUnaryExpression
+            ).operand,
+        )!
+    );
+    if (
+        positionLanes.join(",") !== "12,13,14" ||
+        forwardLanes.join(",") !== "8,9,10"
+    ) {
+        refuseModule(
+            symbol,
+            "no longer bakes the position column and negated forward " +
+                "the lowered way",
+        );
+    }
+    const forwardNames = forwardDeclarations.map(
+        (declaration) => (declaration.name as ts.Identifier).text,
+    );
+    const lengthDeclaration = collectNodes(
+        applyAsset.body,
+        (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            node.initializer !== undefined &&
+            (() => {
+                const value = unwrapPin(node.initializer!);
+                return ts.isBinaryExpression(value) &&
+                    value.operatorToken.kind ===
+                        ts.SyntaxKind.BarBarToken &&
+                    mathCall(value.left, "hypot") !== undefined;
+            })(),
+    )[0];
+    const hypotArguments = lengthDeclaration
+        ? mathCall(
+            (
+                unwrapPin(
+                    lengthDeclaration.initializer!,
+                ) as ts.BinaryExpression
+            ).left,
+            "hypot",
+        )!.arguments.map((argument) => identifierText(argument))
+        : undefined;
+    if (
+        !hypotArguments ||
+        hypotArguments.join(",") !== forwardNames.join(",")
+    ) {
+        // The record normalizes through the loader's shared helper; the
+        // pin's defensive `|| 1` shape is required so the translation
+        // stays the one documented in the round-3 notes.
+        refuseModule(
+            symbol,
+            "no longer normalizes the baked forward defensively",
+        );
+    }
+    // The emitted signs fold the pin's RH→LH root into the record's
+    // glTF-space worlds: emitted = pin sign × root diagonal lane sign.
+    const flip = pinnedRootFlip(parserFile);
+    const laneSign = (row: number, pinSign: number): string => {
+        const folded = pinSign * (row === flip.lane ? flip.sign : 1);
+        return folded < 0 ? "-" : "";
+    };
+    const spotDefaultLiteral = floatLiteral(outerValue);
+    const kindOf = (index: number): string =>
+        lightKindByPin[branches[index]!.value]!;
+    return [
+        "                const std::string type =",
+        `                    string_or(definition, "${typeKey}");`,
+        "                if (",
+        `                    type != "${branches[0]!.value}" &&`,
+        `                    type != "${branches[1]!.value}" &&`,
+        `                    type != "${branches[2]!.value}") {`,
+        "                    continue;",
+        "                }",
+        "                const Matrix& light_world =",
+        "                    compute_world(node_index);",
+        "                LightRecord light;",
+        `                light.kind = type == "${branches[0]!.value}"`,
+        `                    ? ${kindOf(0)}`,
+        `                    : type == "${branches[2]!.value}"`,
+        `                        ? ${kindOf(2)}`,
+        `                        : ${kindOf(1)};`,
+        `                if (type == "${spotBranch.value}") {`,
+        "                    // createSpotLight(position, direction, outer * 2, 1,",
+        "                    // intensity): the pinned loader passes twice the outer",
+        "                    // cone angle as the full cone, and the light stores",
+        "                    // cos(angle / 2). innerConeAngle is read by neither the",
+        "                    // pinned light nor its pointer handlers.",
+        "                    const ts::JsonValue* spot_value =",
+        `                        optional(definition, "${spotKey}");`,
+        "                    const float outer_cone_angle = spot_value",
+        "                        ? float_or(",
+        "                              spot_value->as_object(),",
+        `                              "${outerKey}",`,
+        `                              ${spotDefaultLiteral})`,
+        `                        : ${spotDefaultLiteral};`,
+        "                    light.cos_half_angle =",
+        "                        std::cos(outer_cone_angle);",
+        "                }",
+        "                light.position = Vec3{",
+        `                    ${laneSign(0, 1)}light_world[` +
+        `${positionLanes[0]}],`,
+        `                    ${laneSign(1, 1)}light_world[` +
+        `${positionLanes[1]}],`,
+        `                    ${laneSign(2, 1)}light_world[` +
+        `${positionLanes[2]}],`,
+        "                };",
+        "                const Vec3 forward{",
+        `                    ${laneSign(0, -1)}light_world[` +
+        `${forwardLanes[0]}],`,
+        `                    ${laneSign(1, -1)}light_world[` +
+        `${forwardLanes[1]}],`,
+        `                    ${laneSign(2, -1)}light_world[` +
+        `${forwardLanes[2]}],`,
+        "                };",
+        "                light.direction =",
+        "                    normalize(forward);",
+        "                const std::vector<float> color =",
+        "                    float_array(",
+        "                        optional(",
+        "                            definition,",
+        `                            "${colorKey}"));`,
+        `                light.diffuse_color = color.size() == ` +
+        `${colorLanes.length}`,
+        "                    ? Color3{",
+        `                          color[${colorLanes[0]}],`,
+        `                          color[${colorLanes[1]}],`,
+        `                          color[${colorLanes[2]}],`,
+        "                      }",
+        `                    : Color3{${colorFallback.join(", ")}};`,
+        "                light.specular_color =",
+        "                    light.diffuse_color;",
+        "                light.intensity =",
+        "                    float_or(",
+        "                        definition,",
+        `                        "${intensityKey}",`,
+        `                        ${floatLiteral(intensityValue)});`,
+        "                light.range =",
+        "                    float_or(",
+        "                        definition,",
+        `                        "${rangeKey}",`,
+        "                        std::numeric_limits<float>::max());",
+    ].join("\n");
 }
