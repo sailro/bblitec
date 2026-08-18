@@ -113,19 +113,7 @@ export class BrowserErasure {
             }
             return false;
         }
-        const isCanvasLookup =
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            ts.isIdentifier(unwrapped.expression.expression) &&
-            unwrapped.expression.expression.text === "document" &&
-            (unwrapped.expression.name.text === "getElementById" || unwrapped.expression.name.text === "querySelector");
-        const isPerformanceNow =
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            ts.isIdentifier(unwrapped.expression.expression) &&
-            unwrapped.expression.expression.text === "performance" &&
-            unwrapped.expression.name.text === "now";
-        return isCanvasLookup || isPerformanceNow;
+        return false;
     }
 
     public evaluateBrowserCondition(
