@@ -1113,6 +1113,23 @@ export function pinnedPbrVariantsHeader(
         // that is emitted but never called leaves its fields zero. That is how
         // Scene 259's emissive colour rendered 128 levels dark here while the
         // transcribed path measured 0.000.
+        // The pin's refraction fragment multiplies its thickness lanes by
+        // `ts`, the mesh world's largest column -- but this backend bakes the
+        // node transform into the vertices, so its pinned mesh world carries
+        // no scale and the fragment's `ts` is 1. The product stays the pin's
+        // by moving the scale into the block here, per draw.
+        const thicknessScaled: string[] = [];
+        if (fields.some((field) => field.name === "refractionParams")) {
+            thicknessScaled.push(
+                "            block.refractionParams[2] *= thickness_scale;",
+            );
+        }
+        if (fields.some((field) => field.name === "thicknessParams")) {
+            thicknessScaled.push(
+                "            block.thicknessParams[0] *= thickness_scale;",
+                "            block.thicknessParams[1] *= thickness_scale;",
+            );
+        }
         variantMaterialCases.push(
             [
                 `        case ${table.length}: {`,
@@ -1126,6 +1143,7 @@ export function pinnedPbrVariantsHeader(
                     `                bblIdentityTransform,\n` +
                     `                block);`
                 ),
+                ...thicknessScaled,
                 "            std::memcpy(",
                 "                destination,",
                 "                &block,",
@@ -1387,7 +1405,10 @@ inline void write_pbr_variant_material(
     std::size_t variant,
     const MaterialRecord& material,
     void* destination,
-    std::size_t bytes) {
+    std::size_t bytes,
+    float thickness_scale = 1.0f) {
+    // Unused when no composed variant carries a thickness lane.
+    (void)thickness_scale;
     switch (variant) {
 ${variantMaterialCases.join("\n")}
         default:

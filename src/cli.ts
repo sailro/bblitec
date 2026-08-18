@@ -567,6 +567,13 @@ async function main(): Promise<void> {
         environment: hasEnvironment,
         fog: result.manifest.features.includes("renderer:fog"),
     });
+    // The pin's enableSceneTransmission marks every material in the scene
+    // `_linearImageProcessing` (markPbrMaterialsLinear), so each composed
+    // fragment wraps its processing tail in `if(scene.vImageInfos.w>=0.0)`
+    // and the retargeted linear pass runs with w = -1.
+    const linearImageProcessing = result.manifest.features.includes(
+        "renderer:transmission",
+    );
     // The runtime keys the variant table by material handle, which is
     // creation order: each glTF load appends its materials, and a scene
     // material appends where its `createPbrMaterial` runs. Every reached
@@ -623,12 +630,15 @@ async function main(): Promise<void> {
     let materialIndexBase = 0;
     for (const asset of gltfAssets) {
         const path = resolve(outputPath, "assets", asset.output);
-        const composed = await composeGltfMaterials(path);
+        const composed = await composeGltfMaterials(path, {
+            linearImageProcessing,
+        });
         assertArmsCovered(composed, emittedArms, asset.output);
         const variants = await composeRenderableVariants(
             path,
             sceneArms,
             materialIndexBase,
+            { linearImageProcessing },
         );
         composedVariants.push(...variants);
         materialIndexBase += gltfMaterialCount(path);
@@ -654,6 +664,7 @@ async function main(): Promise<void> {
                         await proceduralRenderableFeatures(),
                     ]),
                 ],
+                { linearImageProcessing },
             )),
         );
     }

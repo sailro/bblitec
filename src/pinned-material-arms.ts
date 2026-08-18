@@ -157,6 +157,7 @@ interface MaterialSubject {
  */
 async function materialSubjects(
     document: GltfDocument,
+    scene: { linearImageProcessing?: boolean } = {},
 ): Promise<readonly MaterialSubject[]> {
     const materials = document.materials ?? [];
     const record = document as unknown as Record<string, unknown>;
@@ -180,6 +181,7 @@ async function materialSubjects(
     const subjects = materials.map((material, index) => {
         const input = pinnedMaterialInputFromGltf(material, {
             imageOf,
+            ...scene,
             animatedBaseColorFactor: animatedBaseColor.has(index),
             animatedEmissive: animatedEmissive.has(index),
             animatedUvTransform: animatedUvTransform.has(index),
@@ -202,6 +204,7 @@ async function materialSubjects(
         // the glTF loader's own stamps, specular AA included.
         const input = pinnedMaterialInputFromGltf({}, {
             imageOf,
+            ...scene,
             animatedBaseColorFactor: false,
             animatedEmissive: false,
             animatedUvTransform: false,
@@ -226,6 +229,7 @@ async function materialSubjects(
  */
 export async function composeGltfMaterials(
     path: string,
+    scene: { linearImageProcessing?: boolean } = {},
 ): Promise<readonly PinnedComposedMaterial[]> {
     const document = glbDocument(path);
     if (!document) return [];
@@ -242,6 +246,7 @@ export async function composeGltfMaterials(
     const composed: PinnedComposedMaterial[] = [];
     for (const { name, input, uv2Mask } of await materialSubjects(
         document!,
+        scene,
     )) {
         const options: PinnedComposeOptions = {
             sceneFeatures: PBR_HAS_ENV,
@@ -378,6 +383,7 @@ export async function composeRenderableVariants(
     path: string,
     arms: readonly PinnedSceneArm[],
     materialIndexBase = 0,
+    scene: { linearImageProcessing?: boolean } = {},
 ): Promise<readonly PinnedRenderableVariant[]> {
     const document = glbDocument(path);
     if (!document || arms.length === 0) return [];
@@ -418,7 +424,7 @@ export async function composeRenderableVariants(
             featureSets.set(material, set);
         }
     }
-    const subjects = await materialSubjects(document);
+    const subjects = await materialSubjects(document, scene);
     const variants: PinnedRenderableVariant[] = [];
     for (const subject of subjects) {
         // A material no primitive references still composes, at the attribute
@@ -496,6 +502,7 @@ export async function composeScenePbrVariants(
     arms: readonly PinnedSceneArm[],
     materialIndexBase = 0,
     meshFeatureSets?: readonly number[],
+    scene: { linearImageProcessing?: boolean } = {},
 ): Promise<readonly PinnedRenderableVariant[]> {
     if (materials.length === 0 || arms.length === 0) return [];
     // Scene code can assign its material to any renderable the scene has --
@@ -516,6 +523,9 @@ export async function composeScenePbrVariants(
         };
         // The pin's setPbrUnlit stamps `mat._unlit = true`, and setPbrSkybox
         // stamps `mat._skyboxMode = true`.
+        if (scene.linearImageProcessing) {
+            input["_linearImageProcessing"] = true;
+        }
         if (material.unlit) input["_unlit"] = true;
         if (material.skyboxMode) input["_skyboxMode"] = true;
         if (material.hasBaseColorTexture) input["baseColorTexture"] = {};

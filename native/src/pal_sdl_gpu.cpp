@@ -540,6 +540,11 @@ PinnedResource pinned_resource_for(
     if (name == "refractionMapTexture" || name == "refractionMapSampler") {
         return {mesh.transmission, mesh.transmission_sampler};
     }
+    if (name == "refractionTexture" || name == "refractionSampler_") {
+        // The pin's transmission grab: the 1024x1024 mip-chained scene
+        // colour copied out mid-pass, sampled trilinear-anisotropic.
+        return {state.transmission_color, state.transmission_sampler};
+    }
     if (name == "thicknessTexture_" || name == "thicknessSampler_") {
         return {mesh.thickness, mesh.thickness_sampler};
     }
@@ -963,7 +968,10 @@ void draw_pinned_variant(
             pinned_variant,
             *material,
             pinned_material.data(),
-            pinned_material.size());
+            pinned_material.size(),
+            // The refraction thickness scale the pin's fragment reads off
+            // its mesh world, whose scale this backend bakes into vertices.
+            pinned_record.baked_world_scale);
     }
     // Each block at the slot the remap assigned it. The
     // order is the `.slots` map's, because a stage can
@@ -5962,6 +5970,11 @@ bool run_gpu_engine(Engine& engine) {
             SDL_GPURenderPass* pass =
                 SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info);
             bool scene_matrix_bound = true;
+            // The pin's transmission grab fires once, before the first
+            // transmissive draw: the opaque scene colour resolved so far is
+            // blitted into the 1024x1024 mip-chained refraction texture the
+            // composed fragments sample.
+            bool transmission_copied = false;
 #if BBLITE_GPU_INSTANCING
             const std::array<float, 16> identity_parent_world{
                 1.0f, 0.0f, 0.0f, 0.0f,
@@ -6231,6 +6244,58 @@ bool run_gpu_engine(Engine& engine) {
                             ? &engine.materials[
                                   item.material.value]
                             : nullptr;
+                    if (
+                        transmission_enabled &&
+                        !transmission_copied &&
+                        material &&
+                        (material->transmission_factor > 0.0f ||
+                         !material->transmission_texture.bytes.empty())) {
+                        // executePassWithTransmission: end the pass (which
+                        // resolves the multisampled colour), copy it into
+                        // the refraction texture with its mip chain, and
+                        // resume loading what was stored.
+                        SDL_EndGPURenderPass(pass);
+                        SDL_GPUBlitInfo transmission_blit{};
+                        transmission_blit.source = SDL_GPUBlitRegion{
+                            state.color,
+                            0,
+                            0,
+                            0,
+                            0,
+                            width,
+                            height,
+                        };
+                        transmission_blit.destination = SDL_GPUBlitRegion{
+                            state.transmission_color,
+                            0,
+                            0,
+                            0,
+                            0,
+                            state.transmission_width,
+                            state.transmission_height,
+                        };
+                        transmission_blit.load_op =
+                            SDL_GPU_LOADOP_DONT_CARE;
+                        transmission_blit.flip_mode = SDL_FLIP_NONE;
+                        transmission_blit.filter = SDL_GPU_FILTER_LINEAR;
+                        SDL_BlitGPUTexture(command, &transmission_blit);
+                        SDL_GenerateMipmapsForGPUTexture(
+                            command,
+                            state.transmission_color);
+                        color_info.load_op = SDL_GPU_LOADOP_LOAD;
+                        color_info.store_op =
+                            multisampled
+                                ? SDL_GPU_STOREOP_RESOLVE
+                                : SDL_GPU_STOREOP_STORE;
+                        depth_info.load_op = SDL_GPU_LOADOP_LOAD;
+                        pass = SDL_BeginGPURenderPass(
+                            command,
+                            &color_info,
+                            1,
+                            &depth_info);
+                        bound_pipeline = nullptr;
+                        transmission_copied = true;
+                    }
 #if BBLITE_PBR_VARIANTS > 0
                     // Babylon Lite's own composed stages own every PBR draw:
                     // the transcribed fragment is retired, so a draw the

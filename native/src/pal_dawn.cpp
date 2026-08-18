@@ -6075,7 +6075,12 @@ bool run_dawn_engine(Engine& engine) {
                                 variant,
                                 engine.materials[draw.item.material.value],
                                 material_block.data(),
-                                material_bytes);
+                                material_bytes,
+                                // The refraction thickness scale the pin's
+                                // fragment reads off its mesh world, whose
+                                // scale this backend bakes into vertices.
+                                engine.meshes[draw.item.mesh.value]
+                                    .baked_world_scale);
                             wgpuQueueWriteBuffer(
                                 state.queue,
                                 variant_mesh.pinned_material_uniforms,

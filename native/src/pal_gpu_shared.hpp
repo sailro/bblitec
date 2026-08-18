@@ -503,7 +503,15 @@ inline upstream::SceneUniforms pinned_scene_block(
         scene.environment.exposure,
         scene.environment.contrast,
         scene.environment.lod_generation_scale,
-        scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
+        // The pin's executeRenderTaskLinear stamps toneMappingEnabled = -1
+        // while a transmission scene's retargeted linear passes run; every
+        // composed fragment then skips its processing tail
+        // (`if(scene.vImageInfos.w>=0.0)`) and the trailing
+        // image-processing pass applies it once. The captured browser block
+        // carries the same -1 (scene30 buffer#1).
+        scene.transmission_enabled
+            ? -1.0f
+            : scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
     };
     scene_block.vFogInfos = {
         scene.fog_mode,
@@ -752,23 +760,13 @@ inline std::size_t pinned_variant_for_draw(
     // the pin's own light world matrix; the block itself was diffed against the
     // browser's (`artifacts/capture/scene7/buffers.json`, 1040 bytes beside the
     // 368-byte scene block).
-    // A transmission scene breaks its main pass in two around the scene-colour
-    // grab, and the pin binds that grab through its own refraction slot rather
-    // than our fixed one. Scene 30's non-refractive materials measured 17.8 MAD
-    // here against 0.05 transcribed even with the refraction arms excluded, so
-    // the pass structure -- not just the arm -- is the open measurement.
-    // A transmission scene stays transcribed, and the two-listing comparison
-    // now bounds why: every refraction material block matches the browser's
-    // byte for byte (`scene -- uniforms scene30` against the capture's
-    // `pinnedMaterialBlocks`), yet Scene 30 measures 24.4 with background
-    // attribution 1.576 -- a pass-level divergence. The pin renders refraction
-    // through its own 1024x1024 rgba16float target where this backend binds the
-    // mid-pass scene-colour grab, so opening this is frame-graph work, not a
-    // block fix. Scene 253 measuring 0.002 through the probe proves only
-    // tolerance: it never enables `renderer:transmission`.
-    if (scene.transmission_enabled) {
-        return std::numeric_limits<std::size_t>::max();
-    }
+    // A transmission scene resolves the same table: its materials compose
+    // with `_linearImageProcessing` (the pin's markPbrMaterialsLinear), so
+    // every fragment guards its processing tail on `vImageInfos.w >= 0` and
+    // the linear main pass runs with the lane at -1; the refraction arms
+    // bind the existing 1024x1024 scene-colour grab through the variant's
+    // own `refractionTexture` slot. The earlier 17.8-MAD refusal here was
+    // the guard missing from the composed fragments, not pass structure.
     const std::size_t variant = upstream::pbr_variant_for(
         material_index,
         static_cast<std::uint32_t>(mesh_features),
