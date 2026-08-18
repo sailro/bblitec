@@ -142,14 +142,15 @@ function sheenRoughnessIsTint(extension: JsonObject): boolean {
 }
 
 /**
- * `needsGltfEmissive`: whether a glTF material's emissive is applied at all.
+ * `needsGltfEmissive`: whether the load-time factor writes `_emissiveColor`.
  *
- * `emissiveFactor` multiplies the emissive texture, so `[1,1,1]` alongside a
- * texture is a no-op and the pin attaches nothing — which is why an emissive
- * texture alone does not put `PBR_HAS_EMISSIVE` on the material, and why the
- * composed UBO then declares no `emissiveUVm` pair. With no texture, `[1,1,1]`
- * is a real full-white emissive and does apply; the glTF default is `[0,0,0]`,
- * which never does.
+ * This gates only `setPbrEmissive` in `applyGltfOptInPbrFeatures` — the
+ * emissive *texture* is attached from the image alone and never consults the
+ * factor (`buildDefaultPbrTexturesExt` line `mat._emissiveImage ? … : void 0`),
+ * so `PBR_HAS_EMISSIVE`, the binding pair, its `_hasTx` and its uv2 bit are
+ * all texture-slot facts. The factor rule: `[1,1,1]` alongside a texture is a
+ * multiplicative no-op and writes nothing; with no texture it is a real
+ * full-white emissive; the glTF default `[0,0,0]` never applies.
  */
 function gltfEmissiveApplies(material: JsonObject): boolean {
     const factor = asNumbers(material["emissiveFactor"]) ?? [0, 0, 0];
@@ -230,9 +231,10 @@ function pinnedTextureSlots(
     const baseColor = asObject(pbr["baseColorTexture"]);
     const metallicRoughness = asObject(pbr["metallicRoughnessTexture"]);
     const normal = asObject(material["normalTexture"]);
-    const emissive = gltfEmissiveApplies(material)
-        ? asObject(material["emissiveTexture"])
-        : undefined;
+    // The emissive slot is built from the image alone — `_emissiveImage ?
+    // wrap(…) : void 0` in `buildDefaultPbrTexturesExt` — so its `_hasTx` and
+    // uv2 bit do not consult the emissive factor. Only `_emissiveColor` does.
+    const emissive = asObject(material["emissiveTexture"]);
     const occlusion = asObject(material["occlusionTexture"]);
 
     const occlusionImage = imageOf(occlusion?.["index"]);
@@ -243,11 +245,17 @@ function pinnedTextureSlots(
         occlusionTexCoord !== 0 &&
         occlusionImage !== undefined &&
         metallicRoughnessImage === undefined;
+    // `occlusionNeedsSplit` tests the transform's *declaration*, not whether
+    // it patches a field: `occ.extensions?.KHR_texture_transform != null`. A
+    // declared-but-empty transform splits the carrier even though it stamps no
+    // `_hasTx` — the `_hasTx` rule belongs to the uv-transform extension, not
+    // to this predicate.
     const sharesOrmImage =
         occlusionImage !== undefined &&
         occlusionImage === metallicRoughnessImage &&
         (occlusion?.["index"] !== metallicRoughness?.["index"] ||
-            hasTransform(occlusion));
+            asObject(occlusion?.["extensions"])?.["KHR_texture_transform"] !=
+                null);
     const hasOcclusionCarrier = occlusionOnUv2 || sharesOrmImage;
 
     // The ORM slot is whichever texture built it, so its transform is that
@@ -718,10 +726,27 @@ export function pinnedMaterialInputFromGltf(
         occlusionStrength: occlusion ? 1 : 0,
     };
     // `setPbrEmissive` writes `_emissiveColor`, which is what the emissive
-    // extension reads for its bit. The load-time factor decides it through
-    // `needsGltfEmissive`, and an animated one needs the field regardless.
+    // extension reads for its bit. Three writers, in the pin's own order:
+    // `gltf-ext-emissive-strength.ts` runs with the other extensions and calls
+    // `setPbrEmissive(layer, factor * strength)` whenever the extension is
+    // *declared* (`emissiveStrength ?? 1`, factor default `[0,0,0]`) — the
+    // later `applyGltfOptInPbrFeatures` guards `!props._emissiveColor` and
+    // stands down. Without the extension, the load-time factor decides through
+    // `needsGltfEmissive`, and an animated pointer needs the field regardless.
     const emissiveFactor = asNumbers(material["emissiveFactor"]);
-    if (scene.animatedEmissive || gltfEmissiveApplies(material)) {
+    const emissiveStrengthExtension = asObject(
+        extensions["KHR_materials_emissive_strength"],
+    );
+    if (emissiveStrengthExtension !== undefined) {
+        const strength =
+            asNumber(emissiveStrengthExtension["emissiveStrength"]) ?? 1;
+        const [red = 0, green = 0, blue = 0] = emissiveFactor ?? [];
+        input["_emissiveColor"] = [
+            red * strength,
+            green * strength,
+            blue * strength,
+        ];
+    } else if (scene.animatedEmissive || gltfEmissiveApplies(material)) {
         input["_emissiveColor"] = emissiveFactor ?? [1, 1, 1];
     }
     const imageOf = scene.imageOf ?? ((): undefined => undefined);

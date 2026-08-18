@@ -217,6 +217,93 @@ test("occlusion becomes the ORM texture when there is no metallic-roughness imag
     assert.ok(uv2["occlusionTexture"]);
 });
 
+test("the emissive slot's transform and uv2 bit ignore the factor", async () => {
+    // `buildDefaultPbrTexturesExt` attaches the emissive texture from the
+    // image alone, and `needsGltfUvTransform`/`uv2Mask` read the *built*
+    // texture — so a neutral `[1,1,1]` factor (which writes no
+    // `_emissiveColor`) still composes the transform arm and the uv2 bit.
+    const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
+    const transformed = pinnedMaterialInputFromGltf(
+        {
+            emissiveFactor: [1, 1, 1],
+            emissiveTexture: {
+                index: 0,
+                extensions: { KHR_texture_transform: { scale: [2, 2] } },
+            },
+        },
+        { imageOf },
+    );
+    assert.equal(transformed["_hasUvTx"], true);
+    assert.equal(transformed["_emissiveColor"], undefined);
+
+    const onUv2 = pinnedMaterialInputFromGltf(
+        { emissiveTexture: { index: 0, texCoord: 1 } },
+        { imageOf },
+    );
+    assert.equal((onUv2["_uv2Mask"] as number) & 8, 8);
+});
+
+test("a declared emissive-strength extension always writes the colour", async () => {
+    // `gltf-ext-emissive-strength.ts` calls `setPbrEmissive(layer,
+    // factor * strength)` whenever the extension is declared —
+    // `emissiveStrength ?? 1`, factor default `[0,0,0]` — and the later
+    // opt-in gate stands down on the already-written property.
+    const strong = pinnedMaterialInputFromGltf({
+        emissiveFactor: [1, 1, 1],
+        emissiveTexture: { index: 0 },
+        extensions: { KHR_materials_emissive_strength: { emissiveStrength: 2 } },
+    });
+    assert.deepEqual(strong["_emissiveColor"], [2, 2, 2]);
+
+    // Declared empty: strength defaults to 1 and the colour is still written,
+    // where the bare neutral-over-texture factor writes nothing.
+    const declared = pinnedMaterialInputFromGltf({
+        emissiveFactor: [1, 1, 1],
+        emissiveTexture: { index: 0 },
+        extensions: { KHR_materials_emissive_strength: {} },
+    });
+    assert.deepEqual(declared["_emissiveColor"], [1, 1, 1]);
+
+    // Even a black factor carries the property, as the pin's ext does.
+    const black = pinnedMaterialInputFromGltf({
+        extensions: { KHR_materials_emissive_strength: { emissiveStrength: 3 } },
+    });
+    assert.deepEqual(black["_emissiveColor"], [0, 0, 0]);
+});
+
+test("a declared-but-empty transform splits the occlusion carrier", async () => {
+    // `occlusionNeedsSplit` tests `occ.extensions?.KHR_texture_transform !=
+    // null` — declaration, not `_hasTx` — so an empty transform object splits
+    // the shared ORM image into a dedicated occlusion carrier even though it
+    // patches no field and stamps no `_hasTx`.
+    const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
+    const shared = {
+        pbrMetallicRoughness: { metallicRoughnessTexture: { index: 0 } },
+    };
+    const plain = pinnedMaterialInputFromGltf(
+        { ...shared, occlusionTexture: { index: 0 } },
+        { imageOf },
+    );
+    assert.equal(plain["occlusionTexture"], undefined);
+
+    const declared = pinnedMaterialInputFromGltf(
+        {
+            ...shared,
+            occlusionTexture: {
+                index: 0,
+                extensions: { KHR_texture_transform: {} },
+            },
+        },
+        { imageOf },
+    );
+    assert.ok(declared["occlusionTexture"], "the empty transform splits");
+    assert.equal(
+        declared["_hasUvTx"],
+        undefined,
+        "but it patches no field, so no UV-transform arm composes",
+    );
+});
+
 test("an extension texture reaches the pin under the pin's own property name", async () => {
     // Each `detect` reads its own names — the coat's normal map is
     // `bumpTexture`, the sheen tint and the iridescence map are both plain
