@@ -25,10 +25,6 @@ export class AnimationLowerer {
             managerModule,
             "startAnimationManager",
         );
-        this.context.functionDeclaration(
-            groupModule,
-            "goToFrame",
-        );
         const { declaration: evaluateSampler } =
             this.context.functionDeclaration(
                 evaluateModule,
@@ -58,6 +54,291 @@ export class AnimationLowerer {
                 "Expected quaternion slerp interpolation.",
             );
         }
+        // The STEP tie-break, paired with the emitted `evaluate_track`
+        // STEP branch (`time >= track.keys[right].time ? right : left`):
+        // a query landing exactly on a key time takes the LATER key's
+        // value, so the `>=` comparison direction is pinned rather than
+        // trusted. The shape is asserted whole because every part of it
+        // is structural — there is no tunable constant to flow.
+        const stepSources = this.context
+            .findNodes(
+                evaluateSampler,
+                (node): node is ts.VariableDeclaration =>
+                    ts.isVariableDeclaration(node),
+            )
+            .filter(
+                (candidate) =>
+                    ts.isIdentifier(candidate.name) &&
+                    candidate.name.text === "srcOff" &&
+                    candidate.initializer !== undefined &&
+                    ts.isBinaryExpression(
+                        this.context.unwrapExpression(
+                            candidate.initializer,
+                        ),
+                    ),
+            );
+        if (stepSources.length !== 1) {
+            this.context.contractError(
+                evaluateSampler,
+                "Expected one STEP source-offset computation.",
+            );
+        }
+        this.context.assertExpressionShape(
+            stepSources[0]!.initializer!,
+            "(t >= t1 ? idx + 1 : idx) * stride",
+            "STEP tie-break",
+        );
+        // The near-parallel slerp threshold feeds the emitted
+        // `slerp_quaternion` guard (`if (dot > ...)`) directly, so a pin
+        // retune changes the generated literal — a deliberate byte-gate
+        // signal — instead of passing behind a presence check. The
+        // structural filter (a `dot > <literal>` comparison) also pins
+        // the comparison direction. The `std::clamp(dot, -1.0f, 1.0f)`
+        // ahead of the emitted acos has no pinned counterpart: it is our
+        // defensive guard, unreachable while dot <= this threshold.
+        const { file: evaluateFile, declaration: quatSlerp } =
+            this.context.functionDeclaration(
+                evaluateModule,
+                "quatSlerp",
+            );
+        const parallelThresholds = this.context
+            .findNodes(
+                quatSlerp,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node),
+            )
+            .filter(
+                (expression) =>
+                    expression.operatorToken.kind ===
+                        ts.SyntaxKind.GreaterThanToken &&
+                    ts.isIdentifier(expression.left) &&
+                    expression.left.text === "dot" &&
+                    ts.isNumericLiteral(expression.right),
+            );
+        if (parallelThresholds.length !== 1) {
+            this.context.contractError(
+                quatSlerp,
+                "Expected one near-parallel slerp threshold.",
+            );
+        }
+        const slerpParallelThreshold =
+            this.context.numericValue(
+                parallelThresholds[0]!.right,
+                evaluateFile,
+            );
+        // The playback tick the emitted `tick_group` transcribes lives on
+        // the controller `createPointerAnimationGroup` builds. Everything
+        // load-bearing in it is pinned here: the ms-per-second divisor
+        // flows into the emitted advance (as its reciprocal — the
+        // existing emitted form multiplies), and the loop-wrap
+        // arithmetic, its negative-wrap correction, and the play-range
+        // clamp are shape-asserted against the exact emitted lines.
+        const { file: propertyFile, declaration: pointerGroup } =
+            this.context.functionDeclaration(
+                propertyModule,
+                "createPointerAnimationGroup",
+            );
+        const tickExpressions = this.context.findNodes(
+            pointerGroup,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node),
+        );
+        const timeAssignment = (
+            operator: ts.SyntaxKind,
+            select: (right: ts.Expression) => boolean,
+            label: string,
+        ): ts.BinaryExpression => {
+            const matches = tickExpressions.filter(
+                (expression) =>
+                    expression.operatorToken.kind ===
+                        operator &&
+                    this.context
+                        .propertyPath(expression.left)
+                        ?.join(".") === "ctrl.time" &&
+                    select(
+                        this.context.unwrapExpression(
+                            expression.right,
+                        ),
+                    ),
+            );
+            if (matches.length !== 1) {
+                this.context.contractError(
+                    pointerGroup,
+                    `Expected one ${label}.`,
+                );
+            }
+            return matches[0]!;
+        };
+        // Advance: `ctrl.time += (deltaMs / 1000) * ctrl.speedRatio`.
+        // Structural checks rather than a full shape assert, so the
+        // divisor is free to flow into the emission.
+        const advance = timeAssignment(
+            ts.SyntaxKind.PlusEqualsToken,
+            (right) => ts.isBinaryExpression(right),
+            "playback advance",
+        );
+        const advanceProduct = this.context.unwrapExpression(
+            advance.right,
+        );
+        if (
+            !ts.isBinaryExpression(advanceProduct) ||
+            advanceProduct.operatorToken.kind !==
+                ts.SyntaxKind.AsteriskToken ||
+            this.context
+                .propertyPath(advanceProduct.right)
+                ?.join(".") !== "ctrl.speedRatio"
+        ) {
+            this.context.contractError(
+                advance,
+                "Expected the playback advance to scale by the speed ratio.",
+            );
+        }
+        const advanceRate = this.context.unwrapExpression(
+            advanceProduct.left,
+        );
+        if (
+            !ts.isBinaryExpression(advanceRate) ||
+            advanceRate.operatorToken.kind !==
+                ts.SyntaxKind.SlashToken ||
+            !ts.isIdentifier(advanceRate.left) ||
+            advanceRate.left.text !== "deltaMs"
+        ) {
+            this.context.contractError(
+                advance,
+                "Expected the playback advance to divide the frame delta.",
+            );
+        }
+        const msPerSecond = this.context.numericValue(
+            advanceRate.right,
+            propertyFile,
+        );
+        // The loop wrap and its negative-wrap correction, paired with the
+        // emitted `if (group->loop)` branch (`std::fmod` mirrors the
+        // pinned `%`, whose result carries the dividend's sign — the
+        // reason the correction exists).
+        const loopWrap = timeAssignment(
+            ts.SyntaxKind.EqualsToken,
+            (right) => ts.isBinaryExpression(right),
+            "loop wrap",
+        );
+        this.context.assertExpressionShape(
+            loopWrap.right,
+            "fromTime + ((ctrl.time - fromTime) % duration)",
+            "Animation loop wrap",
+        );
+        const wrapCorrection = timeAssignment(
+            ts.SyntaxKind.PlusEqualsToken,
+            (right) => ts.isIdentifier(right),
+            "wrap correction",
+        );
+        this.context.assertExpressionShape(
+            wrapCorrection,
+            "ctrl.time += duration",
+            "Animation wrap correction",
+        );
+        const wrapGuards = tickExpressions.filter(
+            (expression) =>
+                expression.operatorToken.kind ===
+                    ts.SyntaxKind.LessThanToken &&
+                this.context
+                    .propertyPath(expression.left)
+                    ?.join(".") === "ctrl.time",
+        );
+        if (wrapGuards.length !== 1) {
+            this.context.contractError(
+                pointerGroup,
+                "Expected one wrap-correction guard.",
+            );
+        }
+        this.context.assertExpressionShape(
+            wrapGuards[0]!,
+            "ctrl.time < fromTime",
+            "Animation wrap-correction guard",
+        );
+        // The play-range clamp, paired with the emitted non-loop branch's
+        // `std::clamp(current_time, from_time, to_time)` (max against the
+        // lower bound, min against the upper) and reused by the emitted
+        // seeker in `start_animation_manager`.
+        const rangeClamp = timeAssignment(
+            ts.SyntaxKind.EqualsToken,
+            (right) => ts.isCallExpression(right),
+            "play-range clamp",
+        );
+        this.context.assertExpressionShape(
+            rangeClamp.right,
+            "Math.min(Math.max(ctrl.time, fromTime), toTime)",
+            "Animation play-range clamp",
+        );
+        // The degenerate-range guard, paired with the emitted
+        // `if (duration <= 0.0f) return;`. The pinned Math.max(0, ...)
+        // never changes the guarded comparison's outcome, so the
+        // emission carries the bare difference.
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                pointerGroup,
+                "duration",
+            ),
+            "Math.max(0, toTime - fromTime)",
+            "Animation tick duration",
+        );
+        const durationGuards = tickExpressions.filter(
+            (expression) =>
+                expression.operatorToken.kind ===
+                    ts.SyntaxKind.LessThanEqualsToken &&
+                ts.isIdentifier(expression.left) &&
+                expression.left.text === "duration",
+        );
+        if (durationGuards.length !== 1) {
+            this.context.contractError(
+                pointerGroup,
+                "Expected one degenerate-range guard.",
+            );
+        }
+        this.context.assertExpressionShape(
+            durationGuards[0]!,
+            "duration <= 0",
+            "Animation degenerate-range guard",
+        );
+        // The seek conversion, paired with the emitted `go_to_frame`
+        // (`frame / group->clip.frame_rate`). The pinned
+        // `|| DEFAULT_FRAME_RATE` fallback is dead in the generated
+        // runtime: `create_property_animation_clip` throws on
+        // non-positive frame rates, so the clip's rate is always usable.
+        const { declaration: goToFrame } =
+            this.context.functionDeclaration(
+                groupModule,
+                "goToFrame",
+            );
+        const seekAssignments = this.context
+            .findNodes(
+                goToFrame,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node),
+            )
+            .filter(
+                (expression) =>
+                    expression.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken &&
+                    this.context
+                        .propertyPath(expression.left)
+                        ?.join(".") === "group.currentTime" &&
+                    ts.isBinaryExpression(
+                        this.context.unwrapExpression(
+                            expression.right,
+                        ),
+                    ),
+            );
+        if (seekAssignments.length !== 1) {
+            this.context.contractError(
+                goToFrame,
+                "Expected one frame-to-time seek conversion.",
+            );
+        }
+        this.context.assertExpressionShape(
+            seekAssignments[0]!.right,
+            "frame / (group.frameRate || DEFAULT_FRAME_RATE)",
+            "Animation seek conversion",
+        );
 
         return {
             modulePath: propertyModule,
@@ -105,7 +386,7 @@ std::array<float, 4> slerp_quaternion(
         for (float& component : right) component = -component;
         dot = -dot;
     }
-    if (dot > 0.9995f) {
+    if (dot > ${this.context.floatLiteral(slerpParallelThreshold)}) {
         std::array<float, 4> result{};
         for (std::size_t index = 0; index < result.size(); ++index) {
             result[index] =
@@ -226,7 +507,7 @@ void tick_group(
     float delta_ms) {
     if (!group || !group->playing) return;
     group->current_time +=
-        delta_ms * 0.001f * group->speed_ratio;
+        delta_ms * ${this.context.floatLiteral(1 / msPerSecond)} * group->speed_ratio;
     const float duration =
         group->to_time - group->from_time;
     if (duration <= 0.0f) return;

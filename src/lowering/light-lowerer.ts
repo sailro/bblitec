@@ -77,6 +77,46 @@ ${body}
         const modulePath = "src/light/hemispheric.ts";
         const symbolName = "createHemisphericLight";
         const defaults = this.extractHemisphericDefaults(modulePath, symbolName);
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        // The pinned local-matrix call anchors the emitted argument
+        // list: a hemispheric light has no position, so the pin passes a
+        // literal origin, and those components flow into the emitted
+        // zeros rather than being retyped beside the direction.
+        const matrixCall = this.context.callExpression(
+            declaration,
+            "localMatrixFromDirection",
+        );
+        const directionArguments = [
+            "light.direction.x",
+            "light.direction.y",
+            "light.direction.z",
+        ];
+        if (
+            matrixCall.arguments.length !== 7 ||
+            directionArguments.some(
+                (expected, index) =>
+                    this.context
+                        .propertyPath(
+                            matrixCall.arguments[index]!,
+                        )
+                        ?.join(".") !== expected,
+            )
+        ) {
+            this.context.contractError(
+                matrixCall,
+                "Expected the hemispheric local matrix to be built from the direction.",
+            );
+        }
+        const origin = [3, 4, 5].map((index) =>
+            this.context.numericValue(
+                matrixCall.arguments[index]!,
+                file,
+            ),
+        );
         return {
             modulePath,
             symbolName,
@@ -99,9 +139,9 @@ LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float inten
         direction.x,
         direction.y,
         direction.z,
-        0.0f,
-        0.0f,
-        0.0f,
+        ${this.context.floatLiteral(origin[0]!)},
+        ${this.context.floatLiteral(origin[1]!)},
+        ${this.context.floatLiteral(origin[2]!)},
         light.local_matrix);
     engine.lights.push_back(light);
     return LightHandle{static_cast<std::uint32_t>(engine.lights.size() - 1)};
@@ -126,6 +166,44 @@ LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float inten
                 "Pinned point-light default range is no longer Number.MAX_VALUE.",
             );
         }
+        // A point light is the one kind whose local matrix the pinned
+        // factory builds by hand: it seeds the identity diagonal once at
+        // creation (`m[0] = m[5] = m[10] = m[15] = 1`) and writes the
+        // translation column inside its local-matrix builder
+        // (`m[12..14] = light.position.*`). Both the indices and the
+        // diagonal values flow from those pinned stores into the emitted
+        // lines below; the size checks make an added or moved store fail
+        // generation instead of leaving the emission stale.
+        const localMatrix = this.extractPointLightLocalMatrix(
+            modulePath,
+            symbolName,
+        );
+        const identityStore = (index: number): string => {
+            const value = localMatrix.identity.get(index);
+            if (value === undefined) {
+                throw new Error(
+                    `Pinned point-light local matrix no longer seeds m[${index}].`,
+                );
+            }
+            return this.context.floatLiteral(value);
+        };
+        const translationIndex = (axis: string): number => {
+            const index = localMatrix.translation.get(axis);
+            if (index === undefined) {
+                throw new Error(
+                    `Pinned point-light local matrix no longer stores position.${axis}.`,
+                );
+            }
+            return index;
+        };
+        if (
+            localMatrix.identity.size !== 4 ||
+            localMatrix.translation.size !== 3
+        ) {
+            throw new Error(
+                "Pinned point-light local matrix gained stores the emission does not carry.",
+            );
+        }
         return {
             modulePath,
             symbolName,
@@ -146,13 +224,13 @@ LightHandle create_point_light(
     light.diffuse_color = ${this.context.cppColor3(defaults.diffuseColor)};
     light.specular_color = ${this.context.cppColor3(defaults.specularColor)};
     light.range = std::numeric_limits<float>::max();
-    light.local_matrix[0] = 1.0f;
-    light.local_matrix[5] = 1.0f;
-    light.local_matrix[10] = 1.0f;
-    light.local_matrix[12] = position.x;
-    light.local_matrix[13] = position.y;
-    light.local_matrix[14] = position.z;
-    light.local_matrix[15] = 1.0f;
+    light.local_matrix[0] = ${identityStore(0)};
+    light.local_matrix[5] = ${identityStore(5)};
+    light.local_matrix[10] = ${identityStore(10)};
+    light.local_matrix[${translationIndex("x")}] = position.x;
+    light.local_matrix[${translationIndex("y")}] = position.y;
+    light.local_matrix[${translationIndex("z")}] = position.z;
+    light.local_matrix[15] = ${identityStore(15)};
     engine.lights.push_back(light);
     return LightHandle{
         static_cast<std::uint32_t>(engine.lights.size() - 1)};
@@ -166,7 +244,7 @@ LightHandle create_point_light(
     public lowerDirectionalFactory(): LoweredSource {
         const modulePath = "src/light/directional-light.ts";
         const symbolName = "createDirectionalLight";
-        const { declaration } =
+        const { file, declaration } =
             this.context.functionDeclaration(
                 modulePath,
                 symbolName,
@@ -177,16 +255,50 @@ LightHandle create_point_light(
             "directional",
             false,
         );
-        if (
-            !this.context.hasCall(
+        // The pinned factory builds the local matrix from the direction
+        // AND the light's position property (the same call shape a spot
+        // uses); the emitted zeros are the pinned DEFAULT position
+        // (`new ObservableVec3(0, 0, 0, ...)`), extracted below so they
+        // stay the pin's own — the native record has no settable
+        // directional position, so a changed default could not be
+        // carried silently.
+        this.context.assertExpressionShape(
+            this.context.callExpression(
                 declaration,
                 "localMatrixFromDirection",
-            )
+            ),
+            "localMatrixFromDirection(light.direction.x, light.direction.y, light.direction.z, light.position.x, light.position.y, light.position.z, _localMatrix)",
+            "directional-light local matrix",
+        );
+        const lightObject = this.context.callObjectArgument(
+            declaration,
+            "applyWorldMatrixAccessors",
+        );
+        const positionInitializer =
+            this.context.unwrapExpression(
+                this.context.propertyInitializer(
+                    lightObject,
+                    "position",
+                ),
+            );
+        if (
+            !ts.isNewExpression(positionInitializer) ||
+            this.context
+                .propertyPath(positionInitializer.expression)
+                ?.join(".") !== "ObservableVec3" ||
+            (positionInitializer.arguments?.length ?? 0) < 3
         ) {
-            throw new Error(
-                "Pinned directional-light factory no longer uses localMatrixFromDirection.",
+            this.context.contractError(
+                positionInitializer,
+                "Expected the directional default position to be an ObservableVec3.",
             );
         }
+        const defaultPosition = [0, 1, 2].map((index) =>
+            this.context.numericValue(
+                positionInitializer.arguments![index]!,
+                file,
+            ),
+        );
         return {
             modulePath,
             symbolName,
@@ -212,9 +324,9 @@ LightHandle create_directional_light(
         direction.x,
         direction.y,
         direction.z,
-        0.0f,
-        0.0f,
-        0.0f,
+        ${this.context.floatLiteral(defaultPosition[0]!)},
+        ${this.context.floatLiteral(defaultPosition[1]!)},
+        ${this.context.floatLiteral(defaultPosition[2]!)},
         light.local_matrix);
     engine.lights.push_back(light);
     return LightHandle{
@@ -229,7 +341,7 @@ LightHandle create_directional_light(
     public lowerSpotFactory(): LoweredSource {
         const modulePath = "src/light/spot-light.ts";
         const symbolName = "createSpotLight";
-        const { declaration } = this.context.functionDeclaration(
+        const { file, declaration } = this.context.functionDeclaration(
             modulePath,
             symbolName,
         );
@@ -241,14 +353,52 @@ LightHandle create_directional_light(
         );
         // The cone is stored as the cosine of its half angle, computed once
         // at creation. `angle` is the FULL cone angle, so a scene passing
-        // Math.PI / 2 lights a quarter turn in total.
-        this.context.assertExpressionShape(
+        // Math.PI / 2 lights a quarter turn in total. The formula is
+        // anchored structurally (a Math.cos over `angle * <factor>`) and
+        // the half-angle factor flows into the emitted
+        // `std::cos(angle * ...)`, so a pin retune regenerates. The
+        // precision semantics stay the emission's own: float cos of an
+        // already-rounded float angle, where the pin takes a double cos
+        // into a float UBO store — the one-ULP boundary gap is the
+        // TODO.md entry "Carry a spot light's cone angle at the pin's
+        // precision", which owns the measurement plan before any
+        // semantic change here.
+        const coneCosine = this.context.unwrapExpression(
             this.context.variableInitializer(
                 declaration,
                 "_cosHalfAngle",
             ),
-            "Math.cos(angle * 0.5)",
-            "spot-light cone cosine",
+        );
+        if (
+            !ts.isCallExpression(coneCosine) ||
+            this.context
+                .propertyPath(coneCosine.expression)
+                ?.join(".") !== "Math.cos" ||
+            coneCosine.arguments.length !== 1
+        ) {
+            this.context.contractError(
+                coneCosine,
+                "Expected the cone cosine to be a Math.cos call.",
+            );
+        }
+        const coneProduct = this.context.unwrapExpression(
+            coneCosine.arguments[0]!,
+        );
+        if (
+            !ts.isBinaryExpression(coneProduct) ||
+            coneProduct.operatorToken.kind !==
+                ts.SyntaxKind.AsteriskToken ||
+            !ts.isIdentifier(coneProduct.left) ||
+            coneProduct.left.text !== "angle"
+        ) {
+            this.context.contractError(
+                coneCosine,
+                "Expected the cone cosine to scale the full angle.",
+            );
+        }
+        const coneHalfFactor = this.context.numericValue(
+            coneProduct.right,
+            file,
         );
         // A spot is the one light kind whose local matrix carries both a
         // direction and a position; the other kinds pass one or the other.
@@ -285,7 +435,7 @@ LightHandle create_spot_light(
     light.direction = direction;
     light.intensity = intensity;
     light.exponent = exponent;
-    light.cos_half_angle = std::cos(angle * 0.5f);
+    light.cos_half_angle = std::cos(angle * ${this.context.floatLiteral(coneHalfFactor)});
     light.diffuse_color = ${this.context.cppColor3(defaults.diffuseColor)};
     light.specular_color = ${this.context.cppColor3(defaults.specularColor)};
     light.range = std::numeric_limits<float>::max();
@@ -305,6 +455,92 @@ LightHandle create_spot_light(
 } // namespace bbl
 `,
         };
+    }
+
+    /**
+     * The pinned point-light local-matrix stores: the identity diagonal
+     * the factory seeds at creation and the translation column its
+     * local-matrix builder writes. Keyed by index and by axis so both
+     * the indices and the values can flow into the emitted factory, and
+     * so an unrecognized store fails loudly (`numericValue` rejects
+     * anything that is neither a constant nor a position component).
+     */
+    private extractPointLightLocalMatrix(
+        modulePath: string,
+        symbolName: string,
+    ): {
+        identity: ReadonlyMap<number, number>;
+        translation: ReadonlyMap<string, number>;
+    } {
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                modulePath,
+                symbolName,
+            );
+        const identity = new Map<number, number>();
+        const translation = new Map<string, number>();
+        const stores = this.context.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                ts.isElementAccessExpression(node.left) &&
+                ts.isIdentifier(node.left.expression) &&
+                node.left.expression.text === "m",
+        );
+        for (const store of stores) {
+            const target =
+                store.left as ts.ElementAccessExpression;
+            if (
+                !ts.isNumericLiteral(
+                    target.argumentExpression,
+                )
+            ) {
+                this.context.contractError(
+                    store,
+                    "Expected a constant local-matrix index.",
+                );
+            }
+            const index = Number(
+                target.argumentExpression.text,
+            );
+            if (
+                identity.has(index) ||
+                [...translation.values()].includes(index)
+            ) {
+                this.context.contractError(
+                    store,
+                    `Local-matrix index ${index} is stored twice.`,
+                );
+            }
+            const right = this.context.unwrapExpression(
+                store.right,
+            );
+            const path = this.context
+                .propertyPath(right)
+                ?.join(".");
+            if (
+                path === "light.position.x" ||
+                path === "light.position.y" ||
+                path === "light.position.z"
+            ) {
+                const axis = path.slice(-1);
+                if (translation.has(axis)) {
+                    this.context.contractError(
+                        store,
+                        `position.${axis} is stored twice.`,
+                    );
+                }
+                translation.set(axis, index);
+                continue;
+            }
+            identity.set(
+                index,
+                this.context.numericValue(right, file),
+            );
+        }
+        return { identity, translation };
     }
 
     private extractHemisphericDefaults(modulePath: string, symbolName: string): HemisphericDefaults {
