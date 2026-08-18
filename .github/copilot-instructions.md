@@ -49,19 +49,17 @@ npm run scene -- uniforms scene33 --size 96    # decode one browser buffer as na
 | CPU side or GPU side? | `parity --differential` — backends agreeing to one LSB puts it on ours |
 | Which value differs from Babylon Lite's? | `diff` |
 | What did the browser actually upload? | `capture`, then `uniforms` |
-| What did *we* put in a pinned variant's blocks? | `diff --recapture`, then `pinnedMaterialBlocks`/`pinnedMeshBlocks` in the native capture — built by the draw path's own writers, refused variants included When `compose` matches byte-for-byte, every pinned residual is an input: diff the two listings before touching any source |
+| What did *we* put in a pinned variant's blocks? | `diff --recapture`, then `pinnedMaterialBlocks`/`pinnedMeshBlocks` in the native capture — built by the draw path's own writers, refused variants included. When `compose` matches byte-for-byte, every pinned residual is an input: diff the two listings before touching any source |
 | Which draw owns the bad pixels? | attribution buffers under `artifacts/parity/<id>` |
 | Does removing the feature remove the residual? | copy the scene to `examples/`, strip it, `parity --recapture-reference` |
 
-Four rules that exist because sessions were lost to their absence:
+Four rules:
 
 - **The loader is the specification. The file format is not.** When you
   need to know what a glTF property means to Babylon, open the loader
   extension that reads it — never reason from what the property means in
   the glTF spec, and never generalize one extension's rule to its
-  neighbours. Every rule re-derived that way in one session was wrong,
-  and each one composed a variant that looked plausible and was missing
-  an arm: a declared extension is enabled *with no factor at all*
+  neighbours: a declared extension is enabled *with no factor at all*
   (`isEnabled: true` unconditionally, in all four of them); a
   `KHR_texture_transform: {}` patches nothing so composes no transform;
   a `baseColorFactor` with no image behind it is baked into the texel
@@ -80,7 +78,7 @@ Four rules that exist because sessions were lost to their absence:
   the sheen setter, `_cullMode` from a pipeline-descriptor default), and
   an arm we never compose looks exactly like a small systematic bias.
 - **Measure the PNG, do not eyeball it.** "The sprites are in the wrong
-  place" cost an hour; "exactly 7200 px at (640,180)-(719,269)" named the
+  place" is a guess; "exactly 7200 px at (640,180)-(719,269)" named the
   bug immediately.
 - **Bisect a defect before trusting the name it arrived with.** Toggle the
   suspect off and re-measure; the element whose removal makes the number

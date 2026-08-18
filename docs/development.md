@@ -88,8 +88,9 @@ scene is considered for integration, before implementing native fixes:
    Then bisect with the runtime switches before trusting the description the
    defect came with — `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0` each remove
    one background element, and the one whose removal makes the measurement
-   *worse* is not the cause. Both defects above were first attributed to the
-   wrong element by eye.
+   *worse* is not the cause
+   ([debugging](debugging.md#before-calling-a-scene-done) carries the measured
+   example).
 
 Do not wait for a high MAD investigation to perform this review. Early history
 inspection prevents repeating Babylon Lite's own parity debugging and helps
@@ -807,10 +808,7 @@ npm run scenes:parity
 npm run status:verify
 ```
 
-`scenes:process` *is* compile, shaders and build. The sequence used to name
-the first two separately as well, which ran them twice: with write-if-different
-generation the second pass wrote nothing, so it was two and a half minutes
-spent re-deriving bytes that were already on disk.
+`scenes:process` *is* compile, shaders and build.
 
 `scenes:parity` runs both backends (`parity all --differential`) because
 [status](status.md) publishes an SDL_GPU and a Dawn number for every scene; a
@@ -819,8 +817,7 @@ On a machine without the pinned Dawn library, run `npm run scene -- parity all`
 instead and treat the Dawn column as unmeasured.
 
 `status:verify` compares every published pair, and its severity colour, against
-the reports the parity run wrote. The table is checked data, not prose: two rows
-had drifted from measurement before this check existed.
+the reports the parity run wrote. The table is checked data, not prose.
 
 Do not run generation and native builds concurrently. Do not build multiple
 CMake trees concurrently against the same vcpkg installation.

@@ -158,19 +158,17 @@ quantized uniform is bit-equal to the baked texel), while the base
 color bakes the pinned sRGB bytes into the fallback texel itself with
 the shader uniform reverted to white, because the hardware sRGB
 decode of those bytes is the reference — a CPU transcription of the
-IEC formula measurably disagreed with the GPU's table (scene 255
-regressed 0.101 to 0.249 before the texel-level port took it to
-0.000). The record keeps the raw alpha for the pinned blend
-semantics.
+IEC formula measurably disagreed with the GPU's table; scene 255
+gates the texel-level port. The record keeps the raw alpha for the
+pinned blend semantics.
 An **animated** base color factor inverts that bake. `whiteFallback` in
 `animation-pointer-basecolor.ts` swaps the factor for `[1,1,1,1]` before
 the upload whenever a `KHR_animation_pointer` channel drives it and the
 material has no base color image, and hands the real factor back to be
 carried as a UBO field for the pointer writer to overwrite. Baking it as
-well applies it twice: Scene 253's Transparency sphere carried the
-authored 0.502 in its texel and the animated 0.648 in its uniform against
-the browser's 0.648 alone, and that factor of 0.5019 was the whole of its
-region figure (Dawn 1.328 to 0.030). Because materials are built before
+well applies the factor twice — the authored value in the texel and the
+animated value in the uniform, against the browser's uniform alone; Scene
+253 gates it. Because materials are built before
 animations are read, the answer has to be gathered in a pre-pass, which is
 what upstream does and what the generated loader now does.
 Environment horizon occlusion applies only to normal-mapped materials:
@@ -215,14 +213,10 @@ adopting reverse-Z. A triangle that straddles the eye plane is another
 matter: the clipper generates new vertices and interpolates their
 attributes from clip space, `z` included, so a differing `z` row shifts
 the interpolated varying in its last bits across the whole clipped
-triangle. Scene 7's solid skybox measures it exactly. Its cube is centred
-on the eye, so the `-Z` face is entirely in front and its two side faces
-straddle; against the golden the front face was byte-identical over
-129240 sky pixels while the `+X` face differed on 9.3% of its 24360,
-every one of them ±1 and thinning to zero at the shared edge — the
-signature of an error that vanishes at the untouched vertices. Binding
-the pin's own reverse-Z row for that draw takes the `+X` face to zero and
-the scene from 0.069 to 0.059 full MAD. That is why
+triangle. Scene 7's solid skybox measures it exactly: its cube is centred
+on the eye, so its side faces straddle the eye plane, and the `+X` face
+carries ±1 errors thinning to zero at the untouched vertices until the
+draw binds the pin's own reverse-Z row. That is why
 `build_solid_skybox_scene_uniforms` builds its own view-projection: the
 draw writes no depth and is first in the pass, so the convention reaches
 its clipping without reaching any depth test. Grounds cannot take the
@@ -329,13 +323,11 @@ are `+Y` and `-Y`, which is what an unculled cube showed: a hard-edged
 quadrilateral of `-Y` — the projection of the plane through the cube centre —
 over a `+Y` surround, where the pinned cube shows one continuous sky. No gated
 pose reaches it, because every gated camera sits inside its own skybox; Scene
-14 at `cam.beta = 0.55` puts the camera above the cube and measured background
-MAD 7.312 before the cull mode was carried over and 0.339 after, on both
-backends.
+14 at `cam.beta = 0.55` puts the camera above the cube and reproduces it.
 
-Embedded image-based lights evaluate SH without the transcription's former
-`[0,4]` clamp. Environment rotation affects SH and cubemap lookup directions,
-while horizon occlusion intentionally uses the unrotated reflection vector.
+Embedded image-based lights evaluate SH unclamped. Environment rotation
+affects SH and cubemap lookup directions, while horizon occlusion
+intentionally uses the unrotated reflection vector.
 
 glTF animation uses pinned LINEAR quaternion interpolation and deterministic
 time seeking, plus CUBICSPLINE quaternion/translation interpolation where
@@ -346,8 +338,8 @@ morph slice use Babylon's pinned uncapped storage-buffer path
 (`morph-fragment-core.ts`): a flat 6-float delta buffer and a weights
 buffer with the 16-byte `{count, vertexCount}` header, accumulated in
 ascending target order before skinning, with source-marker assertions
-pinning the loop, indexing, and header ABI. Scene 243 gates it and renders
-bit-identically to the former CPU fallback. Primitives without source normals remain
+pinning the loop, indexing, and header ABI. Scene 243 gates it.
+Primitives without source normals remain
 deindexed and use a narrow CPU fallback to recompute post-deformation face
 normals, while their positions are still GPU-skinned. See
 [Architecture](architecture.md#animation-and-deformation) for layout,
@@ -405,9 +397,8 @@ shader an instrumented capture recovers computes `emissiveUV` on the line
 above and then ignores it. The generated fragment matches that. It is only
 observable when a material carries both an emissive texture and a non-identity
 emissive transform, which in this corpus means Scene 39, whose water animates
-one: sampling through the transform scrolled an emissive texture the browser
-holds still, and cost 0.581 of region MAD until the sample was put back on the
-raw UV.
+one: sampling through the transform scrolls an emissive texture the browser
+holds still.
 
 **The bitangent is a varying.** `pbr-template.ts`'s `tangentBlock` builds
 `B_local = cross(N_local, T_local) * tangent.w` before the world and skin
@@ -487,10 +478,10 @@ on this scene they agree byte for byte with each other and with the golden.
 
 **A skybox size of zero asks the loader for the pinned default.** The
 generated loader resolves an unset `skyboxSize` to `createDefaultEnvironment`'s
-20, so the compiler passes zero rather than substituting a size of its own.
-It previously substituted 1000, which built a skybox large enough for a
-camera's far plane to clip — invisible from a scene's reference pose and a
-straight-edged hole in the background as soon as the camera moved.
+20, so the compiler passes zero rather than substituting a size of its own —
+a compiler-substituted size builds a skybox the camera's far plane can clip,
+invisible from the reference pose and a straight-edged hole in the background
+as soon as the camera moves.
 
 **A DDS environment's irradiance harmonics are projected at compile time.**
 Babylon Lite's `loadDdsEnvironment` uploads the file's mip chain as the
@@ -591,8 +582,7 @@ Scenes 145 and 146 gate the separate production geometry-renderer path: all
 eleven geometry texture types, split 7+4 MRT passes, optional real color,
 independent depth, viewport copies, and MSAA resolve.
 Frame-graph depth targets select a supported D32/D24 sampled depth format,
-matching Babylon Lite's `depth32float` geometry-target contract instead of the
-former hardcoded D16 adaptation.
+matching Babylon Lite's `depth32float` geometry-target contract.
 The `scene geometry` diagnostic command selects each existing copy task
 full-screen in the capture harness and native PAL without modifying curated
 scene sources. It emits per-attachment Babylon Lite/native/diff images and a
@@ -608,8 +598,8 @@ the loop index, so no per-task literal exists to rewrite. The task list comes
 from the generated entry point, where the compiler has already unrolled that
 loop.
 Standard double-sided materials disable culling but do not flip fragment
-normals. Matching that pinned distinction reduced scene 145 full-resolution
-view/world-normal MAD from `1.459`/`1.446` to `0.002`/`0.003`.
+normals; scene 145's full-resolution view/world-normal attachments gate the
+distinction.
 Mirrored double-sided PBR meshes retain their authored index order and select
 a clockwise front-face pipeline, preserving Babylon Lite's
 `front_facing`-driven normal flip in Scenes 168 and 266.
@@ -696,12 +686,10 @@ Scenes 145 and 146 resolve each geometry attachment at full resolution, then
 bilinearly downscale it into one of twelve preview regions on a 4x-MSAA target
 before the final mosaic resolve. Babylon Lite floors each normalized viewport
 edge to integer target pixels and applies the same rectangle as a scissor.
-SDL_GPU previously received fractional viewport bounds without that scissor,
-which introduced partial-sample coverage at tile boundaries. Preserving the
-JavaScript double-precision viewport expressions and the pinned floor/scissor
-contract reduced scene 145 full MAD from `1.077` to `0.063` and scene 146 from
-`0.845` to `0.021`, without another pass or a scene-specific path. The
-full-resolution attachment maxima remain `0.067` and `0.057`; use
+Fractional viewport bounds without that scissor introduce partial-sample
+coverage at tile boundaries, so native preserves the JavaScript
+double-precision viewport expressions and the pinned floor/scissor contract.
+The full-resolution attachment maxima remain `0.067` and `0.057`; use
 `npm run scene -- geometry scene145|scene146` to inspect them individually.
 
 ## Validation policy

@@ -11,8 +11,7 @@ Three rules make the rest of this page work:
 
 - **Capture before theorizing.** A hypothesis that was not derived from a
   capture is a guess, and a guess that happens to sound mechanical is the
-  expensive kind. Two sessions were lost to inferences from pixel
-  statistics that a `scene -- diff` would have settled in a minute.
+  expensive kind.
 - **Never call a residual a floor from statistics alone.** "It is
   probably a sampling floor" is a claim about a mechanism, and a
   mechanism claim needs a mechanism: the pinned line that does something
@@ -61,7 +60,7 @@ at least once:
   it was captured under. If native and `scene -- capture <id> --seek <t>`
   agree with each other but the golden disagrees with both, the golden is
   stale — recapture it with `parity <id> --recapture-reference` before
-  debugging anything else. This cost an hour on scene 242.
+  debugging anything else.
 
 One more, off the parity path: `artifacts/shader-cache` keys on the WGSL
 and the DXC flags, not on `tools/compile-shaders.ps1`. After editing that
@@ -123,7 +122,7 @@ can cause:
 3. **Texture sample expressions.** The set of `textureSample(...)` calls
    in the browser's fragments against ours. A sample taken against a
    different UV than the pin is invisible in every uniform and obvious
-   here — that is exactly what scene 39's `0.581 → 0.002` was.
+   here — that is exactly what scene 39's emissive residual was.
 
 Values are matched rather than blocks: every float tuple the browser
 uploaded is indexed, and each native field is looked up in it, so a
@@ -290,10 +289,8 @@ before choosing a shape.
   the cause: disabling the ground took that scene from 6.455 to 9.619,
   disabling the skybox took it to 1.202, and that ordering named the
   culprit before any code was read.
-- **Measure the cost of anything you are about to scope out.** Two
-  beliefs that made remaining work look large — "the Dawn bring-up is
-  entangled with the renderer", "re-proving neutrality is expensive" —
-  were each checkable in a few minutes and each was wrong.
+- **Measure the cost of anything you are about to scope out.** A belief
+  that makes remaining work look large is often checkable in minutes.
 
 ## Why each tool still exists
 

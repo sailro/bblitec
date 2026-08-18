@@ -133,17 +133,6 @@ present):
 | SDL_GPU | 0.127 ms | 0.085 ms |
 | Dawn | 0.208 ms | 0.141 ms |
 
-The bracket used to start at each backend's own surface acquire.
-SDL_GPU now has to acquire before it may advance the scene at all — a
-null swapchain must skip the whole frame, not just its draws — so an
-acquire-anchored bracket would have covered the scene half on one
-backend and not the other. Widening both to the loop body was measured
-against the old shape in one session before it was published: SDL_GPU
-0.136/0.0896 to 0.127/0.0852 and Dawn 0.216/0.1453 to 0.208/0.1414,
-both *down* despite covering strictly more work, so the scene half of
-a Scene 1 frame sits below run-to-run noise and the two definitions are
-continuous.
-
 Dawn's ~60% higher CPU cost at this (sub-millisecond) scale comes from
 always-on validation and robustness — which must stay on, since the
 browser reference runs with both — and per-draw uniform-buffer writes
@@ -233,45 +222,27 @@ Regression guards from the migration; each was measured, not assumed:
   vanished.
 - **The `.env` RGBD cubemap Y-flip is pinned behavior**, not an SDL
   adaptation: upstream `uploadCubemapRGBD` documents "BJS uploads
-  cubemap faces with invertY=true". Uploading unflipped cost scene 1
-  0.89 MAD; flipping restored 0.001.
+  cubemap faces with invertY=true"; uploading unflipped costs scene 1
+  0.89 MAD.
 - The registry `backgroundColor` values are region-keying colors, not
   exact clear values (scene 2's actual background is 76, not 77).
-- **The scene 243 "silhouette floor" was a feature gap, not
-  arithmetic.** Five suspects were eliminated by experiment
-  (evaluation place, shader codegen, rasterization, input precision,
-  pose timing) before instrumented browser captures — hooked
-  `createShaderModule`, buffer and texture uploads, and render-bundle
-  draws — proved the weights, morph deltas, geometry, and matrices
-  bit-identical and localized the entire residual band to the
-  platform slab draw. The cause: the slab's baked-AO
-  `occlusionTexture` on TEXCOORD_1, which the native material
-  pipeline silently dropped (and the native glTF loader never read
-  TEXCOORD_1 at all). Porting the pinned dedicated uv2 occlusion pair
-  took the scene from 1.043 to 0.052 foreground MAD on both backends,
-  and the scene-247 findings below (factor quantization and the
-  normal-map horizon-occlusion gate) closed the rest to 0.005.
-  The instrumented differential capture is the repeatable lesson —
-  it now ships as `scene -- capture` (see
-  [development](development.md#instrumented-browser-capture)) — and
-  it also proved reverse-Z versus the native forward-Z adaptation and
-  the browser's world-matrix mirror versus the native baked-vertex
-  mirror produce identical images to ~1e-5 px, so those adaptations
-  stay.
-- **The scene 247 instancing floor dissolved under the same
-  instrumented capture.** Three stacked causes, none of them
-  instancing arithmetic: texture-less PBR factors shade quantized in
-  the browser (the pinned factor-texture bake, with base color baked
-  as sRGB bytes whose hardware decode is the reference — a CPU
-  transcription of the decode was measurably off), the browser
-  composes TRS and world matrices in JavaScript doubles rounded once
-  (native now matches — all 1899 captured thin-instance matrices are
-  bit-identical), and environment horizon occlusion is composed only
-  for normal-mapped materials (native applied it unconditionally,
-  dimming metallic silhouette speculars by one MSAA sample step —
-  the dominant term). 0.405 → 0.014 foreground MAD on both backends;
-  the old float32-versus-float64 world-composition attribution was
-  wrong, and the same contracts took scene 255 from 0.101 to 0.000.
+- **Scene 243's baked-AO occlusion is the dedicated uv2 texture
+  pair** — an `occlusionTexture` on TEXCOORD_1 without a
+  metallic-roughness image binds through its own pair sampled at uv2,
+  canonical in [fidelity](fidelity.md). The instrumented differential
+  capture that settled it ships as `scene -- capture` (see
+  [development](development.md#instrumented-browser-capture)), and the
+  same captures proved the native forward-Z and baked-vertex-mirror
+  adaptations render identically to the browser's reverse-Z and
+  world-matrix mirror to ~1e-5 px, so both adaptations stay.
+- **Scene 247 is three shading contracts, none of them instancing
+  arithmetic**: texture-less PBR factors shade quantized through the
+  pinned factor-texture bake (base color as sRGB bytes whose hardware
+  decode is the reference), TRS and world matrices compose in
+  JavaScript doubles rounded once at the float32 store (all 1899
+  captured thin-instance matrices are bit-identical), and environment
+  horizon occlusion composes only for normal-mapped materials. Each
+  contract is canonical in [fidelity](fidelity.md).
 - **Scene 33's backend delta was the image-processing pass, measured
   rather than argued — and it closed when the vendored SDL patch
   landed.** At one sample the then-current delta collapsed to
@@ -282,14 +253,9 @@ Regression guards from the migration; each was measured, not assumed:
   complementary question: its delta is 0.000/0.001 at *both* sample
   counts, so what remains there is not multisampling.
 - **The single-sample diagnostic reaches the frame-graph scenes too.**
-  SDL_GPU used to refuse `BBLITE_MSAA=1` on every scene carrying an
-  explicit resolve task — 116, 145 and 146 — because the resolve step
-  asked for `SDL_GPU_STOREOP_RESOLVE` whatever the source's sample
-  count was, and D3D12 will not close a command list containing that.
-  It now makes the same degradation Dawn always made: with nothing to
-  average, the resolve of a single-sample source is the source, so the
-  step becomes a texture copy. The two backends no longer disagree
-  about the diagnostic itself.
+  At one sample a resolve step becomes a copy on both backends
+  (scenes 116, 145 and 146): with nothing to average, the resolve of a
+  single-sample source is the source.
 
 ## Dawn backend architecture (`native/src/pal_dawn.cpp`)
 
