@@ -7,7 +7,6 @@ import {
     readFileSync,
     writeFileSync,
 } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { captureSuiteReference } from "./capture-suite-reference.js";
@@ -203,6 +202,37 @@ export function verifyBuildIdentity(
     }
 }
 
+/**
+ * The one measured-run spawn: npm_* environment hygiene, the synchronous
+ * child, and the exit contract, shared by the parity runner and the native
+ * capture so the ceremony cannot drift between them. `dropVariables` scrubs
+ * ambient variables a caller sets explicitly (the capture drops
+ * `BBLITE_GPU_BACKEND` so an ambient one cannot silently pick the other
+ * backend).
+ */
+export function spawnNativeMeasured(
+    executable: string,
+    overrides: Record<string, string>,
+    dropVariables: readonly string[] = [],
+): void {
+    const inherited: Record<string, string> = {};
+    for (const [name, value] of Object.entries(process.env)) {
+        if (value === undefined) continue;
+        if (name.toLowerCase().startsWith("npm_")) continue;
+        if (dropVariables.includes(name)) continue;
+        inherited[name] = value;
+    }
+    const result = spawnSync(resolve(executable), [], {
+        stdio: "inherit",
+        windowsHide: true,
+        env: { ...inherited, ...overrides },
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+        throw new Error(`Native renderer exited with status ${result.status}.`);
+    }
+}
+
 export function runNative(
     executable: string,
     screenshot: string,
@@ -230,17 +260,8 @@ export function runNative(
     const maxFrames = Number.isFinite(screenshotFrame) && screenshotFrame >= 0
         ? screenshotFrame + 1
         : 1;
-    const nativeBaseEnvironment = Object.fromEntries(
-        Object.entries(process.env).filter(
-            ([name]) => !name.toLowerCase().startsWith("npm_"),
-        ),
-    );
-    const result = spawnSync(resolve(executable), [], {
-        stdio: "inherit",
-        windowsHide: true,
-        env: {
-            ...nativeBaseEnvironment,
-            ...nativeEnvironment,
+    spawnNativeMeasured(executable, {
+        ...nativeEnvironment,
             ...(gpu
                 ? {
                       BBLITE_GPU: "1",
@@ -265,12 +286,7 @@ export function runNative(
                       ),
                   }
                 : {}),
-        },
     });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-        throw new Error(`Native renderer exited with status ${result.status}.`);
-    }
     if (generatedDirectory) {
         verifyBuildIdentity(
             executable,
@@ -529,24 +545,6 @@ export async function runSceneParity(
             })),
         };
     });
-    const diagnosticFiles = false
-        ? Object.fromEntries(
-              [
-                  ["normal", "normal-gpu.png"],
-                  ["reflectivity", "reflectivity-gpu.png"],
-                  ["irradiance", "irradiance-gpu.png"],
-                  ["directLight", "direct-light-gpu.png"],
-                  ["ibl", "ibl-gpu.png"],
-                  ["normalizedDepth", "normalized-depth-gpu.png"],
-                  ["albedo", "albedo-gpu.png"],
-                  ["baseColor", "base-color-gpu.png"],
-                  ["preToneHdr", "pre-tone-hdr-gpu.png"],
-                  ["preToneHdrRaw", "pre-tone-hdr-gpu.rgba16f"],
-              ]
-                  .map(([key, file]) => [key, resolve(outputDirectory, file!)] as const)
-                  .filter(([, path]) => existsSync(path)),
-          )
-        : {};
     const diffPath = resolve(outputDirectory, `diff-map-${artifactSuffix}.png`);
     const hotspotPath = resolve(outputDirectory, `hotspots-${artifactSuffix}.png`);
     generateDiffMap(actual, reference, diffPath);
@@ -587,7 +585,6 @@ export async function runSceneParity(
             ...(clusterVisualizationPath && existsSync(clusterVisualizationPath)
                 ? { triangleClustersVisual: clusterVisualizationPath }
                 : {}),
-            ...diagnosticFiles,
         },
     };
     const reportPath = resolve(
@@ -733,14 +730,4 @@ export async function runSceneParityDifferential(
             ).toFixed(2)}%`,
     );
     console.log(`Report: ${reportPath}`);
-}
-
-if (
-    process.argv[1] &&
-    resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
-    runSceneParity(process.argv.slice(2)).catch((error: unknown) => {
-        console.error(error instanceof Error ? error.message : String(error));
-        process.exitCode = 1;
-    });
 }

@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { doubleLiteral } from "../cpp-literals.js";
+import { doubleLiteral, sanitizeCppIdentifier } from "../cpp-literals.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -132,7 +132,7 @@ export function dataTypesEqual(
 }
 
 function sanitizeIdentifier(name: string): string {
-    const cleaned = name.replace(/[^A-Za-z0-9_]/g, "_");
+    const cleaned = sanitizeCppIdentifier(name);
     const prefixed = /^[0-9]/.test(cleaned)
         ? `_${cleaned}`
         : cleaned;

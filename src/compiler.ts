@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { sanitizeCppIdentifier } from "./cpp-literals.js";
 import {
     emitPropertyAssignment,
     type AssignmentContext,
@@ -5420,7 +5421,7 @@ class Compiler
 
     public cppIdentifier(sourceName: string): string {
         const prefix = this.cppNamePrefixes.at(-1) ?? "";
-        return `v_${prefix}${sourceName.replace(/[^A-Za-z0-9_]/g, "_")}`;
+        return `v_${prefix}${sanitizeCppIdentifier(sourceName)}`;
     }
 
     public cppString(value: string): string {

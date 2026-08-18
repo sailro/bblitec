@@ -17,3 +17,12 @@ export function doubleLiteral(value: number): string {
     const text = String(value);
     return text.includes(".") || /e/i.test(text) ? text : `${text}.0`;
 }
+
+/**
+ * The one identifier-sanitizing regex. Callers keep their own prefixing and
+ * reserved-word policies (a `v_`-prefixed local needs neither; a struct
+ * field needs both), but the character class they share lives here.
+ */
+export function sanitizeCppIdentifier(name: string): string {
+    return name.replace(/[^A-Za-z0-9_]/g, "_");
+}

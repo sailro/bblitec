@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import ts from "typescript";
 import { RendererFidelityManifest } from "../fidelity.js";
@@ -145,7 +144,6 @@ const rgbdDecodeModule = "src/loader-env/rgbd-decode.ts";
 const surfaceModule = "src/engine/surface.ts";
 const shaderPipelineModule = "src/material/shader/shader-pipeline.ts";
 const sceneUniformsSourceModule = "src/shader/scene-uniforms.ts";
-const templateRoot = fileURLToPath(new URL("../../../src/lowering/templates/renderer/", import.meta.url));
 
 interface LoweredShader {
     output: string;
@@ -2997,11 +2995,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             }
         }
 
-        const sources: string[] = [];
-        const result = sources.map((name) => ({
-            output: `upstream/shaders/${name}`,
-            data: readFileSync(resolve(templateRoot, name), "utf8"),
-        }));
+        const result: Array<{ output: string; data: string }> = [];
         result.push({
             output: "upstream/shaders/pbr.vert.native.wgsl",
             data: materialVertexWgsl(

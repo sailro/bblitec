@@ -1,3 +1,10 @@
+// The alpha-card and circular-cutout WGSL bodies below are re-formatted
+// copies of the SHA-pinned corpus scene sources that declare them (the
+// audit-shader-frame-graph gate's scene and its corpus siblings), not
+// authored shaders: the compiler lowers each through the typed shader IR
+// and refuses on any semantic mismatch with the scene's own text
+// (`compileShaderMaterialOptions` in src/compiler.ts), so this table is a
+// verified mirror, never an independent source of truth.
 import type { ShaderMaterialVariantName } from "./compiler.js";
 
 export interface ShaderMaterialProgramSource {

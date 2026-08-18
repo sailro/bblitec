@@ -17,7 +17,7 @@
  */
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import ts from "typescript";
 import { resolveBrowserPath } from "./browser-path.js";
@@ -75,18 +75,6 @@ function decodeDataUrl(dataUrl: string): Uint8Array {
         );
     }
     return new Uint8Array(Buffer.from(match[1], "base64"));
-}
-
-/** Width and height from a PNG IHDR, so the baked bytes report their own size. */
-export function readPngSize(bytes: Uint8Array): {
-    width: number;
-    height: number;
-} {
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    if (bytes.length < 24 || view.getUint32(0) !== 0x89504e47) {
-        throw new Error("A drawn sprite atlas did not produce a PNG.");
-    }
-    return { width: view.getUint32(16), height: view.getUint32(20) };
 }
 
 /**
@@ -157,21 +145,3 @@ export async function drawSpriteAtlasPng(
     }
 }
 
-/** Provenance for the generated manifest: what drew these pixels. */
-export function getSpriteAtlasProvenance(
-    source: SpriteAtlasSource,
-    repositoryRoot: string,
-) {
-    return {
-        module: source.modulePath
-            .slice(repositoryRoot.length + 1)
-            .split(/[\\/]/)
-            .join("/"),
-        export: source.exportName,
-        rasterizer: "headless Chromium canvas2D",
-        directory: dirname(source.modulePath)
-            .slice(repositoryRoot.length + 1)
-            .split(/[\\/]/)
-            .join("/"),
-    } as const;
-}

@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import {
     defaultExecutable,
+    spawnNativeMeasured,
     verifyBuildIdentity,
     verifyDeployedPayload,
 } from "./parity-scene.js";
@@ -62,43 +62,26 @@ export function runNativeCapture(
     // different pose than the one being diffed against.
     const seekSeconds =
         options.seekSeconds ?? scene.parity?.referenceTimeSeconds;
-    const inherited: Record<string, string> = {};
-    for (const [name, value] of Object.entries(process.env)) {
-        // npm_* leaks the invoking script's configuration into a run that
-        // is supposed to describe the scene, and BBLITE_GPU_BACKEND is set
-        // explicitly below so an ambient one cannot silently pick the
-        // other backend.
-        if (value === undefined) continue;
-        if (name.toLowerCase().startsWith("npm_")) continue;
-        if (name === "BBLITE_GPU_BACKEND") continue;
-        inherited[name] = value;
-    }
-    const environment: Record<string, string> = {
-        ...inherited,
-        ...(scene.parity?.nativeEnvironment ?? {}),
-        BBLITE_GPU: "1",
-        BBLITE_GPU_REQUIRED: "1",
-        ...(backend === "dawn" ? { BBLITE_GPU_BACKEND: "dawn" } : {}),
-        BBLITE_TEST_PASS: "1",
-        BBLITE_MAX_FRAMES: "1",
-        BBLITE_SCREENSHOT: screenshotPath,
-        BBLITE_RENDER_CAPTURE: capturePath,
-        BBLITE_BUILD_STAMP_OUT: stampPath,
-        ...(seekSeconds !== undefined
-            ? { BBLITE_ANIMATION_SEEK_SECONDS: String(seekSeconds) }
-            : {}),
-    };
-    const result = spawnSync(executable, [], {
-        stdio: "inherit",
-        windowsHide: true,
-        env: environment,
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-        throw new Error(
-            `Native renderer exited with status ${result.status}.`,
-        );
-    }
+    spawnNativeMeasured(
+        executable,
+        {
+            ...(scene.parity?.nativeEnvironment ?? {}),
+            BBLITE_GPU: "1",
+            BBLITE_GPU_REQUIRED: "1",
+            ...(backend === "dawn" ? { BBLITE_GPU_BACKEND: "dawn" } : {}),
+            BBLITE_TEST_PASS: "1",
+            BBLITE_MAX_FRAMES: "1",
+            BBLITE_SCREENSHOT: screenshotPath,
+            BBLITE_RENDER_CAPTURE: capturePath,
+            BBLITE_BUILD_STAMP_OUT: stampPath,
+            ...(seekSeconds !== undefined
+                ? { BBLITE_ANIMATION_SEEK_SECONDS: String(seekSeconds) }
+                : {}),
+        },
+        // An ambient backend selection must not survive into a run whose
+        // backend the flag chooses explicitly.
+        ["BBLITE_GPU_BACKEND"],
+    );
     verifyBuildIdentity(executable, scene.output, stampPath);
     if (!existsSync(capturePath)) {
         throw new Error(

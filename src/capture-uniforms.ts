@@ -44,8 +44,10 @@ export interface DecodedBuffer {
 
 /** WGSL uniform-address-space size and alignment for the types a composed
  *  Babylon Lite fragment declares. Anything else is reported as unknown rather
- *  than guessed, because a wrong stride silently shifts every later field. */
-function layoutOf(type: string): { size: number; align: number } | undefined {
+ *  than guessed, because a wrong stride silently shifts every later field.
+ *  This is the one copy: `render-diff` decodes through it too, so a stride
+ *  fix reaches both diagnostics at once. */
+export function layoutOf(type: string): { size: number; align: number } | undefined {
     const scalar = /^(f32|i32|u32)$/.exec(type);
     if (scalar) return { size: 4, align: 4 };
     const vector = /^vec([234])<(f32|i32|u32)>$/.exec(type);
@@ -77,7 +79,7 @@ function roundUp(alignment: number, value: number): number {
     return Math.ceil(value / alignment) * alignment;
 }
 
-function fieldOffsets(
+export function fieldOffsets(
     fields: WgslField[],
 ): { offsets: number[]; size: number } | undefined {
     let offset = 0;
@@ -130,8 +132,17 @@ function decodeStruct(
     });
 }
 
-function lastWriteBytes(buffer: {
+/**
+ * The last bytes a captured buffer holds, from the newest recorded write —
+ * accepting both the `bytes` and `data` key spellings — and falling back to
+ * the mapped-at-creation range, which is the only content a buffer filled
+ * through `mappedAtCreation` ever has. The one copy `render-diff` reads
+ * through as well: the two diagnostics used to disagree about which buffers
+ * even had bytes.
+ */
+export function lastWriteBytes(buffer: {
     writes?: unknown;
+    mappedWrites?: unknown;
 }): Buffer | undefined {
     const writes = Array.isArray(buffer.writes) ? buffer.writes : [];
     for (let index = writes.length - 1; index >= 0; index--) {
@@ -143,11 +154,28 @@ function lastWriteBytes(buffer: {
             typeof write === "string" ? write : write?.bytes ?? write?.data;
         if (base64) return Buffer.from(base64, "base64");
     }
+    const mapped = Array.isArray(buffer.mappedWrites)
+        ? buffer.mappedWrites
+        : [];
+    for (const write of mapped as Array<{ bytes?: string; data?: string }>) {
+        const base64 = write?.bytes ?? write?.data;
+        if (base64) return Buffer.from(base64, "base64");
+    }
     return undefined;
 }
 
-/** Uniform buffers only: GPUBufferUsage.UNIFORM is 0x40. */
-const uniformUsage = 0x40;
+/** GPUBufferUsage.UNIFORM and .STORAGE. */
+export const uniformUsage = 0x40;
+export const storageUsage = 0x80;
+
+/**
+ * How large a non-uniform buffer may be and still be read for values.
+ * Babylon Lite keeps some per-frame state the fragments read — light lists,
+ * for one — in storage buffers rather than uniform blocks; vertex and index
+ * buffers are storage-sized too and hold nothing worth decoding, so the cap
+ * admits the state and excludes the geometry.
+ */
+export const storageValueCap = 4096;
 
 export function decodeCapturedUniforms(
     captureDirectory: string,
@@ -180,9 +208,17 @@ export function decodeCapturedUniforms(
     for (const entry of buffers as Array<Record<string, unknown>>) {
         const size = Number(entry.size ?? entry.byteLength ?? 0);
         const usage = Number(entry.usage ?? 0);
-        if ((usage & uniformUsage) === 0) continue;
+        // Uniform blocks, plus the small storage buffers the fragments read
+        // (the light lists) — the same admission `scene -- diff` uses, so a
+        // buffer one rung reports is never invisible to the next.
+        const admitted =
+            (usage & uniformUsage) !== 0 ||
+            ((usage & storageUsage) !== 0 && size <= storageValueCap);
+        if (!admitted) continue;
         if (options.sizes && !options.sizes.includes(size)) continue;
-        const bytes = lastWriteBytes(entry as { writes?: unknown });
+        const bytes = lastWriteBytes(
+            entry as { writes?: unknown; mappedWrites?: unknown },
+        );
         if (!bytes) continue;
         const candidates = structs
             .filter((struct) => struct.size === size)

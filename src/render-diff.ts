@@ -1,6 +1,15 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { parseWgslStructs, type WgslStruct } from "./capture-uniforms.js";
+import {
+    fieldOffsets,
+    lastWriteBytes,
+    layoutOf,
+    parseWgslStructs,
+    storageUsage,
+    storageValueCap,
+    uniformUsage,
+    type WgslStruct,
+} from "./capture-uniforms.js";
 
 /**
  * Pairing the browser's instrumented capture with the native one.
@@ -234,22 +243,6 @@ export function nativeFields(
 // Browser side
 // ---------------------------------------------------------------------------
 
-/** GPUBufferUsage.UNIFORM and .STORAGE. */
-const uniformUsage = 0x40;
-const storageUsage = 0x80;
-
-/**
- * How large a non-uniform buffer may be and still be read for values.
- *
- * Babylon Lite keeps some per-frame state the fragments read — light
- * lists, for one — in storage buffers rather than uniform blocks, and
- * leaving those out means a native light slot has nothing to correspond
- * to and is reported as divergent on a scene that renders correctly.
- * Vertex and index buffers are storage-sized too and hold nothing worth
- * matching, so the cap admits the state and excludes the geometry.
- */
-const storageValueCap = 4096;
-
 interface CapturedBuffer {
     id?: number;
     label?: string;
@@ -257,47 +250,6 @@ interface CapturedBuffer {
     usage?: number;
     writes?: Array<{ data?: string } | string>;
     mappedWrites?: Array<{ data?: string }>;
-}
-
-function lastWrite(buffer: CapturedBuffer): Buffer | undefined {
-    const writes = buffer.writes ?? [];
-    for (let index = writes.length - 1; index >= 0; index -= 1) {
-        const write = writes[index];
-        const base64 = typeof write === "string" ? write : write?.data;
-        if (base64) return Buffer.from(base64, "base64");
-    }
-    // A buffer filled through `mappedAtCreation` never reaches
-    // `writeBuffer`, so its only bytes are the mapped range.
-    for (const write of buffer.mappedWrites ?? []) {
-        if (write.data) return Buffer.from(write.data, "base64");
-    }
-    return undefined;
-}
-
-function wgslSize(type: string): number | undefined {
-    if (/^(f32|i32|u32)$/.test(type)) return 4;
-    const vector = /^vec([234])</.exec(type);
-    if (vector) return Number(vector[1]) * 4;
-    const matrix = /^mat([234])x([234])</.exec(type);
-    if (matrix) {
-        const rows = Number(matrix[2]);
-        return Number(matrix[1]) * (rows === 3 ? 16 : rows * 4);
-    }
-    const array = /^array<(.+),\s*(\d+)u?>$/.exec(type);
-    if (array) {
-        const element = wgslSize(array[1]!.trim());
-        if (element === undefined) return undefined;
-        return Math.ceil(element / 16) * 16 * Number(array[2]);
-    }
-    return undefined;
-}
-
-function wgslAlign(type: string): number | undefined {
-    if (/^(f32|i32|u32)$/.test(type)) return 4;
-    const vector = /^vec([234])</.exec(type);
-    if (vector) return Number(vector[1]) === 3 ? 16 : Number(vector[1]) * 4;
-    if (/^mat/.test(type) || /^array</.test(type)) return 16;
-    return undefined;
 }
 
 /**
@@ -342,7 +294,7 @@ export function browserUniformFields(
             (usage & storageUsage) !== 0 &&
             (buffer.size ?? 0) <= storageValueCap;
         if (!uniform && !storage) continue;
-        const bytes = lastWrite(buffer);
+        const bytes = lastWriteBytes(buffer);
         if (!bytes) continue;
         const size = buffer.size ?? bytes.length;
         const matching = structs.filter((struct) => struct.size === size);
@@ -358,12 +310,12 @@ export function browserUniformFields(
             continue;
         }
         for (const struct of matching) {
-            let offset = 0;
-            for (const field of struct.fields) {
-                const width = wgslSize(field.type);
-                const align = wgslAlign(field.type);
-                if (width === undefined || align === undefined) break;
-                offset = Math.ceil(offset / align) * align;
+            const layout = fieldOffsets(struct.fields);
+            if (!layout) continue;
+            struct.fields.forEach((field, index) => {
+                const offset = layout.offsets[index]!;
+                const width = layoutOf(field.type)?.size;
+                if (width === undefined) return;
                 const values: number[] = [];
                 for (
                     let lane = 0;
@@ -372,13 +324,12 @@ export function browserUniformFields(
                 ) {
                     values.push(bytes.readFloatLE(offset + lane * 4));
                 }
-                offset += width;
                 const name = `buffer#${buffer.id ?? "?"} ${field.name}`;
                 const signature = `${name}|${values.join(",")}`;
-                if (seen.has(signature)) continue;
+                if (seen.has(signature)) return;
                 seen.add(signature);
                 fields.push({ name, values });
-            }
+            });
         }
     }
     return fields;

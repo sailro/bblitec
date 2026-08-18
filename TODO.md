@@ -166,7 +166,10 @@ Both backends stay long-term as mutually validating implementations;
   it SDL refuses a multisample texture carrying a read usage and the SDL_GPU
   backend cannot run the pinned per-sample image-processing pass. **3.6.0 is the
   release to watch**; when it carries the patch, move `builtin-baseline` to a
-  registry commit containing it and delete both paths.
+  registry commit containing it and delete both paths. Verify a candidate
+  release by creating a 4x multisample texture with
+  `SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ` (the shape the per-sample pass
+  needs) before moving the baseline.
 - [ ] Compose environment/camera sizing from object-local bounds through the
   pinned abs-matrix OBB-to-AABB world transform, and add the `upperRadiusLimit`
   ground/skybox override (upstream `scene-size.ts`, `mesh-world-bounds.ts`,
