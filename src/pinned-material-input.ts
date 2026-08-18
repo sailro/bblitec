@@ -1,292 +1,54 @@
 /**
  * Maps a glTF material to the shape Babylon Lite's own feature derivation
- * reads.
+ * reads — by executing the pin's own loader, not by re-deriving its rules.
  *
- * This module deliberately contains no feature bits. Each extension's `detect`
- * hook reads a named property off the material — `_clearCoat.isEnabled`,
- * `_sheen.isEnabled`, `_iridescence.isEnabled`, `_anisotropy.isEnabled`,
- * `_metallicReflectanceTexture` — and contributes its own bits, so all this has
- * to get right is which glTF extension populates which property. Anything it
- * gets wrong shows up as a different `fragmentKey`, which is checkable against
- * an instrumented capture rather than against intent.
+ * Each option object here used to be a line-for-line transcription of the
+ * loader extensions' `applyMaterial` builders, which is the drift the project
+ * rule exists to prevent: a re-typed formula only agrees until the pin changes
+ * it, and the IOR Fresnel `((ior-1)/(ior+1))^2 / 0.04` was carried twice as
+ * exactly that. Now the pinned modules themselves run:
+ *
+ * - the seven loader extensions (`gltf-ext-clearcoat.ts` … `gltf-ext-
+ *   dielectric.ts`) are executed against a recording `ctx` stub, and the
+ *   option objects are whatever their own `setPbrX` calls set;
+ * - `buildDefaultPbrTexturesExt` + `assemblePbrPropsExt` run with the GPU
+ *   uploads stubbed to decide the occlusion carrier, the UV2 mask and the
+ *   factor gates;
+ * - `animation-pointer-ext.ts`'s `seedExtMaterials` runs for the animated-
+ *   pointer seeding, so the IOR Fresnel is computed by the pin's own
+ *   `iorToF0Factor`.
+ *
+ * The pinned `applyMaterial` hooks are `async` (they await real texture
+ * decodes) while this module's callers are synchronous, so the ext modules
+ * are imported once at module load through `importPinnedModuleUnasynced`,
+ * which erases the `async`/`await` keywords from the pin's own text — every
+ * value they await here is produced synchronously by the stub — and the
+ * module top-level awaits that one-time load. Callers see the same
+ * synchronous API as before.
+ *
+ * What this module still carries by hand is plumbing, not formulas, each
+ * piece cited at its definition: the loader's parsed-material field defaults
+ * (`assembleMaterial` needs the document to fetch images; callers hand this
+ * module an `imageOf` closure instead), the feature-registry ordering and
+ * merge loop, and the slot-shaped texture fields of the output, which stand
+ * in for the pin's GPU texture records.
  */
 import {
-    asNumber,
     asNumbers,
     asObject,
     type JsonObject,
 } from "./gltf-document.js";
-import type { PinnedMaterialInput } from "./pinned-pbr-variants.js";
-
-/** A glTF texture slot resolved to the texture the loader would have built. */
-type TextureBuilder = (slot: unknown) => JsonObject | undefined;
-
-/**
- * The glTF extension that populates each pinned material property, and the
- * option object its loader builds.
- *
- * Presence alone enables each of these. All four loader extensions read the
- * same way — `if (!c) return null;` then `setPbrX(out, { isEnabled: true, ...
- * })` — so `KHR_materials_iridescence: {}` with no factor at all still
- * composes the iridescence arm; the factor only sets the intensity, which
- * multiplies the layer to nothing without removing it. Gating on a non-zero
- * factor instead drops the arm and changes the variant: Scene 253's Volume
- * and IOR spheres both declare an empty iridescence extension and both of
- * their captured fragments carry `iridescenceParams`.
- */
-const materialExtensions: ReadonlyArray<{
-    gltf: string;
-    property: string;
-    /**
-     * The option object the loader's `setPbrX` call builds, term for term.
-     *
-     * Spreading the glTF extension instead is wrong twice over. Property
-     * names differ — the coat's normal map is `bumpTexture` upstream, the
-     * sheen tint is plain `texture` — so every map bit stays clear and the
-     * arm that samples it never composes. And the loaders set options the
-     * glTF does not mention at all: `albedoScaling: true` picks which of the
-     * two sheen models composes, and `useF0Remap: false` is what makes a glTF
-     * coat a different fragment from a scene-code one.
-     */
-    props: (extension: JsonObject, texture: TextureBuilder) => JsonObject;
-}> = [
-    {
-        gltf: "KHR_materials_clearcoat",
-        property: "_clearCoat",
-        props: (c, texture) => ({
-            isEnabled: true,
-            intensity: asNumber(c["clearcoatFactor"]) ??
-                (c["clearcoatTexture"] ? 1 : 0),
-            roughness: asNumber(c["clearcoatRoughnessFactor"]) ??
-                (c["clearcoatRoughnessTexture"] ? 1 : 0),
-            texture: texture(c["clearcoatTexture"]),
-            roughnessTexture: texture(c["clearcoatRoughnessTexture"]),
-            bumpTexture: texture(c["clearcoatNormalTexture"]),
-            bumpTextureScale:
-                asNumber(asObject(c["clearcoatNormalTexture"])?.["scale"]) ?? 1,
-            useF0Remap: false,
-        }),
-    },
-    {
-        gltf: "KHR_materials_sheen",
-        property: "_sheen",
-        props: (s, texture) => ({
-            isEnabled: true,
-            color: asNumbers(s["sheenColorFactor"]) ?? [0, 0, 0],
-            roughness: asNumber(s["sheenRoughnessFactor"]) ?? 0,
-            intensity: 1,
-            texture: texture(s["sheenColorTexture"]),
-            // Dropped when it is the same texture object as the tint, because
-            // that packing reads roughness out of the tint's alpha.
-            ...(sheenRoughnessIsTint(s)
-                ? {}
-                : { roughnessTexture: texture(s["sheenRoughnessTexture"]) }),
-            albedoScaling: true,
-        }),
-    },
-    {
-        gltf: "KHR_materials_iridescence",
-        property: "_iridescence",
-        props: (iri, texture) => ({
-            isEnabled: true,
-            intensity: asNumber(iri["iridescenceFactor"]) ?? 0,
-            indexOfRefraction: asNumber(iri["iridescenceIor"]) ?? 1.3,
-            minimumThickness:
-                asNumber(iri["iridescenceThicknessMinimum"]) ?? 100,
-            maximumThickness:
-                asNumber(iri["iridescenceThicknessMaximum"]) ?? 400,
-            texture: texture(iri["iridescenceTexture"]),
-            thicknessTexture: texture(iri["iridescenceThicknessTexture"]),
-        }),
-    },
-    {
-        gltf: "KHR_materials_anisotropy",
-        property: "_anisotropy",
-        props: (a, texture) => {
-            const rotation = asNumber(a["anisotropyRotation"]) ?? 0;
-            return {
-                isEnabled: true,
-                intensity: asNumber(a["anisotropyStrength"]) ?? 0,
-                direction: [Math.cos(rotation), Math.sin(rotation)],
-                texture: texture(a["anisotropyTexture"]),
-            };
-        },
-    },
-];
-
-/**
- * The `KHR_materials_sheen` loader drops a roughness texture that is the same
- * texture as the tint, because the legacy packing reads roughness from the
- * tint's alpha. `gltf-ext-sheen.ts` compares the index *and* the transform
- * object identity, so two slots naming one image through different transforms
- * still build two textures.
- */
-function sheenRoughnessIsTint(extension: JsonObject): boolean {
-    const rough = asObject(extension["sheenRoughnessTexture"]);
-    const tint = asObject(extension["sheenColorTexture"]);
-    if (!rough || !tint) return false;
-    return (
-        rough["index"] === tint["index"] &&
-        asObject(rough["extensions"])?.["KHR_texture_transform"] ===
-            asObject(tint["extensions"])?.["KHR_texture_transform"]
-    );
-}
-
-/**
- * `needsGltfEmissive`: whether the load-time factor writes `_emissiveColor`.
- *
- * This gates only `setPbrEmissive` in `applyGltfOptInPbrFeatures` — the
- * emissive *texture* is attached from the image alone and never consults the
- * factor (`buildDefaultPbrTexturesExt` line `mat._emissiveImage ? … : void 0`),
- * so `PBR_HAS_EMISSIVE`, the binding pair, its `_hasTx` and its uv2 bit are
- * all texture-slot facts. The factor rule: `[1,1,1]` alongside a texture is a
- * multiplicative no-op and writes nothing; with no texture it is a real
- * full-white emissive; the glTF default `[0,0,0]` never applies.
- */
-function gltfEmissiveApplies(material: JsonObject): boolean {
-    const factor = asNumbers(material["emissiveFactor"]) ?? [0, 0, 0];
-    const hasTexture = asObject(material["emissiveTexture"]) !== undefined;
-    const black =
-        factor[0] === 0 && factor[1] === 0 && factor[2] === 0;
-    const neutralOverTexture =
-        hasTexture && factor[0] === 1 && factor[1] === 1 && factor[2] === 1;
-    return !(black || neutralOverTexture);
-}
-
-/**
- * The markers `KHR_texture_transform`'s loader extension stamps on a texture,
- * ported term for term from `loader-gltf/gltf-ext-uv-transform.ts`.
- *
- * The distinctions here are all load-bearing and none of them are guessable:
- *
- * - `_hasTx` is set only when the transform contributes a *field*. A declared
- *   but empty `KHR_texture_transform: {}` patches nothing, so it composes no
- *   UV-transform arm — Scene 39's Grass material is exactly that case, and
- *   treating the extension's presence as the test composed four UBO fields
- *   and a `txfUV` helper the browser's fragment does not have.
- * - `rotation` is read for truthiness, so a rotation of `0` also patches
- *   nothing, the same as omitting it.
- * - `_texCoord` comes from the transform's own `texCoord` when it has one and
- *   the slot's otherwise, and only a value of exactly `1` is stamped.
- */
-function pinnedTexturePatch(slot: JsonObject | undefined): {
-    _hasTx?: true;
-    _texCoord?: 1;
-} {
-    if (slot === undefined) return {};
-    const transform = asObject(
-        asObject(slot["extensions"])?.["KHR_texture_transform"],
-    );
-    const patched =
-        transform !== undefined &&
-        (transform["scale"] !== undefined ||
-            transform["offset"] !== undefined ||
-            Boolean(transform["rotation"]));
-    const texCoord = asNumber(transform?.["texCoord"]) ??
-        asNumber(slot["texCoord"]);
-    return {
-        ...(patched ? { _hasTx: true as const } : {}),
-        ...(texCoord === 1 ? { _texCoord: 1 as const } : {}),
-    };
-}
-
-const hasTransform = (slot: JsonObject | undefined): boolean =>
-    pinnedTexturePatch(slot)._hasTx === true;
-
-/**
- * Which of the pinned texture slots `buildDefaultPbrTexturesExt` actually
- * builds, and whether each carries a UV transform.
- *
- * This is the half that cannot be read off the glTF material alone, because
- * occlusion and metallic-roughness share one ORM slot and which of them fills
- * it depends on the *images* behind them:
- *
- * - occlusion on a non-zero texCoord with no metallic-roughness image becomes
- *   its own carrier and the ORM slot falls back to a factor texel;
- * - occlusion with no metallic-roughness image otherwise *becomes* the ORM
- *   texture, and there is no separate carrier at all;
- * - a separate carrier appears alongside metallic-roughness only when the two
- *   name the same image through different texture objects, or occlusion has a
- *   transform of its own — the orm-unpack case, so the two can be animated
- *   apart.
- */
-function pinnedTextureSlots(
-    material: JsonObject,
-    imageOf: (textureIndex: unknown) => number | undefined,
-): {
-    hasOcclusionCarrier: boolean;
-    hasUvTransform: boolean;
-    uv2Mask: number;
-} {
-    const pbr = asObject(material["pbrMetallicRoughness"]) ?? {};
-    const baseColor = asObject(pbr["baseColorTexture"]);
-    const metallicRoughness = asObject(pbr["metallicRoughnessTexture"]);
-    const normal = asObject(material["normalTexture"]);
-    // The emissive slot is built from the image alone — `_emissiveImage ?
-    // wrap(…) : void 0` in `buildDefaultPbrTexturesExt` — so its `_hasTx` and
-    // uv2 bit do not consult the emissive factor. Only `_emissiveColor` does.
-    const emissive = asObject(material["emissiveTexture"]);
-    const occlusion = asObject(material["occlusionTexture"]);
-
-    const occlusionImage = imageOf(occlusion?.["index"]);
-    const metallicRoughnessImage = imageOf(metallicRoughness?.["index"]);
-    const occlusionTexCoord = asNumber(occlusion?.["texCoord"]) ?? 0;
-
-    const occlusionOnUv2 =
-        occlusionTexCoord !== 0 &&
-        occlusionImage !== undefined &&
-        metallicRoughnessImage === undefined;
-    // `occlusionNeedsSplit` tests the transform's *declaration*, not whether
-    // it patches a field: `occ.extensions?.KHR_texture_transform != null`. A
-    // declared-but-empty transform splits the carrier even though it stamps no
-    // `_hasTx` — the `_hasTx` rule belongs to the uv-transform extension, not
-    // to this predicate.
-    const sharesOrmImage =
-        occlusionImage !== undefined &&
-        occlusionImage === metallicRoughnessImage &&
-        (occlusion?.["index"] !== metallicRoughness?.["index"] ||
-            asObject(occlusion?.["extensions"])?.["KHR_texture_transform"] !=
-                null);
-    const hasOcclusionCarrier = occlusionOnUv2 || sharesOrmImage;
-
-    // The ORM slot is whichever texture built it, so its transform is that
-    // texture's — metallic-roughness when there is one, otherwise the occlusion
-    // image standing in for it.
-    const ormSlot = metallicRoughnessImage !== undefined
-        ? metallicRoughness
-        : occlusionOnUv2
-            ? undefined
-            : occlusion;
-
-    // `needsGltfUvTransform` reads `_hasTx` off the *built* textures, so a
-    // transform on a slot the assembly never builds does not count — and a
-    // factor-only base colour is an uploaded texel carrying none.
-    const hasUvTransform =
-        (imageOf(baseColor?.["index"]) !== undefined &&
-            hasTransform(baseColor)) ||
-        (imageOf(normal?.["index"]) !== undefined && hasTransform(normal)) ||
-        hasTransform(ormSlot) ||
-        (imageOf(emissive?.["index"]) !== undefined &&
-            hasTransform(emissive)) ||
-        (hasOcclusionCarrier && hasTransform(occlusion));
-
-    // `assemblePbrPropsExt`'s own mask, bit for bit. It is read off the *built*
-    // textures' `_texCoord`, except occlusion, which is read off the material
-    // — so a UV2 occlusion that becomes its own carrier still sets bit 32 and
-    // the reflectance fragment samples a dedicated occlusion binding.
-    const onUv2 = (slot: JsonObject | undefined): boolean =>
-        slot !== undefined &&
-        imageOf(slot["index"]) !== undefined &&
-        pinnedTexturePatch(slot)._texCoord === 1;
-    const uv2Mask =
-        (onUv2(baseColor) ? 1 : 0) |
-        (onUv2(ormSlot) ? 2 : 0) |
-        (onUv2(normal) ? 4 : 0) |
-        (onUv2(emissive) ? 8 : 0) |
-        (occlusionTexCoord === 1 ? 32 : 0);
-
-    return { hasOcclusionCarrier, hasUvTransform, uv2Mask };
-}
+import {
+    importPinnedModule,
+    readPinnedLibraryModule,
+} from "./pinned-shader-composer.js";
+import {
+    registeredPbrExtensionIds,
+    type PinnedMaterialInput,
+} from "./pinned-pbr-variants.js";
+import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 /**
  * Builds the pinned material input for one glTF material.
@@ -405,32 +167,37 @@ export interface PinnedAnimatedExtensionTargets {
     volumeTint?: boolean;
 }
 
-const extensionPointerFamilies: ReadonlyArray<
-    readonly [keyof PinnedAnimatedExtensionTargets, RegExp]
-> = [
-    ["occlusionStrength", /^\/materials\/(\d+)\/occlusionTexture\/strength$/],
-    [
-        "transmission",
-        /^\/materials\/(\d+)\/extensions\/KHR_materials_transmission\/transmissionFactor$/,
-    ],
-    ["ior", /^\/materials\/(\d+)\/extensions\/KHR_materials_ior\/ior$/],
-    [
-        "volumeThickness",
-        /^\/materials\/(\d+)\/extensions\/KHR_materials_volume\/thicknessFactor$/,
-    ],
-    [
-        "volumeTint",
-        /^\/materials\/(\d+)\/extensions\/KHR_materials_volume\/(?:attenuationColor|attenuationDistance)$/,
-    ],
-];
+/** The per-family material-index sets `animatedTargets` returns. */
+interface PinnedAnimatedTargetSets {
+    occlusionStrength: ReadonlySet<number>;
+    transmission: ReadonlySet<number>;
+    ior: ReadonlySet<number>;
+    volumeThickness: ReadonlySet<number>;
+    volumeTint: ReadonlySet<number>;
+}
 
-/** `animatedTargets`, by material index. */
+/**
+ * `animatedTargets`, executed from the pin, projected onto per-material flag
+ * records. The pointer regexes are the pin's own; only the flag names are
+ * this module's, because `seedAnimatedExtensions` re-expands them into the
+ * index sets `seedExtMaterials` takes.
+ */
 export function gltfAnimatedExtensionTargets(
     document: JsonObject,
 ): ReadonlyMap<number, PinnedAnimatedExtensionTargets> {
+    const animated = pin.animatedTargets(document);
+    const families: ReadonlyArray<
+        readonly [keyof PinnedAnimatedExtensionTargets, ReadonlySet<number>]
+    > = [
+        ["occlusionStrength", animated.occlusionStrength],
+        ["transmission", animated.transmission],
+        ["ior", animated.ior],
+        ["volumeThickness", animated.volumeThickness],
+        ["volumeTint", animated.volumeTint],
+    ];
     const targets = new Map<number, PinnedAnimatedExtensionTargets>();
-    for (const [family, pattern] of extensionPointerFamilies) {
-        for (const material of gltfAnimatedPointers(document, pattern)) {
+    for (const [family, indices] of families) {
+        for (const material of indices) {
             const entry = targets.get(material) ?? {};
             entry[family] = true;
             targets.set(material, entry);
@@ -440,226 +207,53 @@ export function gltfAnimatedExtensionTargets(
 }
 
 /**
- * `seedExtMaterials`, ported term for term.
+ * `seedExtMaterials`, executed over a one-material view.
  *
- * Runs after the ordinary mapping and uses the same "only if absent" merges
- * upstream does, so a material that already declares transmission or volume
- * keeps what the builder gave it and only gains what the animation needs.
+ * The pin runs it per document, reading `json.materials[matIdx]` beside the
+ * built material map. This module is handed one material and its flags, so
+ * the bridge synthesizes that view — a single-entry document and map, and the
+ * flags re-expanded into the index sets — and the pin's own function does the
+ * seeding, `iorToF0Factor` included. The reflectance setter is wired exactly
+ * when `prepareExtMaterials` would wire it: an occlusion-strength or ior
+ * family with targets.
  */
 function seedAnimatedExtensions(
     input: PinnedMaterialInput,
     material: JsonObject,
     animated: PinnedAnimatedExtensionTargets,
 ): void {
-    const extensions = asObject(material["extensions"]) ?? {};
-    const subsurface = (): JsonObject =>
-        (input["_subsurface"] ??= {}) as JsonObject;
-
-    if (animated.occlusionStrength) {
-        input.occlusionStrength =
-            asNumber(asObject(material["occlusionTexture"])?.["strength"]) ?? 1;
-        // `setReflectance(pm, {})` registers the reflectance extension without
-        // setting a single property, and `_occlStrengthAnimated` is what that
-        // extension's own `detect` reads for PBR2_HAS_REFLECTANCE_FACTORS.
-        // The reflectance arm then *takes over* occlusion: `pbr-compose.ts`
-        // forces `_hasOcclusion` false whenever it composes.
-        input["_occlStrengthAnimated"] = true;
-    }
-    if (animated.transmission) {
-        input["_transmissive"] = true;
-        const surface = subsurface();
-        surface["refraction"] ??= {
-            intensity:
-                asNumber(
-                    asObject(extensions["KHR_materials_transmission"])?.[
-                        "transmissionFactor"
-                    ],
-                ) ?? 0,
-            indexOfRefraction:
-                asNumber(asObject(extensions["KHR_materials_ior"])?.["ior"]) ??
-                    1.5,
-        };
-    }
-    if (animated.ior) {
-        const ior =
-            asNumber(asObject(extensions["KHR_materials_ior"])?.["ior"]) ?? 1.5;
-        const surface = subsurface();
-        surface["refraction"] ??= { intensity: 0, indexOfRefraction: ior };
-        input["_metallicF0Factor"] = ((ior - 1) / (ior + 1)) ** 2 / 0.04;
-        input["_specularWeight"] = 1;
-    }
-    if (animated.volumeThickness || animated.volumeTint) {
-        const surface = subsurface();
-        const volume = asObject(extensions["KHR_materials_volume"]) ?? {};
-        if (animated.volumeThickness) {
-            surface["thickness"] ??= {
-                min: 0,
-                max: asNumber(volume["thicknessFactor"]) ?? 0,
-                useGlTFChannel: true,
-            };
-            const refraction = asObject(surface["refraction"]);
-            if (refraction) refraction["useThicknessAsDepth"] = true;
-        }
-        if (animated.volumeTint) {
-            surface["tint"] ??= {
-                color: asNumbers(volume["attenuationColor"]) ?? [1, 1, 1],
-                atDistance: asNumber(volume["attenuationDistance"]) ?? 1,
-            };
-        }
-    }
+    const indices = (flagged?: boolean): ReadonlySet<number> =>
+        flagged ? new Set([0]) : new Set();
+    pin.seedExtMaterials(
+        { materials: [material] },
+        [input],
+        {
+            occlusionStrength: indices(animated.occlusionStrength),
+            transmission: indices(animated.transmission),
+            ior: indices(animated.ior),
+            volumeThickness: indices(animated.volumeThickness),
+            volumeTint: indices(animated.volumeTint),
+        },
+        animated.occlusionStrength || animated.ior
+            ? pin.setPbrMetallicReflectance
+            : null,
+    );
 }
 
 /**
- * `gltf-ext-dielectric.ts`, ported.
+ * Builds an `imageOf` resolver from a glTF document's `textures` array.
  *
- * Upstream handles `KHR_materials_ior`, `_specular`, `_volume`, `_transmission`
- * and `_dispersion` in *one* extension, because they interact: the ior seeds
- * the refraction and can turn the reflectance layer on by itself, the volume
- * decides whether thickness is a depth, and transmission is what actually
- * registers the scene hook. Handling them separately means re-deriving those
- * interactions, and the one that costs a variant is the quietest:
- * `needsReflectance` is true for any `ior !== 1.5`, so Scene 253's
- * Transmission sphere composes a reflectance arm purely because its ior is
- * 1.209.
+ * The pin's `getTextureImageIndex` reads `extensions.EXT_texture_webp.source
+ * ?? source`; this resolver reads plain `source` with the texture index as
+ * the fallback identity, so a webp-only texture is its own pseudo-image
+ * instead of the webp source's. Scene 37's sofa is all webp-only textures
+ * and the difference is inert there — image identity gates only the
+ * occlusion/metallic-roughness sharing decision, and that asset's pairs
+ * share whole texture objects — but a GLB pairing those two slots through
+ * two texture objects onto one webp source would split the occlusion
+ * carrier under the pin and not here. Aligning the read is a one-line
+ * change; it waits for an asset that can measure it.
  */
-function applyDielectric(
-    input: PinnedMaterialInput,
-    extensions: JsonObject,
-    texture: TextureBuilder,
-): void {
-    const eIor = asObject(extensions["KHR_materials_ior"]);
-    const eSp = asObject(extensions["KHR_materials_specular"]);
-    const eVol = asObject(extensions["KHR_materials_volume"]);
-    const eTx = asObject(extensions["KHR_materials_transmission"]);
-    const eDisp = asObject(extensions["KHR_materials_dispersion"]);
-    if (!eIor && !eSp && !eVol && !eTx && !eDisp) return;
-
-    const ior = asNumber(eIor?.["ior"]) ?? 1.5;
-    const intensity = asNumber(eTx?.["transmissionFactor"]) ?? 0;
-    const thicknessFactor = asNumber(eVol?.["thicknessFactor"]) ?? 0;
-    const dispersion = asNumber(eDisp?.["dispersion"]) ?? 0;
-    const specularFactor = asNumber(eSp?.["specularFactor"]);
-    const specularColorFactor = asNumbers(eSp?.["specularColorFactor"]);
-    const specularTexture = texture(eSp?.["specularTexture"]);
-    const specularColorTexture = texture(eSp?.["specularColorTexture"]);
-    const thicknessTexture = texture(eVol?.["thicknessTexture"]);
-    const transmissionTexture = texture(eTx?.["transmissionTexture"]);
-
-    const needsTransmission =
-        eTx !== undefined && (intensity > 0 || transmissionTexture !== undefined);
-    const needsDispersion =
-        dispersion > 0 &&
-        (eIor !== undefined || needsTransmission) &&
-        eVol !== undefined &&
-        (thicknessFactor > 0 || thicknessTexture !== undefined);
-
-    const subsurface: JsonObject = {};
-    const reflectance: JsonObject = {};
-    let hasReflectance = false;
-
-    if (eIor) {
-        if (ior !== 1.5) {
-            reflectance["f0Factor"] = ((ior - 1) / (ior + 1)) ** 2 / 0.04;
-            reflectance["specularWeight"] = 1;
-            hasReflectance = true;
-        }
-        subsurface["refraction"] = { indexOfRefraction: ior };
-    }
-    if (eSp) {
-        if (specularFactor !== undefined) {
-            if (Math.abs(specularFactor - 1) > 1e-6) {
-                reflectance["f0Factor"] = specularFactor;
-                reflectance["specularWeight"] = specularFactor;
-                hasReflectance = true;
-            } else {
-                // An explicit factor of 1 *clears* what the ior set above.
-                delete reflectance["f0Factor"];
-                delete reflectance["specularWeight"];
-            }
-        }
-        if (specularColorFactor?.length === 3) {
-            const [red, green, blue] = specularColorFactor as [
-                number,
-                number,
-                number,
-            ];
-            if (red !== 1 || green !== 1 || blue !== 1) {
-                reflectance["color"] = [red, green, blue];
-                hasReflectance = true;
-            }
-        }
-        if (specularTexture) {
-            reflectance["texture"] = specularTexture;
-            reflectance["useOnlyMetallicFromTexture"] = true;
-        }
-        if (specularColorTexture) {
-            reflectance["reflectanceTexture"] = specularColorTexture;
-        }
-    }
-    if (eVol) {
-        if (thicknessFactor > 0 || thicknessTexture) {
-            subsurface["thickness"] = {
-                min: 0,
-                max: thicknessFactor || 1,
-                useGlTFChannel: true,
-                ...(thicknessTexture ? { texture: thicknessTexture } : {}),
-            };
-        }
-        const color = asNumbers(eVol["attenuationColor"])?.length === 3
-            ? asNumbers(eVol["attenuationColor"])
-            : undefined;
-        const atDistance = asNumber(eVol["attenuationDistance"]);
-        if (color || atDistance !== undefined) {
-            subsurface["tint"] = {
-                ...(color ? { color } : {}),
-                ...(atDistance !== undefined ? { atDistance } : {}),
-            };
-        } else if (subsurface["thickness"]) {
-            subsurface["tint"] = { color: [1, 1, 1], atDistance: 1 };
-        }
-    }
-
-    if (needsTransmission) {
-        // `setPbrTransmission` — the one that registers the scene hook, because
-        // enabling transmission retargets the frame graph's colour buffer.
-        input["_transmissive"] = true;
-        subsurface["refraction"] = {
-            ...(asObject(subsurface["refraction"]) ?? {}),
-            intensity,
-            useThicknessAsDepth: subsurface["thickness"] !== undefined,
-            ...(transmissionTexture ? { texture: transmissionTexture } : {}),
-        };
-    }
-    if (needsDispersion && subsurface["refraction"] && subsurface["thickness"]) {
-        (subsurface["refraction"] as JsonObject)["dispersion"] =
-            20 / dispersion;
-    }
-    if (Object.keys(subsurface).length > 0) input["_subsurface"] = subsurface;
-    if (
-        reflectance["texture"] ||
-        reflectance["reflectanceTexture"] ||
-        hasReflectance
-    ) {
-        // `setPbrMetallicReflectance` writes each option under its own
-        // underscore-prefixed name, which is what the ext's `detect` reads.
-        const names: Record<string, string> = {
-            color: "_metallicReflectanceColor",
-            texture: "_metallicReflectanceTexture",
-            reflectanceTexture: "_reflectanceTexture",
-            f0Factor: "_metallicF0Factor",
-            specularWeight: "_specularWeight",
-            useOnlyMetallicFromTexture:
-                "_useOnlyMetallicFromMetallicReflectanceTexture",
-        };
-        for (const [option, property] of Object.entries(names)) {
-            if (reflectance[option] !== undefined) {
-                input[property] = reflectance[option];
-            }
-        }
-    }
-}
-
-/** Builds an `imageOf` resolver from a glTF document's `textures` array. */
 export function gltfImageResolver(
     document: JsonObject,
 ): (textureIndex: unknown) => number | undefined {
@@ -674,39 +268,507 @@ export function gltfImageResolver(
     };
 }
 
+/** A pinned extension's `applyMaterial`, synchronous after the unasync load. */
+type PinnedApplyMaterial = (
+    mat: JsonObject,
+    ctx: PinnedExtensionContext,
+) => JsonObject | null;
+
+/** The half of the loader's `extCtx` the material extensions read. */
+interface PinnedExtensionContext {
+    _texture: (texInfo: unknown, sRGB: boolean) => JsonObject | undefined;
+}
+
+/** The texture set `buildDefaultPbrTexturesExt` returns; `void 0` slots stay. */
+interface PinnedTextureSet {
+    baseColorTexture: JsonObject;
+    ormTexture: JsonObject;
+    normalTexture: JsonObject | undefined;
+    emissiveTexture: JsonObject | undefined;
+    occlusionTexture: JsonObject | undefined;
+}
+
+/** The executed pinned callables this module drives. */
+interface PinnedLoaderExecution {
+    /** The seven `applyMaterial` extensions, in the feature registry's order. */
+    materialExtensions: ReadonlyArray<{
+        id: string;
+        applyMaterial: PinnedApplyMaterial;
+    }>;
+    wrapTexture: (texture: JsonObject, texInfo: unknown) => JsonObject;
+    buildDefaultPbrTexturesExt: (
+        engine: unknown,
+        mat: JsonObject,
+        sampler: undefined,
+        generateMipmaps: () => void,
+        getCachedTex: (image: unknown, srgb: boolean) => JsonObject,
+        wrapTex: (texture: JsonObject, texInfo: unknown) => JsonObject,
+        samplerFor: undefined,
+    ) => PinnedTextureSet;
+    assemblePbrPropsExt: (
+        mat: JsonObject,
+        textures: PinnedTextureSet,
+        extLayers: JsonObject | undefined,
+    ) => JsonObject;
+    needsGltfUvTransform: (textures: PinnedTextureSet) => boolean;
+    needsGltfEmissive: (mat: JsonObject, emissiveTexture: unknown) => boolean;
+    setPbrEmissive: (material: PinnedMaterialInput, color: number[]) => void;
+    setPbrAlphaCutoff: (
+        material: PinnedMaterialInput,
+        alphaCutOff: unknown,
+    ) => void;
+    setPbrMetallicReflectance: (
+        material: PinnedMaterialInput,
+        options: JsonObject,
+    ) => void;
+    enableMaterialUvTransform: (material: PinnedMaterialInput) => boolean;
+    animatedTargets: (json: JsonObject) => PinnedAnimatedTargetSets;
+    seedExtMaterials: (
+        json: JsonObject,
+        map: readonly PinnedMaterialInput[],
+        animated: PinnedAnimatedTargetSets,
+        setReflectance:
+            | ((material: PinnedMaterialInput, options: JsonObject) => void)
+            | null,
+    ) => void;
+}
+
+/** The composer's resolution of the pin, mirrored from `pinned-shader-composer.ts`. */
+function pinnedLibraryRoot(): string {
+    const repositoryRoot = findRepositoryRoot();
+    const upstream = readUpstreamPin(repositoryRoot);
+    return join(
+        repositoryRoot,
+        "node_modules",
+        ...upstream.package.split("/"),
+        "lib",
+    );
+}
+
+/**
+ * Imports a pinned module with its `async`/`await` erased.
+ *
+ * The loader's `applyMaterial` hooks are `async` because the real `ctx`
+ * decodes images; the stub `ctx` here produces every awaited value
+ * synchronously, so the awaits are inert and the pin's text runs unchanged
+ * with the keywords stripped. Three mechanical rewrites make that executable:
+ *
+ * - dynamic `import('…')` expressions are hoisted into eager namespace
+ *   imports (`gltf-ext-dielectric.ts` lazy-loads its three `setPbrX`
+ *   modules; eager loading is the same modules, which define functions and
+ *   nothing else at load);
+ * - the remaining relative specifiers are anchored to absolute URLs against
+ *   the module's own directory, exactly as `importPinnedModuleWithExports`
+ *   does, so the dependencies are the same instances the composer imports;
+ * - `Promise.all` is shadowed by the identity it reduces to once nothing in
+ *   the array is a promise.
+ *
+ * Everything that executes is still the pin's text. If the pin ever grows a
+ * genuinely asynchronous step, a promise surfaces where a value is expected
+ * and `assertPinnedSync` throws at generation time instead of drifting.
+ */
+async function importPinnedModuleUnasynced(
+    relativePath: string,
+    extraExports: readonly string[] = [],
+    redirects: ReadonlyMap<string, string> = new Map(),
+): Promise<Record<string, unknown>> {
+    const modulePath = join(pinnedLibraryRoot(), relativePath);
+    const anchor = (specifier: string): string =>
+        redirects.get(specifier) ??
+            pathToFileURL(resolve(dirname(modulePath), specifier)).href;
+    const hoisted: string[] = [];
+    let dynamicIndex = 0;
+    const text = readPinnedLibraryModule(relativePath)
+        .replace(
+            /\bimport\((["'])([^"']+)\1\)/g,
+            (_match, _quote: string, specifier: string) => {
+                const name = `__pinnedDynamicImport${dynamicIndex++}`;
+                hoisted.push(
+                    `import * as ${name} from ${
+                        JSON.stringify(anchor(specifier))
+                    };`,
+                );
+                return name;
+            },
+        )
+        .replace(
+            /(from\s*)(["'])(\.\.?\/[^"']+)\2/g,
+            (_match, keyword: string, quote: string, specifier: string) =>
+                `${keyword}${quote}${anchor(specifier)}${quote}`,
+        )
+        .replace(/\basync\s+/g, "")
+        .replace(/\bawait\s+/g, "");
+    const augmented = [
+        ...hoisted,
+        "const Promise = { all: (values) => values };",
+        text,
+        ...(extraExports.length > 0
+            ? [`export { ${extraExports.join(", ")} };`]
+            : []),
+    ].join("\n");
+    const url = `data:text/javascript;base64,${
+        Buffer.from(augmented, "utf8").toString("base64")
+    }`;
+    return (await import(url)) as Record<string, unknown>;
+}
+
+/** Trips if an unasynced pinned function still produced a promise. */
+function assertPinnedSync<T>(value: T, what: string): T {
+    if (
+        typeof value === "object" &&
+        value !== null &&
+        typeof (value as { then?: unknown }).then === "function"
+    ) {
+        throw new Error(
+            `Pinned ${what} returned a promise under the unasync transform; ` +
+                `the pin's shape changed and the transform needs re-reading.`,
+        );
+    }
+    return value;
+}
+
+/**
+ * The material extensions `loadGltfFeatures` can activate, in the feature
+ * registry's own order (`gltf-feature-registry.ts`), because
+ * `runGltfMaterialFeatures` merges their fragments in that order. The
+ * registry gates each on `extensionsUsed`; every module also guards itself on
+ * the material's own declaration (`if (!c) return null`), so running all of
+ * them per material differs only for an extension a material declares without
+ * the document announcing it — which no valid glTF does.
+ *
+ * `gltf-ext-diffuse-transmission.ts` and `gltf-ext-spec-gloss.ts` sit in the
+ * registry between these and are deliberately not run: no corpus asset
+ * declares either, and their arms have no generated counterpart yet — a
+ * material reaching them should fail the compose gate loudly, not compose an
+ * arm generation cannot emit.
+ */
+const loaderMaterialExtensionModules = [
+    "loader-gltf/gltf-ext-clearcoat.js",
+    "loader-gltf/gltf-ext-iridescence.js",
+    "loader-gltf/gltf-ext-emissive-strength.js",
+    "loader-gltf/gltf-ext-sheen.js",
+    "loader-gltf/gltf-ext-anisotropy.js",
+    "loader-gltf/gltf-ext-unlit.js",
+    "loader-gltf/gltf-ext-dielectric.js",
+] as const;
+
+/**
+ * Everything the pinned extensions are allowed to have set. A key outside
+ * this list means the pin grew a new option this module has never projected,
+ * and the right response is a loud failure at generation time, not a silent
+ * pass-through whose downstream meaning nobody checked.
+ */
+const knownLayerProperties = new Set([
+    "_clearCoat",
+    "_sheen",
+    "_iridescence",
+    "_anisotropy",
+    "_emissiveColor",
+    "_unlit",
+    "_unlitColor",
+    "_transmissive",
+    "_subsurface",
+    "_metallicReflectanceColor",
+    "_metallicReflectanceTexture",
+    "_reflectanceTexture",
+    "_metallicF0Factor",
+    "_specularWeight",
+    "_useOnlyMetallicFromMetallicReflectanceTexture",
+]);
+
+/**
+ * `setPbrMetallicReflectance`'s write order, which is also the order the
+ * transcription used to write them, so the projection preserves both.
+ */
+const reflectanceProperties = [
+    "_metallicReflectanceColor",
+    "_metallicReflectanceTexture",
+    "_reflectanceTexture",
+    "_metallicF0Factor",
+    "_specularWeight",
+    "_useOnlyMetallicFromMetallicReflectanceTexture",
+] as const;
+
+/**
+ * The one-time load of every pinned callable this module executes.
+ *
+ * The first await matters most: the executed `setPbrX` setters call
+ * `_registerPbrExt`, and registration order is the material UBO's field order
+ * (`pinned-pbr-variants.ts` spells the contract out). `_registerPbrExt` is a
+ * `Map.set` keyed by id — a re-registration keeps the first position — so
+ * registering the composer's curated order here first makes every
+ * registration the executed setters perform order-neutral. The scene hook
+ * `setPbrTransmission` registers is a `Set` nothing in generation drains.
+ */
+const pin = await (async (): Promise<PinnedLoaderExecution> => {
+    await registeredPbrExtensionIds();
+    const uvTransform = await importPinnedModule<{
+        default: {
+            wrapTexture: (texture: JsonObject, texInfo: unknown) => JsonObject;
+        };
+    }>("loader-gltf/gltf-ext-uv-transform.js");
+    const builder = await importPinnedModule<{
+        needsGltfEmissive: (
+            mat: JsonObject,
+            emissiveTexture: unknown,
+        ) => boolean;
+    }>("loader-gltf/gltf-pbr-builder.js");
+    // The texture assembly's factor-texel branches call the real GPU uploads,
+    // and `gpu-flags.ts` snapshots `globalThis.GPUTextureUsage`, which Node
+    // does not have. The uploads are redirected to recording stubs — the
+    // `ctx` pattern one seam over: a factor texel's only reads here are its
+    // missing `_hasTx`/`_texCoord` markers and its truthiness, and an empty
+    // record carries both. `needsGltfEmissive` above stays on the real
+    // module.
+    const uploadStubs = `data:text/javascript;base64,${
+        Buffer.from(
+            "export const uploadBaseColorFactorTexture = () => ({});\n" +
+                "export const uploadOrmFactorTexture = () => ({});\n" +
+                "export const uploadTex = () => ({});\n",
+            "utf8",
+        ).toString("base64")
+    }`;
+    const builderExt = await importPinnedModuleUnasynced(
+        "loader-gltf/gltf-pbr-builder-ext.js",
+        ["needsGltfUvTransform"],
+        new Map([["./gltf-pbr-builder.js", uploadStubs]]),
+    ) as {
+        buildDefaultPbrTexturesExt: PinnedLoaderExecution[
+            "buildDefaultPbrTexturesExt"
+        ];
+        assemblePbrPropsExt: PinnedLoaderExecution["assemblePbrPropsExt"];
+        needsGltfUvTransform: PinnedLoaderExecution["needsGltfUvTransform"];
+    };
+    const emissive = await importPinnedModule<{
+        setPbrEmissive: PinnedLoaderExecution["setPbrEmissive"];
+    }>("material/pbr/set-emissive.js");
+    const alphaCutoff = await importPinnedModule<{
+        setPbrAlphaCutoff: PinnedLoaderExecution["setPbrAlphaCutoff"];
+    }>("material/pbr/set-alpha-cutoff.js");
+    const reflectance = await importPinnedModule<{
+        setPbrMetallicReflectance: PinnedLoaderExecution[
+            "setPbrMetallicReflectance"
+        ];
+    }>("material/pbr/set-metallic-reflectance.js");
+    const uvEnable = await importPinnedModule<{
+        enableMaterialUvTransform: PinnedLoaderExecution[
+            "enableMaterialUvTransform"
+        ];
+    }>("material/pbr/enable-material-uv-transform.js");
+    const pointerExt = await importPinnedModuleUnasynced(
+        "loader-gltf/animation-pointer-ext.js",
+        ["animatedTargets", "seedExtMaterials"],
+    );
+    const materialExtensions: Array<{
+        id: string;
+        applyMaterial: PinnedApplyMaterial;
+    }> = [];
+    for (const path of loaderMaterialExtensionModules) {
+        const module = await importPinnedModuleUnasynced(path);
+        materialExtensions.push(
+            module["default"] as {
+                id: string;
+                applyMaterial: PinnedApplyMaterial;
+            },
+        );
+    }
+    return {
+        materialExtensions,
+        wrapTexture: uvTransform.default.wrapTexture,
+        buildDefaultPbrTexturesExt: builderExt.buildDefaultPbrTexturesExt,
+        assemblePbrPropsExt: builderExt.assemblePbrPropsExt,
+        needsGltfUvTransform: builderExt.needsGltfUvTransform,
+        needsGltfEmissive: builder.needsGltfEmissive,
+        setPbrEmissive: emissive.setPbrEmissive,
+        setPbrAlphaCutoff: alphaCutoff.setPbrAlphaCutoff,
+        setPbrMetallicReflectance: reflectance.setPbrMetallicReflectance,
+        enableMaterialUvTransform: uvEnable.enableMaterialUvTransform,
+        animatedTargets: pointerExt[
+            "animatedTargets"
+        ] as PinnedLoaderExecution["animatedTargets"],
+        seedExtMaterials: pointerExt[
+            "seedExtMaterials"
+        ] as PinnedLoaderExecution["seedExtMaterials"],
+    };
+})();
+
+/**
+ * The engine and mipmap generator only flow into the stubbed uploads —
+ * `samplerFor` is withheld, so every image-backed slot goes through the
+ * `getCachedTex` stub instead — so both are inert placeholders.
+ */
+const stubEngine: unknown = undefined;
+
+const noopGenerateMipmaps = (): void => {};
+
+/**
+ * The `ctx._texture` stub the executed extensions await.
+ *
+ * The real one decodes the image and wraps the GPU texture through the
+ * registered `wrapTexture` hooks (`load-gltf.ts`'s `extCtx`). This one keeps
+ * the module's output shape — the slot's own JSON plus the loader's markers —
+ * but the *markers* come from executing the pin's `wrapTexture` over the
+ * slot, so which transforms patch a field and which texCoord is stamped are
+ * the pin's decisions, not re-derived ones. A slot with no image behind it
+ * builds nothing, the same as the real fetcher.
+ *
+ * Two nuances the real loader has that this stub flattens, both corpus-
+ * neutral today: `wrapTexture` only runs when `KHR_texture_transform` is in
+ * `extensionsUsed` (here it always runs, as the transcription always
+ * stamped), and the sRGB flag changes only the texture format, never the
+ * markers.
+ */
+function builtExtensionTexture(
+    imageOf: (textureIndex: unknown) => number | undefined,
+    slot: unknown,
+): JsonObject | undefined {
+    const info = asObject(slot);
+    if (!info || imageOf(info["index"]) === undefined) return undefined;
+    const wrapped = pin.wrapTexture({}, info);
+    return {
+        ...info,
+        ...(wrapped["_hasTx"] === true ? { _hasTx: true as const } : {}),
+        ...(wrapped["_texCoord"] === 1 ? { _texCoord: 1 as const } : {}),
+    };
+}
+
+/**
+ * The parsed-material state `assembleMaterial` builds, field for field
+ * (`gltf-material.ts`). That function is the one pinned step this module
+ * cannot execute: it fetches real images from the document, and callers hand
+ * this module an `imageOf` closure instead of the document. So the defaults
+ * are mirrored here — they are plumbing, every formula that *reads* them is
+ * executed — and each image becomes a per-index singleton handle, because the
+ * texture assembly compares images by identity to decide whether occlusion
+ * and metallic-roughness share one.
+ */
+function loaderMaterialState(
+    material: JsonObject,
+    imageOf: (textureIndex: unknown) => number | undefined,
+): JsonObject {
+    const handles = new Map<number, JsonObject>();
+    const image = (slot: unknown): JsonObject | null => {
+        const info = asObject(slot);
+        const index = info ? imageOf(info["index"]) : undefined;
+        if (index === undefined) return null;
+        let handle = handles.get(index);
+        if (!handle) handles.set(index, handle = {});
+        return handle;
+    };
+    const pbr = asObject(material["pbrMetallicRoughness"]) ?? {};
+    const normal = asObject(material["normalTexture"]);
+    const occlusion = asObject(material["occlusionTexture"]);
+    return {
+        _baseColorFactor: pbr["baseColorFactor"] ?? [1, 1, 1, 1],
+        _metallicFactor: pbr["metallicFactor"] ?? 1,
+        _roughnessFactor: pbr["roughnessFactor"] ?? 1,
+        _emissiveFactor: material["emissiveFactor"] ?? [0, 0, 0],
+        _baseColorImage: image(pbr["baseColorTexture"]),
+        _metallicRoughnessImage: image(pbr["metallicRoughnessTexture"]),
+        _normalImage: image(normal),
+        _normalScale: typeof normal?.["scale"] === "number"
+            ? normal["scale"]
+            : 1,
+        _occlusionTexCoord: typeof occlusion?.["texCoord"] === "number"
+            ? occlusion["texCoord"]
+            : 0,
+        _occlusionImage: image(occlusion),
+        _emissiveImage: image(material["emissiveTexture"]),
+        _doubleSided: !!material["doubleSided"],
+        _alphaMode: material["alphaMode"] ?? "OPAQUE",
+        _alphaCutoff: material["alphaCutoff"] ?? 0.5,
+        _rawMatDef: material,
+    };
+}
+
+/**
+ * Runs the executed extensions and merges their fragments the way
+ * `runGltfMaterialFeatures` does — `Object.assign` over the non-null results
+ * in registry order. The loop is mirrored (it holds no formulas); every value
+ * inside the fragments came out of the pin.
+ */
+function pinnedExtensionLayers(
+    mat: JsonObject,
+    imageOf: (textureIndex: unknown) => number | undefined,
+): JsonObject {
+    const ctx: PinnedExtensionContext = {
+        _texture: (texInfo, _sRGB) => builtExtensionTexture(imageOf, texInfo),
+    };
+    const layers: JsonObject = {};
+    for (const extension of pin.materialExtensions) {
+        const fragment = assertPinnedSync(
+            extension.applyMaterial(mat, ctx),
+            `${extension.id}.applyMaterial`,
+        );
+        if (fragment) Object.assign(layers, fragment);
+    }
+    for (const name of Object.keys(layers)) {
+        if (!knownLayerProperties.has(name)) {
+            throw new Error(
+                `Pinned material extension set '${name}', which this ` +
+                    `module has no projection for; the pin grew an option.`,
+            );
+        }
+    }
+    return layers;
+}
+
+/**
+ * An option object as the pin built it, minus the `undefined`-valued keys the
+ * builders leave behind for the slots they could not build (`texture: tex`
+ * with no image resolves to an explicit `undefined` upstream). Dropping them
+ * is this module's long-standing output normalization — JSON-identical to the
+ * pin's object, and what every existing consumer and baseline expects.
+ */
+function withoutUndefinedOptions(options: JsonObject): JsonObject {
+    const scrubbed: JsonObject = {};
+    for (const [name, value] of Object.entries(options)) {
+        if (value !== undefined) scrubbed[name] = value;
+    }
+    return scrubbed;
+}
+
 export function pinnedMaterialInputFromGltf(
     material: JsonObject,
     scene: PinnedMaterialSceneContext = {},
 ): PinnedMaterialInput {
     const pbr = asObject(material["pbrMetallicRoughness"]) ?? {};
-    const baseColorFactor = asNumbers(pbr["baseColorFactor"]);
-    const alphaMode = material["alphaMode"];
     const occlusion = asObject(material["occlusionTexture"]);
-    const extensions = asObject(material["extensions"]) ?? {};
+    const imageOf = scene.imageOf ?? ((): undefined => undefined);
+
+    // The pin's own loader steps, over this one material: the parsed state,
+    // the extension fragments, the texture assembly, the props assembly.
+    const mat = loaderMaterialState(material, imageOf);
+    const layers = pinnedExtensionLayers(mat, imageOf);
+    const textures = pin.buildDefaultPbrTexturesExt(
+        stubEngine,
+        mat,
+        undefined,
+        noopGenerateMipmaps,
+        () => ({}),
+        pin.wrapTexture,
+        undefined,
+    );
+    const props = pin.assemblePbrPropsExt(mat, textures, layers);
 
     const input: PinnedMaterialInput = {
-        // `buildDefaultPbrTexturesExt` attaches the emissive texture from the
-        // image alone; `needsGltfEmissive` gates only `setPbrEmissive`, which
-        // writes `_emissiveColor`. So the texture — and with it
-        // `PBR_HAS_EMISSIVE` and the emissive binding pair — is unconditional,
-        // and Scene 253's module 9 shows exactly that: an emissive texture
-        // bound, and no `emissiveUVm` beside it.
+        // The base texture fields stay slot-shaped — the raw glTF slot stands
+        // in for the pin's GPU texture record, carrying the same truthiness
+        // for every slot with an image behind it. `buildDefaultPbrTexturesExt`
+        // attaches the emissive texture from the image alone; the factor
+        // gates only `_emissiveColor` below — Scene 253's module 9 shows
+        // exactly that: an emissive texture bound, and no `emissiveUVm`
+        // beside it.
         emissiveTexture: asObject(material["emissiveTexture"]),
         normalTexture: asObject(material["normalTexture"]),
-        doubleSided: material["doubleSided"] === true,
-        // `gltf-pbr-builder.ts` and its slow-path sibling both set this
-        // unconditionally, so it is a property of the glTF loader rather than
-        // of the material: every glTF PBR material composes the specular-AA
-        // block that derives `alphaG` from the normal's screen-space slope.
-        enableSpecularAA: true,
-        // `_computePbrMaterialFeatures` sets PBR_HAS_OCCLUSION from
-        // `(occlusionStrength ?? 1) > 0`, so a material with no occlusion
-        // texture has to carry zero rather than the glTF slot default of one:
-        // otherwise the fragment samples `orm.r` for an occlusion the material
-        // does not have, where the pin composes a constant `1.0`.
-        // `assemblePbrPropsExt` writes `mat._occlusionImage ? 1.0 : 0` — the
-        // glTF `strength` is not what this field carries, only whether an
-        // occlusion image was decoded at all.
+        doubleSided: props["doubleSided"] as boolean,
+        // `assemblePbrPropsExt` sets this unconditionally: every glTF PBR
+        // material composes the specular-AA block that derives `alphaG` from
+        // the normal's screen-space slope.
+        enableSpecularAA: props["enableSpecularAA"] as boolean,
+        // The pin's `mat._occlusionImage ? 1 : 0` — whether an occlusion
+        // image was decoded at all, not the glTF `strength`.
+        // `_computePbrMaterialFeatures` reads it as PBR_HAS_OCCLUSION.
         //
         // Scene 253 disagrees and is left disagreeing rather than tuned away:
         // its one occlusion-textured material composes `occlusion = orm.r`
@@ -714,77 +776,73 @@ export function pinnedMaterialInputFromGltf(
         // Forcing the field to zero matches that but costs a distinct variant
         // and gains no exact match, so the source keeps the vote until a
         // capture explains which materials actually reach `_occlusionImage`.
-        occlusionStrength: occlusion ? 1 : 0,
+        occlusionStrength: props["occlusionStrength"] as number,
     };
-    // `setPbrEmissive` writes `_emissiveColor`, which is what the emissive
-    // extension reads for its bit. Three writers, in the pin's own order:
-    // `gltf-ext-emissive-strength.ts` runs with the other extensions and calls
-    // `setPbrEmissive(layer, factor * strength)` whenever the extension is
-    // *declared* (`emissiveStrength ?? 1`, factor default `[0,0,0]`) — the
-    // later `applyGltfOptInPbrFeatures` guards `!props._emissiveColor` and
-    // stands down. Without the extension, the load-time factor decides through
-    // `needsGltfEmissive`, and an animated pointer needs the field regardless.
-    const emissiveFactor = asNumbers(material["emissiveFactor"]);
-    const emissiveStrengthExtension = asObject(
-        extensions["KHR_materials_emissive_strength"],
-    );
-    if (emissiveStrengthExtension !== undefined) {
-        const strength =
-            asNumber(emissiveStrengthExtension["emissiveStrength"]) ?? 1;
-        const [red = 0, green = 0, blue = 0] = emissiveFactor ?? [];
-        input["_emissiveColor"] = [
-            red * strength,
-            green * strength,
-            blue * strength,
-        ];
-    } else if (scene.animatedEmissive || gltfEmissiveApplies(material)) {
-        input["_emissiveColor"] = emissiveFactor ?? [1, 1, 1];
+    // `_emissiveColor`, three writers in the pin's own order:
+    // `gltf-ext-emissive-strength.ts` ran with the other extensions and wrote
+    // `factor * strength` whenever the extension is declared; an animated
+    // pointer needs the field regardless of the load-time factor
+    // (`gltf-feature-animation-pointer.ts`, mirrored — its module is
+    // asset-level plumbing); otherwise the executed `needsGltfEmissive`
+    // decides and the pin's own setter writes. The predicate's texture
+    // operand is the slot, standing in for the built texture as everywhere
+    // else in the output shape.
+    if ("_emissiveColor" in layers) {
+        input["_emissiveColor"] = layers["_emissiveColor"];
+    } else if (scene.animatedEmissive) {
+        input["_emissiveColor"] = asNumbers(material["emissiveFactor"]) ??
+            [1, 1, 1];
+    } else if (
+        pin.needsGltfEmissive(mat, asObject(material["emissiveTexture"]))
+    ) {
+        const factor = mat["_emissiveFactor"] as number[];
+        pin.setPbrEmissive(input, [factor[0]!, factor[1]!, factor[2]!]);
     }
-    const imageOf = scene.imageOf ?? ((): undefined => undefined);
-    const slots = pinnedTextureSlots(material, imageOf);
-    if (slots.hasOcclusionCarrier && occlusion) {
+    // The occlusion carrier is whatever the executed texture assembly built:
+    // its own slot on a second UV set, or the orm-unpack split when occlusion
+    // and metallic-roughness name one image through different texture objects
+    // or a declared transform. The carried fields stay slot-shaped.
+    if (textures.occlusionTexture && occlusion) {
         input["occlusionTexture"] = occlusion;
-        const texCoord = asNumber(occlusion["texCoord"]);
-        if (texCoord) input["occlusionTexCoord"] = texCoord;
+        if ("occlusionTexCoord" in props) {
+            input["occlusionTexCoord"] = props["occlusionTexCoord"];
+        }
     }
-    // `PBR2_HAS_UV_TRANSFORM` is contributed by the uv-transform extension's own
-    // detect, which reads `_hasUvTx` — the marker the pinned loader stamps on
-    // the textures it actually built.
-    if (slots.uv2Mask !== 0) input["_uv2Mask"] = slots.uv2Mask;
-    if (slots.hasUvTransform || scene.animatedUvTransform) {
-        input["_hasUvTx"] = true;
+    // `assemblePbrPropsExt`'s own mask, executed — read off the built
+    // textures' `_texCoord`, except occlusion, which is read off the
+    // material, so a UV2 occlusion that becomes its own carrier still sets
+    // bit 32.
+    if ("_uv2Mask" in props) {
+        input["_uv2Mask"] = props["_uv2Mask"] as number;
+    }
+    // `PBR2_HAS_UV_TRANSFORM` follows the executed `needsGltfUvTransform`
+    // over the built textures — so a declared-but-empty transform, or a
+    // transform on a slot the assembly never built, composes nothing — and
+    // the pin's own `enableMaterialUvTransform` writes the field, here as in
+    // the animated-pointer path upstream.
+    if (pin.needsGltfUvTransform(textures) || scene.animatedUvTransform) {
+        pin.enableMaterialUvTransform(input);
     }
     if (scene.linearImageProcessing) input["_linearImageProcessing"] = true;
-    // `gltf-pbr-builder-ext.ts` states the rule outright:
-    //   `mat._baseColorImage && !isDefaultBaseColorFactor(...)`
-    // Both halves matter. A default `[1,1,1,1]` is the identity and is
-    // skipped; and a factor with *no image* behind it is not carried either,
-    // because `uploadBaseColorFactorTexture` bakes it into the 1x1 texel the
-    // slot samples instead — so a coloured, textureless material like Scene
-    // 39's Rock declares no `baseColorFactor` field at all.
-    const defaultBaseColorFactor =
-        baseColorFactor === undefined ||
-        (baseColorFactor[0] === 1 &&
-            baseColorFactor[1] === 1 &&
-            baseColorFactor[2] === 1 &&
-            baseColorFactor[3] === 1);
-    const hasBaseColorImage =
-        imageOf(asObject(pbr["baseColorTexture"])?.["index"]) !== undefined;
-    if (
-        (hasBaseColorImage && !defaultBaseColorFactor) ||
-        scene.animatedBaseColorFactor
-    ) {
-        input.baseColorFactor = baseColorFactor ?? [1, 1, 1, 1];
+    // The factor field exists exactly when the executed assembly carried it —
+    // `mat._baseColorImage && !isDefaultBaseColorFactor(...)` — or when an
+    // animated pointer needs the UBO lane regardless (Scene 242 carries
+    // `[1,1,1,1]` at load and the browser's fragment still declares it).
+    // Without an image the factor is baked into the uploaded texel instead.
+    if ("baseColorFactor" in props || scene.animatedBaseColorFactor) {
+        input.baseColorFactor = mat["_baseColorFactor"] as readonly number[];
     }
-    // The pin takes alpha from the factor for both blended and masked
-    // materials, and carries the cutoff through the alpha-test setter.
-    if (alphaMode === "BLEND") {
-        input.alphaBlend = true;
-        input.alpha = baseColorFactor?.[3] ?? 1;
+    // The executed assembly's own alpha block: BLEND carries the blend flag
+    // and the factor's alpha; MASK carries the alpha and, through the pin's
+    // alpha-test setter, the cutoff — the two `applyGltfOptInPbrFeatures`
+    // gates, mirrored around the executed setter.
+    if ("alphaBlend" in props) {
+        input.alphaBlend = props["alphaBlend"] as boolean;
+        input.alpha = props["alpha"] as number;
     }
-    if (alphaMode === "MASK") {
-        input.alpha = baseColorFactor?.[3] ?? 1;
-        input._alphaCutOff = asNumber(material["alphaCutoff"]) ?? 0.5;
+    if (mat["_alphaMode"] === "MASK") {
+        input.alpha = props["alpha"] as number;
+        pin.setPbrAlphaCutoff(input, mat["_alphaCutoff"]);
     }
     if (asObject(pbr["metallicRoughnessTexture"])) {
         // The ORM slot is the metallic-roughness image; the pin reads it off
@@ -794,36 +852,44 @@ export function pinnedMaterialInputFromGltf(
     if (asObject(pbr["baseColorTexture"])) {
         input["baseColorTexture"] = asObject(pbr["baseColorTexture"]);
     }
-
-    // `ctx._texture` returns nothing for a slot it cannot build, so a slot
-    // with no image behind it contributes no texture — the same rule the base
-    // slots follow. `detect` then reads `_hasTx` and `_texCoord` off the
-    // *built* texture, so the slot carries what the loader would have stamped.
-    const buildTexture: TextureBuilder = (slot) => {
-        const info = asObject(slot);
-        if (!info || imageOf(info["index"]) === undefined) return undefined;
-        return { ...info, ...pinnedTexturePatch(info) };
-    };
-    for (const entry of materialExtensions) {
-        const declared = asObject(extensions[entry.gltf]);
-        if (!declared) continue;
-        const props = entry.props(declared, buildTexture);
-        for (const [name, value] of Object.entries(props)) {
-            if (value === undefined) delete props[name];
+    // The layered extensions, exactly as their executed `setPbrX` calls set
+    // them — presence alone enables each layer (`if (!c) return null;` then
+    // `isEnabled: true`), the coat's normal map arrives as `bumpTexture`,
+    // the glTF coat carries `useF0Remap: false`, the sheen model
+    // `albedoScaling: true`, and a sheen roughness map that is the tint map
+    // is dropped because that packing reads roughness from the tint's alpha.
+    for (
+        const property of [
+            "_clearCoat",
+            "_sheen",
+            "_iridescence",
+            "_anisotropy",
+        ] as const
+    ) {
+        if (property in layers) {
+            input[property] = withoutUndefinedOptions(
+                layers[property] as JsonObject,
+            );
         }
-        input[entry.property] = props;
     }
-
-    applyDielectric(input, extensions, buildTexture);
-
+    // The dielectric cluster's fragment — ior, specular, volume, transmission
+    // and dispersion interact in one pinned extension, and the quietest
+    // interaction costs a variant: any `ior !== 1.5` composes a reflectance
+    // arm, which is why Scene 253's Transmission sphere carries one at ior
+    // 1.209. Projected in this module's long-standing field order; the
+    // reflectance names are the pin's own setter writes.
+    if (layers["_transmissive"] === true) input["_transmissive"] = true;
+    if ("_subsurface" in layers) input["_subsurface"] = layers["_subsurface"];
+    for (const property of reflectanceProperties) {
+        if (property in layers) input[property] = layers[property];
+    }
     // `gltf-ext-unlit.ts`: presence sets `_unlit`, and the tint is carried
-    // only over a base colour image — the same reason `baseColorFactor` is,
-    // since without one the factor is already baked into the texel.
-    if (asObject(extensions["KHR_materials_unlit"])) {
-        input["_unlit"] = true;
-        if (hasBaseColorImage) {
-            const factor = baseColorFactor ?? [1, 1, 1, 1];
-            input["_unlitColor"] = [factor[0], factor[1], factor[2]];
+    // only over a base colour image, since without one the factor is already
+    // baked into the texel.
+    if ("_unlit" in layers) {
+        input["_unlit"] = layers["_unlit"];
+        if ("_unlitColor" in layers) {
+            input["_unlitColor"] = layers["_unlitColor"];
         }
     }
 
