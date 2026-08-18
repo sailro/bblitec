@@ -95,12 +95,6 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
   writers `writeStdMaterialData`/`writeStandardUvTransformData`
   (`standard-pipeline.js:241`) — the exact analog of the shipped PBR
   migration; writers lower via the existing `pinned-ubo-writer-lowerer`.
-- [ ] **RD-6 — dds-packager computeSH.** ~120 lines re-typing the pin's
-  internal `computeSH` (`load-dds-env.js`); good provenance comments, **no
-  test at all**; bit-exact executable alternative proven. EXECUTE.
-- [ ] **RD-7 — ibl-brdf-lut.** JS re-derivation of the pinned `brdfLutWGSL`
-  compute feeding the shipped `.rgba16f`; upstream `generateBrdfLut` is
-  exported and the Chromium WebGPU harness exists. EXECUTE.
 - [ ] **RD-8/10 — background + utility WGSL are liftable strings.** Upstream
   ships ground/DDS/HDR-skybox fragments, `WGSL_DITHER`, `WGSL_FOG`, and the
   image-processing `ip()` as plain string literals; lift them with the same
@@ -165,39 +159,16 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
 
 ## Transpiler structure
 
-- [ ] **TS-1 — browser-harness ceremony ×4.** Identical
+- [ ] **TS-1 — browser-harness ceremony, now ×5.** Identical
   server-listen → Chromium-launch → page-drive → teardown in
-  `capture-suite-reference.ts:270-321`, `capture-instrumented.ts:214-259`,
-  `hdr-prefilter-gpu.ts:209-230`, `sprite-atlas-packager.ts:105-136`.
-  Extract `withBrowserPage()` + `waitForSceneReady()` (~120-150 lines
-  removed). `browser-path.ts`'s own header records the drift this stack
-  already had once.
-- [ ] **TS-2 — two `buffers.json` decoders, already drifted.**
-  `capture-uniforms.ts` (accepts `bytes ?? data`, uniform-usage only) vs
-  `render-diff.ts` (`data` + `mappedWrites`, small storage buffers) plus two
-  WGSL layout implementations — a mapped-at-creation buffer decodes in `diff`
-  and is invisible to `uniforms`, a dead end mid-ladder. One capture-decoder
-  module; `render-diff` already imports `parseWgslStructs` from there.
-- [ ] **TS-3 — GLB/glTF document reading ×4-5 + duplicated animated-pointer
-  contract.** `glbDocument` twice under the same name
-  (`pinned-material-arms.ts:117-137`, `scene-compose-report.ts:61-74`), plus
-  `cli.ts:250-264`, `asset-specializer.ts:139-142`,
-  `compressed-geometry.ts:27`; `asObject`/`asNumber` re-declared in four
-  files; and `materialSubjects` duplicated between generation and the compose
-  gate **with the four animated-pointer regex literals repeated** — a fifth
-  pointer added to one side silently unsyncs the gate. One `gltf-document.ts`
-  + one exported `materialSubjects`.
-- [ ] **TS-4 — native-run spawn ceremony ×2.** `parity-scene.ts:206-281` vs
-  `capture-native.ts:65-102`: same npm-env filtering, same env assembly, same
-  spawnSync/error shape; each has options the other lacks. Extend `runNative`
-  with capture options.
+  `capture-suite-reference.ts`, `capture-instrumented.ts`,
+  `hdr-prefilter-gpu.ts`, `sprite-atlas-packager.ts`, and (added with RD-7)
+  `ibl-brdf-lut.ts`. Extract `withBrowserPage()` + `waitForSceneReady()`.
+  `browser-path.ts`'s own header records the drift this stack already had
+  once.
 - [ ] **TS-5 — four hand-rolled argv parsers**, one closure triple-pasted
   inside `scene-command.ts` (:760, :843, :863). One strict `parseFlags`
   (also closes TL-2).
-- [ ] **TS-7 — identifier-sanitize regex ×3** (`compiler.ts:5423`,
-  `data-types.ts:134`, `native-functions.ts:444`), each
-  `replace(/[^A-Za-z0-9_]/g, "_")` with different prefixing — fold into
-  `src/cpp-literals.ts`, which now owns the literal half (TS-6 done).
 - [ ] **TS-8/9/10 — small consolidations.** `transpileForBrowser` (×3);
   `captureDirectory()`/`parityDirectory()` helpers (path expression ×5);
   exported `ParityReport`/`DifferentialReport` types consumed by
@@ -212,18 +183,15 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
   (5421-5443). In `cli.ts`, ~450 lines of business logic want
   `babylon-asset-features.ts` (the `.babylon` twin of asset-specializer,
   currently inline at :324-436) and a `compose-pipeline.ts` (:596-745).
-- [ ] **Dead code (verified zero references).** Delete:
-  `tools/sdl-multisample-probe.c` (or name it in the SDL-3.6.0 TODO entry as
-  the verification tool); the `false ? {…}` diagnostics block
-  (`parity-scene.ts:532-549`) and its orphaned `artifacts/parity/scene1`
-  outputs; `renderer-lowerer.ts:148,3000-3004` (empty `sources` map toward a
-  deleted template directory); `assetDigest` (`compressed-geometry.ts:512`);
-  `getSpriteAtlasProvenance`, `readPngSize` (`sprite-atlas-packager.ts`).
-  Decide: `composePinnedPbrShader`/`pinnedComposer` (production uses
-  `createPbrComposer`; only its own test imports it — keep only if the test
-  is meant as a pin-contract guard); `examples/modular-scene.ts` pair;
+- [ ] **Dead code — remainder.** Decide `composePinnedPbrShader`/
+  `pinnedComposer` (production composes through `createPbrComposer`; only
+  their own test imports them — keep only if that test is meant as an
+  independent pin-contract guard, else delete both plus the test half).
   ~15 `export` keywords on file-local symbols. Add `knip` or `ts-prune` so
-  unused exports cannot re-accumulate.
+  unused exports cannot re-accumulate. (The verified-dead items — the probe,
+  the `false ? {…}` block, the empty-template map, `assetDigest`, the
+  sprite-atlas pair, the modular-scene examples, `half-float.ts` after both
+  packagers went GPU — are deleted.)
 
 ## Native
 
@@ -236,36 +204,29 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
   The names half already exists generated (`pbr_variant_bindings`). Emit one
   generated table `{slot, material_field, srgb_rule, fallback_rule,
   pinned_names}`; each backend keeps only enum→API translation.
-- [ ] **NA-3 — mip policy.** Chain-length formula hand-written ×4 + the
+- [ ] **NA-3 remainder — the transmission mip variant and Dawn's mip-blit
+  WGSL.** The chain-length helper is shared now; still open: the
   transmission mips-minus-4 derived two different ways
-  (`pal_dawn.cpp:4374-4378` hardcodes 11-4; `pal_sdl_gpu.cpp:1785-1795`
-  derives). Shared helper; emit Dawn's mip-blit WGSL from generation
-  (currently a C++ string invisible to shader provenance).
+  (`pal_dawn.cpp` hardcodes 11-4; `pal_sdl_gpu.cpp` derives from the
+  swapchain), and Dawn's mip-blit WGSL is a C++ string invisible to shader
+  provenance — emit it from generation (pairs with RD-5).
 - [ ] **NA-4 — transmission constants + trigger predicate shared.** 1024²,
   −4 mips, repeat-trilinear-aniso-4, first-transmissive-draw predicate —
-  duplicated at `pal_sdl_gpu.cpp:1759-1804,5973-6024` and
-  `pal_dawn.cpp:4374-4402,6610-6631`. Pass mechanics stay per backend.
-- [ ] **NA-5/6/7 — small shared tables.** Geometry attachment format-class +
-  clear rules (×2); blend-factor 4-tuples per bucket (restated at every
-  pipeline site); skybox family sub-order + back-cull default (×2; the Dawn
-  comment at `pal_dawn.cpp:4917-4921` claiming SDL keeps the undithered
-  fragment is stale — fix in passing).
-- [ ] **NA-12/13/14/15 — finish started extractions.** Sprite instance layout
-  /sort/blend-check (generate the layout table; Dawn hardcodes the atlas
-  sampler SDL derives from the record); `skeleton_draw`/`world_from_palette`/
-  `mirrored_vertices` boolean derivation (×2 → one shared helper feeding the
-  already-shared `pinned_draw_world`); bone-palette texture layout constants;
-  diagnostic id/cluster uniform structs + packing (×2; `advance_cluster_range`
-  already shared).
-- [ ] **NA-shared — hoist the non-API masses into `pal_gpu_shared.hpp`.**
-  Readback row-conversion (~250 lines), mesh-sync dirty policy (~235; SDL's
-  inline weights rebuild at :4377-4404 duplicates shared
-  `pack_morph_weights` — call it), shader-variant stage-block gather loop
-  (×4 incl. `pal_render_capture.hpp:827-857`), ModelVertex→GpuVertex quad
-  packing (×4), run-flag interpretation (×3 incl. `pal_sdl.cpp:1181-1190`),
-  sprite-alongside-scene refusal (×2 identical), CPU benchmark through
-  `report_benchmark`. Rule: tables and predicates move; pass encoding, bind
-  groups, and swapchain stay per backend (the mutually-validating surface).
+  duplicated in both backends. Pass mechanics stay per backend.
+- [ ] **NA-12 — sprite pinned contracts.** Instance layout offsets/stride
+  (generate the layout table beside `sprite_layer.hpp`); the per-frame
+  layer sort and blend-homogeneity check → shared helpers; Dawn hardcodes
+  the atlas sampler SDL derives from the record.
+- [ ] **NA-shared remainder — the two big masses.** Readback row-conversion
+  (~250 lines: half→byte, r16f→red, BGRA swap) and mesh-sync dirty policy
+  (~235; SDL's inline weights rebuild duplicates shared
+  `pack_morph_weights` — call it); CPU benchmark through
+  `report_benchmark`. Rule stands: tables and predicates move; pass
+  encoding, bind groups, and swapchain stay per backend.
+- [ ] **NA-generated-warnings.** Generated `pbr_variants.hpp` no-op writers
+  carry an unreferenced `material` parameter (`warning C4100`, e.g.
+  scene32:270,353) — the warning-clean rule covers generated C++ too; emit
+  `[[maybe_unused]]` on writer parameters a variant's arms never read.
 - [ ] **NA-dawn — factor Dawn's pinned draw path.** It is distributed across
   four sites that duplicate each other (write 6053-6148, encode 6382-6449,
   geometry write 2386-2507, geometry encode 7181-7265); SDL has
@@ -297,17 +258,6 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
   the canonical page per copilot-instructions' map; non-owners compress to a
   clause + link (the model exists: development.md's minimal-size section
   already links `backends.md#empirical-findings`).
-- [ ] **DOC-E — strip dev-log/history (~45 passages).** Delete pure war
-  stories ("this cost an hour on scene 242" debugging.md:64, the
-  benchmark-bracket migration backends.md:135-144, "used to name the first
-  two separately" development.md:806-809). Compress before/after MAD pairs to
-  the surviving contract (scene-243 five-suspects narrative, viewport
-  1.077→0.063 pairs — whose "after" values are stale vs status.md anyway,
-  scene-255 0.101→0.249→0.000, solid-skybox clip-z forensics, scene-14
-  7.312→0.339, scene-39 0.581). Keep measured evidence for live contracts
-  (dither magnitudes, VS-vs-Ninja and concurrency benchmarks, the 1.18→1.20
-  findings, TODO's distilled residual entries). The test: does a maintainer
-  need it to act today?
 
 ## Tooling
 
@@ -410,7 +360,9 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
    rewritten across its six pages, the pinned-variant-era boundaries retired,
    the smaller corrections landed; only the DOC-C remainder above and DOC-D/E
    stay open.
-3. **RD-4 → RD-6/7 → RD-8/9/10** — the EXECUTE quick wins, then
+3. ~~RD-4/6/7~~ done 2026-08-18 (the pin executes for the HDR package, DDS
+   harmonics, and BRDF LUT; scenes 8 and 265 both moved TOWARD the golden).
+   Next: **RD-8/9/10** (lift the background/grid/utility WGSL), then
    **RD-1** (Standard family) as the flagship; RD-2/RD-3 leaf-by-leaf
    behind it.
 4. **NA-1** and the NA small-table batch; TS-1/2/3 clusters; monolith
