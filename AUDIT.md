@@ -169,9 +169,9 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
   refused marker, (b) shader-arm hashing with the near-miss divergence
   line, and (e) `scene -- measure` shipped in wave C.)
   (c) Palette matching vs `tex-uploads.json` (zero readers today) with the
-  documented mirror map applied. (d) `scene -- probe-variants <id>` (the
-  stripped-shader-dir probe; write the recipe into debugging.md
-  regardless). (f) `capture --seek-bracket` (±1-frame motion scale).
+  documented mirror map applied. (d) `scene -- probe-variants <id>` automating the
+  stripped-shader-dir probe (the manual recipe is now written into
+  rung 6 of debugging.md). (f) `capture --seek-bracket` (±1-frame motion scale).
   (g) `parity --without ground|background` (the bisection ordering
   experiment). (h) `scene -- stability <id> [--runs N] [--single-sample]`
   (the 9/37 wobble check with the never-vs-golden trap built in).

@@ -227,6 +227,19 @@ For an animated scene, capture the browser at the seek and at ±1 frame
 and compare against each. That gives the *scale* of one frame of motion,
 so a residual can be judged against it instead of against intuition.
 
+The same experiment works one level lower, on a single shader arm,
+without touching the scene: the build deploys every generated shader
+next to the executable in `native\build-<id>-release\shaders\`, and the
+Dawn backend compiles the deployed `.native.wgsl` at startup. Neutralize
+the term under test in that file, re-run `npm run scene -- capture <id>
+--native` (it runs the existing executable — no rebuild), and measure
+the delta: that is the arm's exact contribution to the residual. Two
+limits: the probe is Dawn-only — SDL_GPU consumes the offline `.dxil`/
+`.spv` beside it, which only `tools/compile-shaders.ps1` refreshes —
+and any CMake build redeploys the directory and erases the edit. Both
+are the point: the probe is an ephemeral measurement, and what it finds
+flows back into generation, never into a hand-edited shader.
+
 ### 7. Did we derive the material's features at all?
 
 `scene -- compose <id|all>` runs every glTF material the scene loads through
