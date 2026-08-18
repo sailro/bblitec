@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
@@ -106,5 +106,11 @@ export function runNativeCapture(
                 `(a sprite-only scene) has nothing to describe here.`,
         );
     }
+    // Seek provenance for the reuse path; the build stamp is already inside
+    // the capture itself, written by the native run.
+    writeFileSync(
+        join(outputDirectory, `native-${backend}.meta.json`),
+        `${JSON.stringify({ seekSeconds: seekSeconds ?? null })}\n`,
+    );
     return { capturePath, screenshotPath, backend };
 }

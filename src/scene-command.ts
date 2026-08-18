@@ -2,12 +2,13 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { availableParallelism, totalmem } from "node:os";
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
     runSceneParity,
     runSceneParityDifferential,
 } from "./parity-scene.js";
+import { computeBuildStamp } from "./build-stamp.js";
 import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
 import { runInstrumentedCapture } from "./capture-instrumented.js";
 import { runNativeCapture } from "./capture-native.js";
@@ -768,7 +769,39 @@ async function runRenderDiff(
     );
     const recapture = rest.includes("--recapture");
     const seek = argument("--seek");
-    if (recapture || !existsSync(join(captureDirectory, "buffers.json"))) {
+    // The effective seek is what the capture modules themselves resolve:
+    // the explicit flag, else the registry pose. A capture on disk is only
+    // reusable when it was taken at this pose — diffing across poses is the
+    // stale-evidence class this command exists to prevent.
+    const wantSeek =
+        seek !== undefined
+            ? Number(seek)
+            : scene.parity?.referenceTimeSeconds ?? null;
+    const recordedSeek = (metaPath: string): number | null | undefined => {
+        // `null` = captured with no seek; `undefined` = no provenance (a
+        // pre-meta capture), which reads as unknown and forces a recapture.
+        if (!existsSync(metaPath)) return undefined;
+        try {
+            const meta = JSON.parse(readFileSync(metaPath, "utf8")) as {
+                seekSeconds?: number | null;
+            };
+            return meta.seekSeconds ?? null;
+        } catch {
+            return undefined;
+        }
+    };
+    const browserReason = !existsSync(join(captureDirectory, "buffers.json"))
+        ? "missing"
+        : recordedSeek(join(captureDirectory, "capture-meta.json")) !==
+                wantSeek
+            ? "was captured at a different seek (or carries no provenance)"
+            : undefined;
+    if (recapture || browserReason !== undefined) {
+        if (!recapture && browserReason !== "missing") {
+            console.log(
+                `Browser capture ${browserReason}; recapturing.`,
+            );
+        }
         await runInstrumentedCapture(idOrSource, {
             ...(seek !== undefined ? { seekSeconds: Number(seek) } : {}),
             outputDirectory: captureDirectory,
@@ -778,7 +811,37 @@ async function runRenderDiff(
         captureDirectory,
         `native-${backend}.json`,
     );
-    if (recapture || !existsSync(nativeCapturePath)) {
+    const nativeReason = ((): string | undefined => {
+        if (!existsSync(nativeCapturePath)) return "missing";
+        // The capture embeds the stamp of the generated tree it was built
+        // from; a tree that moved since makes the capture describe a build
+        // that no longer exists.
+        try {
+            const capture = JSON.parse(
+                readFileSync(nativeCapturePath, "utf8"),
+            ) as { buildStamp?: string };
+            if (
+                capture.buildStamp !==
+                    computeBuildStamp(resolve(scene.output)).stamp
+            ) {
+                return "was captured from a different generated tree";
+            }
+        } catch {
+            return "is unreadable";
+        }
+        if (
+            recordedSeek(
+                join(captureDirectory, `native-${backend}.meta.json`),
+            ) !== wantSeek
+        ) {
+            return "was captured at a different seek (or carries no provenance)";
+        }
+        return undefined;
+    })();
+    if (recapture || nativeReason !== undefined) {
+        if (!recapture && nativeReason !== "missing") {
+            console.log(`Native capture ${nativeReason}; recapturing.`);
+        }
         runNativeCapture(idOrSource, {
             backend,
             ...(seek !== undefined ? { seekSeconds: Number(seek) } : {}),

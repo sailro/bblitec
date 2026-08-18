@@ -302,6 +302,14 @@ export async function runInstrumentedCapture(
             )
             .join("\n");
         writeFileSync(join(outputDirectory, "buffers-summary.txt"), summary);
+        // The capture's provenance, so a reuse path can tell whether this
+        // directory describes the pose it is about to be diffed at. `null`
+        // means captured with no seek; a missing file is a pre-provenance
+        // capture and reads as unknown.
+        writeFileSync(
+            join(outputDirectory, "capture-meta.json"),
+            `${JSON.stringify({ seekSeconds: seekSeconds ?? null })}\n`,
+        );
         console.log(`Instrumented capture written to ${outputDirectory}`);
         console.log(`Draw calls: ${JSON.stringify(draws)}`);
         console.log(summary);
