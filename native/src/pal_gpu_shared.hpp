@@ -1248,8 +1248,13 @@ inline std::size_t standard_variant_for_draw(
  * glTF X-mirror. A thin-instanced draw keeps local vertices and rides the
  * pin's own `mesh.world * instanceWorld` product, so it takes the record's
  * parent TRS. A LOCAL_POSITION geometry variant reads the raw position
- * attribute, which only matches the baked pair while the record's own
- * transform is the identity; a transformed mesh there is refused by name
+ * attribute, so its draw binds the unbaked local lanes and needs the
+ * pin's node world back: the TRS the loader baked away and recorded in
+ * `instance_parent_matrix` (the identity for a mesh that never had one —
+ * scene 145's browser blocks carry exactly that TRS beside
+ * localMatrix-applied vertex uploads, so `world * local` reproduces the
+ * baked product). A record whose own transform is live bakes at packing
+ * time instead and records no such world, so it is refused by name
  * rather than rendered with a silently-wrong varying.
  */
 inline std::array<float, 16> standard_draw_world(
@@ -1275,6 +1280,7 @@ inline std::array<float, 16> standard_draw_world(
                 "Standard mesh is not wired: the baked vertices and the "
                 "raw position attribute disagree.");
         }
+        return record.instance_parent_matrix;
     }
     return std::array<float, 16>{
         1.0f, 0.0f, 0.0f, 0.0f,

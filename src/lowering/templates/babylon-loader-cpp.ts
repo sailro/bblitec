@@ -611,6 +611,34 @@ ${lightMeshLists ? `    // A light names the meshes it lights, or the ones it sk
                 }
                 MeshRecord mesh;
                 mesh.primitive = PrimitiveKind::babylon;
+                // The pin's mesh.world keeps this node's TRS — its position
+                // attribute carries only localMatrix-applied vertices,
+                // measured bit-exact against the browser's uploads — while
+                // this loader bakes the same TRS into vertex.position and
+                // leaves the record transform the identity. A LOCAL_POSITION
+                // geometry variant binds the unbaked local lanes, so its
+                // draw needs the pin's world back: record it the way the
+                // glTF loader records every node's parent matrix.
+                {
+                    const Vec3 world_x = rotate(
+                        Vec3{mesh_scaling.x, 0.0f, 0.0f},
+                        mesh_rotation);
+                    const Vec3 world_y = rotate(
+                        Vec3{0.0f, mesh_scaling.y, 0.0f},
+                        mesh_rotation);
+                    const Vec3 world_z = rotate(
+                        Vec3{0.0f, 0.0f, mesh_scaling.z},
+                        mesh_rotation);
+                    mesh.instance_parent_matrix = {
+                        world_x.x, world_x.y, world_x.z, 0.0f,
+                        world_y.x, world_y.y, world_y.z, 0.0f,
+                        world_z.x, world_z.y, world_z.z, 0.0f,
+                        mesh_position.x,
+                        mesh_position.y,
+                        mesh_position.z,
+                        1.0f,
+                    };
+                }
                 mesh.geometry = static_cast<std::uint32_t>(
                     engine.geometries.size() - 1);
                 mesh.material = material;

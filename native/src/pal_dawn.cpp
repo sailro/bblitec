@@ -678,6 +678,18 @@ struct DawnState : DawnDevice {
             }
             mesh.pinned_geometry_states.clear();
 #endif
+#if BBLITE_STANDARD_VARIANTS > 0
+            for (auto& [variant, draw_state] :
+                 mesh.standard_geometry_states) {
+                if (draw_state.group) {
+                    wgpuBindGroupRelease(draw_state.group);
+                }
+                if (draw_state.mesh_uniforms) {
+                    wgpuBufferRelease(draw_state.mesh_uniforms);
+                }
+            }
+            mesh.standard_geometry_states.clear();
+#endif
             if (mesh.material_uniforms) {
                 wgpuBufferRelease(mesh.material_uniforms);
             }
@@ -2581,20 +2593,41 @@ WGPUBindGroupLayout standard_draw_layout_for(
     }
     const upstream::StandardVariantEntry& entry =
         upstream::standard_variants[variant];
+    // The composed stages own the group-1 binding map. Bindings 0 and 1
+    // are the hand-managed mesh and material blocks — except when the
+    // reflected rows occupy them: a morph variant's storage pair claims
+    // bindings 1-2, which pushes `mat` out to a reflected uniform row of
+    // its own (scene 252's is at 3). A fixed entry under an occupied
+    // binding would duplicate it, which Dawn refuses at layout creation,
+    // so each fixed entry yields to the rows.
+    bool rows_occupy_binding_0 = false;
+    bool rows_occupy_binding_1 = false;
+    for (std::size_t index = 0; index < entry.binding_count; ++index) {
+        const upstream::StandardVariantBinding& binding =
+            upstream::standard_variant_bindings[
+                entry.first_binding + index];
+        if (binding.binding == 0) rows_occupy_binding_0 = true;
+        if (binding.binding == 1) rows_occupy_binding_1 = true;
+    }
     std::vector<WGPUBindGroupLayoutEntry> entries;
     entries.reserve(2 + entry.binding_count);
-    WGPUBindGroupLayoutEntry mesh_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    mesh_entry.binding = 0;
-    mesh_entry.visibility =
-        WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-    mesh_entry.buffer.type = WGPUBufferBindingType_Uniform;
-    entries.push_back(mesh_entry);
-    WGPUBindGroupLayoutEntry material_entry =
-        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    material_entry.binding = 1;
-    material_entry.visibility = WGPUShaderStage_Fragment;
-    material_entry.buffer.type = WGPUBufferBindingType_Uniform;
-    entries.push_back(material_entry);
+    if (!rows_occupy_binding_0) {
+        WGPUBindGroupLayoutEntry mesh_entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        mesh_entry.binding = 0;
+        mesh_entry.visibility =
+            WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+        mesh_entry.buffer.type = WGPUBufferBindingType_Uniform;
+        entries.push_back(mesh_entry);
+    }
+    if (!rows_occupy_binding_1) {
+        WGPUBindGroupLayoutEntry material_entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        material_entry.binding = 1;
+        material_entry.visibility = WGPUShaderStage_Fragment;
+        material_entry.buffer.type = WGPUBufferBindingType_Uniform;
+        entries.push_back(material_entry);
+    }
     for (std::size_t index = 0; index < entry.binding_count; ++index) {
         const upstream::StandardVariantBinding& binding =
             upstream::standard_variant_bindings[
@@ -2621,7 +2654,8 @@ WGPUBindGroupLayout standard_draw_layout_for(
         } else if (
             binding.kind ==
             upstream::StandardBindingKind::uniformBuffer) {
-            // The vertex `up` block and the geometry arms' gpUniforms.
+            // The vertex `up` block, the geometry arms' gpUniforms, and a
+            // displaced `mat`/`mesh` block riding a reflected row.
             layout_entry.buffer.type = WGPUBufferBindingType_Uniform;
         } else {
             layout_entry.texture.sampleType =
@@ -2695,18 +2729,34 @@ WGPUBindGroup build_standard_draw_group(
     const bool unfilterable_emissive = emissive_render_view != nullptr;
     const upstream::StandardVariantEntry& entry =
         upstream::standard_variants[variant];
+    // The fixed mesh@0/material@1 entries yield to reflected rows exactly
+    // as the layout's do — a morph variant's storage pair occupies
+    // binding 1 and its `mat` block rides a reflected row instead.
+    bool rows_occupy_binding_0 = false;
+    bool rows_occupy_binding_1 = false;
+    for (std::size_t index = 0; index < entry.binding_count; ++index) {
+        const upstream::StandardVariantBinding& binding =
+            upstream::standard_variant_bindings[
+                entry.first_binding + index];
+        if (binding.binding == 0) rows_occupy_binding_0 = true;
+        if (binding.binding == 1) rows_occupy_binding_1 = true;
+    }
     std::vector<WGPUBindGroupEntry> entries;
     entries.reserve(2 + entry.binding_count);
-    WGPUBindGroupEntry mesh_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-    mesh_entry.binding = 0;
-    mesh_entry.buffer = mesh_uniforms;
-    mesh_entry.size = sizeof(upstream::MeshUniforms);
-    entries.push_back(mesh_entry);
-    WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-    material_entry.binding = 1;
-    material_entry.buffer = material_uniforms;
-    material_entry.size = upstream::standard_material_ubo_bytes;
-    entries.push_back(material_entry);
+    if (!rows_occupy_binding_0) {
+        WGPUBindGroupEntry mesh_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        mesh_entry.binding = 0;
+        mesh_entry.buffer = mesh_uniforms;
+        mesh_entry.size = sizeof(upstream::MeshUniforms);
+        entries.push_back(mesh_entry);
+    }
+    if (!rows_occupy_binding_1) {
+        WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        material_entry.binding = 1;
+        material_entry.buffer = material_uniforms;
+        material_entry.size = upstream::standard_material_ubo_bytes;
+        entries.push_back(material_entry);
+    }
     for (std::size_t index = 0; index < entry.binding_count; ++index) {
         const upstream::StandardVariantBinding& binding =
             upstream::standard_variant_bindings[
@@ -2721,6 +2771,16 @@ WGPUBindGroup build_standard_draw_group(
             } else if (binding.name == "gp" && geometry_params) {
                 group_entry.buffer = geometry_params;
                 group_entry.size = sizeof(PinnedGeometryParams);
+            } else if (binding.name == "mat") {
+                // The material block, displaced past hand-managed
+                // binding 1 by the morph storage pair.
+                group_entry.buffer = material_uniforms;
+                group_entry.size = upstream::standard_material_ubo_bytes;
+            } else if (binding.name == "mesh") {
+                // The mesh block's mirror arm, should a variant ever
+                // displace binding 0 the same way.
+                group_entry.buffer = mesh_uniforms;
+                group_entry.size = sizeof(upstream::MeshUniforms);
             } else {
                 dawn_error(
                     ("standard variant declares an unmapped uniform "
@@ -3000,24 +3060,45 @@ void write_standard_geometry_task(
                     ? &engine.materials[draw.item.material.value]
                     : nullptr;
             ensure_standard_draw_buffers(state, mesh);
+            DawnMesh::StandardGeometryDrawState& draw_state =
+                mesh.standard_geometry_states[variant];
+            // A LOCAL_POSITION variant's mesh block carries the node world
+            // where the colour pass's carries the identity over baked
+            // vertices, and every queue write lands before the frame's
+            // submission — so a geometry variant cannot share the colour
+            // pass's mesh buffer without the last writer poisoning the
+            // other pass. Each geometry draw state owns its mesh block;
+            // the material and uv blocks are the same bytes in every pass
+            // and stay shared.
+            if (!draw_state.mesh_uniforms) {
+                WGPUBufferDescriptor descriptor =
+                    WGPU_BUFFER_DESCRIPTOR_INIT;
+                descriptor.size = sizeof(upstream::MeshUniforms);
+                descriptor.usage =
+                    WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+                draw_state.mesh_uniforms =
+                    wgpuDeviceCreateBuffer(state.device, &descriptor);
+                if (!draw_state.mesh_uniforms) {
+                    dawn_error(
+                        "standard geometry mesh buffer creation failed.");
+                }
+            }
             write_standard_draw_blocks(
                 state,
                 scene,
                 engine,
                 draw,
                 variant,
-                mesh.standard_mesh_uniforms,
+                draw_state.mesh_uniforms,
                 mesh.standard_material_uniforms,
                 mesh.standard_uv_uniforms);
-            DawnMesh::StandardGeometryDrawState& draw_state =
-                mesh.standard_geometry_states[variant];
             if (!draw_state.group) {
                 draw_state.group = build_standard_draw_group(
                     state,
                     mesh,
                     material,
                     variant,
-                    mesh.standard_mesh_uniforms,
+                    draw_state.mesh_uniforms,
                     mesh.standard_material_uniforms,
                     mesh.standard_uv_uniforms,
                     geometry.pinned_geometry_params,
