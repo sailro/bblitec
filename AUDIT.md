@@ -86,15 +86,6 @@ mechanisms (`pinned-ubo-writer-lowerer`, `light-lowerer#lowerMatrix`, the
 sprite template evaluator) that are the templates to reuse. Two legitimate
 shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
 
-- [ ] **RD-4 — hdr-packager (do first, sets the pattern).** `parseRgbe`,
-  `computeSphericalHarmonics`, `shToPolynomial` re-type upstream functions
-  that are **exported** (`hdr-parser.js`, `spherical-harmonics.js`) — direct
-  Node imports today. `preScalePolynomial` constants ↔
-  `ibl-env-assembly.js`. Mip 0 comes from a JS transcription of the pinned
-  equirect compute while mips 1+ already execute the pinned shader in
-  Chromium — route mip 0 through the same harness. Current
-  `test/hdr-packager.test.ts` sha256 goldens are self-referential (a pin
-  change leaves them green); replace with pin-comparison.
 - [ ] **RD-1 — Standard material family (the flagship).**
   `src/shader-builtins-standard.ts` (~500 WGSL lines) hand-rewrites
   `createStandardTemplate` + `LIGHTING_FN` with semantics re-encoded (light
@@ -223,8 +214,7 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
   currently inline at :324-436) and a `compose-pipeline.ts` (:596-745).
 - [ ] **Dead code (verified zero references).** Delete:
   `tools/sdl-multisample-probe.c` (or name it in the SDL-3.6.0 TODO entry as
-  the verification tool); `hdrGgxPrefilterReferenceWgsl`
-  (`hdr-prefilter-gpu.ts:35-134`); the `false ? {…}` diagnostics block
+  the verification tool); the `false ? {…}` diagnostics block
   (`parity-scene.ts:532-549`) and its orphaned `artifacts/parity/scene1`
   outputs; `renderer-lowerer.ts:148,3000-3004` (empty `sources` map toward a
   deleted template directory); `assetDigest` (`compressed-geometry.ts:512`);
