@@ -1,5 +1,9 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import {
+    captureBuffersPath,
+    captureShadersDirectory,
+} from "./parity-scene.js";
 
 /**
  * Reading an instrumented capture's uniform buffers.
@@ -181,13 +185,13 @@ export function decodeCapturedUniforms(
     captureDirectory: string,
     options: { sizes?: number[]; module?: string } = {},
 ): DecodedBuffer[] {
-    const buffersPath = join(captureDirectory, "buffers.json");
+    const buffersPath = captureBuffersPath(captureDirectory);
     if (!existsSync(buffersPath)) {
         throw new Error(
             `No capture buffers at ${buffersPath}. Run 'scene -- capture <id>' first.`,
         );
     }
-    const shaderDirectory = join(captureDirectory, "shaders");
+    const shaderDirectory = captureShadersDirectory(captureDirectory);
     const structs: WgslStruct[] = [];
     if (existsSync(shaderDirectory)) {
         for (const name of readdirSync(shaderDirectory)) {

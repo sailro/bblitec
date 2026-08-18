@@ -6,6 +6,9 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
     backendFileToken,
+    captureBuffersPath,
+    captureMetaPath,
+    defaultCaptureDirectory,
     enableGpuDebug,
     flagNumber,
     formatPngMeasurement,
@@ -787,7 +790,7 @@ async function runRenderDiff(
     const token = backendFileToken(backend);
     const captureDirectory = resolve(
         parsed.values.get("--capture") ??
-            join("artifacts", "capture", scene.id),
+            defaultCaptureDirectory(scene.id),
     );
     const recapture = parsed.flags.has("--recapture");
     const seek = flagNumber(parsed, "--seek", "diff");
@@ -810,9 +813,9 @@ async function runRenderDiff(
             return undefined;
         }
     };
-    const browserReason = !existsSync(join(captureDirectory, "buffers.json"))
+    const browserReason = !existsSync(captureBuffersPath(captureDirectory))
         ? "missing"
-        : recordedSeek(join(captureDirectory, "capture-meta.json")) !==
+        : recordedSeek(captureMetaPath(captureDirectory)) !==
                 wantSeek
             ? "was captured at a different seek (or carries no provenance)"
             : undefined;
@@ -978,7 +981,7 @@ async function main(): Promise<void> {
         const scene = resolveScene(id);
         const directory =
             parsed.values.get("--capture") ??
-            join("artifacts", "capture", scene.id);
+            defaultCaptureDirectory(scene.id);
         const sizes = parsed.values.get("--size");
         const module = parsed.values.get("--module");
         const decoded = decodeCapturedUniforms(directory, {

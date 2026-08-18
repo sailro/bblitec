@@ -6,7 +6,7 @@ import {
     readFileSync,
     writeFileSync,
 } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { PNG } from "pngjs";
 import { captureSuiteReference } from "./capture-suite-reference.js";
@@ -245,6 +245,62 @@ export function resolveBackend(
  */
 export function backendFileToken(backend: string): string {
     return backend === "sdl_gpu" ? "gpu" : backend;
+}
+
+/**
+ * Where `scene -- capture <id>` lands unless `--capture` (or an
+ * `outputDirectory` option) points elsewhere. The browser half, the
+ * native half, `scene -- diff`, `scene -- uniforms` and
+ * `scene -- compose` all pair through this one directory, so its
+ * spelling lives here rather than at each of them.
+ */
+export function defaultCaptureDirectory(sceneId: string): string {
+    return join("artifacts", "capture", sceneId);
+}
+
+/**
+ * The fixed names inside a capture directory that the instrumented
+ * browser capture writes and the diff/uniforms readers pair on. A reader
+ * and the writer disagreeing on one of these fails as "no capture", so
+ * each name is spelled once.
+ */
+export function captureBuffersPath(captureDirectory: string): string {
+    return join(captureDirectory, "buffers.json");
+}
+
+export function captureDrawsPath(captureDirectory: string): string {
+    return join(captureDirectory, "draws.json");
+}
+
+export function captureShadersDirectory(captureDirectory: string): string {
+    return join(captureDirectory, "shaders");
+}
+
+/** Seek provenance for the browser capture's reuse path (`null` means
+ *  captured with no seek; a missing file reads as unknown). */
+export function captureMetaPath(captureDirectory: string): string {
+    return join(captureDirectory, "capture-meta.json");
+}
+
+/**
+ * The parity artifacts a backend's run leaves in its scene's parity
+ * directory, by filename token (`backendFileToken`, plus
+ * `differential` for the combined report). The differential run reads
+ * the per-backend reports and native images back, so writer and reader
+ * spell these names through one place.
+ */
+export function parityReportPath(
+    outputDirectory: string,
+    suffix: string,
+): string {
+    return resolve(outputDirectory, `report-${suffix}.json`);
+}
+
+export function parityNativeImagePath(
+    outputDirectory: string,
+    suffix: string,
+): string {
+    return resolve(outputDirectory, `native-${suffix}.png`);
 }
 
 /**
@@ -822,7 +878,7 @@ export async function runSceneParity(
     const artifactSuffix = backendFileToken(backend);
     const actual = resolve(
         arguments_.actual ??
-            resolve(outputDirectory, `native-${artifactSuffix}.png`),
+            parityNativeImagePath(outputDirectory, artifactSuffix),
     );
     const seek = arguments_.seekSeconds;
     if (
@@ -1045,10 +1101,7 @@ export async function runSceneParity(
                 : {}),
         },
     };
-    const reportPath = resolve(
-        outputDirectory,
-        `report-${artifactSuffix}.json`,
-    );
+    const reportPath = parityReportPath(outputDirectory, artifactSuffix);
     writeReport(
         reportPath,
         {
@@ -1140,8 +1193,8 @@ export async function runSceneParityDifferential(
     // Each backend run writes its own suffixed actual, so the two images
     // sit side by side without a copy step and neither run can overwrite
     // the other's.
-    const sdlImage = resolve(outputDirectory, "native-gpu.png");
-    const dawnImage = resolve(outputDirectory, "native-dawn.png");
+    const sdlImage = parityNativeImagePath(outputDirectory, "gpu");
+    const dawnImage = parityNativeImagePath(outputDirectory, "dawn");
     const previousBackend = process.env.BBLITE_GPU_BACKEND;
     try {
         delete process.env.BBLITE_GPU_BACKEND;
@@ -1162,7 +1215,7 @@ export async function runSceneParityDifferential(
     } =>
         JSON.parse(
             readFileSync(
-                resolve(outputDirectory, `report-${suffix}.json`),
+                parityReportPath(outputDirectory, suffix),
                 "utf8",
             ),
         ) as { full: { mad: number }; region: { mad: number } };
@@ -1180,10 +1233,7 @@ export async function runSceneParityDifferential(
         },
         sdlGpuVersusDawn: backendDelta,
     };
-    const reportPath = resolve(
-        outputDirectory,
-        "report-differential.json",
-    );
+    const reportPath = parityReportPath(outputDirectory, "differential");
     writeReport(
         reportPath,
         {

@@ -2,6 +2,11 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
+    captureBuffersPath,
+    captureDrawsPath,
+    captureShadersDirectory,
+} from "./parity-scene.js";
+import {
     fieldOffsets,
     lastWriteBytes,
     layoutOf,
@@ -447,14 +452,14 @@ interface CapturedBuffer {
 export function browserUniformFields(
     captureDirectory: string,
 ): UniformField[] {
-    const buffersPath = join(captureDirectory, "buffers.json");
+    const buffersPath = captureBuffersPath(captureDirectory);
     if (!existsSync(buffersPath)) {
         throw new Error(
             `No browser capture at ${buffersPath}. Run 'scene -- capture <id>' first.`,
         );
     }
     const structs: WgslStruct[] = [];
-    const shaderDirectory = join(captureDirectory, "shaders");
+    const shaderDirectory = captureShadersDirectory(captureDirectory);
     if (existsSync(shaderDirectory)) {
         for (const name of readdirSync(shaderDirectory)) {
             if (!name.endsWith(".wgsl")) continue;
@@ -533,7 +538,7 @@ export function browserUniformFields(
 export function browserBufferValueRows(
     captureDirectory: string,
 ): UniformField[] {
-    const buffersPath = join(captureDirectory, "buffers.json");
+    const buffersPath = captureBuffersPath(captureDirectory);
     if (!existsSync(buffersPath)) return [];
     const buffers = JSON.parse(
         readFileSync(buffersPath, "utf8"),
@@ -749,7 +754,7 @@ function browserDrawShapes(captureDirectory: string): {
     indexed: Set<string>;
     nonIndexed: string[];
 } {
-    const path = join(captureDirectory, "draws.json");
+    const path = captureDrawsPath(captureDirectory);
     const indexed = new Set<string>();
     const nonIndexed: string[] = [];
     if (!existsSync(path)) return { indexed, nonIndexed };
@@ -1047,7 +1052,7 @@ export function buildRenderDiff(
         browserNonIndexed: browserShapes.nonIndexed,
     };
 
-    const shaderDirectory = join(captureDirectory, "shaders");
+    const shaderDirectory = captureShadersDirectory(captureDirectory);
     const browserShaderTexts = new Map<string, string>();
     if (existsSync(shaderDirectory)) {
         for (const name of readdirSync(shaderDirectory)) {

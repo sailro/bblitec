@@ -6,10 +6,13 @@ import {
     resolve,
     sep,
 } from "node:path";
-import ts from "typescript";
-import { chromium } from "playwright-core";
 import { readUpstreamPin } from "./upstream-source.js";
-import { resolveBrowserPath } from "./browser-path.js";
+import {
+    screenshotCaptureBrowserArgs,
+    transpileForBrowser,
+    waitForSceneReady,
+    withBrowserPage,
+} from "./browser-harness.js";
 
 
 function mimeType(path: string): string {
@@ -75,13 +78,7 @@ export function suiteBrowserModule(
               "await startEngine(engine);",
               'await startEngine(engine); canvas.dataset.ready = "true";',
           );
-    return ts.transpileModule(readySource, {
-        compilerOptions: {
-            module: ts.ModuleKind.ES2022,
-            target: ts.ScriptTarget.ES2022,
-        },
-        fileName: sourcePath,
-    }).outputText;
+    return transpileForBrowser(readySource, sourcePath);
 }
 
 /**
@@ -173,13 +170,7 @@ ${seedScript}<script type="module" src="${entryPath}"></script></body></html>`;
                     .replaceAll('"babylon-lite"', '"/node_modules/@babylonjs/lite/lib/index.js"');
                 response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
                 response.end(
-                    ts.transpileModule(moduleText, {
-                        compilerOptions: {
-                            module: ts.ModuleKind.ES2022,
-                            target: ts.ScriptTarget.ES2022,
-                        },
-                        fileName: typescriptPath,
-                    }).outputText,
+                    transpileForBrowser(moduleText, typescriptPath),
                 );
                 return;
             }
@@ -271,52 +262,25 @@ export async function captureSuiteReference(
         ...options,
         sourcePath,
     });
-    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("Unable to start parity server.");
-    const browser = await chromium.launch({
-        executablePath: resolveBrowserPath(),
-        headless: true,
-        args: ["--force-color-profile=srgb", "--enable-unsafe-webgpu"],
-    });
-    try {
-        const page = await browser.newPage({
+    await withBrowserPage(
+        server,
+        {
+            serverName: "parity server",
+            browserArgs: screenshotCaptureBrowserArgs,
             viewport: { width: 1280, height: 720 },
-            deviceScaleFactor: 1,
-        });
-        page.on("pageerror", (error) => {
-            console.error(`Reference page error: ${error.message}`);
-        });
-        page.on("console", (message) => {
-            if (message.type() === "error") {
-                console.error(
-                    `Reference console error: ${message.text()}`,
-                );
-            }
-        });
-        await page.goto(`http://127.0.0.1:${address.port}/scene.html`, {
-            waitUntil: "domcontentloaded",
-            timeout: 120_000,
-        });
-        await page.waitForFunction(
-            () => document.getElementById("renderCanvas")?.dataset.ready === "true",
-            undefined,
-            { timeout: 120_000 },
-        );
-        if (captureTimeSeconds !== undefined) {
-            await page.waitForFunction(
-                () =>
-                    document.getElementById("renderCanvas")
-                        ?.dataset.animationFrozen === "true",
-                undefined,
-                { timeout: 120_000 },
+            pageErrorPrefix: "Reference page error",
+            consoleErrorPrefix: "Reference console error",
+        },
+        async (page, origin) => {
+            await waitForSceneReady(
+                page,
+                origin,
+                captureTimeSeconds !== undefined,
             );
-        }
-        await page.waitForTimeout(3000);
-        mkdirSync(resolve(referencePath, ".."), { recursive: true });
-        await page.locator("#renderCanvas").screenshot({ path: referencePath });
-    } finally {
-        await browser.close();
-        await new Promise<void>((done) => server.close(() => done()));
-    }
+            mkdirSync(resolve(referencePath, ".."), { recursive: true });
+            await page
+                .locator("#renderCanvas")
+                .screenshot({ path: referencePath });
+        },
+    );
 }

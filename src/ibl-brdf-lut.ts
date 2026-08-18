@@ -12,8 +12,10 @@ import {
     resolve,
 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright-core";
-import { resolveBrowserPath } from "./browser-path.js";
+import {
+    webgpuComputeBrowserArgs,
+    withBrowserPage,
+} from "./browser-harness.js";
 import {
     findRepositoryRoot,
     readUpstreamPin,
@@ -108,24 +110,13 @@ export async function generateIblBrdfLutRgba16f(): Promise<Uint8Array> {
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         response.end("<!doctype html><title>IBL BRDF LUT</title>");
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
-    if (!address || typeof address === "string") {
-        server.close();
-        throw new Error("Unable to start the BRDF LUT server.");
-    }
-
-    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
-    try {
-        browser = await chromium.launch({
-            executablePath: resolveBrowserPath(
-                "Exact IBL BRDF LUT generation requires Chrome or Edge.",
-            ),
-            headless: true,
-            args: ["--enable-unsafe-webgpu"],
-        });
-        const page = await browser.newPage();
-        await page.goto(`http://127.0.0.1:${address.port}`);
+    return withBrowserPage(server, {
+        serverName: "BRDF LUT server",
+        browserRequirement:
+            "Exact IBL BRDF LUT generation requires Chrome or Edge.",
+        browserArgs: webgpuComputeBrowserArgs,
+    }, async (page, origin) => {
+        await page.goto(origin);
         await page.evaluate(
             (value) => {
                 (
@@ -211,10 +202,5 @@ export async function generateIblBrdfLutRgba16f(): Promise<Uint8Array> {
             );
         }
         return bytes;
-    } finally {
-        await browser?.close();
-        await new Promise<void>((resolve, reject) =>
-            server.close((error) => error ? reject(error) : resolve()),
-        );
-    }
+    });
 }

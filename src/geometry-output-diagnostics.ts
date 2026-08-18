@@ -12,6 +12,7 @@ import {
     applyGpuBackendEnvironment,
     backendFileToken,
     defaultExecutable,
+    parityReportPath,
     resolveBackend,
     runNative,
     writeReport,
@@ -213,7 +214,7 @@ export async function runGeometryOutputDiagnostics(
                 `max=${comparison.maxDiff}`,
         );
     }
-    const report = resolve(outputDirectory, `report-${token}.json`);
+    const report = parityReportPath(outputDirectory, token);
     writeReport(
         report,
         {

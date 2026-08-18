@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import {
     backendFileToken,
     canonicalBackend,
+    defaultCaptureDirectory,
     defaultExecutable,
     spawnNativeMeasured,
     verifyBuildIdentity,
@@ -53,7 +54,7 @@ export function runNativeCapture(
     // still read by `scene -- diff` for one transition.
     const token = backendFileToken(backend);
     const outputDirectory = resolve(
-        options.outputDirectory ?? join("artifacts", "capture", scene.id),
+        options.outputDirectory ?? defaultCaptureDirectory(scene.id),
     );
     mkdirSync(outputDirectory, { recursive: true });
     const executable = defaultExecutable(scene.buildDirectory);

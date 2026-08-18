@@ -1,11 +1,13 @@
 // Where the reference browser lives.
 //
-// Three tools drive a real Chromium -- the golden-suite capture, the
-// scene-1 diagnostics capture, and the exact HDR GGX prefilter -- and
-// each carried its own copy of this list. They had drifted: the
-// golden-suite copy had lost the 32-bit Edge path and the macOS Edge
-// path the others kept, so a machine with only those would have failed
-// to capture goldens while the diagnostics capture worked.
+// Five tools drive a real Chromium -- the golden-suite capture, the
+// instrumented diagnostics capture, the exact HDR GGX prefilter, the
+// drawn sprite atlas, and the BRDF LUT -- and each once carried its own
+// copy of this list. They had drifted: the golden-suite copy had lost
+// the 32-bit Edge path and the macOS Edge path the others kept, so a
+// machine with only those would have failed to capture goldens while
+// the diagnostics capture worked. Today all five launch through
+// `browser-harness.ts`, whose one ceremony resolves through here.
 //
 // The order is the contract, not just the set: `CHROME_PATH` wins, then
 // Chrome, then Edge. Anything that resolved a browser before resolves

@@ -18,6 +18,10 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+    captureShadersDirectory,
+    defaultCaptureDirectory,
+} from "./parity-scene.js";
+import {
     asObject,
     glbDocument,
     type JsonObject,
@@ -40,9 +44,8 @@ function capturedFragments(
     scene: string,
     captureDirectory?: string,
 ): Map<string, string> {
-    const directory = join(
-        captureDirectory ?? join("artifacts", "capture", scene),
-        "shaders",
+    const directory = captureShadersDirectory(
+        captureDirectory ?? defaultCaptureDirectory(scene),
     );
     const fragments = new Map<string, string>();
     if (!existsSync(directory)) return fragments;
