@@ -22,16 +22,11 @@ its absence is legible.
 
 ## Feature activation
 
+All feature-activation findings are closed; the per-scene
+`feature-activation.json` inventory is the standing drift detector.
 
 ## Re-derivation (port, do not re-derive)
 
-- [ ] **RD tail — one deletion batch.** The 20 never-read option keys
-  the lane prune orphaned (renderer-lowerer options + the upstream-lower
-  call sites :539-591/:594-632) ride the next upstream-lower touch; the
-  emitted-but-uncalled `quantized_unorm_factor` in every generated
-  loader can trim with them. (The formulas are lowered; both ordering
-  divergences are ADOPTED from the pin, sweep-judged green, scene39
-  improved — the revert seams are commits 3e2adb2's marked hunks.)
 
 
 Quantified backlog: ~10,700 lines of hand-written C++ template text encoding
@@ -47,16 +42,6 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
 
 ## Native
 
-- [ ] **NA redesign-class remainders (reported, not forced).** The
-  mesh-sync frame loops differ structurally (SDL walks the plan once
-  and skips CPU rebakes for GPU-deformed meshes; Dawn walks per draw
-  and rewrites unconditionally — same outcomes, different shapes;
-  unifying is a frame-loop redesign). The CPU benchmark:
-  `pal_sdl.cpp:1075` `print_benchmark` disagrees with shared
-  `report_benchmark` in stats, line shape and warmup policy — unify
-  deliberately, deciding which contract wins. (The
-  capture's `pinned_mesh_block` world choice is now documented at the
-  dump site — done.)
 
 
 ## Documentation
