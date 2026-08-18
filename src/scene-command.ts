@@ -8,8 +8,11 @@ import {
     backendFileToken,
     enableGpuDebug,
     flagNumber,
+    formatPngMeasurement,
+    measurePng,
     parseFlags,
     parseParityArguments,
+    parseRgbTriple,
     resolveBackend,
     runSceneParity,
     runSceneParityDifferential,
@@ -1053,6 +1056,29 @@ async function main(): Promise<void> {
         await runRenderDiff(id, rest);
         return;
     }
+    if (command === "measure" && id) {
+        // The measure-the-PNG rule as a command: the non-background
+        // bounding box, pixel count and per-channel means of any PNG,
+        // native render or otherwise. Takes a path, not a scene id.
+        const parsed = parseFlags(
+            rest,
+            { value: ["--background"] },
+            "measure",
+        );
+        const backgroundFlag = parsed.values.get("--background");
+        const background =
+            backgroundFlag === undefined
+                ? undefined
+                : parseRgbTriple(backgroundFlag, "--background", "measure");
+        const imagePath = resolve(id);
+        if (!existsSync(imagePath)) {
+            throw new Error(`measure: no image at ${imagePath}.`);
+        }
+        console.log(
+            formatPngMeasurement(imagePath, measurePng(imagePath, background)),
+        );
+        return;
+    }
     if (command === "compose" && id) {
         const parsed = parseFlags(
             rest,
@@ -1077,6 +1103,7 @@ async function main(): Promise<void> {
         "Usage: scene-command <list | show <id|source.ts> | " +
             "compile|build|process|parity|compose <id|source.ts|all> [options] | " +
             "geometry|capture|uniforms|diff <id|source.ts> [options] | " +
+            "measure <image.png> [--background r,g,b] | " +
             "neutrality <baseline-parity-directory>>",
     );
 }

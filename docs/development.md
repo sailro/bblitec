@@ -33,6 +33,7 @@ npm run scene -- parity scene1
 npm run scene -- geometry scene145 --recapture-reference
 npm run scene -- diff scene1
 npm run scene -- compose scene1
+npm run scene -- measure artifacts\parity\scene1\native-gpu.png
 npm run scene -- neutrality artifacts/parity-baseline
 ```
 
@@ -47,7 +48,10 @@ default, which is what every golden is captured at.
 `diff` captures both renderers and reports where they disagree; `compose`
 checks our material feature derivation by composing each material through
 Babylon Lite's own pipeline and comparing the whole fragment against the
-captured one. See [debugging](debugging.md) for the ladder they sit in.
+captured one. `measure` prints a PNG's non-background bounding box, pixel
+count and mean RGB (`--background r,g,b` overrides the top-left-pixel
+default) — the measure-the-PNG rule as a command, for any render or probe
+image. See [debugging](debugging.md) for the ladder they sit in.
 `geometry` captures each existing geometry-output copy task full-screen in
 Babylon Lite and native without changing the curated scene source; its
 native outputs and report carry the same `-gpu`/`-dawn` filename token as
@@ -750,12 +754,16 @@ npm run scene -- diff scene33 --backend dawn --recapture
 ```
 
 `diff` takes both captures — capturing whichever is missing — and reports
-where they part: draw shapes, then uniform values field by field, then
-the texture sample expressions in each side's shaders. Native fields are
-named through the struct declarations in the scene's own generated
-`renderer_plan.hpp`; browser buffers through the structs in the browser's
-own composed shaders. See [debugging](debugging.md) for how to read the
-report, including why a byte-exact scene still lists entries.
+where they part: draw shapes, then uniform values field by field — the
+capture's pinned material and mesh blocks included, with per-block
+tallies and any block no PBR draw carries flagged refused — then the
+browser's composed shaders hashed against the generated arms (matched
+groups, both one-sided sets, and the closest near miss's first divergent
+line), then the texture sample expressions in each side's shaders. Native
+fields are named through the struct declarations in the scene's own
+generated `renderer_plan.hpp`; browser buffers through the structs in the
+browser's own composed shaders. See [debugging](debugging.md) for how to
+read the report, including why a byte-exact scene still lists entries.
 
 Its flags: `--backend` selects which native capture to pair (values and
 fallback as above), `--seek <t>` diffs pose `<t>` instead of the registry

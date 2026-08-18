@@ -6,9 +6,13 @@ import test from "node:test";
 import {
     buildRenderDiff,
     correspond,
+    formatRenderDiff,
     nativeFields,
     parseCppUniformStructs,
+    pinnedBlockFields,
     sampleCalls,
+    shaderArmReport,
+    type NativeCapture,
     type UniformField,
 } from "../src/render-diff.js";
 
@@ -115,6 +119,138 @@ test("classifies correspondence by value, tolerating last-bit drift", () => {
     assert.ok((results[3]!.maxDelta ?? 0) > 0.1);
 });
 
+test("decodes pinned blocks into vec4 rows, flagging blocks no draw carries", () => {
+    const capture: NativeCapture = {
+        backend: "sdl_gpu",
+        buildStamp: "t",
+        viewport: { width: 1, height: 1 },
+        draws: [
+            {
+                stage: "opaque",
+                pipeline: "pbr_opaque_back",
+                materialKind: "pbr",
+                bucket: "opaque",
+                mesh: 1,
+                material: 2,
+                geometry: 0,
+                uniforms: [],
+            },
+        ],
+        backgroundUniforms: [],
+        pinnedMaterialBlocks: [
+            {
+                materialIndex: 2,
+                variant: 0,
+                key: "ibl|linear",
+                bytes: 32,
+                values: [1, 2, 3, 4, 5, 6, 7, 8],
+            },
+            // Material 3 is drawn by no PBR draw: the gate refused its
+            // variant or nothing draws it at this pose. The block is
+            // still decoded — the writers built it — but flagged.
+            {
+                materialIndex: 3,
+                variant: 1,
+                key: "",
+                bytes: 16,
+                values: [9, 10, 11, 12],
+            },
+        ],
+        pinnedMeshBlocks: [
+            {
+                meshIndex: 1,
+                world: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1],
+                lightCount: 2,
+                boneCount: 1,
+                bone0: [1, 0, 0, 0, 0, 1, 0, 0],
+            },
+            // The capture dumps one entry per draw; a mesh drawn twice
+            // repeats byte-identically and collapses to one block.
+            {
+                meshIndex: 1,
+                world: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1],
+                lightCount: 2,
+                boneCount: 1,
+                bone0: [1, 0, 0, 0, 0, 1, 0, 0],
+            },
+        ],
+    };
+    const decoded = pinnedBlockFields(capture);
+    assert.deepEqual(
+        decoded.material.map((entry) => [
+            entry.refused,
+            entry.fields.map((field) => field.name),
+        ]),
+        [
+            [
+                false,
+                [
+                    "pinned material[2] variant0:ibl|linear values[0..3]",
+                    "pinned material[2] variant0:ibl|linear values[4..7]",
+                ],
+            ],
+            [true, ["pinned material[3] variant1 values[0..3] (refused)"]],
+        ],
+    );
+    assert.equal(decoded.mesh.length, 1);
+    assert.deepEqual(
+        decoded.mesh[0]!.fields.map((field) => field.name),
+        [
+            "pinned mesh[1] world[0..3]",
+            "pinned mesh[1] world[4..7]",
+            "pinned mesh[1] world[8..11]",
+            "pinned mesh[1] world[12..15]",
+            "pinned mesh[1] lightCount",
+            "pinned mesh[1] bone0[0..3]",
+            "pinned mesh[1] bone0[4..7]",
+        ],
+    );
+    assert.deepEqual(decoded.mesh[0]!.fields[3]!.values, [4, 5, 6, 1]);
+});
+
+test("matches shader arms by normalized content and opens the closest near miss", () => {
+    const browser = new Map([
+        ["02-match.wgsl", "// arm\n@fragment\nfn main() { }\n"],
+        [
+            "01-pbr.wgsl",
+            "// pbr\n@fragment\nfn shade() {\n  let colorF0 = 1.0;\n  let arm = 2.0;\n}\n",
+        ],
+    ]);
+    const native = new Map([
+        // Trailing whitespace and a trailing blank line are the cosmetic
+        // differences the normalization forgives — nothing else.
+        ["pbr-variants/match.frag.wgsl", "// arm  \n@fragment\nfn main() { }\n\n"],
+        [
+            "pbr-variants/near.frag.wgsl",
+            "// pbr\n@fragment\nfn shade() {\n  let colorF0 = 1.0;\n  let arm = 3.0;\n}\n",
+        ],
+    ]);
+    const report = shaderArmReport(browser, native);
+    assert.deepEqual(report.matched, [
+        {
+            browser: ["02-match.wgsl"],
+            native: ["pbr-variants/match.frag.wgsl"],
+        },
+    ]);
+    assert.deepEqual(report.browserOnly, ["01-pbr.wgsl"]);
+    assert.deepEqual(report.nativeOnly, ["pbr-variants/near.frag.wgsl"]);
+    // The near miss is compose's longest-common-prefix idiom: the first
+    // divergent line names the arm.
+    assert.equal(report.nearMiss?.browser, "01-pbr.wgsl");
+    assert.equal(report.nearMiss?.native, "pbr-variants/near.frag.wgsl");
+    assert.equal(report.nearMiss?.line, 5);
+    assert.deepEqual(report.nearMiss?.browserLines, ["  let arm = 2.0;", "}"]);
+    assert.deepEqual(report.nearMiss?.nativeLines, ["  let arm = 3.0;", "}"]);
+});
+
+test("two shaders sharing no line are not reported as a near miss", () => {
+    const report = shaderArmReport(
+        new Map([["a.wgsl", "@vertex\nfn v() { }\n"]]),
+        new Map([["pbr-variants/b.frag.wgsl", "// unrelated\nfn f() { }\n"]]),
+    );
+    assert.equal(report.nearMiss, undefined);
+});
+
 test("pairs a native capture against a browser capture end to end", () => {
     const root = mkdtempSync(join(tmpdir(), "render-diff-"));
     try {
@@ -126,6 +262,9 @@ test("pairs a native capture against a browser capture end to end", () => {
             { recursive: true },
         );
         mkdirSync(join(generated, "upstream", "shaders"), { recursive: true });
+        mkdirSync(join(generated, "upstream", "pbr-variants"), {
+            recursive: true,
+        });
         writeFileSync(
             join(
                 generated,
@@ -140,11 +279,40 @@ test("pairs a native capture against a browser capture end to end", () => {
         writeFileSync(
             join(capture, "shaders", "00-fragment.wgsl"),
             "struct Scene { vEyePosition : vec4<f32>, vAlbedoColor : vec4<f32> }\n" +
+                "struct M { a : f32, b : f32, c : f32, d : f32 }\n" +
                 "fn main() { let c = textureSample(baseColorTexture, baseColorSampler, input.uv); }\n",
+        );
+        // A captured PBR fragment we never emitted, and its nearest
+        // generated arm differing by one line — the compose-class defect
+        // the shader-arm section exists to catch.
+        const orphanFragment =
+            "// pinned pbr\n@fragment\nfn shade() {\n  let colorF0 = 1.0;\n  let arm = 2.0;\n}\n";
+        writeFileSync(join(capture, "shaders", "01-pbr.wgsl"), orphanFragment);
+        writeFileSync(
+            join(generated, "upstream", "pbr-variants", "near.frag.wgsl"),
+            orphanFragment.replace("arm = 2.0", "arm = 3.0"),
+        );
+        // A module that matches a generated variant modulo trailing
+        // whitespace, whose deployed .native.wgsl twin is byte-equal.
+        const matchedArm = "// composed arm\n@fragment\nfn main2() { }\n";
+        writeFileSync(join(capture, "shaders", "02-match.wgsl"), matchedArm);
+        writeFileSync(
+            join(generated, "upstream", "pbr-variants", "match.frag.wgsl"),
+            matchedArm.replace("arm\n", "arm  \n"),
+        );
+        writeFileSync(
+            join(generated, "upstream", "shaders", "twin.frag.native.wgsl"),
+            matchedArm,
         );
         const bytes = Buffer.alloc(32);
         [0.25, 0.5, 0.75, 0, 1, 1, 1, 1].forEach((value, index) =>
             bytes.writeFloatLE(value, index * 4),
+        );
+        // A 16-byte buffer the shaders declare as four f32 scalars: the
+        // width a pinned vec4 chunk can only meet through the raw rows.
+        const scalarBytes = Buffer.alloc(16);
+        [3, 5, 7, 9].forEach((value, index) =>
+            scalarBytes.writeFloatLE(value, index * 4),
         );
         writeFileSync(
             join(capture, "buffers.json"),
@@ -154,6 +322,14 @@ test("pairs a native capture against a browser capture end to end", () => {
                     size: 32,
                     usage: 0x48,
                     writes: [{ offset: 0, data: bytes.toString("base64") }],
+                },
+                {
+                    id: 2,
+                    size: 16,
+                    usage: 0x40,
+                    writes: [
+                        { offset: 0, data: scalarBytes.toString("base64") },
+                    ],
                 },
             ]),
         );
@@ -219,6 +395,40 @@ test("pairs a native capture against a browser capture end to end", () => {
                     },
                 ],
                 backgroundUniforms: [],
+                pinnedMaterialBlocks: [
+                    // Material 0 is drawn; its values sit in the 16-byte
+                    // browser buffer, reachable only via the raw rows.
+                    {
+                        materialIndex: 0,
+                        variant: 0,
+                        key: "ibl",
+                        bytes: 16,
+                        values: [3, 5, 7, 9],
+                    },
+                    // Material 5 is drawn by no PBR draw: flagged, and
+                    // its unmatched values stay flagged in the list too.
+                    {
+                        materialIndex: 5,
+                        variant: 1,
+                        key: "ibl",
+                        bytes: 16,
+                        values: [11, 12, 13, 14],
+                    },
+                ],
+                pinnedMeshBlocks: [
+                    {
+                        meshIndex: 0,
+                        world: [-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+                        lightCount: 1,
+                        boneCount: 0,
+                    },
+                    {
+                        meshIndex: 0,
+                        world: [-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+                        lightCount: 1,
+                        boneCount: 0,
+                    },
+                ],
             }),
         );
 
@@ -227,14 +437,87 @@ test("pairs a native capture against a browser capture end to end", () => {
         assert.deepEqual(report.draws.onlyInNative, []);
         assert.deepEqual(report.draws.onlyInBrowser, []);
         // The vec3 slot agrees despite its packed fourth lane; the
-        // invented one does not and is the only reported divergence.
-        assert.deepEqual(
-            report.divergent.map((entry) => entry.native),
-            ["GridUniforms.grid_control"],
-        );
-        assert.deepEqual(report.divergent[0]!.values, [7, 8, 9, 10]);
+        // invented GridUniforms payload does not.
+        const names = report.divergent.map((entry) => entry.native);
+        assert.ok(names.includes("GridUniforms.grid_control"));
         assert.equal(report.summary.vec3, 1);
         assert.equal(report.backend, "sdl_gpu");
+        // The refused block's unmatched row is the widest divergence and
+        // carries its flag in the name.
+        assert.equal(
+            report.divergent[0]!.native,
+            "pinned material[5] variant1:ibl values[0..3] (refused)",
+        );
+        // The drawn block's bytes sit in the browser's 16-byte buffer,
+        // reachable only through the raw vec4 rows — so it is matched,
+        // not listed.
+        assert.ok(
+            !names.some((name) =>
+                name.startsWith("pinned material[0] variant0:ibl"),
+            ),
+        );
+        assert.deepEqual(report.pinned?.materialBlocks, [
+            {
+                materialIndex: 0,
+                variant: 0,
+                key: "ibl",
+                bytes: 16,
+                refused: false,
+                rows: { exact: 1, vec3: 0, divergent: 0 },
+            },
+            {
+                materialIndex: 5,
+                variant: 1,
+                key: "ibl",
+                bytes: 16,
+                refused: true,
+                rows: { exact: 0, vec3: 0, divergent: 1 },
+            },
+        ]);
+        // The duplicate mesh dump collapsed to one block; its rows (four
+        // world rows and the light count) match nothing in this fixture.
+        assert.deepEqual(report.pinned?.meshBlocks, [
+            {
+                meshIndex: 0,
+                lightCount: 1,
+                boneCount: 0,
+                rows: { exact: 0, vec3: 0, divergent: 5 },
+            },
+        ]);
+        // Shader arms: the matched module names its variant and deployed
+        // twin; the orphaned PBR fragment is one-sided with a near miss.
+        const arms = report.shaders.arms;
+        assert.deepEqual(arms.matched, [
+            {
+                browser: ["02-match.wgsl"],
+                native: [
+                    "pbr-variants/match.frag.wgsl",
+                    "shaders/twin.frag.native.wgsl",
+                ],
+            },
+        ]);
+        assert.deepEqual(arms.browserOnly, [
+            "00-fragment.wgsl",
+            "01-pbr.wgsl",
+        ]);
+        assert.deepEqual(arms.nativeOnly, ["pbr-variants/near.frag.wgsl"]);
+        assert.equal(arms.nearMiss?.browser, "01-pbr.wgsl");
+        assert.equal(arms.nearMiss?.native, "pbr-variants/near.frag.wgsl");
+        assert.equal(arms.nearMiss?.line, 5);
+        assert.ok(
+            report.findings.some((finding) =>
+                finding.includes("match no generated shader arm"),
+            ),
+        );
+        const text = formatRenderDiff(report);
+        assert.match(
+            text,
+            /REFUSED — no PBR draw this frame carries this material/,
+        );
+        assert.match(
+            text,
+            /Shader arms[^:]*: 1 matched, 2 browser-only, 1 native-only/,
+        );
         assert.deepEqual(report.shaders.browserSampleCalls, [
             "textureSample(baseColorTexture,baseColorSampler,input.uv)",
         ]);

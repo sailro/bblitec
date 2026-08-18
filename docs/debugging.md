@@ -41,7 +41,7 @@ meaningful, and stopping early is how a wrong branch gets taken.
 | 2 | Is the difference on the CPU or the GPU side? | `scene -- parity <id> --differential` |
 | 3 | Which value differs from Babylon Lite's? | `scene -- diff <id>` |
 | 4 | What exactly did the browser upload into that buffer? | `scene -- capture <id>` then `scene -- uniforms <id> --size N` |
-| 4b | What did *we* put in the pinned variant's blocks? | `scene -- diff <id> --recapture`, then `pinnedMaterialBlocks` / `pinnedMeshBlocks` in `artifacts/capture/<id>/native-gpu.json` — built by the same writers the draw path calls, CPU-side, so refused variants appear too. Diff the two listings field by field; a pinned-path residual is an input, never the shader, once `scene -- compose` matches byte-for-byte |
+| 4b | What did *we* put in the pinned variant's blocks? | `scene -- diff <id>` — its pinned section pairs `pinnedMaterialBlocks` / `pinnedMeshBlocks` (built by the same writers the draw path calls, CPU-side) against the browser's uploads row by row, flagging blocks no draw carries as refused. The raw listings stay in `artifacts/capture/<id>/native-gpu.json`; a pinned-path residual is an input, never the shader, once the report's shader arms match |
 | 5 | Which draw owns the bad pixels? | attribution buffers in `artifacts/parity/<id>` |
 | 6 | Does removing the feature remove the residual? | copy the scene to `examples/`, strip it, `parity --recapture-reference` |
 | 7 | Did we derive the material's features at all? | `scene -- compose <id>` — composes each material through the pin and checks the whole fragment against the captured one |
@@ -120,8 +120,23 @@ can cause:
    `renderer_plan.hpp`; browser buffers through the struct declarations
    in the browser's own composed shaders. So a difference reads
    `emissive_factor native 1, 1, 1 / browser 0, 0, 0` rather than as an
-   offset into base64.
-3. **Texture sample expressions.** The set of `textureSample(...)` calls
+   offset into base64. The capture's `pinnedMaterialBlocks` and
+   `pinnedMeshBlocks` ride the same pairing as vec4 rows named
+   `pinned ...`, with per-block tallies in the report's pinned section —
+   rung 4b's two listings, diffed instead of read. A material block no
+   PBR draw carries is flagged refused: its values never reached the
+   GPU, so a divergence there cannot explain a pixel. Mesh worlds and
+   bone palettes ride the mirror convention (end of this page), so a
+   sign-flipped lane against the browser's is documented, not a finding.
+3. **Shader arms.** Every captured module hashed against the generated
+   `pbr-variants/*.wgsl` and the deployed `*.native.wgsl` set, per-line
+   trailing whitespace ignored: matched groups name their counterparts,
+   both one-sided sets are listed — arms the browser did not compose at
+   this pose are normal on the native side — and the closest near miss
+   prints its first divergent line, which names the arm. A captured PBR
+   fragment matching no arm is promoted to a finding; that is the
+   compose-class defect, caught without a compose run.
+4. **Texture sample expressions.** The set of `textureSample(...)` calls
    in the browser's fragments against ours. A sample taken against a
    different UV than the pin is invisible in every uniform and obvious
    here — that is exactly what scene 39's emissive residual was.
@@ -174,11 +189,21 @@ tile, then the id attribution to get the draw.
 the browser, which isolates one draw's contribution when paired with a
 matching temporary filter natively.
 
-When a native render is wrong, **measure the PNG, do not eyeball it**. A
-twenty-line pngjs script printing the non-clear bounding box turned "the
-sprites are in the wrong place" into "exactly 7200 px at
+When a native render is wrong, **measure the PNG, do not eyeball it**:
+
+```powershell
+npm run scene -- measure artifacts\parity\scene50\native-gpu.png
+npm run scene -- measure probe.png --background 51,51,76
+```
+
+It prints the non-background bounding box, pixel count and mean RGB.
+That measurement — as a twenty-line throwaway script, then — turned
+"the sprites are in the wrong place" into "exactly 7200 px at
 (640,180)-(719,269)", which inverted through the vertex shader to the
-exact quad corners and named the bug.
+exact quad corners and named the bug. The background defaults to the
+top-left pixel and matches exactly, because "exactly 7200" is the point:
+native renders clear to one solid color, while browser goldens dither
+theirs, so point it at the native PNG.
 
 ### 6. Isolation
 
