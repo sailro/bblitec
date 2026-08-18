@@ -80,6 +80,11 @@ inline void update_camera(CameraRecord& camera) {
         return index >= 0 && index < key_count && keys[index];
     };
     if (camera.kind == CameraKind::free) {
+        // The pin's per-frame move scale, evaluated at the fixed 60 FPS
+        // step this loop runs: free-camera-controls.ts computes
+        // moveSpeed = speed * sqrt(dt * dt / 1e5) each frame, and
+        // dt = 1000/60 ms gives (1000/60) / sqrt(1e5) = 0.05270463.
+        // A variable-dt loop would re-derive this from its own dt.
         constexpr double nominal_frame_scale = 0.05270463;
         const double movement = camera.speed * nominal_frame_scale;
         if (pressed(SDL_SCANCODE_W) || pressed(SDL_SCANCODE_UP)) {

@@ -62,7 +62,7 @@ Primary source ownership:
 | `src/upstream-lower.ts` | lowerer orchestration, provenance, generated capabilities |
 | `src/pinned-shader-composer.ts` | executes the pin's own `composeShader`, and lifts named declarations out of a composition verbatim |
 | `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant; supplies the generated shader's helper text |
-| `src/pinned-material-input.ts` | maps a glTF material to the shape `_computePbrMaterialFeatures` reads — the loader's rules ported, not the format's |
+| `src/pinned-material-input.ts` | maps a glTF material to the shape `_computePbrMaterialFeatures` reads — the loader's own extension builders executed against a recording stub, not re-derived |
 | `src/pinned-material-arms.ts` | composes every material a scene loads and refuses a fragment missing an arm one of them reaches |
 | `src/pinned-scene-arms.ts` | the scene half of composition: light modes, tone mapping, fog bits |
 | `src/pinned-mesh-features.ts` | the pin's mesh feature bits, imported rather than restated |
