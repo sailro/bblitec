@@ -19,7 +19,8 @@ import {
     statSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { basename, dirname, join, relative, resolve } from "node:path";
 
 export class GeneratedTree {
     private readonly written = new Set<string>();
@@ -158,4 +159,143 @@ export class GeneratedTree {
         }
         return empty;
     }
+}
+
+// ---------------------------------------------------------------------------
+// `scene -- neutrality-generated` — the compile-and-digest proof
+//
+// docs/development.md's neutrality ladder: a change confined to
+// TypeScript is proved by compiling every registered scene and digesting
+// the generated tree — byte-identical output means identical build
+// stamps, identical binaries, unmoved measurements. The digest half kept
+// being retyped as a throwaway script; these functions are that script,
+// with its one footgun handled instead of re-stepped-on: a corpus sweep
+// or a deleted probe leaves top-level directories under `generated/`
+// that no registry scene owns, and hashing those silently makes two
+// identical compiles digest differently. They are returned for the
+// caller to list loudly, and excluded from the digest.
+//
+// Digesting is all this does — the caller compiles first.
+// ---------------------------------------------------------------------------
+
+export interface GeneratedTreeDigest {
+    /** `generated/<path>\t<sha1>`, sorted by path. */
+    lines: string[];
+    /** Top-level entries under the root that no registry scene owns,
+     *  excluded from `lines`. */
+    strays: string[];
+}
+
+function listFiles(directory: string, out: string[]): void {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const full = join(directory, entry.name);
+        if (entry.isDirectory()) {
+            listFiles(full, out);
+        } else {
+            out.push(full);
+        }
+    }
+}
+
+/**
+ * Hash every file under the registry-owned directories below `root`
+ * (sha1, one `<rootName>/<path>\t<hash>` line per file, forward slashes,
+ * sorted). `ownedDirectories` are the scenes' output directories; a
+ * top-level entry outside that set is a stray, listed rather than
+ * hashed.
+ */
+export function digestGeneratedTree(
+    root: string,
+    ownedDirectories: readonly string[],
+): GeneratedTreeDigest {
+    const resolvedRoot = resolve(root);
+    const rootName = basename(resolvedRoot);
+    const lines: string[] = [];
+    const strays: string[] = [];
+    if (!existsSync(resolvedRoot)) {
+        return { lines, strays };
+    }
+    const owned = new Set(
+        ownedDirectories.map((directory) =>
+            relative(resolvedRoot, resolve(directory)).replace(/\\/g, "/"),
+        ),
+    );
+    for (const entry of readdirSync(resolvedRoot, {
+        withFileTypes: true,
+    })) {
+        if (!entry.isDirectory() || !owned.has(entry.name)) {
+            strays.push(entry.name);
+            continue;
+        }
+        const files: string[] = [];
+        listFiles(join(resolvedRoot, entry.name), files);
+        for (const file of files) {
+            const relativePath = relative(resolvedRoot, file).replace(
+                /\\/g,
+                "/",
+            );
+            const digest = createHash("sha1")
+                .update(readFileSync(file))
+                .digest("hex");
+            lines.push(`${rootName}/${relativePath}\t${digest}`);
+        }
+    }
+    lines.sort();
+    strays.sort();
+    return { lines, strays };
+}
+
+/**
+ * A baseline file's `<path>\t<hash>` lines as a map. Strict: a line that
+ * is not that shape means the file is not a digest baseline, and
+ * tolerating it would let a truncated baseline pass a comparison.
+ */
+export function parseDigestBaseline(text: string): Map<string, string> {
+    const map = new Map<string, string>();
+    text.split(/\r?\n/).forEach((line, index) => {
+        if (line === "") return;
+        const tab = line.indexOf("\t");
+        if (tab <= 0 || tab === line.length - 1) {
+            throw new Error(
+                `Baseline line ${index + 1} is not '<path>\\t<sha1>': '${line}'.`,
+            );
+        }
+        map.set(line.slice(0, tab), line.slice(tab + 1));
+    });
+    return map;
+}
+
+export interface GeneratedDigestComparison {
+    added: string[];
+    removed: string[];
+    changed: string[];
+    unchanged: number;
+}
+
+export function compareGeneratedDigest(
+    baseline: ReadonlyMap<string, string>,
+    currentLines: readonly string[],
+): GeneratedDigestComparison {
+    const added: string[] = [];
+    const changed: string[] = [];
+    let unchanged = 0;
+    const seen = new Set<string>();
+    for (const line of currentLines) {
+        const tab = line.indexOf("\t");
+        const path = tab >= 0 ? line.slice(0, tab) : line;
+        const hash = tab >= 0 ? line.slice(tab + 1) : "";
+        seen.add(path);
+        const before = baseline.get(path);
+        if (before === undefined) {
+            added.push(path);
+        } else if (before !== hash) {
+            changed.push(path);
+        } else {
+            unchanged += 1;
+        }
+    }
+    const removed = [...baseline.keys()]
+        .filter((path) => !seen.has(path))
+        .sort();
+    return { added, removed, changed, unchanged };
 }

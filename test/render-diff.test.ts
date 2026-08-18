@@ -7,12 +7,17 @@ import {
     buildRenderDiff,
     correspond,
     formatRenderDiff,
+    mirrorMatrixConvention,
     nativeFields,
     parseCppUniformStructs,
     pinnedBlockFields,
+    readTextureUploads,
     sampleCalls,
     shaderArmReport,
+    texturePaletteReport,
     type NativeCapture,
+    type RenderDiffReport,
+    type TextureUpload,
     type UniformField,
 } from "../src/render-diff.js";
 
@@ -208,6 +213,188 @@ test("decodes pinned blocks into vec4 rows, flagging blocks no draw carries", ()
     assert.deepEqual(decoded.mesh[0]!.fields[3]!.values, [4, 5, 6, 1]);
 });
 
+test("applies the documented mirror map: negate column-major 1, 2, 3, 4, 8, 12", () => {
+    const matrix = [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    ];
+    assert.deepEqual(
+        mirrorMatrixConvention(matrix),
+        [0, -1, -2, -3, -4, 5, 6, 7, -8, 9, 10, 11, -12, 13, 14, 15],
+    );
+    // The map is an involution: applying it twice is the identity, which
+    // is why matching mirrored-native against browser is the same
+    // correspondence the docs describe in the other direction.
+    assert.deepEqual(
+        mirrorMatrixConvention(mirrorMatrixConvention(matrix)),
+        matrix,
+    );
+});
+
+test("matches native bone palettes against rgba32float uploads, mirror map applied", () => {
+    const nativeBone = [
+        0.5, 0.1, -0.2, 0,
+        0.3, 0.9, 0.05, 0,
+        -0.4, 0.2, 0.8, 0,
+        1.5, -2.5, 3.5, 1,
+    ];
+    // The browser's upload carries the mirrored form of ours; encode it
+    // as the raw rgba32float texel bytes the capture records.
+    const browserMatrix = mirrorMatrixConvention(nativeBone);
+    const bytes = Buffer.alloc(64);
+    browserMatrix.forEach((value, index) =>
+        bytes.writeFloatLE(value, index * 4),
+    );
+    const uploads: TextureUpload[] = [
+        {
+            tex: 5,
+            kind: "writeTexture",
+            desc: { format: "rgba32float" },
+            mipLevel: 0,
+            bytes: Array.from(bytes),
+            byteLength: 64,
+        },
+        {
+            tex: 6,
+            kind: "writeTexture",
+            desc: { format: "rgba8unorm" },
+            bytes: [255, 255, 255, 255],
+            byteLength: 4,
+        },
+        { tex: 7, kind: "copyExternalImage", desc: { format: "rgba8unorm" } },
+        // A palette above the capture's byte cap records size only.
+        {
+            tex: 8,
+            kind: "writeTexture",
+            desc: { format: "rgba32float" },
+            bytes: null,
+            byteLength: 1 << 20,
+        },
+    ];
+    const capture: NativeCapture = {
+        backend: "sdl_gpu",
+        buildStamp: "t",
+        viewport: { width: 1, height: 1 },
+        draws: [],
+        backgroundUniforms: [],
+        pinnedMeshBlocks: [
+            {
+                meshIndex: 2,
+                lightCount: 1,
+                boneCount: 2,
+                bone0: nativeBone,
+                bone1: nativeBone.map((value) => value + 10),
+            },
+            // One entry per PBR draw in the capture; the duplicate
+            // collapses like every other pairing.
+            {
+                meshIndex: 2,
+                lightCount: 1,
+                boneCount: 2,
+                bone0: nativeBone,
+                bone1: nativeBone.map((value) => value + 10),
+            },
+        ],
+    };
+    const report = texturePaletteReport(capture, uploads);
+    assert.deepEqual(report.floatUploads, [
+        {
+            tex: 5,
+            format: "rgba32float",
+            matrices: 1,
+            byteLength: 64,
+            truncated: false,
+        },
+        {
+            tex: 8,
+            format: "rgba32float",
+            matrices: 0,
+            byteLength: 1 << 20,
+            truncated: true,
+        },
+    ]);
+    assert.equal(report.colorUploads, 1);
+    assert.equal(report.externalImages, 1);
+    assert.deepEqual(
+        report.palettes.map((entry) => [
+            entry.native,
+            entry.match,
+            entry.browser,
+        ]),
+        [
+            ["pinned mesh[2] bone0", "exact", "tex#5 upload0 matrix[0]"],
+            // bone1 exists nowhere in the uploads: divergent, with the
+            // nearest matrix and its delta named.
+            ["pinned mesh[2] bone1", "divergent", "tex#5 upload0 matrix[0]"],
+        ],
+    );
+    assert.ok((report.palettes[1]!.maxDelta ?? 0) > 5);
+});
+
+test("readTextureUploads distinguishes a pre-palette capture from an unreadable one", () => {
+    const root = mkdtempSync(join(tmpdir(), "tex-uploads-"));
+    try {
+        // No file: the capture predates tex-uploads.json entirely.
+        assert.equal(readTextureUploads(root), undefined);
+        writeFileSync(join(root, "tex-uploads.json"), "not json");
+        assert.deepEqual(readTextureUploads(root), []);
+        writeFileSync(
+            join(root, "tex-uploads.json"),
+            JSON.stringify([{ tex: 1, kind: "writeTexture" }]),
+        );
+        assert.deepEqual(readTextureUploads(root), [
+            { tex: 1, kind: "writeTexture" },
+        ]);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("a capture without tex-uploads.json says to recapture when the scene has bones", () => {
+    const report: RenderDiffReport = {
+        scene: "t",
+        backend: "sdl_gpu",
+        findings: [],
+        summary: {
+            nativeDraws: 0,
+            nativeMeshes: 0,
+            nativeMaterials: 0,
+            nativeLights: 0,
+            nativeFields: 0,
+            browserFields: 0,
+            exact: 0,
+            vec3: 0,
+            divergent: 0,
+        },
+        draws: {
+            shared: [],
+            onlyInNative: [],
+            onlyInBrowser: [],
+            browserNonIndexed: [],
+        },
+        divergent: [],
+        browserOnly: [],
+        pinned: {
+            materialBlocks: [],
+            meshBlocks: [
+                {
+                    meshIndex: 0,
+                    lightCount: 1,
+                    boneCount: 4,
+                    rows: { exact: 0, vec3: 0, divergent: 0 },
+                },
+            ],
+        },
+        shaders: {
+            browserModules: [],
+            nativeShaders: [],
+            arms: { matched: [], browserOnly: [], nativeOnly: [] },
+            browserSampleCalls: [],
+            nativeSampleCalls: [],
+        },
+    };
+    assert.match(formatRenderDiff(report), /predates tex-uploads\.json/);
+});
+
 test("matches shader arms by normalized content and opens the closest near miss", () => {
     const browser = new Map([
         ["02-match.wgsl", "// arm\n@fragment\nfn main() { }\n"],
@@ -343,6 +530,25 @@ test("pairs a native capture against a browser capture end to end", () => {
                 "pass.drawIndexed(36,1,0,0)": 700,
                 "pass.draw(3,1,0)": 700,
             }),
+        );
+        // A boneless scene's upload record: census only, nothing to match.
+        writeFileSync(
+            join(capture, "tex-uploads.json"),
+            JSON.stringify([
+                {
+                    tex: 1,
+                    kind: "writeTexture",
+                    desc: { format: "rgba8unorm" },
+                    bytes: [0, 0, 0, 255],
+                    byteLength: 4,
+                },
+                {
+                    tex: 2,
+                    kind: "copyExternalImage",
+                    desc: { format: "rgba8unorm" },
+                    sample: {},
+                },
+            ]),
         );
         const nativeCapture = join(capture, "native-gpu.json");
         writeFileSync(
@@ -484,6 +690,14 @@ test("pairs a native capture against a browser capture end to end", () => {
                 rows: { exact: 0, vec3: 0, divergent: 5 },
             },
         ]);
+        // tex-uploads.json is present, so the palette section reports its
+        // census even with no float uploads and no bones to match.
+        assert.deepEqual(report.texturePalettes, {
+            floatUploads: [],
+            palettes: [],
+            colorUploads: 1,
+            externalImages: 1,
+        });
         // Shader arms: the matched module names its variant and deployed
         // twin; the orphaned PBR fragment is one-sided with a near miss.
         const arms = report.shaders.arms;
@@ -514,6 +728,11 @@ test("pairs a native capture against a browser capture end to end", () => {
             text,
             /REFUSED — no PBR draw this frame carries this material/,
         );
+        assert.match(
+            text,
+            /0 float upload\(s\), 1 color texel upload\(s\), 1 external image\(s\)/,
+        );
+        assert.match(text, /no bone palettes in the native capture/);
         assert.match(
             text,
             /Shader arms[^:]*: 1 matched, 2 browser-only, 1 native-only/,

@@ -88,6 +88,21 @@ assumed: SDL_GPU is bit-identical across runs and so is Dawn under
 of them by exactly one. So it is the multisampled path, and nothing else about
 those two scenes is in question.
 
+That check is a command for any scene:
+
+```powershell
+npm run scene -- stability scene9 --backend dawn
+npm run scene -- stability scene9 --backend dawn --single-sample
+```
+
+It renders the native side N times (default 5, `--runs N`) and prints every
+run against run 1 *and* against the golden — both columns always, because
+comparing runs only against each other hides a stable-but-wrong image, and the
+report says so out loud when the runs agree while all differing from the
+golden. `--single-sample` re-runs at one sample, the bisection that localised
+the wobble to multisampling; its golden column is context only, since the
+goldens are multisampled.
+
 ### 3. `scene -- diff` — the two captures, paired
 
 ```powershell
@@ -125,10 +140,17 @@ can cause:
    `pinned ...`, with per-block tallies in the report's pinned section —
    rung 4b's two listings, diffed instead of read. A material block no
    PBR draw carries is flagged refused: its values never reached the
-   GPU, so a divergence there cannot explain a pixel. Mesh worlds and
-   bone palettes ride the mirror convention (end of this page), so a
-   sign-flipped lane against the browser's is documented, not a finding.
-3. **Shader arms.** Every captured module hashed against the generated
+   GPU, so a divergence there cannot explain a pixel. Mesh worlds ride
+   the mirror convention (end of this page), so a sign-flipped lane
+   against the browser's is documented, not a finding.
+3. **Texture palettes.** Babylon Lite uploads each skin's bone matrices
+   as an Nx1 rgba32float texture, and the capture keeps those texels'
+   raw bytes in `tex-uploads.json`. The report decodes them and looks
+   each native `bone0`/`bone1` palette matrix up among them with the
+   mirror map already applied, so the skinning comparison is a
+   matched/divergent verdict rather than a by-eye hexfloat diff with a
+   sign-flip caveat; an unmatched palette is promoted to a finding.
+4. **Shader arms.** Every captured module hashed against the generated
    `pbr-variants/*.wgsl` and the deployed `*.native.wgsl` set, per-line
    trailing whitespace ignored: matched groups name their counterparts,
    both one-sided sets are listed — arms the browser did not compose at
@@ -136,7 +158,7 @@ can cause:
    prints its first divergent line, which names the arm. A captured PBR
    fragment matching no arm is promoted to a finding; that is the
    compose-class defect, caught without a compose run.
-4. **Texture sample expressions.** The set of `textureSample(...)` calls
+5. **Texture sample expressions.** The set of `textureSample(...)` calls
    in the browser's fragments against ours. A sample taken against a
    different UV than the pin is invisible in every uniform and obvious
    here — that is exactly what scene 39's emissive residual was.
@@ -223,9 +245,19 @@ which feature; the composed shader says which line.
 `compile` refuses sources outside the repository, which is why the copy
 goes in `examples/`; delete it and its `generated/` directory afterwards.
 
-For an animated scene, capture the browser at the seek and at ±1 frame
-and compare against each. That gives the *scale* of one frame of motion,
-so a residual can be judged against it instead of against intuition.
+For an animated scene, bracket the pose:
+
+```powershell
+npm run scene -- capture scene5 --seek-bracket
+```
+
+That captures the browser at the seek and at ±1 frame (into
+`seek-minus1/` and `seek-plus1/` beside the main capture) and prints the
+MAD between the exact frame and each neighbour — the *scale* of one
+frame of motion, so a residual can be judged against it instead of
+against intuition. Only the exact-seek capture keeps the byte-identity
+check against the golden; the brackets are one frame away from its pose
+by design.
 
 The same experiment works one level lower, on a single shader arm,
 without touching the scene: the build deploys every generated shader
@@ -332,7 +364,11 @@ before choosing a shape.
   element, and the one whose removal makes the measurement *worse* is not
   the cause: disabling the ground took that scene from 6.455 to 9.619,
   disabling the skybox took it to 1.202, and that ordering named the
-  culprit before any code was read.
+  culprit before any code was read. That experiment is a flag now:
+  `scene -- parity <id> --without ground|background` runs the native side
+  with one element suppressed against the unchanged golden, artifacts
+  suffixed `-without-<element>` so the standard run's stay untouched, and
+  no threshold gate — the number *is* the answer.
 - **Measure the cost of anything you are about to scope out.** A belief
   that makes remaining work look large is often checkable in minutes.
 
@@ -349,7 +385,8 @@ the wrong one wastes the run:
 | `uniforms` | One browser buffer in full, decoded under **every** candidate layout of its size, ambiguity included. `diff` picks a correspondence; `uniforms` refuses to and shows you all of them. |
 | attribution buffers | Which draw owns which pixels, joined to nodes, meshes, materials and alpha state. Nothing else maps a screen region to a draw. |
 | `geometry` | Frame-graph copy-task attachments at full resolution. `diff` does not look at render targets at all. Takes `--backend` and `--seek` (the latter with `--recapture-reference`) under the same rules as `parity`. |
-| `BBLITE_DEFORMATION_DUMP` | Bone palettes and morph weights per mesh. The render capture records the material and scene uniforms, not the skinning matrices. |
+| `BBLITE_DEFORMATION_DUMP` | Bone palettes and morph weights per mesh, in full. `diff`'s texture-palette section verdicts the first two matrices per mesh against the browser's uploads; this dump is what to read when that verdict says divergent. |
+| `stability` | **Whether a number is reproducible at all.** Every other tool measures one run; only repeated runs separate a residual from the scenes 9/37 run-to-run wobble class — and its golden column prints beside the run-to-run one because a stable-but-wrong image passes the latter. |
 | `compose` | Whether our *feature derivation* is right, which every tool above assumes. They compare what two renderers did; `compose` compares what Babylon Lite would have built against what we built it from, so it catches a fragment that is missing an arm entirely — the failure that renders as a plausible small bias and never as an error. |
 
 The shape to expect: `parity` says something is wrong, `--differential`
@@ -373,10 +410,13 @@ out the entire class of defect in one command.
 | `artifacts/capture/<id>/shaders/*.wgsl` | `capture` | the browser's own composed shader modules |
 | `artifacts/capture/<id>/buffers.json` | `capture` | every browser buffer, with the last eight writes |
 | `artifacts/capture/<id>/draws.json` | `capture` | the browser draw census, bundles included |
-| `artifacts/capture/<id>/tex-uploads.json` | `capture` | texture uploads, with raw bytes for small texels |
+| `artifacts/capture/<id>/tex-uploads.json` | `capture` | texture uploads, with raw bytes for small texels; `diff`'s palette matching reads the rgba32float ones |
+| `artifacts/capture/<id>/seek-{minus1,plus1}/`, `seek-bracket.json` | `capture --seek-bracket` | the ±1-frame captures and the one-frame motion scale |
 | `artifacts/capture/<id>/native-{gpu,dawn}.json` | `capture --native` | our scene model, draw list and uniform blocks (`diff` still reads a pre-rename `native-sdl_gpu.json` when only that exists) |
 | `artifacts/capture/<id>/capture-meta.json`, `native-{gpu,dawn}.meta.json` | `capture` / `capture --native` | the seek each capture was taken at, read by `diff`'s reuse check |
 | `artifacts/capture/<id>/diff-{gpu,dawn}.json` | `diff` | the paired report |
+| `artifacts/parity/<id>/report-<token>-without-{ground,background}.json`, `native-...png` | `parity --without` | the suppression run, suffixed so the standard run's artifacts stay |
+| `artifacts/parity/<id>/stability/run<N>-<token>[-single-sample].png`, `stability-<token>[-single-sample].json` | `stability` | per-run renders and the run-to-run/golden comparison |
 
 One filename token per backend everywhere: `gpu` is SDL_GPU and `dawn` is
 Dawn, in parity, capture, diff and geometry artifacts alike — `--backend`
@@ -429,3 +469,6 @@ sample and that number means nothing.
 Comparing native bone palettes against the browser's requires the mirror
 similarity map — negate column-major indexes 1, 2, 3, 4, 8 and 12 — which
 is the documented `diag(-1, 1, 1)` convention difference, not a bug.
+`scene -- diff` applies that map for you in its texture-palette section;
+the raw rule stays here for reading `BBLITE_DEFORMATION_DUMP` output by
+hand.

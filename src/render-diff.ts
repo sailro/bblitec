@@ -5,6 +5,7 @@ import {
     captureBuffersPath,
     captureDrawsPath,
     captureShadersDirectory,
+    captureTextureUploadsPath,
 } from "./parity-scene.js";
 import {
     fieldOffsets,
@@ -109,6 +110,41 @@ export interface ShaderArmReport {
     };
 }
 
+/** One native bone-palette matrix looked up among the browser's float
+ *  texture uploads, mirror map applied. */
+export interface PaletteCorrespondence {
+    native: string;
+    match: "exact" | "divergent";
+    browser?: string;
+    maxDelta?: number;
+}
+
+/**
+ * The capture's `tex-uploads.json`, matched against the native side's
+ * texture content expectations. Babylon Lite uploads each skin's bone
+ * matrices as an Nx1 rgba32float texture — four texels per matrix — and
+ * the instrumented capture keeps those texels' raw bytes; the native
+ * capture carries the same matrices CPU-side in its `pinnedMeshBlocks`,
+ * stored under the native mirror convention. Each native matrix is
+ * pushed through the documented mirror map and looked up among the
+ * uploaded ones, so the skinning comparison is a verdict rather than a
+ * by-eye hexfloat diff with a sign-flip caveat.
+ */
+export interface TexturePaletteReport {
+    floatUploads: Array<{
+        tex: number;
+        format: string;
+        matrices: number;
+        byteLength: number;
+        /** Bytes above the capture's cap are recorded as size only. */
+        truncated: boolean;
+    }>;
+    palettes: PaletteCorrespondence[];
+    /** Census of the rest of the upload record, for context. */
+    colorUploads: number;
+    externalImages: number;
+}
+
 export interface RenderDiffReport {
     scene: string;
     backend: string;
@@ -154,6 +190,8 @@ export interface RenderDiffReport {
             rows: PinnedBlockRowTally;
         }>;
     };
+    /** Absent when the capture predates `tex-uploads.json`. */
+    texturePalettes?: TexturePaletteReport;
     shaders: {
         browserModules: string[];
         nativeShaders: string[];
@@ -563,6 +601,160 @@ export function browserBufferValueRows(
         }
     }
     return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Texture palettes
+// ---------------------------------------------------------------------------
+
+/** One `tex-uploads.json` entry, as the instrumented capture's page
+ *  script records it: raw bytes for small `writeTexture` payloads
+ *  (rgba32float rows get a higher cap because they carry bone
+ *  palettes), a 4x4 sample for `copyExternalImageToTexture`. */
+export interface TextureUpload {
+    tex?: number;
+    kind?: string;
+    desc?: { format?: string } | null;
+    mipLevel?: number;
+    bytes?: number[] | null;
+    byteLength?: number;
+    sample?: unknown;
+}
+
+/**
+ * The documented mirror similarity map: negate column-major indexes 1,
+ * 2, 3, 4, 8 and 12 — the `diag(-1, 1, 1)` conjugation that relates
+ * every native matrix to the browser's (docs/debugging.md). Applying it
+ * is what turns the "a sign-flipped lane is not a finding" counsel into
+ * a mechanical match.
+ */
+export function mirrorMatrixConvention(
+    values: readonly number[],
+): number[] {
+    const mirrored = [...values];
+    for (const index of [1, 2, 3, 4, 8, 12]) {
+        if (index < mirrored.length) mirrored[index] = -mirrored[index]!;
+    }
+    return mirrored;
+}
+
+/** `undefined` when the capture predates `tex-uploads.json`; an
+ *  unreadable file reads as an empty record rather than a crash. */
+export function readTextureUploads(
+    captureDirectory: string,
+): TextureUpload[] | undefined {
+    const path = captureTextureUploadsPath(captureDirectory);
+    if (!existsSync(path)) return undefined;
+    try {
+        const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+        return Array.isArray(parsed) ? (parsed as TextureUpload[]) : [];
+    } catch {
+        return [];
+    }
+}
+
+export function texturePaletteReport(
+    capture: NativeCapture,
+    uploads: readonly TextureUpload[],
+): TexturePaletteReport {
+    const floatUploads: TexturePaletteReport["floatUploads"] = [];
+    const candidates: UniformField[] = [];
+    let colorUploads = 0;
+    let externalImages = 0;
+    uploads.forEach((upload, index) => {
+        if (upload.kind === "copyExternalImage") {
+            externalImages += 1;
+            return;
+        }
+        const format = upload.desc?.format ?? "";
+        if (!format.includes("32float")) {
+            colorUploads += 1;
+            return;
+        }
+        const bytes = upload.bytes;
+        let matrices = 0;
+        if (Array.isArray(bytes)) {
+            const buffer = Buffer.from(bytes);
+            const floats: number[] = [];
+            for (
+                let offset = 0;
+                offset + 4 <= buffer.length;
+                offset += 4
+            ) {
+                floats.push(buffer.readFloatLE(offset));
+            }
+            // Four rgba32float texels per matrix, matrices consecutive:
+            // the pin's bone-texture layout.
+            matrices = Math.floor(floats.length / 16);
+            for (let matrix = 0; matrix < matrices; matrix += 1) {
+                candidates.push({
+                    name: `tex#${upload.tex ?? "?"} upload${index} matrix[${matrix}]`,
+                    values: floats.slice(matrix * 16, matrix * 16 + 16),
+                });
+            }
+        }
+        floatUploads.push({
+            tex: upload.tex ?? -1,
+            format,
+            matrices,
+            byteLength:
+                upload.byteLength ??
+                (Array.isArray(bytes) ? bytes.length : 0),
+            truncated: !Array.isArray(bytes),
+        });
+    });
+    const palettes: PaletteCorrespondence[] = [];
+    const seen = new Set<string>();
+    for (const block of capture.pinnedMeshBlocks ?? []) {
+        for (const [label, matrix] of [
+            ["bone0", block.bone0],
+            ["bone1", block.bone1],
+        ] as const) {
+            if (!matrix || matrix.length === 0) continue;
+            // One entry per distinct payload, like every other pairing:
+            // the capture dumps one mesh block per PBR draw.
+            const signature = `${block.meshIndex} ${label} ${matrix.join(",")}`;
+            if (seen.has(signature)) continue;
+            seen.add(signature);
+            const name = `pinned mesh[${block.meshIndex}] ${label}`;
+            const mirrored = mirrorMatrixConvention(matrix);
+            let matched: UniformField | undefined;
+            let nearest: UniformField | undefined;
+            let nearestDelta = Number.POSITIVE_INFINITY;
+            for (const candidate of candidates) {
+                if (candidate.values.length !== mirrored.length) continue;
+                if (agrees(mirrored, candidate.values, mirrored.length)) {
+                    matched = candidate;
+                    break;
+                }
+                const delta = maxDelta(mirrored, candidate.values);
+                if (delta < nearestDelta) {
+                    nearestDelta = delta;
+                    nearest = candidate;
+                }
+            }
+            palettes.push(
+                matched
+                    ? {
+                          native: name,
+                          match: "exact",
+                          browser: matched.name,
+                          maxDelta: maxDelta(mirrored, matched.values),
+                      }
+                    : {
+                          native: name,
+                          match: "divergent",
+                          ...(nearest
+                              ? {
+                                    browser: nearest.name,
+                                    maxDelta: nearestDelta,
+                                }
+                              : {}),
+                      },
+            );
+        }
+    }
+    return { floatUploads, palettes, colorUploads, externalImages };
 }
 
 // ---------------------------------------------------------------------------
@@ -1102,6 +1294,15 @@ export function buildRenderDiff(
     }
     const arms = shaderArmReport(browserShaderTexts, nativeArmTexts);
 
+    // The palette matching: absent (not empty) when the browser capture
+    // predates tex-uploads.json, so the report can say "recapture" rather
+    // than "no palettes".
+    const textureUploads = readTextureUploads(captureDirectory);
+    const texturePalettes =
+        textureUploads !== undefined
+            ? texturePaletteReport(capture, textureUploads)
+            : undefined;
+
     const findings: string[] = [];
     if (draws.onlyInNative.length > 0 || draws.onlyInBrowser.length > 0) {
         findings.push(
@@ -1152,6 +1353,17 @@ export function buildRenderDiff(
                     : ""),
         );
     }
+    const unmatchedPalettes =
+        texturePalettes?.palettes.filter(
+            (entry) => entry.match === "divergent",
+        ) ?? [];
+    if (unmatchedPalettes.length > 0) {
+        findings.push(
+            `${unmatchedPalettes.length} native bone-palette matrix(es) appear in no browser float-texture upload ` +
+                `(mirror map applied): ${unmatchedPalettes.map((entry) => entry.native).join(", ")}. ` +
+                "The two sides disagree on skinning state at this pose — BBLITE_DEFORMATION_DUMP prints the native palettes in full.",
+        );
+    }
     if (findings.length === 0) {
         findings.push(
             "Every native uniform value appears in the browser's uploads and the draw shapes agree. " +
@@ -1190,6 +1402,7 @@ export function buildRenderDiff(
                   },
               }
             : {}),
+        ...(texturePalettes !== undefined ? { texturePalettes } : {}),
         shaders: {
             browserModules,
             nativeShaders: nativeShaderFiles,
@@ -1311,12 +1524,63 @@ export function formatRenderDiff(
         }
         if (report.pinned.meshBlocks.length > 0) {
             lines.push(
-                "  Mesh worlds and bone palettes ride the native mirror " +
-                    "convention (negate column-major 1, 2, 3, 4, 8 and 12 — " +
-                    "docs/debugging.md): a sign-flipped lane against the " +
-                    "browser's is that documented difference, not a finding.",
+                "  Mesh worlds ride the native mirror convention (negate " +
+                    "column-major 1, 2, 3, 4, 8 and 12 — docs/debugging.md): " +
+                    "a sign-flipped lane against the browser's is that " +
+                    "documented difference, not a finding." +
+                    (report.texturePalettes
+                        ? " Bone palettes are matched with that map applied, under 'Texture palettes' below."
+                        : ""),
             );
         }
+    }
+    const palettes = report.texturePalettes;
+    const nativeHasBones =
+        report.pinned?.meshBlocks.some((block) => block.boneCount > 0) ??
+        false;
+    if (palettes) {
+        lines.push("");
+        lines.push(
+            "Texture palettes (browser skins upload bone matrices as rgba32float " +
+                "texels; each native palette matrix is looked up with the mirror " +
+                `map applied): ${palettes.floatUploads.length} float upload(s), ` +
+                `${palettes.colorUploads} color texel upload(s), ` +
+                `${palettes.externalImages} external image(s) beside them`,
+        );
+        for (const upload of palettes.floatUploads.slice(0, limit)) {
+            lines.push(
+                `  tex#${upload.tex} ${upload.format}: ${upload.matrices} matrix(es), ${upload.byteLength} B` +
+                    (upload.truncated
+                        ? "  (bytes not recorded — above the capture's cap)"
+                        : ""),
+            );
+        }
+        for (const entry of palettes.palettes.slice(0, limit)) {
+            lines.push(
+                entry.match === "exact"
+                    ? `  ${entry.native} == ${entry.browser}  (mirror applied, delta ${entry.maxDelta?.toExponential(3) ?? "0"})`
+                    : `  ${entry.native} matches NO uploaded matrix` +
+                          (entry.browser
+                              ? `  (nearest ${entry.browser}, delta ${entry.maxDelta?.toExponential(3)})`
+                              : ""),
+            );
+        }
+        if (palettes.palettes.length === 0) {
+            lines.push(
+                "  (no bone palettes in the native capture — nothing to match)",
+            );
+        } else if (palettes.palettes.length > limit) {
+            lines.push(
+                `  ... ${palettes.palettes.length - limit} more palette matrix(es)`,
+            );
+        }
+    } else if (nativeHasBones) {
+        lines.push("");
+        lines.push(
+            "Texture palettes: this browser capture predates tex-uploads.json; " +
+                "recapture with 'scene -- capture <id>' to match the native bone " +
+                "palettes against the uploaded ones.",
+        );
     }
     lines.push("");
     const arms = report.shaders.arms;

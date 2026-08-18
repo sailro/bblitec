@@ -2,12 +2,19 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { availableParallelism, totalmem } from "node:os";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import {
+    existsSync,
+    readFileSync,
+    readdirSync,
+    writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
     backendFileToken,
     captureBuffersPath,
     captureMetaPath,
+    captureNativePaths,
+    captureSeekBracketDirectory,
     defaultCaptureDirectory,
     enableGpuDebug,
     flagNumber,
@@ -16,9 +23,12 @@ import {
     parseFlags,
     parseParityArguments,
     parseRgbTriple,
+    parseStabilityArguments,
     resolveBackend,
     runSceneParity,
     runSceneParityDifferential,
+    runStabilityReport,
+    seekBracketPlan,
     writeReport,
 } from "./parity-scene.js";
 import { computeBuildStamp } from "./build-stamp.js";
@@ -33,10 +43,17 @@ import {
     decodeCapturedUniforms,
     formatDecodedUniforms,
 } from "./capture-uniforms.js";
+import { compareImages } from "./parity.js";
 import { resolveScene, scenes } from "./scene-registry.js";
 import { runComposeReport } from "./scene-compose-report.js";
 import { holdDistLock } from "./dist-lock.js";
 import { runNeutralityReport } from "./scene-neutrality.js";
+import {
+    compareGeneratedDigest,
+    digestGeneratedTree,
+    parseDigestBaseline,
+} from "./generated-tree.js";
+import { verifyStatus } from "./verify-status.js";
 import { readCacheConfiguration } from "./build-stamp.js";
 
 function run(
@@ -833,22 +850,17 @@ async function runRenderDiff(
     // The current filename token first; the pre-token `native-sdl_gpu.*`
     // spelling is accepted for one transition so captures taken before
     // the rename stay reusable. A recapture always writes the current
-    // spelling.
-    let nativeCapturePath = join(
-        captureDirectory,
-        `native-${token}.json`,
-    );
-    const legacyCapturePath = join(
-        captureDirectory,
-        `native-${backend}.json`,
-    );
-    if (
-        !existsSync(nativeCapturePath) &&
-        legacyCapturePath !== nativeCapturePath &&
-        existsSync(legacyCapturePath)
-    ) {
-        nativeCapturePath = legacyCapturePath;
-    }
+    // spelling. Both spellings come from the one shared helper the
+    // native-capture writer uses, so reader and writer cannot drift.
+    const currentPaths = captureNativePaths(captureDirectory, token);
+    const legacyPaths = captureNativePaths(captureDirectory, backend);
+    const nativePaths =
+        !existsSync(currentPaths.capture) &&
+        legacyPaths.capture !== currentPaths.capture &&
+        existsSync(legacyPaths.capture)
+            ? legacyPaths
+            : currentPaths;
+    let nativeCapturePath = nativePaths.capture;
     const nativeReason = ((): string | undefined => {
         if (!existsSync(nativeCapturePath)) return "missing";
         // The capture embeds the stamp of the generated tree it was built
@@ -867,11 +879,7 @@ async function runRenderDiff(
         } catch {
             return "is unreadable";
         }
-        if (
-            recordedSeek(
-                nativeCapturePath.replace(/\.json$/, ".meta.json"),
-            ) !== wantSeek
-        ) {
+        if (recordedSeek(nativePaths.meta) !== wantSeek) {
             return "was captured at a different seek (or carries no provenance)";
         }
         return undefined;
@@ -907,6 +915,284 @@ async function runRenderDiff(
     console.log(formatRenderDiff(report));
     console.log("");
     console.log(`Full report: ${reportPath}`);
+}
+
+/**
+ * `scene -- capture <id> --seek-bracket`: rung 6's ±1-frame recipe as a
+ * command. Three browser captures — the exact seek, one frame before,
+ * one frame after — and the MAD between the exact frame and each
+ * neighbour, which is the scale of one frame of motion. A residual is
+ * then judged against that scale instead of against intuition.
+ */
+async function runSeekBracketCapture(
+    idOrSource: string,
+    explicitSeek: number | undefined,
+    outputDirectory: string | undefined,
+): Promise<void> {
+    const scene = resolveScene(idOrSource);
+    const frameRate = scene.parity?.referenceFrameRate ?? 60;
+    const plan = seekBracketPlan(
+        explicitSeek ?? scene.parity?.referenceTimeSeconds,
+        frameRate,
+    );
+    const captureDirectory = resolve(
+        outputDirectory ?? defaultCaptureDirectory(scene.id),
+    );
+    // The exact-seek capture keeps its byte-identity check against the
+    // committed golden — of the three, it is the one whose pose the
+    // golden was captured at.
+    await runInstrumentedCapture(idOrSource, {
+        seekSeconds: plan.seekSeconds,
+        outputDirectory: captureDirectory,
+    });
+    const brackets = [
+        {
+            label: "-1 frame",
+            seekSeconds: plan.minus,
+            directory: captureSeekBracketDirectory(captureDirectory, -1),
+        },
+        {
+            label: "+1 frame",
+            seekSeconds: plan.plus,
+            directory: captureSeekBracketDirectory(captureDirectory, 1),
+        },
+    ];
+    const measured: Array<{
+        label: string;
+        seekSeconds: number;
+        directory: string;
+        madVsExact: number;
+        maxDiff: number;
+    }> = [];
+    for (const bracket of brackets) {
+        await runInstrumentedCapture(idOrSource, {
+            seekSeconds: bracket.seekSeconds,
+            outputDirectory: bracket.directory,
+            // A draw filter that can match no draw: it perturbs nothing
+            // (the hook skips only positive matches) while marking the
+            // capture as filtered, which suppresses its byte-identity
+            // check against the golden. That check belongs to the
+            // exact-seek capture alone — these two are one frame away
+            // from the golden's pose by design, and "DIFFERS from the
+            // committed golden" would be alarm about the experiment
+            // working.
+            skipDrawIndexCount: -1,
+        });
+        const delta = compareImages(
+            join(bracket.directory, "screenshot.png"),
+            join(captureDirectory, "screenshot.png"),
+        );
+        measured.push({
+            ...bracket,
+            madVsExact: delta.mad,
+            maxDiff: delta.maxDiff,
+        });
+    }
+    const reportPath = join(captureDirectory, "seek-bracket.json");
+    writeReport(
+        reportPath,
+        { tool: "seek-bracket" },
+        {
+            scene: scene.id,
+            seekSeconds: plan.seekSeconds,
+            frameRate,
+            frameStep: plan.frameStep,
+            brackets: measured,
+        },
+    );
+    const mads = measured.map((entry) => entry.madVsExact);
+    console.log("");
+    console.log(
+        `Seek bracket: ${scene.id} at ${plan.seekSeconds}s, one frame = ` +
+            `${plan.frameStep.toFixed(6)}s (${frameRate} fps)`,
+    );
+    for (const entry of measured) {
+        console.log(
+            `  ${entry.label} (${entry.seekSeconds.toFixed(6)}s): ` +
+                `MAD vs exact ${entry.madVsExact.toFixed(3)}, max ${entry.maxDiff} — ${entry.directory}`,
+        );
+    }
+    console.log(
+        `One frame of motion moves this scene by MAD ` +
+            `${Math.min(...mads).toFixed(3)}-${Math.max(...mads).toFixed(3)}; ` +
+            "judge a residual against that scale (docs/debugging.md rung 6).",
+    );
+    console.log(`Report: ${reportPath}`);
+}
+
+/**
+ * `scene -- neutrality-generated <baseline.txt> [--write]`: the
+ * compile-and-digest half of the neutrality proof. Digests every
+ * registry-owned file under `generated/` (sha1, `generated/<path>\t<hash>`
+ * lines) and writes or compares the baseline file. It never compiles —
+ * run `scene -- compile all` before each invocation, or the digest
+ * describes whatever tree the last compile left. Stray top-level
+ * directories no registry scene owns are listed loudly and excluded,
+ * because hashing a corpus-sweep leftover silently is how two identical
+ * compiles digest differently.
+ */
+function runGeneratedNeutrality(
+    baselinePath: string,
+    write: boolean,
+): void {
+    const { lines, strays } = digestGeneratedTree(
+        "generated",
+        scenes.map((scene) => scene.output),
+    );
+    if (strays.length > 0) {
+        console.warn(
+            `generated/ contains ${strays.length} top-level entr${
+                strays.length === 1 ? "y" : "ies"
+            } no registry scene owns — excluded from the digest ` +
+                "(a corpus sweep or a deleted probe leaves these; remove them):",
+        );
+        for (const stray of strays) console.warn(`  generated/${stray}`);
+    }
+    if (lines.length === 0) {
+        throw new Error(
+            "Nothing to digest under generated/. This command digests, it does not compile — " +
+                "run 'npm run scene -- compile all' first.",
+        );
+    }
+    if (write) {
+        writeFileSync(baselinePath, `${lines.join("\n")}\n`);
+        console.log(
+            `Baseline written: ${lines.length} file(s) -> ${baselinePath}`,
+        );
+        return;
+    }
+    if (!existsSync(baselinePath)) {
+        throw new Error(
+            `No baseline at ${baselinePath}. Write one before the change with ` +
+                `'scene -- neutrality-generated ${baselinePath} --write' (compile first — this command only digests).`,
+        );
+    }
+    const comparison = compareGeneratedDigest(
+        parseDigestBaseline(readFileSync(baselinePath, "utf8")),
+        lines,
+    );
+    const list = (label: string, paths: string[]): void => {
+        if (paths.length === 0) return;
+        console.log(`\n${label} (${paths.length}):`);
+        const cap = 50;
+        for (const path of paths.slice(0, cap)) console.log(`  ${path}`);
+        if (paths.length > cap) {
+            console.log(`  ... ${paths.length - cap} more`);
+        }
+    };
+    const moved =
+        comparison.added.length +
+        comparison.removed.length +
+        comparison.changed.length;
+    console.log(
+        `${comparison.unchanged} file(s) byte-identical to the baseline, ` +
+            `${comparison.changed.length} changed, ${comparison.added.length} added, ` +
+            `${comparison.removed.length} removed.`,
+    );
+    if (moved === 0) {
+        console.log(
+            "\nNeutral: the generated tree digests identically, so the build stamps, " +
+                "binaries and measurements cannot have moved.",
+        );
+        return;
+    }
+    list("Changed", comparison.changed);
+    list("Added", comparison.added);
+    list("Removed", comparison.removed);
+    console.log(
+        "\nA change meant to be generation-neutral moved the generated tree. " +
+            "Confirm both digests followed a full 'scene -- compile all' — " +
+            "but if it moves again, it is not neutral.",
+    );
+    process.exitCode = 1;
+}
+
+/**
+ * `scene -- validate <id|all>`: the validation bundle. Chains the
+ * existing stages — compile, shaders, build, parity, the published-table
+ * check — with one summary line per stage, stopping at the first failure
+ * (later stages would measure the stale result of the failed one) and
+ * preserving every artifact the completed stages wrote. The parity stage
+ * runs `--differential` when the pinned Dawn library is installed,
+ * mirroring `scenes:parity`.
+ */
+async function runValidate(idOrSource: string): Promise<void> {
+    // Resolve the selection (and the backend story) before any stage
+    // spends time on an id that cannot mean anything.
+    const scene =
+        idOrSource === "all" ? undefined : resolveScene(idOrSource);
+    const differential = buildSetup().backend === "BOTH";
+    const stages: Array<{ name: string; body: () => Promise<void> }> = [
+        { name: "compile", body: () => compile(idOrSource) },
+        {
+            name: "shaders",
+            body: async () => compileShaders(scene?.id),
+        },
+        { name: "build", body: () => build(idOrSource) },
+        {
+            name: `parity${differential ? " --differential" : ""}`,
+            body: () =>
+                parity(idOrSource, differential ? ["--differential"] : []),
+        },
+        {
+            name: "verify-status",
+            body: async () => {
+                const problems = verifyStatus();
+                // A single-scene validate answers for that scene's row;
+                // other rows may be legitimately unmeasured on this
+                // checkout. Both spellings the checker uses: the id
+                // followed by a column name, and by a colon ("no parity
+                // report").
+                const relevant = scene
+                    ? problems.filter(
+                          (problem) =>
+                              problem.includes(` ${scene.id} `) ||
+                              problem.includes(` ${scene.id}:`),
+                      )
+                    : problems;
+                if (relevant.length > 0) {
+                    for (const problem of relevant) {
+                        console.error(problem);
+                    }
+                    throw new Error(
+                        `${relevant.length} published value(s) disagree with the measured reports.`,
+                    );
+                }
+            },
+        },
+    ];
+    const failures: string[] = [];
+    for (const stage of stages) {
+        if (failures.length > 0) {
+            console.log(
+                `validate: ${stage.name} skipped (an earlier stage failed).`,
+            );
+            continue;
+        }
+        const started = Date.now();
+        const seconds = (): string =>
+            ((Date.now() - started) / 1000).toFixed(1);
+        try {
+            await stage.body();
+            console.log(`validate: ${stage.name} ok (${seconds()}s).`);
+        } catch (error) {
+            failures.push(stage.name);
+            console.error(
+                `validate: ${stage.name} FAILED (${seconds()}s): ${
+                    (error as Error).message
+                }`,
+            );
+        }
+    }
+    if (failures.length > 0) {
+        throw new Error(
+            `validate: ${failures.join(", ")} failed; later stages skipped. ` +
+                "Artifacts from the completed stages are preserved under artifacts/ and generated/ for inspection.",
+        );
+    }
+    console.log(
+        `validate: all ${stages.length} stages passed for ${idOrSource}.`,
+    );
 }
 
 async function main(): Promise<void> {
@@ -998,15 +1284,28 @@ async function main(): Promise<void> {
             rest,
             {
                 value: ["--seek", "--skip-draw", "--capture", "--backend"],
-                boolean: ["--native", "--gpu-debug"],
+                boolean: ["--native", "--gpu-debug", "--seek-bracket"],
                 alias: { "--out": "--capture" },
             },
             "capture",
         );
         const native = parsed.flags.has("--native");
+        const seekBracket = parsed.flags.has("--seek-bracket");
         const seek = flagNumber(parsed, "--seek", "capture");
         const skipDraw = flagNumber(parsed, "--skip-draw", "capture");
         const output = parsed.values.get("--capture");
+        if (seekBracket) {
+            if (native) {
+                throw new Error(
+                    "capture: --seek-bracket brackets the browser capture; the native pose is what gets judged against the three, so it does not compose with --native.",
+                );
+            }
+            if (skipDraw !== undefined) {
+                throw new Error(
+                    "capture: --seek-bracket does not compose with --skip-draw; a filtered capture cannot serve as the motion baseline.",
+                );
+            }
+        }
         // `--native` asks the same question of our renderer that the
         // browser hooks ask of Babylon Lite's, so the two captures land
         // in one directory and `diff` can pair them.
@@ -1041,6 +1340,10 @@ async function main(): Promise<void> {
                     `capture: ${flag} selects the native renderer and needs --native beside it.`,
                 );
             }
+        }
+        if (seekBracket) {
+            await runSeekBracketCapture(id, seek, output);
+            return;
         }
         await runInstrumentedCapture(id, {
             ...(seek !== undefined
@@ -1097,17 +1400,36 @@ async function main(): Promise<void> {
         await runComposeReport(id, scenes, resolveScene, captureDirectory);
         return;
     }
+    if (command === "stability" && id) {
+        runStabilityReport(id, parseStabilityArguments(rest));
+        return;
+    }
+    if (command === "validate" && id) {
+        parseFlags(rest, {}, "validate");
+        await runValidate(id);
+        return;
+    }
     if (command === "neutrality" && id) {
         parseFlags(rest, {}, "neutrality");
         runNeutralityReport(id);
         return;
     }
+    if (command === "neutrality-generated" && id) {
+        const parsed = parseFlags(
+            rest,
+            { boolean: ["--write"] },
+            "neutrality-generated",
+        );
+        runGeneratedNeutrality(id, parsed.flags.has("--write"));
+        return;
+    }
     throw new Error(
         "Usage: scene-command <list | show <id|source.ts> | " +
-            "compile|build|process|parity|compose <id|source.ts|all> [options] | " +
-            "geometry|capture|uniforms|diff <id|source.ts> [options] | " +
+            "compile|build|process|parity|compose|validate <id|source.ts|all> [options] | " +
+            "geometry|capture|uniforms|diff|stability <id|source.ts> [options] | " +
             "measure <image.png> [--background r,g,b] | " +
-            "neutrality <baseline-parity-directory>>",
+            "neutrality <baseline-parity-directory> | " +
+            "neutrality-generated <baseline.txt> [--write] (digests generated/ as it stands; compile first)>",
     );
 }
 

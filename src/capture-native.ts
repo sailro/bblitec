@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
     backendFileToken,
     canonicalBackend,
+    captureNativePaths,
     defaultCaptureDirectory,
     defaultExecutable,
     spawnNativeMeasured,
@@ -65,8 +66,10 @@ export function runNativeCapture(
     }
     verifyDeployedPayload(executable, scene.output);
 
-    const capturePath = join(outputDirectory, `native-${token}.json`);
-    const screenshotPath = join(outputDirectory, `native-${token}.png`);
+    // One spelling for the trio, shared with the `scene -- diff` reader.
+    const paths = captureNativePaths(outputDirectory, token);
+    const capturePath = paths.capture;
+    const screenshotPath = paths.screenshot;
     const stampPath = `${screenshotPath}.build-stamp`;
     // The seek pairs the native frame to the browser frame the golden was
     // captured at; without it an animated scene is described at a
@@ -103,7 +106,7 @@ export function runNativeCapture(
     // Seek provenance for the reuse path; the build stamp is already inside
     // the capture itself, written by the native run.
     writeFileSync(
-        join(outputDirectory, `native-${token}.meta.json`),
+        paths.meta,
         `${JSON.stringify({ seekSeconds: seekSeconds ?? null })}\n`,
     );
     return { capturePath, screenshotPath, backend };
