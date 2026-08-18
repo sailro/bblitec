@@ -341,7 +341,24 @@ struct TextureSamplerState {
 struct TextureData {
     std::vector<std::uint8_t> bytes;
     TextureSamplerState sampler{};
+    // The pin's *upload* flip: `loadTexture2D`'s `invertY` option, passed as
+    // `flipY` to `copyExternalImageToTexture` (texture-2d.ts). The PALs'
+    // shared `decode_uploadable_image` applies it as a row swap.
     bool invert_y = false;
+    // The pin's texture-OBJECT `invertY` property, a different thing from
+    // the upload flip above: `loadTexture2D` results never carry the
+    // property (its option only drives the flipped copy), so every image
+    // texture a loader or compiled setter creates leaves this false. The
+    // objects that do carry `invertY: true` are the ones whose pixels reach
+    // the GPU un-flippable or already top-down — KTX2/Basis and
+    // texture-array uploads, and colour render-target textures (rtt.ts;
+    // depth RTTs carry false) — and `isStandardUvInverted`
+    // (standard-pipeline.ts) reads exactly that property when it decides
+    // the Standard UV transform's v flip. Scene 9's browser capture
+    // carries `up = [1, 1, 0, 0]` for all 32 materials and Scene 24's for
+    // 127 of 128, which is that property evaluating false over `.babylon`
+    // textures.
+    bool uv_invert_y = false;
 };
 
 struct FileTexture {

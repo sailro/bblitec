@@ -1333,19 +1333,28 @@ inline float standard_texture_level(std::uint32_t features) {
 
 // src/material/standard/standard-pipeline.ts isStandardUvInverted,
 // mirrored condition for condition: the diffuse texture's invertY when one
-// exists, else the opacity texture's, else the bump texture's. The record's
-// TextureData::invert_y is the loader's own stamp for each slot.
+// exists, else the opacity texture's, else the bump texture's. The property
+// it reads is the texture OBJECT's \`invertY\`, which \`loadTexture2D\`
+// results never carry — its \`invertY\` option only drives the flipped
+// upload copy — so it is false for every image texture and true only on
+// the objects whose pixels reach the GPU un-flippable or already top-down:
+// KTX2/Basis and texture-array uploads, and colour render-target textures.
+// The record models that property as TextureData::uv_invert_y;
+// TextureData::invert_y is the *upload* flip and must not feed this
+// condition — reading it here flipped every textured Standard sample
+// vertically (Scenes 9 and 24, whose browser captures carry
+// \`up = [1, 1, 0, 0]\` on every .babylon material).
 inline bool standard_uv_inverted(
     std::uint32_t features,
     const MaterialRecord& material) {
     if ((features & ${flag("HAS_DIFFUSE_TEXTURE")}u) != 0u) {
-        return material.base_color_texture.invert_y;
+        return material.base_color_texture.uv_invert_y;
     }
     if ((features & ${flag("HAS_OPACITY_TEXTURE")}u) != 0u) {
-        return material.opacity_texture.invert_y;
+        return material.opacity_texture.uv_invert_y;
     }
     return (features & ${flag("HAS_BUMP_TEXTURE")}u) != 0u &&
-        material.bump_texture.invert_y;
+        material.bump_texture.uv_invert_y;
 }
 
 // MaterialRecord -> StandardMaterialProps, the record gaps closed:

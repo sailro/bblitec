@@ -450,6 +450,7 @@ inline void write_texture_slot(
     json.field("byteLength", texture.bytes.size());
     json.field("digest", payload_digest(texture.bytes));
     json.field("invertY", texture.invert_y);
+    json.field("uvInvertY", texture.uv_invert_y);
     json.key("sampler");
     json.begin_object();
     json.field("minFilter", filter_name(texture.sampler.min_filter));
