@@ -4455,9 +4455,23 @@ bool run_dawn_engine(Engine& engine) {
         6);
     state.black_cube_view = cube_view(state.black_cube);
     const std::vector<std::uint8_t> zero_rgba16f(8, 0);
+    // The startup value IS the no-environment value: `upload_environment`
+    // replaces this cube only when the scene carries one, so an
+    // environment-less PBR scene shades ambient reflections from this face.
+    // SDL_GPU uploads the same `environment_fallback_face`; zeros here were
+    // a silent backend delta.
+    std::vector<std::uint8_t> fallback_rgba16f(8);
+    for (std::size_t channel = 0; channel < 4; ++channel) {
+        const std::uint16_t half =
+            float_to_half(environment_fallback_face[channel]);
+        fallback_rgba16f[channel * 2] =
+            static_cast<std::uint8_t>(half & 0xff);
+        fallback_rgba16f[channel * 2 + 1] =
+            static_cast<std::uint8_t>(half >> 8);
+    }
     state.environment_cube = create_solid_texture(
         state,
-        zero_rgba16f,
+        fallback_rgba16f,
         WGPUTextureFormat_RGBA16Float,
         6);
     state.environment_cube_view = cube_view(state.environment_cube);

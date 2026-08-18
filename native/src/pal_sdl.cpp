@@ -220,16 +220,34 @@ void draw_ground(SDL_Renderer* renderer, const MeshRecord& mesh, const Projectio
 }
 
 Vec3 rotate(Vec3 value, Vec3 rotation) {
-    const float sin_x = std::sin(rotation.x);
-    const float cos_x = std::cos(rotation.x);
-    const float sin_y = std::sin(rotation.y);
-    const float cos_y = std::cos(rotation.y);
+    // The pinned Euler proxy converts through eulerToQuat's intrinsic XYZ
+    // order (src/math/quat-euler.ts), which applies Z, then Y, then X to a
+    // vector — the same body as `rotate_euler` in pal_gpu_shared.hpp, kept
+    // local because this translation unit also compiles for sprite-only
+    // scenes whose generated tree carries none of that header's includes.
+    // (This used to apply X, then Y, then Z, silently diverging from the
+    // GPU backends for any multi-axis rotation.)
     const float sin_z = std::sin(rotation.z);
     const float cos_z = std::cos(rotation.z);
-
-    value = Vec3{value.x, value.y * cos_x - value.z * sin_x, value.y * sin_x + value.z * cos_x};
-    value = Vec3{value.x * cos_y + value.z * sin_y, value.y, -value.x * sin_y + value.z * cos_y};
-    return Vec3{value.x * cos_z - value.y * sin_z, value.x * sin_z + value.y * cos_z, value.z};
+    value = Vec3{
+        value.x * cos_z - value.y * sin_z,
+        value.x * sin_z + value.y * cos_z,
+        value.z,
+    };
+    const float sin_y = std::sin(rotation.y);
+    const float cos_y = std::cos(rotation.y);
+    value = Vec3{
+        value.x * cos_y + value.z * sin_y,
+        value.y,
+        -value.x * sin_y + value.z * cos_y,
+    };
+    const float sin_x = std::sin(rotation.x);
+    const float cos_x = std::cos(rotation.x);
+    return Vec3{
+        value.x,
+        value.y * cos_x - value.z * sin_x,
+        value.y * sin_x + value.z * cos_x,
+    };
 }
 
 Vec3 rotate(Vec3 value, Vec4 quaternion) {

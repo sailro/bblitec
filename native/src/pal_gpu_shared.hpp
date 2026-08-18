@@ -987,6 +987,13 @@ inline std::vector<std::uint8_t> pack_morph_weights(
 }
 #endif
 
+// The no-environment fallback face — the ported pinned contract both
+// backends must agree on: a compiled-PBR scene with no environment binds a
+// 1x1 cube of this colour, never zeros. (Dawn used to keep its
+// zero-initialized startup cube here while SDL_GPU uploaded this face — a
+// silent backend delta on any environment-less PBR scene.)
+inline constexpr float environment_fallback_face[4] = {0.15f, 0.16f, 0.2f, 1.0f};
+
 // RGBD decode and half-float packing shared by both render
 // backends (moved verbatim from pal_sdl_gpu.cpp).
 inline std::vector<float> decode_rgbd(const TextureData& texture_data, int& width, int& height) {

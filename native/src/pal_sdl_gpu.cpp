@@ -1500,11 +1500,9 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
                           *face_data,
                           image_width,
                           image_height)
-                    : std::vector<float>{
-                          0.15f,
-                          0.16f,
-                          0.2f,
-                          1.0f};
+                    : std::vector<float>(
+                          environment_fallback_face,
+                          environment_fallback_face + 4);
                 decoded_half_pixels.reserve(
                     decoded_pixels.size());
                 for (const float value : decoded_pixels) {
