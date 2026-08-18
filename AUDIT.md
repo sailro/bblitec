@@ -22,14 +22,6 @@ its absence is legible.
 
 ## Feature activation
 
-- [ ] **FA-map residual — complete the row citations.** The inventory ships
-  (89 rows ×73 scenes, zero unproven provenance), but scene-source rows
-  carry a generic `activatedBy` because `context.reachFeature` keeps no
-  source locations — thread intrinsic call sites through `CompileManifest`
-  to cite file:line. Also record the pinned `MAX_LIGHTS` value itself on
-  the refusal row (today only the checked count), and add the two cli
-  interleave refusals (scene mesh/material created before a later glTF
-  load) that guard the variant key.
 
 ## Re-derivation (port, do not re-derive)
 
@@ -40,37 +32,6 @@ mechanisms (`pinned-ubo-writer-lowerer`, `light-lowerer#lowerMatrix`, the
 sprite template evaluator) that are the templates to reuse. Two legitimate
 shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
 
-- [ ] **RD-1 — Standard material family: the PAL flip itself.** Everything
-  up to the PAL draw calls is SHIPPED and staged behind
-  `BBLITE_PINNED_STANDARD_VARIANTS=1` (thin-instance arm composed; per-scene
-  driver over scene-code + `.babylon` materials with the mesh table in load
-  order; `standard_variants.hpp` support block lowers
-  `_computeStandardMaterialFeatures` from the pin; record gaps closed —
-  `bump_level` emits the reciprocal, `alpha` reads its lane,
-  `lightmap_level`/`reflection_coord_mode` are the pin's own defaults with
-  no record writer; shared scene/light/mesh mirrors hoist when
-  `BBLITE_PBR_VARIANTS == 0`; stages deploy as `variant-std-*` for the
-  offline compiler's pinned arm; selector keys on the pin feature word —
-  scene-code standard materials carry no per-handle manifest, and both
-  sides compute the word from the same pinned function). Remaining, atomic
-  across both backends: SDL_GPU standard siblings of
-  `ensure_pinned_slots`/`pinned_variant_pipeline`/`draw_pinned_variant`
-  with slot-name blocks (scene/lights shared, mesh, 96-byte mat via
-  `write_standard_material`, up, gp) and `standard_binding_resources`
-  textures (cRT/cRS = the mesh reflection cube); Dawn's four sites
-  (layouts ~1878, bind groups ~2271, writes ~2319/2460 + the legacy
-  `build_standard_uniforms` write ~5733, draws ~5820/6140/6950) with the
-  depth-emissive trap — `eT` needs an unfilterable-float layout when the
-  key carries `std-emissive` and the record flags the render texture; then
-  flip, delete `shader-builtins-standard.ts` + renderer-lowerer standard
-  emissions (~:2984/:3038, ~:2183-2293, ~:3361-3375), retire
-  `standardLights`/`standardSpotLights` from the shader path
-  (`standardLightLists` STAYS in the loader — it fills `LightRecord`
-  inclusion lists `pinned_mesh_block` consumes). Known parity movers to
-  expect: authored diffuse `texture.level` (pin ignores it — moves toward
-  the pin), `getAlphaFromRGB` opacity sampling (pre-existing), Sponza's
-  dropped skinned meshes and 2D reflections (pre-existing), Dawn MRT
-  wobble.
 - [ ] **RD-2 — gltf-loader-cpp.ts (XL, round 3+).** Rounds 1-2 lowered the
   animation interpolation, sampler table, accessor normalization, color
   normalize, extension defaults, SH prescale and image-processing defaults
@@ -98,14 +59,8 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
   {mode, start, end, density} read as `.x/.y/.z/.w` by the lifted WGSL)
   is guarded only by fog parity scenes; the order assert belongs beside
   the packing here.
-- [ ] **RD-12 — pinned-material-input option builders.** Line-for-line
-  transcription of the ext `applyMaterial` builders, plus an unguarded
-  re-type of the IOR Fresnel at :489/:563. EXECUTE-able (the ext modules are
-  default-exported with a stubbable ctx). Strongly gated today by
-  `scene -- compose`, but the gate is capture-dependent.
 - [ ] **RD-5 — native constants and strings.**
-  `pal_camera_controls.hpp:83` freezes Babylon's frame scale evaluated at 60
-  FPS as an uncommented constant; `pal_dawn.cpp:3219-3263` embeds the pinned
+  `pal_dawn.cpp:3219-3263` embeds the pinned
   MSAA-blit + `ip()` WGSL as C++ strings (lift via `rawWgslLiteral` and ship
   like every other pinned shader); `runtime.hpp` carries Babylon defaults as
   literals incl. a pre-computed sRGB→linear `primary_color` (:879) — derive
@@ -163,24 +118,15 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
 
 ## Tooling
 
-- [ ] **TL-gaps — remaining rungs.** ((a) pinned blocks in diff with the
-  refused marker, (b) shader-arm hashing with the near-miss divergence
-  line, and (e) `scene -- measure` shipped in wave C.)
-  (c) Palette matching vs `tex-uploads.json` (zero readers today) with the
-  documented mirror map applied. (d) `scene -- probe-variants <id>` automating the
-  stripped-shader-dir probe (the manual recipe is now written into
-  rung 6 of debugging.md). (f) `capture --seek-bracket` (±1-frame motion scale).
-  (g) `parity --without ground|background` (the bisection ordering
-  experiment). (h) `scene -- stability <id> [--runs N] [--single-sample]`
-  (the 9/37 wobble check with the never-vs-golden trap built in).
-  (i) generated-tree neutrality mode (compile-and-digest with the
-  stray-directory footgun handled; the wave-C sync scripted it by hand
-  again — `digest-sha1.cjs` in the session scratchpad is the shape).
-  (j) the `validate` bundle TODO already asks for. Path-helper leftover
-  from the TS-9 sweep: the native-capture writer and the diff reader keep
-  matching `native-<token>.*` literals (`capture-native.ts:67-105`,
-  `scene-command.ts` diff arm) — move the pair through one helper
-  together.
+- [ ] **TL-gaps — one rung left.** (d) `scene -- probe-variants <id>`
+  automating the stripped-shader-dir probe (the manual recipe is rung 6
+  of debugging.md). Everything else shipped: pinned blocks and shader
+  arms and palette matching in diff, measure, seek brackets, --without,
+  stability, neutrality-generated, the validate bundle, the shared
+  native-capture path pair. New from the flip endgame: the capture
+  decoder parses only `renderer_plan.hpp` structs — extend it to
+  `standard_variants.hpp` so standard mat/mesh blocks decode in
+  `scene -- diff` (the scene9 hunt decoded them by hand).
 
 ## Verified clean — do not re-audit
 

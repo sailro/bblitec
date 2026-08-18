@@ -212,7 +212,6 @@ Both backends stay long-term as mutually validating implementations;
   `scene -- neutrality` excludes these two scenes' Dawn cells; delete that
   exclusion with this entry.
 - [ ] Add malformed asset and backend-layout tests.
-- [ ] Add a validation bundle command that preserves artifacts on failure.
 
 ## P1 — Developer experience
 

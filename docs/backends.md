@@ -339,10 +339,11 @@ afterwards). Only the GPU API layer differs:
   pipelines with the reverse-depth matrix and depth cleared to zero;
   geometry tasks bind one MRT per attachment (`geometry_clear_color`
   clears, optional output target last, resolve on multisample) —
-  Standard draws through the per-task `standard-geometry-N.frag`
-  module, PBR draws through the pinned MRT variants under the pin's
-  reverse-Z contract (reverse matrix, GREATER, zero depth clear, the
-  gpUniforms block per task); copy tasks either resolve in an empty pass or run the
+  Standard and PBR draws both go through their pin-composed MRT
+  variants under the pin's reverse-Z contract (reverse matrix, GREATER,
+  zero depth clear, the gpUniforms block per task — demoted to a
+  fragment storage buffer on SDL_GPU where a fifth uniform block would
+  exceed the stage cap); copy tasks either resolve in an empty pass or run the
   generated fullscreen blit with the integer `resolve_copy_viewport`
   viewport+scissor, and a swapchain copy records its source as the
   capture texture. Sampled depth attachments copy into an r32float
