@@ -23,10 +23,6 @@ export interface ShaderMaterialProgramSource {
     clipDepth: "matrix" | "direct-webgpu";
 }
 
-export function normalizeShaderSource(source: string): string {
-    return source.replace(/\s+/g, "").replace(/,([)}])/g, "$1");
-}
-
 /**
  * The canonical flat value layout for a program's custom uniforms:
  * declaration order, sized by component count. Both the generated

@@ -282,11 +282,13 @@ struct PbrMaterialOptions {
     float direct_intensity = 1.0f;
     float environment_intensity = 1.0f;
     float alpha = 1.0f;
+    // Pinned default: the dielectric F0 the PBR material seeds (0.04).
     float reflectance = 0.04f;
     bool unlit = false;
     bool double_sided = false;
     bool skybox_mode = false;
     float transmission_factor = 0.0f;
+    // Pinned default: gltf-ext-dielectric.ts treats ior 1.5 as neutral.
     float index_of_refraction = 1.5f;
     float thickness = 0.0f;
     bool use_thickness_as_depth = false;
@@ -616,6 +618,7 @@ struct MaterialRecord {
     float roughness_factor = 1.0f;
     float direct_intensity = 1.0f;
     float environment_intensity = 1.0f;
+    // Pinned default: the dielectric F0 the PBR material seeds (0.04).
     float reflectance = 0.04f;
     // KHR_materials_specular, through the pinned dielectric reflectance ext:
     // specularFactor scales the dielectric F0 and its grazing weight, and
@@ -629,6 +632,7 @@ struct MaterialRecord {
     Color3 metallic_reflectance_color{1.0f, 1.0f, 1.0f};
     float normal_texture_scale = 1.0f;
     float transmission_factor = 0.0f;
+    // Pinned default: gltf-ext-dielectric.ts treats ior 1.5 as neutral.
     float index_of_refraction = 1.5f;
     float thickness = 0.0f;
     bool use_thickness_as_depth = false;
@@ -637,12 +641,15 @@ struct MaterialRecord {
     float dispersion = 0.0f;
     float clearcoat_intensity = 0.0f;
     float clearcoat_roughness = 0.0f;
+    // Pinned default: the coat ior the clearcoat layer seeds.
     float clearcoat_index_of_refraction = 1.5f;
     float clearcoat_normal_scale = 1.0f;
     Color3 sheen_color{0.0f, 0.0f, 0.0f};
     float sheen_roughness = 0.0f;
     float sheen_intensity = 1.0f;
     float iridescence_intensity = 0.0f;
+    // Pinned defaults: KHR_materials_iridescence ior 1.3, thickness
+    // 100..400 nm (gltf-ext-iridescence.ts).
     float iridescence_index_of_refraction = 1.3f;
     float iridescence_minimum_thickness = 100.0f;
     float iridescence_maximum_thickness = 400.0f;
@@ -844,6 +851,8 @@ struct EnvironmentState {
     bool has_irradiance = false;
     float exposure = 1.0f;
     float contrast = 1.0f;
+    // Pinned: the DDS environment loader uses LOD generation scale 0.8
+    // where the HDR loader uses 1.0 (load-dds-env.ts; docs/fidelity.md).
     float lod_generation_scale = 0.8f;
     float rotation_y = 0.0f;
     bool tone_mapping_enabled = false;
@@ -876,6 +885,9 @@ struct EnvironmentState {
     std::uint32_t skybox_data_offset = 0;
     Vec3 ground_position{};
     Vec3 skybox_position{};
+    // The pin's own environmentPrimaryColor default literals
+    // (load-env.ts: 0.08697355964132344, ..., 0.2122208331110881), stored
+    // at the float32 precision the shader uniforms carry.
     Color3 primary_color{0.08697356f, 0.08697356f, 0.21222083f};
 };
 

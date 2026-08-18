@@ -71,7 +71,6 @@ import type {
 } from "./compiler/types.js";
 export type {
     CompileAsset,
-    CompileManifest,
     CompileOptions,
     CompileResult,
     CompiledShaderProgram,

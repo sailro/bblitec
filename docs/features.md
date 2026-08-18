@@ -143,6 +143,12 @@ in the capability header instead — scene transmission is the standing
 example, because Babylon Lite enables it from any transmissive material a
 loaded asset carries.
 
+The rule that decides which mechanism owns a feature: a runtime feature
+exists for API the scene's own source can reach, and a capability exists for
+what assets decide. An extension family with a scene-code setter therefore
+has both (clearcoat and sheen are feature-or-capability), and one without a
+setter has only the capability (iridescence, dispersion).
+
 **Why compile time:** there is no dynamic module loading, so upstream's own
 `import()`-behind-a-predicate boundaries have to be resolved somewhere, and
 generation is the only place that can see both the source and the assets. The

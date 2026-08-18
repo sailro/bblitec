@@ -35,6 +35,17 @@ runtime and the browser reference capture).
 
 New high-risk adaptations require an explicit record and a focused test.
 
+The recorded set is semantic *divergences* only. Compile-time folds that are
+bit-identical by construction — the DDS harmonics projected by the pin's own
+`computeSH`, Draco and meshopt decoded by the pin's own decoder builds — are
+deliberately not recorded per scene, because the browser and the native
+build read the same bytes. Two freezes sit at the boundary and are stated
+here instead of per scene: the composed variant set is closed at generation
+(upstream can rebuild a material's shader at run time; a run-time material
+change that needs an uncomposed variant refuses), and an asset carrying more
+punctual light nodes than the pinned `MAX_LIGHTS` refuses at generation
+where upstream would grow the constant.
+
 Curated Babylon Lite inputs are byte-identical, SHA-256-checked snapshots from
 the pinned source commit. Never edit, flatten, normalize, or replace them.
 Thresholds and goldens are equally immutable during ordinary fixes. Add a

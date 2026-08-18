@@ -324,6 +324,13 @@ export function extractWgslDeclaration(
  * plausible: `createClearcoatFragment(..., hasIbl = true, ...)` declares `ibl`
  * and the composer refuses it without `createIblFragment`. That refusal is the
  * point — it is the pin stating a contract we would otherwise have to know.
+ *
+ * Production composition goes through `createPbrComposer` in
+ * `pinned-pbr-variants.ts`; this thinner entry exists for
+ * `test/pinned-shader-composer.test.ts`, which guards the pinned composer's
+ * own contracts (the F0-remap text, the dependency refusal) independently of
+ * the production path. Deliberately kept: it is the test's harness, not dead
+ * code.
  */
 export async function composePinnedPbrShader(
     templateConfig: Record<string, unknown> = {},
