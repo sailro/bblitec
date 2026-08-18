@@ -61,6 +61,11 @@ import {
     pinnedSingleLightTypes,
 } from "./pinned-scene-arms.js";
 import { pinnedMeshFeaturesFromPrimitive } from "./pinned-mesh-features.js";
+import {
+    babylonRenderableCount,
+    composeSceneStandardVariants,
+    type StandardSceneComposition,
+} from "./pinned-standard-variants.js";
 
 interface CliOptions {
     input: string;
@@ -780,6 +785,104 @@ async function main(): Promise<void> {
             : sceneMeshFeatureValues.size === 1
                 ? [...sceneMeshFeatureValues][0]!
                 : undefined;
+    // The Standard family's pinned composition. Staged behind an explicit
+    // switch: the generation and selector halves are complete, but neither
+    // GPU PAL consumes standard_variants.hpp yet, so emitting it by default
+    // would ship dead weight into every standard scene's tree. The
+    // orchestrated flip sets the variable, wires the PAL draw paths, and
+    // deletes the transcribed standard emissions in the same change.
+    let standardComposition: StandardSceneComposition | undefined;
+    let standardRenderableMeshFeatures: number[] | undefined;
+    if (
+        process.env["BBLITE_PINNED_STANDARD_VARIANTS"] === "1" &&
+        result.manifest.features.includes("material:standard")
+    ) {
+        const babylonAssets = result.manifest.assets
+            .filter((asset) => asset.kind === "babylon")
+            .map((asset) => resolve(outputPath, "assets", asset.output));
+        const sceneStandardMaterials =
+            result.manifest.sceneMaterialCount >
+                result.manifest.scenePbrMaterials.length;
+        standardComposition = await composeSceneStandardVariants(
+            {
+                babylonAssets,
+                bumpTexture: reachedStandardBump(
+                    outputPath,
+                    result.manifest.assets,
+                ),
+                diffuseUv2: reachedDiffuseUv2(
+                    outputPath,
+                    result.manifest.assets,
+                ),
+                fog: result.manifest.features.includes("renderer:fog"),
+                vertexColors: result.manifest.features.includes(
+                    "material:standard-vertex-colors",
+                ),
+                noColorViews: result.manifest.features.includes(
+                    "material:no-color-view",
+                ),
+                emissiveRenderTexture: result.manifest.features.includes(
+                    "renderer:geometry-output",
+                ),
+                thinInstances:
+                    result.manifest.features.includes(
+                        "mesh:thin-instances",
+                    ) ||
+                    result.manifest.features.includes(
+                        "mesh:thin-instances-dynamic",
+                    ),
+                morphTargets: result.manifest.features.includes(
+                    "mesh:morph-targets",
+                ),
+                sceneMaterials: sceneStandardMaterials,
+                sceneMeshFeatureValues: [
+                    ...new Set(
+                        renderableMeshFeatures.slice(
+                            renderableMeshFeatures.length -
+                                result.manifest.sceneMeshes.length,
+                        ),
+                    ),
+                ],
+                geometryTasks: result.manifest.geometryOutputTasks.map(
+                    (task, index) => ({
+                        index,
+                        attachments: task.attachments,
+                        emitColor: task.emitColor,
+                    }),
+                ),
+            },
+            (path) => readFileSync(path, "utf8"),
+        );
+        // The Standard mesh table covers every runtime mesh handle in
+        // creation order: each asset's renderables as its loader creates
+        // them (`.babylon` records carry no composition-relevant bits, so
+        // zero rows sized by the loader's own walk), then the scene-code
+        // meshes.
+        standardRenderableMeshFeatures = [];
+        let gltfCursor = 0;
+        for (const asset of result.manifest.assets) {
+            if (asset.kind === "gltf") {
+                const rows = await gltfRenderableFeatures(
+                    resolve(outputPath, "assets", asset.output),
+                );
+                standardRenderableMeshFeatures.push(...rows);
+                gltfCursor += rows.length;
+            } else if (asset.kind === "babylon") {
+                const count = babylonRenderableCount(
+                    readFileSync(
+                        resolve(outputPath, "assets", asset.output),
+                        "utf8",
+                    ),
+                );
+                for (let index = 0; index < count; index += 1) {
+                    standardRenderableMeshFeatures.push(0);
+                }
+            }
+        }
+        standardRenderableMeshFeatures.push(
+            ...renderableMeshFeatures.slice(gltfCursor),
+        );
+    }
     // Named rather than inline so the activation inventory below records
     // the exact values the emitters consumed, not a restatement of them.
     const emitOptions: UpstreamEmitOptions = {
@@ -845,6 +948,17 @@ async function main(): Promise<void> {
         // formulas are the pin's own text under the pin's own names.
         pinnedHelpers: await pinnedShaderHelpers(),
         pinnedVariants,
+        ...(standardComposition !== undefined
+            ? {
+                pinnedStandardVariants: standardComposition.variants,
+                pinnedStandardSelectors: standardComposition.selectors,
+                standardRenderableMeshFeatures:
+                    standardRenderableMeshFeatures ?? [],
+                ...(runtimeMeshFeatures !== undefined
+                    ? { standardRuntimeMeshFeatures: runtimeMeshFeatures }
+                    : {}),
+            }
+            : {}),
         // The runtime's material-handle count: the assets' materials plus
         // every scene-code creation of any family, since handles are
         // creation-ordered across families.

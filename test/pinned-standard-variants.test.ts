@@ -10,12 +10,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+    babylonRenderableCount,
     composePinnedStandardVariant,
+    composeSceneStandardVariants,
     pinnedStandardMaterialFeatures,
+    pinnedStandardSupportBlock,
     pinnedStandardVariantManifestEntry,
     registeredStandardExtensionIds,
 } from "../src/pinned-standard-variants.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { UpstreamSourceStore } from "../src/upstream-source.js";
 
 test("registers the pin's eight Standard material extensions", async () => {
     // Sorted by id — `_getStdExtsSorted` localeCompares — which is the
@@ -247,6 +252,7 @@ test("inputs the pin needs but this repo cannot supply throw by name", async () 
         MSH_HAS_SKELETON: number;
         MSH_RECEIVE_SHADOWS: number;
         MSH_HAS_THIN_INSTANCES: number;
+        MSH_HAS_INSTANCE_COLOR: number;
     }>("material/mesh-features.js");
     await assert.rejects(
         composePinnedStandardVariant(
@@ -265,9 +271,12 @@ test("inputs the pin needs but this repo cannot supply throw by name", async () 
     await assert.rejects(
         composePinnedStandardVariant(
             {},
-            { meshFeatures: meshBits.MSH_HAS_THIN_INSTANCES },
+            {
+                meshFeatures: meshBits.MSH_HAS_THIN_INSTANCES |
+                    meshBits.MSH_HAS_INSTANCE_COLOR,
+            },
         ),
-        /thin instances/,
+        /instance colours/,
     );
     const flags = await importPinnedModule<{
         ESM_SHADOW_OUTPUT: number;
@@ -279,6 +288,33 @@ test("inputs the pin needs but this repo cannot supply throw by name", async () 
         ),
         /_esmShadowDepthCode/,
     );
+});
+
+test("the colourless thin-instance arm composes the pin's fragment", async () => {
+    // `rebuildSingle` splices `tiFragment(false)` for a pool with no
+    // instance colours -- the runtime sweep's lattices are exactly that.
+    const meshBits = await importPinnedModule<{
+        MSH_HAS_THIN_INSTANCES: number;
+    }>("material/mesh-features.js");
+    const variant = await composePinnedStandardVariant(
+        {},
+        { meshFeatures: meshBits.MSH_HAS_THIN_INSTANCES },
+    );
+    // The pin's per-instance matrix arrives as four vec4 attributes and
+    // multiplies into finalWorld before the world-position product.
+    assert.ok(
+        variant.vertexWgsl.includes(
+            "let instanceWorld = mat4x4<f32>(world0, world1, world2, " +
+                "world3);",
+        ),
+    );
+    assert.ok(
+        variant.vertexWgsl.includes(
+            "finalWorld = mesh.world * instanceWorld;",
+        ),
+    );
+    const plain = await composePinnedStandardVariant({}, {});
+    assert.notEqual(variant.vertexWgsl, plain.vertexWgsl);
 });
 
 test("the depth-only view composes the pin's NO_COLOR_OUTPUT arm", async () => {
@@ -311,4 +347,261 @@ test("manifest entries carry deterministic file stems", async () => {
     );
     assert.equal(entry.vertexWgsl, variant.vertexWgsl);
     assert.equal(entry.fragmentWgsl, variant.fragmentWgsl);
+});
+
+test("the scene driver composes, dedups and keys a runtime-sweep shape", async () => {
+    const meshBits = await importPinnedModule<{
+        MSH_HAS_THIN_INSTANCES: number;
+    }>("material/mesh-features.js");
+    const flags = await importPinnedModule<{
+        DISABLE_LIGHTING: number;
+    }>("material/standard/standard-flags.js");
+    const composition = await composeSceneStandardVariants(
+        {
+            babylonAssets: [],
+            bumpTexture: false,
+            diffuseUv2: false,
+            fog: false,
+            vertexColors: false,
+            noColorViews: false,
+            emissiveRenderTexture: false,
+            thinInstances: true,
+            morphTargets: false,
+            sceneMaterials: true,
+            sceneMeshFeatureValues: [0],
+            geometryTasks: [],
+        },
+        () => {
+            throw new Error("no assets to read");
+        },
+    );
+    // Scene-code feature space is the setter closure {0, DISABLE_LIGHTING,
+    // DOUBLE_SIDED, ALPHA_BLEND, ...}; only DISABLE_LIGHTING changes the
+    // composed text, so the plain and thin-instanced lit/unlit pairs are
+    // four distinct variants while every selector key resolves.
+    assert.ok(composition.variants.length >= 4);
+    const lit = composition.selectors.find(
+        (selector) =>
+            selector.features === 0 &&
+            selector.meshFeatures === meshBits.MSH_HAS_THIN_INSTANCES,
+    );
+    assert.ok(lit, "the thin-instanced lit row exists");
+    const unlit = composition.selectors.find(
+        (selector) =>
+            selector.features === flags.DISABLE_LIGHTING &&
+            selector.meshFeatures === 0,
+    );
+    assert.ok(unlit, "the unlit plain row exists");
+    assert.notEqual(
+        composition.variants[lit.variant]!.vertexWgsl,
+        composition.variants[unlit.variant]!.vertexWgsl,
+    );
+    // DOUBLE_SIDED and ALPHA_BLEND are pipeline state, not text: their rows
+    // must resolve to the same variant index as the plain lit row.
+    const doubleSidedFlags = await pinnedStandardMaterialFeatures({
+        backFaceCulling: false,
+    });
+    const plain = composition.selectors.find(
+        (selector) =>
+            selector.features === 0 && selector.meshFeatures === 0,
+    );
+    const doubleSided = composition.selectors.find(
+        (selector) =>
+            selector.features === doubleSidedFlags &&
+            selector.meshFeatures === 0,
+    );
+    assert.ok(plain && doubleSided);
+    assert.equal(doubleSided.variant, plain.variant);
+    // Determinism: the same inputs compose the same bytes and rows.
+    const again = await composeSceneStandardVariants(
+        {
+            babylonAssets: [],
+            bumpTexture: false,
+            diffuseUv2: false,
+            fog: false,
+            vertexColors: false,
+            noColorViews: false,
+            emissiveRenderTexture: false,
+            thinInstances: true,
+            morphTargets: false,
+            sceneMaterials: true,
+            sceneMeshFeatureValues: [0],
+            geometryTasks: [],
+        },
+        () => {
+            throw new Error("no assets to read");
+        },
+    );
+    assert.deepEqual(again, composition);
+});
+
+test("the babylon walk mirrors the generated loader's records", async () => {
+    const document = JSON.stringify({
+        materials: [
+            {
+                id: "walls",
+                diffuseTexture: { name: "walls.jpg" },
+                ambientTexture: { name: "ao.jpg", coordinatesIndex: 1 },
+                backFaceCulling: true,
+            },
+            {
+                id: "glass",
+                alpha: 0.4,
+                reflectionTexture: { name: "sky", isCube: true },
+            },
+        ],
+        meshes: [
+            {
+                positions: [0, 0, 0],
+                normals: [0, 1, 0],
+                indices: [0, 0, 0],
+                materialId: "walls",
+                subMeshes: [
+                    { materialIndex: 0, indexStart: 0, indexCount: 3 },
+                    // Out-of-range submeshes create no record.
+                    { materialIndex: 1, indexStart: 3, indexCount: 3 },
+                ],
+            },
+            { positions: [0], normals: [0], indices: [] },
+            { isVisible: false, positions: [0], normals: [0], indices: [0] },
+        ],
+    });
+    assert.equal(babylonRenderableCount(document), 1);
+    const flags = await importPinnedModule<{
+        HAS_DIFFUSE_TEXTURE: number;
+        HAS_AMBIENT_TEXTURE: number;
+        AMBIENT_USES_UV2: number;
+        HAS_CUBE_REFLECTION: number;
+        MATERIAL_ALPHA_BLEND: number;
+    }>("material/standard/standard-flags.js");
+    const composition = await composeSceneStandardVariants(
+        {
+            babylonAssets: ["asset.babylon"],
+            bumpTexture: false,
+            diffuseUv2: false,
+            fog: false,
+            vertexColors: false,
+            noColorViews: false,
+            emissiveRenderTexture: false,
+            thinInstances: false,
+            morphTargets: false,
+            sceneMaterials: false,
+            sceneMeshFeatureValues: [],
+            geometryTasks: [],
+        },
+        () => document,
+    );
+    const words = composition.selectors.map(
+        (selector) => selector.features,
+    );
+    assert.ok(
+        words.includes(
+            flags.HAS_DIFFUSE_TEXTURE | flags.HAS_AMBIENT_TEXTURE |
+                flags.AMBIENT_USES_UV2,
+        ),
+        "the walls material's word composes",
+    );
+    assert.ok(
+        words.includes(
+            flags.HAS_CUBE_REFLECTION | flags.MATERIAL_ALPHA_BLEND,
+        ),
+        "the glass material's word composes",
+    );
+    // The loader's lazily-created fallback material composes the plain word.
+    assert.ok(words.includes(0));
+});
+
+test("the native-support block flows from the pin's own declarations", async () => {
+    const context = new LoweringContext(new UpstreamSourceStore());
+    const flags = await importPinnedModule<{
+        NEEDS_UV: number;
+        NO_COLOR_OUTPUT: number;
+        HAS_DIFFUSE_TEXTURE: number;
+        DISABLE_LIGHTING: number;
+        MATERIAL_ALPHA_BLEND: number;
+    }>("material/standard/standard-flags.js");
+    const meshBits = await importPinnedModule<{
+        MSH_HAS_MORPH_TARGETS: number;
+        MSH_HAS_THIN_INSTANCES: number;
+    }>("material/mesh-features.js");
+    const block = pinnedStandardSupportBlock(context, {
+        selectors: [
+            { features: 0, meshFeatures: 0, variant: 0 },
+            {
+                features: flags.DISABLE_LIGHTING,
+                meshFeatures: 0,
+                geometryTask: 1,
+                variant: 1,
+            },
+        ],
+        renderableMeshFeatures: [0, 0, 4],
+        runtimeMeshFeatures: 0,
+    });
+    // The pinned values, evaluated from their own declarations rather than
+    // restated: NEEDS_UV, the pass bit, and the MSH_* runtime OR bits.
+    assert.ok(
+        block.includes(
+            `inline constexpr std::uint32_t standard_needs_uv_mask = ` +
+                `${flags.NEEDS_UV}u;`,
+        ),
+    );
+    assert.ok(block.includes(`${flags.NO_COLOR_OUTPUT}u`));
+    assert.ok(
+        block.includes(`${meshBits.MSH_HAS_MORPH_TARGETS}u`),
+    );
+    assert.ok(
+        block.includes(`${meshBits.MSH_HAS_THIN_INSTANCES}u`),
+    );
+    // The lowered derivation carries the pin's own structure: the diffuse
+    // presence guard, the alpha-blend comparison, the disable-lighting flag
+    // -- and none of the branches the loader cannot feed (no lightmap).
+    assert.ok(
+        block.includes("if (!material.base_color_texture.bytes.empty()) {"),
+    );
+    assert.ok(
+        block.includes(
+            `features |= ${flags.HAS_DIFFUSE_TEXTURE}u; // ` +
+                "HAS_DIFFUSE_TEXTURE",
+        ),
+    );
+    assert.ok(
+        block.includes("if (material.base_color_factor.a < 1.0f) {"),
+    );
+    assert.ok(
+        block.includes(
+            `features |= ${flags.MATERIAL_ALPHA_BLEND}u; // ` +
+                "MATERIAL_ALPHA_BLEND",
+        ),
+    );
+    assert.ok(!block.includes("LIGHTMAP"));
+    // The record-gap closures: the bump inverse, the alpha lane, and the
+    // pin-default fields left untouched.
+    assert.ok(
+        block.includes("props.bump_level = material.bump_scale != 0.0f"),
+    );
+    assert.ok(
+        block.includes("props.alpha = material.base_color_factor.a;"),
+    );
+    assert.ok(!block.includes("props.lightmap_level"));
+    assert.ok(!block.includes("props.reflection_coord_mode"));
+    // Selector rows and tables land as given.
+    assert.ok(block.includes(`{${flags.DISABLE_LIGHTING}u, 0u, 1, 1},`));
+    assert.ok(block.includes("standard_renderable_mesh_features"));
+    // Deterministic emission.
+    assert.equal(
+        pinnedStandardSupportBlock(context, {
+            selectors: [
+                { features: 0, meshFeatures: 0, variant: 0 },
+                {
+                    features: flags.DISABLE_LIGHTING,
+                    meshFeatures: 0,
+                    geometryTask: 1,
+                    variant: 1,
+                },
+            ],
+            renderableMeshFeatures: [0, 0, 4],
+            runtimeMeshFeatures: 0,
+        }),
+        block,
+    );
 });

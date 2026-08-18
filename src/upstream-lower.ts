@@ -22,11 +22,18 @@ import { GeneratedTree } from "./generated-tree.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
 import {
     materialTextureSlotsHeader,
+    meshUniformsBlock,
+    lightUniformsBlock,
     pinnedPbrVariantsHeader,
     pinnedStandardVariantsHeader,
+    sceneUniformsStruct,
 } from "./pinned-pbr-variant-cpp.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
-import type { PinnedStandardVariantManifestEntry } from "./pinned-standard-variants.js";
+import {
+    pinnedStandardSupportBlock,
+    type PinnedStandardSelector,
+    type PinnedStandardVariantManifestEntry,
+} from "./pinned-standard-variants.js";
 
 /**
  * The byte count `shader/scene-uniforms-size.ts` publishes for the scene block.
@@ -144,6 +151,21 @@ export interface UpstreamEmitOptions {
      * keeps the generated tree byte-identical.
      */
     pinnedStandardVariants?: readonly PinnedStandardVariantManifestEntry[];
+    /**
+     * The selector rows for `pinnedStandardVariants`: how a native draw's
+     * record-derived feature word and mesh bits resolve a variant index.
+     * Emitted with the variants into `standard_variants.hpp`.
+     */
+    pinnedStandardSelectors?: readonly PinnedStandardSelector[];
+    /**
+     * The Standard family's mesh-feature bits per runtime mesh handle —
+     * unlike `renderableMeshFeatures` it also covers `.babylon` renderables
+     * (one row per loader-created record, zero bits) so the handle indexing
+     * matches the runtime's creation order in loader scenes.
+     */
+    standardRenderableMeshFeatures?: readonly number[];
+    /** The Standard fallback for meshes created past the static table. */
+    standardRuntimeMeshFeatures?: number;
     /** The runtime material-handle count the variant gate checks. */
     pinnedMaterialCount?: number;
     /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
@@ -201,6 +223,12 @@ class GeneratedSourceWriter {
 // How many of Babylon Lite's own composed PBR variants this scene reaches.
 // Zero for a scene with no glTF materials, which emits no variant header.
 #define BBLITE_PBR_VARIANTS ${(options.pinnedVariants ?? []).length}
+
+// The Standard family's composed variants, the same way. Zero until the
+// scene composes them, which also skips standard_variants.hpp.
+#define BBLITE_STANDARD_VARIANTS ${
+                (options.pinnedStandardVariants ?? []).length
+            }
 `,
         );
         // The texture-slot table both render backends execute. Emitted for
@@ -406,6 +434,12 @@ class GeneratedSourceWriter {
                 { modulePath: "src/animation/evaluate.ts", symbolName: "normalizeQuat4" },
                 { modulePath: "src/animation/evaluate.ts", symbolName: "quatSlerp" },
                 { modulePath: "src/animation/evaluate.ts", symbolName: "evaluateSampler" },
+                { modulePath: "src/loader-gltf/gltf-ext-quantization.ts", symbolName: "readComponent" },
+                { modulePath: "src/loader-gltf/gltf-color-normalize.ts", symbolName: "normalizeColorToVec4" },
+                { modulePath: "src/loader-gltf/ibl-env-assembly.ts", symbolName: "polynomialToPreScaledHarmonics" },
+                { modulePath: "src/loader-gltf/gltf-ext-lights-image-based.ts", symbolName: "applyAsset" },
+                { modulePath: "src/loader-gltf/gltf-ext-dielectric.ts", symbolName: "applyMaterial" },
+                { modulePath: "src/loader-gltf/gltf-ext-iridescence.ts", symbolName: "applyMaterial" },
             );
         }
         if (features.includes("loader:babylon")) {
@@ -751,10 +785,61 @@ class GeneratedSourceWriter {
             });
         }
         // The Standard family's pinned variants, mirroring the PBR flow
-        // above. Off until wave D: no caller sets the option, so no scene's
-        // tree changes; when one does, the header and the composed stages
-        // land beside the transcribed fragment they will eventually replace.
+        // above. The header carries the composed tables and lowered UBO
+        // writers; the appended support block carries the selector and the
+        // record-derived halves of its key; and for a scene with no PBR
+        // variants the shared scene/lights/mesh mirrors are hoisted in too,
+        // since they otherwise ride pbr_variants.hpp.
         if ((options.pinnedStandardVariants ?? []).length > 0) {
+            const sharedMirrors = (options.pinnedVariants ?? []).length > 0
+                ? ""
+                : `
+// ---------------------------------------------------------------------------
+// The shared pinned scene/lights/mesh blocks, hoisted for a scene that emits
+// no pbr_variants.hpp (both families' composed stages declare the same three
+// blocks; a TU never sees this and the PBR copy together, the capability
+// defines gate the includes).
+${
+                    ["hemispheric", "directional", "point", "spot"].some(
+                        (kind) => features.includes(`light:${kind}`),
+                    )
+                        ? "#include <bblite/upstream/light_matrix.hpp>\n"
+                        : ""
+                }
+namespace bbl::upstream {
+
+using bbl::LightRecord;
+using bbl::LightKind;
+
+${
+                    sceneUniformsStruct(
+                        new RendererLowerer(context)
+                            .compiledSceneUniformsWgsl(),
+                        sceneUboBytes(context),
+                    )
+                }
+
+${
+                    lightUniformsBlock(
+                        context,
+                        pinnedMaxLights(context),
+                        ["hemispheric", "directional", "point", "spot"]
+                            .filter(
+                                (kind) =>
+                                    features.includes(`light:${kind}`),
+                            ),
+                    )
+                }
+
+${
+                    meshUniformsBlock(
+                        options.pinnedStandardVariants![0]!.fragmentWgsl,
+                        meshLightIndexWordOffset(context),
+                    )
+                }
+
+} // namespace bbl::upstream
+`;
             this.tree.write(
                 "upstream/include/bblite/upstream/standard_variants.hpp",
                 pinnedStandardVariantsHeader(
@@ -762,17 +847,28 @@ class GeneratedSourceWriter {
                     "src/pinned-pbr-variant-cpp.ts " +
                         "pinnedStandardVariantsHeader",
                     options.pinnedStandardVariants!,
-                ),
+                ) + sharedMirrors + pinnedStandardSupportBlock(context, {
+                    selectors: options.pinnedStandardSelectors ?? [],
+                    renderableMeshFeatures:
+                        options.standardRenderableMeshFeatures ?? [],
+                    runtimeMeshFeatures:
+                        options.standardRuntimeMeshFeatures,
+                }),
             );
             for (const variant of options.pinnedStandardVariants!) {
+                // Deployed under the `variant-` prefix so
+                // tools/compile-shaders.ps1 takes its pinned-variant arm
+                // (Babylon's own `main` entry points, the register remap,
+                // the `.slots` sidecar) exactly as it does for the PBR
+                // stages.
                 composedShaders.push({
-                    output: `upstream/shaders/std-variant-${
+                    output: `upstream/shaders/variant-std-${
                         variant.vertex.replace(".wgsl", ".native.wgsl")
                     }`,
                     data: variant.vertexWgsl,
                 });
                 composedShaders.push({
-                    output: `upstream/shaders/std-variant-${
+                    output: `upstream/shaders/variant-std-${
                         variant.fragment.replace(".wgsl", ".native.wgsl")
                     }`,
                     data: variant.fragmentWgsl,
