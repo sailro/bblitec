@@ -31,6 +31,7 @@ export interface MaterialIntrinsicContext
     extends IntrinsicCallContext {
     recordScenePbrSheen(sheen: ScenePbrSheenManifest): void;
     recordScenePbrNoColorView(): void;
+    recordScenePbrUnlit(): void;
     recordSceneMaterialSlot(): number;
     recordScenePbrClearCoat(clearCoat: ScenePbrClearCoatManifest): void;
     expectSameEngine(
@@ -472,6 +473,9 @@ export function compileMaterialIntrinsic(
                 "material",
                 call.arguments[0]!,
             );
+            if (importedName === "setPbrUnlit") {
+                context.recordScenePbrUnlit();
+            }
             if (importedName === "setPbrSkybox") {
                 // Skybox mode is composed by the transmission-capable
                 // renderer (its uniform block carries the skybox

@@ -505,6 +505,8 @@ export async function composeScenePbrVariants(
             // glTF input builder documents.
             occlusionStrength: 0,
         };
+        // The pin's setPbrUnlit stamps `mat._unlit = true`.
+        if (material.unlit) input["_unlit"] = true;
         if (material.hasBaseColorTexture) input["baseColorTexture"] = {};
         if (material.hasOrmTexture) input["ormTexture"] = {};
         if (material.doubleSided) input.doubleSided = true;

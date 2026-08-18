@@ -76,6 +76,8 @@ export interface ScenePbrMaterialManifest {
      * same handle sequence.
      */
     materialsBefore: number;
+    /** Stamped by the pin's `setPbrUnlit`: `mat._unlit = true`. */
+    unlit?: boolean;
     /** A `createPbrNoColorMaterialView` of the scene material before it:
      *  the same record with the pin's `PBR2_NO_COLOR_OUTPUT` bit, drawn by
      *  the depth-only render tasks. */

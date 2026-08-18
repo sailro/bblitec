@@ -5247,6 +5247,10 @@ class Compiler
         return this.sceneMaterialCount++;
     }
 
+    public recordScenePbrUnlit(): void {
+        this.sceneMaterialForSetter("setPbrUnlit").unlit = true;
+    }
+
     public recordScenePbrSheen(sheen: ScenePbrSheenManifest): void {
         this.sceneMaterialForSetter("setPbrSheen").sheen = sheen;
     }
