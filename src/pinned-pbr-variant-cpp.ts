@@ -15,12 +15,14 @@
  * to 4, `vec3<f32>` and `vec4<f32>` to 16, the struct rounds up to 16 — and a
  * field or total the pin places elsewhere is a generation failure.
  */
+import ts from "typescript";
 import type { LoweringContext } from "./lowering/context.js";
 import {
     lowerPinnedUboWriter,
     type UboFieldSlot,
 } from "./lowering/pinned-ubo-writer-lowerer.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
+import type { PinnedStandardVariantManifestEntry } from "./pinned-standard-variants.js";
 
 /**
  * The pinned extension writers, and how each reads our record.
@@ -1064,10 +1066,15 @@ export function pinnedPbrVariantsHeader(
                 // several extensions expose their writer as `pbrExt.writeUbo`
                 // on their own literal, so the symbol is not unique within a
                 // variant while the base field is.
+                //
+                // `material` is [[maybe_unused]] because a writer whose reads
+                // all fold at generation — the unlit writer's colour default
+                // is one — emits a body that never touches it, and the
+                // warning-clean rule covers generated C++ too (MSVC C4100).
                 `inline void write_${name}_${
                     extension.baseField.replace(/\W+/g, "_")
                 }(\n` +
-                `    const MaterialRecord& material,\n` +
+                `    [[maybe_unused]] const MaterialRecord& material,\n` +
                 `    const TextureTransform& transform,\n` +
                 `    ${name}MaterialUniforms& out) {\n` +
                 // A writer whose slots carry no UV transform never reads the
@@ -1095,9 +1102,11 @@ export function pinnedPbrVariantsHeader(
             // The pin's own `_writeMaterialData`, lowered like every extension
             // writer. It fills only the fields it owns and delegates the rest,
             // which is why a hand-written version kept failing on fields the
-            // extension writers own.
+            // extension writers own. `material` carries [[maybe_unused]] for
+            // the same reason the extension writers' does: a variant whose
+            // base fields all fold leaves the parameter unread (MSVC C4100).
             writer = `\n\ninline void write_${name}_material(\n` +
-                `    const MaterialRecord& material,\n` +
+                `    [[maybe_unused]] const MaterialRecord& material,\n` +
                 `    ${name}MaterialUniforms& out) {\n` +
                 `${
                     lowerPinnedUboWriter(context, {
@@ -1932,6 +1941,543 @@ inline constexpr std::array<MaterialTextureSlot, ${rows.length}>
     material_texture_slots{{
 ${rows.join("\n")}
 }};
+
+} // namespace bbl::upstream
+`;
+}
+
+/**
+ * The pin's Standard material-UBO sizing, from the renderable's own scratch.
+ *
+ * `writeStdMaterialData` keys on literal float lanes rather than a published
+ * `_offsets` map (the Standard template inlines its `matUniforms` struct
+ * text, so `composeShader` returns no `_materialUboSpec`), which makes the
+ * authorities: the composed fragment's own struct declaration for the field
+ * layout, and `standard-renderable.ts`'s `new F32(24)` scratch for the
+ * allocation the writer fills. Both are read here rather than assumed.
+ */
+function pinnedStandardMaterialFloats(context: LoweringContext): number {
+    const file = context.sourceFile(
+        "src/material/standard/standard-renderable.ts",
+    );
+    const initializer = context.unwrapExpression(
+        context.variableInitializer(file, "_stdMatScratch"),
+    );
+    if (
+        !ts.isNewExpression(initializer) ||
+        initializer.arguments?.length !== 1 ||
+        !ts.isNumericLiteral(initializer.arguments[0]!)
+    ) {
+        throw new Error(
+            "Expected the pinned _stdMatScratch to be `new F32(<floats>)`.",
+        );
+    }
+    return Number.parseInt(initializer.arguments[0].text, 10);
+}
+
+/** A pinned default, formatted as the C++ float literal it becomes. */
+function cppFloat(value: number): string {
+    const text = `${value}`;
+    return /[.e]/i.test(text) ? `${text}f` : `${text}.0f`;
+}
+
+/**
+ * The pin's own Standard material defaults, from `createStandardMaterial`.
+ *
+ * The C++ mirror of `StandardMaterialProps` carries them so a wave-D caller
+ * that fills only what its loader knows still uploads the pin's values for
+ * the rest — `lightmapLevel` and `reflectionCoordMode` have no MaterialRecord
+ * field today, and their defaults are what the pin renders with.
+ */
+function standardMaterialDefault(
+    context: LoweringContext,
+    property: string,
+): number | readonly number[] {
+    const { file, declaration } = context.functionDeclaration(
+        "src/material/standard/create-standard-material.ts",
+        "createStandardMaterial",
+    );
+    const literal = declaration.body!.statements
+        .filter(ts.isReturnStatement)
+        .map((statement) => {
+            // The pin returns `{ ... } as StandardMaterialProps`.
+            const unwrapped = statement.expression &&
+                context.unwrapExpression(statement.expression);
+            return unwrapped && ts.isObjectLiteralExpression(unwrapped)
+                ? unwrapped
+                : undefined;
+        })
+        .find((expression) => expression !== undefined);
+    if (!literal) {
+        throw new Error(
+            "Expected createStandardMaterial to return an object literal.",
+        );
+    }
+    for (const entry of literal.properties) {
+        if (
+            !ts.isPropertyAssignment(entry) ||
+            !ts.isIdentifier(entry.name) ||
+            entry.name.text !== property
+        ) {
+            continue;
+        }
+        const value = entry.initializer;
+        if (ts.isNumericLiteral(value)) {
+            return Number.parseFloat(value.text);
+        }
+        if (ts.isArrayLiteralExpression(value)) {
+            return value.elements.map((element) => {
+                if (!ts.isNumericLiteral(element)) {
+                    throw new Error(
+                        `Pinned Standard default '${property}' is not a ` +
+                            "numeric array.",
+                    );
+                }
+                return Number.parseFloat(element.text);
+            });
+        }
+        throw new Error(
+            `Pinned Standard default '${property}' is not a literal ` +
+                `(${value.getText(file)}).`,
+        );
+    }
+    throw new Error(
+        `createStandardMaterial declares no property '${property}'.`,
+    );
+}
+
+/**
+ * The fields of the pin's `StandardMaterialProps` the two lowered writers
+ * read, with our snake_case spellings. `kind` decides the C++ member type;
+ * defaults come from `createStandardMaterial`'s own AST.
+ */
+const standardPropsFields: ReadonlyArray<{
+    pinName: string;
+    cppName: string;
+    kind: "color3" | "float" | "float2";
+}> = [
+    { pinName: "diffuseColor", cppName: "diffuse_color", kind: "color3" },
+    { pinName: "alpha", cppName: "alpha", kind: "float" },
+    { pinName: "specularColor", cppName: "specular_color", kind: "color3" },
+    { pinName: "specularPower", cppName: "specular_power", kind: "float" },
+    { pinName: "emissiveColor", cppName: "emissive_color", kind: "color3" },
+    { pinName: "ambientColor", cppName: "ambient_color", kind: "color3" },
+    { pinName: "bumpLevel", cppName: "bump_level", kind: "float" },
+    {
+        pinName: "ambientTexLevel",
+        cppName: "ambient_tex_level",
+        kind: "float",
+    },
+    { pinName: "lightmapLevel", cppName: "lightmap_level", kind: "float" },
+    { pinName: "opacityLevel", cppName: "opacity_level", kind: "float" },
+    { pinName: "alphaCutOff", cppName: "alpha_cutoff", kind: "float" },
+    { pinName: "reflectionLevel", cppName: "reflection_level", kind: "float" },
+    {
+        pinName: "reflectionCoordMode",
+        cppName: "reflection_coord_mode",
+        kind: "float",
+    },
+    { pinName: "uvScale", cppName: "uv_scale", kind: "float2" },
+];
+
+/** How the pinned Standard writers' property reads map onto the mirror. */
+const standardWriterSources: Readonly<Record<string, string>> = {
+    diffuseColor: "material.diffuse_color",
+    specularColor: "material.specular_color",
+    emissiveColor: "material.emissive_color",
+    ambientColor: "material.ambient_color",
+    alpha: "material.alpha",
+    specularPower: "material.specular_power",
+    bumpLevel: "material.bump_level",
+    ambientTexLevel: "material.ambient_tex_level",
+    lightmapLevel: "material.lightmap_level",
+    opacityLevel: "material.opacity_level",
+    alphaCutOff: "material.alpha_cutoff",
+    reflectionLevel: "material.reflection_level",
+    reflectionCoordMode: "material.reflection_coord_mode",
+    // The composition-time texture level: `rebuildSingle` passes
+    // `(features & NEEDS_UV) !== 0 ? 1 : 0` (the geometry renderable passes
+    // its HAS_DIFFUSE_TEXTURE form), so it is a writer parameter here too.
+    textureLevel: "texture_level",
+};
+
+/**
+ * Emits `upstream/standard_variants.hpp`: the Standard material family's
+ * pinned-composition mirror — the material-props record with the pin's own
+ * defaults, the `matUniforms` mirror with the pin's offsets, both UBO writers
+ * lowered from their pinned ASTs, and the per-variant stage/binding tables.
+ *
+ * Nothing routes here yet: the emission rides `pinnedStandardVariants`, which
+ * no caller sets, so the generated tree is unchanged until wave D wires the
+ * PALs and flips the transcribed fragment off.
+ */
+export function pinnedStandardVariantsHeader(
+    context: LoweringContext,
+    provenance: string,
+    variants: readonly PinnedStandardVariantManifestEntry[],
+): string {
+    if (variants.length === 0) {
+        throw new Error(
+            "pinnedStandardVariantsHeader needs at least one composed " +
+                "variant; the material struct is read from the composed " +
+                "fragment text.",
+        );
+    }
+    // The template's own material block, from the composed fragment: the
+    // Standard template inlines `matUniforms` rather than building it from
+    // UBO field specs, so the text is the layout authority.
+    const structMatch = /struct matUniforms\s*\{([^}]*)\}/.exec(
+        variants[0]!.fragmentWgsl,
+    );
+    if (!structMatch) {
+        throw new Error(
+            "A pinned composed Standard fragment no longer declares " +
+                "struct matUniforms.",
+        );
+    }
+    const fields = parseVariantFields(
+        structMatch[1]!
+            .split(/[,\n]/)
+            .map((part) => part.replace(/\/\/.*$/, "").trim())
+            .filter((part) => part !== "")
+            .map((part) => `${part},`)
+            .join("\n"),
+    );
+    const { offsets, totalBytes } = variantLayout(fields);
+    // Every variant shares the block — the template emits it unconditionally
+    // — so any variant disagreeing with the first is a pin change to see.
+    for (const variant of variants.slice(1)) {
+        const other = /struct matUniforms\s*\{([^}]*)\}/.exec(
+            variant.fragmentWgsl,
+        );
+        if (!other || other[1] !== structMatch[1]) {
+            throw new Error(
+                `Pinned Standard variant '${variant.fragmentKey}' declares ` +
+                    "a different matUniforms block than its siblings.",
+            );
+        }
+    }
+    // The renderable's own allocation: `new F32(24)` (96 bytes). The writer
+    // fills lanes of that scratch, so the mirrored layout must total it.
+    const pinnedFloats = pinnedStandardMaterialFloats(context);
+    if (totalBytes !== pinnedFloats * 4) {
+        throw new Error(
+            `Pinned Standard material scratch is F32(${pinnedFloats}) ` +
+                `(${pinnedFloats * 4} bytes); the mirrored matUniforms ` +
+                `layout computes ${totalBytes}.`,
+        );
+    }
+    const slots: UboFieldSlot[] = fields.map((field, index) => ({
+        name: field.name,
+        offset: offsets[index]!,
+        lanes: field.wgslType === "f32"
+            ? 1
+            : field.wgslType === "vec3<f32>"
+            ? 3
+            : 4,
+    }));
+    const mirrored = mirroredMembers(
+        "StandardMaterialUniforms",
+        fields,
+        offsets,
+        totalBytes,
+    );
+    // The pin's writer, lowered from its own AST. `lowerPinnedUboWriter`
+    // resolves every `data[<lane>]` store against the slots above and fails
+    // on any lane no declared field covers — which is the offsets cross-check
+    // in the direction the pin states it (writer lanes → struct fields).
+    const materialWriterBody = lowerPinnedUboWriter(context, {
+        modulePath: "src/material/standard/standard-pipeline.ts",
+        symbolName: "writeStdMaterialData",
+        sourceLocal: "mat",
+        baseField: "dc",
+        propertySources: standardWriterSources,
+        vectorProperties: {
+            diffuseColor: 3,
+            specularColor: 3,
+            emissiveColor: 3,
+            ambientColor: 3,
+        },
+        slots,
+    }).join("\n");
+    // And the reverse direction: every field the struct declares (padding
+    // aside) must be written, or a lane uploads a zero the fragment reads.
+    const unwritten = fields
+        .map((field) => field.name)
+        .filter((name) =>
+            !name.startsWith("_") &&
+            !materialWriterBody.includes(`out.${name}`)
+        );
+    if (unwritten.length > 0) {
+        throw new Error(
+            `Pinned Standard matUniforms declares ${
+                unwritten.map((name) => `'${name}'`).join(", ")
+            } with no write in the lowered writeStdMaterialData.`,
+        );
+    }
+    // The vertex-stage UV block the second writer fills. The template builds
+    // it as literal text, so the marker is asserted before the writer is
+    // lowered against its single vec4.
+    if (
+        !context.store.getSource(
+            "src/material/standard/standard-template.ts",
+        ).includes("struct upUniforms { u: vec4<f32>, }")
+    ) {
+        throw new Error(
+            "Pinned Standard template no longer declares the " +
+                "`struct upUniforms { u: vec4<f32>, }` block " +
+                "writeStandardUvTransformData fills.",
+        );
+    }
+    const uvWriterBody = lowerPinnedUboWriter(context, {
+        modulePath: "src/material/standard/standard-pipeline.ts",
+        symbolName: "writeStandardUvTransformData",
+        sourceLocal: "material",
+        baseField: "u",
+        propertySources: {
+            invertY: "invert_y",
+            uvScale: "material.uv_scale",
+        },
+        vectorProperties: { uvScale: 2 },
+        laneSources: {
+            uvScale: {
+                0: "material.uv_scale[0]",
+                1: "material.uv_scale[1]",
+            },
+        },
+        // `enableStandardUvOffset()` is the pin's opt-in for a per-material
+        // UV offset; no reached scene calls it, so the resolver is the pin's
+        // own uninstalled null and the offset lanes fold to their defaults.
+        // A scene that enables it must extend this before wave D flips over.
+        absentHooks: ["_uvOffsetResolver"],
+        slots: [{ name: "u", offset: 0, lanes: 4 }],
+    }).join("\n");
+    const propsMembers = standardPropsFields.map((field) => {
+        const value = standardMaterialDefault(context, field.pinName);
+        if (field.kind === "color3") {
+            if (!Array.isArray(value) || value.length !== 3) {
+                throw new Error(
+                    `Pinned Standard default '${field.pinName}' is not a ` +
+                        "3-lane colour.",
+                );
+            }
+            return `    Color3 ${field.cppName}{${
+                value.map(cppFloat).join(", ")
+            }};`;
+        }
+        if (field.kind === "float2") {
+            if (!Array.isArray(value) || value.length !== 2) {
+                throw new Error(
+                    `Pinned Standard default '${field.pinName}' is not a ` +
+                        "2-lane vector.",
+                );
+            }
+            return `    std::array<float, 2> ${field.cppName}{${
+                value.map(cppFloat).join(", ")
+            }};`;
+        }
+        if (typeof value !== "number") {
+            throw new Error(
+                `Pinned Standard default '${field.pinName}' is not a number.`,
+            );
+        }
+        return `    float ${field.cppName} = ${cppFloat(value)};`;
+    });
+    const table: string[] = [];
+    const bindingRows: string[] = [];
+    const attributeRows: string[] = [];
+    for (const variant of variants) {
+        const attributes = variantAttributes(variant.vertexWgsl);
+        const bindings = variantBindings(
+            variant.vertexWgsl,
+            variant.fragmentWgsl,
+        );
+        const fragmentOutputStruct = variant.fragmentWgsl.match(
+            /struct FragmentOutput \{[^}]*\}/,
+        );
+        // The Standard fragment's *input* struct also numbers its varyings
+        // with `@location(n)`, so a colour output is detected off the entry
+        // point's own return type — `-> @location(0)` — which the
+        // NO_COLOR_OUTPUT arm drops and the MRT rewrite replaces with
+        // `-> FragmentOutput`.
+        const hasColorReturn =
+            variant.fragmentWgsl.includes("-> @location(0)");
+        const colorTargetCount = fragmentOutputStruct
+            ? (fragmentOutputStruct[0].match(/@location\(\d+\)/g) ?? [])
+                .length
+            : hasColorReturn
+                ? 1
+                : 0;
+        table.push(
+            `    {"${variant.fragmentKey}", "${variant.vertex}", ` +
+                `"${variant.fragment}", ${variant.features}, ` +
+                `${variant.meshFeatures}, ` +
+                `${bindingRows.length}, ${bindings.length}, ` +
+                `${attributeRows.length}, ${attributes.length}, ` +
+                `${
+                    hasColorReturn || fragmentOutputStruct
+                        ? "false"
+                        : "true"
+                }, ` +
+                `${colorTargetCount}},`,
+        );
+        for (const attribute of attributes) {
+            attributeRows.push(
+                `    {${attribute.location}, "${attribute.name}", ` +
+                    `"${attribute.wgslType}"},`,
+            );
+        }
+        for (const entry of bindings) {
+            bindingRows.push(
+                `    {${entry.binding}, "${entry.name}", ` +
+                    `StandardBindingKind::${entry.kind}, ` +
+                    `${entry.vertex ? "true" : "false"}, ` +
+                    `${entry.fragment ? "true" : "false"}},`,
+            );
+        }
+    }
+    return `// ${provenance}
+// Generated from the pin's own composed Standard variants. Nothing selects
+// these yet: the transcribed standard fragment stays live until wave D wires
+// the PALs over, so this header ships beside it rather than replacing it.
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string_view>
+
+#include <bblite/runtime.hpp>
+
+namespace bbl::upstream {
+
+using bbl::Color3;
+
+// src/material/standard/create-standard-material.ts createStandardMaterial
+//
+// The pin's own StandardMaterialProps, with the pin's own defaults — the
+// values the two writers below read. Wave D fills it from MaterialRecord
+// (diffuse_color, specular_power, ... are one-to-one; bump_level is the
+// authored level where MaterialRecord::bump_scale stores its inverse, and
+// lightmap_level / reflection_coord_mode have no record field yet).
+struct StandardMaterialProps {
+${propsMembers.join("\n")}
+};
+
+// src/material/standard/standard-template.ts matUniforms
+//
+// The template inlines this block's WGSL, and the renderable allocates the
+// pin's F32(${pinnedFloats}) scratch for it, so those two are the layout
+// authorities the mirror is checked against.
+struct StandardMaterialUniforms {
+${mirrored.members}
+};
+static_assert(
+    sizeof(StandardMaterialUniforms) == ${totalBytes},
+    "The pinned Standard material UBO is ${totalBytes} bytes.");
+${mirrored.asserts}
+
+// src/material/standard/standard-pipeline.ts writeStdMaterialData
+//
+// texture_level is the composition-time value the renderable passes:
+// (features & NEEDS_UV) != 0 ? 1 : 0 for the colour path, and the geometry
+// renderable's HAS_DIFFUSE_TEXTURE form for the MRT path.
+inline void write_standard_material(
+    [[maybe_unused]] const StandardMaterialProps& material,
+    float texture_level,
+    StandardMaterialUniforms& out) {
+${materialWriterBody}
+}
+
+// src/material/standard/standard-template.ts upUniforms — the vertex-stage
+// UV transform block, bound only when the variant carries NEEDS_UV.
+struct StandardUvTransformUniforms {
+    // offset 0, vec4<f32>
+    std::array<float, 4> u{};
+};
+static_assert(
+    sizeof(StandardUvTransformUniforms) == 16,
+    "The pinned Standard UV block is one vec4.");
+
+// src/material/standard/standard-pipeline.ts writeStandardUvTransformData
+//
+// invert_y is isStandardUvInverted(features, material): the diffuse
+// texture's invertY when one exists, else the opacity texture's, else the
+// bump texture's.
+inline void write_standard_uv_transform(
+    [[maybe_unused]] const StandardMaterialProps& material,
+    bool invert_y,
+    StandardUvTransformUniforms& out) {
+${uvWriterBody}
+}
+
+// What each composed variant declares in group 1, past the hand-managed
+// mesh (0) and material (1) blocks — the same reading discipline as
+// pbr_variants.hpp, with Standard-named types so both headers can coexist
+// in one translation unit.
+enum class StandardBindingKind {
+    texture2d,
+    texture2dLoad,
+    textureCube,
+    sampler,
+    storageBuffer,
+    // A group-1 uniform block past mesh (0) and material (1): the UV
+    // transform block \`up\`, and the geometry arms' gpUniforms.
+    uniformBuffer,
+};
+
+struct StandardVariantBinding {
+    std::uint32_t binding;
+    std::string_view name;
+    StandardBindingKind kind;
+    bool vertex;
+    bool fragment;
+};
+
+inline constexpr std::array<StandardVariantBinding, ${bindingRows.length}>
+    standard_variant_bindings{{
+${bindingRows.join("\n")}
+}};
+
+struct StandardVariantAttribute {
+    std::uint32_t location;
+    std::string_view name;
+    std::string_view wgsl_type;
+};
+
+inline constexpr std::array<StandardVariantAttribute, ${attributeRows.length}>
+    standard_variant_attributes{{
+${attributeRows.join("\n")}
+}};
+
+struct StandardVariantEntry {
+    std::string_view key;
+    std::string_view vertex_shader;
+    std::string_view fragment_shader;
+    /** The pin's Standard feature bits this variant composed under. */
+    std::uint32_t features;
+    /** The pin's MSH_* bits for the mesh half of the key. */
+    std::uint32_t mesh_features;
+    /** Half-open range into the binding table above. */
+    std::size_t first_binding;
+    std::size_t binding_count;
+    /** Half-open range into the attribute table above. */
+    std::size_t first_attribute;
+    std::size_t attribute_count;
+    /** A NO_COLOR_OUTPUT view's fragment writes no colour target. */
+    bool no_color_output;
+    /** One for a colour pass, zero for a depth-only view, the attachment
+     *  count (plus the optional trailing colour) for a geometry MRT arm. */
+    std::size_t color_target_count;
+};
+
+inline constexpr std::array<StandardVariantEntry, ${variants.length}>
+    standard_variants{{
+${table.join("\n")}
+}};
+
+/** Every variant shares the template's one material block. */
+inline constexpr std::size_t standard_material_ubo_bytes = ${totalBytes};
 
 } // namespace bbl::upstream
 `;
