@@ -148,6 +148,37 @@ interface MaterialSubject {
 }
 
 /**
+ * The single-light kinds a glTF asset's own KHR_lights_punctual lights reach.
+ *
+ * The pin's loader creates these lights exactly like scene code does, and
+ * `writeMeshLightSelection` walks them the same way, so the composed arms
+ * must cover their kinds even when no scene-code intrinsic declares a light
+ * feature. glTF has no hemispheric light, so the mapping is the identity on
+ * the three punctual kinds.
+ */
+export function gltfLightKinds(path: string): readonly string[] {
+    const document = glbDocument(path);
+    if (!document) return [];
+    const record = document as unknown as Record<string, unknown>;
+    const extensions = record["extensions"] as
+        | Record<string, unknown>
+        | undefined;
+    const punctual = extensions?.["KHR_lights_punctual"] as
+        | { lights?: { type?: string }[] }
+        | undefined;
+    const kinds = new Set<string>();
+    for (const light of punctual?.lights ?? []) {
+        if (
+            light.type === "point" ||
+            light.type === "directional" ||
+            light.type === "spot") {
+            kinds.add(light.type);
+        }
+    }
+    return [...kinds];
+}
+
+/**
  * The composer's material-shaped input for every material in a document.
  *
  * Shared by the arms scan and the variant space so both compose the same

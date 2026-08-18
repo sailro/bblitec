@@ -2,8 +2,15 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { CompileAsset, CompileError, compileSource } from "./compiler.js";
+import {
+    CompileAsset,
+    CompileError,
+    compileSource,
+    renderFeaturesCmake,
+} from "./compiler.js";
 import type { CompiledShaderProgram } from "./compiler.js";
+import type { Feature } from "./compiler/types.js";
+import { reachedGeneratedSources } from "./generated-sources.js";
 import { shaderMaterialPrograms } from "./shader-material-programs.js";
 import { emitUpstreamGenerated } from "./upstream-lower.js";
 import { emitAssetSpecializations } from "./asset-specializer.js";
@@ -33,6 +40,7 @@ import {
     composeGltfMaterials,
     composeRenderableVariants,
     composeScenePbrVariants,
+    gltfLightKinds,
     gltfMaterialCount,
     gltfRenderableFeatures,
     proceduralRenderableFeatures,
@@ -556,6 +564,37 @@ async function main(): Promise<void> {
     const hasEnvironment = result.manifest.features.includes(
         "environment:ibl",
     );
+    // An asset's own KHR_lights_punctual lights are the scene's lights: the
+    // pin's loader creates them exactly like scene code does, and every
+    // consumer keyed on the light features -- the composed arms, the pinned
+    // light writers, the generated-source table -- reads the one authority,
+    // so the kinds the assets reach join the manifest here.
+    let assetLightsAdded = false;
+    for (const asset of result.manifest.assets) {
+        if (asset.kind !== "gltf") continue;
+        for (const kind of gltfLightKinds(
+            resolve(outputPath, "assets", asset.output),
+        )) {
+            const feature = `light:${kind}` as Feature;
+            if (!result.manifest.features.includes(feature)) {
+                result.manifest.features.push(feature);
+                assetLightsAdded = true;
+            }
+        }
+    }
+    if (assetLightsAdded) {
+        // The features drive the generated-source table and the CMake
+        // projection, both rendered at compile time; re-render them from the
+        // same authorities so the joined features stay declared everywhere.
+        result.manifest.generatedSources = reachedGeneratedSources(
+            result.manifest.features as Feature[],
+        );
+        result.cmake = renderFeaturesCmake(
+            result.manifest.features as Feature[],
+            result.manifest.runtimeSources,
+            result.manifest.generatedSources,
+        );
+    }
     const lightKinds = pinnedSingleLightTypes.filter((kind) =>
         result.manifest.features.includes(`light:${kind}`)
     );
