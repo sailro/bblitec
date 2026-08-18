@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import ts from "typescript";
 import { CompileAsset } from "./compiler.js";
 import { parseGlbJson } from "./gltf-document.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
@@ -24,6 +25,7 @@ interface GltfSpecialization {
         extras: boolean;
         occlusionUv2: boolean;
         eightInfluenceSkinning: boolean;
+        dispersionReached: boolean;
     };
 }
 
@@ -304,14 +306,108 @@ function refuseUnsupportedGltf(
     }
 }
 
+/**
+ * The pinned registry's extension→module rows, read from its own AST rather
+ * than from text patterns: the former regexes hard-coded the minified prefix
+ * alias, so an upstream rename would have produced a silently empty map
+ * instead of a contract error. A row whose name expression the walk cannot
+ * resolve — or a registry with no rows at all — fails generation naming the
+ * file.
+ */
 function extensionModuleMap(store: UpstreamSourceStore): Map<string, string> {
-    const source = store.getSource("src/loader-gltf/gltf-feature-registry.ts");
+    const path = "src/loader-gltf/gltf-feature-registry.ts";
+    const source = store.getSource(path);
+    const file = ts.createSourceFile(
+        path,
+        source,
+        ts.ScriptTarget.ES2022,
+        true,
+    );
+    const constants = new Map<string, string>();
+    const rows: Array<[ts.Expression, ts.Expression]> = [];
+    const visit = (node: ts.Node): void => {
+        if (
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.initializer !== undefined &&
+            ts.isStringLiteral(node.initializer)
+        ) {
+            constants.set(node.name.text, node.initializer.text);
+        }
+        if (ts.isArrayLiteralExpression(node) && node.elements.length === 2) {
+            rows.push([node.elements[0]!, node.elements[1]!]);
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(file);
+    const importTarget = (expression: ts.Expression): string | undefined => {
+        let found: string | undefined;
+        const walk = (node: ts.Node): void => {
+            if (
+                ts.isCallExpression(node) &&
+                node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+                node.arguments.length === 1 &&
+                ts.isStringLiteral(node.arguments[0]!)
+            ) {
+                found = node.arguments[0]!.text;
+            }
+            ts.forEachChild(node, walk);
+        };
+        walk(expression);
+        return found;
+    };
     const result = new Map<string, string>();
-    for (const match of source.matchAll(/\["([^"]+)",\s*\(\)\s*=>\s*import\("([^"]+)"\)\]/g)) {
-        result.set(match[1]!, match[2]!);
+    for (const [name, loader] of rows) {
+        const module = importTarget(loader);
+        if (module === undefined) continue;
+        // The registry keys rows two ways: extension NAMES (a string
+        // literal, a prefix + literal, or a string constant) and document
+        // PREDICATES (arrow functions or references to them — the skeleton
+        // and morph rows, `hasGltfExtras`, …). Only the named rows belong in
+        // this map; predicate rows are the asset-feature half the
+        // specializer mirrors term by term elsewhere.
+        if (ts.isStringLiteral(name)) {
+            result.set(name.text, module);
+            continue;
+        }
+        if (
+            ts.isBinaryExpression(name) &&
+            name.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+            ts.isIdentifier(name.left) &&
+            ts.isStringLiteral(name.right)
+        ) {
+            const prefix = constants.get(name.left.text);
+            if (prefix === undefined) {
+                throw new Error(
+                    `${path}: the registry prefix ${name.left.text} did not ` +
+                        `resolve to a string constant.`,
+                );
+            }
+            result.set(`${prefix}${name.right.text}`, module);
+            continue;
+        }
+        if (ts.isIdentifier(name)) {
+            const resolved = constants.get(name.text);
+            if (resolved !== undefined) result.set(resolved, module);
+            continue;
+        }
+        if (
+            ts.isArrowFunction(name) ||
+            ts.isFunctionExpression(name) ||
+            ts.isCallExpression(name)
+        ) {
+            continue;
+        }
+        throw new Error(
+            `${path}: a registry row's name expression has an unrecognized ` +
+                `shape.`,
+        );
     }
-    for (const match of source.matchAll(/\[M \+ "([^"]+)",\s*\(\)\s*=>\s*import\("([^"]+)"\)\]/g)) {
-        result.set(`KHR_materials_${match[1]!}`, match[2]!);
+    if (result.size === 0) {
+        throw new Error(
+            `${path}: no extension registry rows were found; the registry ` +
+                `shape changed.`,
+        );
     }
     return result;
 }
@@ -396,10 +492,11 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
                 asRecord(material.extensions)?.["KHR_materials_transmission"],
             )?.transmissionFactor as number | undefined ?? 0) > 0,
     );
-    // The pinned dielectric loader fetches setPbrMetallicReflectance — and with
-    // it the reflectance fragment — only when a specular field actually departs
-    // from its default, so a material declaring the extension at factor 1 and
-    // colour (1,1,1) reaches nothing.
+    // The specular half of the pinned `needsReflectance` — which also fires
+    // on `ior !== 1.5` alone; that arm is folded exactly by the generated
+    // loader's reflectance fold and `applyDielectric`, so this predicate
+    // deliberately reads only the specular fields. A material declaring the
+    // extension at factor 1 and colour (1,1,1) reaches nothing.
     const specularReflectance = asRecords(document.materials).some((material) => {
         const specular = asRecord(
             asRecord(material.extensions)?.["KHR_materials_specular"],
@@ -414,6 +511,46 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
             (Array.isArray(color) &&
                 color.length === 3 &&
                 (color[0] !== 1 || color[1] !== 1 || color[2] !== 1))
+        );
+    });
+    // The pinned `needsDispersion`, term for term (`gltf-ext-dielectric.ts`):
+    // `dispersion > 0 && (!!eIor || needsTransmission) && !!eVol &&
+    // (thicknessFactor > 0 || !!eVol.thicknessTexture)`, with
+    // `needsTransmission = !!eTx && (intensity > 0 ||
+    // !!eTx.transmissionTexture)`. Keying the capability on extension
+    // presence instead shipped dispersion arms for assets whose declared
+    // extension the pin never imports.
+    const dispersionReached = asRecords(document.materials).some((material) => {
+        const extensions = asRecord(material.extensions);
+        const dispersionExtension = asRecord(
+            extensions?.["KHR_materials_dispersion"],
+        );
+        const dispersion =
+            typeof dispersionExtension?.dispersion === "number"
+                ? dispersionExtension.dispersion
+                : 0;
+        if (!(dispersion > 0)) return false;
+        const ior = asRecord(extensions?.["KHR_materials_ior"]);
+        const transmission = asRecord(
+            extensions?.["KHR_materials_transmission"],
+        );
+        const transmissionFactor =
+            typeof transmission?.transmissionFactor === "number"
+                ? transmission.transmissionFactor
+                : 0;
+        const needsTransmission =
+            transmission !== undefined &&
+            (transmissionFactor > 0 ||
+                transmission.transmissionTexture !== undefined);
+        const volume = asRecord(extensions?.["KHR_materials_volume"]);
+        const thicknessFactor =
+            typeof volume?.thicknessFactor === "number"
+                ? volume.thicknessFactor
+                : 0;
+        return (
+            (ior !== undefined || needsTransmission) &&
+            volume !== undefined &&
+            (thicknessFactor > 0 || volume.thicknessTexture !== undefined)
         );
     });
     const extras = hasExtras(document);
@@ -451,6 +588,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
             extras,
             occlusionUv2,
             eightInfluenceSkinning,
+            dispersionReached,
         },
     };
 }
@@ -564,15 +702,20 @@ export function emitAssetSpecializations(
             (specialization) =>
                 specialization.features.maxMorphTargets > 0,
         ),
-        // The same predicate that pulls Babylon Lite's dynamically
-        // imported `gltf-feature-primitive.js`: a primitive whose mode is
-        // not the triangle-list default. Off, the generated loader carries
-        // no topology handling at all, which is where upstream keeps it.
+        // Half of Babylon Lite's own predicate for the dynamically imported
+        // `gltf-feature-primitive.js` — the pinned registry tests
+        // `hasNegDetNode(j) || anyPrimitive(mode !== 4)`, and the
+        // negative-determinant half is unconditional inline code in the
+        // generated loader (`mirrored_x`), so only the mode half selects the
+        // module here. Off, the generated loader carries no topology handling
+        // at all, which is where upstream keeps it.
         nonTrianglePrimitives: specializations.some(
             (specialization) =>
                 specialization.features.nonTrianglePrimitives,
         ),
         nodeVisibility: usesExtension("KHR_node_visibility"),
+        // (Dispersion keys on the evaluated pinned predicate below, not on
+        // extension presence — see `dispersionReached`.)
         animationPointer: usesExtension("KHR_animation_pointer"),
         animationPointerMaterials: specializations.some(
             (specialization) =>
@@ -591,7 +734,9 @@ export function emitAssetSpecializations(
         clearcoat: usesExtension("KHR_materials_clearcoat"),
         sheen: usesExtension("KHR_materials_sheen"),
         iridescence: usesExtension("KHR_materials_iridescence"),
-        dispersion: usesExtension("KHR_materials_dispersion"),
+        dispersion: specializations.some(
+            (specialization) => specialization.features.dispersionReached,
+        ),
         occlusionUv2: specializations.some(
             (specialization) =>
                 specialization.features.occlusionUv2,

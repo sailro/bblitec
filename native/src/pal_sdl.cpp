@@ -326,7 +326,6 @@ struct MaterialTextures {
 struct PreparedGeometry {
     std::vector<Vec3> normals;
     std::vector<Color3> base_colors;
-    std::vector<float> base_luminance;
     std::vector<float> occlusion;
     std::vector<float> roughness;
     std::vector<float> metallic;
@@ -539,7 +538,6 @@ std::vector<PreparedGeometry> prepare_geometries(
         PreparedGeometry& prepared = result[geometry_index];
         prepared.normals.reserve(geometry.vertices.size());
         prepared.base_colors.reserve(geometry.vertices.size());
-        prepared.base_luminance.reserve(geometry.vertices.size());
         prepared.occlusion.reserve(geometry.vertices.size());
         prepared.roughness.reserve(geometry.vertices.size());
         prepared.metallic.reserve(geometry.vertices.size());
@@ -561,8 +559,6 @@ std::vector<PreparedGeometry> prepare_geometries(
                     vertex.uv,
                     Color4{1.0f, 1.0f, 1.0f, 1.0f});
                 prepared.base_colors.push_back(Color3{base_color.r, base_color.g, base_color.b});
-                prepared.base_luminance.push_back(
-                    (base_color.r + base_color.g + base_color.b) / 3.0f);
 
                 const Color4 packed = sample_surface(
                     material_textures->metallic_roughness,
@@ -585,7 +581,6 @@ std::vector<PreparedGeometry> prepare_geometries(
                 }
             } else {
                 prepared.base_colors.push_back(Color3{});
-                prepared.base_luminance.push_back(1.0f);
             }
 
             prepared.normals.push_back(normal);
@@ -946,25 +941,13 @@ void render_models(
             Point2 p1;
             Point2 p2;
             RenderTriangle triangle;
-            const float height = geometry.bounds_max.y - geometry.bounds_min.y;
-            const float normalized_height =
-                height > 0.000001f
-                    ? (((geometry.vertices[i0].position.y + geometry.vertices[i1].position.y + geometry.vertices[i2].position.y) / 3.0f) -
-                       geometry.bounds_min.y) /
-                        height
-                    : 0.0f;
-            const float upward =
-                (prepared.normals[i0].y + prepared.normals[i1].y + prepared.normals[i2].y) / 3.0f;
-            const float luminance =
-                (prepared.base_luminance[i0] + prepared.base_luminance[i1] + prepared.base_luminance[i2]) / 3.0f;
-            const float roughness =
-                (prepared.roughness[i0] + prepared.roughness[i1] + prepared.roughness[i2]) / 3.0f;
-            const bool smoked_glass =
-                normalized_height > 0.575f &&
-                upward > 0.55f &&
-                luminance < 0.16f &&
-                roughness < 0.08f;
-            const float opacity = smoked_glass ? 0.72f : 1.0f;
+            // The fallback shades every triangle opaque. A geometry-position
+            // heuristic used to detect Scene 1's smoked-glass lid here
+            // (height/normal/luminance/roughness thresholds selecting 0.72
+            // opacity), against the repository's no-heuristics invariant; the
+            // scene-1 CPU thresholds are re-baselined to the honest opaque
+            // rendering instead.
+            const float opacity = 1.0f;
             triangle.vertices[0] = render_vertex(
                 geometry.vertices[i0],
                 prepared.normals[i0],

@@ -128,9 +128,40 @@ test("selects PBR material-extension specializations from glTF metadata", () => 
         assert.equal(features.clearcoat, true);
         assert.equal(features.sheen, true);
         assert.equal(features.iridescence, true);
-        assert.equal(features.dispersion, true);
+        // Dispersion keys on the evaluated pinned predicate, not presence: a
+        // declared extension with no factor, refraction, or volume reaches
+        // nothing upstream (`needsDispersion` in gltf-ext-dielectric.ts).
+        assert.equal(features.dispersion, false);
         assert.equal(features.textureTransform, false);
         assert.equal(features.multiLight, false);
+
+        writeGlb(join(scratch, "assets", "dispersive.glb"), {
+            extensionsUsed: [
+                "KHR_materials_dispersion",
+                "KHR_materials_transmission",
+                "KHR_materials_volume",
+            ],
+            materials: [
+                {
+                    name: "Prism",
+                    extensions: {
+                        KHR_materials_dispersion: { dispersion: 0.1 },
+                        KHR_materials_transmission: { transmissionFactor: 1 },
+                        KHR_materials_volume: { thicknessFactor: 0.5 },
+                    },
+                },
+            ],
+            meshes: [],
+            nodes: [],
+        });
+        const dispersive = emitAssetSpecializations(scratch, [
+            {
+                source: "https://example.invalid/dispersive.glb",
+                output: "dispersive.glb",
+                kind: "gltf",
+            },
+        ]);
+        assert.equal(dispersive.dispersion, true);
 
         writeGlb(join(scratch, "assets", "plain.glb"), {
             materials: [{ name: "Plain" }],
