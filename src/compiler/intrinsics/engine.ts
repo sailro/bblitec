@@ -45,9 +45,10 @@ export interface EngineIntrinsicContext
 
 function reachRenderer(
     context: EngineIntrinsicContext,
+    call: ts.CallExpression,
 ): void {
-    context.reachFeature("renderer:pbr");
-    context.reachFeature("renderer:geometry-output");
+    context.reachFeature("renderer:pbr", call);
+    context.reachFeature("renderer:geometry-output", call);
 }
 
 export function compileEngineIntrinsic(
@@ -99,7 +100,7 @@ export function compileEngineIntrinsic(
                 context.compileRenderTargetOptions(
                     call.arguments[0]!,
                 );
-            reachRenderer(context);
+            reachRenderer(context, call);
             return {
                 kind: "render-target",
                 cpp: `bbl::create_render_target(${engine}, ${options})`,
@@ -120,7 +121,7 @@ export function compileEngineIntrinsic(
                 context.compileRenderTargetOptions(
                     call.arguments[1]!,
                 );
-            reachRenderer(context);
+            reachRenderer(context, call);
             return {
                 kind: "render-target-texture",
                 cpp:
@@ -152,7 +153,7 @@ export function compileEngineIntrinsic(
                 context.compileRenderTaskOptions(
                     call.arguments[0]!,
                 );
-            reachRenderer(context);
+            reachRenderer(context, call);
             return {
                 kind: "task",
                 cpp:
@@ -187,7 +188,7 @@ export function compileEngineIntrinsic(
             context.recordGeometryOutputTask(
                 compiled.manifest,
             );
-            reachRenderer(context);
+            reachRenderer(context, call);
             return {
                 kind: "task",
                 cpp:
@@ -221,7 +222,7 @@ export function compileEngineIntrinsic(
                 context.compileCopyTaskOptions(
                     call.arguments[0]!,
                 );
-            reachRenderer(context);
+            reachRenderer(context, call);
             return {
                 kind: "task",
                 cpp:

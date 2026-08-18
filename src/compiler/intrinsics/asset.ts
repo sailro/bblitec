@@ -81,8 +81,8 @@ export function compileAssetIntrinsic(
                 source,
                 "gltf",
             );
-            context.reachFeature("loader:gltf");
-            context.reachFeature("renderer:pbr");
+            context.reachFeature("loader:gltf", call);
+            context.reachFeature("renderer:pbr", call);
             return {
                 kind: "asset",
                 cpp:
@@ -116,10 +116,10 @@ export function compileAssetIntrinsic(
                 source,
                 "babylon",
             );
-            context.reachFeature("camera:free");
-            context.reachFeature("loader:babylon");
-            context.reachFeature("material:standard");
-            context.reachFeature("renderer:pbr");
+            context.reachFeature("camera:free", call);
+            context.reachFeature("loader:babylon", call);
+            context.reachFeature("material:standard", call);
+            context.reachFeature("renderer:pbr", call);
             return {
                 kind: "asset",
                 cpp:
@@ -307,7 +307,7 @@ export function compileAssetIntrinsic(
             const size = call.arguments[3]
                 ? context.compileNumber(call.arguments[3])
                 : "100.0f";
-            context.reachFeature("background:image-skybox");
+            context.reachFeature("background:image-skybox", call);
             return {
                 kind: "void",
                 cpp:
@@ -384,18 +384,18 @@ export function compileAssetIntrinsic(
                       "texture",
                   )
                 : undefined;
-            context.reachFeature("environment:ibl");
-            context.reachFeature("environment:env");
+            context.reachFeature("environment:ibl", call);
+            context.reachFeature("environment:env", call);
             // The deferred builder's ground arm is `!bgOptions.skipGround`
             // alone: `buildGroundRenderable` takes the texture URL as
             // optional and falls back to a 1x1 white texel, so a scene that
             // names no ground texture and skips no ground still gets a
             // ground.
             if (!options.skipGround) {
-                context.reachFeature("background:ground");
+                context.reachFeature("background:ground", call);
             }
             if (skyboxAsset || skyboxUsesEnvironment) {
-                context.reachFeature("background:skybox");
+                context.reachFeature("background:skybox", call);
             }
             // The deferred builder's own condition: a scene that names no DDS
             // or .env skybox and does not skip one gets the solid-colour cube
@@ -405,7 +405,7 @@ export function compileAssetIntrinsic(
                 !skyboxUsesEnvironment &&
                 !options.skipSkybox;
             if (solidSkybox) {
-                context.reachFeature("background:solid-skybox");
+                context.reachFeature("background:solid-skybox", call);
             }
             return {
                 kind: "void",
@@ -461,8 +461,8 @@ export function compileAssetIntrinsic(
                       "texture",
                   )
                 : undefined;
-            context.reachFeature("environment:ibl");
-            context.reachFeature("environment:dds");
+            context.reachFeature("environment:ibl", call);
+            context.reachFeature("environment:dds", call);
             return {
                 kind: "void",
                 cpp:
@@ -517,10 +517,10 @@ export function compileAssetIntrinsic(
                 "generated:pinned-ibl-brdf-lut",
                 "texture",
             );
-            context.reachFeature("environment:ibl");
-            context.reachFeature("environment:hdr");
+            context.reachFeature("environment:ibl", call);
+            context.reachFeature("environment:hdr", call);
             if (options.useCubemapSkybox) {
-                context.reachFeature("background:skybox");
+                context.reachFeature("background:skybox", call);
             }
             return {
                 kind: "void",

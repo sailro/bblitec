@@ -29,7 +29,7 @@ export function compileLightIntrinsic(
             const intensity = call.arguments[1]
                 ? context.compileNumber(call.arguments[1])
                 : "1.0f";
-            context.reachFeature("light:hemispheric");
+            context.reachFeature("light:hemispheric", call);
             return {
                 kind: "light",
                 cpp:
@@ -48,7 +48,7 @@ export function compileLightIntrinsic(
             const intensity = call.arguments[1]
                 ? context.compileNumber(call.arguments[1])
                 : "1.0f";
-            context.reachFeature("light:directional");
+            context.reachFeature("light:directional", call);
             return {
                 kind: "light",
                 cpp:
@@ -67,7 +67,7 @@ export function compileLightIntrinsic(
             const intensity = call.arguments[1]
                 ? context.compileNumber(call.arguments[1])
                 : "1.0f";
-            context.reachFeature("light:point");
+            context.reachFeature("light:point", call);
             return {
                 kind: "light",
                 cpp:
@@ -91,7 +91,7 @@ export function compileLightIntrinsic(
             const intensity = call.arguments[4]
                 ? context.compileNumber(call.arguments[4])
                 : "1.0f";
-            context.reachFeature("light:spot");
+            context.reachFeature("light:spot", call);
             return {
                 kind: "light",
                 cpp:

@@ -177,7 +177,7 @@ export function compileSpriteIntrinsic(
                 options,
                 "premultiplyOnLoad",
             );
-            context.reachFeature("sprite:2d");
+            context.reachFeature("sprite:2d", call);
             return {
                 kind: "sprite-atlas",
                 cpp:
@@ -250,7 +250,7 @@ export function compileSpriteIntrinsic(
             const engineCpp =
                 atlas.engineCpp ??
                 context.requireDefaultEngine(call);
-            context.reachFeature("sprite:2d");
+            context.reachFeature("sprite:2d", call);
             return {
                 kind: "sprite-layer",
                 cpp:
@@ -326,7 +326,7 @@ export function compileSpriteIntrinsic(
             const engineCpp =
                 layer.engineCpp ??
                 context.requireDefaultEngine(call);
-            context.reachFeature("sprite:2d");
+            context.reachFeature("sprite:2d", call);
             return {
                 kind: "number",
                 cpp:
@@ -391,8 +391,8 @@ export function compileSpriteIntrinsic(
                 options,
                 call,
             );
-            context.reachFeature("sprite:2d");
-            context.reachFeature("renderer:sprite");
+            context.reachFeature("sprite:2d", call);
+            context.reachFeature("renderer:sprite", call);
             return {
                 kind: "sprite-renderer",
                 cpp:
@@ -417,7 +417,7 @@ export function compileSpriteIntrinsic(
                 "sprite-renderer",
                 call.arguments[0]!,
             );
-            context.reachFeature("renderer:sprite");
+            context.reachFeature("renderer:sprite", call);
             return {
                 kind: "void",
                 cpp: `bbl::register_sprite_renderer(${

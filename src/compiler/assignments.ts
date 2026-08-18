@@ -166,8 +166,8 @@ function emitFrameGraphTransmission(
         "scene",
         frameGraph.arguments[0]!,
     );
-    context.reachFeature("renderer:pbr");
-    context.reachFeature("renderer:transmission");
+    context.reachFeature("renderer:pbr", expression);
+    context.reachFeature("renderer:transmission", expression);
     context.emit(
         `bbl::enable_scene_transmission(${scene.cpp});`,
     );
@@ -311,7 +311,12 @@ export interface AssignmentContext {
         expression: ts.Expression,
     ): boolean;
     emit(line: string): void;
-    reachFeature(feature: Feature): void;
+    /**
+     * Records the feature and its first reaching scene-source call
+     * site (here the assignment expression), so the activation
+     * inventory can cite file:line.
+     */
+    reachFeature(feature: Feature, site: ts.Node): void;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -664,9 +669,7 @@ export function emitPropertyAssignment(
                     `${morph.morphTarget.weightCpp});`,
             );
             morph.morphTarget.meshCpp = target.cpp;
-            context.reachFeature(
-                "mesh:morph-targets",
-            );
+            context.reachFeature("mesh:morph-targets", expression);
             return;
         }
 

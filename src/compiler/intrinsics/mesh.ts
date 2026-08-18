@@ -108,7 +108,7 @@ export function compileMeshIntrinsic(
                 hasTangents: optional[2] !== "{}",
                 hasColors: optional[3] !== "{}",
             });
-            context.reachFeature("mesh:from-data");
+            context.reachFeature("mesh:from-data", call);
             return {
                 kind: "mesh",
                 cpp:
@@ -152,7 +152,7 @@ export function compileMeshIntrinsic(
             const count = context.compileNumber(
                 call.arguments[2]!,
             );
-            context.reachFeature("mesh:thin-instances");
+            context.reachFeature("mesh:thin-instances", call);
             return {
                 kind: "void",
                 cpp:
@@ -173,10 +173,8 @@ export function compileMeshIntrinsic(
             const count = context.compileNumber(
                 call.arguments[1]!,
             );
-            context.reachFeature("mesh:thin-instances");
-            context.reachFeature(
-                "mesh:thin-instances-dynamic",
-            );
+            context.reachFeature("mesh:thin-instances", call);
+            context.reachFeature("mesh:thin-instances-dynamic", call);
             return {
                 kind: "void",
                 cpp:
@@ -194,10 +192,8 @@ export function compileMeshIntrinsic(
                 "mesh",
                 call.arguments[0]!,
             );
-            context.reachFeature("mesh:thin-instances");
-            context.reachFeature(
-                "mesh:thin-instances-dynamic",
-            );
+            context.reachFeature("mesh:thin-instances", call);
+            context.reachFeature("mesh:thin-instances-dynamic", call);
             return {
                 kind: "void",
                 cpp:
@@ -219,7 +215,7 @@ export function compileMeshIntrinsic(
             const options = call.arguments[1]
                 ? context.compileBoxOptions(call.arguments[1])
                 : ["1.0f", "1.0f", "1.0f"];
-            context.reachFeature("mesh:box");
+            context.reachFeature("mesh:box", call);
             return {
                 kind: "mesh",
                 cpp:
@@ -250,7 +246,7 @@ export function compileMeshIntrinsic(
                       "1.0f",
                       "1.0f",
                   ];
-            context.reachFeature("mesh:ground");
+            context.reachFeature("mesh:ground", call);
             return {
                 kind: "mesh",
                 cpp:
@@ -277,7 +273,7 @@ export function compileMeshIntrinsic(
             const options = call.arguments[1]
                 ? context.compilePlaneOptions(call.arguments[1])
                 : ["1.0f", "1.0f"];
-            context.reachFeature("mesh:plane");
+            context.reachFeature("mesh:plane", call);
             return {
                 kind: "mesh",
                 cpp:
@@ -302,7 +298,7 @@ export function compileMeshIntrinsic(
             const options = call.arguments[1]
                 ? context.compileSphereOptions(call.arguments[1])
                 : ["32u", "1.0f", "1.0f", "1.0f"];
-            context.reachFeature("mesh:sphere");
+            context.reachFeature("mesh:sphere", call);
             return {
                 kind: "mesh",
                 cpp:
@@ -329,7 +325,7 @@ export function compileMeshIntrinsic(
                 `bbl::SphereMeshData ${temporary} = bbl::create_sphere_data(` +
                     `bbl::SphereOptions{${options.join(", ")}});`,
             );
-            context.reachFeature("mesh:sphere");
+            context.reachFeature("mesh:sphere", call);
             return {
                 kind: "record",
                 cpp: "",
@@ -454,9 +450,7 @@ export function compileMeshIntrinsic(
                     values.elements[0]!,
                 );
             }
-            context.reachFeature(
-                "mesh:morph-targets",
-            );
+            context.reachFeature("mesh:morph-targets", call);
             return {
                 kind: "morph-targets",
                 cpp: "",
@@ -515,9 +509,7 @@ export function compileMeshIntrinsic(
                     call.arguments[2]!,
                     "f32array",
                 );
-            context.reachFeature(
-                "mesh:morph-targets",
-            );
+            context.reachFeature("mesh:morph-targets", call);
             return {
                 kind: "void",
                 cpp:
@@ -539,7 +531,7 @@ export function compileMeshIntrinsic(
             const options = call.arguments[1]
                 ? context.compileTorusOptions(call.arguments[1])
                 : ["1.0f", "0.5f", "16u"];
-            context.reachFeature("mesh:torus");
+            context.reachFeature("mesh:torus", call);
             return {
                 kind: "mesh",
                 cpp:

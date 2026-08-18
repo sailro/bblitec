@@ -146,7 +146,7 @@ export function compileMaterialIntrinsic(
             if (channels.length === 3) {
                 channels.push("1.0f");
             }
-            context.reachFeature("material:pbr");
+            context.reachFeature("material:pbr", call);
             return {
                 kind: "texture",
                 cpp:
@@ -184,8 +184,8 @@ export function compileMaterialIntrinsic(
                 call.arguments[0]!,
             );
             context.expectSameEngine(baseColor, orm, call);
-            context.reachFeature("material:pbr");
-            context.reachFeature("renderer:pbr");
+            context.reachFeature("material:pbr", call);
+            context.reachFeature("renderer:pbr", call);
             if (
                 skyboxMode !== "false" ||
                 transmission !== "0.0f" ||
@@ -194,9 +194,7 @@ export function compileMaterialIntrinsic(
                     "bbl::Color3{1.0f, 1.0f, 1.0f}" ||
                 attenuationDistance !== "1.0f"
             ) {
-                context.reachFeature(
-                    "renderer:transmission",
-                );
+                context.reachFeature("renderer:transmission", call);
             }
             if (orm.textureFile) {
                 context.fail(
@@ -271,8 +269,8 @@ export function compileMaterialIntrinsic(
                 call.arguments[1]!,
             );
             context.expectSameEngine(scene, engine, call);
-            context.reachFeature("renderer:pbr");
-            context.reachFeature("renderer:transmission");
+            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:transmission", call);
             return {
                 kind: "void",
                 cpp: `bbl::enable_scene_transmission(${scene.cpp})`,
@@ -302,8 +300,8 @@ export function compileMaterialIntrinsic(
                       "false",
                       "true",
                   ];
-            context.reachFeature("material:grid");
-            context.reachFeature("renderer:pbr");
+            context.reachFeature("material:grid", call);
+            context.reachFeature("renderer:pbr", call);
             return {
                 kind: "material",
                 cpp:
@@ -329,8 +327,8 @@ export function compileMaterialIntrinsic(
             } else {
                 context.recordSceneMaterialSlot();
             }
-            context.reachFeature("material:no-color-view");
-            context.reachFeature("renderer:pbr");
+            context.reachFeature("material:no-color-view", call);
+            context.reachFeature("renderer:pbr", call);
             return {
                 kind: "material",
                 cpp:
@@ -374,8 +372,8 @@ export function compileMaterialIntrinsic(
                 context.compileShaderMaterialOptions(
                     call.arguments[0]!,
                 );
-            context.reachFeature("material:shader");
-            context.reachFeature("renderer:pbr");
+            context.reachFeature("material:shader", call);
+            context.reachFeature("renderer:pbr", call);
             return {
                 kind: "material",
                 cpp:
@@ -483,7 +481,7 @@ export function compileMaterialIntrinsic(
                 // renderer (its uniform block carries the skybox
                 // option), which the createPbrMaterial `skyboxMode`
                 // option used to reach before it became a setter.
-                context.reachFeature("renderer:transmission");
+                context.reachFeature("renderer:transmission", call);
             }
             const nativeSetter =
                 importedName === "setPbrUnlit"
@@ -524,11 +522,11 @@ export function compileMaterialIntrinsic(
                 roughness: Number.parseFloat(clearCoat[2]!),
                 indexOfRefraction: Number.parseFloat(clearCoat[3]!),
             });
-            context.reachFeature("material:clearcoat");
+            context.reachFeature("material:clearcoat", call);
             // `useF0Remap` is not a reached option, so a scene-code coat
             // always takes the pin's default: the remap is composed. Only
             // `gltf-ext-clearcoat.ts` turns it off.
-            context.reachFeature("material:clearcoat-f0-remap");
+            context.reachFeature("material:clearcoat-f0-remap", call);
             return {
                 kind: "void",
                 cpp:
@@ -573,11 +571,9 @@ export function compileMaterialIntrinsic(
                 albedoScaling: sheen.albedoScaling,
             });
             const engine = context.requireEngine(material, call);
-            context.reachFeature("material:sheen");
+            context.reachFeature("material:sheen", call);
             if (sheen.albedoScaling) {
-                context.reachFeature(
-                    "material:sheen-albedo-scaling",
-                );
+                context.reachFeature("material:sheen-albedo-scaling", call);
             }
             if (sheen.texture) {
                 const texture = context.compileValue(
@@ -634,8 +630,8 @@ export function compileMaterialIntrinsic(
             context.expectArgumentCount(call, 0, 0);
             const engine =
                 context.requireDefaultEngine(call);
-            context.reachFeature("material:standard");
-            context.reachFeature("renderer:pbr");
+            context.reachFeature("material:standard", call);
+            context.reachFeature("renderer:pbr", call);
             return {
                 kind: "material",
                 cpp: `bbl::create_standard_material(${engine})`,
@@ -651,11 +647,9 @@ export function compileMaterialIntrinsic(
             // so the call reaches the feature and emits no statement:
             // the generated Standard fragment carries the pinned slot.
             context.expectArgumentCount(call, 0, 0);
-            context.reachFeature("material:standard");
-            context.reachFeature(
-                "material:standard-vertex-colors",
-            );
-            context.reachFeature("renderer:pbr");
+            context.reachFeature("material:standard", call);
+            context.reachFeature("material:standard-vertex-colors", call);
+            context.reachFeature("renderer:pbr", call);
             return { kind: "void", cpp: "" };
         }
 
