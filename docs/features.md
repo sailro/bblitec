@@ -137,12 +137,11 @@ The feature list is finalized during compilation, before remote assets are
 materialized, with two deliberate exceptions joined afterwards: an asset's
 own `KHR_lights_punctual` kinds and `EXT_lights_image_based` become
 `light:*` and `environment:ibl` features, because light features select
-their own translation units, which only the feature list can (see
-[architecture](architecture.md#animation-and-deformation)). Every other
-capability an asset reaches without the scene source naming it lives in the
-capability header instead — scene transmission is the standing example,
-because Babylon Lite enables it from any transmissive material a loaded
-asset carries.
+`light_*.cpp` translation units, which only the feature list can. Every
+other capability an asset reaches without the scene source naming it lives
+in the capability header instead — scene transmission is the standing
+example, because Babylon Lite enables it from any transmissive material a
+loaded asset carries.
 
 **Why compile time:** there is no dynamic module loading, so upstream's own
 `import()`-behind-a-predicate boundaries have to be resolved somewhere, and
@@ -349,7 +348,9 @@ declares — the slot *count* is fixed at generation, and which lights fill them
 is run-time state — with each mesh lit by the set its assets name. Spot cones
 shade under the pinned cosine-and-exponent falloff on Standard surfaces and
 the physical falloff in the PBR extra-light slots. PBR carries two analytic
-slots.
+slots in single-light mode; under multi-light the shape is the primary slot
+plus a seven-entry extras loop, with the second analytic slot deliberately
+disabled.
 
 ### Materials and material state
 
@@ -402,10 +403,10 @@ source normals.
 ### Sprites
 
 Pure-2D `depth: "none"` layers drawn by their own sprite renderer with no
-scene at all — the frame table is derived at load from the decoded atlas's own
-width and height, and each sprite's position, size, frame, tint, rotation and
-flip are written per frame into the pinned instance layout for the
-straight-alpha blend. Both GPU backends draw it from one generated WGSL pair.
+scene at all: the frame grid derived at load from the decoded atlas,
+per-sprite instance writes, and the straight-alpha blend, on both GPU
+backends from one generated WGSL pair. The pinned renderer split and
+instance layout are in [fidelity](fidelity.md#shader-contract).
 
 ### Frame graph
 
@@ -476,11 +477,9 @@ of a measurement that does not mean what it looks like.
 
 Requested environment grounds and DDS/HDR/solid-colour skyboxes render by
 default and are disabled independently with `BBLITE_GROUND=0` and
-`BBLITE_BACKGROUND=0`. Which skybox a scene gets is decided at generation from
-the two URLs and the pinned `skipSkybox` flag, exactly as `load-env.ts`'s
-deferred builder decides it: a `.dds` URL takes the DDS arm, a URL naming the
-`.env` itself takes the environment cubemap, and a scene naming neither and
-skipping neither gets the solid-colour cube.
+`BBLITE_BACKGROUND=0`. Which skybox arm a scene gets is decided at generation
+from the two URLs and the pinned `skipSkybox` flag
+([fidelity](fidelity.md#shader-contract) carries the three-way rule).
 
 ## Boundaries
 
@@ -541,9 +540,12 @@ generated code refuses them explicitly instead of shading something plausible:
 
 ### Platform validation
 
-D3D12 is validated locally. Vulkan and Metal artifacts are generated but still
-require real-device validation, and the Dawn integration is Windows-only today
-by configuration rather than architecture. See [backends](backends.md).
+D3D12 is validated locally. Vulkan has one recorded device run (Windows NVIDIA
+through SDL_GPU: the Standard family correct, the PBR family mis-shading —
+[TODO](../TODO.md)'s Vulkan section carries the findings); Metal artifacts are
+generated but untested, and the Dawn integration is Windows-only today by
+configuration rather than architecture
+([backends](backends.md#honest-comparison)).
 
 ---
 

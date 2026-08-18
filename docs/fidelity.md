@@ -306,8 +306,13 @@ Requested generated grounds render by default. Their mesh is translated to the
 computed scene root while Babylon Lite's fade calculation deliberately keeps
 `backgroundCenter` at the world origin; Scenes 1, 6, 13, and 14 gate that
 distinction. Requested DDS skyboxes use Babylon's finite root-positioned cube
-and normal scene view-projection. Grounds and DDS/HDR/solid-colour skyboxes can be disabled
-independently with `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0`.
+and normal scene view-projection. Which skybox a scene gets is decided at
+generation from the two URLs and the pinned `skipSkybox` flag, exactly as
+`load-env.ts`'s deferred builder decides it: a `.dds` URL takes the DDS arm, a
+URL naming the `.env` itself takes the environment cubemap, and a scene naming
+neither and skipping neither gets the solid-colour cube. Grounds and
+DDS/HDR/solid-colour skyboxes can be disabled independently with
+`BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0`.
 
 **The background skybox cube culls back faces; only the image skybox does
 not.** The DDS, HDR, and solid background skyboxes build their pipeline through
@@ -525,11 +530,10 @@ factor becomes the extension's `specularFactor` and reflectance returns to its
 default, which is also how the pin resolves the two extensions against each
 other — the specular factor overwrites the one the index of refraction seeded.
 
-DXC cannot be removed from the D3D12 path because Tint does not emit DXIL.
-Tint does emit SPIR-V, but its separate WGSL texture/sampler binding numbers do
-not directly satisfy SDL_GPU's dense corresponding-slot contract. Vulkan
-therefore still uses normalized Tint HLSL through DXC pending a verified
-binding-remap transform.
+DXC stays mandatory on the SDL_GPU offline paths — Tint emits no DXIL, and
+Vulkan temporarily recompiles normalized Tint HLSL through DXC
+([features](features.md#stage-2-compiling-wgsl-for-the-device) tabulates the
+paths and the binding-remap gap).
 
 Tint HLSL is normalized before DXC so texture and sampler registers are dense
 and corresponding, as required by SDL_GPU. D3D system-value inputs are ordered
@@ -706,5 +710,6 @@ images are evidence, not tuning targets: fixes must follow upstream semantics
 or metadata rather than scene or pixel heuristics.
 
 On Windows, runtime topology changes wait for GPU idle before appending
-resources. Screenshot/diagnostic capture is deferred until the following frame
-so upload and readback are never submitted in the same D3D12 command list.
+resources, and screenshot/diagnostic capture defers one frame
+([architecture](architecture.md#renderer) carries the deferral contract and
+its bounded grace period).

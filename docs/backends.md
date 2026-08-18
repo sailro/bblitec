@@ -9,12 +9,11 @@ bblitec ships two peer GPU render backends over one semantic core:
 
 Both consume the same generated render plans, uniforms, and vertex
 packing (`native/src/pal_gpu_shared.hpp`), differ only at the GPU API
-layer, and are measured against the same goldens. Every scene either
-backend can express passes on both, the two within a rounding step of
-each other everywhere and Dawn ahead where its stack is structurally
-closer (see the two MAD columns in [status](status.md)).
-`BBLITE_GPU_BACKEND=dawn` selects Dawn at runtime; SDL_GPU is the
-default. The SDL_Renderer CPU fallback is unrelated to either.
+layer, and are measured against the same goldens — a scene is
+integrated only when it passes on both, and [status](status.md)
+publishes the two MAD columns. `BBLITE_GPU_BACKEND=dawn` selects Dawn
+at runtime; SDL_GPU is the default. The SDL_Renderer CPU fallback is
+unrelated to either.
 
 Keeping both is deliberate: two independent compiler and API stacks
 that must agree pixel-for-pixel are a differential diagnostic no
@@ -112,9 +111,9 @@ Both backends render every expressible scene within its gate; the
 differences that remain are structural.
 
 **Parity.** The two backends sit within a rounding step of each other
-on every measured scene, and the differences that remain are
-structural: scene 259 is bit-exact on Dawn because the browser's own
-compiler eliminates SDL_GPU's DXC-versus-browser rounding; the
+on every measured scene: scene 259 is bit-exact on Dawn because the
+browser's own compiler eliminates SDL_GPU's DXC-versus-browser
+rounding; the
 transmission scenes keep a small Dawn edge (scene 33 foreground 0.010
 versus 0.007) from the scene-colour grab — SDL_GPU copies the
 resolved opaque colour where the pin reads the multisampled

@@ -276,18 +276,12 @@ uncapped storage-buffer morph path: a flat 6-float delta buffer and a
 pinned accumulation loop before skinning. Skins beyond 64 joints keep the
 general CPU deformation path rather than truncating.
 
-Two lists decide what a scene compiles, and they answer different questions.
-`BBLITE_RUNTIME_FEATURES` in `features.cmake` records what the scene's own
-TypeScript reached, finalized during compilation with two deliberate
-exceptions joined after the assets materialize: an asset's own
-`KHR_lights_punctual` kinds and `EXT_lights_image_based` become `light:*` and
-`environment:ibl` features, because light features select `light_*.cpp`
-translation units, which only the feature list can. `render_capabilities.hpp`
-records everything else the loaded assets reach, and it is written after
-asset specialization. A capability an asset can reach without the scene source naming
-it is therefore defined in the capability header rather than derived from the
-feature list; scene transmission is one, because Babylon Lite enables it from
-any transmissive material a loaded asset carries.
+Two generated lists decide what a scene compiles: `BBLITE_RUNTIME_FEATURES`
+in `features.cmake` from the scene's own TypeScript, and
+`render_capabilities.hpp` from the materialized assets. Which list answers
+which question — including the two deliberate asset-joined light and IBL
+exceptions — is in
+[features](features.md#feature-and-capability-selection).
 
 Generated `render_capabilities.hpp`, shader reflection, and native layout
 declarations must stay synchronized. The D3D12 pipeline failure encountered
@@ -309,30 +303,29 @@ architecture and comparison). The SDL_GPU offline shader targets:
 | Linux / Android | Vulkan | Tint HLSL → DXC SPIR-V (temporary) |
 | macOS / iOS | Metal | Tint MSL |
 
-The Dawn backend needs no offline shader artifacts: the generated
-WGSL feeds Dawn directly and its in-process Tint compiles per
-platform (D3D12 today).
+The Dawn backend needs none of these — it compiles the same WGSL
+in-process ([features](features.md#stage-2-compiling-wgsl-for-the-device)).
 
 Important contracts:
 
 - base-color/emissive textures are sRGB; normal/ORM textures are linear
-- `.env` RGBD cubemap rows are vertically reversed for SDL_GPU upload
+- `.env` RGBD cubemap faces upload Y-flipped — pinned behavior, not an SDL
+  adaptation ([backends](backends.md#ported-pinned-contracts))
 - compiled HDR cubemaps are linear RGBA16F with mip-major, face-major layout
 - DDS skyboxes are RGBA16F with face-major, mip-minor layout
 - alpha mode, cutoff, blending, culling, and coverage are material-driven
-- requested environment grounds render by default; their translated geometry
-  retains Babylon Lite's world-origin fade center
+- requested environment grounds render by default and keep Babylon Lite's
+  world-origin fade center ([fidelity](fidelity.md#shader-contract))
 - PBR material-extension textures and uniforms are appended after the base
   and transmission bindings, selected only by the generated
   `render_capabilities.hpp` defines for the reached glTF extensions
 - PAL executes generated draw-command indices and pipeline keys rather than
   rescanning every mesh once per pipeline
-- frame-graph viewport copies preserve Babylon Lite's double-precision
-  normalized coordinates, floor them to integer target bounds, and apply the
-  same scissor rectangle before drawing
-- transmission resolves and stores the multisample opaque color attachment,
-  copies the resolved RGBA16F scene color, then reloads the preserved
-  multisample color and depth attachments for transmissive draws
+- frame-graph viewport copies keep the pinned double-precision
+  floor-and-scissor viewport contract ([fidelity](fidelity.md#attribution))
+- transmission preserves the multisample color and depth attachments around
+  the scene-color grab ([fidelity](fidelity.md#shader-contract) carries the
+  pass shape)
 - screenshot capture uses a readable target, then blits to the swapchain
 - capture is deferred one frame when scene topology changes so D3D12 upload
   and readback commands do not share an invalid command list; the frame loop
@@ -361,24 +354,16 @@ same reached quaternion mesh transforms.
 
 ## Backend rationale
 
-The project keeps two complete GPU backends on purpose. The Dawn
-backend renders through the browser reference's own compiler and
-rasterization stack (the pinned Dawn commit shared with the Tint
-pin), which makes parity structural instead of adapted: the two sit
-within a rounding step of each other on every scene, and Dawn
-uniquely expresses the pinned multisampled scene-color read. The
-SDL_GPU backend is the independent implementation: offline-compiled
-shaders through a different toolchain and API. Two stacks that must
-agree pixel-for-pixel form the project's sharpest diagnostic — their
-direct diff separates CPU-side causes from GPU-side ones immediately.
-[Backends](backends.md) carries the full comparison, build recipes,
-and the ported pinned contracts.
+The project keeps two complete GPU backends on purpose: two stacks
+that must agree pixel-for-pixel are a differential diagnostic that
+separates CPU-side causes from GPU-side ones immediately.
+[Backends](backends.md) carries the rationale, the full comparison,
+build recipes, and the ported pinned contracts.
 
 The shader-language migration is complete: all native GPU shaders originate as
-WGSL and compile through Tint. bblitec owns composition, SDL specialization,
-reflection checks, and fixed-function state. For SDL_GPU, Tint can emit SPIR-V
-directly, but its WGSL resource layout does not yet match SDL_GPU's dense
-paired texture/sampler convention; DXC therefore temporarily compiles
-normalized Tint HLSL for Vulkan too, and remains mandatory for DXIL. The Dawn
-backend consumes the same WGSL with no offline step. Remaining work is
-tracked only in [TODO](../TODO.md).
+WGSL and compile through Tint, with bblitec owning composition, SDL
+specialization, reflection checks, and fixed-function state. The SDL_GPU
+offline paths — including why DXC stays mandatory and why Vulkan temporarily
+recompiles Tint HLSL through it — are tabulated in
+[features](features.md#stage-2-compiling-wgsl-for-the-device). Remaining work
+is tracked only in [TODO](../TODO.md).

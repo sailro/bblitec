@@ -38,12 +38,21 @@ npm run scene -- neutrality artifacts/parity-baseline
 
 `process` runs compile, scene-local shader compilation, CMake configure, and
 parallel native build in order.
+The compiler CLI underneath (`node dist\src\cli.js <entry.ts> --out <dir>`)
+also takes `--title <text>`, `--width <pixels>` and `--height <pixels>` —
+the generated engine's window title and size, default 1280x720 — and
+`--id-diagnostics` for the attribution buffers. The scene command supplies
+the title and attribution flag from the registry and leaves the size at its
+default, which is what every golden is captured at.
 `diff` captures both renderers and reports where they disagree; `compose`
 checks our material feature derivation by composing each material through
 Babylon Lite's own pipeline and comparing the whole fragment against the
 captured one. See [debugging](debugging.md) for the ladder they sit in.
 `geometry` captures each existing geometry-output copy task full-screen in
-Babylon Lite and native without changing the curated scene source.
+Babylon Lite and native without changing the curated scene source; its
+native outputs and report carry the same `-gpu`/`-dawn` filename token as
+parity's, and it takes `--backend` and `--seek` (the latter with
+`--recapture-reference`) under the same rules.
 
 HDR scene compilation launches headless Chromium to run the pinned
 1024-sample GGX compute shader. Set `CHROME_PATH` when Chrome/Edge is not in a
@@ -530,14 +539,14 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | Variable | Purpose |
 | --- | --- |
 | `BBLITE_GPU=0` | force SDL_Renderer fallback |
-| `BBLITE_GPU_BACKEND=dawn` | select the Dawn (WebGPU) render backend |
+| `BBLITE_GPU_BACKEND=dawn` | select the Dawn (WebGPU) render backend; every backend-running scene subcommand also takes `--backend`, which wins over this variable and prints the override |
 | `BBLITE_GPU_REQUIRED=1` | fail instead of falling back |
 | `BBLITE_GPU_DEBUG=1` | enable the backend GPU validation layer |
 | `BBLITE_MSAA=1` | force single-sample rendering for diagnostics, on both backends: it answers whether a difference is multisampling by removing it |
 | `BBLITE_BACKGROUND=0` | disable a requested DDS/HDR/solid-colour skybox |
 | `BBLITE_GROUND=0` | disable a requested transparent environment ground |
 | `BBLITE_MAX_FRAMES=<n>` | automated frame limit |
-| `BBLITE_ANIMATION_SEEK_SECONDS=<t>` | seek the deterministic clock before the measured frame (parity sets it from the registry, `capture`/`diff` from `--seek`) |
+| `BBLITE_ANIMATION_SEEK_SECONDS=<t>` | seek the deterministic clock before the measured frame (registry entries pin per-scene poses; `--seek` on `parity`/`geometry`/`capture`/`diff` overrides) |
 | `BBLITE_TEST_PASS=1` | the measured-run contract the harnesses set: capture-driven frame gating |
 | `BBLITE_ID_BUFFER=<path>` / `BBLITE_CLUSTER_BUFFER=<path>` | write the draw-id / triangle-cluster attribution buffers (set by `parity` for registry-attributed scenes) |
 | `BBLITE_COPY_TASK=<name>` | select one frame-graph copy task full-screen (driven by `scene -- geometry`) |
@@ -598,9 +607,24 @@ reporting an unthresholded pass. Ad-hoc GPU scenes without configured
 thresholds remain available, but reports and console output label them
 `diagnostic-only`.
 
-Outputs under `artifacts\parity` include the actual image, diff map, hotspots,
-JSON report, and optional draw/cluster buffers. Committed goldens
-live under `reference\<scene>`.
+The full parity flag set (an unknown flag is an error naming this set):
+
+| Flag | Effect |
+| --- | --- |
+| `--backend sdl_gpu\|dawn\|cpu` | select the backend. `gpu` is accepted for `sdl_gpu`, and `--cpu` still means `--backend cpu`. Ambient `BBLITE_GPU_BACKEND` is the fallback; an explicit flag that disagrees with it wins and prints the override. |
+| `--seek <t>` | measure pose `<t>` instead of the registry pose, on both sides — the browser capture seeks through the harness, the native run through `BBLITE_ANIMATION_SEEK_SECONDS`. Requires `--recapture-reference` while a golden exists, because a seeked native against an unseeked golden compares two different poses. |
+| `--recapture-reference` | intentionally replace the golden (see above) |
+| `--differential` | both GPU backends plus their direct comparison (below); accepts only `--gpu-debug` beside it |
+| `--gpu-debug` | the backend's validation layer plus SDL assertion defusal (see [debugging](debugging.md#runtime-switches-worth-knowing)) |
+| `--exe <path>` | measure a specific native executable instead of the scene's Release build; `BBLITE_NATIVE_EXE` is the environment form of the same override |
+| `--actual <png>` | compare an existing image instead of rendering one |
+| `--no-fail` | report a threshold violation as a warning instead of a failing exit |
+
+Outputs land in the scene's parity directory `artifacts\parity\<scene>`:
+the actual image as `native-{gpu,dawn,cpu}.png` — suffixed per backend, so
+an SDL_GPU run and a Dawn run never overwrite each other's evidence — plus
+the diff map, hotspots, `report-{gpu,dawn,cpu}.json`, and optional
+draw/cluster buffers. Committed goldens live under `reference\<scene>`.
 
 Both GPU backends serve the attribution captures. `BBLITE_GPU_BACKEND=dawn`
 before any of the scene 1 commands renders the draw-id and triangle-cluster
@@ -622,9 +646,10 @@ SDL_GPU-versus-Dawn comparison — backend agreement to one LSB puts a
 divergence on the CPU side, disagreement puts it on the GPU side.
 `--differential` also composes with `parity all`. It runs each backend in its
 own process, because the backend selection is process-global, and those
-processes receive only the differential flag — so it does not carry
-`--recapture-reference`. Capture a new golden with a plain
-`parity <id> --recapture-reference` first, then run the differential.
+processes receive only the differential flag — combining it with anything
+except `--gpu-debug` is an error rather than a silent drop. Capture a new
+golden with a plain `parity <id> --recapture-reference` first, then run the
+differential.
 
 ## Instrumented browser capture
 
@@ -677,10 +702,12 @@ ambiguity. `--module <substring>` narrows it once the right fragment is known,
 and `--capture <dir>` reads a capture written somewhere other than
 `artifacts\capture\<scene>`.
 
-`--seek` overrides the registry's `referenceTimeSeconds`, and
-`--skip-draw <indexCount>` drops matching draws for per-draw
-isolation; pair it with a matching temporary filter in the native
-frame loop to localize a residual to a single draw. The recorded
+`--seek` overrides the registry's `referenceTimeSeconds`,
+`--capture <dir>` writes the capture somewhere other than
+`artifacts\capture\<scene>`, and `--skip-draw <indexCount>` drops
+matching draws for per-draw isolation; pair it with a matching
+temporary filter in the native frame loop to localize a residual to a
+single draw. The recorded
 buffer bytes support bit-level comparison against native uploads —
 weights, morph deltas, instance matrices, material UBOs, and factor
 texels. This workflow resolved the scene 243 occlusion gap and the
@@ -709,7 +736,13 @@ that uploaded correct bytes to the wrong slot still looks correct here;
 that is what `parity --differential` is for.
 
 The run is subject to the same build-identity checks as a measured parity
-run, so a capture cannot silently describe a stale executable.
+run, so a capture cannot silently describe a stale executable. The capture
+lands beside the browser capture as `native-{gpu,dawn}.json` with its
+screenshot — the same `gpu` filename token the parity artifacts use, while
+`--backend` keeps the unambiguous `sdl_gpu|dawn` values (`gpu` accepted,
+ambient `BBLITE_GPU_BACKEND` as the fallback). `--capture <dir>` redirects
+the output directory and `--gpu-debug` turns the backend's validation
+layer on for the run.
 
 ```powershell
 npm run scene -- diff scene33
@@ -723,6 +756,13 @@ named through the struct declarations in the scene's own generated
 `renderer_plan.hpp`; browser buffers through the structs in the browser's
 own composed shaders. See [debugging](debugging.md) for how to read the
 report, including why a byte-exact scene still lists entries.
+
+Its flags: `--backend` selects which native capture to pair (values and
+fallback as above), `--seek <t>` diffs pose `<t>` instead of the registry
+pose, `--capture <dir>` reads and writes a capture directory other than
+`artifacts\capture\<scene>`, `--recapture` forces both sides fresh, and
+`--gpu-debug` applies to the native recapture. The paired report is
+written beside the captures as `diff-{gpu,dawn}.json`.
 
 ## Build identity
 

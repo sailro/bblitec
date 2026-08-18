@@ -41,7 +41,7 @@ meaningful, and stopping early is how a wrong branch gets taken.
 | 2 | Is the difference on the CPU or the GPU side? | `scene -- parity <id> --differential` |
 | 3 | Which value differs from Babylon Lite's? | `scene -- diff <id>` |
 | 4 | What exactly did the browser upload into that buffer? | `scene -- capture <id>` then `scene -- uniforms <id> --size N` |
-| 4b | What did *we* put in the pinned variant's blocks? | `scene -- diff <id> --recapture`, then `pinnedMaterialBlocks` / `pinnedMeshBlocks` in `artifacts/capture/<id>/native-sdl_gpu.json` — built by the same writers the draw path calls, CPU-side, so refused variants appear too. Diff the two listings field by field; a pinned-path residual is an input, never the shader, once `scene -- compose` matches byte-for-byte |
+| 4b | What did *we* put in the pinned variant's blocks? | `scene -- diff <id> --recapture`, then `pinnedMaterialBlocks` / `pinnedMeshBlocks` in `artifacts/capture/<id>/native-gpu.json` — built by the same writers the draw path calls, CPU-side, so refused variants appear too. Diff the two listings field by field; a pinned-path residual is an input, never the shader, once `scene -- compose` matches byte-for-byte |
 | 5 | Which draw owns the bad pixels? | attribution buffers in `artifacts/parity/<id>` |
 | 6 | Does removing the feature remove the residual? | copy the scene to `examples/`, strip it, `parity --recapture-reference` |
 | 7 | Did we derive the material's features at all? | `scene -- compose <id>` — composes each material through the pin and checks the whole fragment against the captured one |
@@ -57,7 +57,9 @@ at least once:
   compared file by file; a shader step that failed without stopping the
   build is otherwise invisible.
 - **The golden.** A reference is only valid for the registry parameters
-  it was captured under. If native and `scene -- capture <id> --seek <t>`
+  it was captured under
+  ([development](development.md#integrating-a-curated-parity-scene) carries
+  the full contract). If native and `scene -- capture <id> --seek <t>`
   agree with each other but the golden disagrees with both, the golden is
   stale — recapture it with `parity <id> --recapture-reference` before
   debugging anything else.
@@ -165,8 +167,8 @@ are two materials: a double-buffered material looks like two.
 
 Registry-enabled scenes emit draw-id and triangle-cluster buffers, and
 the parity report joins them to glTF nodes, meshes, materials, alpha mode
-and double-sided state. Read `report.json`'s hotspots to get a tile, then
-the id attribution to get the draw.
+and double-sided state. Read `report-<backend>.json`'s hotspots to get a
+tile, then the id attribution to get the draw.
 
 `scene -- capture <id> --skip-draw <indexCount>` drops matching draws in
 the browser, which isolates one draw's contribution when paired with a
@@ -234,6 +236,10 @@ assumption about it.
 Its one blind spot is a material the *scene* built rather than the asset —
 `createPbrMaterial` plus a `setPbr*` call — which it flags rather than
 reporting as a bare gap.
+
+`--capture <dir>` compares against a capture written somewhere other than
+`artifacts/capture/<scene>`; it names one scene's capture directory, so it
+does not compose with `all`.
 
 ## Sizing a scene before writing any code
 
@@ -304,7 +310,7 @@ the wrong one wastes the run:
 | `capture` | The browser's ground truth: composed WGSL, texture uploads, per-draw isolation with `--skip-draw`. `diff` consumes a subset of it and reports differences; the capture itself is what you read when `diff` says a value has no counterpart. |
 | `uniforms` | One browser buffer in full, decoded under **every** candidate layout of its size, ambiguity included. `diff` picks a correspondence; `uniforms` refuses to and shows you all of them. |
 | attribution buffers | Which draw owns which pixels, joined to nodes, meshes, materials and alpha state. Nothing else maps a screen region to a draw. |
-| `geometry` | Frame-graph copy-task attachments at full resolution. `diff` does not look at render targets at all. |
+| `geometry` | Frame-graph copy-task attachments at full resolution. `diff` does not look at render targets at all. Takes `--backend` and `--seek` (the latter with `--recapture-reference`) under the same rules as `parity`. |
 | `BBLITE_DEFORMATION_DUMP` | Bone palettes and morph weights per mesh. The render capture records the material and scene uniforms, not the skinning matrices. |
 | `compose` | Whether our *feature derivation* is right, which every tool above assumes. They compare what two renderers did; `compose` compares what Babylon Lite would have built against what we built it from, so it catches a fragment that is missing an arm entirely — the failure that renders as a plausible small bias and never as an error. |
 
@@ -323,14 +329,23 @@ out the entire class of defect in one command.
 | --- | --- | --- |
 | `artifacts/parity/<id>/report-{gpu,dawn,cpu}.json` | `parity` | MAD, region breakdown, hotspots, attribution, per backend |
 | `artifacts/parity/<id>/report-differential.json` | `parity --differential` | both backends plus their direct comparison |
+| `artifacts/parity/<id>/native-{gpu,dawn,cpu}.png` | `parity` | the native actual, suffixed per backend so runs cannot overwrite each other |
 | `artifacts/parity/<id>/diff-map-<backend>.png`, `hotspots-<backend>.png` | `parity` | where the pixels differ |
+| `artifacts/parity/<id>/geometry/<task>-{lite,native-<backend>,diff-<backend>}.png`, `report-<backend>.json` | `geometry` | frame-graph copy-task attachments: the browser reference (backend-free `-lite`), the native attachment and diff per backend |
 | `artifacts/capture/<id>/shaders/*.wgsl` | `capture` | the browser's own composed shader modules |
 | `artifacts/capture/<id>/buffers.json` | `capture` | every browser buffer, with the last eight writes |
 | `artifacts/capture/<id>/draws.json` | `capture` | the browser draw census, bundles included |
 | `artifacts/capture/<id>/tex-uploads.json` | `capture` | texture uploads, with raw bytes for small texels |
-| `artifacts/capture/<id>/native-<backend>.json` | `capture --native` | our scene model, draw list and uniform blocks |
-| `artifacts/capture/<id>/capture-meta.json`, `native-<backend>.meta.json` | `capture` / `capture --native` | the seek each capture was taken at, read by `diff`'s reuse check |
-| `artifacts/capture/<id>/diff-<backend>.json` | `diff` | the paired report |
+| `artifacts/capture/<id>/native-{gpu,dawn}.json` | `capture --native` | our scene model, draw list and uniform blocks (`diff` still reads a pre-rename `native-sdl_gpu.json` when only that exists) |
+| `artifacts/capture/<id>/capture-meta.json`, `native-{gpu,dawn}.meta.json` | `capture` / `capture --native` | the seek each capture was taken at, read by `diff`'s reuse check |
+| `artifacts/capture/<id>/diff-{gpu,dawn}.json` | `diff` | the paired report |
+
+One filename token per backend everywhere: `gpu` is SDL_GPU and `dawn` is
+Dawn, in parity, capture, diff and geometry artifacts alike — `--backend`
+values stay `sdl_gpu|dawn`. Every JSON report above also carries `tool`,
+`backend`, `generatedStamp` and `writtenAt` provenance fields; they are
+strings, which is what keeps them invisible to `scene -- neutrality`'s
+numeric cell comparison.
 
 ## Runtime switches worth knowing
 
@@ -342,7 +357,7 @@ These are the diagnostic ones:
 | `BBLITE_RENDER_CAPTURE=<path>` | write the frame's full CPU-side description as JSON |
 | `BBLITE_DEFORMATION_DUMP=<path>` | append first-frame bone palettes and morph weights as hexfloats |
 | `BBLITE_GPU_BACKEND=dawn` | select Dawn in a dual-backend build |
-| `BBLITE_GPU_DEBUG=1` | enable the backend debug layer (prefer `parity --gpu-debug`, which also defuses SDL's assertion handler) |
+| `BBLITE_GPU_DEBUG=1` | enable the backend debug layer (prefer `--gpu-debug`, which `parity`, `diff` and `capture --native` all take and which also defuses SDL's assertion handler) |
 | `BBLITE_MSAA=1` | render single-sampled |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | drive a headless measured run |
 
