@@ -22,6 +22,11 @@
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
 
+// The custom-shader stage blocks are reported through the same
+// `shader_stage_block_floats` packing both backends push, so a capture
+// diff can never disagree with an upload about the block's bytes.
+#include "pal_gpu_shared.hpp"
+
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 
 #include <bblite/upstream/build_stamp.hpp>
@@ -829,21 +834,11 @@ inline void write_draw_uniforms(
                         const upstream::ShaderVariantStageBlock& block,
                         const char* stage) {
                         if (!block.present) return;
-                        std::vector<float> floats(block.float_size, 0.0f);
-                        if (block.system_matrix) {
-                            std::copy_n(
-                                view_projection.data(), 16, floats.begin());
-                        }
-                        for (const std::array<std::uint32_t, 3>& gather :
-                             block.gather) {
-                            for (std::uint32_t offset = 0;
-                                 offset < gather[2];
-                                 ++offset) {
-                                floats[gather[0] + offset] =
-                                    material.shader_uniform_values
-                                        [gather[1] + offset];
-                            }
-                        }
+                        const std::vector<float> floats =
+                            shader_stage_block_floats(
+                                block,
+                                view_projection.data(),
+                                material);
                         write_float_block(
                             json,
                             stage,

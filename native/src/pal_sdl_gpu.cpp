@@ -85,6 +85,31 @@ constexpr std::size_t pbr_texture_binding_capacity =
               pbr_texture_binding_count + standard_bump_binding_count)
         : 9u;
 
+SDL_GPUBlendFactor gpu_blend_factor(BlendFactor factor) {
+    switch (factor) {
+        case BlendFactor::one:
+            return SDL_GPU_BLENDFACTOR_ONE;
+        case BlendFactor::src_alpha:
+            return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        case BlendFactor::one_minus_src_alpha:
+            return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    }
+    return SDL_GPU_BLENDFACTOR_ONE;
+}
+
+// A shared blend tuple in this API's state; the operation is always add
+// (`transparent_blend` / `ground_blend`, pal_gpu_shared.hpp).
+SDL_GPUColorTargetBlendState blend_state_from(const BlendFactors& factors) {
+    SDL_GPUColorTargetBlendState blend{};
+    blend.enable_blend = true;
+    blend.color_blend_op = SDL_GPU_BLENDOP_ADD;
+    blend.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+    blend.src_color_blendfactor = gpu_blend_factor(factors.src_color);
+    blend.dst_color_blendfactor = gpu_blend_factor(factors.dst_color);
+    blend.src_alpha_blendfactor = gpu_blend_factor(factors.src_alpha);
+    blend.dst_alpha_blendfactor = gpu_blend_factor(factors.dst_alpha);
+    return blend;
+}
 
 struct GpuMesh {
     SDL_GPUBuffer* vertices = nullptr;
@@ -241,16 +266,6 @@ struct GpuSolidSkybox {
     bool enabled = false;
 };
 #endif
-
-struct IdUniforms {
-    float id_color[4];
-    float alpha_options[4];
-};
-
-struct ClusterUniforms {
-    std::uint32_t cluster_options[4];
-    float alpha_options[4];
-};
 
 struct GpuRenderTarget {
     SDL_GPUTexture* color = nullptr;
@@ -704,18 +719,8 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         kind == Kind::pbr_transparent_none_clockwise;
     SDL_GPUColorTargetDescription color_target{};
     color_target.format = state.pinned_color_format;
-    SDL_GPUColorTargetBlendState blend{};
     if (transparent) {
-        blend.enable_blend = true;
-        blend.color_blend_op = SDL_GPU_BLENDOP_ADD;
-        blend.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-        blend.dst_color_blendfactor =
-            SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        blend.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-        blend.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
-        blend.dst_alpha_blendfactor =
-            SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        color_target.blend_state = blend;
+        color_target.blend_state = blend_state_from(transparent_blend);
     }
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = vertex_shader;
@@ -780,13 +785,17 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
              geometry_task->geometry.attachments) {
             SDL_GPUColorTargetDescription target{};
             target.format = geometry_texture_format(description);
-            if (transparent) target.blend_state = blend;
+            if (transparent) {
+                target.blend_state = blend_state_from(transparent_blend);
+            }
             geometry_targets.push_back(target);
         }
         if (geometry_task->geometry.target.value != invalid_handle) {
             SDL_GPUColorTargetDescription target{};
             target.format = state.pinned_color_format;
-            if (transparent) target.blend_state = blend;
+            if (transparent) {
+                target.blend_state = blend_state_from(transparent_blend);
+            }
             geometry_targets.push_back(target);
         }
         if (geometry_targets.size() != entry.color_target_count) {
@@ -837,6 +846,7 @@ void write_pinned_bone_texture(
     const std::uint32_t bones =
         static_cast<std::uint32_t>(record.bone_matrices.size());
     if (bones == 0) return;
+    const BonePaletteLayout palette = bone_palette_layout(bones);
     if (!state.pinned_bone_sampler) {
         SDL_GPUSamplerCreateInfo sampler_info{};
         sampler_info.min_filter = SDL_GPU_FILTER_NEAREST;
@@ -862,8 +872,8 @@ void write_pinned_bone_texture(
         texture_info.type = SDL_GPU_TEXTURETYPE_2D;
         texture_info.format = SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
         texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        texture_info.width = bones * 4;
-        texture_info.height = 1;
+        texture_info.width = palette.width;
+        texture_info.height = palette.height;
         texture_info.layer_count_or_depth = 1;
         texture_info.num_levels = 1;
         texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
@@ -874,25 +884,25 @@ void write_pinned_bone_texture(
         }
         mesh.pinned_bone_count = bones;
     }
-    const std::size_t size =
-        record.bone_matrices.size() * sizeof(std::array<float, 16>);
     SDL_GPUTransferBufferCreateInfo transfer_info{};
     transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    transfer_info.size = static_cast<Uint32>(size);
+    transfer_info.size = palette.bytes;
     SDL_GPUTransferBuffer* transfer =
         SDL_CreateGPUTransferBuffer(state.device, &transfer_info);
     if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer");
     void* mapped = SDL_MapGPUTransferBuffer(state.device, transfer, false);
     if (!mapped) gpu_error("SDL_MapGPUTransferBuffer");
-    std::memcpy(mapped, record.bone_matrices.data(), size);
+    std::memcpy(mapped, record.bone_matrices.data(), palette.bytes);
     SDL_UnmapGPUTransferBuffer(state.device, transfer);
     SDL_GPUCommandBuffer* command =
         SDL_AcquireGPUCommandBuffer(state.device);
     if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
-    SDL_GPUTextureTransferInfo source{transfer, 0, bones * 4, 1};
+    SDL_GPUTextureTransferInfo source{
+        transfer, 0, palette.width, palette.height};
     SDL_GPUTextureRegion destination{
-        mesh.pinned_bone_texture, 0, 0, 0, 0, 0, bones * 4, 1, 1};
+        mesh.pinned_bone_texture, 0, 0, 0, 0, 0,
+        palette.width, palette.height, 1};
     SDL_UploadToGPUTexture(copy, &source, &destination, true);
     SDL_EndGPUCopyPass(copy);
     if (!SDL_SubmitGPUCommandBuffer(command)) {
@@ -943,33 +953,21 @@ void draw_pinned_variant(
         pinned_scene_block(scene, camera, matrix);
     const std::vector<std::uint8_t> pinned_lights =
         pinned_lights_block(scene, engine);
-    // A skinned draw takes the identity world with the
-    // MIRRORED vertex buffer: the loader's palette is the
-    // mirror-conjugated `jointWorld * IBM`, so against
-    // mirrored vertices the product collapses to the
-    // browser's own `M * jointWorld * IBM * v_unmirrored`,
-    // and adding the mirror world on top double-applies
-    // it -- the finding the Dawn backend's captured mesh
-    // blocks localised. An animated no-skin mesh rides
-    // the same convention with one matrix: its palette
-    // entry is `M * world * M`, passed as the pin's
-    // finalWorld against the mirrored buffer.
     const MeshRecord& pinned_record =
         engine.meshes[item.mesh.value];
-    const bool skeleton_draw =
-        pinned_variant_skeleton(pinned_variant);
-    const bool world_from_palette =
-        !skeleton_draw &&
-        !pinned_record.bone_matrices.empty();
-    const bool mirrored_vertices =
-        skeleton_draw || world_from_palette;
+    // `pinned_draw_conventions` states the skinned and
+    // palette-world contract these three booleans carry.
+    const PinnedDrawConventions conventions =
+        pinned_draw_conventions(
+            pinned_variant,
+            pinned_record);
     const upstream::MeshUniforms pinned_mesh =
         pinned_mesh_block(
             scene,
             engine,
             pinned_draw_world(
-                skeleton_draw,
-                world_from_palette,
+                conventions.skeleton_draw,
+                conventions.world_from_palette,
                 variant_entry.uses_local_position,
                 pinned_record),
             item.mesh.value);
@@ -1135,7 +1133,7 @@ void draw_pinned_variant(
         // mirrored buffer; the palette carries the mirror
         // on both sides, so unmirrored vertices would
         // apply it three times.
-        mirrored_vertices
+        conventions.mirrored_vertices
             ? mesh.vertices
             : mesh.pinned_vertices,
         0,
@@ -1250,12 +1248,9 @@ SDL_GPUTexture* upload_texture(
     texture_info.width = image.width;
     texture_info.height = image.height;
     texture_info.layer_count_or_depth = 1;
-    texture_info.num_levels =
-        1u + static_cast<Uint32>(
-                 std::floor(
-                     std::log2(
-                         static_cast<double>(
-                             std::max(image.width, image.height)))));
+    texture_info.num_levels = full_mip_chain(
+        static_cast<std::uint32_t>(image.width),
+        static_cast<std::uint32_t>(image.height));
     texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
     if (!texture) gpu_error("SDL_CreateGPUTexture");
@@ -1320,12 +1315,9 @@ SDL_GPUTexture* upload_cube_texture(
     texture_info.width = static_cast<Uint32>(width);
     texture_info.height = static_cast<Uint32>(height);
     texture_info.layer_count_or_depth = 6;
-    texture_info.num_levels =
-        1u + static_cast<Uint32>(
-                 std::floor(
-                     std::log2(
-                         static_cast<double>(
-                             std::max(width, height)))));
+    texture_info.num_levels = full_mip_chain(
+        static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(height));
     texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUTexture* texture =
         SDL_CreateGPUTexture(device, &texture_info);
@@ -1809,32 +1801,21 @@ SDL_GPUSampleCount task_sample_count(
 
 SDL_GPUTextureFormat geometry_texture_format(
     const GeometryTextureDescription& description) {
-    if (description.format == GeometryTextureFormat::r16_float) {
-        return SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
-    }
-    switch (description.type) {
-        case GeometryTextureType::reflectivity:
-        case GeometryTextureType::albedo:
+    switch (geometry_format_class(description)) {
+        case GeometryFormatClass::rgba8_unorm:
             return SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-        case GeometryTextureType::view_depth:
-            return SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
-        case GeometryTextureType::normalized_view_depth:
-        case GeometryTextureType::screenspace_depth:
+        case GeometryFormatClass::r16_float:
             return SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
-        case GeometryTextureType::irradiance:
-        case GeometryTextureType::world_position:
-        case GeometryTextureType::local_position:
-        case GeometryTextureType::view_normal:
-        case GeometryTextureType::world_normal:
-        case GeometryTextureType::linear_velocity:
+        case GeometryFormatClass::r32_float:
+            return SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+        case GeometryFormatClass::rgba16_float:
             return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
     }
     return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
 }
 
 SDL_FColor geometry_clear_color(GeometryTextureType type) {
-    const float value =
-        type == GeometryTextureType::normalized_view_depth ? 1.0f : 0.0f;
+    const float value = geometry_clear_component(type);
     return SDL_FColor{value, value, value, value};
 }
 
@@ -2090,33 +2071,20 @@ void save_geometry_id_buffer_png(
             const std::array<float, 4> alpha_options =
                 diagnostic_alpha_options(item, material);
             if (cluster_ids) {
-                ClusterUniforms uniforms{};
-                uniforms.cluster_options[0] = current_cluster_base;
-                uniforms.cluster_options[1] = 128;
-                std::copy_n(
-                    alpha_options.begin(),
-                    4,
-                    uniforms.alpha_options);
+                const DiagnosticClusterUniforms uniforms =
+                    diagnostic_cluster_uniforms(
+                        current_cluster_base,
+                        alpha_options);
                 SDL_PushGPUFragmentUniformData(
                     command,
                     0,
                     &uniforms,
                     sizeof(uniforms));
             } else {
-                const std::uint32_t draw_id =
-                    static_cast<std::uint32_t>(mesh_index + 1);
-                IdUniforms uniforms{};
-                uniforms.id_color[0] =
-                    static_cast<float>(draw_id & 0xffu) / 255.0f;
-                uniforms.id_color[1] =
-                    static_cast<float>((draw_id >> 8) & 0xffu) / 255.0f;
-                uniforms.id_color[2] =
-                    static_cast<float>((draw_id >> 16) & 0xffu) / 255.0f;
-                uniforms.id_color[3] = 1.0f;
-                std::copy_n(
-                    alpha_options.begin(),
-                    4,
-                    uniforms.alpha_options);
+                const DiagnosticIdUniforms uniforms =
+                    diagnostic_id_uniforms(
+                        static_cast<std::uint32_t>(mesh_index + 1),
+                        alpha_options);
                 SDL_PushGPUFragmentUniformData(
                     command,
                     0,
@@ -2493,39 +2461,17 @@ bool run_gpu_engine(Engine& engine) {
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("GPU renderer requires a registered scene.");
     }
-    // A scene that also registers sprite renderers composes two
-    // rendering contexts in one frame (the pinned HUD-on-3D shape, corpus
-    // scene 52). The sprite pass is recordable into any open render pass
-    // for exactly that, but nothing here records it yet, and drawing the
-    // scene while silently dropping the sprites would be measured as a
-    // parity residual rather than a missing feature.
-    if (!engine.registered_sprite_renderers.empty()) {
-        throw std::runtime_error(
-            "A sprite renderer registered alongside a scene is not "
-            "composed into the scene's frame yet.");
-    }
+    reject_uncomposed_sprites(engine);
     Scene& scene = *engine.registered_scenes.front();
-    if (frame_options.animation_seek_seconds != 0.0) {
-        const float time =
-            static_cast<float>(frame_options.animation_seek_seconds);
-        for (const auto& seek : scene.animation_seekers) {
-            seek(time);
-        }
-    }
-    const std::string& background_flag = frame_options.background_flag;
-    const bool background_enabled =
-        background_flag == "1" ||
-        background_flag == "true" ||
-        (background_flag.empty() &&
-         scene.environment.background_enabled_by_default);
+    apply_animation_seek(frame_options, scene);
+    // Read by the image-skybox and ground arms, which not every feature set
+    // compiles.
+    [[maybe_unused]] const bool background_enabled =
+        frame_options.background_enabled(scene.environment);
     const bool use_skybox =
-        background_enabled &&
-        scene.environment.has_skybox;
-    const std::string& ground_flag = frame_options.ground_flag;
+        frame_options.skybox_enabled(scene.environment);
     const bool use_ground =
-        scene.environment.has_ground &&
-        ground_flag != "0" &&
-        ground_flag != "false";
+        frame_options.ground_enabled(scene.environment);
     const std::string id_buffer_path = frame_options.id_buffer_path;
     const std::string cluster_buffer_path =
         frame_options.cluster_buffer_path;
@@ -3073,19 +3019,8 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_GPUColorTargetDescription shader_target =
                     color_target;
                 if (info.alpha_blending) {
-                    shader_target.blend_state.src_color_blendfactor =
-                        SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-                    shader_target.blend_state.dst_color_blendfactor =
-                        SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-                    shader_target.blend_state.color_blend_op =
-                        SDL_GPU_BLENDOP_ADD;
-                    shader_target.blend_state.src_alpha_blendfactor =
-                        SDL_GPU_BLENDFACTOR_ONE;
-                    shader_target.blend_state.dst_alpha_blendfactor =
-                        SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-                    shader_target.blend_state.alpha_blend_op =
-                        SDL_GPU_BLENDOP_ADD;
-                    shader_target.blend_state.enable_blend = true;
+                    shader_target.blend_state =
+                        blend_state_from(transparent_blend);
                 }
                 SDL_GPUGraphicsPipelineCreateInfo shader_pipeline_info =
                     pipeline_info;
@@ -3205,17 +3140,7 @@ bool run_gpu_engine(Engine& engine) {
                 }
             }
             for (SDL_GPUColorTargetDescription& target : geometry_targets) {
-                target.blend_state.src_color_blendfactor =
-                    SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-                target.blend_state.dst_color_blendfactor =
-                    SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-                target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
-                target.blend_state.src_alpha_blendfactor =
-                    SDL_GPU_BLENDFACTOR_ONE;
-                target.blend_state.dst_alpha_blendfactor =
-                    SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-                target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-                target.blend_state.enable_blend = true;
+                target.blend_state = blend_state_from(transparent_blend);
             }
             geometry_pipeline_info.rasterizer_state.cull_mode =
                 SDL_GPU_CULLMODE_BACK;
@@ -3334,13 +3259,7 @@ bool run_gpu_engine(Engine& engine) {
             state.cluster_double_sided_pipeline =
                 SDL_CreateGPUGraphicsPipeline(state.device, &cluster_pipeline_info);
         }
-        color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-        color_target.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        color_target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
-        color_target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
-        color_target.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        color_target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-        color_target.blend_state.enable_blend = true;
+        color_target.blend_state = blend_state_from(transparent_blend);
         pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
         pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
         pipeline_info.depth_stencil_state.enable_depth_write = false;
@@ -3395,21 +3314,17 @@ bool run_gpu_engine(Engine& engine) {
             pipeline_info.vertex_shader = vertex_shader;
             pipeline_info.fragment_shader = skybox_fragment_shader;
             color_target.blend_state.enable_blend = false;
-            // The pinned background skyboxes (DDS, HDR and solid) build their
-            // pipeline through createDefaultPipelineDescriptor without a
-            // _cullMode, so they take its "back" default; only the image
-            // skybox below asks for "none" explicitly. Drawing the cube
-            // unculled leaves both the entry and the exit face rasterized
-            // once the camera is outside it, and depth writes are off, so the
-            // later face in index order wins instead of the nearer one.
-            pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
+            // `skybox_layer_culls_back` states why the cube must cull.
+            pipeline_info.rasterizer_state.cull_mode =
+                skybox_layer_culls_back(SkyboxLayer::environment)
+                    ? SDL_GPU_CULLMODE_BACK
+                    : SDL_GPU_CULLMODE_NONE;
             state.skybox_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
         }
         if (background_fragment_shader) {
             pipeline_info.vertex_shader = vertex_shader;
             pipeline_info.fragment_shader = background_fragment_shader;
-            color_target.blend_state.enable_blend = true;
-            color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+            color_target.blend_state = blend_state_from(ground_blend);
             pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             state.background_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
         }
@@ -3461,7 +3376,9 @@ bool run_gpu_engine(Engine& engine) {
                     1,
                 };
             image_skybox_info.rasterizer_state.cull_mode =
-                SDL_GPU_CULLMODE_NONE;
+                skybox_layer_culls_back(SkyboxLayer::image)
+                    ? SDL_GPU_CULLMODE_BACK
+                    : SDL_GPU_CULLMODE_NONE;
             state.image_skybox.pipeline =
                 SDL_CreateGPUGraphicsPipeline(
                     state.device,
@@ -3529,11 +3446,14 @@ bool run_gpu_engine(Engine& engine) {
                     &solid_skybox_attribute,
                     1,
                 };
-            // createDefaultPipelineDescriptor's own default, which
-            // background-solid-skybox.ts does not override: back faces
-            // culled, counter-clockwise front, depth writes off.
+            // createDefaultPipelineDescriptor's own defaults, which
+            // background-solid-skybox.ts does not override:
+            // counter-clockwise front, depth writes off, and the shared
+            // back-cull rule (`skybox_layer_culls_back`).
             solid_skybox_info.rasterizer_state.cull_mode =
-                SDL_GPU_CULLMODE_BACK;
+                skybox_layer_culls_back(SkyboxLayer::solid)
+                    ? SDL_GPU_CULLMODE_BACK
+                    : SDL_GPU_CULLMODE_NONE;
             state.solid_skybox.pipeline =
                 SDL_CreateGPUGraphicsPipeline(
                     state.device,
@@ -3692,17 +3612,7 @@ bool run_gpu_engine(Engine& engine) {
                 upstream::build_skybox_plan(scene.environment);
             std::array<GpuVertex, 8> vertices{};
             for (std::size_t index = 0; index < vertices.size(); ++index) {
-                const ModelVertex& vertex = skybox.vertices[index];
-                vertices[index] = GpuVertex{
-                    {vertex.position.x, vertex.position.y, vertex.position.z},
-                    {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-                    {vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w},
-                    {vertex.uv.x, vertex.uv.y},
-                    {vertex.local_position.x, vertex.local_position.y, vertex.local_position.z},
-                    {vertex.uv2.x, vertex.uv2.y},
-                    {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
-                    {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-                };
+                vertices[index] = gpu_vertex_from(skybox.vertices[index]);
             }
             state.skybox.vertices = upload_buffer(
                 state.device,
@@ -3731,17 +3641,8 @@ bool run_gpu_engine(Engine& engine) {
                 upstream::build_background_plan(scene.environment);
             std::array<GpuVertex, 4> vertices{};
             for (std::size_t index = 0; index < vertices.size(); ++index) {
-                const ModelVertex& vertex = background.vertices[index];
-                vertices[index] = GpuVertex{
-                    {vertex.position.x, vertex.position.y, vertex.position.z},
-                    {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-                    {vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w},
-                    {vertex.uv.x, vertex.uv.y},
-                    {vertex.local_position.x, vertex.local_position.y, vertex.local_position.z},
-                    {vertex.uv2.x, vertex.uv2.y},
-                    {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
-                    {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-                };
+                vertices[index] =
+                    gpu_vertex_from(background.vertices[index]);
             }
             state.background.vertices = upload_buffer(
                 state.device,
@@ -4892,31 +4793,12 @@ bool run_gpu_engine(Engine& engine) {
                                                 block,
                                         bool fragment_stage) {
                                     if (!block.present) return;
-                                    std::vector<float> block_floats(
-                                        block.float_size,
-                                        0.0f);
-                                    if (block.system_matrix) {
-                                        std::copy_n(
-                                            draw_matrix.data(),
-                                            16,
-                                            block_floats.begin());
-                                    }
-                                    for (const std::array<
-                                             std::uint32_t,
-                                             3>& gather :
-                                         block.gather) {
-                                        for (
-                                            std::uint32_t index = 0;
-                                            index < gather[2];
-                                            ++index) {
-                                            block_floats[
-                                                gather[0] + index] =
-                                                material
-                                                    ->shader_uniform_values[
-                                                        gather[1] +
-                                                        index];
-                                        }
-                                    }
+                                    const std::vector<float>
+                                        block_floats =
+                                            shader_stage_block_floats(
+                                                block,
+                                                draw_matrix.data(),
+                                                *material);
                                     if (fragment_stage) {
                                         SDL_PushGPUFragmentUniformData(
                                             command,
@@ -6107,27 +5989,11 @@ bool run_gpu_engine(Engine& engine) {
                                     block,
                                 bool fragment_stage) {
                             if (!block.present) return;
-                            std::vector<float> block_floats(
-                                block.float_size,
-                                0.0f);
-                            if (block.system_matrix) {
-                                std::copy_n(
+                            const std::vector<float> block_floats =
+                                shader_stage_block_floats(
+                                    block,
                                     matrix.data(),
-                                    16,
-                                    block_floats.begin());
-                            }
-                            for (const std::array<std::uint32_t, 3>&
-                                     gather : block.gather) {
-                                for (
-                                    std::uint32_t index = 0;
-                                    index < gather[2];
-                                    ++index) {
-                                    block_floats[gather[0] + index] =
-                                        material
-                                            ->shader_uniform_values[
-                                                gather[1] + index];
-                                }
-                            }
+                                    *material);
                             if (fragment_stage) {
                                 SDL_PushGPUFragmentUniformData(
                                     command,
@@ -6376,16 +6242,26 @@ bool run_gpu_engine(Engine& engine) {
             for (const upstream::RenderStage stage : render_plan.stages) {
                 switch (stage) {
                     case upstream::RenderStage::skybox:
+                        // The sub-order comes from the shared
+                        // `skybox_stage_order`.
+                        for (const SkyboxLayer layer :
+                             skybox_stage_order) {
+                            switch (layer) {
+                                case SkyboxLayer::solid:
 #if BBLITE_SOLID_SKYBOX
-                        // load-env.ts pushes the solid cube before the DDS
-                        // and .env arms, and every background renderable
-                        // carries order 0, so it draws first here too.
-                        draw_solid_skybox();
+                                    draw_solid_skybox();
 #endif
-                        draw_skybox();
+                                    break;
+                                case SkyboxLayer::environment:
+                                    draw_skybox();
+                                    break;
+                                case SkyboxLayer::image:
 #if BBLITE_IMAGE_SKYBOX
-                        draw_image_skybox();
+                                    draw_image_skybox();
 #endif
+                                    break;
+                            }
+                        }
                         break;
                     case upstream::RenderStage::opaque:
                         draw_render_list(render_plan.draw_lists.opaque);

@@ -58,6 +58,31 @@ struct DawnMeshBindings {
 #endif
 };
 
+WGPUBlendFactor dawn_blend_factor(BlendFactor factor) {
+    switch (factor) {
+        case BlendFactor::one:
+            return WGPUBlendFactor_One;
+        case BlendFactor::src_alpha:
+            return WGPUBlendFactor_SrcAlpha;
+        case BlendFactor::one_minus_src_alpha:
+            return WGPUBlendFactor_OneMinusSrcAlpha;
+    }
+    return WGPUBlendFactor_One;
+}
+
+// A shared blend tuple in this API's state; the operation is always add
+// (`transparent_blend` / `ground_blend`, pal_gpu_shared.hpp).
+WGPUBlendState blend_state_from(const BlendFactors& factors) {
+    WGPUBlendState blend{};
+    blend.color.operation = WGPUBlendOperation_Add;
+    blend.color.srcFactor = dawn_blend_factor(factors.src_color);
+    blend.color.dstFactor = dawn_blend_factor(factors.dst_color);
+    blend.alpha.operation = WGPUBlendOperation_Add;
+    blend.alpha.srcFactor = dawn_blend_factor(factors.src_alpha);
+    blend.alpha.dstFactor = dawn_blend_factor(factors.dst_alpha);
+    return blend;
+}
+
 // Vertex uniform bindings in group 1 mirror the SDL vertex uniform
 // slots: 0 = viewProjection, 1 = deformation, then the instance
 // parent world matrix.
@@ -1153,12 +1178,9 @@ WGPUTexture upload_material_texture(
     std::uint32_t& out_mip_count) {
     const DecodedImage image =
         decode_uploadable_image(texture_data, fallback);
-    const std::uint32_t mip_count =
-        1u + static_cast<std::uint32_t>(
-                 std::floor(
-                     std::log2(
-                         static_cast<double>(
-                             std::max(image.width, image.height)))));
+    const std::uint32_t mip_count = full_mip_chain(
+        static_cast<std::uint32_t>(image.width),
+        static_cast<std::uint32_t>(image.height));
     out_mip_count = mip_count;
     const WGPUTextureFormat format = srgb
         ? WGPUTextureFormat_RGBA8UnormSrgb
@@ -1228,12 +1250,9 @@ WGPUTexture upload_reflection_cube(
                 "Cube texture faces must have matching dimensions.");
         }
     }
-    const std::uint32_t mip_count =
-        1u + static_cast<std::uint32_t>(
-                 std::floor(
-                     std::log2(
-                         static_cast<double>(
-                             std::max(width, height)))));
+    const std::uint32_t mip_count = full_mip_chain(
+        static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(height));
     WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
     descriptor.usage =
         WGPUTextureUsage_TextureBinding |
@@ -1506,26 +1525,21 @@ std::uint32_t task_sample_count(
 
 WGPUTextureFormat geometry_texture_format(
     const GeometryTextureDescription& description) {
-    if (description.format == GeometryTextureFormat::r16_float) {
-        return WGPUTextureFormat_R16Float;
-    }
-    switch (description.type) {
-        case GeometryTextureType::reflectivity:
-        case GeometryTextureType::albedo:
+    switch (geometry_format_class(description)) {
+        case GeometryFormatClass::rgba8_unorm:
             return WGPUTextureFormat_RGBA8Unorm;
-        case GeometryTextureType::view_depth:
-            return WGPUTextureFormat_R32Float;
-        case GeometryTextureType::normalized_view_depth:
-        case GeometryTextureType::screenspace_depth:
+        case GeometryFormatClass::r16_float:
             return WGPUTextureFormat_R16Float;
-        default:
+        case GeometryFormatClass::r32_float:
+            return WGPUTextureFormat_R32Float;
+        case GeometryFormatClass::rgba16_float:
             return WGPUTextureFormat_RGBA16Float;
     }
+    return WGPUTextureFormat_RGBA16Float;
 }
 
 WGPUColor geometry_clear_color(GeometryTextureType type) {
-    const double value =
-        type == GeometryTextureType::normalized_view_depth ? 1.0 : 0.0;
+    const double value = geometry_clear_component(type);
     return WGPUColor{value, value, value, value};
 }
 
@@ -2170,6 +2184,7 @@ void write_pinned_bone_texture(
     const std::uint32_t bones =
         static_cast<std::uint32_t>(record.bone_matrices.size());
     if (bones == 0) return;
+    const BonePaletteLayout palette = bone_palette_layout(bones);
     if (mesh.pinned_bone_count != bones) {
         if (mesh.pinned_bone_view) {
             wgpuTextureViewRelease(mesh.pinned_bone_view);
@@ -2179,7 +2194,7 @@ void write_pinned_bone_texture(
         }
         WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
         descriptor.dimension = WGPUTextureDimension_2D;
-        descriptor.size = {bones * 4, 1, 1};
+        descriptor.size = {palette.width, palette.height, 1};
         descriptor.format = WGPUTextureFormat_RGBA32Float;
         descriptor.usage =
             WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
@@ -2197,14 +2212,14 @@ void write_pinned_bone_texture(
     WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
     destination.texture = mesh.pinned_bone_texture;
     WGPUTexelCopyBufferLayout layout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
-    layout.bytesPerRow = bones * 4 * 16;
-    layout.rowsPerImage = 1;
-    WGPUExtent3D extent{bones * 4, 1, 1};
+    layout.bytesPerRow = palette.bytes;
+    layout.rowsPerImage = palette.height;
+    WGPUExtent3D extent{palette.width, palette.height, 1};
     wgpuQueueWriteTexture(
         state.queue,
         &destination,
         record.bone_matrices.data(),
-        record.bone_matrices.size() * sizeof(std::array<float, 16>),
+        palette.bytes,
         &layout,
         &extent);
 }
@@ -2782,12 +2797,7 @@ DawnPipeline& pipeline_for(
     if (
         traits.transparent ||
         (shader_info && shader_info->alpha_blending)) {
-        blend.color.operation = WGPUBlendOperation_Add;
-        blend.color.srcFactor = WGPUBlendFactor_SrcAlpha;
-        blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
-        blend.alpha.operation = WGPUBlendOperation_Add;
-        blend.alpha.srcFactor = WGPUBlendFactor_One;
-        blend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+        blend = blend_state_from(transparent_blend);
         color_target.blend = &blend;
     }
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
@@ -2966,12 +2976,7 @@ WGPURenderPipeline pinned_variant_pipeline(
     color_target.format = state.frame_color_format;
     WGPUBlendState blend{};
     if (traits.transparent) {
-        blend.color.operation = WGPUBlendOperation_Add;
-        blend.color.srcFactor = WGPUBlendFactor_SrcAlpha;
-        blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
-        blend.alpha.operation = WGPUBlendOperation_Add;
-        blend.alpha.srcFactor = WGPUBlendFactor_One;
-        blend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+        blend = blend_state_from(transparent_blend);
         color_target.blend = &blend;
     }
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
@@ -3131,13 +3136,7 @@ WGPURenderPipeline geometry_pipeline_for(
         task_sample_count(state, task.geometry.samples);
     std::vector<WGPUColorTargetState> color_targets;
     color_targets.reserve(task.geometry.attachments.size() + 1);
-    WGPUBlendState blend{};
-    blend.color.operation = WGPUBlendOperation_Add;
-    blend.color.srcFactor = WGPUBlendFactor_SrcAlpha;
-    blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
-    blend.alpha.operation = WGPUBlendOperation_Add;
-    blend.alpha.srcFactor = WGPUBlendFactor_One;
-    blend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    const WGPUBlendState blend = blend_state_from(transparent_blend);
     for (const GeometryTextureDescription& description :
          task.geometry.attachments) {
         WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
@@ -3780,16 +3779,6 @@ DawnMeshBindings& bindings_for(
 // the SDL backend's save_geometry_id_buffer_png / save_pbr_diagnostic_
 // buffers outputs byte-for-byte in layout and conversion semantics.
 
-struct DiagnosticIdUniforms {
-    float id_color[4];
-    float alpha_options[4];
-};
-
-struct DiagnosticClusterUniforms {
-    std::uint32_t cluster_options[4];
-    float alpha_options[4];
-};
-
 // The diagnostic pipelines reuse the scene vertex module and the
 // superset mesh pipeline layout so the per-mesh bind groups from the
 // main pass stay valid; only the fragment module, cull mode, sample
@@ -4108,13 +4097,10 @@ void save_dawn_geometry_id_buffer(
                 state.device,
                 &uniform_descriptor);
             if (cluster_ids) {
-                DiagnosticClusterUniforms uniforms{};
-                uniforms.cluster_options[0] = current_cluster_base;
-                uniforms.cluster_options[1] = 128;
-                std::copy_n(
-                    alpha_options.begin(),
-                    4,
-                    uniforms.alpha_options);
+                const DiagnosticClusterUniforms uniforms =
+                    diagnostic_cluster_uniforms(
+                        current_cluster_base,
+                        alpha_options);
                 wgpuQueueWriteBuffer(
                     state.queue,
                     uniform_buffer,
@@ -4122,21 +4108,10 @@ void save_dawn_geometry_id_buffer(
                     &uniforms,
                     sizeof(uniforms));
             } else {
-                const std::uint32_t draw_id =
-                    static_cast<std::uint32_t>(mesh_index + 1);
-                DiagnosticIdUniforms uniforms{};
-                uniforms.id_color[0] =
-                    static_cast<float>(draw_id & 0xffu) / 255.0f;
-                uniforms.id_color[1] =
-                    static_cast<float>((draw_id >> 8) & 0xffu) / 255.0f;
-                uniforms.id_color[2] =
-                    static_cast<float>((draw_id >> 16) & 0xffu) /
-                    255.0f;
-                uniforms.id_color[3] = 1.0f;
-                std::copy_n(
-                    alpha_options.begin(),
-                    4,
-                    uniforms.alpha_options);
+                const DiagnosticIdUniforms uniforms =
+                    diagnostic_id_uniforms(
+                        static_cast<std::uint32_t>(mesh_index + 1),
+                        alpha_options);
                 wgpuQueueWriteBuffer(
                     state.queue,
                     uniform_buffer,
@@ -4230,17 +4205,7 @@ bool run_dawn_engine(Engine& engine) {
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("Dawn renderer requires a registered scene.");
     }
-    // A scene that also registers sprite renderers composes two
-    // rendering contexts in one frame (the pinned HUD-on-3D shape, corpus
-    // scene 52). The sprite pass is recordable into any open render pass
-    // for exactly that, but nothing here records it yet, and drawing the
-    // scene while silently dropping the sprites would be measured as a
-    // parity residual rather than a missing feature.
-    if (!engine.registered_sprite_renderers.empty()) {
-        throw std::runtime_error(
-            "A sprite renderer registered alongside a scene is not "
-            "composed into the scene's frame yet.");
-    }
+    reject_uncomposed_sprites(engine);
     const FrameOptions frame_options = read_frame_options();
     reject_unsupported_frame_options(
         frame_options,
@@ -4272,26 +4237,15 @@ bool run_dawn_engine(Engine& engine) {
                 "implemented yet.");
         }
     }
-    if (frame_options.animation_seek_seconds != 0.0) {
-        const float time =
-            static_cast<float>(frame_options.animation_seek_seconds);
-        for (const auto& seek : scene.animation_seekers) {
-            seek(time);
-        }
-    }
-    const std::string& background_flag = frame_options.background_flag;
-    const bool background_enabled =
-        background_flag == "1" ||
-        background_flag == "true" ||
-        (background_flag.empty() &&
-         scene.environment.background_enabled_by_default);
+    apply_animation_seek(frame_options, scene);
+    // Read by the image-skybox and ground arms, which not every feature set
+    // compiles.
+    [[maybe_unused]] const bool background_enabled =
+        frame_options.background_enabled(scene.environment);
     const bool use_skybox =
-        background_enabled && scene.environment.has_skybox;
-    const std::string& ground_flag = frame_options.ground_flag;
+        frame_options.skybox_enabled(scene.environment);
     const bool use_ground =
-        scene.environment.has_ground &&
-        ground_flag != "0" &&
-        ground_flag != "false";
+        frame_options.ground_enabled(scene.environment);
     DawnState state;
     // Every attachment and pipeline reads this, so it is settled before
     // any of them is created.
@@ -4930,9 +4884,8 @@ bool run_dawn_engine(Engine& engine) {
         // The dither seeds on interpolated world positions whose low
         // bits follow the barycentrics, so it reproduces only where the
         // composed view-projection agrees with the pinned engine bit for
-        // bit. That holds on Dawn for clip x, y and w; SDL_GPU keeps the
-        // undithered fragment because its offline DXC compilation of the
-        // hash decorrelates the noise.
+        // bit. Both backends select the same variant from this same
+        // environment-arm rule.
         state.skybox_module = load_wgsl_module(
             state,
             scene.environment.skybox_uses_environment
@@ -4942,25 +4895,8 @@ bool run_dawn_engine(Engine& engine) {
             upstream::build_skybox_plan(scene.environment);
         std::array<GpuVertex, 8> skybox_quad{};
         for (std::size_t index = 0; index < skybox_quad.size(); ++index) {
-            const ModelVertex& vertex = skybox_plan.vertices[index];
-            skybox_quad[index] = GpuVertex{
-                {vertex.position.x, vertex.position.y, vertex.position.z},
-                {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-                {vertex.tangent.x,
-                 vertex.tangent.y,
-                 vertex.tangent.z,
-                 vertex.tangent.w},
-                {vertex.uv.x, vertex.uv.y},
-                {vertex.local_position.x,
-                 vertex.local_position.y,
-                 vertex.local_position.z},
-                {vertex.uv2.x, vertex.uv2.y},
-                {vertex.color.x,
-                 vertex.color.y,
-                 vertex.color.z,
-                 vertex.color.w},
-                {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-            };
+            skybox_quad[index] =
+                gpu_vertex_from(skybox_plan.vertices[index]);
         }
         state.skybox_vertices = create_buffer(
             state,
@@ -5078,14 +5014,11 @@ bool run_dawn_engine(Engine& engine) {
         descriptor.primitive.topology =
             WGPUPrimitiveTopology_TriangleList;
         descriptor.primitive.frontFace = WGPUFrontFace_CCW;
-        // The pinned background skyboxes (DDS, HDR and solid) build their
-        // pipeline through createDefaultPipelineDescriptor without a
-        // _cullMode, so they take its "back" default; only the image skybox
-        // asks for "none" explicitly. Drawing the cube unculled leaves both
-        // the entry and the exit face rasterized once the camera is outside
-        // it, and depth writes are off, so the later face in index order wins
-        // instead of the nearer one.
-        descriptor.primitive.cullMode = WGPUCullMode_Back;
+        // `skybox_layer_culls_back` states why the cube must cull.
+        descriptor.primitive.cullMode =
+            skybox_layer_culls_back(SkyboxLayer::environment)
+                ? WGPUCullMode_Back
+                : WGPUCullMode_None;
         WGPUDepthStencilState depth_stencil =
             WGPU_DEPTH_STENCIL_STATE_INIT;
         depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
@@ -5269,9 +5202,12 @@ bool run_dawn_engine(Engine& engine) {
         descriptor.primitive.topology =
             WGPUPrimitiveTopology_TriangleList;
         descriptor.primitive.frontFace = WGPUFrontFace_CCW;
-        // createDefaultPipelineDescriptor's "back" default, which
+        // The shared back-cull rule (`skybox_layer_culls_back`), which
         // background-solid-skybox.ts does not override.
-        descriptor.primitive.cullMode = WGPUCullMode_Back;
+        descriptor.primitive.cullMode =
+            skybox_layer_culls_back(SkyboxLayer::solid)
+                ? WGPUCullMode_Back
+                : WGPUCullMode_None;
         WGPUDepthStencilState depth_stencil =
             WGPU_DEPTH_STENCIL_STATE_INIT;
         depth_stencil.format =
@@ -5394,7 +5330,10 @@ bool run_dawn_engine(Engine& engine) {
         descriptor.primitive.topology =
             WGPUPrimitiveTopology_TriangleList;
         descriptor.primitive.frontFace = WGPUFrontFace_CCW;
-        descriptor.primitive.cullMode = WGPUCullMode_None;
+        descriptor.primitive.cullMode =
+            skybox_layer_culls_back(SkyboxLayer::image)
+                ? WGPUCullMode_Back
+                : WGPUCullMode_None;
         WGPUDepthStencilState depth_stencil =
             WGPU_DEPTH_STENCIL_STATE_INIT;
         depth_stencil.format =
@@ -5488,25 +5427,8 @@ bool run_dawn_engine(Engine& engine) {
             upstream::build_background_plan(scene.environment);
         std::array<GpuVertex, 4> ground_quad{};
         for (std::size_t index = 0; index < ground_quad.size(); ++index) {
-            const ModelVertex& vertex = background.vertices[index];
-            ground_quad[index] = GpuVertex{
-                {vertex.position.x, vertex.position.y, vertex.position.z},
-                {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-                {vertex.tangent.x,
-                 vertex.tangent.y,
-                 vertex.tangent.z,
-                 vertex.tangent.w},
-                {vertex.uv.x, vertex.uv.y},
-                {vertex.local_position.x,
-                 vertex.local_position.y,
-                 vertex.local_position.z},
-                {vertex.uv2.x, vertex.uv2.y},
-                {vertex.color.x,
-                 vertex.color.y,
-                 vertex.color.z,
-                 vertex.color.w},
-                {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-            };
+            ground_quad[index] =
+                gpu_vertex_from(background.vertices[index]);
         }
         state.ground_vertices = create_buffer(
             state,
@@ -5573,13 +5495,7 @@ bool run_dawn_engine(Engine& engine) {
         WGPUColorTargetState color_target =
             WGPU_COLOR_TARGET_STATE_INIT;
         color_target.format = state.frame_color_format;
-        WGPUBlendState blend{};
-        blend.color.operation = WGPUBlendOperation_Add;
-        blend.color.srcFactor = WGPUBlendFactor_One;
-        blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
-        blend.alpha.operation = WGPUBlendOperation_Add;
-        blend.alpha.srcFactor = WGPUBlendFactor_One;
-        blend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+        const WGPUBlendState blend = blend_state_from(ground_blend);
         color_target.blend = &blend;
         WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
         fragment.module = state.ground_module;
@@ -6030,24 +5946,12 @@ bool run_dawn_engine(Engine& engine) {
                                         "shader uniform blocks are "
                                         "not implemented yet.");
                                 }
-                                std::vector<float> block_floats(
-                                    block.float_size,
-                                    0.0f);
-                                for (const std::array<
-                                         std::uint32_t,
-                                         3>& gather : block.gather) {
-                                    for (
-                                        std::uint32_t index = 0;
-                                        index < gather[2];
-                                        ++index) {
-                                        block_floats[
-                                            gather[0] + index] =
-                                            material
-                                                .shader_uniform_values[
-                                                    gather[1] +
-                                                    index];
-                                    }
-                                }
+                                const std::vector<float>
+                                    block_floats =
+                                        shader_stage_block_floats(
+                                            block,
+                                            nullptr,
+                                            material);
                                 wgpuQueueWriteBuffer(
                                     state.queue,
                                     buffer,
@@ -6090,9 +5994,14 @@ bool run_dawn_engine(Engine& engine) {
                                 state.meshes[draw.item_index];
                             const MeshRecord& variant_record =
                                 engine.meshes[draw.item.mesh.value];
-                            const bool skeleton_draw =
-                                pinned_variant_skeleton(variant);
-                            if (skeleton_draw) {
+                            // `pinned_draw_conventions` states the
+                            // skinned and palette-world contract these
+                            // three booleans carry.
+                            const PinnedDrawConventions conventions =
+                                pinned_draw_conventions(
+                                    variant,
+                                    variant_record);
+                            if (conventions.skeleton_draw) {
                                 write_pinned_bone_texture(
                                     state,
                                     variant_mesh,
@@ -6102,31 +6011,16 @@ bool run_dawn_engine(Engine& engine) {
                                 state,
                                 variant_mesh,
                                 variant);
-                            // A skinned draw takes the identity world with the
-                            // MIRRORED vertex buffer. The loader's palette is
-                            // the mirror-conjugated `jointWorld * IBM`
-                            // (`M A M`), so against mirrored vertices the
-                            // product collapses to the browser's own
-                            // `M * jointWorld * IBM * v_unmirrored`; adding the
-                            // mirror world on top double-applies it, which the
-                            // captured mesh blocks (world = bare mirror,
-                            // palette translation 1.66 vs the browser's 0)
-                            // localised. An animated no-skin mesh rides the
-                            // same convention with one matrix: its palette
-                            // entry is `M * world * M`, passed as the pin's
-                            // finalWorld against the mirrored buffer.
-                            const bool world_from_palette =
-                                !skeleton_draw &&
-                                !variant_record.bone_matrices.empty();
                             variant_mesh.pinned_mirrored_vertices =
-                                skeleton_draw || world_from_palette;
+                                conventions.mirrored_vertices;
                             const upstream::MeshUniforms mesh_block =
                                 pinned_mesh_block(
                                     scene,
                                     engine,
                                     pinned_draw_world(
-                                        skeleton_draw,
-                                        world_from_palette,
+                                        conventions.skeleton_draw,
+                                        conventions
+                                            .world_from_palette,
                                         upstream::pbr_variants[variant]
                                             .uses_local_position,
                                         variant_record),
@@ -6773,16 +6667,26 @@ bool run_dawn_engine(Engine& engine) {
         for (const upstream::RenderStage stage : render_plan.stages) {
             switch (stage) {
                 case upstream::RenderStage::skybox:
+                    // The sub-order comes from the shared
+                    // `skybox_stage_order`.
+                    for (const SkyboxLayer layer :
+                         skybox_stage_order) {
+                        switch (layer) {
+                            case SkyboxLayer::solid:
 #if BBLITE_SOLID_SKYBOX
-                    // load-env.ts pushes the solid cube before the DDS and
-                    // .env arms, and every background renderable carries
-                    // order 0, so it draws first here too.
-                    draw_solid_skybox();
+                                draw_solid_skybox();
 #endif
-                    draw_skybox();
+                                break;
+                            case SkyboxLayer::environment:
+                                draw_skybox();
+                                break;
+                            case SkyboxLayer::image:
 #if BBLITE_IMAGE_SKYBOX
-                    draw_image_skybox();
+                                draw_image_skybox();
 #endif
+                                break;
+                        }
+                    }
                     break;
                 case upstream::RenderStage::opaque:
                     draw_render_list(render_plan.draw_lists.opaque);

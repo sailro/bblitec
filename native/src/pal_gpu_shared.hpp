@@ -391,6 +391,34 @@ inline std::vector<GpuVertex> transformed_vertices(
     return result;
 }
 
+/**
+ * One background-plan vertex (the skybox and ground quads) in GpuVertex
+ * layout: the local-normal lane mirrors the normal and every deformation
+ * lane stays zero. Both backends upload the plan quads from this one
+ * packing, so the vertex bytes cannot differ between them.
+ */
+inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
+    return GpuVertex{
+        {vertex.position.x, vertex.position.y, vertex.position.z},
+        {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+        {
+            vertex.tangent.x,
+            vertex.tangent.y,
+            vertex.tangent.z,
+            vertex.tangent.w,
+        },
+        {vertex.uv.x, vertex.uv.y},
+        {
+            vertex.local_position.x,
+            vertex.local_position.y,
+            vertex.local_position.z,
+        },
+        {vertex.uv2.x, vertex.uv2.y},
+        {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
+        {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+    };
+}
+
 #if BBLITE_PBR_VARIANTS > 0
 /**
  * The same vertices in Babylon's own convention.
@@ -860,6 +888,58 @@ inline std::size_t pinned_variant_for_draw(
     }
     return variant;
 }
+
+/**
+ * The convention arms one pinned draw rides.
+ *
+ * A skinned draw takes the identity world with the MIRRORED vertex
+ * buffer: the loader's palette is the mirror-conjugated
+ * `jointWorld * IBM` (`M A M`), so against mirrored vertices the product
+ * collapses to the browser's own `M * jointWorld * IBM * v_unmirrored`,
+ * and adding the mirror world on top double-applies it -- the finding the
+ * Dawn backend's captured mesh blocks localised (world = bare mirror,
+ * palette translation 1.66 vs the browser's 0). An animated no-skin mesh
+ * rides the same convention with one matrix: its palette entry is
+ * `M * world * M`, passed as the pin's finalWorld against the mirrored
+ * buffer. Derived once so the backends cannot disagree about which draw
+ * takes which arm.
+ */
+struct PinnedDrawConventions {
+    bool skeleton_draw;
+    bool world_from_palette;
+    bool mirrored_vertices;
+};
+
+inline PinnedDrawConventions pinned_draw_conventions(
+    std::size_t variant,
+    const MeshRecord& record) {
+    const bool skeleton_draw = pinned_variant_skeleton(variant);
+    const bool world_from_palette =
+        !skeleton_draw && !record.bone_matrices.empty();
+    return PinnedDrawConventions{
+        skeleton_draw,
+        world_from_palette,
+        skeleton_draw || world_from_palette,
+    };
+}
+
+/**
+ * The pin's bone-palette texture shape: `skeleton-updater.ts` writes
+ * `invMeshWorld * jointWorld * IBM` per bone into one rgba32float row,
+ * four 16-byte texels per bone. Both backends size and fill their
+ * palette texture from this; only the upload mechanics stay per API.
+ */
+struct BonePaletteLayout {
+    std::uint32_t width;
+    std::uint32_t height;
+    // The whole palette, which for the single row is also the row pitch.
+    std::uint32_t bytes;
+};
+
+inline BonePaletteLayout bone_palette_layout(std::uint32_t bones) {
+    const std::uint32_t width = bones * 4u;
+    return BonePaletteLayout{width, 1u, width * 16u};
+}
 #endif
 
 // Inverse image processing for the linear-frame clear color shared by
@@ -1035,9 +1115,9 @@ struct FrameOptions {
     // instrumented capture.
     std::string render_capture_path;
     // Kept as written rather than pre-interpreted: the background and
-    // ground flags accept "1"/"true" as well as "0"/"false", and each
-    // default differs (a requested background is off unless asked for, a
-    // requested ground is on unless refused).
+    // ground flags accept "1"/"true" as well as "0"/"false", and the
+    // methods below hold the differing defaults (a requested background
+    // is off unless asked for, a requested ground is on unless refused).
     std::string background_flag;
     std::string ground_flag;
     bool gpu_debug = false;
@@ -1066,6 +1146,33 @@ struct FrameOptions {
     bool benchmark_requested = false;
     [[nodiscard]] long benchmark_warmup() const {
         return benchmark_frames > 0 ? 30 : 0;
+    }
+
+    /**
+     * Whether the run draws the environment background: only when asked
+     * for, or when the scene enables it by default and the flag says
+     * nothing. Both frame loops read the flags through these three
+     * methods, so a run's flags cannot mean different draws per backend.
+     */
+    [[nodiscard]] bool background_enabled(
+        const EnvironmentState& environment) const {
+        return background_flag == "1" ||
+            background_flag == "true" ||
+            (background_flag.empty() &&
+             environment.background_enabled_by_default);
+    }
+    /** The skybox draws with the background when the scene carries one. */
+    [[nodiscard]] bool skybox_enabled(
+        const EnvironmentState& environment) const {
+        return background_enabled(environment) &&
+            environment.has_skybox;
+    }
+    /** The scene's ground draws unless the flag refuses it. */
+    [[nodiscard]] bool ground_enabled(
+        const EnvironmentState& environment) const {
+        return environment.has_ground &&
+            ground_flag != "0" &&
+            ground_flag != "false";
     }
 };
 
@@ -1106,6 +1213,38 @@ inline FrameOptions read_frame_options() {
     options.animation_seek_seconds =
         seek.empty() ? 0.0 : std::strtod(seek.c_str(), nullptr);
     return options;
+}
+
+/**
+ * A measured seek runs every registered animation seeker to the
+ * requested time before the first frame; both frame loops apply the same
+ * request so a seeked capture renders the same pose on either backend.
+ */
+inline void apply_animation_seek(
+    const FrameOptions& options,
+    const Scene& scene) {
+    if (options.animation_seek_seconds == 0.0) return;
+    const float time =
+        static_cast<float>(options.animation_seek_seconds);
+    for (const auto& seek : scene.animation_seekers) {
+        seek(time);
+    }
+}
+
+/**
+ * A scene that also registers sprite renderers composes two rendering
+ * contexts in one frame (the pinned HUD-on-3D shape, corpus scene 52).
+ * The sprite pass is recordable into any open render pass for exactly
+ * that, but neither backend records it yet, and drawing the scene while
+ * silently dropping the sprites would be measured as a parity residual
+ * rather than a missing feature.
+ */
+inline void reject_uncomposed_sprites(const Engine& engine) {
+    if (!engine.registered_sprite_renderers.empty()) {
+        throw std::runtime_error(
+            "A sprite renderer registered alongside a scene is not "
+            "composed into the scene's frame yet.");
+    }
 }
 
 /**
@@ -1174,6 +1313,142 @@ inline DecodedImage decode_uploadable_image(
 }
 
 /**
+ * Mip levels for a full chain over a base level:
+ * 1 + floor(log2(max(width, height))), computed through double exactly as
+ * both backends always have, so the same image sizes the same chain
+ * everywhere. (The transmission grab's shortened chain is not this: its
+ * two derivations differ per backend on purpose.)
+ */
+inline std::uint32_t full_mip_chain(
+    std::uint32_t width,
+    std::uint32_t height) {
+    return 1u + static_cast<std::uint32_t>(
+        std::floor(
+            std::log2(
+                static_cast<double>(std::max(width, height)))));
+}
+
+/**
+ * The format class and clear rule of one geometry-task attachment.
+ *
+ * Mirrors the pinned geometry-output attachments
+ * (`pbr-geometry-output-shader.ts`): reflectivity and albedo pack into
+ * rgba8, VIEW_DEPTH keeps full float precision, the normalized and
+ * screenspace depths take r16 (as does any attachment whose description
+ * requests r16 explicitly), and every other lane is rgba16. Each backend
+ * only translates the class to its API's format constant.
+ */
+enum class GeometryFormatClass {
+    rgba8_unorm,
+    r16_float,
+    r32_float,
+    rgba16_float,
+};
+
+inline GeometryFormatClass geometry_format_class(
+    const GeometryTextureDescription& description) {
+    if (description.format == GeometryTextureFormat::r16_float) {
+        return GeometryFormatClass::r16_float;
+    }
+    switch (description.type) {
+        case GeometryTextureType::reflectivity:
+        case GeometryTextureType::albedo:
+            return GeometryFormatClass::rgba8_unorm;
+        case GeometryTextureType::view_depth:
+            return GeometryFormatClass::r32_float;
+        case GeometryTextureType::normalized_view_depth:
+        case GeometryTextureType::screenspace_depth:
+            return GeometryFormatClass::r16_float;
+        case GeometryTextureType::irradiance:
+        case GeometryTextureType::world_position:
+        case GeometryTextureType::local_position:
+        case GeometryTextureType::view_normal:
+        case GeometryTextureType::world_normal:
+        case GeometryTextureType::linear_velocity:
+            return GeometryFormatClass::rgba16_float;
+    }
+    return GeometryFormatClass::rgba16_float;
+}
+
+/**
+ * All four channels of a geometry attachment clear to this value: the
+ * pinned NORMALIZED_VIEW_DEPTH lane clears to one (its far plane), every
+ * other lane to zero.
+ */
+inline float geometry_clear_component(GeometryTextureType type) {
+    return type == GeometryTextureType::normalized_view_depth
+        ? 1.0f
+        : 0.0f;
+}
+
+/**
+ * The two blend-factor tuples the corpus reaches, stated once. A
+ * transparent draw blends colour src-alpha over one-minus-src-alpha and
+ * accumulates alpha at one; the pinned background ground rides one over
+ * one-minus-src-alpha on both lanes. The operation is always add. Every
+ * blending pipeline in either backend translates one of these instances
+ * to its API's enums.
+ */
+enum class BlendFactor {
+    one,
+    src_alpha,
+    one_minus_src_alpha,
+};
+
+struct BlendFactors {
+    BlendFactor src_color;
+    BlendFactor dst_color;
+    BlendFactor src_alpha;
+    BlendFactor dst_alpha;
+};
+
+inline constexpr BlendFactors transparent_blend{
+    BlendFactor::src_alpha,
+    BlendFactor::one_minus_src_alpha,
+    BlendFactor::one,
+    BlendFactor::one_minus_src_alpha,
+};
+
+inline constexpr BlendFactors ground_blend{
+    BlendFactor::one,
+    BlendFactor::one_minus_src_alpha,
+    BlendFactor::one,
+    BlendFactor::one_minus_src_alpha,
+};
+
+/**
+ * The skybox stage in sub-draw order: load-env.ts pushes the solid cube
+ * before the DDS and .env arms, every background renderable carries
+ * order 0, and the image-skybox cube draws after the environment arm.
+ * Both backends walk this one array, so the stage cannot reorder on one
+ * of them.
+ */
+enum class SkyboxLayer {
+    solid,
+    environment,
+    image,
+};
+
+inline constexpr std::array<SkyboxLayer, 3> skybox_stage_order{
+    SkyboxLayer::solid,
+    SkyboxLayer::environment,
+    SkyboxLayer::image,
+};
+
+/**
+ * The pinned background skyboxes (DDS, HDR and solid) build their
+ * pipeline through createDefaultPipelineDescriptor without a `_cullMode`,
+ * so they take its "back" default; only the image skybox asks for "none"
+ * explicitly. Drawing the cube unculled leaves both the entry and the
+ * exit face rasterized once the camera is outside it, and depth writes
+ * are off, so the later face in index order wins instead of the nearer
+ * one.
+ */
+inline constexpr bool skybox_layer_culls_back(SkyboxLayer layer) {
+    return layer != SkyboxLayer::image;
+}
+
+/**
  * Cluster ids advance in fixed 128-triangle groups, and the id and
  * cluster buffers are compared against the browser's, so both backends
  * have to number them identically.
@@ -1215,6 +1490,73 @@ inline std::array<float, 4> diagnostic_alpha_options(
     options[1] = material->alpha_cutoff;
     options[2] = material->base_color_factor.a;
     return options;
+}
+
+/**
+ * The id and cluster diagnostic uniform blocks. The draw-id RGB packing
+ * (one little-endian byte per channel over 255) and the
+ * {cluster base, 128 triangles per cluster} pair are diffed against the
+ * browser's buffers, so both backends fill the blocks here.
+ */
+struct DiagnosticIdUniforms {
+    float id_color[4];
+    float alpha_options[4];
+};
+
+struct DiagnosticClusterUniforms {
+    std::uint32_t cluster_options[4];
+    float alpha_options[4];
+};
+
+inline DiagnosticIdUniforms diagnostic_id_uniforms(
+    std::uint32_t draw_id,
+    const std::array<float, 4>& alpha_options) {
+    DiagnosticIdUniforms uniforms{};
+    uniforms.id_color[0] =
+        static_cast<float>(draw_id & 0xffu) / 255.0f;
+    uniforms.id_color[1] =
+        static_cast<float>((draw_id >> 8) & 0xffu) / 255.0f;
+    uniforms.id_color[2] =
+        static_cast<float>((draw_id >> 16) & 0xffu) / 255.0f;
+    uniforms.id_color[3] = 1.0f;
+    std::copy_n(alpha_options.begin(), 4, uniforms.alpha_options);
+    return uniforms;
+}
+
+inline DiagnosticClusterUniforms diagnostic_cluster_uniforms(
+    std::uint32_t cluster_base,
+    const std::array<float, 4>& alpha_options) {
+    DiagnosticClusterUniforms uniforms{};
+    uniforms.cluster_options[0] = cluster_base;
+    uniforms.cluster_options[1] = 128;
+    std::copy_n(alpha_options.begin(), 4, uniforms.alpha_options);
+    return uniforms;
+}
+
+/**
+ * One custom-shader stage block, filled from the generated variant
+ * table: [optional 16-float scene worldViewProjection][the reflected
+ * gathers from the material's flat value storage]. The same floats reach
+ * an SDL_GPU push, a Dawn buffer write and the render capture, so the
+ * packing lives here. `system_matrix` is null on the arm that binds the
+ * shared scene-matrix buffer instead (the Dawn backend, which refuses
+ * combined matrix-plus-gather blocks before calling).
+ */
+inline std::vector<float> shader_stage_block_floats(
+    const upstream::ShaderVariantStageBlock& block,
+    const float* system_matrix,
+    const MaterialRecord& material) {
+    std::vector<float> floats(block.float_size, 0.0f);
+    if (block.system_matrix && system_matrix) {
+        std::copy_n(system_matrix, 16, floats.begin());
+    }
+    for (const std::array<std::uint32_t, 3>& gather : block.gather) {
+        for (std::uint32_t index = 0; index < gather[2]; ++index) {
+            floats[gather[0] + index] =
+                material.shader_uniform_values[gather[1] + index];
+        }
+    }
+    return floats;
 }
 #endif
 
