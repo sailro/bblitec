@@ -169,13 +169,15 @@ if ($sdlShared) {
 Copy-Item (Join-Path $assetSource "*") $assets -Recurse
 
 # The runtime reads only its compiled backend's shader formats:
-# SDL_GPU loads offline .dxil (D3D12) or .spv (Vulkan); Dawn compiles
-# the .native.wgsl text in-process. Text intermediates (.hlsl, .msl,
-# reflection dumps, tool manifests) are development artifacts.
+# SDL_GPU loads offline .dxil (D3D12) or .spv (Vulkan) plus the .slots
+# sidecars naming each pinned variant's register order (the PAL binds by
+# that file, never by the WGSL); Dawn compiles the .native.wgsl text
+# in-process. Text intermediates (.hlsl, .msl, reflection dumps, tool
+# manifests) are development artifacts.
 $shaderPatterns = switch ($backend) {
-    "SDL_GPU" { @("*.dxil", "*.spv") }
+    "SDL_GPU" { @("*.dxil", "*.spv", "*.slots") }
     "DAWN" { @("*.native.wgsl") }
-    "BOTH" { @("*.dxil", "*.spv", "*.native.wgsl") }
+    "BOTH" { @("*.dxil", "*.spv", "*.slots", "*.native.wgsl") }
 }
 $shaderFiles = Get-ChildItem $shaderSource -File |
     Where-Object {
