@@ -312,7 +312,14 @@ afterwards). Only the GPU API layer differs:
   the generated binding table, and SDL_GPU gets the addressing from
   `Remap-PinnedVariantRegisters` in `tools/compile-shaders.ps1`, which
   moves each register class into the SDL spaces and publishes the
-  result as a `.slots` sidecar. The PAL binds by that file, never by
+  result as a `.slots` sidecar. A stage whose emitted HLSL exceeds
+  SDL_GPU's four uniform buffers — the composed Standard geometry
+  fragments spend all four on scene, lights, mesh and mat before the
+  tasks' `gp` block — is recompiled with `gp` demoted to a read-only
+  storage buffer (an `r` row in the sidecar; the SDL PAL binds the
+  task's params buffer against it), while Dawn keeps the pin's uniform
+  declaration in the `.native.wgsl` it consumes. The PAL binds by that
+  file, never by
   the WGSL: a stage can declare a block it never reads — the unlit
   fragment declares its mesh block for `mli()` — and Tint strips it,
   so the source over-counts. Vertex convention: an unskinned pinned

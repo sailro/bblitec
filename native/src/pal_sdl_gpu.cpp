@@ -339,6 +339,12 @@ struct GpuGeometryTask {
     // matrix, seeded with the current one on the first frame.
     std::array<float, 16> previous_view_projection{};
     bool has_previous_view_projection = false;
+    // The task's gpUniforms as a real buffer. SDL_GPU caps uniform
+    // buffers at four per stage and the composed Standard geometry
+    // fragments spend all four on scene, lights, mesh and mat, so the
+    // shader compile demotes their gp block to a read-only storage
+    // buffer and the encode uploads its contents here each frame.
+    SDL_GPUBuffer* params = nullptr;
 };
 
 #if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
@@ -1308,7 +1314,8 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
         SDL_GPU_SHADERSTAGE_FRAGMENT,
         static_cast<Uint32>(fragment_slots.textures.size()),
         static_cast<Uint32>(fragment_slots.uniforms.size()),
-        "main");
+        "main",
+        static_cast<Uint32>(fragment_slots.storage.size()));
     std::vector<SDL_GPUVertexAttribute> attributes;
     attributes.reserve(entry.attribute_count);
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
@@ -1482,7 +1489,8 @@ void draw_standard_variant(
     SDL_GPUGraphicsPipeline*& bound_pipeline,
     const FrameTaskRecord* geometry_task = nullptr,
     const PinnedGeometryParams* geometry_params = nullptr,
-    SDL_GPUTexture* emissive_render_texture = nullptr) {
+    SDL_GPUTexture* emissive_render_texture = nullptr,
+    SDL_GPUBuffer* geometry_params_buffer = nullptr) {
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline =
         standard_variant_pipeline(
@@ -1596,6 +1604,29 @@ void draw_standard_variant(
             0,
             fragment_textures.data(),
             static_cast<Uint32>(fragment_textures.size()));
+    }
+    if (!fragment_slots.storage.empty()) {
+        // The gp block the shader compile demoted out of the uniform
+        // slots: SDL_GPU caps those at four per stage and the geometry
+        // fragments spend all four on scene, lights, mesh and mat.
+        std::vector<SDL_GPUBuffer*> fragment_storage;
+        fragment_storage.reserve(fragment_slots.storage.size());
+        for (const std::string& name : fragment_slots.storage) {
+            SDL_GPUBuffer* buffer =
+                name == "gp" ? geometry_params_buffer : nullptr;
+            if (!buffer) {
+                gpu_error(
+                    ("standard variant declares an unmapped fragment "
+                     "storage buffer '" + name + "'.")
+                        .c_str());
+            }
+            fragment_storage.push_back(buffer);
+        }
+        SDL_BindGPUFragmentStorageBuffers(
+            pass,
+            0,
+            fragment_storage.data(),
+            static_cast<Uint32>(fragment_storage.size()));
     }
     const PinnedStageSlots& vertex_slots =
         state.standard_vertex_slots[variant];
@@ -2339,9 +2370,11 @@ void release_frame_graph_textures(GpuState& state) {
             }
         }
         if (task.depth) SDL_ReleaseGPUTexture(state.device, task.depth);
+        if (task.params) SDL_ReleaseGPUBuffer(state.device, task.params);
         task.colors.clear();
         task.sampled_colors.clear();
         task.depth = nullptr;
+        task.params = nullptr;
     }
     state.frame_graph_width = 0;
     state.frame_graph_height = 0;
@@ -4606,7 +4639,8 @@ bool run_gpu_engine(Engine& engine) {
                                           const CameraRecord& draw_camera,
                                           const upstream::RenderDrawLists& draw_lists,
                                           [[maybe_unused]] const FrameTaskRecord* geometry_task,
-                                          [[maybe_unused]] const PinnedGeometryParams* geometry_params) {
+                                          [[maybe_unused]] const PinnedGeometryParams* geometry_params,
+                                          [[maybe_unused]] SDL_GPUBuffer* geometry_params_buffer) {
                     bool scene_matrix_bound = true;
                     const auto pipeline_for =
                         [&](
@@ -4790,7 +4824,8 @@ bool run_gpu_engine(Engine& engine) {
                                         ? source_texture(
                                               material
                                                   ->emissive_render_texture)
-                                        : nullptr);
+                                        : nullptr,
+                                    geometry_params_buffer);
                                 continue;
                             }
 #else
@@ -5149,6 +5184,7 @@ bool run_gpu_engine(Engine& engine) {
                             task_camera,
                             task_draw_lists[handle.value],
                             nullptr,
+                            nullptr,
                             nullptr);
                         SDL_EndGPURenderPass(task_pass);
                         continue;
@@ -5223,34 +5259,9 @@ bool run_gpu_engine(Engine& engine) {
                             task_draw_lists[handle.value]);
 #endif
                         SDL_GPUDepthStencilTargetInfo task_depth{};
-                        task_depth.texture = geometry.depth;
-                        task_depth.clear_depth =
-                            task_has_pbr ? 0.0f : 1.0f;
-                        task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
-                        task_depth.store_op =
-                            SDL_GPU_STOREOP_DONT_CARE;
-                        task_depth.stencil_load_op =
-                            SDL_GPU_LOADOP_DONT_CARE;
-                        task_depth.stencil_store_op =
-                            SDL_GPU_STOREOP_DONT_CARE;
-                        SDL_GPURenderPass* task_pass =
-                            SDL_BeginGPURenderPass(
-                                command,
-                                target_infos.data(),
-                                static_cast<Uint32>(target_infos.size()),
-                                &task_depth);
-                        SDL_PushGPUVertexUniformData(
-                            command,
-                            0,
-                            matrix.data(),
-                            sizeof(matrix));
-                        upstream::sort_transparent_draws(
-                            task_draw_lists[handle.value].transparent,
-                            engine,
-                            camera);
                         // The pinned draws take the reverse-Z matrix the
                         // pin's geometry tasks render with; the Standard
-                        // path keeps the forward one pushed above.
+                        // path keeps the forward one pushed below.
                         const std::array<float, 16> geometry_matrix =
                             task_has_pbr
                                 ? upstream::build_view_projection(
@@ -5277,6 +5288,55 @@ bool run_gpu_engine(Engine& engine) {
                                 0.0f,
                             },
                         };
+#if BBLITE_STANDARD_VARIANTS > 0
+                        // The same block as a real buffer, for the composed
+                        // Standard geometry fragments whose gp the shader
+                        // compile demoted out of SDL_GPU's four uniform
+                        // slots. The upload runs on its own command buffer,
+                        // submitted (and so executed) ahead of this frame's,
+                        // and cycles the buffer so a frame still in flight
+                        // keeps last frame's contents.
+                        if (!upstream::standard_variants.empty()) {
+                            if (!geometry.params) {
+                                geometry.params = upload_buffer(
+                                    state.device,
+                                    SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+                                    &geometry_params,
+                                    sizeof(geometry_params));
+                            } else {
+                                update_buffer(
+                                    state.device,
+                                    geometry.params,
+                                    &geometry_params,
+                                    sizeof(geometry_params));
+                            }
+                        }
+#endif
+                        task_depth.texture = geometry.depth;
+                        task_depth.clear_depth =
+                            task_has_pbr ? 0.0f : 1.0f;
+                        task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
+                        task_depth.store_op =
+                            SDL_GPU_STOREOP_DONT_CARE;
+                        task_depth.stencil_load_op =
+                            SDL_GPU_LOADOP_DONT_CARE;
+                        task_depth.stencil_store_op =
+                            SDL_GPU_STOREOP_DONT_CARE;
+                        SDL_GPURenderPass* task_pass =
+                            SDL_BeginGPURenderPass(
+                                command,
+                                target_infos.data(),
+                                static_cast<Uint32>(target_infos.size()),
+                                &task_depth);
+                        SDL_PushGPUVertexUniformData(
+                            command,
+                            0,
+                            matrix.data(),
+                            sizeof(matrix));
+                        upstream::sort_transparent_draws(
+                            task_draw_lists[handle.value].transparent,
+                            engine,
+                            camera);
                         draw_scene(
                             task_pass,
                             nullptr,
@@ -5289,7 +5349,8 @@ bool run_gpu_engine(Engine& engine) {
                             camera,
                             task_draw_lists[handle.value],
                             &task,
-                            &geometry_params);
+                            &geometry_params,
+                            geometry.params);
                         geometry.previous_view_projection =
                             geometry_matrix;
                         SDL_EndGPURenderPass(task_pass);

@@ -323,6 +323,60 @@ function Remap-PinnedVariantRegisters {
     Set-Content $slotPath ($slots -join [Environment]::NewLine)
 }
 
+function Get-HlslUniformBufferCount {
+    param([string]$Path)
+
+    return ([regex]::Matches(
+        (Get-Content $Path -Raw),
+        "cbuffer\s+\w+\s*:\s*register\(b"
+    )).Count
+}
+
+function Demote-PinnedVariantGpBlock {
+    <#
+    .SYNOPSIS
+    Rewrites a pinned stage's `gp` uniform block to a read-only storage
+    buffer, for stages SDL_GPU cannot otherwise express.
+
+    .DESCRIPTION
+    SDL_GPU caps uniform buffers at four per stage
+    (MAX_UNIFORM_BUFFERS_PER_STAGE), and its release build skips the
+    validation: a fifth block corrupts the D3D12 command buffer's
+    fixed-size slot arrays instead of failing. The composed Standard
+    geometry fragments reach five -- scene, lights, mesh and mat spend
+    the whole budget before the geometry tasks' gp block arrives.
+
+    Storage buffers have their own budget of eight, so the stage keeps
+    every pinned struct, name and expression and only the gp block's
+    address space changes -- the same contract as the register remap.
+    The demoted source feeds every SDL-facing artifact (HLSL, DXIL,
+    SPIR-V, MSL, and the .slots sidecar, where the block becomes an
+    `r` row the PAL binds a real buffer against); the `.native.wgsl`
+    Dawn consumes keeps the pin's uniform declaration.
+
+    Returns the demoted source path, written beside the stage.
+    #>
+    param([string]$SourcePath, [string]$OutputBase, [int]$UniformCount)
+
+    $wgsl = Get-Content $SourcePath -Raw
+    $demoted = [regex]::Replace(
+        $wgsl,
+        "var\s*<\s*uniform\s*>\s*gp\s*:",
+        "var<storage, read> gp:"
+    )
+    if ($demoted -eq $wgsl) {
+        throw (
+            "$SourcePath declares $UniformCount uniform blocks; SDL_GPU " +
+            "caps a stage at 4 and only a gp block is demotable."
+        )
+    }
+    # Tint infers the input format from the extension, so the temp must
+    # end in .wgsl; it is removed after the HLSL and MSL arms consume it.
+    $demotedPath = "$OutputBase.pending-sdl.wgsl"
+    Set-Content $demotedPath $demoted
+    return $demotedPath
+}
+
 function Normalize-TintHlslBindings {
     param([string]$Path)
 
@@ -513,6 +567,38 @@ foreach ($shaderDirectory in $shaderDirectories) {
             ) {
                 throw "Tint binding reflection differs from native WGSL for $($source.FullName)."
             }
+            # SDL_GPU caps uniform buffers at four per stage. The count that
+            # binds is the emitted HLSL's, not the WGSL's -- Tint strips a
+            # block a stage declares but never reads -- so the overflow check
+            # reads the first compile and, when it trips, recompiles every
+            # SDL-facing artifact from a source whose gp block is demoted to
+            # a read-only storage buffer. Dawn keeps the pin's uniform
+            # declaration in the `.native.wgsl` it consumes.
+            $sdlSource = $source.FullName
+            if ($isPinnedVariant) {
+                $uniformCount = Get-HlslUniformBufferCount $pendingHlsl
+                if ($uniformCount -gt 4) {
+                    $sdlSource = Demote-PinnedVariantGpBlock `
+                        $source.FullName `
+                        $outputBase `
+                        $uniformCount
+                    & $Tint $sdlSource `
+                        --entry-point $entryPoint `
+                        --format hlsl `
+                        --output-name $pendingHlsl
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Tint HLSL generation failed for $sdlSource."
+                    }
+                    $demotedCount = Get-HlslUniformBufferCount $pendingHlsl
+                    if ($demotedCount -gt 4) {
+                        throw (
+                            "$($source.FullName) still emits $demotedCount " +
+                            "uniform blocks after demoting gp; SDL_GPU caps " +
+                            "a stage at 4."
+                        )
+                    }
+                }
+            }
             if ($isPinnedVariant) {
                 Remap-PinnedVariantRegisters `
                     $pendingHlsl `
@@ -522,11 +608,14 @@ foreach ($shaderDirectory in $shaderDirectories) {
             }
             Move-IfDifferent $pendingHlsl "$outputBase.hlsl"
             $pendingMsl = "$outputBase.pending-msl"
-            & $Tint $source.FullName --entry-point $entryPoint --format msl --output-name $pendingMsl
+            & $Tint $sdlSource --entry-point $entryPoint --format msl --output-name $pendingMsl
             if ($LASTEXITCODE -ne 0) {
                 throw "Tint MSL generation failed for $($source.FullName)."
             }
             Move-IfDifferent $pendingMsl "$outputBase.msl"
+            if ($sdlSource -ne $source.FullName) {
+                Remove-Item $sdlSource
+            }
         }
     }
     foreach ($source in Get-ChildItem $shaderDirectory -Filter "*.hlsl") {
