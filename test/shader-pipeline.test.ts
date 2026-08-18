@@ -25,10 +25,7 @@ import {
     readUpstreamPin,
 } from "../src/upstream-source.js";
 import { resolve } from "node:path";
-import {
-    materialVertexWgsl,
-    standardFragmentWgsl,
-} from "../src/shader-builtins-standard.js";
+import { materialVertexWgsl } from "../src/shader-builtins-standard.js";
 
 test("lowers reached alpha-card WGSL through typed reflection", () => {
     const program = lowerWgslShaderProgram(
@@ -221,61 +218,4 @@ test("generates the shared Tint material vertex interface", () => {
     );
 });
 
-test("generates Tint Standard material and geometry WGSL", () => {
-    const fragment = standardFragmentWgsl("standard provenance");
-    const geometry = standardFragmentWgsl("geometry provenance", {
-        shaderIndex: 0,
-        attachments: ["WORLD_POSITION", "REFLECTIVITY"],
-        emitColor: true,
-    });
-    assert.match(fragment, /texture_cube<f32>/);
-    assert.match(fragment, /lightData2: vec4<f32>/);
-    assert.match(fragment, /light1\.diffuse \+ light2\.diffuse/);
-    assert.doesNotMatch(fragment, /@builtin\(front_facing\)/);
-    assert.match(fragment, /return color/);
-    assert.match(geometry, /struct FragmentOutput/);
-    assert.match(geometry, /@location\(2\) color/);
-    assert.match(geometry, /output\.f1 = vec4<f32>/);
-});
-
-test("adds the pinned Standard vertex-color slot only when reached", () => {
-    const plain = standardFragmentWgsl("standard provenance");
-    const colored = standardFragmentWgsl(
-        "standard provenance",
-        undefined,
-        false,
-        true,
-    );
-    assert.doesNotMatch(plain, /@location\(6\) color/);
-    assert.doesNotMatch(plain, /baseColor \*=/);
-    assert.match(plain, /let baseColor =/);
-    // std-vertex-color-fragment.ts multiplies the base color by the RGB
-    // in the alpha-test slot and leaves alpha alone without the
-    // mesh.hasVertexAlpha opt-in.
-    assert.match(colored, /@location\(6\) color: vec4<f32>,/);
-    assert.match(colored, /var baseColor =/);
-    assert.match(colored, /baseColor \*= input\.color\.rgb;/);
-    assert.doesNotMatch(colored, /alpha \*= input\.color\.a/);
-    assert.equal(
-        colored
-            .replace("    @location(6) color: vec4<f32>,\n", "")
-            .replace("\n    baseColor *= input.color.rgb;", "")
-            .replace("    var baseColor =", "    let baseColor ="),
-        plain,
-    );
-    assert.throws(
-        () =>
-            standardFragmentWgsl(
-                "geometry provenance",
-                {
-                    shaderIndex: 0,
-                    attachments: ["ALBEDO"],
-                    emitColor: true,
-                },
-                false,
-                true,
-            ),
-        /color fragment variant/,
-    );
-});
 

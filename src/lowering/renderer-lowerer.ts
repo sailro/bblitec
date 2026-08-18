@@ -37,10 +37,7 @@ import {
     solidSkyboxVertexWgsl,
 } from "../shader-builtins-background.js";
 import type { PinnedSolidSkyboxSource } from "../shader-builtins-background.js";
-import {
-    materialVertexWgsl,
-    standardFragmentWgsl,
-} from "../shader-builtins-standard.js";
+import { materialVertexWgsl } from "../shader-builtins-standard.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 /**
@@ -134,10 +131,6 @@ const fogWgslModule = "src/shader/wgsl-fog.ts";
 const skyboxCubemapModule =
     "src/material/standard/skybox-cubemap.ts";
 const orthoMatrixModule = "src/math/mat4-ortho-lh-to-ref.ts";
-const standardVertexColorFragmentModule =
-    "src/material/standard/fragments/std-vertex-color-fragment.ts";
-const standardRenderableModule =
-    "src/material/standard/standard-renderable.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
 const backgroundHdrModule = "src/material/pbr/background-hdr-skybox.ts";
@@ -175,11 +168,6 @@ export class RendererLowerer {
         iridescence?: boolean;
         dispersion?: boolean;
         nodeVisibility?: boolean;
-        standardLights?: number;
-        standardLightLists?: boolean;
-        standardDiffuseUv2?: boolean;
-        standardBump?: boolean;
-        standardSpotLights?: boolean;
         orthographicCamera?: boolean;
         background?: boolean;
         shaderPrograms?: CompiledShaderProgram[];
@@ -208,21 +196,6 @@ export class RendererLowerer {
             this.context.functionDeclaration(
                 "src/scene/world-matrix-state.ts",
                 "composeTrsLocalMatrix",
-            );
-        }
-        if (
-            options.standardBump &&
-            (options.transmission === true ||
-                options.clearcoat === true ||
-                options.sheen === true ||
-                options.iridescence === true)
-        ) {
-            // The Standard bump pair appends after every PBR texture pair,
-            // so its binding index is 12 only while none of those pairs
-            // exist. A scene composing both would need the index computed
-            // in the fragment rather than fixed, and none reaches it.
-            throw new Error(
-                "Standard bump mapping is lowered only for scenes without transmission or PBR material-extension textures.",
             );
         }
         if (options.orthographicCamera && options.background) {
@@ -484,28 +457,6 @@ export class RendererLowerer {
                       )
                       .join("")
                 : "";
-        // One uniform slot per Standard light the scene's assets carry,
-        // never fewer than the two this block has always emitted.
-        const standardLightSlots = Math.max(
-            2,
-            options.standardLights ?? 2,
-        );
-        const extraStandardLights = Array.from(
-            { length: standardLightSlots - 2 },
-            (_, index) => index + 3,
-        );
-        // Which slots hold a light is normally read off `light_direction.w`,
-        // which every written light sets to one and an untouched slot leaves
-        // at zero. A spot cone needs that component for its cosine, so a
-        // scene reaching one tags the empty slots in the kind component
-        // instead: the pinned kinds are 0 point, 1 directional, 2 spot and
-        // 3 hemispheric, and -1 is none of them.
-        const emptyLightData = options.standardSpotLights
-            ? "{0.0f, 0.0f, 0.0f, -1.0f}"
-            : "{}";
-        const standardPositionalLight = options.standardSpotLights
-            ? "positional"
-            : "light.kind == LightKind::point";
         const fogUniformFields = options.fog
             ? `    std::array<float, 4> fog_infos{};
     std::array<float, 4> fog_color{};
@@ -927,37 +878,6 @@ ${materialExtensionUniformFields}\
     std::array<std::array<float, 4>, 9> spherical_harmonics{};
 };
 
-struct StandardUniforms {
-    std::array<float, 4> camera_position{};
-    std::array<float, 4> camera_forward_near{};
-    std::array<float, 4> view_right{};
-    std::array<float, 4> view_up{};
-    std::array<float, 4> view_forward{};
-    std::array<float, 4> light_data${emptyLightData};
-    std::array<float, 4> light_diffuse{};
-    std::array<float, 4> light_specular{};
-    std::array<float, 4> light_direction{};
-    std::array<float, 4> light_data_2${emptyLightData};
-    std::array<float, 4> light_diffuse_2{};
-    std::array<float, 4> light_specular_2{};
-    std::array<float, 4> light_direction_2{};${extraStandardLights.map((slot) => `
-    std::array<float, 4> light_data_${slot}${emptyLightData};
-    std::array<float, 4> light_diffuse_${slot}{};
-    std::array<float, 4> light_specular_${slot}{};
-    std::array<float, 4> light_direction_${slot}{};`).join("")}
-    std::array<float, 4> diffuse_alpha{};
-    std::array<float, 4> specular_power{};
-    std::array<float, 4> emissive_level{};
-    std::array<float, 4> ambient_level{};
-    std::array<float, 4> texture_options{};
-    std::array<float, 4> uv_options{};
-    std::array<float, 4> material_options{};
-    std::array<float, 4> reflection_options{};${options.standardDiffuseUv2 ? `
-    std::array<float, 4> diffuse_uv_options{};` : ""}${options.standardBump ? `
-    std::array<float, 4> bump_options{};` : ""}
-${fogUniformFields}\
-};
-
 struct GridUniforms {
     std::array<float, 4> grid_control{};
     std::array<float, 4> main_color{};
@@ -1093,11 +1013,6 @@ bool light_affects_mesh(
     const LightRecord& light,
     std::uint32_t mesh_index);
 PbrUniforms build_pbr_uniforms(
-    const Scene& scene,
-    const Engine& engine,
-    const CameraRecord& camera,
-    const RenderItem& item);
-StandardUniforms build_standard_uniforms(
     const Scene& scene,
     const Engine& engine,
     const CameraRecord& camera,
@@ -2049,251 +1964,6 @@ ${transmissionViewProjection}\
     return result;
 }
 
-StandardUniforms build_standard_uniforms(
-    const Scene& scene,
-    const Engine& engine,
-    const CameraRecord& camera,
-    const RenderItem& item) {
-    StandardUniforms result;
-    const CameraBasis basis = camera_basis(camera);
-    const Vec3& eye = basis.eye;
-    const Vec3& forward = basis.forward;
-    const Vec3& right = basis.right;
-    const Vec3& up = basis.up;
-    result.camera_position = {
-        eye.x,
-        eye.y,
-        eye.z,
-        static_cast<float>(camera.far_plane),
-    };
-    result.camera_forward_near = {
-        forward.x,
-        forward.y,
-        forward.z,
-        static_cast<float>(camera.near_plane),
-    };
-    result.view_right = {right.x, right.y, right.z, 0.0f};
-    result.view_up = {up.x, up.y, up.z, 0.0f};
-    result.view_forward = {forward.x, forward.y, forward.z, 0.0f};
-${fogUniforms}\
-    if (scene.lights.size() > ${standardLightSlots}) {
-        throw std::runtime_error(
-            "Reached Standard material supports at most ${standardLightSlots} lights.");
-    }
-    const auto write_light =
-        [](
-            const LightRecord& light,
-            std::array<float, 4>& light_data,
-            std::array<float, 4>& light_diffuse,
-            std::array<float, 4>& light_specular,
-            std::array<float, 4>& light_direction) {${options.standardSpotLights ? `
-        // A spot is positional like a point light and directional like a
-        // directional one: it packs its position in the data slot and its
-        // cone axis in the direction slot.
-        const bool positional =
-            light.kind == LightKind::point ||
-            light.kind == LightKind::spot;` : ""}
-        const Vec3 matrix_direction{
-            light.local_matrix[8],
-            light.local_matrix[9],
-            light.local_matrix[10],
-        };
-        const float matrix_length = std::sqrt(
-            matrix_direction.x * matrix_direction.x +
-            matrix_direction.y * matrix_direction.y +
-            matrix_direction.z * matrix_direction.z);
-        const Vec3 direction = matrix_length > 0.000001f
-            ? Vec3{
-                  matrix_direction.x / matrix_length,
-                  matrix_direction.y / matrix_length,
-                  matrix_direction.z / matrix_length,
-              }
-            : light.direction;
-        light_data = {
-            ${standardPositionalLight}
-                ? light.position.x
-                : direction.x,
-            ${standardPositionalLight}
-                ? light.position.y
-                : direction.y,
-            ${standardPositionalLight}
-                ? light.position.z
-                : direction.z,
-            light.kind == LightKind::hemispheric
-                ? 3.0f
-                : light.kind == LightKind::directional
-                    ? 1.0f
-                    : ${options.standardSpotLights ? `light.kind == LightKind::spot
-                        ? 2.0f
-                        : 0.0f` : "0.0f"},
-        };
-        light_diffuse = {
-            light.diffuse_color.r * light.intensity,
-            light.diffuse_color.g * light.intensity,
-            light.diffuse_color.b * light.intensity,
-            ${standardPositionalLight} ? light.range : 0.0f,
-        };
-        light_specular = {
-            light.specular_color.r * light.intensity,
-            light.specular_color.g * light.intensity,
-            light.specular_color.b * light.intensity,
-            ${options.standardSpotLights ? `light.kind == LightKind::spot
-                ? light.exponent
-                : 0.0f` : "0.0f"},
-        };
-        light_direction = {
-            light.kind == LightKind::hemispheric
-                ? light.ground_color.r
-                : direction.x,
-            light.kind == LightKind::hemispheric
-                ? light.ground_color.g
-                : direction.y,
-            light.kind == LightKind::hemispheric
-                ? light.ground_color.b
-                : direction.z,
-            ${options.standardSpotLights ? `light.kind == LightKind::spot
-                ? light.cos_half_angle
-                : 1.0f` : "1.0f"},
-        };
-    };
-${options.standardLightLists ? `    // A light can name the meshes it applies to, so the slots hold this
-    // mesh's light set rather than the scene's. That is the same set the
-    // pinned template's \`min(mesh.lc, MAX_LIGHTS)\` loop walks.
-    std::uint32_t light_slot = 0;
-    for (const LightHandle handle : scene.lights) {
-        if (handle.value >= engine.lights.size()) continue;
-        const LightRecord& light = engine.lights[handle.value];
-        if (!light_affects_mesh(light, item.mesh.value)) continue;
-        switch (light_slot) {
-            case 0:
-                write_light(
-                    light,
-                    result.light_data,
-                    result.light_diffuse,
-                    result.light_specular,
-                    result.light_direction);
-                break;
-            case 1:
-                write_light(
-                    light,
-                    result.light_data_2,
-                    result.light_diffuse_2,
-                    result.light_specular_2,
-                    result.light_direction_2);
-                break;${extraStandardLights.map((slot) => `
-            case ${slot - 1}:
-                write_light(
-                    light,
-                    result.light_data_${slot},
-                    result.light_diffuse_${slot},
-                    result.light_specular_${slot},
-                    result.light_direction_${slot});
-                break;`).join("")}
-            default:
-                break;
-        }
-        ++light_slot;
-        if (light_slot >= ${standardLightSlots}u) break;
-    }` : `    if (
-        !scene.lights.empty() &&
-        scene.lights[0].value < engine.lights.size()) {
-        write_light(
-            engine.lights[scene.lights[0].value],
-            result.light_data,
-            result.light_diffuse,
-            result.light_specular,
-            result.light_direction);
-    }`}${options.standardLightLists ? "" : `
-    if (
-        scene.lights.size() > 1 &&
-        scene.lights[1].value < engine.lights.size()) {
-        write_light(
-            engine.lights[scene.lights[1].value],
-            result.light_data_2,
-            result.light_diffuse_2,
-            result.light_specular_2,
-            result.light_direction_2);
-    }${extraStandardLights.map((slot) => `
-    if (
-        scene.lights.size() > ${slot - 1} &&
-        scene.lights[${slot - 1}].value < engine.lights.size()) {
-        write_light(
-            engine.lights[scene.lights[${slot - 1}].value],
-            result.light_data_${slot},
-            result.light_diffuse_${slot},
-            result.light_specular_${slot},
-            result.light_direction_${slot});
-    }`).join("")}`}
-    if (item.material.value < engine.materials.size()) {
-        const MaterialRecord& material =
-            engine.materials[item.material.value];
-        result.diffuse_alpha = {
-            material.diffuse_color.r,
-            material.diffuse_color.g,
-            material.diffuse_color.b,
-            material.base_color_factor.a,
-        };
-        result.specular_power = {
-            material.specular_color.r,
-            material.specular_color.g,
-            material.specular_color.b,
-            material.specular_power,
-        };
-        result.emissive_level = {
-            material.emissive_factor.r,
-            material.emissive_factor.g,
-            material.emissive_factor.b,
-            material.diffuse_level,
-        };
-        result.ambient_level = {
-            material.ambient_color.r,
-            material.ambient_color.g,
-            material.ambient_color.b,
-            material.ambient_level,
-        };
-        result.texture_options = {
-            material.base_color_texture.bytes.empty() ? 0.0f : 1.0f,
-            material.specular_texture.bytes.empty() ? 0.0f : 1.0f,
-            material.opacity_texture.bytes.empty() ? 0.0f : 1.0f,
-            material.ambient_texture.bytes.empty() ? 0.0f : 1.0f,
-        };
-        result.uv_options = {
-            material.diffuse_u_scale,
-            material.diffuse_v_scale,
-            static_cast<float>(material.specular_coord_index),
-            static_cast<float>(material.ambient_coord_index),
-        };
-        result.material_options = {
-            material.double_sided ? 1.0f : 0.0f,
-            material.alpha_cutoff,
-            material.opacity_level,
-            material.disable_lighting ? 1.0f : 0.0f,
-        };${options.standardDiffuseUv2 ? `
-        result.diffuse_uv_options = {
-            static_cast<float>(material.diffuse_coord_index),
-            0.0f,
-            0.0f,
-            0.0f,
-        };` : ""}${options.standardBump ? `
-        result.bump_options = {
-            material.bump_scale,
-            material.bump_texture.bytes.empty() ? 0.0f : 1.0f,
-            0.0f,
-            0.0f,
-        };` : ""}
-        result.reflection_options = {
-            material.reflection_cube == invalid_handle ? 0.0f : 1.0f,
-            material.reflection_level,
-            (
-                !material.emissive_texture.bytes.empty() ||
-                material.has_emissive_render_texture
-            ) ? 1.0f : 0.0f,
-            material.has_emissive_render_texture ? 1.0f : 0.0f,
-        };
-    }
-    return result;
-}
-
 GridUniforms build_grid_uniforms(
     const Engine& engine,
     const RenderItem& item) {
@@ -2596,12 +2266,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         fog?: boolean;
         normalTextureScale?: boolean;
         shaderPrograms: CompiledShaderProgram[];
-        standardMaterial: boolean;
-        standardVertexColors?: boolean;
-        standardLights?: number;
-        standardDiffuseUv2?: boolean;
-        standardBump?: boolean;
-        standardSpotLights?: boolean;
         gridMaterial?: boolean;
         idDiagnostics: boolean;
         geometryOutputTasks: GeometryOutputTaskManifest[];
@@ -2630,8 +2294,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             ...program,
             uniformDefaults: program.uniformDefaults ?? [],
         })),
-        standardMaterial: false,
-        standardVertexColors: false,
         gridMaterial: false,
         idDiagnostics: true,
         geometryOutputTasks: [],
@@ -2665,46 +2327,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         const pbrGeometryModule =
             "src/material/pbr/pbr-geometry-output-shader.ts";
         const pbrGeometry = this.context.store.getSource(pbrGeometryModule);
-        const standardGeometryModule =
-            "src/material/standard/standard-geometry-output-shader.ts";
-        const standardTemplateModule =
-            "src/material/standard/standard-template.ts";
-        const standardGeometry = this.context.store.getSource(
-            standardGeometryModule,
-        );
-        const standardTemplate = this.context.store.getSource(
-            standardTemplateModule,
-        );
-        if (
-            options.standardMaterial &&
-            standardTemplate.includes("@builtin(front_facing)")
-        ) {
-            throw new Error(
-                "Pinned Standard double-sided normal semantics changed.",
-            );
-        }
-        if (
-            options.standardVertexColors &&
-            options.geometryOutputTasks.length > 0
-        ) {
-            // standard-renderable.ts composes the vertex-colour fragment
-            // for the geometry outputs too (its ALBEDO attachment writes
-            // baseColor), but no reached scene combines them.
-            throw new Error(
-                "Standard vertex colors are lowered for the color fragment only; geometry outputs with vertex colors are not supported yet.",
-            );
-        }
-        if (
-            options.standardSpotLights &&
-            options.geometryOutputTasks.length > 0
-        ) {
-            // The geometry fragments share the same lighting function, but
-            // their slots keep the direction component as the occupied flag
-            // the spot cone needs. No reached scene composes the two.
-            throw new Error(
-                "Standard spot lights are lowered for the color fragment only; geometry outputs with spot lights are not supported yet.",
-            );
-        }
         const gridModule = "src/material/grid/grid-material.ts";
         const clearcoatFragment = this.context.store.getSource(
             clearcoatFragmentModule,
@@ -2796,71 +2418,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                     morphTargets,
                     "MORPH_WEIGHTS_HEADER_BYTES = 16",
                     "morph weights header ABI",
-                ],
-            );
-        }
-        if (options.standardMaterial) {
-            requiredUpstreamFormulas.push(
-                [
-                    standardTemplate,
-                    "diffuseBase * diffuseColor + emissiveContrib + mat.ac",
-                    "standard diffuse lighting",
-                ],
-                [
-                    standardGeometry,
-                    "BJS Standard material can't split irradiance",
-                    "standard zero irradiance output",
-                ],
-                [
-                    standardGeometry,
-                    "pow(mat.sc.rgb, vec3<f32>(2.2))",
-                    "standard reflectivity output",
-                ],
-            );
-        }
-        if (options.standardSpotLights) {
-            requiredUpstreamFormulas.push(
-                [
-                    standardTemplate,
-                    "let c = max(0.0, dot(L.vLightDirection.xyz, -lv));",
-                    "standard spot cone cosine",
-                ],
-                [
-                    standardTemplate,
-                    "if (c >= L.vLightDirection.w) { a *= max(0.0, pow(c, L.vLightSpecular.a)); } else { a = 0.0; }",
-                    "standard spot cone falloff",
-                ],
-            );
-        }
-        if (options.standardVertexColors) {
-            const standardVertexColorFragment =
-                this.context.store.getSource(
-                    standardVertexColorFragmentModule,
-                );
-            const standardRenderable =
-                this.context.store.getSource(
-                    standardRenderableModule,
-                );
-            requiredUpstreamFormulas.push(
-                [
-                    standardVertexColorFragment,
-                    'let at = "baseColor *= input.vColor.rgb;"',
-                    "standard vertex color base color",
-                ],
-                [
-                    standardVertexColorFragment,
-                    '_vertexSlots: { VB: "out.vColor = color;" }',
-                    "standard vertex color passthrough",
-                ],
-                [
-                    standardVertexColorFragment,
-                    "if (hasVertexAlpha) {",
-                    "standard vertex alpha opt-in",
-                ],
-                [
-                    standardRenderable,
-                    "const hasVertexColor = !!mesh._gpu.colorBuffer && !!_stdVertexColorFragment;",
-                    "standard vertex color mesh condition",
                 ],
             );
         }
@@ -3012,43 +2569,9 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                     );
                 }
             }
-            if (options.standardMaterial) {
-                const stdFogSource = this.context.store.getSource(
-                    "src/material/standard/std-fog-wgsl.ts",
-                );
-                for (const marker of [
-                    "color = vec4<f32>(mix(scene.vFogColor.rgb, color.rgb, fog), color.a);",
-                    'out.vf = (scene.view * vec4<f32>(out.vp, 1.0)).xyz;',
-                    "let fog = calcFogFactor(input.vf);",
-                ]) {
-                    if (!stdFogSource.includes(marker)) {
-                        throw new Error(
-                            `Pinned Babylon Lite Standard fog blend changed: ${marker}`,
-                        );
-                    }
-                }
-            }
             // The falloff formula itself is not asserted here: every
             // consumer emits it through `fogFactorWgsl()`, which lifts the
             // pinned `WGSL_FOG` literal and throws if it changes shape.
-        }
-        if (options.standardMaterial) {
-            result.push({
-                output: "upstream/shaders/standard.frag.native.wgsl",
-                data: standardFragmentWgsl(
-                    this.context.provenance(
-                        standardTemplateModule,
-                        "createStandardTemplate",
-                    ),
-                    undefined,
-                    options.fog === true,
-                    options.standardVertexColors === true,
-                    Math.max(2, options.standardLights ?? 2),
-                    options.standardDiffuseUv2 === true,
-                    options.standardBump === true,
-                    options.standardSpotLights === true,
-                ),
-            });
         }
         if (options.ground) {
             const pinnedGround = readPinnedBackgroundGroundSource(
@@ -3357,21 +2880,6 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
                     data: emitNativeWgslProgram(program, "fragment"),
                 },
             );
-        }
-        for (const task of options.geometryOutputTasks) {
-            if (options.standardMaterial) {
-                result.push({
-                    output:
-                        `upstream/shaders/standard-geometry-${task.shaderIndex}.frag.native.wgsl`,
-                    data: standardFragmentWgsl(
-                        this.context.provenance(
-                            standardGeometryModule,
-                            "attachmentExpr",
-                        ),
-                        task,
-                    ),
-                });
-            }
         }
         return result;
     }

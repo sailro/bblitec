@@ -59,6 +59,13 @@ function pinnedMaxLights(context: LoweringContext): number {
     return Number.parseInt(initializer.text, 10);
 }
 
+/** The pin's frozen MAX_LIGHTS, read for the activation inventory's
+ *  max-lights refusal row so it records the constant's value beside
+ *  the checked count. */
+export function readPinnedMaxLights(): number {
+    return pinnedMaxLights(new LoweringContext(new UpstreamSourceStore()));
+}
+
 function meshLightIndexWordOffset(context: LoweringContext): number {
     const file = context.sourceFile("src/render/lights-ubo.ts");
     const initializer = context.unwrapExpression(
@@ -535,12 +542,6 @@ class GeneratedSourceWriter {
                     iridescence: options.iridescence,
                     dispersion: options.dispersion,
                     nodeVisibility: options.nodeVisibility,
-                    standardLights: options.standardLights,
-                    standardLightLists: options.standardLightLists,
-                    standardDiffuseUv2: options.standardDiffuseUv2,
-                    standardBump: options.standardBump,
-                    standardSpotLights:
-                        features.includes("light:spot"),
                     orthographicCamera: features.includes(
                         "camera:orthographic",
                     ),
@@ -575,16 +576,6 @@ class GeneratedSourceWriter {
                 fog: features.includes("renderer:fog"),
                 normalTextureScale: features.includes("loader:gltf"),
                 shaderPrograms: options.shaderPrograms,
-                standardMaterial:
-                    features.includes("material:standard") &&
-                    features.includes("renderer:pbr"),
-                standardVertexColors: features.includes(
-                    "material:standard-vertex-colors",
-                ),
-                standardLights: options.standardLights,
-                standardDiffuseUv2: options.standardDiffuseUv2,
-                standardBump: options.standardBump,
-                standardSpotLights: features.includes("light:spot"),
                 gridMaterial: features.includes("material:grid"),
                 idDiagnostics: options.idDiagnostics,
                 geometryOutputTasks: options.geometryOutputTasks,
@@ -791,6 +782,31 @@ class GeneratedSourceWriter {
         // variants the shared scene/lights/mesh mirrors are hoisted in too,
         // since they otherwise ride pbr_variants.hpp.
         if ((options.pinnedStandardVariants ?? []).length > 0) {
+            // The mesh mirror must cover every composed variant's declaration:
+            // the LINEAR_VELOCITY geometry arm appends previousWorld and
+            // velocityEnabled after the light indices, and binding the base
+            // 144-byte block to that variant is a validation error. The
+            // largest declared struct is mirrored; the base variants read
+            // its prefix, which is laid out identically.
+            const widestStandardMesh = [...options.pinnedStandardVariants!]
+                .sort((left, right) => {
+                    const size = (text: string): number =>
+                        /struct MeshUniforms\s*\{([\s\S]*?)\}/
+                            .exec(text)?.[1]?.length ?? 0;
+                    return size(right.fragmentWgsl) -
+                        size(left.fragmentWgsl);
+                })[0]!.fragmentWgsl;
+            if (
+                (options.pinnedVariants ?? []).length > 0 &&
+                widestStandardMesh.includes("previousWorld")
+            ) {
+                throw new Error(
+                    "A composed Standard velocity variant extends " +
+                        "MeshUniforms past the PBR header's mirror; " +
+                        "hoisting the widest struct for a scene that also " +
+                        "emits pbr_variants.hpp is not wired yet.",
+                );
+            }
             const sharedMirrors = (options.pinnedVariants ?? []).length > 0
                 ? ""
                 : `
@@ -833,7 +849,7 @@ ${
 
 ${
                     meshUniformsBlock(
-                        options.pinnedStandardVariants![0]!.fragmentWgsl,
+                        widestStandardMesh,
                         meshLightIndexWordOffset(context),
                     )
                 }

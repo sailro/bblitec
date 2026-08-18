@@ -663,17 +663,31 @@ export function meshUniformsBlock(
         );
     }
     // `li` is an array of vec4<u32>; its element count comes from the
-    // declaration rather than from MAX_LIGHTS restated here.
+    // declaration rather than from MAX_LIGHTS restated here. Fields keep
+    // their declared order — the velocity geometry arm appends
+    // previousWorld and velocityEnabled after the array, and laying the
+    // scalars out contiguously would move them under it.
     const arrayField =
         /(\w+)\s*:\s*array<vec4<u32>\s*,\s*(\d+)>/.exec(body[1]!);
-    const scalarText = body[1]!
-        .replace(/(\w+)\s*:\s*array<vec4<u32>\s*,\s*\d+>\s*,?/g, "")
-        .split(/[,\n]/)
-        .map((part) => part.replace(/\/\/.*$/, "").trim())
-        .filter((part) => part !== "")
-        .map((part) => `${part},`)
-        .join("\n");
-    const fields = parseVariantFields(scalarText);
+    const arrayIndexInText = arrayField
+        ? body[1]!.indexOf(arrayField[0])
+        : -1;
+    const parseScalars = (text: string) =>
+        text
+            .split(/[,\n]/)
+            .map((part) => part.replace(/\/\/.*$/, "").trim())
+            .filter((part) => part !== "")
+            .map((part) => `${part},`)
+            .join("\n");
+    const beforeText = arrayField
+        ? body[1]!.slice(0, arrayIndexInText)
+        : body[1]!;
+    const afterText = arrayField
+        ? body[1]!
+            .slice(arrayIndexInText)
+            .replace(/(\w+)\s*:\s*array<vec4<u32>\s*,\s*\d+>\s*,?/, "")
+        : "";
+    const fields = parseVariantFields(parseScalars(beforeText));
     const { offsets, totalBytes } = variantLayout(fields);
     const mirrored = mirroredMembers("MeshUniforms", fields, offsets);
     let members = mirrored.members;
@@ -681,15 +695,14 @@ export function meshUniformsBlock(
     let end = totalBytes;
     if (arrayField) {
         // The array aligns to 16 like any vec4, after the scalars.
-        const arrayOffset = Math.ceil(
-            fields.reduce(
-                (cursor, field, index) => Math.max(
-                    cursor,
-                    offsets[index]! + field.size,
-                ),
-                0,
-            ) / 16,
-        ) * 16;
+        const natural = fields.reduce(
+            (cursor, field, index) => Math.max(
+                cursor,
+                offsets[index]! + field.size,
+            ),
+            0,
+        );
+        const arrayOffset = Math.ceil(natural / 16) * 16;
         if (arrayOffset !== lightIndexWordOffset * 4) {
             throw new Error(
                 `Pinned MSH_LIGHT_INDEX_WORD_OFFSET is ` +
@@ -698,13 +711,6 @@ export function meshUniformsBlock(
                     `puts '${arrayField[1]}' at byte ${arrayOffset}.`,
             );
         }
-        const natural = fields.reduce(
-            (cursor, field, index) => Math.max(
-                cursor,
-                offsets[index]! + field.size,
-            ),
-            0,
-        );
         if (arrayOffset > natural) {
             members += `\n    // ${arrayOffset - natural} bytes of WGSL ` +
                 `alignment padding.\n` +
@@ -721,6 +727,39 @@ export function meshUniformsBlock(
             `    "MeshUniforms::${arrayField[1]} must sit where the pin ` +
             `puts it.");`;
         end = arrayOffset + Number.parseInt(arrayField[2]!, 10) * 16;
+        const afterScalars = parseScalars(afterText);
+        if (afterScalars !== "") {
+            // The velocity arm's tail, laid out from the array's end under
+            // the same WGSL rules and padded to 16 like the block itself.
+            const tailFields = parseVariantFields(afterScalars);
+            const tailLayout = variantLayout(tailFields);
+            let tailCursor = 0;
+            tailFields.forEach((field, index) => {
+                const offset = end + tailLayout.offsets[index]!;
+                if (tailLayout.offsets[index]! > tailCursor) {
+                    const pad = tailLayout.offsets[index]! - tailCursor;
+                    members +=
+                        `\n    // ${pad} bytes of WGSL alignment padding.` +
+                        `\n    std::array<std::uint8_t, ${pad}> ` +
+                        `_padTail${index}{};`;
+                }
+                members += `\n    // offset ${offset}, ${field.wgslType}` +
+                    `\n    ${field.cppType} ${field.name}{};`;
+                asserts += `\nstatic_assert(\n` +
+                    `    offsetof(MeshUniforms, ${field.name}) == ` +
+                    `${offset},\n` +
+                    `    "MeshUniforms::${field.name} must sit where the ` +
+                    `pin puts it.");`;
+                tailCursor = tailLayout.offsets[index]! + field.size;
+            });
+            if (tailLayout.totalBytes > tailCursor) {
+                const pad = tailLayout.totalBytes - tailCursor;
+                members +=
+                    `\n    // ${pad} bytes rounding the block up to 16.` +
+                    `\n    std::array<std::uint8_t, ${pad}> _padTailEnd{};`;
+            }
+            end += tailLayout.totalBytes;
+        }
     }
     return `// src/render/lights-ubo.ts appendMeshLightUboFields\n` +
         `struct MeshUniforms {\n${members}\n};\n` +
@@ -2319,7 +2358,15 @@ export function pinnedStandardVariantsHeader(
                         ? "false"
                         : "true"
                 }, ` +
-                `${colorTargetCount}},`,
+                `${colorTargetCount}, ` +
+                // The LOCAL_POSITION geometry arm reads the raw position
+                // attribute for its varying, so the draw binds the local
+                // vertex lanes for it.
+                `${
+                    variant.vertexWgsl.includes("out.vLocalPos = position;")
+                        ? "true"
+                        : "false"
+                }},`,
         );
         for (const attribute of attributes) {
             attributeRows.push(
@@ -2469,6 +2516,9 @@ struct StandardVariantEntry {
     /** One for a colour pass, zero for a depth-only view, the attachment
      *  count (plus the optional trailing colour) for a geometry MRT arm. */
     std::size_t color_target_count;
+    /** A LOCAL_POSITION geometry variant's varying reads the raw position
+     *  attribute, so its draw binds the local vertex lanes. */
+    bool uses_local_position;
 };
 
 inline constexpr std::array<StandardVariantEntry, ${variants.length}>

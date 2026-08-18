@@ -166,6 +166,24 @@ struct DawnMesh {
     WGPUTextureView pinned_bone_view = nullptr;
     std::uint32_t pinned_bone_count = 0;
 #endif
+#if BBLITE_STANDARD_VARIANTS > 0
+    // The Standard family's per-draw blocks and group-1 bind group, keyed
+    // by (variant, unfilterable-emissive) exactly like the layout.
+    WGPUBuffer standard_mesh_uniforms = nullptr;
+    WGPUBuffer standard_material_uniforms = nullptr;
+    WGPUBuffer standard_uv_uniforms = nullptr;
+    WGPUBindGroup standard_group = nullptr;
+    std::size_t standard_group_key =
+        std::numeric_limits<std::size_t>::max();
+    struct StandardGeometryDrawState {
+        WGPUBuffer mesh_uniforms = nullptr;
+        WGPUBuffer material_uniforms = nullptr;
+        WGPUBuffer uv_uniforms = nullptr;
+        WGPUBindGroup group = nullptr;
+    };
+    std::map<std::size_t, StandardGeometryDrawState>
+        standard_geometry_states;
+#endif
     std::array<WGPUTexture, mesh_texture_slots> owned_textures{};
     std::array<WGPUTextureView, mesh_texture_slots> owned_views{};
     std::array<WGPUTextureView, mesh_texture_slots> views{};
@@ -358,23 +376,44 @@ struct DawnState : DawnDevice {
     // groups interchangeable across shader variants.
     std::array<WGPUBindGroupLayout, 4> mesh_group_layouts{};
     WGPUPipelineLayout mesh_pipeline_layout = nullptr;
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
     // Babylon Lite's own grouping, which its composed fragments declare:
     // group 0 carries the per-pass scene block and the lights array, group 1
     // the per-draw mesh and material blocks followed by the material's texture
     // pairs from binding 3. Kept beside the layouts above while the variant
     // path is brought up, so both can be measured against the same goldens.
-    // Group 0 is shared by every variant; group 1 is not — the pin assigns its
-    // texture bindings densely per variant, so the same index names a different
-    // texture in two of them and each needs its own layout.
+    // Group 0 is shared by every variant of both composed families; group 1
+    // is not — the pin assigns its texture bindings densely per variant, so
+    // the same index names a different texture in two of them and each needs
+    // its own layout.
     WGPUBindGroupLayout pinned_frame_layout = nullptr;
     WGPUBindGroup pinned_frame_group = nullptr;
+#endif
+#if BBLITE_PBR_VARIANTS > 0
     std::vector<WGPUBindGroupLayout> pinned_draw_layouts;
     std::vector<WGPUPipelineLayout> pinned_pipeline_layouts;
+#endif
+#if BBLITE_STANDARD_VARIANTS > 0
+    // The Standard family's composed layouts, modules and pipelines. The
+    // draw layout is keyed (variant * 2 + unfilterable-emissive): a
+    // depth-sampled emissive render texture binds eT as unfilterable-float
+    // with a non-filtering sampler, and the two arms cannot share a layout.
+    std::vector<WGPUBindGroupLayout> standard_draw_layouts;
+    std::vector<WGPUPipelineLayout> standard_pipeline_layouts;
+    std::vector<WGPUShaderModule> standard_vertex_modules;
+    std::vector<WGPUShaderModule> standard_fragment_modules;
+    std::map<std::uint32_t, std::map<std::size_t, WGPURenderPipeline>>
+        standard_variant_pipelines;
+#endif
+#if BBLITE_PBR_VARIANTS > 0
     std::vector<WGPUShaderModule> pinned_vertex_modules;
     std::vector<WGPUShaderModule> pinned_fragment_modules;
     std::map<std::uint32_t, std::map<std::size_t, WGPURenderPipeline>>
         pinned_variant_pipelines;
+#endif
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+    // The frame's scene and lights blocks, shared by the PBR and the
+    // Standard composed families through the same group-0 layout.
     WGPUBuffer pinned_scene_uniforms = nullptr;
     WGPUBuffer pinned_lights_uniforms = nullptr;
     // The geometry tasks' scene block: the same struct with the reverse-Z
@@ -1828,7 +1867,7 @@ PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
     }
 }
 
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
 // Babylon Lite's own bind groups, as its composed fragments declare them.
 //
 // The generated `pbr_variants.hpp` mirrors the four blocks -- SceneUniforms,
@@ -1863,6 +1902,7 @@ WGPUBindGroupLayout pinned_frame_layout_for(DawnState& state) {
     return state.pinned_frame_layout;
 }
 
+#if BBLITE_PBR_VARIANTS > 0
 /**
  * Group 1 for one variant: the mesh block, the material block, then exactly the
  * resources that variant's fragment declares.
@@ -1976,6 +2016,7 @@ WGPUPipelineLayout pinned_pipeline_layout_for(
     }
     return state.pinned_pipeline_layouts[variant];
 }
+#endif
 
 // The per-pass scene and lights buffers, sized by the pin's own structs.
 void ensure_pinned_frame_buffers(DawnState& state) {
@@ -2062,6 +2103,7 @@ WGPUBindGroup pinned_geometry_frame_group(DawnState& state) {
     return state.pinned_geometry_frame_group;
 }
 
+#if BBLITE_PBR_VARIANTS > 0
 /**
  * Which of our resources the pin's own name for a binding refers to.
  *
@@ -2359,7 +2401,7 @@ void write_pinned_geometry_task(
     const FrameTaskRecord& task,
     DawnGeometryTask& geometry,
     const upstream::RenderDrawLists& draw_lists) {
-    if (!pinned_lists_have_pbr(draw_lists)) return;
+    if (!pinned_lists_have_pinned_draws(draw_lists)) return;
     const std::array<float, 16> geometry_matrix =
         upstream::build_view_projection(camera, aspect, true);
     pinned_geometry_frame_group(state);
@@ -2473,6 +2515,8 @@ void write_pinned_geometry_task(
     }
 }
 
+#endif
+
 // Fill and upload the pin's per-pass blocks.
 //
 // Every value is placed by generated code: `write_<kind>_light` is each light's
@@ -2503,6 +2547,474 @@ void write_pinned_frame_blocks(
         0,
         lights.data(),
         lights.size());
+}
+#endif
+
+#if BBLITE_STANDARD_VARIANTS > 0
+/**
+ * Group 1 for one Standard variant: the mesh block, the `mat` block, then
+ * exactly the resources the composed stages declare — textures with their
+ * samplers, the vertex `up` block, the geometry arms' `gp`, the morph
+ * storage pair. `unfilterable_emissive` keys the depth-emissive trap: a
+ * record whose emissive is the depth render texture binds eT as
+ * unfilterable-float with a non-filtering sampler.
+ */
+WGPUBindGroupLayout standard_draw_layout_for(
+    DawnState& state,
+    std::size_t variant,
+    bool unfilterable_emissive) {
+    const std::size_t key = variant * 2 + (unfilterable_emissive ? 1 : 0);
+    if (
+        state.standard_draw_layouts.size() <
+        upstream::standard_variants.size() * 2) {
+        state.standard_draw_layouts.resize(
+            upstream::standard_variants.size() * 2,
+            nullptr);
+    }
+    if (state.standard_draw_layouts[key]) {
+        return state.standard_draw_layouts[key];
+    }
+    const upstream::StandardVariantEntry& entry =
+        upstream::standard_variants[variant];
+    std::vector<WGPUBindGroupLayoutEntry> entries;
+    entries.reserve(2 + entry.binding_count);
+    WGPUBindGroupLayoutEntry mesh_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    mesh_entry.binding = 0;
+    mesh_entry.visibility =
+        WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+    mesh_entry.buffer.type = WGPUBufferBindingType_Uniform;
+    entries.push_back(mesh_entry);
+    WGPUBindGroupLayoutEntry material_entry =
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    material_entry.binding = 1;
+    material_entry.visibility = WGPUShaderStage_Fragment;
+    material_entry.buffer.type = WGPUBufferBindingType_Uniform;
+    entries.push_back(material_entry);
+    for (std::size_t index = 0; index < entry.binding_count; ++index) {
+        const upstream::StandardVariantBinding& binding =
+            upstream::standard_variant_bindings[
+                entry.first_binding + index];
+        WGPUBindGroupLayoutEntry layout_entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        layout_entry.binding = binding.binding;
+        layout_entry.visibility = 0;
+        if (binding.vertex) layout_entry.visibility |= WGPUShaderStage_Vertex;
+        if (binding.fragment) {
+            layout_entry.visibility |= WGPUShaderStage_Fragment;
+        }
+        const bool depth_emissive = unfilterable_emissive &&
+            (binding.name == "eT" || binding.name == "eS");
+        if (binding.kind == upstream::StandardBindingKind::sampler) {
+            layout_entry.sampler.type = depth_emissive
+                ? WGPUSamplerBindingType_NonFiltering
+                : WGPUSamplerBindingType_Filtering;
+        } else if (
+            binding.kind ==
+            upstream::StandardBindingKind::storageBuffer) {
+            layout_entry.buffer.type =
+                WGPUBufferBindingType_ReadOnlyStorage;
+        } else if (
+            binding.kind ==
+            upstream::StandardBindingKind::uniformBuffer) {
+            // The vertex `up` block and the geometry arms' gpUniforms.
+            layout_entry.buffer.type = WGPUBufferBindingType_Uniform;
+        } else {
+            layout_entry.texture.sampleType =
+                binding.kind ==
+                        upstream::StandardBindingKind::texture2dLoad ||
+                    depth_emissive
+                    ? WGPUTextureSampleType_UnfilterableFloat
+                    : WGPUTextureSampleType_Float;
+            layout_entry.texture.viewDimension =
+                binding.kind ==
+                        upstream::StandardBindingKind::textureCube
+                    ? WGPUTextureViewDimension_Cube
+                    : WGPUTextureViewDimension_2D;
+        }
+        entries.push_back(layout_entry);
+    }
+    WGPUBindGroupLayoutDescriptor descriptor =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    state.standard_draw_layouts[key] =
+        wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
+    if (!state.standard_draw_layouts[key]) {
+        dawn_error("standard variant draw bind group layout creation failed.");
+    }
+    return state.standard_draw_layouts[key];
+}
+
+WGPUPipelineLayout standard_pipeline_layout_for(
+    DawnState& state,
+    std::size_t variant,
+    bool unfilterable_emissive) {
+    const std::size_t key = variant * 2 + (unfilterable_emissive ? 1 : 0);
+    if (
+        state.standard_pipeline_layouts.size() <
+        upstream::standard_variants.size() * 2) {
+        state.standard_pipeline_layouts.resize(
+            upstream::standard_variants.size() * 2,
+            nullptr);
+    }
+    if (state.standard_pipeline_layouts[key]) {
+        return state.standard_pipeline_layouts[key];
+    }
+    std::array<WGPUBindGroupLayout, 2> groups{
+        pinned_frame_layout_for(state),
+        standard_draw_layout_for(state, variant, unfilterable_emissive),
+    };
+    WGPUPipelineLayoutDescriptor descriptor =
+        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    descriptor.bindGroupLayoutCount = groups.size();
+    descriptor.bindGroupLayouts = groups.data();
+    state.standard_pipeline_layouts[key] =
+        wgpuDeviceCreatePipelineLayout(state.device, &descriptor);
+    if (!state.standard_pipeline_layouts[key]) {
+        dawn_error("standard variant pipeline layout creation failed.");
+    }
+    return state.standard_pipeline_layouts[key];
+}
+
+/** The group-1 bind group for one Standard variant of a mesh. */
+WGPUBindGroup build_standard_draw_group(
+    DawnState& state,
+    DawnMesh& mesh,
+    const MaterialRecord* material,
+    std::size_t variant,
+    WGPUBuffer mesh_uniforms,
+    WGPUBuffer material_uniforms,
+    WGPUBuffer uv_uniforms,
+    WGPUBuffer geometry_params,
+    WGPUTextureView emissive_render_view) {
+    const bool unfilterable_emissive = emissive_render_view != nullptr;
+    const upstream::StandardVariantEntry& entry =
+        upstream::standard_variants[variant];
+    std::vector<WGPUBindGroupEntry> entries;
+    entries.reserve(2 + entry.binding_count);
+    WGPUBindGroupEntry mesh_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    mesh_entry.binding = 0;
+    mesh_entry.buffer = mesh_uniforms;
+    mesh_entry.size = sizeof(upstream::MeshUniforms);
+    entries.push_back(mesh_entry);
+    WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    material_entry.binding = 1;
+    material_entry.buffer = material_uniforms;
+    material_entry.size = upstream::standard_material_ubo_bytes;
+    entries.push_back(material_entry);
+    for (std::size_t index = 0; index < entry.binding_count; ++index) {
+        const upstream::StandardVariantBinding& binding =
+            upstream::standard_variant_bindings[
+                entry.first_binding + index];
+        WGPUBindGroupEntry group_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        group_entry.binding = binding.binding;
+        if (binding.kind == upstream::StandardBindingKind::uniformBuffer) {
+            if (binding.name == "up") {
+                group_entry.buffer = uv_uniforms;
+                group_entry.size =
+                    sizeof(upstream::StandardUvTransformUniforms);
+            } else if (binding.name == "gp" && geometry_params) {
+                group_entry.buffer = geometry_params;
+                group_entry.size = sizeof(PinnedGeometryParams);
+            } else {
+                dawn_error(
+                    ("standard variant declares an unmapped uniform "
+                     "block '" + std::string(binding.name) + "'.")
+                        .c_str());
+            }
+            entries.push_back(group_entry);
+            continue;
+        }
+        if (binding.kind == upstream::StandardBindingKind::storageBuffer) {
+#if BBLITE_GPU_MORPH_STORAGE
+            if (binding.name == "morphDeltas") {
+                group_entry.buffer = mesh.morph_deltas;
+            } else if (binding.name == "morph") {
+                group_entry.buffer = mesh.morph_weights;
+            }
+#endif
+            if (!group_entry.buffer) {
+                dawn_error(
+                    ("standard variant declares an unmapped storage "
+                     "buffer '" + std::string(binding.name) + "'.")
+                        .c_str());
+            }
+            group_entry.size = WGPU_WHOLE_SIZE;
+            entries.push_back(group_entry);
+            continue;
+        }
+        // The generated name->slot rows; the cube pair and the
+        // depth-sampled emissive are the resources outside the table.
+        WGPUTextureView view = nullptr;
+        WGPUSampler sampler = nullptr;
+        bool matched = false;
+        for (
+            const upstream::StandardBindingResource& row :
+            upstream::standard_binding_resources) {
+            if (
+                binding.name != row.texture_name &&
+                binding.name != row.sampler_name) {
+                continue;
+            }
+            matched = true;
+            if (row.reflection_cube) {
+                view = mesh.reflection;
+                sampler = state.default_sampler;
+            } else if (
+                row.source ==
+                    upstream::MaterialTextureSource::standard_emissive &&
+                material != nullptr &&
+                material->has_emissive_render_texture) {
+                view = emissive_render_view;
+                sampler = state.nearest_sampler;
+            } else {
+                const upstream::MaterialTextureSlot* slot =
+                    material_slot_for_binding(row.texture_name);
+                if (
+                    slot == nullptr ||
+                    slot->slot == upstream::material_texture_no_slot) {
+                    dawn_error(
+                        ("standard variant resource '" +
+                         std::string(binding.name) +
+                         "' has no material slot.")
+                            .c_str());
+                }
+                view = mesh.views[slot->slot];
+                sampler = mesh.samplers[slot->slot];
+            }
+            break;
+        }
+        (void)unfilterable_emissive;
+        if (!matched) {
+            dawn_error(
+                ("standard variant declares an unmapped resource '" +
+                 std::string(binding.name) + "'.")
+                    .c_str());
+        }
+        if (binding.kind == upstream::StandardBindingKind::sampler) {
+            group_entry.sampler = sampler;
+        } else {
+            group_entry.textureView = view;
+        }
+        entries.push_back(group_entry);
+    }
+    WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    descriptor.layout = standard_draw_layout_for(
+        state,
+        variant,
+        unfilterable_emissive);
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    WGPUBindGroup group =
+        wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    if (!group) {
+        dawn_error("standard variant draw bind group creation failed.");
+    }
+    return group;
+}
+
+/** The per-draw uniform buffers for a mesh's Standard draws. */
+void ensure_standard_draw_buffers(DawnState& state, DawnMesh& mesh) {
+    const auto uniform_buffer = [&](std::size_t size) {
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.size = static_cast<std::uint64_t>(size);
+        descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        WGPUBuffer buffer = wgpuDeviceCreateBuffer(state.device, &descriptor);
+        if (!buffer) dawn_error("standard draw buffer creation failed.");
+        return buffer;
+    };
+    if (!mesh.standard_mesh_uniforms) {
+        mesh.standard_mesh_uniforms =
+            uniform_buffer(sizeof(upstream::MeshUniforms));
+    }
+    if (!mesh.standard_material_uniforms) {
+        mesh.standard_material_uniforms =
+            uniform_buffer(upstream::standard_material_ubo_bytes);
+    }
+    if (!mesh.standard_uv_uniforms) {
+        mesh.standard_uv_uniforms =
+            uniform_buffer(sizeof(upstream::StandardUvTransformUniforms));
+    }
+}
+
+/** Writes one Standard draw's pinned blocks for the frame. */
+void write_standard_draw_blocks(
+    DawnState& state,
+    const Scene& scene,
+    const Engine& engine,
+    const upstream::RenderDrawCommand& draw,
+    std::size_t variant,
+    WGPUBuffer mesh_uniforms,
+    WGPUBuffer material_uniforms,
+    WGPUBuffer uv_uniforms) {
+    const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+    const MaterialRecord* material =
+        draw.item.material.value < engine.materials.size()
+            ? &engine.materials[draw.item.material.value]
+            : nullptr;
+    const upstream::StandardVariantEntry& entry =
+        upstream::standard_variants[variant];
+    const upstream::MeshUniforms mesh_block =
+        pinned_mesh_block(
+            scene,
+            engine,
+            standard_draw_world(record, entry.uses_local_position),
+            draw.item.mesh.value);
+    wgpuQueueWriteBuffer(
+        state.queue,
+        mesh_uniforms,
+        0,
+        &mesh_block,
+        sizeof(mesh_block));
+    std::uint32_t features = material
+        ? upstream::standard_material_features(*material)
+        : 0u;
+    if (material && material->no_color) {
+        features |= upstream::standard_no_color_output_flag;
+    }
+    const upstream::StandardMaterialUniforms material_block =
+        standard_material_block(material, features);
+    wgpuQueueWriteBuffer(
+        state.queue,
+        material_uniforms,
+        0,
+        &material_block,
+        sizeof(material_block));
+    const upstream::StandardUvTransformUniforms uv_block =
+        standard_uv_block(material, features);
+    wgpuQueueWriteBuffer(
+        state.queue,
+        uv_uniforms,
+        0,
+        &uv_block,
+        sizeof(uv_block));
+}
+
+/**
+ * The Standard sibling of `write_pinned_geometry_task`: every Standard
+ * draw in a geometry task's lists resolves its MRT variant, writes the
+ * shared per-draw blocks, and builds a per-variant group carrying the
+ * task's own `gp` buffer. Variants are per task by construction — the
+ * selector keys on the task index — so the per-variant map cannot mix
+ * two tasks' groups.
+ */
+void write_standard_geometry_task(
+    DawnState& state,
+    const Scene& scene,
+    const Engine& engine,
+    const CameraRecord& camera,
+    double aspect,
+    const FrameTaskRecord& task,
+    DawnGeometryTask& geometry,
+    const upstream::RenderDrawLists& draw_lists) {
+    if (!pinned_lists_have_pinned_draws(draw_lists)) return;
+    const std::array<float, 16> geometry_matrix =
+        upstream::build_view_projection(camera, aspect, true);
+#if BBLITE_PBR_VARIANTS == 0
+    // With no PBR family compiled, `write_pinned_geometry_task` does not
+    // exist, so this side owns the frame prologue it would have run: the
+    // reverse-Z scene block, the params buffer, and the previous
+    // view-projection tracking.
+    pinned_geometry_frame_group(state);
+    const upstream::SceneUniforms scene_block =
+        pinned_scene_block(scene, camera, geometry_matrix);
+    wgpuQueueWriteBuffer(
+        state.queue,
+        state.pinned_geometry_scene_uniforms,
+        0,
+        &scene_block,
+        sizeof(scene_block));
+    if (!geometry.pinned_geometry_params) {
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.size = sizeof(PinnedGeometryParams);
+        descriptor.usage =
+            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        geometry.pinned_geometry_params =
+            wgpuDeviceCreateBuffer(state.device, &descriptor);
+        if (!geometry.pinned_geometry_params) {
+            dawn_error("pinned geometry params buffer creation failed.");
+        }
+    }
+    if (!geometry.has_previous_view_projection) {
+        geometry.previous_view_projection = geometry_matrix;
+        geometry.has_previous_view_projection = true;
+    }
+    const PinnedGeometryParams params{
+        geometry.previous_view_projection,
+        {
+            static_cast<float>(camera.near_plane),
+            static_cast<float>(camera.far_plane),
+            0.0f,
+            0.0f,
+        },
+    };
+    wgpuQueueWriteBuffer(
+        state.queue,
+        geometry.pinned_geometry_params,
+        0,
+        &params,
+        sizeof(params));
+    geometry.previous_view_projection = geometry_matrix;
+#else
+    // The PBR write ran first at the shared call site and owns the
+    // prologue; only the Standard draws are resolved here.
+    (void)camera;
+    (void)aspect;
+    (void)geometry_matrix;
+#endif
+    for (const auto* list : {&draw_lists.opaque, &draw_lists.transparent}) {
+        for (const upstream::RenderDrawCommand& draw : list->commands) {
+            if (
+                draw.item.material_kind !=
+                upstream::RenderMaterialKind::standard) {
+                continue;
+            }
+            if (draw.item_index >= state.meshes.size()) continue;
+            const std::size_t variant = standard_variant_for_draw(
+                scene,
+                engine,
+                draw,
+                static_cast<std::size_t>(task.geometry.shader_index));
+            if (variant == std::numeric_limits<std::size_t>::max()) {
+                dawn_error(
+                    ("Standard draw for mesh " +
+                     std::to_string(draw.item.mesh.value) +
+                     ", material " +
+                     std::to_string(draw.item.material.value) +
+                     " resolves no composed variant in a geometry task.")
+                        .c_str());
+            }
+            DawnMesh& mesh = state.meshes[draw.item_index];
+            const MaterialRecord* material =
+                draw.item.material.value < engine.materials.size()
+                    ? &engine.materials[draw.item.material.value]
+                    : nullptr;
+            ensure_standard_draw_buffers(state, mesh);
+            write_standard_draw_blocks(
+                state,
+                scene,
+                engine,
+                draw,
+                variant,
+                mesh.standard_mesh_uniforms,
+                mesh.standard_material_uniforms,
+                mesh.standard_uv_uniforms);
+            DawnMesh::StandardGeometryDrawState& draw_state =
+                mesh.standard_geometry_states[variant];
+            if (!draw_state.group) {
+                draw_state.group = build_standard_draw_group(
+                    state,
+                    mesh,
+                    material,
+                    variant,
+                    mesh.standard_mesh_uniforms,
+                    mesh.standard_material_uniforms,
+                    mesh.standard_uv_uniforms,
+                    geometry.pinned_geometry_params,
+                    nullptr);
+            }
+        }
+    }
 }
 #endif
 
@@ -2976,6 +3488,179 @@ WGPURenderPipeline pinned_variant_pipeline(
     WGPURenderPipeline pipeline =
         wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
     if (!pipeline) dawn_error("pinned variant pipeline creation failed.");
+    return map.emplace(key, pipeline).first->second;
+}
+#endif
+
+#if BBLITE_STANDARD_VARIANTS > 0
+/**
+ * The render pipeline for one composed Standard variant — the Standard
+ * sibling of `pinned_variant_pipeline`. The kind carries the blend and
+ * cull state the render plan bucketed (standard-pipeline.ts
+ * getOrCreateStandardPipeline), and the geometry arm rides the pin's
+ * reverse-Z contract.
+ */
+WGPURenderPipeline standard_variant_pipeline(
+    DawnState& state,
+    std::size_t variant,
+    upstream::RenderPipelineKind kind,
+    std::uint32_t samples,
+    bool has_depth,
+    bool unfilterable_emissive,
+    const FrameTaskRecord* geometry_task = nullptr) {
+    const PipelineKindTraits traits = pipeline_traits(kind);
+    const std::size_t key = variant * 256 +
+        static_cast<std::size_t>(kind) * 4 +
+        (has_depth ? 2 : 0) + (unfilterable_emissive ? 1 : 0);
+    auto& map = state.standard_variant_pipelines[samples];
+    const auto existing = map.find(key);
+    if (existing != map.end()) return existing->second;
+    if (
+        state.standard_vertex_modules.size() <
+        upstream::standard_variants.size()) {
+        state.standard_vertex_modules.resize(
+            upstream::standard_variants.size(),
+            nullptr);
+        state.standard_fragment_modules.resize(
+            upstream::standard_variants.size(),
+            nullptr);
+    }
+    const upstream::StandardVariantEntry& entry =
+        upstream::standard_variants[variant];
+    if (!state.standard_vertex_modules[variant]) {
+        const auto stem = [](std::string_view file) {
+            return "variant-std-" +
+                std::string(file.substr(0, file.find(".wgsl")));
+        };
+        state.standard_vertex_modules[variant] =
+            load_wgsl_module(state, stem(entry.vertex_shader).c_str());
+        state.standard_fragment_modules[variant] =
+            load_wgsl_module(state, stem(entry.fragment_shader).c_str());
+    }
+    std::vector<WGPUVertexAttribute> attributes;
+    std::vector<WGPUVertexAttribute> instance_attributes;
+    attributes.reserve(entry.attribute_count);
+    for (std::size_t index = 0; index < entry.attribute_count; ++index) {
+        const upstream::StandardVariantAttribute& input =
+            upstream::standard_variant_attributes[
+                entry.first_attribute + index];
+        WGPUVertexAttribute attribute{};
+        attribute.shaderLocation = input.location;
+        if (input.name == "position") {
+            attribute.format = WGPUVertexFormat_Float32x3;
+            attribute.offset = entry.uses_local_position
+                ? offsetof(GpuVertex, local_position)
+                : offsetof(GpuVertex, position);
+        } else if (input.name == "normal") {
+            attribute.format = WGPUVertexFormat_Float32x3;
+            attribute.offset = offsetof(GpuVertex, normal);
+        } else if (input.name == "uv") {
+            attribute.format = WGPUVertexFormat_Float32x2;
+            attribute.offset = offsetof(GpuVertex, uv);
+        } else if (input.name == "uv2") {
+            attribute.format = WGPUVertexFormat_Float32x2;
+            attribute.offset = offsetof(GpuVertex, uv2);
+        } else if (input.name == "color") {
+            attribute.format = WGPUVertexFormat_Float32x4;
+            attribute.offset = offsetof(GpuVertex, color);
+        } else if (
+            input.name == "world0" || input.name == "world1" ||
+            input.name == "world2" || input.name == "world3") {
+            attribute.format = WGPUVertexFormat_Float32x4;
+            attribute.offset = static_cast<std::uint64_t>(
+                16 * (input.name.back() - '0'));
+            instance_attributes.push_back(attribute);
+            continue;
+        } else {
+            dawn_error(
+                (std::string("standard variant declares an unmapped ") +
+                 "vertex input '" + std::string(input.name) + "'.")
+                    .c_str());
+        }
+        attributes.push_back(attribute);
+    }
+    std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
+    vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
+    vertex_layouts[0].arrayStride = sizeof(GpuVertex);
+    vertex_layouts[0].attributeCount = attributes.size();
+    vertex_layouts[0].attributes = attributes.data();
+    vertex_layouts[1].stepMode = WGPUVertexStepMode_Instance;
+    vertex_layouts[1].arrayStride = sizeof(std::array<float, 16>);
+    vertex_layouts[1].attributeCount = instance_attributes.size();
+    vertex_layouts[1].attributes = instance_attributes.data();
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.layout = standard_pipeline_layout_for(
+        state,
+        variant,
+        unfilterable_emissive);
+    descriptor.vertex.module = state.standard_vertex_modules[variant];
+    descriptor.vertex.entryPoint = string_view("main");
+    descriptor.vertex.bufferCount = instance_attributes.empty() ? 1 : 2;
+    descriptor.vertex.buffers = vertex_layouts.data();
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.frontFace = WGPUFrontFace_CCW;
+    descriptor.primitive.cullMode = traits.cull;
+    WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
+    depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
+    depth_stencil.depthWriteEnabled =
+        !entry.no_color_output && traits.transparent
+            ? WGPUOptionalBool_False
+            : WGPUOptionalBool_True;
+    depth_stencil.depthCompare = entry.no_color_output
+        ? WGPUCompareFunction_Greater
+        : traits.transparent
+            ? WGPUCompareFunction_LessEqual
+            : WGPUCompareFunction_Less;
+    descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
+    descriptor.multisample.count = samples;
+    descriptor.multisample.mask = ~0u;
+    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
+    color_target.format = state.frame_color_format;
+    WGPUBlendState blend{};
+    if (traits.transparent) {
+        blend = blend_state_from(transparent_blend);
+        color_target.blend = &blend;
+    }
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = state.standard_fragment_modules[variant];
+    fragment.entryPoint = string_view("main");
+    fragment.targetCount = entry.no_color_output ? 0 : 1;
+    fragment.targets = entry.no_color_output ? nullptr : &color_target;
+    std::vector<WGPUColorTargetState> geometry_targets;
+    if (geometry_task) {
+        geometry_targets.reserve(
+            geometry_task->geometry.attachments.size() + 1u);
+        for (const GeometryTextureDescription& description :
+             geometry_task->geometry.attachments) {
+            WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
+            target.format = geometry_texture_format(description);
+            if (traits.transparent) target.blend = &blend;
+            geometry_targets.push_back(target);
+        }
+        if (geometry_task->geometry.target.value != invalid_handle) {
+            WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
+            target.format = state.frame_color_format;
+            if (traits.transparent) target.blend = &blend;
+            geometry_targets.push_back(target);
+        }
+        if (geometry_targets.size() != entry.color_target_count) {
+            dawn_error(
+                ("standard geometry variant writes " +
+                 std::to_string(entry.color_target_count) +
+                 " targets where its task carries " +
+                 std::to_string(geometry_targets.size()) + ".")
+                    .c_str());
+        }
+        fragment.targetCount = geometry_targets.size();
+        fragment.targets = geometry_targets.data();
+        depth_stencil.depthCompare = WGPUCompareFunction_Greater;
+        depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
+    }
+    descriptor.fragment = &fragment;
+    WGPURenderPipeline pipeline =
+        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    if (!pipeline) dawn_error("standard variant pipeline creation failed.");
     return map.emplace(key, pipeline).first->second;
 }
 #endif
@@ -4600,10 +5285,12 @@ bool run_dawn_engine(Engine& engine) {
                 ? &upstream::shader_variant_info(
                       item.shader_variant)
                 : nullptr;
+        // A Standard item's blocks live in the pinned standard buffers,
+        // so the transcribed material buffer is a 16-byte stub for it.
         mesh.material_uniform_size =
             ((item.material_kind ==
                       upstream::RenderMaterialKind::standard
-                  ? sizeof(upstream::StandardUniforms)
+                  ? 16ull
                   : item.material_kind ==
                           upstream::RenderMaterialKind::grid
                       ? sizeof(upstream::GridUniforms)
@@ -5577,7 +6264,7 @@ bool run_dawn_engine(Engine& engine) {
             0,
             matrix.data(),
             sizeof(matrix));
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
         // The pin's per-pass blocks, before anything reads them: the scene block
         // the variants' vertex and fragment stages share, and the lights array
         // their multi-light arm indexes.
@@ -5730,19 +6417,54 @@ bool run_dawn_engine(Engine& engine) {
                     if (
                         draw.item.material_kind ==
                         upstream::RenderMaterialKind::standard) {
-                        const upstream::StandardUniforms fragment =
-                            upstream::build_standard_uniforms(
-                                scene,
-                                engine,
-                                camera,
-                                draw.item);
-                        wgpuQueueWriteBuffer(
-                            state.queue,
-                            state.meshes[draw.item_index]
-                                .material_uniforms,
-                            0,
-                            &fragment,
-                            sizeof(fragment));
+#if BBLITE_STANDARD_VARIANTS > 0
+                        // The pin's own per-draw blocks; the transcribed
+                        // block is retired, so an unresolved draw errors
+                        // naming the mesh, matching the SDL_GPU backend.
+                        const std::size_t variant =
+                            standard_variant_for_draw(scene, engine, draw);
+                        if (
+                            variant ==
+                            std::numeric_limits<std::size_t>::max()) {
+                            dawn_error(
+                                ("Standard draw for mesh " +
+                                 std::to_string(draw.item.mesh.value) +
+                                 ", material " +
+                                 std::to_string(draw.item.material.value) +
+                                 " resolves no composed variant.")
+                                    .c_str());
+                        }
+                        const MaterialRecord* standard_material =
+                            draw.item.material.value <
+                                    engine.materials.size()
+                                ? &engine.materials[
+                                      draw.item.material.value]
+                                : nullptr;
+                        ensure_standard_draw_buffers(state, draw_mesh);
+                        // The bind group builds at encode: a depth-sampled
+                        // emissive render texture's view resolves only
+                        // after the frame-graph textures exist.
+                        draw_mesh.standard_group_key = variant * 2 +
+                            ((standard_material &&
+                              standard_material
+                                  ->has_emissive_render_texture)
+                                 ? 1
+                                 : 0);
+                        write_standard_draw_blocks(
+                            state,
+                            scene,
+                            engine,
+                            draw,
+                            variant,
+                            draw_mesh.standard_mesh_uniforms,
+                            draw_mesh.standard_material_uniforms,
+                            draw_mesh.standard_uv_uniforms);
+#else
+                        dawn_error(
+                            "Standard draw in a build with no composed "
+                            "variant table; the transcribed fragment is "
+                            "retired.");
+#endif
                     } else if (grid_draw) {
                         const upstream::GridUniforms fragment =
                             upstream::build_grid_uniforms(
@@ -6049,6 +6771,18 @@ bool run_dawn_engine(Engine& engine) {
                         state.geometry_tasks[handle.value],
                         state.render_tasks[handle.value].draw_lists);
 #endif
+#if BBLITE_STANDARD_VARIANTS > 0
+                    write_standard_geometry_task(
+                        state,
+                        scene,
+                        engine,
+                        camera,
+                        static_cast<double>(width) /
+                            static_cast<double>(height),
+                        task,
+                        state.geometry_tasks[handle.value],
+                        state.render_tasks[handle.value].draw_lists);
+#endif
                     continue;
                 }
                 if (task.kind != FrameTaskKind::render) continue;
@@ -6198,6 +6932,95 @@ bool run_dawn_engine(Engine& engine) {
                         0);
                     continue;
                 }
+#endif
+#if BBLITE_STANDARD_VARIANTS > 0
+                if (
+                    draw.item.material_kind ==
+                    upstream::RenderMaterialKind::standard &&
+                    mesh.standard_group_key !=
+                        std::numeric_limits<std::size_t>::max()) {
+                    const std::size_t variant = mesh.standard_group_key / 2;
+                    if (!mesh.standard_group) {
+                        const MaterialRecord* standard_material =
+                            draw.item.material.value <
+                                    engine.materials.size()
+                                ? &engine.materials[
+                                      draw.item.material.value]
+                                : nullptr;
+                        mesh.standard_group = build_standard_draw_group(
+                            state,
+                            mesh,
+                            standard_material,
+                            variant,
+                            mesh.standard_mesh_uniforms,
+                            mesh.standard_material_uniforms,
+                            mesh.standard_uv_uniforms,
+                            nullptr,
+                            (mesh.standard_group_key & 1) != 0
+                                ? mesh.emissive_render_view
+                                : nullptr);
+                    }
+                    WGPURenderPipeline variant_pipeline =
+                        standard_variant_pipeline(
+                            state,
+                            variant,
+                            draw.pipeline,
+                            samples,
+                            pass_has_depth,
+                            (mesh.standard_group_key & 1) != 0);
+                    if (variant_pipeline != bound_pipeline) {
+                        wgpuRenderPassEncoderSetPipeline(
+                            list_pass, variant_pipeline);
+                        bound_pipeline = variant_pipeline;
+                    }
+                    wgpuRenderPassEncoderSetBindGroup(
+                        list_pass, 0, pinned_frame_group(state), 0, nullptr);
+                    wgpuRenderPassEncoderSetBindGroup(
+                        list_pass, 1, mesh.standard_group, 0, nullptr);
+                    // The Standard families carry no glTF X-mirror: the
+                    // baked buffer is the pin's own convention already.
+                    wgpuRenderPassEncoderSetVertexBuffer(
+                        list_pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
+                    std::uint32_t standard_instances = 1;
+#if BBLITE_GPU_INSTANCING
+                    if (pinned_record_instanced(
+                            engine.meshes[draw.item.mesh.value]) &&
+                        mesh.instances) {
+                        wgpuRenderPassEncoderSetVertexBuffer(
+                            list_pass,
+                            1,
+                            mesh.instances,
+                            0,
+                            WGPU_WHOLE_SIZE);
+                        standard_instances = mesh.instance_count;
+                    }
+#endif
+                    wgpuRenderPassEncoderSetIndexBuffer(
+                        list_pass,
+                        mesh.indices,
+                        WGPUIndexFormat_Uint32,
+                        0,
+                        WGPU_WHOLE_SIZE);
+                    wgpuRenderPassEncoderDrawIndexed(
+                        list_pass,
+                        mesh.index_count,
+                        standard_instances,
+                        0,
+                        0,
+                        0);
+                    continue;
+                }
+                if (
+                    draw.item.material_kind ==
+                    upstream::RenderMaterialKind::standard) {
+                    dawn_error(
+                        ("Standard draw for mesh " +
+                         std::to_string(draw.item.mesh.value) +
+                         " reached the encode with no resolved variant.")
+                            .c_str());
+                }
+#endif
+#if BBLITE_PBR_VARIANTS > 0
                 // The write phase resolves and binds every PBR draw or
                 // errors; reaching here with one means its pinned bindings
                 // were never built for this frame.
@@ -6898,20 +7721,21 @@ bool run_dawn_engine(Engine& engine) {
                     }
                     color_attachments.push_back(attachment);
                 }
-                // A task whose draws are PBR renders through the pin's own
-                // reverse-Z geometry contract: reverse matrix, GREATER
-                // pipelines, zero depth clear. The Standard geometry path
-                // keeps the forward pair.
-                bool task_has_pbr = false;
-#if BBLITE_PBR_VARIANTS > 0
-                task_has_pbr =
-                    pinned_lists_have_pbr(render_task.draw_lists);
+                // A task whose draws are composed variants — PBR or
+                // Standard — renders through the pin's own reverse-Z
+                // geometry contract: reverse matrix, GREATER pipelines,
+                // zero depth clear. Only the legacy fallback keeps the
+                // forward pair.
+                bool task_has_pinned = false;
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+                task_has_pinned =
+                    pinned_lists_have_pinned_draws(render_task.draw_lists);
 #endif
                 WGPURenderPassDepthStencilAttachment depth_attachment{};
                 depth_attachment.view = geometry.depth_view;
                 depth_attachment.depthLoadOp = WGPULoadOp_Clear;
                 depth_attachment.depthClearValue =
-                    task_has_pbr ? 0.0f : 1.0f;
+                    task_has_pinned ? 0.0f : 1.0f;
                 depth_attachment.depthStoreOp = WGPUStoreOp_Discard;
                 depth_attachment.stencilLoadOp = WGPULoadOp_Clear;
                 depth_attachment.stencilStoreOp = WGPUStoreOp_Discard;
@@ -7019,6 +7843,109 @@ bool run_dawn_engine(Engine& engine) {
                                     task_pass,
                                     mesh.index_count,
                                     1,
+                                    0,
+                                    0,
+                                    0);
+                                continue;
+                            }
+#endif
+#if BBLITE_STANDARD_VARIANTS > 0
+                            // The composed Standard MRT arm: variant and
+                            // bindings resolved in the write phase, the
+                            // task's own gp buffer inside the group.
+                            if (
+                                draw.item.material_kind ==
+                                upstream::RenderMaterialKind::standard) {
+                                const std::size_t variant =
+                                    standard_variant_for_draw(
+                                        scene,
+                                        engine,
+                                        draw,
+                                        static_cast<std::size_t>(
+                                            task.geometry.shader_index));
+                                if (
+                                    variant ==
+                                    std::numeric_limits<
+                                        std::size_t>::max()) {
+                                    dawn_error(
+                                        ("Standard draw for mesh " +
+                                         std::to_string(
+                                             draw.item.mesh.value) +
+                                         " resolves no composed variant "
+                                         "in a geometry task.")
+                                            .c_str());
+                                }
+                                const auto draw_state_it =
+                                    mesh.standard_geometry_states.find(
+                                        variant);
+                                if (
+                                    draw_state_it ==
+                                        mesh.standard_geometry_states
+                                            .end() ||
+                                    !draw_state_it->second.group) {
+                                    dawn_error(
+                                        "standard geometry draw reached "
+                                        "the encoder with no bindings.");
+                                }
+                                WGPURenderPipeline variant_pipeline =
+                                    standard_variant_pipeline(
+                                        state,
+                                        variant,
+                                        draw.pipeline,
+                                        samples,
+                                        true,
+                                        false,
+                                        &task);
+                                if (variant_pipeline != bound_pipeline) {
+                                    wgpuRenderPassEncoderSetPipeline(
+                                        task_pass,
+                                        variant_pipeline);
+                                    bound_pipeline = variant_pipeline;
+                                }
+                                wgpuRenderPassEncoderSetBindGroup(
+                                    task_pass,
+                                    0,
+                                    pinned_geometry_frame_group(state),
+                                    0,
+                                    nullptr);
+                                wgpuRenderPassEncoderSetBindGroup(
+                                    task_pass,
+                                    1,
+                                    draw_state_it->second.group,
+                                    0,
+                                    nullptr);
+                                wgpuRenderPassEncoderSetVertexBuffer(
+                                    task_pass,
+                                    0,
+                                    mesh.vertices,
+                                    0,
+                                    WGPU_WHOLE_SIZE);
+                                std::uint32_t standard_instances = 1;
+#if BBLITE_GPU_INSTANCING
+                                if (pinned_record_instanced(
+                                        engine.meshes[
+                                            draw.item.mesh.value]) &&
+                                    mesh.instances) {
+                                    wgpuRenderPassEncoderSetVertexBuffer(
+                                        task_pass,
+                                        1,
+                                        mesh.instances,
+                                        0,
+                                        WGPU_WHOLE_SIZE);
+                                    standard_instances =
+                                        mesh.instance_count;
+                                }
+#endif
+                                wgpuRenderPassEncoderSetIndexBuffer(
+                                    task_pass,
+                                    mesh.indices,
+                                    WGPUIndexFormat_Uint32,
+                                    0,
+                                    WGPU_WHOLE_SIZE);
+                                wgpuRenderPassEncoderDrawIndexed(
+                                    task_pass,
+                                    mesh.index_count,
+                                    standard_instances,
                                     0,
                                     0,
                                     0);

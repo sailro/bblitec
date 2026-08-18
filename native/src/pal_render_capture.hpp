@@ -806,11 +806,29 @@ inline void write_draw_uniforms(
         view_projection.size());
     switch (draw.item.material_kind) {
         case upstream::RenderMaterialKind::standard: {
-            const upstream::StandardUniforms fragment =
-                upstream::build_standard_uniforms(
-                    scene, engine, camera, draw.item);
+#if BBLITE_STANDARD_VARIANTS > 0
+            // The transcribed StandardUniforms block is retired: the
+            // draw path fills the pin's own 96-byte material mirror, so
+            // the capture dumps the same bytes the same writer builds.
+            const MaterialRecord* material =
+                draw.item.material.value < engine.materials.size()
+                    ? &engine.materials[draw.item.material.value]
+                    : nullptr;
+            std::uint32_t features = material
+                ? upstream::standard_material_features(*material)
+                : 0u;
+            if (material && material->no_color) {
+                features |= upstream::standard_no_color_output_flag;
+            }
+            const upstream::StandardMaterialUniforms fragment =
+                standard_material_block(material, features);
             write_uniform_block(
-                json, "fragment", 0, "StandardUniforms", fragment);
+                json,
+                "fragment",
+                0,
+                "StandardMaterialUniforms",
+                fragment);
+#endif
             break;
         }
         case upstream::RenderMaterialKind::grid: {

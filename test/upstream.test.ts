@@ -893,7 +893,6 @@ test("emits only reached WGSL composition modules", () => {
         ground: false,
         skybox: false,
         shaderPrograms: [],
-        standardMaterial: false,
         gridMaterial: true,
         idDiagnostics: false,
         geometryOutputTasks: [],
@@ -915,7 +914,6 @@ test("generates portable GridMaterial shaders from pinned formulas", () => {
         ground: false,
         skybox: false,
         shaderPrograms: [],
-        standardMaterial: false,
         gridMaterial: true,
         idDiagnostics: false,
         geometryOutputTasks: [],
@@ -951,7 +949,6 @@ test("generates typed geometry task records and PBR MRT shaders", () => {
         ground: false,
         skybox: false,
         shaderPrograms: [],
-        standardMaterial: false,
         idDiagnostics: false,
         geometryOutputTasks: [
             {
@@ -1004,14 +1001,16 @@ test("generates typed geometry task records and PBR MRT shaders", () => {
     );
 });
 
-test("generates standard-material geometry output shaders", () => {
+test("emits no transcribed standard fragments", () => {
+    // The Standard family draws through the pin's own composed variants
+    // (standard_variants.hpp + variant-std-* stages); the transcribed
+    // standard.frag and per-task standard-geometry-*.frag are retired.
     const shaders = new RendererLowerer(
         new LoweringContext(),
     ).lowerShaders({
         ground: false,
         skybox: false,
         shaderPrograms: [],
-        standardMaterial: true,
         idDiagnostics: false,
         geometryOutputTasks: [
             {
@@ -1027,22 +1026,14 @@ test("generates standard-material geometry output shaders", () => {
             },
         ],
     });
-    const geometry = shaders.find((shader) =>
-        shader.output.endsWith("standard-geometry-0.frag.native.wgsl"),
-    );
-    assert.match(String(geometry?.data), /vec4<f32>\(0\.0, 0\.0, 0\.0/);
-    assert.match(
-        String(geometry?.data),
-        /1\.0 - input\.position\.z/,
-    );
-    assert.match(String(geometry?.data), /pow\(specularSample\.rgb/);
-    assert.match(String(geometry?.data), /reflectionTexture/);
-    assert.match(String(geometry?.data), /output\.color = color/);
     assert.ok(
-        !shaders.some(
-            (shader) =>
-                shader.output.includes("standard") &&
-                /\.(?:hlsl|msl)$/.test(shader.output),
+        !shaders.some((shader) => shader.output.includes("standard")),
+    );
+    // The shared material vertex stage stays: the diagnostics, depth-only
+    // and background pipelines still enter it at mainVertex.
+    assert.ok(
+        shaders.some((shader) =>
+            shader.output.endsWith("pbr.vert.native.wgsl"),
         ),
     );
 });
@@ -1053,7 +1044,6 @@ test("emits only reached custom shader variants", () => {
         ground: false,
         skybox: false,
         shaderPrograms: reachedPrograms(["alpha-card"]),
-        standardMaterial: false,
         idDiagnostics: false,
         geometryOutputTasks: [],
     });
@@ -1077,7 +1067,6 @@ test("emits only reached custom shader variants", () => {
         ground: false,
         skybox: false,
         shaderPrograms: reachedPrograms(["circular-cutout"]),
-        standardMaterial: false,
         idDiagnostics: false,
         geometryOutputTasks: [],
     });

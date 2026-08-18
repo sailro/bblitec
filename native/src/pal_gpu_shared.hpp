@@ -27,6 +27,14 @@
 #if BBLITE_PBR_VARIANTS > 0
 #include <bblite/upstream/pbr_variants.hpp>
 #endif
+// The Standard family's composed variants: the same shape, one entry per
+// feature word the scene's materials and meshes reach, plus the selector and
+// lowered UBO writers its support block appends. When no pbr_variants.hpp is
+// emitted the header hoists the shared scene/lights/mesh mirrors itself, so
+// the include order here (after the PBR header) is what keeps one definition.
+#if BBLITE_STANDARD_VARIANTS > 0
+#include <bblite/upstream/standard_variants.hpp>
+#endif
 
 /**
  * The pin's `gpUniforms` block, declared by a geometry-output variant whose
@@ -664,6 +672,9 @@ inline std::vector<std::array<float, 16>> pinned_instance_matrices(
     return result;
 }
 
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
 /** Whether a record draws through the pin's thin-instance arm: stamped by
  *  the scene setter or filled by the glTF EXT_mesh_gpu_instancing pool. */
 inline bool pinned_record_instanced(const MeshRecord& record) {
@@ -671,24 +682,31 @@ inline bool pinned_record_instanced(const MeshRecord& record) {
 }
 
 /**
- * Whether a task's draw lists contain a PBR draw. A geometry task whose
- * draws are PBR renders through the pin's reverse-Z contract (reverse
- * matrix, GREATER pipelines, zero depth clear), and both backends make the
- * same decision from the same lists.
+ * Whether a task's draw lists contain a draw the pinned path owns — a PBR
+ * draw, or a Standard one now that both families run Babylon's own composed
+ * stages. A geometry task whose draws are pinned renders through the pin's
+ * reverse-Z contract (reverse matrix, GREATER pipelines, zero depth clear),
+ * and both backends make the same decision from the same lists.
  */
-inline bool pinned_lists_have_pbr(const upstream::RenderDrawLists& lists) {
+inline bool pinned_lists_have_pinned_draws(
+    const upstream::RenderDrawLists& lists) {
     for (const upstream::RenderDrawList* list :
          {&lists.opaque, &lists.transparent}) {
         for (const upstream::RenderDrawCommand& draw : list->commands) {
             if (
                 draw.item.material_kind ==
-                upstream::RenderMaterialKind::pbr) {
+                    upstream::RenderMaterialKind::pbr ||
+                draw.item.material_kind ==
+                    upstream::RenderMaterialKind::standard) {
                 return true;
             }
         }
     }
     return false;
 }
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0
 
 /** The identity, for a skinned draw whose palette already carries everything. */
 inline std::array<float, 16> pinned_identity_world() {
@@ -756,7 +774,7 @@ inline std::array<float, 16> pinned_draw_world(
 }
 #endif
 
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
 /**
  * The pin's per-pass scene block.
  *
@@ -893,8 +911,29 @@ inline upstream::MeshUniforms pinned_mesh_block(
         ++light_index;
     }
     block.lc = count;
+    // The velocity geometry arm's tail. The native worlds are constant
+    // frame to frame (node motion re-bakes vertices), so the previous
+    // world is the world itself and the flag stays on: the composed
+    // vertex then measures camera motion, which is what the pin's
+    // tracked previous clip reduces to for a static world. The generic
+    // lambda makes the access dependent: outside a template, both
+    // `if constexpr` branches must compile, and most scenes' mirrored
+    // MeshUniforms carries no velocity tail.
+    [&](auto& dependent) {
+        if constexpr (
+            requires {
+                dependent.previousWorld;
+                dependent.velocityEnabled;
+            }) {
+            dependent.previousWorld = world;
+            dependent.velocityEnabled = 1.0f;
+        }
+    }(block);
     return block;
 }
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0
 
 /**
  * The variant a draw composes, or `npos` when this scene cannot resolve one.
@@ -1113,6 +1152,145 @@ struct BonePaletteLayout {
 inline BonePaletteLayout bone_palette_layout(std::uint32_t bones) {
     const std::uint32_t width = bones * 4u;
     return BonePaletteLayout{width, 1u, width * 16u};
+}
+#endif
+
+#if BBLITE_STANDARD_VARIANTS > 0
+/**
+ * The Standard variant a draw composes, or `npos` when none was emitted.
+ *
+ * The key is the pin's own feature word, derived from the record by the
+ * generated `standard_material_features` — the same pinned
+ * `_computeStandardMaterialFeatures` generation executed to compose — plus
+ * the mesh bits: the static per-handle table with the pool and deformation
+ * bits ORed on at draw time, because thin instances attach and morph
+ * weights arrive after mesh creation. A no-color view's record ORs the
+ * pass bit the composition keyed its depth-only rows on.
+ */
+inline std::size_t standard_variant_for_draw(
+    const Scene& scene,
+    const Engine& engine,
+    const upstream::RenderDrawCommand& draw,
+    std::size_t geometry_task = std::numeric_limits<std::size_t>::max()) {
+    (void)scene;
+    if (
+        draw.item.material_kind !=
+        upstream::RenderMaterialKind::standard) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    if (draw.item.material.value >= engine.materials.size()) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    const MaterialRecord& material =
+        engine.materials[draw.item.material.value];
+    std::uint32_t features =
+        upstream::standard_material_features(material);
+    if (material.no_color) {
+        features |= upstream::standard_no_color_output_flag;
+    }
+    std::size_t mesh_features =
+        draw.item.mesh.value <
+            upstream::standard_renderable_mesh_features.size()
+            ? upstream::standard_renderable_mesh_features[
+                  draw.item.mesh.value]
+            : upstream::standard_runtime_mesh_features;
+    if (mesh_features == std::numeric_limits<std::size_t>::max()) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    if (draw.item.mesh.value < engine.meshes.size()) {
+        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        if (pinned_record_instanced(record)) {
+            mesh_features |= upstream::std_msh_has_thin_instances;
+        }
+    }
+    if (
+        draw.item.geometry < engine.geometries.size() &&
+        !engine.geometries[draw.item.geometry].morph_positions.empty()) {
+        mesh_features |= upstream::std_msh_has_morph_targets;
+    }
+    return upstream::standard_variant_for(
+        features,
+        static_cast<std::uint32_t>(mesh_features),
+        geometry_task);
+}
+
+/**
+ * The pin's mesh-block world for one Standard draw.
+ *
+ * The native side bakes a mesh's TRS into its vertices, so the pin's
+ * `finalWorld` collapses to the identity — the Standard families carry no
+ * glTF X-mirror. A thin-instanced draw keeps local vertices and rides the
+ * pin's own `mesh.world * instanceWorld` product, so it takes the record's
+ * parent TRS. A LOCAL_POSITION geometry variant reads the raw position
+ * attribute, which only matches the baked pair while the record's own
+ * transform is the identity; a transformed mesh there is refused by name
+ * rather than rendered with a silently-wrong varying.
+ */
+inline std::array<float, 16> standard_draw_world(
+    [[maybe_unused]] const MeshRecord& record,
+    bool uses_local_position) {
+#if BBLITE_GPU_INSTANCING
+    if (pinned_record_instanced(record)) {
+        return upstream::build_instance_parent_world(record);
+    }
+#endif
+    if (uses_local_position) {
+        const bool identity_transform =
+            record.position.x == 0.0f && record.position.y == 0.0f &&
+            record.position.z == 0.0f &&
+            record.scaling.x == 1.0f && record.scaling.y == 1.0f &&
+            record.scaling.z == 1.0f &&
+            !record.has_rotation_quaternion &&
+            record.rotation.x == 0.0f && record.rotation.y == 0.0f &&
+            record.rotation.z == 0.0f;
+        if (!identity_transform) {
+            throw std::runtime_error(
+                "A LOCAL_POSITION geometry variant over a transformed "
+                "Standard mesh is not wired: the baked vertices and the "
+                "raw position attribute disagree.");
+        }
+    }
+    return std::array<float, 16>{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
+}
+
+/**
+ * The Standard material block for one draw: the pin's own writer over the
+ * record-filled props. A material-less item keeps the pin's defaults, the
+ * way `createStandardMaterial` seeds them.
+ */
+inline upstream::StandardMaterialUniforms standard_material_block(
+    const MaterialRecord* material,
+    std::uint32_t features) {
+    const upstream::StandardMaterialProps props = material
+        ? upstream::standard_material_props(*material)
+        : upstream::StandardMaterialProps{};
+    upstream::StandardMaterialUniforms block{};
+    upstream::write_standard_material(
+        props,
+        upstream::standard_texture_level(features),
+        block);
+    return block;
+}
+
+/** The vertex-stage UV block for one draw, by the pin's own writer. */
+inline upstream::StandardUvTransformUniforms standard_uv_block(
+    const MaterialRecord* material,
+    std::uint32_t features) {
+    const upstream::StandardMaterialProps props = material
+        ? upstream::standard_material_props(*material)
+        : upstream::StandardMaterialProps{};
+    upstream::StandardUvTransformUniforms block{};
+    upstream::write_standard_uv_transform(
+        props,
+        material != nullptr &&
+            upstream::standard_uv_inverted(features, *material),
+        block);
+    return block;
 }
 #endif
 

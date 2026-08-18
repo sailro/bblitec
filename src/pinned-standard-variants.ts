@@ -1052,6 +1052,7 @@ export async function composeSceneStandardVariants(
     // Compose, deduplicating by composed text.
     const variants: PinnedStandardVariantManifestEntry[] = [];
     const byText = new Map<string, number>();
+    const usedStems = new Set<string>();
     const selectors: PinnedStandardSelector[] = [];
     const seenKeys = new Set<string>();
     const add = async (
@@ -1078,19 +1079,18 @@ export async function composeSceneStandardVariants(
             const entry = pinnedStandardVariantManifestEntry(composed);
             // Two feature words can compose byte-identical stages while the
             // emitted stem carries the first word; the selector rows keep
-            // every word resolving to the shared file.
-            if (
-                variants.some(
-                    (existing) =>
-                        existing.vertex === entry.vertex &&
-                        existing.fragment === entry.fragment,
-                )
-            ) {
-                throw new Error(
-                    `Composed Standard variants collide on stem ` +
-                        `'${entry.vertex}' with different stage text.`,
-                );
+            // every word resolving to the shared file. The reverse also
+            // happens — one word composing different stages per geometry
+            // task — so a taken stem gets a numeric suffix, the same
+            // de-collision `writePinnedPbrVariants` applies.
+            const base = entry.vertex.replace(/\.vert\.wgsl$/, "");
+            let stem = base;
+            for (let suffix = 2; usedStems.has(stem); suffix += 1) {
+                stem = `${base}-${suffix}`;
             }
+            usedStems.add(stem);
+            entry.vertex = `${stem}.vert.wgsl`;
+            entry.fragment = `${stem}.frag.wgsl`;
             variants.push(entry);
         }
         selectors.push({

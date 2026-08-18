@@ -14,6 +14,7 @@ import { reachedGeneratedSources } from "./generated-sources.js";
 import { shaderMaterialPrograms } from "./shader-material-programs.js";
 import {
     emitUpstreamGenerated,
+    readPinnedMaxLights,
     type UpstreamEmitOptions,
 } from "./upstream-lower.js";
 import { emitAssetSpecializations } from "./asset-specializer.js";
@@ -624,6 +625,28 @@ async function main(): Promise<void> {
             }
         }
     }
+    // A `.babylon` asset's own lights are the scene's lights the same way a
+    // glTF's KHR_lights_punctual lights are: the generated loader fills
+    // point LightRecords (`type: 0` is the only kind it accepts), and the
+    // pinned lights block consumes them through `write_pinned_light`, whose
+    // per-kind writers are emitted only for the light features the scene
+    // reaches. Joining `light:point` here is what routes the point writer
+    // (and the pinned light matrix it indexes) into the generated tree.
+    for (const asset of result.manifest.assets) {
+        if (asset.kind !== "babylon") continue;
+        const materialized = resolve(outputPath, "assets", asset.output);
+        if (!existsSync(materialized)) continue;
+        const document = JSON.parse(
+            readFileSync(materialized, "utf8"),
+        ) as { lights?: BabylonLight[] };
+        if (
+            (document.lights ?? []).some((light) => light.type === 0) &&
+            !result.manifest.features.includes("light:point")
+        ) {
+            result.manifest.features.push("light:point");
+            assetJoinedFeatures.set("light:point", asset.output);
+        }
+    }
     if (assetJoinedFeatures.size > 0) {
         // The features drive the generated-source table and the CMake
         // projection, both rendered at compile time; re-render them from the
@@ -785,18 +808,12 @@ async function main(): Promise<void> {
             : sceneMeshFeatureValues.size === 1
                 ? [...sceneMeshFeatureValues][0]!
                 : undefined;
-    // The Standard family's pinned composition. Staged behind an explicit
-    // switch: the generation and selector halves are complete, but neither
-    // GPU PAL consumes standard_variants.hpp yet, so emitting it by default
-    // would ship dead weight into every standard scene's tree. The
-    // orchestrated flip sets the variable, wires the PAL draw paths, and
-    // deletes the transcribed standard emissions in the same change.
+    // The Standard family's pinned composition: every standard scene
+    // composes its variants through the pin, and both GPU PALs draw them —
+    // the transcribed standard fragment is retired.
     let standardComposition: StandardSceneComposition | undefined;
     let standardRenderableMeshFeatures: number[] | undefined;
-    if (
-        process.env["BBLITE_PINNED_STANDARD_VARIANTS"] === "1" &&
-        result.manifest.features.includes("material:standard")
-    ) {
+    if (result.manifest.features.includes("material:standard")) {
         const babylonAssets = result.manifest.assets
             .filter((asset) => asset.kind === "babylon")
             .map((asset) => resolve(outputPath, "assets", asset.output));
@@ -896,7 +913,12 @@ async function main(): Promise<void> {
                 "mesh:morph-targets",
             ),
         animatedWorldBounds: specializationFeatures.animatedWorldBounds,
-        morphStorage: specializationFeatures.morphStorage,
+        // Scene-code morph targets join the storage arm: the pinned morph
+        // fragment (`morph-fragment-core`) reads its deltas and weights
+        // from storage buffers, and with the transcribed standard fragment
+        // retired there is no attribute-lane consumer left for them.
+        morphStorage: specializationFeatures.morphStorage ||
+            result.manifest.features.includes("mesh:morph-targets"),
         nonTrianglePrimitives:
             specializationFeatures.nonTrianglePrimitives,
         nodeVisibility: specializationFeatures.nodeVisibility,
@@ -1019,12 +1041,25 @@ ${imageCodecLines}
         `${JSON.stringify(
             featureActivationRows({
                 features: result.manifest.features,
+                featureSites: result.manifest.featureSites,
                 assetJoinedFeatures,
                 specialization: specializationFeatures,
                 emit: emitOptions,
                 transmission: emittedArms.transmission,
                 imageCodecs,
                 gltfAssetNames: gltfAssets.map((asset) => asset.output),
+                pinnedMaxLights: readPinnedMaxLights(),
+                interleave: {
+                    sceneMeshGltfAssetsBefore:
+                        result.manifest.sceneMeshes.map(
+                            (mesh) => mesh.gltfAssetsBefore,
+                        ),
+                    scenePbrMaterialGltfAssetsBefore:
+                        result.manifest.scenePbrMaterials.map(
+                            (material) => material.gltfAssetsBefore,
+                        ),
+                    gltfAssetCount: gltfAssets.length,
+                },
                 composition: {
                     lightKinds,
                     toneMappingArms: hasEnvironment,
