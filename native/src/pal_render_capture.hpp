@@ -787,7 +787,9 @@ inline void write_environment(
 
 /**
  * The uniform blocks one draw uploads, rebuilt through the generated
- * builders both backends call.
+ * builders both backends call. The PBR arm is the one exception: no draw
+ * uploads `PbrUniforms` any more, so its dump is the reduced base-lane
+ * block documented at the arm itself.
  */
 inline void write_draw_uniforms(
     JsonWriter& json,
@@ -873,6 +875,17 @@ inline void write_draw_uniforms(
         }
         case upstream::RenderMaterialKind::pbr:
         default: {
+            // Reduced to the base lanes: PBR draws bind the pinned
+            // material, scene and lights blocks, so the transcribed
+            // struct now carries only the scene-and-light-derived values
+            // a diff still pairs by name (analytic light slots, camera
+            // basis, base material factors, harmonics). The option-gated
+            // extension lanes it used to mirror -- fog, transmission,
+            // texture transforms, specular, extra lights, clearcoat,
+            // sheen, iridescence, occlusion -- are pruned from the
+            // generated struct; their real values are the
+            // pinnedMaterialBlocks section below and the capture's own
+            // scene and lights dumps.
             const upstream::PbrUniforms fragment =
                 upstream::build_pbr_uniforms(
                     scene, engine, camera, draw.item);

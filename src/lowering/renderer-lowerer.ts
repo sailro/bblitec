@@ -38,71 +38,258 @@ import {
 } from "../shader-builtins-background.js";
 import type { PinnedSolidSkyboxSource } from "../shader-builtins-background.js";
 import { materialVertexWgsl } from "../shader-builtins-standard.js";
+import {
+    extractPackagedStringLiteral,
+    extractPackagedTemplateLiteral,
+    extractWgslFunction,
+    readPinnedLibraryModule,
+    splitWgslStatements,
+} from "../pinned-shader-composer.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 /**
- * The texture slots a composed PBR fragment can sample, each with the material
- * record field holding its glTF texture transform. Babylon Lite keeps the
- * transform on the texture wrapper rather than on the material
- * (`gltf-ext-uv-transform.ts`), so slots on one material disagree freely and
- * each sample computes its own UV. `extension` names the option that composes
- * the fragment owning the slot, so a scene emits exactly the pairs its shader
- * reads — which is how upstream's per-fragment UBO slices behave.
+ * The pinned fog falloff's own component reads, paired with the scene field
+ * each one packs from. `WGSL_FOG` names its inputs — `let fogMode =
+ * scene.vFogInfos.x;` and so on — so the {mode, start, end, density} order of
+ * every native `fogInfos` vec4 is the pin's contract, not a convention. The
+ * table is the single source for both halves: the assert requires the pin to
+ * still read each name from its component, and the packing emission below
+ * writes the stores in table order, so a pin retune fails generation instead
+ * of shading with a silently transposed vec4.
  */
-const pbrUvTransformSlots: ReadonlyArray<{
-    wgsl: string;
-    cpp: string;
-    extension?: "clearcoat" | "sheen" | "iridescence" | "transmission";
-}> = [
-    { wgsl: "baseColor", cpp: "base_color" },
-    { wgsl: "orm", cpp: "orm" },
-    { wgsl: "normal", cpp: "normal" },
-    { wgsl: "emissive", cpp: "emissive" },
-    { wgsl: "clearcoat", cpp: "clearcoat", extension: "clearcoat" },
-    {
-        wgsl: "clearcoatRoughness",
-        cpp: "clearcoat_roughness",
-        extension: "clearcoat",
-    },
-    {
-        wgsl: "clearcoatNormal",
-        cpp: "clearcoat_normal",
-        extension: "clearcoat",
-    },
-    { wgsl: "sheen", cpp: "sheen", extension: "sheen" },
-    { wgsl: "sheenRoughness", cpp: "sheen_roughness", extension: "sheen" },
-    { wgsl: "iridescence", cpp: "iridescence", extension: "iridescence" },
-    {
-        wgsl: "iridescenceThickness",
-        cpp: "iridescence_thickness",
-        extension: "iridescence",
-    },
-    {
-        wgsl: "refractionMap",
-        cpp: "transmission",
-        extension: "transmission",
-    },
-    { wgsl: "thickness", cpp: "thickness", extension: "transmission" },
+const pinnedFogInfoComponentReads: ReadonlyArray<
+    readonly [component: string, pinnedName: string, packedStore: string]
+> = [
+    ["x", "fogMode", "scene.fog_mode"],
+    ["y", "fogStart", "scene.fog_start"],
+    ["z", "fogEnd", "scene.fog_end"],
+    ["w", "fogDensity", "scene.fog_density"],
 ];
 
-function reachedUvTransformSlots(options: {
-    clearcoat?: boolean;
-    sheen?: boolean;
-    sheenAlbedoScaling?: boolean;
-    iridescence?: boolean;
-    transmission?: boolean;
-}): ReadonlyArray<{ wgsl: string; cpp: string }> {
-    return pbrUvTransformSlots.filter(
-        (slot) =>
-            (slot.extension === undefined ||
-                options[slot.extension] === true) &&
-            // The legacy sheen arm samples no separate roughness map, so
-            // that slot's transform has nothing to transform.
-            !(
-                slot.wgsl === "sheenRoughness" &&
-                options.sheenAlbedoScaling !== true
-            ),
+function assertPinnedFogInfosOrder(): void {
+    const fog = extractPackagedTemplateLiteral(
+        readPinnedLibraryModule("shader/wgsl-fog.js"),
+        "WGSL_FOG",
     );
+    for (const [component, pinnedName] of pinnedFogInfoComponentReads) {
+        if (
+            !fog.includes(
+                `let ${pinnedName} = scene.vFogInfos.${component};`,
+            )
+        ) {
+            throw new Error(
+                `Pinned WGSL_FOG no longer reads ${pinnedName} from vFogInfos.${component}; retune the native fogInfos packing to the pin's component order.`,
+            );
+        }
+    }
+}
+
+/** The `fog_infos` initializer list, one pinned component read per store. */
+function pinnedFogInfosPacking(): string {
+    assertPinnedFogInfosOrder();
+    return pinnedFogInfoComponentReads
+        .map(([, , packedStore]) => `        ${packedStore},\n`)
+        .join("");
+}
+
+/**
+ * Applies a documented re-homing map, requiring every entry to occur so a
+ * pinned rename fails generation instead of leaving a dangling reference.
+ */
+function rehomePinned(
+    source: string,
+    replacements: ReadonlyArray<readonly [string, string]>,
+    what: string,
+): string {
+    let text = source;
+    for (const [from, to] of replacements) {
+        if (!text.includes(from)) {
+            throw new Error(
+                `Pinned Babylon Lite ${what} changed ('${from}' is gone).`,
+            );
+        }
+        text = text.split(from).join(to);
+    }
+    return text;
+}
+
+/** The statement list of a packaged WGSL literal's `fn main` body. */
+function pinnedEntryStatements(literal: string, what: string): string[] {
+    const entry = extractWgslFunction(literal, "main");
+    const open = entry.indexOf("{");
+    const close = entry.lastIndexOf("}");
+    if (open < 0 || close <= open) {
+        throw new Error(`Pinned Babylon Lite ${what} has no entry body.`);
+    }
+    return splitWgslStatements(entry.slice(open + 1, close));
+}
+
+interface LiftedImageSkybox {
+    /** Re-homed vertex statements, one per line at body indent. */
+    vertexBody: string;
+    /** Re-homed fragment statements, one per line at body indent. */
+    fragmentBody: string;
+}
+
+/**
+ * Lifts the cubemap skybox's two stages out of the packaged pin.
+ *
+ * `skybox-cubemap.ts` ships `skyVertSrc`/`skyFragSrc` as inlined string
+ * literals (raw imports carry no source-map entry), so the statements are
+ * taken from the packaged module text and re-homed onto the native binding
+ * contract, each mapping required to occur. Three documented departures from
+ * the pin, all forced by the native frame rather than chosen:
+ *
+ * - `mesh.world` drops out: the pinned skybox mesh carries an identity world
+ *   (`build_image_skybox_plan` authors the cube around the origin exactly as
+ *   the pinned `createBoxData` does), and the native vertex block is the
+ *   64-byte view-projection both PALs already bind — Dawn sizes that bind
+ *   group entry to 64 bytes explicitly, so the block cannot grow.
+ * - `vFogDistance` moves across the stage boundary: the pin computes
+ *   `(scene.view * worldPos).xyz` per vertex and interpolates it, but the
+ *   vertex block above cannot carry `scene.view`, so the fragment evaluates
+ *   the pin's own expression on the interpolated `vPositionW` instead — the
+ *   same affine function of the same varying, evaluated after interpolation
+ *   rather than before.
+ * - The pin's unused `normal` vertex input is dropped: both PALs feed the
+ *   pipeline a single position buffer, and the lift refuses to drop it the
+ *   moment the pinned body starts reading it.
+ */
+function liftedImageSkyboxWgsl(): LiftedImageSkybox {
+    const module = readPinnedLibraryModule(
+        "material/standard/skybox-cubemap.js",
+    );
+    const vertexLiteral = extractPackagedStringLiteral(
+        module,
+        "skyVertSrc",
+    );
+    const fragmentLiteral = extractPackagedStringLiteral(
+        module,
+        "skyFragSrc",
+    );
+    const vertexContracts: ReadonlyArray<readonly [string, string]> = [
+        ["struct e{world:mat4x4<f32>}", "skybox-cubemap mesh block"],
+        [
+            "@group(1) @binding(0) var<uniform> mesh:e;",
+            "skybox-cubemap mesh binding",
+        ],
+        [
+            "struct d{@builtin(position) clipPos:vec4<f32>,@location(0) vPositionW:vec3<f32>,@location(1) vPositionLocal:vec3<f32>,@location(2) vFogDistance:vec3<f32>}",
+            "skybox-cubemap varying block",
+        ],
+        [
+            "fn main(@location(0) c:vec3<f32>,@location(1) normal:vec3<f32>)->d",
+            "skybox-cubemap vertex inputs",
+        ],
+    ];
+    for (const [text, what] of vertexContracts) {
+        if (!vertexLiteral.includes(text)) {
+            throw new Error(`Pinned Babylon Lite ${what} changed.`);
+        }
+    }
+    const fragmentContracts: ReadonlyArray<readonly [string, string]> = [
+        [
+            "@group(1) @binding(1) var c:texture_cube<f32>;",
+            "skybox-cubemap texture binding",
+        ],
+        [
+            "@group(1) @binding(2) var d:sampler;",
+            "skybox-cubemap sampler binding",
+        ],
+        [
+            "struct g{@location(0) vPositionW:vec3<f32>,@location(1) vPositionLocal:vec3<f32>,@location(2) vFogDistance:vec3<f32>}",
+            "skybox-cubemap fragment inputs",
+        ],
+    ];
+    for (const [text, what] of fragmentContracts) {
+        if (!fragmentLiteral.includes(text)) {
+            throw new Error(`Pinned Babylon Lite ${what} changed.`);
+        }
+    }
+
+    const vertexStatements = pinnedEntryStatements(
+        vertexLiteral,
+        "skybox-cubemap vertex stage",
+    );
+    for (const statement of vertexStatements) {
+        if (statement.includes("normal")) {
+            throw new Error(
+                "Pinned Babylon Lite skybox-cubemap vertex stage started reading its normal input; the native single-buffer pipeline can no longer drop it.",
+            );
+        }
+    }
+    const fogDistanceStatement = vertexStatements.find((statement) =>
+        statement.startsWith("a.vFogDistance="),
+    );
+    if (!fogDistanceStatement) {
+        throw new Error(
+            "Pinned Babylon Lite skybox-cubemap fog distance varying changed.",
+        );
+    }
+    // The pin's own right-hand side, re-homed for per-fragment evaluation:
+    // `b` is the world-position vec4 in the pinned vertex, rebuilt here from
+    // the interpolated varying that carries its xyz.
+    const fogDistanceExpression = rehomePinned(
+        fogDistanceStatement
+            .slice("a.vFogDistance=".length)
+            .replace(/;$/, ""),
+        [
+            ["scene.view", "uniforms.view"],
+            ["*b)", "*vec4<f32>(b.vPositionW,1.0))"],
+        ],
+        "skybox-cubemap fog distance",
+    );
+    const vertexBody = rehomePinned(
+        vertexStatements
+            .filter((statement) => statement !== fogDistanceStatement)
+            .map((statement) => `    ${statement}`)
+            .join("\n"),
+        [
+            ["var a:d;", "var a: VertexOutput;"],
+            ["mesh.world*vec4<f32>(c,1.0)", "vec4<f32>(c,1.0)"],
+            ["scene.viewProjection", "uniforms.viewProjection"],
+        ],
+        "skybox-cubemap vertex stage",
+    );
+
+    const fragmentStatements = pinnedEntryStatements(
+        fragmentLiteral,
+        "skybox-cubemap fragment stage",
+    );
+    const fogBranchIndex = fragmentStatements.findIndex((statement) =>
+        statement.startsWith("if"),
+    );
+    if (fogBranchIndex < 0) {
+        throw new Error(
+            "Pinned Babylon Lite skybox-cubemap fog branch changed.",
+        );
+    }
+    const fragmentBody = rehomePinned(
+        [
+            ...fragmentStatements.slice(0, fogBranchIndex),
+            `let vFogDistance=${fogDistanceExpression};`,
+            ...fragmentStatements.slice(fogBranchIndex),
+        ]
+            .map((statement) => `    ${statement}`)
+            .join("\n"),
+        [
+            ["scene.vFogInfos", "uniforms.fogInfos"],
+            ["scene.vFogColor", "uniforms.fogColor"],
+            ["calcFogFactor(b.vFogDistance)", "bblCalcFogFactor(vFogDistance)"],
+        ],
+        "skybox-cubemap fragment stage",
+    );
+    for (const [body, stage] of [
+        [vertexBody, "vertex"],
+        [fragmentBody, "fragment"],
+    ] as const) {
+        if (body.includes("scene.") || body.includes("mesh.")) {
+            throw new Error(
+                `Pinned Babylon Lite skybox-cubemap ${stage} stage carries an unmapped scene or mesh reference.`,
+            );
+        }
+    }
+    return { vertexBody, fragmentBody };
 }
 
 const renderTaskModule = "src/frame-graph/render-task.ts";
@@ -415,121 +602,26 @@ export class RendererLowerer {
         ${stageBlockLiteral(info.fragment)},
     },`,
         ).join("\n");
-        const transmissionUniformFields = options.transmission
-            ? `    std::array<float, 4> refraction_params{};
-    std::array<float, 4> volume_params{};
-    std::array<float, 4> transmission_options{};
-    std::array<std::array<float, 4>, 4> view_projection{};
-`
-            : "";
-        // The pinned reflectance ext's material-UBO slice: the F0 scale, its
-        // grazing weight, and the dielectric tint, laid out as the fragment
-        // reads them.
-        const specularUniformField = options.materialSpecular
-            ? "    std::array<float, 4> reflectance_factors{};\n"
-            : "";
-        const specularMaterialUniform = options.materialSpecular
-            ? `        result.reflectance_factors = {
-            material.metallic_f0_factor,
-            material.specular_weight,
-            0.0f,
-            0.0f,
-        };
-        result.metallic_reflectance_color = {
-            material.metallic_reflectance_color.r,
-            material.metallic_reflectance_color.g,
-            material.metallic_reflectance_color.b,
-            0.0f,
-        };
-`
-            : "";
-        const specularColorUniformField = options.materialSpecular
-            ? "    std::array<float, 4> metallic_reflectance_color{};\n"
-            : "";
-        const uvTransformSlots = reachedUvTransformSlots(options);
-        const textureTransformUniformField =
-            options.textureTransform
-                ? uvTransformSlots
-                      .map(
-                          (slot) =>
-                              `    std::array<float, 4> ${slot.cpp}_uv_m{};\n` +
-                              `    std::array<float, 4> ${slot.cpp}_uv_t{};\n`,
-                      )
-                      .join("")
-                : "";
-        const fogUniformFields = options.fog
-            ? `    std::array<float, 4> fog_infos{};
-    std::array<float, 4> fog_color{};
-`
-            : "";
-        const fogUniforms = options.fog
-            ? `    result.fog_infos = {
-        scene.fog_mode,
-        scene.fog_start,
-        scene.fog_end,
-        scene.fog_density,
-    };
-    result.fog_color = {
-        scene.fog_color.r,
-        scene.fog_color.g,
-        scene.fog_color.b,
-        0.0f,
-    };
-`
-            : "";
-        // Pinned uv-transform writeOne: the rotation-free branch stores the
-        // scales on the diagonal untouched, and the rotated branch composes
-        // [c*sx, s*sy, -s*sx, c*sy] in JavaScript doubles before the
-        // Float32Array store rounds each component once.
-        const textureTransformMaterialUniform =
-            options.textureTransform
-                ? uvTransformSlots
-                      .map(
-                          (slot) => `        {
-            const TextureTransform& slot = material.${slot.cpp}_transform;
-            if (slot.rotation == 0.0f) {
-                result.${slot.cpp}_uv_m = {
-                    slot.u_scale,
-                    0.0f,
-                    0.0f,
-                    slot.v_scale,
-                };
-            } else {
-                const double angle = static_cast<double>(slot.rotation);
-                const double cosine = std::cos(angle);
-                const double sine = std::sin(angle);
-                result.${slot.cpp}_uv_m = {
-                    static_cast<float>(
-                        cosine * static_cast<double>(slot.u_scale)),
-                    static_cast<float>(
-                        sine * static_cast<double>(slot.v_scale)),
-                    static_cast<float>(
-                        -sine * static_cast<double>(slot.u_scale)),
-                    static_cast<float>(
-                        cosine * static_cast<double>(slot.v_scale)),
-                };
-            }
-            result.${slot.cpp}_uv_t = {
-                slot.u_offset,
-                slot.v_offset,
-                0.0f,
-                0.0f,
-            };
+        // The camera matrix chain the source below emits is anchored
+        // per-term against its pinned writers before anything is returned:
+        // the perspective stores, the multiply accumulation order, and the
+        // view transpose (whose emission is derived from the pinned store
+        // map rather than asserted against it).
+        this.assertPinnedPerspectiveWriter();
+        this.assertPinnedMultiplyWriter();
+        const viewMatrixBody = this.pinnedViewMatrixBody();
+        if (options.fog) {
+            // PBR and Standard fog ride the PAL's pinned scene block; its
+            // {mode, start, end, density} packing is the same WGSL_FOG
+            // contract, asserted here so a pin retune fails generation.
+            assertPinnedFogInfosOrder();
         }
-`,
-                      )
-                      .join("")
-                : "";
-        const multiLightUniformFields =
-            options.punctualLights
-                ? `    std::array<std::array<float, 4>, 7> extra_light_positions{};
-    std::array<std::array<float, 4>, 7> extra_light_colors{};
-    std::array<std::array<float, 4>, 7> extra_light_directions{};
-`
-                : "";
-        // Under multi-light the extras loop owns every light past the
-        // primary slot, so the second analytic slot stays disabled to
-        // avoid double-counting scene.lights[1].
+        const instancingTrs = options.gpuInstancing
+            ? this.pinnedTrsComposition()
+            : { quaternionProducts: "", basisLocals: "", basisStores: "" };
+        // Under multi-light the pinned lights block owns every light past
+        // the primary slot, so the legacy capture block keeps its second
+        // analytic slot empty there exactly as the retired uploader did.
         const secondAnalyticLightFill =
             options.punctualLights
                 ? ""
@@ -541,179 +633,6 @@ export class RendererLowerer {
             result.ground_color_2);
     }
 `;
-        const multiLightMaterialUniforms =
-            options.punctualLights
-                ? `        for (
-            std::size_t light_index = 1;
-            light_index < scene.lights.size() &&
-            light_index <= result.extra_light_positions.size();
-            ++light_index) {
-            const LightHandle handle =
-                scene.lights[light_index];
-            if (handle.value >= engine.lights.size()) continue;
-            const LightRecord& extra =
-                engine.lights[handle.value];
-            if (
-                extra.kind != LightKind::point &&
-                extra.kind != LightKind::spot) {
-                continue;
-            }
-            const std::size_t output = light_index - 1;
-            result.extra_light_positions[output] = {
-                extra.position.x,
-                extra.position.y,
-                extra.position.z,
-                extra.range,
-            };
-            result.extra_light_colors[output] = {
-                extra.diffuse_color.r,
-                extra.diffuse_color.g,
-                extra.diffuse_color.b,
-                extra.intensity * material.direct_intensity,
-            };
-            // A cosine lives in [-1, 1], so -2 is unambiguously "this slot
-            // has no cone" and a point light keeps its bare inverse-square
-            // falloff.
-            result.extra_light_directions[output] = {
-                extra.direction.x,
-                extra.direction.y,
-                extra.direction.z,
-                extra.kind == LightKind::spot
-                    ? extra.cos_half_angle
-                    : -2.0f,
-            };
-        }
-`
-                : "";
-        const transmissionMaterialUniforms = options.transmission
-            ? `        const float ior = material.index_of_refraction;
-        const float thickness_scale =
-            item.mesh.value < engine.meshes.size()
-                ? engine.meshes[item.mesh.value].baked_world_scale
-                : 1.0f;
-        result.refraction_params = {
-            material.transmission_factor,
-            1.0f / (material.use_thickness_as_depth && material.thickness > 0.0f
-                ? ior
-                : 1.0f),
-            material.use_thickness_as_depth
-                ? material.thickness * thickness_scale
-                : 0.0f,
-            1.0f / ior,
-        };
-        const float attenuation_distance =
-            std::max(material.attenuation_distance, 0.0001f);
-        result.volume_params = {
-            std::log(std::max(material.attenuation_color.r, 0.000001f)) /
-                attenuation_distance,
-            std::log(std::max(material.attenuation_color.g, 0.000001f)) /
-                attenuation_distance,
-            std::log(std::max(material.attenuation_color.b, 0.000001f)) /
-                attenuation_distance,
-            ${options.dispersion ? "material.dispersion" : "0.0f"},
-        };
-        result.transmission_options = {
-            material.skybox_mode ? 1.0f : 0.0f,
-            material.has_volume ? 1.0f : 0.0f,
-            material.transmission_texture.bytes.empty() ? 0.0f : 1.0f,
-            material.thickness_texture.bytes.empty() ? 0.0f : 1.0f,
-        };
-`
-            : "";
-        const transmissionViewProjection = options.transmission
-            ? `    const std::array<float, 16> view_projection =
-        build_view_projection(
-            camera,
-            static_cast<float>(engine.options.width) /
-                std::max(engine.options.height, 1));
-    for (std::size_t column = 0; column < 4; ++column) {
-        for (std::size_t row = 0; row < 4; ++row) {
-            result.view_projection[column][row] =
-                view_projection[column * 4 + row];
-        }
-    }
-`
-            : "";
-        const materialExtensionUniformFields =
-            `${options.clearcoat
-                ? `    std::array<float, 4> clearcoat_params{};
-    std::array<float, 4> clearcoat_refraction_params{};
-`
-                : ""}${options.sheen
-                ? `    std::array<float, 4> sheen_params{};
-    std::array<float, 4> sheen_params2{};
-`
-                : ""}${options.iridescence
-                ? "    std::array<float, 4> iridescence_params{};\n" +
-                  "    std::array<float, 4> iridescence_options{};\n"
-                : ""}${options.occlusionUv2
-                ? "    std::array<float, 4> occlusion_params{};\n"
-                : ""}`;
-        const materialExtensionUniforms =
-            `${options.clearcoat
-                ? `        result.clearcoat_params = {
-            material.clearcoat_intensity,
-            material.clearcoat_roughness,
-            material.clearcoat_normal_scale,
-            material.clearcoat_normal_texture.bytes.empty()
-                ? 0.0f
-                : 1.0f,
-        };
-        const float clearcoat_a =
-            1.0f - material.clearcoat_index_of_refraction;
-        const float clearcoat_b =
-            1.0f + material.clearcoat_index_of_refraction;
-        const float clearcoat_f0 =
-            (-clearcoat_a / clearcoat_b) *
-            (-clearcoat_a / clearcoat_b);
-        result.clearcoat_refraction_params = {
-            clearcoat_f0,
-            1.0f / material.clearcoat_index_of_refraction,
-            clearcoat_a,
-            clearcoat_b,
-        };
-`
-                : ""}${options.sheen
-                ? `        result.sheen_params = {
-            material.sheen_color.r,
-            material.sheen_color.g,
-            material.sheen_color.b,
-            material.sheen_intensity,
-        };
-        result.sheen_params2 = {
-            material.sheen_roughness,
-            material.sheen_color_texture.bytes.empty()
-                ? 0.0f
-                : 1.0f,
-            0.0f,
-            0.0f,
-        };
-`
-                : ""}${options.iridescence
-                ? `        result.iridescence_params = {
-            material.iridescence_intensity,
-            material.iridescence_index_of_refraction,
-            material.iridescence_minimum_thickness,
-            material.iridescence_maximum_thickness,
-        };
-        result.iridescence_options = {
-            material.iridescence_texture.bytes.empty() ? 0.0f : 1.0f,
-            material.iridescence_thickness_texture.bytes.empty()
-                ? 0.0f
-                : 1.0f,
-            0.0f,
-            0.0f,
-        };
-`
-                : ""}${options.occlusionUv2
-                ? `        result.occlusion_params = {
-            material.occlusion_texture_uv2 ? 1.0f : 0.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-        };
-`
-                : ""}`;
 
         return {
             modulePath: renderTaskModule,
@@ -853,7 +772,6 @@ struct PbrUniforms {
     std::array<float, 4> light_direction{};
     std::array<float, 4> light_color{};
     std::array<float, 4> ground_color{};
-${multiLightUniformFields}\
     std::array<float, 4> light_direction_2{};
     std::array<float, 4> light_color_2{};
     std::array<float, 4> ground_color_2{};
@@ -869,12 +787,6 @@ ${multiLightUniformFields}\
     std::array<float, 4> material_options{};
     std::array<float, 4> normal_options{};
     std::array<float, 4> image_processing_options{};
-${specularUniformField}\
-${specularColorUniformField}\
-${textureTransformUniformField}\
-${fogUniformFields}\
-${transmissionUniformFields}\
-${materialExtensionUniformFields}\
     std::array<std::array<float, 4>, 9> spherical_harmonics{};
 };
 
@@ -944,11 +856,12 @@ struct ImageSkyboxPlan {
     std::array<std::uint32_t, 36> indices{};
 };
 
+// The lifted cubemap-skybox fragment block. The pinned fog distance is
+// (scene.view * worldPos).xyz, so the block carries the view matrix the
+// fragment evaluates that expression with, plus the two WGSL_FOG vec4s --
+// 96 bytes, the same size the retired camera-basis block occupied.
 struct ImageSkyboxUniforms {
-    std::array<float, 4> camera_position{};
-    std::array<float, 4> view_right{};
-    std::array<float, 4> view_up{};
-    std::array<float, 4> view_forward{};
+    std::array<float, 16> view{};
     std::array<float, 4> fog_infos{};
     std::array<float, 4> fog_color{};
 };
@@ -1120,35 +1033,7 @@ Vec3 rotate_euler(Vec3 value, const Vec3& rotation) {
 // variants fills the pin's own scene block, which carries scene.view.
 std::array<float, 16> build_view_matrix(
     const std::array<float, 16>& world) {
-    const double cx = static_cast<double>(world[12]);
-    const double cy = static_cast<double>(world[13]);
-    const double cz = static_cast<double>(world[14]);
-    std::array<float, 16> view{};
-    view[0] = world[0];
-    view[1] = world[4];
-    view[2] = world[8];
-    view[3] = 0.0f;
-    view[4] = world[1];
-    view[5] = world[5];
-    view[6] = world[9];
-    view[7] = 0.0f;
-    view[8] = world[2];
-    view[9] = world[6];
-    view[10] = world[10];
-    view[11] = 0.0f;
-    view[12] = static_cast<float>(
-        -(static_cast<double>(world[0]) * cx +
-          static_cast<double>(world[1]) * cy +
-          static_cast<double>(world[2]) * cz));
-    view[13] = static_cast<float>(
-        -(static_cast<double>(world[4]) * cx +
-          static_cast<double>(world[5]) * cy +
-          static_cast<double>(world[6]) * cz));
-    view[14] = static_cast<float>(
-        -(static_cast<double>(world[8]) * cx +
-          static_cast<double>(world[9]) * cy +
-          static_cast<double>(world[10]) * cz));
-    view[15] = 1.0f;
+${viewMatrixBody}\
     return view;
 }
 
@@ -1699,37 +1584,14 @@ std::array<float, 16> build_instance_parent_world(
         const double sy = std::sin(half_y);
         const double cz = std::cos(half_z);
         const double sz = std::sin(half_z);
-        qx = sx * cy * cz + cx * sy * sz;
-        qy = cx * sy * cz - sx * cy * sz;
-        qz = cx * cy * sz + sx * sy * cz;
-        qw = cx * cy * cz - sx * sy * sz;
+${instancingTrs.quaternionProducts}\
     }
     const double scale_x = mesh.scaling.x;
     const double scale_y = mesh.scaling.y;
     const double scale_z = mesh.scaling.z;
-    const double xx = qx * qx;
-    const double yy = qy * qy;
-    const double zz = qz * qz;
-    const double xy = qx * qy;
-    const double xz = qx * qz;
-    const double yz = qy * qz;
-    const double wx = qw * qx;
-    const double wy = qw * qy;
-    const double wz = qw * qz;
+${instancingTrs.basisLocals}\
     std::array<double, 16> local{};
-    local[0] = (1.0 - 2.0 * (yy + zz)) * scale_x;
-    local[1] = 2.0 * (xy + wz) * scale_x;
-    local[2] = 2.0 * (xz - wy) * scale_x;
-    local[4] = 2.0 * (xy - wz) * scale_y;
-    local[5] = (1.0 - 2.0 * (xx + zz)) * scale_y;
-    local[6] = 2.0 * (yz + wx) * scale_y;
-    local[8] = 2.0 * (xz + wy) * scale_z;
-    local[9] = 2.0 * (yz - wx) * scale_z;
-    local[10] = (1.0 - 2.0 * (xx + yy)) * scale_z;
-    local[12] = mesh.position.x;
-    local[13] = mesh.position.y;
-    local[14] = mesh.position.z;
-    local[15] = 1.0;
+${instancingTrs.basisStores}\
     std::array<float, 16> result{};
     for (std::size_t column = 0; column < 4; ++column) {
         for (std::size_t row = 0; row < 4; ++row) {
@@ -1891,7 +1753,6 @@ ${options.environmentRotation
         scene.environment.rotation_y;
 `
     : ""}\
-${fogUniforms}\
     if (item.material.value < engine.materials.size()) {
         const MaterialRecord& material = engine.materials[item.material.value];
         result.base_color_factor = {
@@ -1921,7 +1782,6 @@ ${fogUniforms}\
         // the second analytic slot folds it into its intensity scalar
         // exactly like the primary slot.
         result.light_color_2[3] *= material.direct_intensity;
-${multiLightMaterialUniforms}\
         result.material_options[2] = material.unlit ? 1.0f : 0.0f;
         result.material_options[3] = material.double_sided ? 1.0f : 0.0f;
         result.normal_options[1] =
@@ -1934,8 +1794,6 @@ ${multiLightMaterialUniforms}\
                 ? dielectric_ratio * dielectric_ratio
                 : material.reflectance;
         result.normal_options[3] = material.normal_texture_scale;
-${specularMaterialUniform}\
-${textureTransformMaterialUniform}\
         if (
             item.geometry < engine.geometries.size() &&
             !engine.geometries[item.geometry].has_tangents &&
@@ -1949,10 +1807,7 @@ ${textureTransformMaterialUniform}\
                     ? 1.0f
                     : 0.0f;
         result.material_options[1] = material.alpha_cutoff;
-${transmissionMaterialUniforms}\
-${materialExtensionUniforms}\
     }
-${transmissionViewProjection}\
     for (std::size_t index = 0; index < scene.environment.spherical_harmonics.size(); ++index) {
         result.spherical_harmonics[index] = {
             scene.environment.spherical_harmonics[index].r,
@@ -2226,21 +2081,12 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
     const Scene& scene,
     const CameraRecord& camera) {
     ImageSkyboxUniforms result;
-    const CameraBasis basis = camera_basis(camera);
-    const Vec3& eye = basis.eye;
-    const Vec3& forward = basis.forward;
-    const Vec3& right = basis.right;
-    const Vec3& up = basis.up;
-    result.camera_position = {eye.x, eye.y, eye.z, 0.0f};
-    result.view_right = {right.x, right.y, right.z, 0.0f};
-    result.view_up = {up.x, up.y, up.z, 0.0f};
-    result.view_forward = {forward.x, forward.y, forward.z, 0.0f};
+    // The pin's own scene.view, so the lifted fragment evaluates the
+    // pinned (scene.view * worldPos).xyz fog distance from the same
+    // float32 matrix every other pinned consumer reads.
+    result.view = build_view_matrix(camera_world_matrix(camera));
     result.fog_infos = {
-        scene.fog_mode,
-        scene.fog_start,
-        scene.fog_end,
-        scene.fog_density,
-    };
+${pinnedFogInfosPacking()}    };
     result.fog_color = {
         scene.fog_color.r,
         scene.fog_color.g,
@@ -2663,35 +2509,15 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             );
         }
         if (options.imageSkybox) {
-            // The skybox-cubemap WGSL ships as inlined string literals
-            // in the compiled module (raw imports carry no source-map
-            // entry), so the pinned contract is asserted against the
-            // packaged text like the compiled scene-uniform WGSL.
-            const imageSkyboxSource = readFileSync(
-                resolve(
-                    this.context.store.packageRoot,
-                    "lib/material/standard/skybox-cubemap.js",
-                ),
-                "utf8",
-            );
-            for (const marker of [
-                "let e=normalize(b.vPositionLocal);",
-                "textureSample(c,d,e)",
-                "if (scene.vFogInfos.x>0.0){let f=calcFogFactor(b.vFogDistance);",
-                "mix(scene.vFogColor.rgb,a.rgb,f)",
-                "a.vFogDistance=(scene.view*b).xyz;",
-            ]) {
-                if (!imageSkyboxSource.includes(marker)) {
-                    throw new Error(
-                        `Pinned Babylon Lite skybox-cubemap contract changed: ${marker}`,
-                    );
-                }
-            }
+            // Both stages are lifted from the packaged module's own
+            // literals and re-homed onto the native binding contract;
+            // the departures are documented on `liftedImageSkyboxWgsl`.
+            const lifted = liftedImageSkyboxWgsl();
             const imageSkyboxProvenance =
                 this.context.provenance(
                     skyboxCubemapModule,
                     "buildSkyboxCubeMapGPU",
-                    `${fogWgslModule}#WGSL_FOG`,
+                    `the module's own skyVertSrc/skyFragSrc with ${fogWgslModule}#WGSL_FOG`,
                 );
             result.push(
                 {
@@ -2704,19 +2530,14 @@ struct VertexUniforms {
 @group(1) @binding(0) var<uniform> uniforms: VertexUniforms;
 
 struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) worldPosition: vec3<f32>,
-    @location(1) localPosition: vec3<f32>,
+    @builtin(position) clipPos: vec4<f32>,
+    @location(0) vPositionW: vec3<f32>,
+    @location(1) vPositionLocal: vec3<f32>,
 }
 
 @vertex
-fn mainVertex(@location(0) position: vec3<f32>) -> VertexOutput {
-    var output: VertexOutput;
-    output.position =
-        uniforms.viewProjection * vec4<f32>(position, 1.0);
-    output.worldPosition = position;
-    output.localPosition = position;
-    return output;
+fn mainVertex(@location(0) c: vec3<f32>) -> VertexOutput {
+${lifted.vertexBody}
 }
 `,
                 },
@@ -2724,14 +2545,11 @@ fn mainVertex(@location(0) position: vec3<f32>) -> VertexOutput {
                     output:
                         "upstream/shaders/skybox-cubemap.frag.native.wgsl",
                     data: `// ${imageSkyboxProvenance}
-@group(2) @binding(0) var skyboxTexture: texture_cube<f32>;
-@group(2) @binding(1) var skyboxSampler: sampler;
+@group(2) @binding(0) var c: texture_cube<f32>;
+@group(2) @binding(1) var d: sampler;
 
 struct FragmentUniforms {
-    cameraPosition: vec4<f32>,
-    viewRight: vec4<f32>,
-    viewUp: vec4<f32>,
-    viewForward: vec4<f32>,
+    view: mat4x4<f32>,
     fogInfos: vec4<f32>,
     fogColor: vec4<f32>,
 }
@@ -2742,33 +2560,14 @@ struct FragmentInput {
     // D3D12 links vertex and fragment signatures by hardware register,
     // so the fragment must consume the position builtin to keep the
     // varying registers aligned with the shared vertex outputs.
-    @builtin(position) position: vec4<f32>,
-    @location(0) worldPosition: vec3<f32>,
-    @location(1) localPosition: vec3<f32>,
+    @builtin(position) clipPos: vec4<f32>,
+    @location(0) vPositionW: vec3<f32>,
+    @location(1) vPositionLocal: vec3<f32>,
 }
 
 @fragment
-fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
-    let direction = normalize(input.localPosition);
-    var color = textureSample(
-        skyboxTexture,
-        skyboxSampler,
-        direction,
-    );
-    if (uniforms.fogInfos.x > 0.0) {
-        let fogView =
-            input.worldPosition - uniforms.cameraPosition.xyz;
-        let fog = bblCalcFogFactor(vec3<f32>(
-            dot(uniforms.viewRight.xyz, fogView),
-            dot(uniforms.viewUp.xyz, fogView),
-            dot(uniforms.viewForward.xyz, fogView),
-        ));
-        color = vec4<f32>(
-            mix(uniforms.fogColor.xyz, color.rgb, fog),
-            color.a,
-        );
-    }
-    return color;
+fn mainFragment(b: FragmentInput) -> @location(0) vec4<f32> {
+${lifted.fragmentBody}
 }
 `,
                 },
@@ -3216,6 +3015,562 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
                 },
             ],
         };
+    }
+
+    /**
+     * Prints one pinned arithmetic expression as C++, renaming identifiers
+     * through a required map. This is how the TRS and Euler emissions below
+     * pair term for term with the pinned writers: the C++ text flows from
+     * the pinned AST, and an identifier or operator the map does not know
+     * fails generation instead of drifting.
+     */
+    private printPinnedCppExpression(
+        expression: ts.Expression,
+        rename: ReadonlyMap<string, string>,
+    ): string {
+        if (ts.isParenthesizedExpression(expression)) {
+            return `(${this.printPinnedCppExpression(
+                expression.expression,
+                rename,
+            )})`;
+        }
+        if (ts.isNonNullExpression(expression)) {
+            return this.printPinnedCppExpression(
+                expression.expression,
+                rename,
+            );
+        }
+        if (ts.isIdentifier(expression)) {
+            const renamed = rename.get(expression.text);
+            if (renamed === undefined) {
+                this.context.contractError(
+                    expression,
+                    `Pinned math term reads '${expression.text}', which the emission does not map.`,
+                );
+            }
+            return renamed;
+        }
+        if (ts.isNumericLiteral(expression)) {
+            return this.context.doubleLiteral(Number(expression.text));
+        }
+        if (ts.isBinaryExpression(expression)) {
+            const operator =
+                expression.operatorToken.kind === ts.SyntaxKind.PlusToken
+                    ? "+"
+                    : expression.operatorToken.kind ===
+                            ts.SyntaxKind.MinusToken
+                        ? "-"
+                        : expression.operatorToken.kind ===
+                                ts.SyntaxKind.AsteriskToken
+                            ? "*"
+                            : undefined;
+            if (operator === undefined) {
+                this.context.contractError(
+                    expression.operatorToken,
+                    "Pinned math term uses an operator the emission does not lower.",
+                );
+            }
+            return `${this.printPinnedCppExpression(
+                expression.left,
+                rename,
+            )} ${operator} ${this.printPinnedCppExpression(
+                expression.right,
+                rename,
+            )}`;
+        }
+        return this.context.contractError(
+            expression,
+            "Pinned math term has a shape the emission does not lower.",
+        );
+    }
+
+    /** A literal element read `base[<n>]`, or a contract error. */
+    private pinnedElementIndex(
+        expression: ts.Expression,
+        base: string,
+    ): number {
+        const unwrapped = this.context.unwrapExpression(expression);
+        if (
+            ts.isElementAccessExpression(unwrapped) &&
+            ts.isIdentifier(unwrapped.expression) &&
+            unwrapped.expression.text === base &&
+            ts.isNumericLiteral(unwrapped.argumentExpression)
+        ) {
+            return Number(unwrapped.argumentExpression.text);
+        }
+        return this.context.contractError(
+            expression,
+            `Expected an indexed read of '${base}'.`,
+        );
+    }
+
+    /** Every `<target>[...] = ...` store inside a pinned writer, in order. */
+    private pinnedElementStores(
+        declaration: ts.Node,
+        target: string,
+    ): Array<{ left: ts.ElementAccessExpression; right: ts.Expression }> {
+        return this.context
+            .findNodes(
+                declaration,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken &&
+                    ts.isElementAccessExpression(node.left) &&
+                    ts.isIdentifier(node.left.expression) &&
+                    node.left.expression.text === target,
+            )
+            .map((store) => {
+                if (!ts.isElementAccessExpression(store.left)) {
+                    this.context.contractError(
+                        store,
+                        "Expected an element store.",
+                    );
+                }
+                return { left: store.left, right: store.right };
+            });
+    }
+
+    /** The `<base>` or `<base> + <n>` offset of a pinned indexed store. */
+    private pinnedStoreOffset(
+        argument: ts.Expression,
+        base: string,
+    ): number {
+        const unwrapped = this.context.unwrapExpression(argument);
+        if (ts.isIdentifier(unwrapped) && unwrapped.text === base) {
+            return 0;
+        }
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+            ts.isIdentifier(unwrapped.left) &&
+            unwrapped.left.text === base &&
+            ts.isNumericLiteral(unwrapped.right)
+        ) {
+            return Number(unwrapped.right.text);
+        }
+        return this.context.contractError(
+            argument,
+            `Expected a '${base}'-relative store offset.`,
+        );
+    }
+
+    /**
+     * The view-transpose body, derived from the pinned getViewMatrix store
+     * map: which world component each view cell copies, and which three
+     * world components each translation row folds against the eye. The
+     * emitted double-then-store-once shape is the native contract; the
+     * indices and the store kinds are the pin's, so a moved store changes
+     * the emission and any other shape fails generation.
+     */
+    private pinnedViewMatrixBody(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            "src/camera/camera.ts",
+            "getViewMatrix",
+        );
+        const worldSource = this.context.unwrapExpression(
+            this.context.variableInitializer(declaration, "w"),
+        );
+        if (
+            this.context.propertyPath(worldSource)?.join(".") !==
+            "camera.worldMatrix"
+        ) {
+            this.context.contractError(
+                worldSource,
+                "Expected the pinned view transpose to read the camera world matrix.",
+            );
+        }
+        const eyeNames = ["cx", "cy", "cz"] as const;
+        const eyeIndices: number[] = [];
+        for (const name of eyeNames) {
+            const initializer = this.context.unwrapExpression(
+                this.context.variableInitializer(declaration, name),
+            );
+            if (
+                !ts.isConditionalExpression(initializer) ||
+                this.context.numericValue(initializer.whenTrue, file) !== 0
+            ) {
+                this.context.contractError(
+                    initializer,
+                    `Expected the pinned eye component ${name} to zero under floating origin and read the world translation otherwise.`,
+                );
+            }
+            eyeIndices.push(
+                this.pinnedElementIndex(initializer.whenFalse, "w"),
+            );
+        }
+        const stores = this.pinnedElementStores(declaration, "v");
+        if (stores.length !== 16) {
+            this.context.contractError(
+                declaration,
+                `Pinned getViewMatrix gained or lost stores (${stores.length} of 16); the emission no longer covers it.`,
+            );
+        }
+        const lines = new Map<number, string>();
+        for (const store of stores) {
+            const index = this.context.numericValue(
+                store.left.argumentExpression,
+                file,
+            );
+            if (lines.has(index)) {
+                this.context.contractError(
+                    store.left,
+                    `Pinned getViewMatrix stores v[${index}] twice.`,
+                );
+            }
+            const rhs = this.context.unwrapExpression(store.right);
+            if (ts.isNumericLiteral(rhs)) {
+                const value = Number(rhs.text);
+                if (value !== 0 && value !== 1) {
+                    this.context.contractError(
+                        rhs,
+                        "Expected a 0 or 1 view-matrix constant.",
+                    );
+                }
+                lines.set(
+                    index,
+                    `    view[${index}] = ${this.context.floatLiteral(value)};\n`,
+                );
+                continue;
+            }
+            if (
+                ts.isElementAccessExpression(rhs) ||
+                ts.isNonNullExpression(rhs)
+            ) {
+                lines.set(
+                    index,
+                    `    view[${index}] = world[${this.pinnedElementIndex(rhs, "w")}];\n`,
+                );
+                continue;
+            }
+            // The translation rows: -(w[a] * cx + w[b] * cy + w[c] * cz).
+            if (
+                !ts.isPrefixUnaryExpression(rhs) ||
+                rhs.operator !== ts.SyntaxKind.MinusToken
+            ) {
+                this.context.contractError(
+                    rhs,
+                    "Expected a negated eye dot for the view translation.",
+                );
+            }
+            const dot = this.context.unwrapExpression(rhs.operand);
+            const products: ts.Expression[] = [];
+            let cursor: ts.Expression = dot;
+            while (
+                ts.isBinaryExpression(cursor) &&
+                cursor.operatorToken.kind === ts.SyntaxKind.PlusToken
+            ) {
+                products.unshift(cursor.right);
+                cursor = this.context.unwrapExpression(cursor.left);
+            }
+            products.unshift(cursor);
+            if (products.length !== eyeNames.length) {
+                this.context.contractError(
+                    dot,
+                    "Expected a three-term eye dot for the view translation.",
+                );
+            }
+            const worldTerms = products.map((product, term) => {
+                const unwrapped = this.context.unwrapExpression(product);
+                if (
+                    !ts.isBinaryExpression(unwrapped) ||
+                    unwrapped.operatorToken.kind !==
+                        ts.SyntaxKind.AsteriskToken ||
+                    this.context.propertyPath(unwrapped.right)?.join(".") !==
+                        eyeNames[term]
+                ) {
+                    this.context.contractError(
+                        product,
+                        `Expected the view translation term ${term} to multiply ${eyeNames[term]}.`,
+                    );
+                }
+                return this.pinnedElementIndex(unwrapped.left, "w");
+            });
+            lines.set(
+                index,
+                `    view[${index}] = static_cast<float>(\n` +
+                    `        -(static_cast<double>(world[${worldTerms[0]}]) * cx +\n` +
+                    `          static_cast<double>(world[${worldTerms[1]}]) * cy +\n` +
+                    `          static_cast<double>(world[${worldTerms[2]}]) * cz));\n`,
+            );
+        }
+        let body =
+            `    const double cx = static_cast<double>(world[${eyeIndices[0]}]);\n` +
+            `    const double cy = static_cast<double>(world[${eyeIndices[1]}]);\n` +
+            `    const double cz = static_cast<double>(world[${eyeIndices[2]}]);\n` +
+            "    std::array<float, 16> view{};\n";
+        for (let index = 0; index < 16; index++) {
+            const line = lines.get(index);
+            if (!line) {
+                this.context.contractError(
+                    declaration,
+                    `Pinned getViewMatrix no longer stores v[${index}].`,
+                );
+            }
+            body += line;
+        }
+        return body;
+    }
+
+    /**
+     * Per-term anchors for the perspective writer the projection emissions
+     * transcribe: every pinned store is required, shape-checked, and no
+     * pinned store may exist that the emission does not carry. Rows [10]
+     * and [14] anchor the pin's reverse-Z arms; the forward-Z arms beside
+     * them are the recorded native departure.
+     */
+    private assertPinnedPerspectiveWriter(): void {
+        const { file, declaration } = this.context.functionDeclaration(
+            "src/math/mat4-perspective-lh-to-ref.ts",
+            "mat4PerspectiveLHToRef",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "tan"),
+            "1 / Math.tan(fov * 0.5)",
+            "Pinned perspective focal term",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "range"),
+            "far - near",
+            "Pinned perspective depth range",
+        );
+        const expected = new Map<number, string>([
+            [0, "tan / aspect"],
+            [5, "tan"],
+            [10, "-near / range"],
+            [11, "1"],
+            [14, "(far * near) / range"],
+        ]);
+        const stores = this.pinnedElementStores(declaration, "out");
+        if (stores.length !== expected.size) {
+            this.context.contractError(
+                declaration,
+                `Pinned perspective writer gained or lost stores (${stores.length} of ${expected.size}); the projection emissions no longer cover it.`,
+            );
+        }
+        for (const store of stores) {
+            const index = this.context.numericValue(
+                store.left.argumentExpression,
+                file,
+            );
+            const shape = expected.get(index);
+            if (shape === undefined) {
+                this.context.contractError(
+                    store.left,
+                    `Pinned perspective writer stores out[${index}], which the projection emissions do not carry.`,
+                );
+            }
+            this.context.assertExpressionShape(
+                store.right,
+                shape,
+                `Pinned perspective row ${index}`,
+            );
+        }
+    }
+
+    /**
+     * Per-term anchors for the pinned matrix multiply the emitted
+     * `multiply_into` loop and the instance-parent accumulation reproduce:
+     * row-stride-4 accumulators and the a0*b0 + a4*b1 + a8*b2 + a12*b3
+     * evaluation order, over exactly sixteen stores.
+     */
+    private assertPinnedMultiplyWriter(): void {
+        const { declaration } = this.context.functionDeclaration(
+            "src/math/mat4-multiply-into.ts",
+            "mat4MultiplyInto",
+        );
+        for (const [name, shape] of [
+            ["a0", "a[i]"],
+            ["a4", "a[i + 4]"],
+            ["a8", "a[i + 8]"],
+            ["a12", "a[i + 12]"],
+        ] as const) {
+            this.context.assertExpressionShape(
+                this.context.variableInitializer(declaration, name),
+                shape,
+                `Pinned matrix-multiply accumulator ${name}`,
+            );
+        }
+        const stores = this.pinnedElementStores(declaration, "dst");
+        if (stores.length !== 16) {
+            this.context.contractError(
+                declaration,
+                `Pinned matrix multiply gained or lost stores (${stores.length} of 16).`,
+            );
+        }
+        const first = stores[0]!;
+        if (
+            this.context.propertyPath(first.left.argumentExpression)?.join(
+                ".",
+            ) !== "d"
+        ) {
+            this.context.contractError(
+                first.left,
+                "Expected the pinned matrix multiply to store dst[d] first.",
+            );
+        }
+        this.context.assertExpressionShape(
+            first.right,
+            "a0 * b0 + a4 * b1 + a8 * b2 + a12 * b3",
+            "Pinned matrix-multiply accumulation order",
+        );
+    }
+
+    /**
+     * The thin-instance TRS emissions, derived from their pinned writers:
+     * eulerToQuat's four products and mat4ComposeInto's quaternion basis
+     * flow from the pinned ASTs into the emitted C++ term for term, so the
+     * instance parent-world stays byte-for-byte the pin's composition.
+     */
+    private pinnedTrsComposition(): {
+        quaternionProducts: string;
+        basisLocals: string;
+        basisStores: string;
+    } {
+        const euler = this.context.functionDeclaration(
+            "src/math/quat-euler.ts",
+            "eulerToQuat",
+        );
+        for (const [name, shape] of [
+            ["cx", "Math.cos(rx * 0.5)"],
+            ["sx_", "Math.sin(rx * 0.5)"],
+            ["cy", "Math.cos(ry * 0.5)"],
+            ["sy_", "Math.sin(ry * 0.5)"],
+            ["cz", "Math.cos(rz * 0.5)"],
+            ["sz_", "Math.sin(rz * 0.5)"],
+        ] as const) {
+            this.context.assertExpressionShape(
+                this.context.variableInitializer(euler.declaration, name),
+                shape,
+                `Pinned Euler half-angle term ${name}`,
+            );
+        }
+        const eulerReturn = this.context.findNodes(
+            euler.declaration,
+            (node): node is ts.ReturnStatement =>
+                ts.isReturnStatement(node),
+        )[0];
+        const tuple = eulerReturn?.expression
+            ? this.context.unwrapExpression(eulerReturn.expression)
+            : undefined;
+        if (
+            !tuple ||
+            !ts.isArrayLiteralExpression(tuple) ||
+            tuple.elements.length !== 4
+        ) {
+            this.context.contractError(
+                eulerReturn ?? euler.declaration,
+                "Expected the pinned Euler quaternion tuple.",
+            );
+        }
+        const eulerRename = new Map<string, string>([
+            ["sx_", "sx"],
+            ["sy_", "sy"],
+            ["sz_", "sz"],
+            ["cx", "cx"],
+            ["cy", "cy"],
+            ["cz", "cz"],
+        ]);
+        const quaternionSlots = ["qx", "qy", "qz", "qw"];
+        const quaternionProducts = tuple.elements
+            .map(
+                (component, index) =>
+                    `        ${quaternionSlots[index]} = ${this.printPinnedCppExpression(
+                        component,
+                        eulerRename,
+                    )};\n`,
+            )
+            .join("");
+
+        const compose = this.context.functionDeclaration(
+            "src/math/mat4-compose-into.ts",
+            "mat4ComposeInto",
+        );
+        const productNames = [
+            "xx",
+            "yy",
+            "zz",
+            "xy",
+            "xz",
+            "yz",
+            "wx",
+            "wy",
+            "wz",
+        ];
+        const quaternionRename = new Map<string, string>([
+            ["qx", "qx"],
+            ["qy", "qy"],
+            ["qz", "qz"],
+            ["qw", "qw"],
+        ]);
+        const basisLocals = productNames
+            .map(
+                (name) =>
+                    `    const double ${name} = ${this.printPinnedCppExpression(
+                        this.context.variableInitializer(
+                            compose.declaration,
+                            name,
+                        ),
+                        quaternionRename,
+                    )};\n`,
+            )
+            .join("");
+        const storeRename = new Map<string, string>([
+            ...productNames.map(
+                (name) => [name, name] as [string, string],
+            ),
+            ["sx", "scale_x"],
+            ["sy", "scale_y"],
+            ["sz", "scale_z"],
+        ]);
+        const translationStores = new Map<string, string>([
+            ["tx", "mesh.position.x"],
+            ["ty", "mesh.position.y"],
+            ["tz", "mesh.position.z"],
+        ]);
+        const stores = this.pinnedElementStores(
+            compose.declaration,
+            "dst",
+        );
+        if (stores.length !== 16) {
+            this.context.contractError(
+                compose.declaration,
+                `Pinned mat4ComposeInto gained or lost stores (${stores.length} of 16); the instance emission no longer covers it.`,
+            );
+        }
+        let basisStores = "";
+        for (const store of stores) {
+            const offset = this.pinnedStoreOffset(
+                store.left.argumentExpression,
+                "off",
+            );
+            const rhs = this.context.unwrapExpression(store.right);
+            if (ts.isNumericLiteral(rhs)) {
+                const value = Number(rhs.text);
+                if (value === 0) {
+                    // The zero cells stay the zero-initialized locals.
+                    continue;
+                }
+                basisStores += `    local[${offset}] = ${this.context.doubleLiteral(value)};\n`;
+                continue;
+            }
+            if (ts.isIdentifier(rhs)) {
+                const translation = translationStores.get(rhs.text);
+                if (translation === undefined) {
+                    this.context.contractError(
+                        rhs,
+                        `Pinned mat4ComposeInto stores '${rhs.text}', which the instance emission does not map.`,
+                    );
+                }
+                basisStores += `    local[${offset}] = ${translation};\n`;
+                continue;
+            }
+            basisStores += `    local[${offset}] = ${this.printPinnedCppExpression(
+                rhs,
+                storeRename,
+            )};\n`;
+        }
+        return { quaternionProducts, basisLocals, basisStores };
     }
 
     /**
