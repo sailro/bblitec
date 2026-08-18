@@ -306,6 +306,7 @@ class Compiler
     > = [new Map()];
     private readonly cppNamePrefixes: string[] = [""];
     private readonly features = new Set<Feature>(["core"]);
+    private readonly featureSites = new Map<Feature, string>();
     public readonly assets = new Map<string, CompileAsset>();
     public readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
     private thisInstance: Value | undefined;
@@ -377,6 +378,15 @@ class Compiler
         }
 
         const features = featureOrder.filter((feature) => this.features.has(feature));
+        // Emitted in `features` order so the parallel record serializes
+        // deterministically beside the array it annotates.
+        const featureSites: Record<string, string> = {};
+        for (const feature of features) {
+            const site = this.featureSites.get(feature);
+            if (site !== undefined) {
+                featureSites[feature] = site;
+            }
+        }
         // Two features can name the same PAL translation unit (the sprite
         // and PBR renderers share one), and CMake must list it once.
         const runtimeSources = [
@@ -396,6 +406,7 @@ class Compiler
             manifest: {
                 source: this.options.fileName,
                 features,
+                featureSites,
                 runtimeSources,
                 generatedSources,
                 assets: [...this.assets.values()],
@@ -2699,8 +2710,33 @@ class Compiler
         });
     }
 
-    public reachFeature(feature: Feature): void {
+    /**
+     * Adds a runtime feature to the reached set and records the first
+     * reaching scene-source call site as "file:line" for the manifest's
+     * `featureSites` record. First-reach wins: the walk is a single
+     * deterministic pass (entry statements in document order,
+     * sub-expressions depth-first), so ties resolve by document order
+     * and regeneration is stable — a repeat reach never moves the
+     * recorded site. Files are named the way `fail` names them: the
+     * entry file by its option name, an imported file by its program
+     * name.
+     */
+    public reachFeature(feature: Feature, site?: ts.Node): void {
         this.features.add(feature);
+        if (site !== undefined && !this.featureSites.has(feature)) {
+            const file = site.getSourceFile();
+            const position = file.getLineAndCharacterOfPosition(
+                site.getStart(file),
+            );
+            const fileName =
+                file === this.sourceFile
+                    ? this.options.fileName
+                    : file.fileName;
+            this.featureSites.set(
+                feature,
+                `${fileName}:${position.line + 1}`,
+            );
+        }
     }
 
     public ensureDefaultRenderTask(
@@ -2716,8 +2752,8 @@ class Compiler
         scene.defaultRenderTaskEmitted = true;
         this.defaultRenderTaskAdapted = true;
         const engine = this.requireEngine(scene, node);
-        this.reachFeature("renderer:pbr");
-        this.reachFeature("renderer:geometry-output");
+        this.reachFeature("renderer:pbr", node);
+        this.reachFeature("renderer:geometry-output", node);
         const target =
             this.allocateTemporaryCppName(
                 "default_target",

@@ -80,6 +80,14 @@ export interface FeatureActivationInputs {
     /** The final manifest feature list, after the asset-light join. */
     features: readonly string[];
     /**
+     * feature -> "file:line" of the first scene-source call site that
+     * reached it, from the manifest's `featureSites` record. Optional:
+     * a caller without recorded sites keeps the generic scene-source
+     * reason. Features the CLI asset-join added carry no entry and are
+     * attributed to their asset instead.
+     */
+    featureSites?: Readonly<Record<string, string>>;
+    /**
      * feature -> asset output for the two deliberate post-compilation
      * joins (`light:*` kinds and `environment:ibl`), recorded by the CLI
      * loop that performed them.
@@ -98,6 +106,29 @@ export interface FeatureActivationInputs {
     imageCodecs: readonly string[];
     /** The glTF asset outputs the generation-time refusals checked. */
     gltfAssetNames: readonly string[];
+    /**
+     * The frozen pinned MAX_LIGHTS the max-lights refusal checked
+     * against, read from the pin's own `src/light/types.ts` by the
+     * upstream lowerer. Optional: a caller without the value keeps the
+     * count-only wording.
+     */
+    pinnedMaxLights?: number;
+    /**
+     * The variant-key interleave guards' inputs, exactly as the CLI
+     * checked them: for each scene-code mesh / PBR material in creation
+     * order, how many glTF assets had loaded when it was created,
+     * against the scene's glTF asset total. The runtime keys the
+     * variant table by creation-order handle, so a creation before a
+     * later load would interleave the key — the CLI refuses generation
+     * instead, and the two rows record that the check ran clean.
+     * Optional: the rows are emitted only when the caller records the
+     * counts.
+     */
+    interleave?: {
+        sceneMeshGltfAssetsBefore: readonly number[];
+        scenePbrMaterialGltfAssetsBefore: readonly number[];
+        gltfAssetCount: number;
+    };
     composition: {
         /** The single-light kinds the composed scene arms cover. */
         lightKinds: readonly string[];
@@ -430,6 +461,10 @@ function runtimeFeatureRows(
     const emit = (name: string, entry: RuntimeFeatureEntry | undefined): void => {
         const active = inputs.features.includes(name);
         const joinedBy = inputs.assetJoinedFeatures.get(name);
+        // The first reaching scene-source call site, recorded by the
+        // compiler (first-reach wins, document order breaks ties). The
+        // seeded "core" has none, so it keeps the generic reason.
+        const site = inputs.featureSites?.[name];
         const activatedBy = !active
             ? "not reached"
             : joinedBy !== undefined
@@ -437,7 +472,9 @@ function runtimeFeatureRows(
                     ? `asset-joined: ${joinedBy} carries EXT_lights_image_based`
                     : `asset-joined: ${joinedBy} carries KHR_lights_punctual ` +
                       `kind "${name.slice("light:".length)}"`
-                : "scene source: reached by the compiled scene TypeScript";
+                : site !== undefined
+                    ? `scene source: reached at ${site}`
+                    : "scene source: reached by the compiled scene TypeScript";
         rows.push(
             row(
                 name,
@@ -530,9 +567,13 @@ function capabilityRows(
                     "a glTF primitive carries morph targets " +
                         "(maxMorphTargets > 0)",
                 ],
+                [
+                    has("mesh:morph-targets"),
+                    "scene source reached mesh:morph-targets (the pinned " +
+                        "standard morph fragment reads storage buffers)",
+                ],
             ],
-            "no glTF morph targets (scene-source morphs use the two-slot " +
-                "vertex-attribute slice)",
+            "no morph targets from either the assets or the scene source",
             "src/loader-gltf/gltf-feature-registry.ts morph row: " +
                 "anyPrimitive(targets.length > 0) -> gltf-feature-morph.js; " +
                 "the pin has one uncapped storage-buffer morph mechanism",
@@ -1093,6 +1134,45 @@ function compositionRows(
     ];
 }
 
+/**
+ * One variant-key interleave guard's row. The counts are the same
+ * per-creation `gltfAssetsBefore` values the CLI guard compared, so a
+ * derivation that says the refusal fired while generation proceeded is
+ * the guard and the table drifting apart — a loud failure, like
+ * `checkedRow`.
+ */
+function interleaveRow(
+    name: string,
+    kind: "mesh" | "PBR material",
+    counts: readonly number[],
+    gltfAssetCount: number,
+    upstreamProvenance: string,
+): FeatureActivationRow {
+    if (counts.some((before) => before !== gltfAssetCount)) {
+        throw new Error(
+            `feature-activation: row '${name}' derives a fired ` +
+                `interleave refusal (a scene-code ${kind} was created ` +
+                `before a later glTF load) but generation proceeded; ` +
+                `the cli.ts guard no longer mirrors the activation ` +
+                `table. Update src/feature-activation.ts beside the ` +
+                `guard.`,
+        );
+    }
+    return row(
+        name,
+        "generation-refusal",
+        false,
+        counts.length > 0
+            ? `checked ${counts.length} scene-code ${kind} ` +
+                `creation(s) against ${gltfAssetCount} glTF load(s): ` +
+                `every one was created after the last load, so the ` +
+                `creation-order key does not interleave`
+            : `no scene-code ${kind} creations to check`,
+        upstreamProvenance,
+        ["generation gate"],
+    );
+}
+
 function refusalRows(
     inputs: FeatureActivationInputs,
 ): FeatureActivationRow[] {
@@ -1103,6 +1183,27 @@ function refusalRows(
               `(${gltfAssetNames.join(", ")})`
             : "no glTF assets to check";
     const gate: readonly FeatureActivationConsumer[] = ["generation gate"];
+    // The frozen constant's own value, when the caller read it from the
+    // pin. A checked count above it is the same drift `checkedRow`
+    // refuses on: the gate would have thrown before rows were built.
+    if (
+        inputs.pinnedMaxLights !== undefined &&
+        emit.assetLightNodes !== undefined &&
+        emit.assetLightNodes.count > inputs.pinnedMaxLights
+    ) {
+        throw new Error(
+            `feature-activation: row 'refusal:max-lights' records a ` +
+                `light-node count of ${emit.assetLightNodes.count} ` +
+                `above the pinned MAX_LIGHTS of ` +
+                `${inputs.pinnedMaxLights}, but generation proceeded; ` +
+                `the upstream-lower.ts gate no longer mirrors the ` +
+                `activation table.`,
+        );
+    }
+    const maxLightsSuffix =
+        inputs.pinnedMaxLights !== undefined
+            ? ` = ${inputs.pinnedMaxLights}`
+            : "";
     return [
         row(
             "refusal:pin-implemented-extension",
@@ -1151,8 +1252,11 @@ function refusalRows(
                 ? `checked: the largest per-asset KHR_lights_punctual ` +
                     `light-node count is ${emit.assetLightNodes.count} ` +
                     `(${emit.assetLightNodes.asset}), within the frozen ` +
-                    "pinned MAX_LIGHTS"
-                : "no glTF asset carries KHR_lights_punctual light nodes",
+                    `pinned MAX_LIGHTS${maxLightsSuffix}`
+                : "no glTF asset carries KHR_lights_punctual light nodes" +
+                    (inputs.pinnedMaxLights !== undefined
+                        ? ` (frozen pinned MAX_LIGHTS${maxLightsSuffix})`
+                        : ""),
             "src/loader-gltf/gltf-feature-lights-punctual.ts setMaxLights: " +
                 "the pin grows MAX_LIGHTS (src/light/types.ts) at run time; " +
                 "this port freezes the constant and the native writers stop " +
@@ -1176,6 +1280,41 @@ function refusalRows(
                 "shipping a shading bias",
             gate,
         ),
+        ...(inputs.interleave === undefined
+            ? []
+            : [
+                interleaveRow(
+                    "refusal:scene-mesh-interleave",
+                    "mesh",
+                    inputs.interleave.sceneMeshGltfAssetsBefore,
+                    inputs.interleave.gltfAssetCount,
+                    "native-architecture: the generated variant table " +
+                        "keys renderables by creation-order mesh handle " +
+                        "(each glTF load appends its renderables in the " +
+                        "pinned loader's node-order walk, then scene-code " +
+                        "builders append; recordSceneMesh in compiler.ts " +
+                        "records gltfAssetsBefore per creation); the pin " +
+                        "composes shaders at run time and keys no static " +
+                        "table, so a scene-code mesh created before a " +
+                        "later glTF load refuses at generation instead of " +
+                        "mis-keying the table",
+                ),
+                interleaveRow(
+                    "refusal:scene-material-interleave",
+                    "PBR material",
+                    inputs.interleave.scenePbrMaterialGltfAssetsBefore,
+                    inputs.interleave.gltfAssetCount,
+                    "native-architecture: the generated variant table " +
+                        "keys materials by creation-order handle (each " +
+                        "glTF load appends its materials, then scene-code " +
+                        "creations append; compilePbrMaterialOptions " +
+                        "records gltfAssetsBefore per creation); the pin " +
+                        "composes per-material at run time and keys no " +
+                        "static table, so a scene-code PBR material " +
+                        "created before a later glTF load refuses at " +
+                        "generation instead of mis-keying the table",
+                ),
+            ]),
         row(
             "refusal:eight-influence-skinning",
             "generation-refusal",

@@ -12,6 +12,17 @@ export interface CompileOptions {
 export interface CompileManifest {
     source: string;
     features: string[];
+    /**
+     * feature -> "file:line" of the first scene-source call site that
+     * reached it, keyed and ordered like `features` but kept as a
+     * parallel record so consumers of the array are untouched. The
+     * compiler's walk is a single deterministic pass (entry statements
+     * in document order, sub-expressions depth-first), so first-reach
+     * wins and regeneration is stable. Features that are reached
+     * without a source node (the seeded "core") and features the CLI
+     * asset-join adds after compilation carry no entry.
+     */
+    featureSites: Record<string, string>;
     runtimeSources: string[];
     generatedSources: string[];
     assets: CompileAsset[];

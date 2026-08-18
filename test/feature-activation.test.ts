@@ -106,6 +106,18 @@ function scene33Inputs(): FeatureActivationInputs {
             "light:point",
         ],
         assetJoinedFeatures: new Map([["light:point", lamp]]),
+        // The manifest's first-reach record: the entry file's call
+        // sites, minus the seeded "core" and the asset-joined kind.
+        featureSites: {
+            "backend:sdl": "scene33.ts:42",
+            "camera:arc-rotate": "scene33.ts:12",
+            "camera:default": "scene33.ts:12",
+            "environment:ibl": "scene33.ts:15",
+            "environment:env": "scene33.ts:15",
+            "loader:gltf": "scene33.ts:9",
+            "renderer:pbr": "scene33.ts:9",
+            "renderer:transmission": "scene33.ts:24",
+        },
         specialization: specialization({
             punctualLights: true,
             assetTransmission: true,
@@ -119,6 +131,14 @@ function scene33Inputs(): FeatureActivationInputs {
         transmission: true,
         imageCodecs: ["png"],
         gltfAssetNames: [lamp],
+        pinnedMaxLights: 8,
+        // No scene-code meshes or PBR materials: the guards had nothing
+        // to compare against the one glTF load.
+        interleave: {
+            sceneMeshGltfAssetsBefore: [],
+            scenePbrMaterialGltfAssetsBefore: [],
+            gltfAssetCount: 1,
+        },
         composition: {
             lightKinds: ["point"],
             toneMappingArms: true,
@@ -227,6 +247,17 @@ function everythingOnInputs(): FeatureActivationInputs {
         transmission: true,
         imageCodecs: ["png", "jpeg", "webp"],
         gltfAssetNames: ["a.glb"],
+        pinnedMaxLights: 8,
+        // Two scene-code meshes and one PBR material, all created after
+        // the single glTF load: the guards' clean pass.
+        interleave: {
+            sceneMeshGltfAssetsBefore: [1, 1],
+            scenePbrMaterialGltfAssetsBefore: [1],
+            gltfAssetCount: 1,
+        },
+        featureSites: {
+            "mesh:box": "everything.ts:3",
+        },
         composition: {
             lightKinds: ["hemispheric", "directional", "point", "spot"],
             toneMappingArms: true,
@@ -421,5 +452,170 @@ test("a merge that stops matching its recorded reasons fails loudly", () => {
                 }),
             }),
         /BBLITE_MATERIAL_CLEARCOAT/,
+    );
+});
+
+test("scene-source rows cite the recorded first-reach site", () => {
+    const rows = featureActivationRows(scene33Inputs());
+
+    // A feature with a recorded site cites it verbatim.
+    assert.equal(
+        named(rows, "renderer:pbr").activatedBy,
+        "scene source: reached at scene33.ts:9",
+    );
+    assert.equal(
+        named(rows, "renderer:transmission").activatedBy,
+        "scene source: reached at scene33.ts:24",
+    );
+
+    // A reached feature without a site (the seeded "core") keeps the
+    // generic reason.
+    assert.equal(
+        named(rows, "core").activatedBy,
+        "scene source: reached by the compiled scene TypeScript",
+    );
+
+    // The asset join wins over a site: a feature the CLI attributed to
+    // an asset is never re-attributed to scene source.
+    const inputs = scene33Inputs();
+    const joined = named(
+        featureActivationRows({
+            ...inputs,
+            featureSites: {
+                ...inputs.featureSites,
+                "light:point": "scene33.ts:1",
+            },
+        }),
+        "light:point",
+    );
+    assert.match(joined.activatedBy, /^asset-joined:/);
+
+    // Without the record, every scene-source row keeps the pre-citation
+    // wording, so trees regenerate unchanged until the CLI passes it.
+    const unrecorded = { ...inputs };
+    delete unrecorded.featureSites;
+    const uncited = featureActivationRows(unrecorded);
+    assert.equal(
+        named(uncited, "renderer:pbr").activatedBy,
+        "scene source: reached by the compiled scene TypeScript",
+    );
+});
+
+test("the max-lights refusal row records the pinned constant's value", () => {
+    // Checked count present: the row names the count, the asset, and
+    // the frozen constant's value.
+    assert.match(
+        named(
+            featureActivationRows(scene33Inputs()),
+            "refusal:max-lights",
+        ).activatedBy,
+        /within the frozen pinned MAX_LIGHTS = 8$/,
+    );
+
+    // No punctual light nodes: the value still lands on the row.
+    assert.equal(
+        named(
+            featureActivationRows({
+                ...dispersiveInputs(),
+                pinnedMaxLights: 8,
+            }),
+            "refusal:max-lights",
+        ).activatedBy,
+        "no glTF asset carries KHR_lights_punctual light nodes " +
+            "(frozen pinned MAX_LIGHTS = 8)",
+    );
+
+    // Without the input the wording stays byte-identical to the
+    // pre-value row, so trees regenerate unchanged until the CLI
+    // passes it.
+    assert.equal(
+        named(
+            featureActivationRows(dispersiveInputs()),
+            "refusal:max-lights",
+        ).activatedBy,
+        "no glTF asset carries KHR_lights_punctual light nodes",
+    );
+
+    // A checked count above the constant is the upstream-lower.ts gate
+    // and the table drifting apart: refuse rather than publish a row
+    // for a generation that should not have proceeded.
+    assert.throws(
+        () =>
+            featureActivationRows({
+                ...scene33Inputs(),
+                pinnedMaxLights: 4,
+            }),
+        /refusal:max-lights/,
+    );
+});
+
+test("interleave refusal rows record the guards' clean pass", () => {
+    // Zero creations: the rows state there was nothing to compare.
+    const scene33 = featureActivationRows(scene33Inputs());
+    const meshRow = named(scene33, "refusal:scene-mesh-interleave");
+    assert.equal(meshRow.active, false);
+    assert.equal(meshRow.mechanism, "generation-refusal");
+    assert.equal(
+        meshRow.activatedBy,
+        "no scene-code mesh creations to check",
+    );
+    assert.deepEqual(meshRow.consumers, ["generation gate"]);
+    assert.match(meshRow.upstreamProvenance, /^native-architecture:/);
+    assert.equal(
+        named(scene33, "refusal:scene-material-interleave").activatedBy,
+        "no scene-code PBR material creations to check",
+    );
+
+    // Counted creations, all after the last load.
+    const everything = featureActivationRows(everythingOnInputs());
+    assert.equal(
+        named(everything, "refusal:scene-mesh-interleave").activatedBy,
+        "checked 2 scene-code mesh creation(s) against 1 glTF " +
+            "load(s): every one was created after the last load, so " +
+            "the creation-order key does not interleave",
+    );
+    assert.match(
+        named(
+            everything,
+            "refusal:scene-material-interleave",
+        ).activatedBy,
+        /^checked 1 scene-code PBR material creation\(s\)/,
+    );
+
+    // A caller that does not record the counts emits no rows, so trees
+    // regenerate unchanged until the CLI passes them.
+    assert.equal(
+        featureActivationRows(dispersiveInputs()).some((row) =>
+            row.name.includes("interleave"),
+        ),
+        false,
+    );
+
+    // An interleaving creation reaching the table is the cli.ts guard
+    // and the inventory drifting apart: fail loudly, never publish a
+    // wrong refusal row.
+    assert.throws(
+        () =>
+            featureActivationRows({
+                ...everythingOnInputs(),
+                interleave: {
+                    sceneMeshGltfAssetsBefore: [0, 1],
+                    scenePbrMaterialGltfAssetsBefore: [1],
+                    gltfAssetCount: 1,
+                },
+            }),
+        /scene-mesh-interleave/,
+    );
+    assert.throws(
+        () =>
+            featureActivationRows({
+                ...everythingOnInputs(),
+                interleave: {
+                    sceneMeshGltfAssetsBefore: [1],
+                    scenePbrMaterialGltfAssetsBefore: [0],
+                    gltfAssetCount: 1,
+                },
+            }),
+        /scene-material-interleave/,
     );
 });
