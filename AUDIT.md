@@ -47,13 +47,6 @@ clearcoat-remap class survived before. Each is small; fix with a fixture.
 
 ## Feature activation
 
-- [ ] **FA-1 — the documented activation boundary is false.**
-  `docs/features.md:136-137` and `docs/architecture.md:269-270` say no asset
-  fact can reach the feature list; `src/cli.ts:564-595` joins asset-borne
-  `light:*` kinds and `environment:ibl` into it and re-renders features.cmake
-  (rationale only in the comment at cli.ts:559-563: light features select
-  `light_*.cpp` translation units). Fix the docs to name the two exceptions
-  and the reason.
 - [ ] **FA-8 — mechanism inconsistencies without a stated rule.**
   (a) clearcoat/sheen = feature OR capability; iridescence/dispersion =
   capability only — write down the implicit rule (a runtime feature exists
@@ -297,58 +290,15 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
 
 ## Documentation
 
-- [ ] **DOC-A — rewrite the per-sample-transmission story (six pages).**
-  The vendored SDL patch shipped per-sample image processing on SDL_GPU
-  (`pal_sdl_gpu.cpp:2649-2676, 6435-6443`); the resolved-pixel pass is now
-  the stock-SDL/1× fallback. Stale copies: `fidelity.md` ~294-303 ("cannot
-  close without per-sample access" — keep only the scene-color-grab half,
-  which does still resolve-then-copy); `status.md` scene-253 note
-  (contradicted by its own 0.001/0.003 row — delete); `backends.md` 115-123
-  (stale numbers, names "IOR/volume/scene-color gates" that do not exist in
-  the registry, "Dawn equal or better on every scene" falsified by scenes
-  31/242/247 foreground cells), 274-284 (dangling "the P1 entry below"),
-  80-84 (dawnThresholds justification), 71-77 (the dual-sweep recipe —
-  `scenes:parity` already runs both backends; the second invocation is a
-  redundant repeat); `architecture.md` 347-360 ("uniquely expresses" — only
-  the multisampled grab remains Dawn-only).
-- [ ] **DOC-B — retire the pinned-variant-era boundaries (three pages +
-  TODO).** "Clearcoat/sheen + punctual multi-light fails explicitly" no
-  longer exists anywhere in src (variants compose every arm under all three
-  light modes; scene 253 green) — delete from `features.md` 516-517,
-  `fidelity.md` 148-149, `TODO.md` 122-123. `fidelity.md` 135-148 still
-  describes "a single generated variant", contradicting its own variant
-  section (78-90) — rewrite the layer intro. `TODO.md` 38-43 ("16 marker
-  rewrites / 8 regexes") describes machinery deleted with the transcription
-  (`renderer-lowerer.ts` has zero `.replace(` left; the ~23 remaining markers
-  are assertions) — re-scope to what remains (Grid/background/Standard
-  fragments still emitted as text outside the typed shader IR). `TODO.md`
-  294 (scene 21) is done — delete. `architecture.md` 211 ("directional/
-  hemispheric two-light Standard") and `features.md` 506-507 understate
-  shipped Standard lighting (scene 9: three point lights; scene 15: two
-  spots; slot count = max(2, declared `.babylon` point lights)).
-- [ ] **DOC-C — smaller corrections.** development.md animation-gate table
-  lists 5 of 18 seeking scenes (point at the registry); `BBLITE_BACKGROUND`
-  descriptions omit the solid skybox in development.md:536 and
-  fidelity.md:314 (features.md has it right); runtime-switch table missing
-  `BBLITE_ANIMATION_SEEK_SECONDS` (features.md points readers at that table
-  for it), `BBLITE_TEST_PASS`, `BBLITE_ID_BUFFER`, `BBLITE_CLUSTER_BUFFER`,
-  `BBLITE_COPY_TASK`; document or delete parity `--exe/--actual/--no-fail`,
-  capture `--out`, diff `--capture/--seek`, `BBLITE_NATIVE_EXE`, cli
-  `--width/--height`; architecture.md's "complete source map" omits 11
-  existing files (`pal_render_capture.hpp`, `pal_camera_controls.hpp`, sprite
-  hpps, `compiler/classes.ts`, `compiler/promises.ts`, the four pinned-*
-  variant/mesh/scene modules, `pinned-ubo-writer-lowerer.ts`); debugging.md
-  130-133 describes a block-pairing algorithm `render-diff.ts:15-23`
-  explicitly does not implement, and its artifact table (324-327) names
-  `report.json`/`*-diff.png`/`*-hotspots.png` where the code writes
-  `report-{gpu,dawn,cpu}.json`/`diff-map-<sfx>.png`/`hotspots-<sfx>.png`;
-  README omits Ninja and DXC from requirements; status.md rows 39/50
-  mis-ordered, scene-253 row missing trailing pipe, no blank line before the
-  gates heading, gate table alignment differs, two coverage cells are
-  narratives; `scene-neutrality.ts:5` credits backends.md for a procedure in
-  development.md; features.md 347 "PBR carries two analytic slots" (under
-  multi-light: primary + 7-entry extras loop, second analytic disabled);
-  features.md platform-validation understates the recorded Vulkan findings.
+- [ ] **DOC-C remainder — flag/switch documentation and two wording items.**
+  Document or delete parity `--exe/--actual/--no-fail`, capture `--out`,
+  diff `--capture` (its `--seek` is now covered by the reuse-provenance
+  text), `BBLITE_NATIVE_EXE`, cli `--width/--height` — pairs with the
+  tooling wave's shared parser (TL-9). features.md 347 "PBR carries two
+  analytic slots" (under multi-light the shape is the primary slot plus a
+  7-entry extras loop, second analytic disabled); features.md
+  platform-validation understates the recorded Vulkan findings (TODO's
+  Vulkan section carries them).
 - [ ] **DOC-D — deduplicate: 31 facts stated in 2-5 places.** Worst: the
   Tint-SPIR-V/DXC limitation (6 pages), differential semantics (5), Dawn's
   no-offline-shaders property (5), capture deferral (4), the capture ladder
@@ -466,8 +416,10 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
    palette-as-world rationale written beside it — upstream recomputes node
    worlds live; this port bakes them, so any animated mesh needs the
    deformation transport.)
-2. **FA-1 + DOC-A/B** — make the docs true again (the two migration
-   clusters), delete the completed TODO entries.
+2. ~~FA-1 + DOC-A/B/C~~ — done 2026-08-18: the per-sample-transmission story
+   rewritten across its six pages, the pinned-variant-era boundaries retired,
+   the smaller corrections landed; only the DOC-C remainder above and DOC-D/E
+   stay open.
 3. **RD-4 → RD-6/7 → RD-8/9/10** — the EXECUTE quick wins, then
    **RD-1** (Standard family) as the flagship; RD-2/RD-3 leaf-by-leaf
    behind it.
