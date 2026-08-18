@@ -151,25 +151,19 @@ Both backends stay long-term as mutually validating implementations;
 
 ### Shader provenance
 
-- [ ] Bring the last 9 scenes back through the pinned-only PBR path. The
-  hand-written PBR shader text is DELETED; 63 of 72 scenes draw Babylon
+- [ ] Bring the last scene back through the pinned-only PBR path. The
+  hand-written PBR shader text is DELETED; 71 of 72 scenes draw Babylon
   Lite's own composed variants on both backends, keyed per renderable and
   per creation-ordered material handle across every family, with scene-code
   materials, setters, no-color views, the default material, fog, morph
-  storage, thin instances (both the glTF EXT pools and the scene-code
-  setters, through `pinned_instance_matrices`' convention split on
-  `instance_source`), the animated world transport and the runtime-spawn
-  fallback all composing from the pin. What remains:
+  storage, thin instances (glTF EXT pools with their node's own world,
+  scene-code setters through `pinned_instance_matrices`' convention split),
+  transmission (the linear-pass guard with the scene block's -1 lane, the
+  mid-pass grab, the dispersion arm, asset-carried lights and image-based
+  lights joining the features, the pin's alpha/occlusion seeds), the
+  animated world transport and the runtime-spawn fallback all composing
+  from the pin. What remains:
 
-  - transmission scenes (30, 33, 176, 212, 244, 247, 253, 265): the pin
-    renders refraction through `frame-graph/transmission.js` -- each render
-    task gets an opaque prepass grabbed into `_transmissionTexture`
-    (mip-chained, `REFRACTION_LOD_BIAS 4`), materials marked
-    `_linearImageProcessing` (`refraction-rtt-fragment.js` registers
-    `LINEAR_IMAGE_PROCESSING_SLOTS`, wrapping every fragment's processing
-    tail in `if(scene.vImageInfos.w>=0.0)`), and a final
-    `transmission-image-processing` task; this backend has no pinned pass
-    for it
   - scene 146 at 19.7: PBR meshes in a geometry task need the pin's
     geometry-view MRT arm (`geometry-view.js`)
 
