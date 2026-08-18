@@ -5251,6 +5251,10 @@ class Compiler
         this.sceneMaterialForSetter("setPbrUnlit").unlit = true;
     }
 
+    public recordScenePbrSkybox(): void {
+        this.sceneMaterialForSetter("setPbrSkybox").skyboxMode = true;
+    }
+
     public recordScenePbrSheen(sheen: ScenePbrSheenManifest): void {
         this.sceneMaterialForSetter("setPbrSheen").sheen = sheen;
     }

@@ -78,6 +78,8 @@ export interface ScenePbrMaterialManifest {
     materialsBefore: number;
     /** Stamped by the pin's `setPbrUnlit`: `mat._unlit = true`. */
     unlit?: boolean;
+    /** Stamped by the pin's `setPbrSkybox`: `mat._skyboxMode = true`. */
+    skyboxMode?: boolean;
     /** A `createPbrNoColorMaterialView` of the scene material before it:
      *  the same record with the pin's `PBR2_NO_COLOR_OUTPUT` bit, drawn by
      *  the depth-only render tasks. */

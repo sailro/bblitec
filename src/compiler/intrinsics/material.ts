@@ -32,6 +32,7 @@ export interface MaterialIntrinsicContext
     recordScenePbrSheen(sheen: ScenePbrSheenManifest): void;
     recordScenePbrNoColorView(): void;
     recordScenePbrUnlit(): void;
+    recordScenePbrSkybox(): void;
     recordSceneMaterialSlot(): number;
     recordScenePbrClearCoat(clearCoat: ScenePbrClearCoatManifest): void;
     expectSameEngine(
@@ -477,6 +478,7 @@ export function compileMaterialIntrinsic(
                 context.recordScenePbrUnlit();
             }
             if (importedName === "setPbrSkybox") {
+                context.recordScenePbrSkybox();
                 // Skybox mode is composed by the transmission-capable
                 // renderer (its uniform block carries the skybox
                 // option), which the createPbrMaterial `skyboxMode`
