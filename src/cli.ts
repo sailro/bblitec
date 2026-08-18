@@ -17,6 +17,7 @@ import { emitAssetSpecializations } from "./asset-specializer.js";
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
 import { decompressGeometry } from "./compressed-geometry.js";
+import { glbJsonText } from "./gltf-document.js";
 import { packageDdsEnvironment } from "./dds-packager.js";
 import { packageHdrEnvironment } from "./hdr-packager.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
@@ -153,7 +154,7 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
     mkdirSync(dirname(destination), { recursive: true });
 
     if (asset.source === "generated:pinned-ibl-brdf-lut") {
-        writeFileSync(destination, generateIblBrdfLutRgba16f());
+        writeFileSync(destination, await generateIblBrdfLutRgba16f());
         return;
     }
 
@@ -251,16 +252,13 @@ const optionalImageCodecs: ReadonlyArray<{
 function glbImages(
     bytes: Buffer,
 ): { mimeType?: string; uri?: string }[] {
-    if (bytes.length < 20 || bytes.readUInt32LE(0) !== 0x46546c67) {
+    const text = glbJsonText(bytes);
+    if (text === undefined) {
         return [];
     }
-    const jsonLength = bytes.readUInt32LE(12);
-    if (bytes.length < 20 + jsonLength) {
-        return [];
-    }
-    const document = JSON.parse(
-        bytes.subarray(20, 20 + jsonLength).toString("utf8"),
-    ) as { images?: { mimeType?: string; uri?: string }[] };
+    const document = JSON.parse(text) as {
+        images?: { mimeType?: string; uri?: string }[];
+    };
     return document.images ?? [];
 }
 
@@ -510,7 +508,7 @@ async function main(): Promise<void> {
         };
         writeFileSync(
             resolve(outputPath, "assets", brdfAsset.output),
-            generateIblBrdfLutRgba16f(),
+            await generateIblBrdfLutRgba16f(),
         );
         result.manifest.assets.push(brdfAsset);
     }

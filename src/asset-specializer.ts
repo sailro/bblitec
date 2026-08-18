@@ -1,6 +1,7 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { CompileAsset } from "./compiler.js";
+import { parseGlbJson } from "./gltf-document.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 
 type JsonRecord = Record<string, unknown>;
@@ -132,19 +133,6 @@ function renderItemSpecializations(document: JsonRecord): RenderItemSpecializati
         });
     });
     return result;
-}
-
-function parseGlbJson(path: string): JsonRecord {
-    const bytes = readFileSync(path);
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    if (view.getUint32(0, true) !== 0x46546c67) throw new Error(`${path} is not a GLB file.`);
-    const jsonLength = view.getUint32(12, true);
-    if (view.getUint32(16, true) !== 0x4e4f534a) throw new Error(`${path} has no JSON first chunk.`);
-    const text = new TextDecoder().decode(bytes.subarray(20, 20 + jsonLength)).replace(/[\0 ]+$/g, "");
-    const parsed: unknown = JSON.parse(text);
-    const record = asRecord(parsed);
-    if (!record) throw new Error(`${path} GLB JSON root is not an object.`);
-    return record;
 }
 
 function primitiveRecords(document: JsonRecord): JsonRecord[] {

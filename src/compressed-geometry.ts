@@ -14,19 +14,19 @@
 //
 // An asset that uses neither extension is returned unchanged, so the pass
 // cannot churn the assets that do not need it.
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createContext, runInContext } from "node:vm";
 
+import {
+    GLB_BINARY_CHUNK as BINARY_CHUNK,
+    GLB_JSON_CHUNK as JSON_CHUNK,
+    GLB_MAGIC,
+} from "./gltf-document.js";
 import { readUpstreamPin } from "./upstream-source.js";
 
 const DRACO_EXTENSION = "KHR_draco_mesh_compression";
 const MESHOPT_EXTENSION = "EXT_meshopt_compression";
-
-const GLB_MAGIC = 0x46546c67;
-const JSON_CHUNK = 0x4e4f534a;
-const BINARY_CHUNK = 0x004e4942;
 
 const COMPONENT_FLOAT = 5126;
 const COMPONENT_UNSIGNED_INT = 5125;
@@ -508,7 +508,3 @@ export async function decompressGeometry(
     return writeGlb(json, built);
 }
 
-/** A stable digest of an asset, for logging which bytes were produced. */
-export function assetDigest(bytes: Uint8Array): string {
-    return createHash("sha256").update(bytes).digest("hex").slice(0, 12);
-}

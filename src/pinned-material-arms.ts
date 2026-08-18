@@ -18,7 +18,13 @@
  * for — Scene 21's cloth gets its sheen from `setPbrSheen`, not its asset — so
  * a fragment carrying more than the assets need is normal. Carrying less is not.
  */
-import { readFileSync } from "node:fs";
+import {
+    animatedMaterialPointerPatterns,
+    asNumber,
+    asObject,
+    glbDocument,
+    type JsonObject,
+} from "./gltf-document.js";
 import {
     gltfAnimatedExtensionTargets,
     gltfAnimatedMaterialPointers,
@@ -32,7 +38,10 @@ import {
 } from "./pinned-pbr-variants.js";
 import type { PinnedSceneArm } from "./pinned-scene-arms.js";
 import type { ScenePbrMaterialManifest } from "./compiler/types.js";
-import { pinnedMeshFeaturesFromPrimitive } from "./pinned-mesh-features.js";
+import {
+    pinnedMeshFeaturesFromPrimitive,
+    skinnedMeshIndices,
+} from "./pinned-mesh-features.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 
 /**
@@ -60,11 +69,6 @@ function plainMaterialUboSpec(spec: unknown): unknown {
         _structBody: record._structBody,
     };
 }
-
-const asRecord = (value: unknown): Record<string, unknown> | undefined =>
-    typeof value === "object" && value !== null && !Array.isArray(value)
-        ? (value as Record<string, unknown>)
-        : undefined;
 
 /** The arms the emitted fragment either has or does not have. */
 export interface PinnedMaterialArms {
@@ -108,40 +112,30 @@ export interface PinnedComposedMaterial {
     materialUboSpec: unknown;
 }
 
-interface GltfDocument {
+type GltfDocument = {
     materials?: Record<string, unknown>[];
     animations?: unknown;
     textures?: unknown;
-}
+};
 
-/** Reads a .glb's JSON chunk. Returns nothing for anything else. */
-function glbDocument(path: string): GltfDocument | undefined {
-    let bytes: Buffer;
-    try {
-        bytes = readFileSync(path);
-    } catch {
-        return undefined;
-    }
-    if (bytes.length < 20 || bytes.readUInt32LE(0) !== 0x46546c67) {
-        return undefined;
-    }
-    const jsonLength = bytes.readUInt32LE(12);
-    if (bytes.length < 20 + jsonLength) return undefined;
-    try {
-        return JSON.parse(
-            bytes.subarray(20, 20 + jsonLength).toString("utf8"),
-        ) as GltfDocument;
-    } catch {
-        return undefined;
-    }
-}
+/** The shared tolerant reader, through this module's typed view of it. */
+const glbView = (path: string): GltfDocument | undefined =>
+    glbDocument(path) as GltfDocument | undefined;
 
 /** One material's composer input, plus what it takes to name and place it. */
-interface MaterialSubject {
+export interface MaterialSubject {
     index: number;
     name: string;
     input: PinnedMaterialInput;
     uv2Mask: number;
+    /**
+     * The pin's `MSH_*` bits of the first primitive that names this material,
+     * in mesh order — 0 when nothing draws it. The compose gate compares each
+     * material's fragment at the attribute set it is actually drawn with;
+     * generation does not read this, because it keys variants on every
+     * distinct attribute set instead (`composeRenderableVariants`).
+     */
+    meshFeatures: number;
 }
 
 /**
@@ -154,9 +148,8 @@ interface MaterialSubject {
  * the three punctual kinds.
  */
 export function gltfLightKinds(path: string): readonly string[] {
-    const document = glbDocument(path);
-    if (!document) return [];
-    const record = document as unknown as Record<string, unknown>;
+    const record = glbDocument(path);
+    if (!record) return [];
     const extensions = record["extensions"] as
         | Record<string, unknown>
         | undefined;
@@ -183,9 +176,8 @@ export function gltfLightKinds(path: string): readonly string[] {
  * the same count is read at generation to refuse what upstream would grow.
  */
 export function gltfLightNodeCount(path: string): number {
-    const document = glbDocument(path);
-    if (!document) return 0;
-    const record = document as unknown as Record<string, unknown>;
+    const record = glbDocument(path);
+    if (!record) return 0;
     const nodes = Array.isArray(record["nodes"])
         ? (record["nodes"] as Record<string, unknown>[])
         : [];
@@ -212,46 +204,91 @@ export function gltfLightNodeCount(path: string): number {
  * environment turns on.
  */
 export function gltfHasImageBasedLight(path: string): boolean {
-    const document = glbDocument(path);
-    if (!document) return false;
-    const record = document as unknown as Record<string, unknown>;
+    const record = glbDocument(path);
+    if (!record) return false;
     const used = record["extensionsUsed"];
     return Array.isArray(used) &&
         used.includes("EXT_lights_image_based");
 }
 
 /**
+ * Whether the asset alone makes the scene render linear: the pin's
+ * `set-transmission.ts` retargets the frame graph's colour buffer when any
+ * material transmits, and marks every material `_linearImageProcessing`.
+ *
+ * This is the asset-side half of the flag only. Generation passes its own
+ * value into `materialSubjects` instead, because scene code reaches the same
+ * retarget through the `renderer:transmission` feature with no transmissive
+ * material in any asset; the compose gate has only the asset, and derives
+ * the flag here.
+ */
+export function gltfLinearImageProcessing(document: JsonObject): boolean {
+    const materials = (document as GltfDocument).materials ?? [];
+    return materials.some(
+        (entry) =>
+            (asNumber(
+                asObject(
+                    asObject(entry["extensions"])?.[
+                        "KHR_materials_transmission"
+                    ],
+                )?.["transmissionFactor"],
+            ) ?? 0) > 0,
+    );
+}
+
+/**
  * The composer's material-shaped input for every material in a document.
  *
- * Shared by the arms scan and the variant space so both compose the same
- * material: the animated-pointer scans decide whether a factor becomes a
- * uniform or a constant, and a variant built without them is a different
- * fragment.
+ * Shared by the arms scan, the variant space and the compose gate so all
+ * three compose the same material: the animated-pointer scans decide whether
+ * a factor becomes a uniform or a constant, and a variant built without them
+ * is a different fragment. The gate consuming this construction — instead of
+ * a copy of it — is what keeps a new animated pointer or loader flag from
+ * silently unsyncing the gate from generation.
  */
-async function materialSubjects(
-    document: GltfDocument,
+export async function materialSubjects(
+    document: JsonObject,
     scene: { linearImageProcessing?: boolean } = {},
 ): Promise<readonly MaterialSubject[]> {
-    const materials = document.materials ?? [];
-    const record = document as unknown as Record<string, unknown>;
-    const imageOf = gltfImageResolver(record);
+    const view = document as GltfDocument;
+    const materials = view.materials ?? [];
+    const imageOf = gltfImageResolver(document);
     const animatedBaseColor = gltfAnimatedMaterialPointers(
-        record,
-        "pbrMetallicRoughness/baseColorFactor",
+        document,
+        animatedMaterialPointerPatterns.baseColorFactor,
     );
     const animatedUvTransform = gltfAnimatedMaterialPointers(
-        record,
-        ".*/KHR_texture_transform/(?:offset|scale|rotation)",
+        document,
+        animatedMaterialPointerPatterns.uvTransform,
     );
-    const animatedEmissive = new Set([
-        ...gltfAnimatedMaterialPointers(record, "emissiveFactor"),
-        ...gltfAnimatedMaterialPointers(
-            record,
-            "extensions/KHR_materials_emissive_strength/emissiveStrength",
-        ),
-    ]);
-    const animatedExtensions = gltfAnimatedExtensionTargets(record);
-    const subjects = materials.map((material, index) => {
+    const animatedEmissive = new Set(
+        animatedMaterialPointerPatterns.emissive.flatMap((pointer) => [
+            ...gltfAnimatedMaterialPointers(document, pointer),
+        ]),
+    );
+    const animatedExtensions = gltfAnimatedExtensionTargets(document);
+    // Which primitive first names each material, for the subject's mesh half:
+    // a second UV set or a vertex-colour stream changes the composed fragment.
+    const skinned = skinnedMeshIndices(document);
+    const primitiveOf = new Map<
+        number,
+        { mesh: number; primitive: JsonObject }
+    >();
+    for (const [mesh, entry] of (
+        Array.isArray(document["meshes"])
+            ? (document["meshes"] as JsonObject[])
+            : []
+    ).entries()) {
+        for (const primitive of Array.isArray(entry["primitives"])
+            ? (entry["primitives"] as JsonObject[])
+            : []) {
+            const material = asNumber(primitive["material"]);
+            if (material === undefined || primitiveOf.has(material)) continue;
+            primitiveOf.set(material, { mesh, primitive });
+        }
+    }
+    const subjects: MaterialSubject[] = [];
+    for (const [index, material] of materials.entries()) {
         const input = pinnedMaterialInputFromGltf(material, {
             imageOf,
             ...scene,
@@ -262,16 +299,22 @@ async function materialSubjects(
                 ? { animatedExtensionTargets: animatedExtensions.get(index)! }
                 : {}),
         });
-        return {
+        const drawn = primitiveOf.get(index);
+        subjects.push({
             index,
             name: typeof material["name"] === "string"
                 ? material["name"]
                 : `material ${index}`,
             input,
             uv2Mask: (input["_uv2Mask"] as number | undefined) ?? 0,
-        };
-    });
-    if (documentHasDefaultMaterial(document)) {
+            meshFeatures: drawn
+                ? await pinnedMeshFeaturesFromPrimitive(drawn.primitive, {
+                    skinned: skinned.has(drawn.mesh),
+                })
+                : 0,
+        });
+    }
+    if (documentHasDefaultMaterial(view)) {
         // The pin's getMat(undefined) assembles the default material from an
         // empty object; the same builder over the same empty object carries
         // the glTF loader's own stamps, specular AA included.
@@ -287,6 +330,7 @@ async function materialSubjects(
             name: "default material",
             input,
             uv2Mask: 0,
+            meshFeatures: 0,
         });
     }
     return subjects;
@@ -304,7 +348,7 @@ export async function composeGltfMaterials(
     path: string,
     scene: { linearImageProcessing?: boolean } = {},
 ): Promise<readonly PinnedComposedMaterial[]> {
-    const document = glbDocument(path);
+    const document = glbView(path);
     if (!document) return [];
     if (
         !document.materials?.length &&
@@ -354,8 +398,8 @@ export async function composeGltfMaterials(
                 // chromatic sample, so it is read from the same place.
                 dispersion:
                     (
-                        asRecord(
-                            asRecord(input["_subsurface"])?.["refraction"],
+                        asObject(
+                            asObject(input["_subsurface"])?.["refraction"],
                         )?.["dispersion"]
                     ) !== undefined,
             },
@@ -471,7 +515,7 @@ export async function composeRenderableVariants(
     scene: { linearImageProcessing?: boolean } = {},
     geometryTasks: readonly PinnedGeometryTaskRequest[] = [],
 ): Promise<readonly PinnedRenderableVariant[]> {
-    const document = glbDocument(path);
+    const document = glbView(path);
     if (!document || arms.length === 0) return [];
     if (
         !document.materials?.length &&
@@ -586,7 +630,7 @@ function documentHasDefaultMaterial(document: GltfDocument): boolean {
 /** The number of materials a glTF document creates -- the declared ones plus
  *  the pin's default when any primitive omits its index. */
 export function gltfMaterialCount(path: string): number {
-    const document = glbDocument(path);
+    const document = glbView(path);
     if (!document) return 0;
     return (
         (document.materials?.length ?? 0) +
@@ -751,7 +795,7 @@ export async function gltfRenderables(
 export async function gltfRenderableFeatures(
     path: string,
 ): Promise<readonly number[]> {
-    const document = glbDocument(path);
+    const document = glbView(path);
     if (!document) return [];
     return (await gltfRenderables(document)).map(
         (renderable) => renderable.features,

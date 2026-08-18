@@ -10,22 +10,13 @@
  * gets wrong shows up as a different `fragmentKey`, which is checkable against
  * an instrumented capture rather than against intent.
  */
+import {
+    asNumber,
+    asNumbers,
+    asObject,
+    type JsonObject,
+} from "./gltf-document.js";
 import type { PinnedMaterialInput } from "./pinned-pbr-variants.js";
-
-type JsonObject = Record<string, unknown>;
-
-const asObject = (value: unknown): JsonObject | undefined =>
-    typeof value === "object" && value !== null && !Array.isArray(value)
-        ? (value as JsonObject)
-        : undefined;
-
-const asNumber = (value: unknown): number | undefined =>
-    typeof value === "number" ? value : undefined;
-
-const asNumbers = (value: unknown): number[] | undefined =>
-    Array.isArray(value) && value.every((entry) => typeof entry === "number")
-        ? (value as number[])
-        : undefined;
 
 /** A glTF texture slot resolved to the texture the loader would have built. */
 type TextureBuilder = (slot: unknown) => JsonObject | undefined;
