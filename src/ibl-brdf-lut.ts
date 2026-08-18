@@ -1,121 +1,206 @@
+// The shipped gltf-ibl-brdf-lut.rgba16f asset, produced by executing the
+// pinned BRDF-LUT compute shader in a headless Chromium instead of
+// re-deriving its math in JS. The WGSL is `brdfLutWGSL`, bundled as the
+// hdr-brdf-lut.compute chunk of the pinned package and consumed by
+// `generateBrdfLut` in lib/loader-gltf/ibl-env-assembly.js; the dispatch
+// below mirrors that function's parameters exactly (size, format, layout,
+// entry point, bind group, workgroup counts).
+import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
+import {
+    dirname,
+    resolve,
+} from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+    webgpuComputeBrowserArgs,
+    withBrowserPage,
+} from "./browser-harness.js";
+import {
+    findRepositoryRoot,
+    readUpstreamPin,
+} from "./upstream-source.js";
+
+// generateBrdfLut's `const size = 256` and the shader's own 256u bounds.
 const lutSize = 256;
-const sampleCount = 1024;
+// rgba16float: four 2-byte half floats per texel.
+const lutBytes = lutSize * lutSize * 8;
 
-// Offline form of loader-gltf's pinned hdr-brdf-lut.compute WGSL.
-function radicalInverse(index: number): number {
-    let bits = index >>> 0;
-    bits = ((bits << 16) | (bits >>> 16)) >>> 0;
-    bits = (((bits & 0x55555555) << 1) | ((bits & 0xaaaaaaaa) >>> 1)) >>> 0;
-    bits = (((bits & 0x33333333) << 2) | ((bits & 0xcccccccc) >>> 2)) >>> 0;
-    bits = (((bits & 0x0f0f0f0f) << 4) | ((bits & 0xf0f0f0f0) >>> 4)) >>> 0;
-    bits = (((bits & 0x00ff00ff) << 8) | ((bits & 0xff00ff00) >>> 8)) >>> 0;
-    return bits * 2.3283064365386963e-10;
+export function getIblBrdfLutProvenance() {
+    const repositoryRoot = findRepositoryRoot(
+        dirname(fileURLToPath(import.meta.url)),
+    );
+    const pin = readUpstreamPin(repositoryRoot);
+    return {
+        package: `${pin.package}@${pin.version}`,
+        sourceCommit: pin.sourceVersion,
+        module: "src/loader-gltf/ibl-env-assembly.ts",
+        shader: "shaders/hdr-brdf-lut.compute.wgsl",
+        sampleCount: 1024,
+    } as const;
 }
 
-function floatToHalf(value: number): number {
-    const source = new Float32Array([value]);
-    const bits = new Uint32Array(source.buffer)[0]!;
-    const sign = (bits >>> 16) & 0x8000;
-    const exponent = (bits >>> 23) & 0xff;
-    const mantissa = bits & 0x7fffff;
-    if (exponent === 0xff) {
-        return sign | (mantissa === 0 ? 0x7c00 : 0x7e00);
+// The chunk file name carries a content hash, so it is resolved through
+// the import in ibl-env-assembly.js — the same module whose
+// generateBrdfLut dispatch this harness mirrors — rather than hard-coded.
+function loadPinnedBrdfLutShader(): string {
+    const packageRoot = resolve(
+        findRepositoryRoot(dirname(fileURLToPath(import.meta.url))),
+        "node_modules",
+        "@babylonjs",
+        "lite",
+    );
+    const assemblyPath = resolve(
+        packageRoot,
+        "lib",
+        "loader-gltf",
+        "ibl-env-assembly.js",
+    );
+    const assemblySource = readFileSync(assemblyPath, "utf8");
+    const chunkMatch = assemblySource.match(
+        /from '(\.\.\/_chunks\/hdr-brdf-lut\.compute-[^']+\.js)'/,
+    );
+    if (!chunkMatch?.[1]) {
+        throw new Error(
+            "Pinned Babylon Lite BRDF LUT chunk import was not found.",
+        );
     }
-    const halfExponent = exponent - 127 + 15;
-    if (halfExponent >= 0x1f) return sign | 0x7c00;
-    if (halfExponent <= 0) {
-        if (halfExponent < -10) return sign;
-        const normalized = mantissa | 0x800000;
-        const shift = 14 - halfExponent;
-        const rounded =
-            (normalized + (1 << (shift - 1)) - 1 +
-                ((normalized >> shift) & 1)) >>
-            shift;
-        return sign | rounded;
+    const chunkSource = readFileSync(
+        resolve(dirname(assemblyPath), chunkMatch[1]),
+        "utf8",
+    );
+    const shaderMatch = chunkSource.match(
+        /const brdfLutWGSL = ("(?:[^"\\]|\\.)*");/,
+    );
+    if (!shaderMatch?.[1]) {
+        throw new Error(
+            "Pinned Babylon Lite BRDF LUT shader was not found.",
+        );
     }
-    const rounded =
-        mantissa + 0xfff + ((mantissa >>> 13) & 1);
-    if ((rounded & 0x800000) !== 0) {
-        const nextExponent = halfExponent + 1;
-        return nextExponent >= 0x1f
-            ? sign | 0x7c00
-            : sign | (nextExponent << 10);
+    const shader: unknown = JSON.parse(shaderMatch[1]);
+    if (
+        typeof shader !== "string" ||
+        !shader.includes("texture_storage_2d<rgba16float,write>") ||
+        !shader.includes("@workgroup_size(8,8)") ||
+        !shader.includes("=1024u") ||
+        !shader.includes(">=256u") ||
+        !shader.includes(",0.001)") ||
+        !shader.includes(",0.04)") ||
+        // Bias in red, scale+bias in green — the byte contract of the
+        // .rgba16f asset (identifier-independent).
+        !/vec4f\((\w+)\.y,\1\.x\+\1\.y,0\.0,1\.0\)/.test(shader)
+    ) {
+        throw new Error("Pinned Babylon Lite BRDF LUT semantics changed.");
     }
-    return sign | (halfExponent << 10) | (rounded >>> 13);
+    return shader;
 }
 
-export function generateIblBrdfLutRgba16f(): Uint8Array {
-    const radical = new Float64Array(sampleCount);
-    const cosine = new Float64Array(sampleCount);
-    const sine = new Float64Array(sampleCount);
-    for (let sample = 0; sample < sampleCount; ++sample) {
-        radical[sample] = radicalInverse(sample);
-        const phi = 2 * Math.PI * (sample / sampleCount);
-        cosine[sample] = Math.cos(phi);
-        sine[sample] = Math.sin(phi);
-    }
+/**
+ * The pinned EXT_lights_image_based BRDF LUT, executed on a real WebGPU
+ * device and read back as the .rgba16f asset bytes.
+ *
+ * The readback is row-major with four half floats per texel — the same
+ * `(y * 256 + x) * 4` Uint16 layout the former JS re-derivation wrote —
+ * so the asset's byte order is unchanged; individual texel values may
+ * differ from the old JS output by float16-rounding ULPs.
+ */
+export async function generateIblBrdfLutRgba16f(): Promise<Uint8Array> {
+    const shader = loadPinnedBrdfLutShader();
+    const server = createServer((_request, response) => {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end("<!doctype html><title>IBL BRDF LUT</title>");
+    });
+    return withBrowserPage(server, {
+        serverName: "BRDF LUT server",
+        browserRequirement:
+            "Exact IBL BRDF LUT generation requires Chrome or Edge.",
+        browserArgs: webgpuComputeBrowserArgs,
+    }, async (page, origin) => {
+        await page.goto(origin);
+        await page.evaluate(
+            (value) => {
+                (
+                    globalThis as typeof globalThis & {
+                        brdfLutShader: string;
+                    }
+                ).brdfLutShader = value;
+            },
+            shader,
+        );
 
-    const values = new Uint16Array(lutSize * lutSize * 4);
-    for (let y = 0; y < lutSize; ++y) {
-        const roughness = Math.max((y + 0.5) / lutSize, 0.04);
-        const alphaSquared = roughness ** 4;
-        for (let x = 0; x < lutSize; ++x) {
-            const ndotV = Math.max((x + 0.5) / lutSize, 0.001);
-            const viewX = Math.sqrt(1 - ndotV * ndotV);
-            let scale = 0;
-            let bias = 0;
-            for (let sample = 0; sample < sampleCount; ++sample) {
-                const xi = radical[sample]!;
-                const tangent =
-                    Math.sqrt(
-                        (1 - xi) /
-                        (1 + (alphaSquared - 1) * xi),
-                    );
-                const radial = Math.sqrt(1 - tangent * tangent);
-                const halfX = cosine[sample]! * radial;
-                const halfZ = tangent;
-                const vdotH = Math.max(
-                    viewX * halfX + ndotV * halfZ,
-                    0,
-                );
-                const lightZ = Math.max(
-                    2 * vdotH * halfZ - ndotV,
-                    0,
-                );
-                if (lightZ <= 0 || halfZ <= 0) continue;
-                const visibility =
-                    (
-                        0.5 /
-                        Math.max(
-                            lightZ *
-                                Math.sqrt(
-                                    ndotV * ndotV *
-                                        (1 - alphaSquared) +
-                                    alphaSquared,
-                                ) +
-                            ndotV *
-                                Math.sqrt(
-                                    lightZ * lightZ *
-                                        (1 - alphaSquared) +
-                                    alphaSquared,
-                                ),
-                            1e-6,
-                        )
-                    ) *
-                    lightZ *
-                    (4 * vdotH / halfZ);
-                const fresnel = (1 - vdotH) ** 5;
-                scale += (1 - fresnel) * visibility;
-                bias += fresnel * visibility;
-            }
-            const offset = (y * lutSize + x) * 4;
-            values[offset] = floatToHalf(bias / sampleCount);
-            values[offset + 1] = floatToHalf(
-                (scale + bias) / sampleCount,
+        const result: unknown = await page.evaluate(`(async () => {
+            const adapter = await navigator.gpu?.requestAdapter();
+            if (!adapter) throw new Error("No WebGPU adapter is available for the BRDF LUT.");
+            const device = await adapter.requestDevice();
+            // Mirrors generateBrdfLut() in the pinned package's
+            // lib/loader-gltf/ibl-env-assembly.js: size 256, rgba16float,
+            // layout "auto", entry point "main", a single storage-texture
+            // binding 0, dispatchWorkgroups(ceil(256/8), ceil(256/8)) over
+            // the shader's @workgroup_size(8,8). COPY_SRC is the harness's
+            // readback addition; the pin keeps TEXTURE_BINDING to sample
+            // the LUT it never reads back.
+            const size = ${lutSize};
+            const module = device.createShaderModule({ code: globalThis.brdfLutShader });
+            const compilation = await module.getCompilationInfo();
+            const errors = compilation.messages.filter((message) => message.type === "error");
+            if (errors.length > 0) throw new Error(errors.map((message) => message.message).join("\\n"));
+            const pipeline = device.createComputePipeline({
+                layout: "auto",
+                compute: { module, entryPoint: "main" },
+            });
+            const texture = device.createTexture({
+                size: { width: size, height: size },
+                format: "rgba16float",
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+            });
+            const bindGroup = device.createBindGroup({
+                layout: pipeline.getBindGroupLayout(0),
+                entries: [{ binding: 0, resource: texture.createView() }],
+            });
+            const rowBytes = size * 8;
+            const rowPitch = Math.ceil(rowBytes / 256) * 256;
+            const readback = device.createBuffer({
+                size: rowPitch * size,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+            });
+            const encoder = device.createCommandEncoder();
+            const pass = encoder.beginComputePass();
+            pass.setPipeline(pipeline);
+            pass.setBindGroup(0, bindGroup);
+            pass.dispatchWorkgroups(Math.ceil(size / 8), Math.ceil(size / 8));
+            pass.end();
+            encoder.copyTextureToBuffer(
+                { texture },
+                { buffer: readback, bytesPerRow: rowPitch },
+                { width: size, height: size },
             );
-            values[offset + 2] = 0;
-            values[offset + 3] = floatToHalf(1);
+            device.queue.submit([encoder.finish()]);
+            await readback.mapAsync(GPUMapMode.READ);
+            const mapped = new Uint8Array(readback.getMappedRange());
+            const packed = new Uint8Array(rowBytes * size);
+            for (let row = 0; row < size; row++) {
+                packed.set(mapped.subarray(row * rowPitch, row * rowPitch + rowBytes), row * rowBytes);
+            }
+            let binary = "";
+            for (let offset = 0; offset < packed.length; offset += 0x8000) {
+                binary += String.fromCharCode(...packed.subarray(offset, offset + 0x8000));
+            }
+            const encoded = btoa(binary);
+            readback.unmap();
+            readback.destroy();
+            texture.destroy();
+            device.destroy();
+            return encoded;
+        })()`);
+        if (typeof result !== "string") {
+            throw new Error("The BRDF LUT compute returned an invalid result.");
         }
-    }
-    return new Uint8Array(values.buffer);
+        const bytes = new Uint8Array(Buffer.from(result, "base64"));
+        if (bytes.byteLength !== lutBytes) {
+            throw new Error(
+                `The BRDF LUT readback held ${bytes.byteLength} bytes; expected ${lutBytes}.`,
+            );
+        }
+        return bytes;
+    });
 }

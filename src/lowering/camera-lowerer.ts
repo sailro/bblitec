@@ -255,7 +255,10 @@ CameraHandle create_arc_rotate_camera(
         const symbolName = "enableOrthographicCamera";
         // The reached surface stores one extent and derives the four
         // planes from it, so the pinned default and that derivation are
-        // the contract this lowering depends on.
+        // the contract this lowering depends on. The emission below
+        // stores exactly two facts — the `orthographic` flag and
+        // `ortho_half_height` — and each assertion here is the reason
+        // those two suffice; the pairings are named at each assert.
         const { declaration: enable } =
             this.context.functionDeclaration(
                 modulePath,
@@ -281,11 +284,19 @@ CameraHandle create_arc_rotate_camera(
                 "Expected the orthographic bounds to be published on the camera.",
             );
         }
+        // ^ Paired with the emitted `record.orthographic = true`: the
+        // record flag is the native form of the published bounds, the
+        // one bit the projection branch dispatches on.
         const { declaration: bounds } =
             this.context.functionDeclaration(
                 modulePath,
                 "createOrthographicBounds",
             );
+        // Paired with the compiler intrinsic (`enableOrthographicCamera`
+        // in src/compiler/intrinsics/camera.ts), which seeds "1.0" when
+        // the scene passes no options. The native factory takes the
+        // already-resolved extent, so the default is consumed there, not
+        // emitted here.
         this.context.assertExpressionShape(
             this.context.variableInitializer(
                 bounds,
@@ -299,6 +310,18 @@ CameraHandle create_arc_rotate_camera(
                 modulePath,
                 "writeOrthoProjection",
             );
+        // This derivation and the seven projection arguments below are
+        // the sufficiency proof for the emitted single-extent store:
+        // every plane is ±halfWidth/±halfHeight with halfWidth derived
+        // from the one stored extent, and near/far are the camera's own
+        // scalars, already on the record — so `ortho_half_height` is the
+        // only new state the native camera needs. They also guard the
+        // C++ transcription of the same derivation in the renderer's
+        // orthographic branch (renderer-lowerer.ts, the
+        // `if (camera.orthographic)` arm of build_view_projection),
+        // which re-derives left/right/bottom/top from
+        // `ortho_half_height * aspect`; the mat4 writer's terms are
+        // asserted beside that arm, the plane derivation only here.
         this.context.assertExpressionShape(
             this.context.variableInitializer(
                 writer,
@@ -757,7 +780,181 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
                 "Expected ArcRotate inertia decay.",
             );
         }
-        const { declaration: attachFreeControl } =
+        // The pinned applyInertia pole margin (`eps`) keeps beta strictly
+        // inside (0, PI). The value flows into the emitted
+        // `constexpr double epsilon` and the clamp shape (max against the
+        // lower margin, min against the upper) is asserted against the
+        // emitted beta line, with `eps` left symbolic so the margin has a
+        // single owner.
+        const betaClampEpsilon = this.context.numericValue(
+            this.context.variableInitializer(
+                declaration,
+                "eps",
+            ),
+            file,
+        );
+        const betaClamps = assignments.filter(
+            (expression) =>
+                expression.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                this.context
+                    .propertyPath(expression.left)
+                    ?.join(".") === "camera.beta",
+        );
+        if (betaClamps.length !== 1) {
+            this.context.contractError(
+                declaration,
+                "Expected one ArcRotate beta clamp.",
+            );
+        }
+        this.context.assertExpressionShape(
+            betaClamps[0]!.right,
+            "Math.max(eps, Math.min(Math.PI - eps, camera.beta))",
+            "ArcRotate beta clamp",
+        );
+        // The radius floor: the pin writes `Math.max(<floor>, ...)` after
+        // both the inertial zoom and the direct pinch write. The emitted
+        // `apply_arc_rotate_inertia` carries the zoom one; extracting
+        // every occurrence and requiring one shared value means a pin
+        // that splits them fails loudly instead of leaving the emission
+        // silently mirroring the wrong surface.
+        const radiusFloors = assignments
+            .filter(
+                (expression) =>
+                    expression.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken &&
+                    this.context
+                        .propertyPath(expression.left)
+                        ?.join(".") === "camera.radius",
+            )
+            .map((expression) =>
+                this.context.unwrapExpression(
+                    expression.right,
+                ),
+            )
+            .filter(
+                (right): right is ts.CallExpression =>
+                    ts.isCallExpression(right) &&
+                    this.context
+                        .propertyPath(right.expression)
+                        ?.join(".") === "Math.max",
+            )
+            .map((call) => {
+                if (
+                    call.arguments.length !== 2 ||
+                    this.context
+                        .propertyPath(call.arguments[1]!)
+                        ?.join(".") !== "camera.radius"
+                ) {
+                    this.context.contractError(
+                        call,
+                        "Expected the radius floor to clamp the radius itself.",
+                    );
+                }
+                return this.context.numericValue(
+                    call.arguments[0]!,
+                    file,
+                );
+            });
+        if (
+            radiusFloors.length === 0 ||
+            radiusFloors.some(
+                (value) => value !== radiusFloors[0],
+            )
+        ) {
+            this.context.contractError(
+                declaration,
+                "Expected one shared ArcRotate radius floor.",
+            );
+        }
+        const radiusFloor = radiusFloors[0]!;
+        // The pan scale is proportional to the radius; the factor flows
+        // into the emitted `pan_scale` line. The pan basis and the three
+        // target increments are shape-asserted because the emission
+        // inlines `rightX = -sinA` / `rightZ = cosA` into its own
+        // `-sine * ...` / `cosine * ...` terms — the signs would
+        // otherwise be trusted.
+        const panScaleInitializer =
+            this.context.unwrapExpression(
+                this.context.variableInitializer(
+                    declaration,
+                    "panScale",
+                ),
+            );
+        if (
+            !ts.isBinaryExpression(panScaleInitializer) ||
+            panScaleInitializer.operatorToken.kind !==
+                ts.SyntaxKind.AsteriskToken ||
+            this.context
+                .propertyPath(panScaleInitializer.left)
+                ?.join(".") !== "camera.radius"
+        ) {
+            this.context.contractError(
+                panScaleInitializer,
+                "Expected the pan scale to be proportional to the radius.",
+            );
+        }
+        const panScaleFactor = this.context.numericValue(
+            panScaleInitializer.right,
+            file,
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                declaration,
+                "rightX",
+            ),
+            "-sinA",
+            "ArcRotate pan basis X",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                declaration,
+                "rightZ",
+            ),
+            "cosA",
+            "ArcRotate pan basis Z",
+        );
+        const requirePanIncrement = (
+            path: string,
+            expected: string,
+            label: string,
+        ): void => {
+            const increments = assignments.filter(
+                (expression) =>
+                    expression.operatorToken.kind ===
+                        ts.SyntaxKind.PlusEqualsToken &&
+                    this.context
+                        .propertyPath(expression.left)
+                        ?.join(".") === path,
+            );
+            if (increments.length !== 1) {
+                this.context.contractError(
+                    declaration,
+                    `Expected one ${label}.`,
+                );
+            }
+            this.context.assertExpressionShape(
+                increments[0]!.right,
+                expected,
+                label,
+            );
+        };
+        requirePanIncrement(
+            "camera.target.x",
+            "rightX * camera.inertialPanningX * panScale",
+            "ArcRotate pan X increment",
+        );
+        requirePanIncrement(
+            "camera.target.y",
+            "camera.inertialPanningY * panScale",
+            "ArcRotate pan Y increment",
+        );
+        requirePanIncrement(
+            "camera.target.z",
+            "rightZ * camera.inertialPanningX * panScale",
+            "ArcRotate pan Z increment",
+        );
+        const { file: freeFile, declaration: attachFreeControl } =
             this.context.functionDeclaration(
                 freeModule,
                 "attachFreeControl",
@@ -810,6 +1007,88 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             "inertia",
             "FreeCamera movement inertia",
         );
+        // The pinned pitch ceiling is `Math.PI / 2 - <margin>`; the
+        // quarter-turn divisor and the margin both flow into the emitted
+        // `max_pitch` line (whose `pi_double` mirrors the pinned
+        // Math.PI), so a retuned margin regenerates rather than
+        // passing behind the shape assert above.
+        const maxPitchInitializer =
+            this.context.unwrapExpression(
+                this.context.variableInitializer(
+                    attachFreeControl,
+                    "maxPitch",
+                ),
+            );
+        if (
+            !ts.isBinaryExpression(maxPitchInitializer) ||
+            maxPitchInitializer.operatorToken.kind !==
+                ts.SyntaxKind.MinusToken
+        ) {
+            this.context.contractError(
+                maxPitchInitializer,
+                "Expected the pitch ceiling to subtract a margin.",
+            );
+        }
+        const pitchQuarterTurn = this.context.unwrapExpression(
+            maxPitchInitializer.left,
+        );
+        if (
+            !ts.isBinaryExpression(pitchQuarterTurn) ||
+            pitchQuarterTurn.operatorToken.kind !==
+                ts.SyntaxKind.SlashToken ||
+            this.context
+                .propertyPath(pitchQuarterTurn.left)
+                ?.join(".") !== "Math.PI"
+        ) {
+            this.context.contractError(
+                maxPitchInitializer,
+                "Expected the pitch ceiling to divide Math.PI.",
+            );
+        }
+        const pitchDivisor = this.context.numericValue(
+            pitchQuarterTurn.right,
+            freeFile,
+        );
+        const pitchMargin = this.context.numericValue(
+            maxPitchInitializer.right,
+            freeFile,
+        );
+        // The pinned stop thresholds both scale with the camera speed.
+        // The emitted `apply_free_camera_inertia` uses one `epsilon` for
+        // movement and rotation, so the two pinned scales must agree for
+        // that sharing to stay faithful; the shared factor then flows.
+        const freeStopScale = (name: string): number => {
+            const initializer = this.context.unwrapExpression(
+                this.context.variableInitializer(
+                    attachFreeControl,
+                    name,
+                ),
+            );
+            if (
+                !ts.isBinaryExpression(initializer) ||
+                initializer.operatorToken.kind !==
+                    ts.SyntaxKind.AsteriskToken ||
+                this.context
+                    .propertyPath(initializer.left)
+                    ?.join(".") !== "camera.speed"
+            ) {
+                this.context.contractError(
+                    initializer,
+                    `Expected ${name} to scale with the camera speed.`,
+                );
+            }
+            return this.context.numericValue(
+                initializer.right,
+                freeFile,
+            );
+        };
+        const moveStopScale = freeStopScale("moveEpsilon");
+        if (moveStopScale !== freeStopScale("rotEpsilon")) {
+            this.context.contractError(
+                attachFreeControl,
+                "Expected one shared free-camera stop-threshold scale.",
+            );
+        }
         const dvalue = (input: number): string => this.context.doubleLiteral(input);
         return {
             modulePath,
@@ -864,7 +1143,7 @@ void apply_arc_rotate_inertia(CameraRecord& camera) {
     if (camera.inertial_alpha_offset != 0.0 || camera.inertial_beta_offset != 0.0) {
         camera.alpha += camera.inertial_alpha_offset;
         camera.beta += camera.inertial_beta_offset;
-        constexpr double epsilon = 0.01;
+        constexpr double epsilon = ${dvalue(betaClampEpsilon)};
         camera.beta = std::max(epsilon, std::min(pi_double - epsilon, camera.beta));
         camera.inertial_alpha_offset *= camera.inertia;
         camera.inertial_beta_offset *= camera.inertia;
@@ -874,14 +1153,14 @@ void apply_arc_rotate_inertia(CameraRecord& camera) {
 
     if (camera.inertial_radius_offset != 0.0) {
         camera.radius -= camera.inertial_radius_offset;
-        camera.radius = std::max(0.01, camera.radius);
+        camera.radius = std::max(${dvalue(radiusFloor)}, camera.radius);
         camera.inertial_radius_offset *= camera.inertia;
         if (std::abs(camera.inertial_radius_offset) < radius_epsilon) camera.inertial_radius_offset = 0.0;
     }
     if (camera.inertial_panning_x != 0.0 || camera.inertial_panning_y != 0.0) {
         const double cosine = std::cos(camera.alpha);
         const double sine = std::sin(camera.alpha);
-        const double pan_scale = camera.radius * 0.001;
+        const double pan_scale = camera.radius * ${dvalue(panScaleFactor)};
         camera.target.x += -sine * camera.inertial_panning_x * pan_scale;
         camera.target.y += camera.inertial_panning_y * pan_scale;
         camera.target.z += cosine * camera.inertial_panning_x * pan_scale;
@@ -903,7 +1182,7 @@ void apply_free_camera_inertia(CameraRecord& camera) {
     if (has_rotation) {
         camera.free_yaw += camera.inertial_yaw_offset;
         camera.free_pitch += camera.inertial_pitch_offset;
-        constexpr double max_pitch = pi_double / 2.0 - 0.01;
+        constexpr double max_pitch = pi_double / ${dvalue(pitchDivisor)} - ${dvalue(pitchMargin)};
         camera.free_pitch =
             std::max(-max_pitch, std::min(max_pitch, camera.free_pitch));
     }
@@ -934,7 +1213,7 @@ void apply_free_camera_inertia(CameraRecord& camera) {
     camera.inertial_direction.z *= camera.inertia;
     camera.inertial_yaw_offset *= camera.inertia;
     camera.inertial_pitch_offset *= camera.inertia;
-    const double epsilon = camera.speed * 0.001;
+    const double epsilon = camera.speed * ${dvalue(moveStopScale)};
     if (std::abs(camera.inertial_direction.x) < epsilon) {
         camera.inertial_direction.x = 0.0;
     }

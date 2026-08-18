@@ -3,7 +3,9 @@ export interface SceneParityDefinition {
     referenceTimeSeconds?: number;
     referenceFrameRate?: number;
     referenceAnimationGroups?: string[];
-    actual: string;
+    // The native actual lands in `outputDirectory` as
+    // `native-{gpu,dawn,cpu}.png` — suffixed per backend so an SDL_GPU
+    // run and a Dawn run cannot overwrite each other's evidence.
     outputDirectory: string;
     maxFullMad?: number;
     maxForegroundMad?: number;
@@ -50,10 +52,9 @@ interface SceneInput
     buildDirectory?: string;
     parity?: Omit<
         SceneParityDefinition,
-        "reference" | "actual" | "outputDirectory"
+        "reference" | "outputDirectory"
     > & {
         reference?: { kind: "source"; path: string };
-        actual?: string;
         outputDirectory?: string;
     };
 }
@@ -548,8 +549,6 @@ const sceneInputs: readonly SceneInput[] = [
                 path:
                     "reference/audit-shader-frame-graph/babylon-lite-golden.png",
             },
-            actual:
-                "artifacts/parity/audit-shader-frame-graph-native.png",
             outputDirectory:
                 "artifacts/parity/audit-shader-frame-graph",
             maxFullMad: 0.001,
@@ -572,8 +571,6 @@ const sceneInputs: readonly SceneInput[] = [
                 path:
                     "reference/regression-runtime-sweep/babylon-lite-golden.png",
             },
-            actual:
-                "artifacts/parity/regression-runtime-sweep-native.png",
             outputDirectory:
                 "artifacts/parity/regression-runtime-sweep",
             maxFullMad: 0.001,
@@ -602,8 +599,6 @@ const sceneInputs: readonly SceneInput[] = [
                 path:
                     "reference/regression-instanced-ground/babylon-lite-golden.png",
             },
-            actual:
-                "artifacts/parity/regression-instanced-ground-native.png",
             outputDirectory:
                 "artifacts/parity/regression-instanced-ground",
             maxFullMad: 0.1,
@@ -627,8 +622,6 @@ const sceneInputs: readonly SceneInput[] = [
                     "reference/regression-morph-ground/babylon-lite-golden.png",
             },
             referenceTimeSeconds: 0.5,
-            actual:
-                "artifacts/parity/regression-morph-ground-native.png",
             outputDirectory:
                 "artifacts/parity/regression-morph-ground",
             maxFullMad: 0.05,
@@ -654,8 +647,6 @@ const sceneInputs: readonly SceneInput[] = [
                 path:
                     "reference/regression-compiler-state/babylon-lite-golden.png",
             },
-            actual:
-                "artifacts/parity/regression-compiler-state-native.png",
             outputDirectory:
                 "artifacts/parity/regression-compiler-state",
             maxFullMad: 0.001,
@@ -781,8 +772,6 @@ const sceneInputs: readonly SceneInput[] = [
                     "reference/regression-track-clamp/babylon-lite-golden.png",
             },
             referenceTimeSeconds: 3,
-            actual:
-                "artifacts/parity/regression-track-clamp-native.png",
             outputDirectory:
                 "artifacts/parity/regression-track-clamp",
             maxFullMad: 0.001,
@@ -1231,9 +1220,6 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
                 kind: "source",
                 path: `reference/${scene.id}/babylon-lite-golden.png`,
             },
-            actual:
-                parity.actual ??
-                `artifacts/parity/${scene.id}-native.png`,
             outputDirectory:
                 parity.outputDirectory ??
                 `artifacts/parity/${scene.id}`,
@@ -1323,7 +1309,6 @@ export function resolveScene(idOrSource: string): SceneDefinition {
                 kind: "source",
                 path: `reference/${id}/babylon-lite-golden.png`,
             },
-            actual: `artifacts/parity/${id}-native.png`,
             outputDirectory: `artifacts/parity/${id}`,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,

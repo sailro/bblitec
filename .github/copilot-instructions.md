@@ -43,25 +43,13 @@ npm run scene -- capture scene33 --native      # our uniforms, draw list, scene 
 npm run scene -- uniforms scene33 --size 96    # decode one browser buffer as named fields
 ```
 
-| Question | Answer |
-| --- | --- |
-| Am I measuring the build and golden I think I am? | `parity` refuses a stale binary or payload; a golden is only valid for the registry parameters it was captured under |
-| CPU side or GPU side? | `parity --differential` — backends agreeing to one LSB puts it on ours |
-| Which value differs from Babylon Lite's? | `diff` |
-| What did the browser actually upload? | `capture`, then `uniforms` |
-| What did *we* put in a pinned variant's blocks? | `diff --recapture`, then `pinnedMaterialBlocks`/`pinnedMeshBlocks` in the native capture — built by the draw path's own writers, refused variants included. When `compose` matches byte-for-byte, every pinned residual is an input: diff the two listings before touching any source |
-| Which draw owns the bad pixels? | attribution buffers under `artifacts/parity/<id>` |
-| Does removing the feature remove the residual? | copy the scene to `examples/`, strip it, `parity --recapture-reference` |
-
-Four rules that exist because sessions were lost to their absence:
+Four rules:
 
 - **The loader is the specification. The file format is not.** When you
   need to know what a glTF property means to Babylon, open the loader
   extension that reads it — never reason from what the property means in
   the glTF spec, and never generalize one extension's rule to its
-  neighbours. Every rule re-derived that way in one session was wrong,
-  and each one composed a variant that looked plausible and was missing
-  an arm: a declared extension is enabled *with no factor at all*
+  neighbours: a declared extension is enabled *with no factor at all*
   (`isEnabled: true` unconditionally, in all four of them); a
   `KHR_texture_transform: {}` patches nothing so composes no transform;
   a `baseColorFactor` with no image behind it is baked into the texel
@@ -80,7 +68,7 @@ Four rules that exist because sessions were lost to their absence:
   the sheen setter, `_cullMode` from a pipeline-descriptor default), and
   an arm we never compose looks exactly like a small systematic bias.
 - **Measure the PNG, do not eyeball it.** "The sprites are in the wrong
-  place" cost an hour; "exactly 7200 px at (640,180)-(719,269)" named the
+  place" is a guess; "exactly 7200 px at (640,180)-(719,269)" named the
   bug immediately.
 - **Bisect a defect before trusting the name it arrived with.** Toggle the
   suspect off and re-measure; the element whose removal makes the number
@@ -201,12 +189,13 @@ binaries are the same, which means no measurement can have moved. See
 - Keep shader formulas tied to upstream markers in
   `renderer-fidelity.json`; do not tune backend shaders against a golden.
 - **Do not type a shader formula out.** The pinned `composeShader` runs
-  under Node, so a helper the generated fragment needs can be *taken* from
-  a real composition instead of transcribed — `pinnedShaderHelpers()` in
-  `src/pinned-pbr-variants.ts` does exactly that, and the fragment calls
-  the pin's own names. A re-typed formula agrees only until upstream
-  changes it. Give it no transcribed fallback either: the fallback is the
-  copy that drifts.
+  under Node, so whole shaders are *composed* rather than transcribed —
+  `createPbrComposer` and `composeSceneStandardVariants` ship the pin's
+  own per-variant stages for both material families, and packaged
+  literals lift through the extraction helpers in
+  `src/pinned-shader-composer.ts`. A re-typed formula agrees only until
+  upstream changes it. Give it no transcribed fallback either: the
+  fallback is the copy that drifts.
 - Avoid unrelated cleanup.
 - There is no hosted CI. Complete the documented local validation matrix
   before committing or pushing.

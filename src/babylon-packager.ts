@@ -2,8 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { downloadCached } from "./asset-download-cache.js";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, resolve } from "node:path";
-
-type JsonRecord = Record<string, unknown>;
+import { asObject, asRecords } from "./gltf-document.js";
 
 const textureFields = [
     "diffuseTexture",
@@ -14,18 +13,6 @@ const textureFields = [
     "opacityTexture",
     "reflectionTexture",
 ] as const;
-
-function asRecord(value: unknown): JsonRecord | undefined {
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-        ? value as JsonRecord
-        : undefined;
-}
-
-function asRecords(value: unknown): JsonRecord[] {
-    return Array.isArray(value)
-        ? value.map(asRecord).filter((entry): entry is JsonRecord => entry !== undefined)
-        : [];
-}
 
 function hash(value: string): string {
     let result = 0x811c9dc5;
@@ -61,7 +48,7 @@ export async function packageBabylon(
 ): Promise<void> {
     const rootBytes = await readResource(source, baseDirectory);
     const parsed: unknown = JSON.parse(new TextDecoder().decode(rootBytes));
-    const document = asRecord(parsed);
+    const document = asObject(parsed);
     if (!document) throw new Error(".babylon JSON root must be an object.");
 
     const textureOutputs = new Map<string, string>();
@@ -73,7 +60,7 @@ export async function packageBabylon(
     };
     for (const material of asRecords(document.materials)) {
         for (const field of textureFields) {
-            const texture = asRecord(material[field]);
+            const texture = asObject(material[field]);
             if (!texture || typeof texture.name !== "string") {
                 continue;
             }

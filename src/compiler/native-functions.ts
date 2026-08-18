@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { sanitizeCppIdentifier } from "../cpp-literals.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type {
     DataType,
@@ -440,10 +441,7 @@ export class NativeFunctionLowerer {
     }
 
     private uniqueName(preferred: string): string {
-        const sanitized = preferred.replace(
-            /[^A-Za-z0-9_]/g,
-            "_",
-        );
+        const sanitized = sanitizeCppIdentifier(preferred);
         let name = sanitized;
         let suffix = 1;
         while (this.usedNames.has(name)) {

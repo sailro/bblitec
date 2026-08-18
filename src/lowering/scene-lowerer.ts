@@ -133,102 +133,60 @@ export class SceneLowerer {
                     "Expected setFog to register the fog scene-uniform contributor.",
                 );
             }
+            // The fog UBO writer's field inventory, paired with the
+            // emitted `set_scene_fog` stores: the generated Scene
+            // carries exactly the fields the pinned writer consumes
+            // (mode, start, end, density, color), so a pin that grows
+            // the fog slice fails generation instead of rendering with a
+            // silently missing term. The writer's float offsets (80-86
+            // in the browser scene UBO) are deliberately NOT asserted:
+            // nothing in the generated tree uses them — fog reaches the
+            // native shaders through named uniform-struct fields packed
+            // by the renderer lowerer, and the WGSL component reads come
+            // from the pin's own WGSL_FOG, lifted verbatim by
+            // shader-builtins-utility.ts fogFactorWgsl(), so they track
+            // the pin without a copy here.
             const { declaration: writeFogUbo } =
                 this.context.functionDeclaration(
                     fogModulePath,
                     "writeFogUbo",
                 );
-            const fogUboWrites: readonly (readonly [
-                number,
-                string,
-            ])[] = [
-                [80, "fog.mode"],
-                [81, "fog.start"],
-                [82, "fog.end"],
-                [83, "fog.density"],
-            ];
-            for (const [offset, path] of fogUboWrites) {
+            const fogReads = new Set<string>();
+            for (const access of this.context.findNodes(
+                writeFogUbo,
+                (
+                    node,
+                ): node is ts.PropertyAccessExpression =>
+                    ts.isPropertyAccessExpression(node),
+            )) {
+                const path = this.context.propertyPath(access);
                 if (
-                    !this.context.hasNode(
-                        writeFogUbo,
-                        (node) =>
-                            ts.isBinaryExpression(node) &&
-                            node.operatorToken.kind ===
-                                ts.SyntaxKind.EqualsToken &&
-                            ts.isElementAccessExpression(
-                                node.left,
-                            ) &&
-                            ts.isNumericLiteral(
-                                node.left.argumentExpression,
-                            ) &&
-                            Number(
-                                node.left.argumentExpression
-                                    .text,
-                            ) === offset &&
-                            this.context
-                                .propertyPath(node.right)
-                                ?.join(".") === path,
-                    )
+                    path &&
+                    path.length === 2 &&
+                    path[0] === "fog"
                 ) {
-                    this.context.contractError(
-                        writeFogUbo,
-                        `Expected fog UBO write data[${offset}] = ${path}.`,
-                    );
+                    fogReads.add(path[1]!);
                 }
             }
-            for (const channel of [0, 1, 2]) {
-                if (
-                    !this.context.hasNode(
-                        writeFogUbo,
-                        (node) => {
-                            if (
-                                !ts.isBinaryExpression(node) ||
-                                node.operatorToken.kind !==
-                                    ts.SyntaxKind.EqualsToken ||
-                                !ts.isElementAccessExpression(
-                                    node.left,
-                                ) ||
-                                !ts.isNumericLiteral(
-                                    node.left
-                                        .argumentExpression,
-                                ) ||
-                                Number(
-                                    node.left
-                                        .argumentExpression
-                                        .text,
-                                ) !== 84 + channel
-                            ) {
-                                return false;
-                            }
-                            const right =
-                                this.context.unwrapExpression(
-                                    node.right,
-                                );
-                            return (
-                                ts.isElementAccessExpression(
-                                    right,
-                                ) &&
-                                ts.isNumericLiteral(
-                                    right.argumentExpression,
-                                ) &&
-                                Number(
-                                    right.argumentExpression
-                                        .text,
-                                ) === channel &&
-                                this.context
-                                    .propertyPath(
-                                        right.expression,
-                                    )
-                                    ?.join(".") === "fog.color"
-                            );
-                        },
-                    )
-                ) {
-                    this.context.contractError(
-                        writeFogUbo,
-                        `Expected fog UBO color write data[${84 + channel}].`,
-                    );
-                }
+            const expectedFogFields = [
+                "mode",
+                "start",
+                "end",
+                "density",
+                "color",
+            ];
+            if (
+                fogReads.size !== expectedFogFields.length ||
+                expectedFogFields.some(
+                    (name) => !fogReads.has(name),
+                )
+            ) {
+                this.context.contractError(
+                    writeFogUbo,
+                    `Expected the fog UBO writer to consume exactly ` +
+                        `{${expectedFogFields.join(", ")}}, found ` +
+                        `{${[...fogReads].sort().join(", ")}}.`,
+                );
             }
         }
         const value = (input: number): string => this.context.floatLiteral(input);

@@ -35,7 +35,7 @@ export function compileAnimationIntrinsic(
     switch (importedName) {
         case "createAnimationManager":
             context.expectArgumentCount(call, 0, 0);
-            context.reachFeature("animation:property");
+            context.reachFeature("animation:property", call);
             return {
                 kind: "animation-manager",
                 cpp: "bbl::create_animation_manager()",
@@ -49,7 +49,7 @@ export function compileAnimationIntrinsic(
                     call.arguments[1]!,
                     call.arguments[2],
                 );
-            context.reachFeature("animation:property");
+            context.reachFeature("animation:property", call);
             return {
                 kind: "animation-clip",
                 cpp: compiled.cpp,
@@ -86,7 +86,7 @@ export function compileAnimationIntrinsic(
                     call.arguments[3],
                     clip,
                 );
-            context.reachFeature("animation:property");
+            context.reachFeature("animation:property", call);
             return {
                 kind: "animation-group",
                 cpp:
@@ -108,7 +108,7 @@ export function compileAnimationIntrinsic(
             );
             const scene =
                 context.requireDefaultScene(call);
-            context.reachFeature("animation:property");
+            context.reachFeature("animation:property", call);
             return {
                 kind: "void",
                 cpp:

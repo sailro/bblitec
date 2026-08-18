@@ -7,9 +7,213 @@
  * path deliberately (`pbr-primitive-topology.ts` is a module of its own so
  * ordinary PBR scenes never carry the topology names), so a scene whose
  * assets are all triangle lists emits this loader without any of it.
+ *
+ * `lowered` carries the segments produced from the pinned ASTs at
+ * generation time (`gltf-lowerer.ts`), replacing what used to be
+ * hand-transcribed C++ in this string: a changed pinned formula now
+ * changes — or refuses — the emitted loader instead of leaving stale
+ * text behind an unrelated assertion.
  */
+export interface GltfLoaderLoweredSegments {
+    /**
+     * `normalize_quaternion`, `interpolate_quaternion`, `cubic_quaternion`
+     * and `cubic_vec3`, lowered from `src/animation/evaluate.ts`
+     * (`normalizeQuat4`, `quatSlerp`, and `evaluateSampler`'s CUBICSPLINE
+     * branch).
+     */
+    animationInterpolation: string;
+    /**
+     * The sampler filter/wrap mapping inside `texture_data`, lowered from
+     * `src/loader-gltf/gltf-sampler-desc.ts#gltfTexSamplerDesc`.
+     */
+    samplerMapping: string;
+    /**
+     * The four integer componentType clauses of `read_component`, lowered
+     * from `src/loader-gltf/gltf-ext-quantization.ts#readComponent` — the
+     * byte/ubyte/short/ushort scale factors and the signed clamps.
+     */
+    accessorNormalization: string;
+    /**
+     * The COLOR_0 → Vec4 build, lowered from
+     * `src/loader-gltf/gltf-color-normalize.ts#normalizeColorToVec4`: the
+     * channel order, the VEC3 alpha default, and the proof that the pinned
+     * color divisors are the accessor divisors `read_component` applies.
+     */
+    vertexColor: string;
+    /**
+     * `pre_scale_harmonics`, lowered from
+     * `src/loader-gltf/ibl-env-assembly.ts#polynomialToPreScaledHarmonics`
+     * (the private copy the pinned EXT_lights_image_based feature executes,
+     * proven identical to `src/loader-env/load-env.ts`'s canonical).
+     */
+    shPrescale: string;
+    /**
+     * The image-processing defaults the pinned EXT_lights_image_based
+     * `_sceneSetup` writes, lowered from
+     * `src/loader-gltf/gltf-ext-lights-image-based.ts`.
+     */
+    imageProcessingDefaults: string;
+    /**
+     * The dielectric/ior/dispersion/iridescence JSON keys and default
+     * constants, lowered from `src/loader-gltf/gltf-ext-dielectric.ts` and
+     * `src/loader-gltf/gltf-ext-iridescence.ts`.
+     */
+    extensionDefaults: GltfExtensionDefaults;
+    /**
+     * The remaining material JSON keys and default constants, lowered
+     * from `gltf-material.ts#assembleMaterial`, the dielectric
+     * specular-factor treatment, the KHR_texture_transform identity
+     * (`gltf-ext-uv-transform.ts` + the pinned writer's defaults), and
+     * the clearcoat/sheen/emissive-strength option objects.
+     */
+    materialDefaults: GltfMaterialDefaults;
+    /**
+     * The factor-bake helpers and their byte constants, lowered from
+     * `src/math/color.ts#linearToSrgbByte` and the pinned factor-texture
+     * bakes (`src/loader-gltf/gltf-pbr-builder.ts`
+     * `uploadBaseColorFactorTexture` / `uploadOrmFactorTexture`).
+     */
+    factorBake: GltfFactorBake;
+    /**
+     * `multiply_matrix`, lowered from
+     * `src/math/mat4-multiply-into.ts#mat4MultiplyInto` — the pin's fully
+     * unrolled product sums verified term by term, emitted as the loop
+     * the loader has always carried.
+     */
+    matrixMultiply: string;
+    /**
+     * `local_matrix`, lowered from
+     * `src/loader-gltf/gltf-parser.ts#computeNodeWorldMatrix` (the
+     * authored-matrix arm, the three JSON keys and their whole-array
+     * defaults, the compose argument order) through the same
+     * `mat4ComposeInto` walk `trs_matrix` uses — but reading the raw
+     * JSON doubles and rounding once per lane at the store, which is
+     * the pin's own precision chain. See the round-3/4 notes in
+     * `gltf-lowerer.ts`.
+     */
+    matrixLocal: string;
+    /**
+     * `trs_matrix`, lowered from
+     * `src/math/mat4-compose-into.ts#mat4ComposeInto` — every product
+     * local and store expression comes from the pin.
+     */
+    matrixCompose: string;
+    /**
+     * `native_matrix`, anchored to
+     * `src/loader-gltf/gltf-parser.ts#RH_TO_LH_ROOT`. The function itself
+     * is the record's convention (the diagonal change of basis applied at
+     * consumption instead of the pin's root-level left multiply), so only
+     * the flip axis and sign flow from the pin.
+     */
+    matrixNative: string;
+    /**
+     * The EXT_lights_image_based SH9 → spherical-polynomial conversion of
+     * `load_image_based_environment`, lowered from
+     * `src/loader-gltf/gltf-ext-lights-image-based.ts#irradianceCoefficientsToPolynomial`
+     * (band constants, slot layout, the intensity/π prescale) plus the
+     * feature's `applyAsset` intensity default.
+     */
+    iblPolynomial: string;
+    /**
+     * The IBL environment scalars that follow it — the LOD generation
+     * scale, the rotation yaw, and the BRDF LUT width — lowered from the
+     * same feature's `applyAsset`/`envYawFromQuaternion` and from
+     * `src/loader-gltf/ibl-env-assembly.ts#generateBrdfLut`.
+     */
+    iblEnvironmentScalars: string;
+    /**
+     * The KHR_lights_punctual record build — type strings, the spot
+     * outer-cone default, the color/intensity/range defaults, and the
+     * position/direction sign convention — lowered from
+     * `src/loader-gltf/gltf-feature-lights-punctual.ts#applyAsset`,
+     * `src/light/spot-light.ts#createSpotLight`, and the parser's
+     * `RH_TO_LH_ROOT`.
+     */
+    punctualLightLoading: string;
+}
+
+/** One lowered glTF extension default: the JSON key and the C++ literal. */
+export interface GltfLoweredDefault {
+    key: string;
+    literal: string;
+}
+
+/**
+ * The pinned factor bakes: `unorm_byte` / `linear_to_srgb_byte`
+ * emitted whole, plus the round-clamp-scale constants the material
+ * build inlines for the base-color alpha lane and the ORM texel's
+ * constant opaque lanes.
+ */
+export interface GltfFactorBake {
+    helpers: string;
+    /** `Math.round(clamp(v, lo, hi) * scale)` as float literals. */
+    unormClampLo: string;
+    unormClampHi: string;
+    unormScale: string;
+    /** The pinned ORM texel's constant occlusion/alpha byte. */
+    opaqueByte: string;
+}
+
+export interface GltfExtensionDefaults {
+    ior: GltfLoweredDefault;
+    transmissionFactor: GltfLoweredDefault;
+    thicknessFactor: GltfLoweredDefault;
+    attenuationDistance: GltfLoweredDefault;
+    dispersion: GltfLoweredDefault;
+    /** Babylon's fixed Abbe numerator in `strength = 20 / dispersion`. */
+    dispersionScale: string;
+    iridescenceFactor: GltfLoweredDefault;
+    iridescenceIor: GltfLoweredDefault;
+    iridescenceThicknessMinimum: GltfLoweredDefault;
+    iridescenceThicknessMaximum: GltfLoweredDefault;
+}
+
+/**
+ * The round-4 material defaults — see the round-4 notes in
+ * `gltf-lowerer.ts` for the absent-arm asymmetries (the base color's
+ * native default, the texture-transform identity, the doubleSided
+ * coercion).
+ */
+export interface GltfMaterialDefaults {
+    /** Key only: the absent arm is the record's native Color4{1,1,1,1}. */
+    baseColorFactorKey: string;
+    metallicFactor: GltfLoweredDefault;
+    roughnessFactor: GltfLoweredDefault;
+    /** The key plus the identity seed the loader writes before the read. */
+    emissiveFactor: { key: string; identity: string };
+    /** glTF `normalTexture.scale`. */
+    normalScale: GltfLoweredDefault;
+    /** glTF `occlusionTexture.texCoord`; the literal is an integer. */
+    occlusionTexCoord: GltfLoweredDefault;
+    alphaMode: { key: string; literal: string };
+    /** Key only: `bool_or(..., false)` is the pin's `!!` coercion. */
+    doubleSidedKey: string;
+    alphaCutoff: GltfLoweredDefault;
+    /** A factor within `epsilon` of `clear` drops both pinned options. */
+    specularFactor: { key: string; clear: string; epsilon: string };
+    /** `((ior - one) / (ior + one)) ** 2 / baseReflectance`. */
+    iorToF0: { one: string; baseReflectance: string };
+    /** The `!== unit` triple gating the dielectric tint, and its length. */
+    specularColor: { key: string; length: string; unit: string };
+    /** KHR_texture_transform: the three field keys; rotation's identity. */
+    textureTransform: {
+        rotation: GltfLoweredDefault;
+        scaleKey: string;
+        offsetKey: string;
+    };
+    /** `clearcoatFactor ?? (clearcoatTexture ? present : absent)`. */
+    clearcoatIntensity: { key: string; present: string; absent: string };
+    clearcoatRoughness: { key: string; present: string; absent: string };
+    clearcoatNormalScale: GltfLoweredDefault;
+    sheenColor: { key: string; identity: string };
+    sheenRoughness: GltfLoweredDefault;
+    sheenIntensity: string;
+    emissiveStrength: GltfLoweredDefault;
+}
+
 export function gltfLoaderCpp(
     provenance: string,
+    lowered: GltfLoaderLoweredSegments,
     nonTrianglePrimitives = false,
     nodeVisibility = false,
     animationPointer = false,
@@ -18,6 +222,9 @@ export function gltfLoaderCpp(
     assetTransmission = false,
     materialSpecular = false,
 ): string {
+    const defaults = lowered.extensionDefaults;
+    const materialDefaults = lowered.materialDefaults;
+    const factorBake = lowered.factorBake;
     return `// ${provenance}
 #include <bblite/pal_gltf.hpp>
 #include <bblite/runtime.hpp>
@@ -93,6 +300,17 @@ std::vector<float> float_array(const ts::JsonValue* value) {
     std::vector<float> result;
     for (const ts::JsonValue& element : value->as_array()) {
         result.push_back(static_cast<float>(element.as_number()));
+    }
+    return result;
+}
+
+// The raw JSON doubles, for the one consumer whose pin composes them in
+// double precision before its Float32Array store (local_matrix).
+std::vector<double> double_array(const ts::JsonValue* value) {
+    if (!value) return {};
+    std::vector<double> result;
+    for (const ts::JsonValue& element : value->as_array()) {
+        result.push_back(element.as_number());
     }
     return result;
 }
@@ -494,22 +712,7 @@ float read_component(
         component_offset;
     const std::uint8_t* data = buffer.data() + offset;
     switch (accessor.component_type) {
-        case 5120: {
-            const std::int8_t value = read_value<std::int8_t>(data);
-            return accessor.normalized ? std::max(-1.0f, static_cast<float>(value) / 127.0f) : value;
-        }
-        case 5121: {
-            const std::uint8_t value = read_value<std::uint8_t>(data);
-            return accessor.normalized ? static_cast<float>(value) / 255.0f : value;
-        }
-        case 5122: {
-            const std::int16_t value = read_value<std::int16_t>(data);
-            return accessor.normalized ? std::max(-1.0f, static_cast<float>(value) / 32767.0f) : value;
-        }
-        case 5123: {
-            const std::uint16_t value = read_value<std::uint16_t>(data);
-            return accessor.normalized ? static_cast<float>(value) / 65535.0f : value;
-        }
+${lowered.accessorNormalization}
         case 5125:
             return static_cast<float>(read_value<std::uint32_t>(data));
         case 5126:
@@ -535,139 +738,7 @@ Vec3 normalize(Vec3 value) {
         : Vec3{0.0f, 1.0f, 0.0f};
 }
 
-Vec4 normalize_quaternion(Vec4 value) {
-    // Pinned normalizeQuat4: double length over float32 components,
-    // a multiply by the inverse square root, one rounding at the
-    // Float32Array store, no epsilon, and the input kept verbatim on
-    // zero length.
-    const double x = value.x;
-    const double y = value.y;
-    const double z = value.z;
-    const double w = value.w;
-    const double length_squared =
-        x * x + y * y + z * z + w * w;
-    if (length_squared > 0.0) {
-        const double inverse =
-            1.0 / std::sqrt(length_squared);
-        return Vec4{
-            static_cast<float>(x * inverse),
-            static_cast<float>(y * inverse),
-            static_cast<float>(z * inverse),
-            static_cast<float>(w * inverse),
-        };
-    }
-    return value;
-}
-
-Vec4 interpolate_quaternion(Vec4 left, Vec4 right, double amount) {
-    // Pinned sampler evaluation lifts float32 keyframes to JavaScript
-    // doubles and rounds once at the Float32Array store.
-    const double lx = left.x;
-    const double ly = left.y;
-    const double lz = left.z;
-    const double lw = left.w;
-    double rx = right.x;
-    double ry = right.y;
-    double rz = right.z;
-    double rw = right.w;
-    double dot = lx * rx + ly * ry + lz * rz + lw * rw;
-    if (dot < 0.0) {
-        rx = -rx;
-        ry = -ry;
-        rz = -rz;
-        rw = -rw;
-        dot = -dot;
-    }
-    if (dot > 0.9995) {
-        // The pinned near-parallel path stores the double lerp into a
-        // Float32Array scratch before normalizing it in place, so the
-        // components round to float32 between the two steps.
-        const Vec4 lerped{
-            static_cast<float>(lx + amount * (rx - lx)),
-            static_cast<float>(ly + amount * (ry - ly)),
-            static_cast<float>(lz + amount * (rz - lz)),
-            static_cast<float>(lw + amount * (rw - lw)),
-        };
-        return normalize_quaternion(lerped);
-    }
-    const double theta = std::acos(dot);
-    const double sin_theta = std::sin(theta);
-    const double left_weight =
-        std::sin((1.0 - amount) * theta) / sin_theta;
-    const double right_weight =
-        std::sin(amount * theta) / sin_theta;
-    return Vec4{
-        static_cast<float>(left_weight * lx + right_weight * rx),
-        static_cast<float>(left_weight * ly + right_weight * ry),
-        static_cast<float>(left_weight * lz + right_weight * rz),
-        static_cast<float>(left_weight * lw + right_weight * rw),
-    };
-}
-
-Vec4 cubic_quaternion(
-    Vec4 left,
-    Vec4 left_tangent,
-    Vec4 right,
-    Vec4 right_tangent,
-    double amount,
-    double span) {
-    // Pinned sampler evaluation lifts float32 keyframes to JavaScript
-    // doubles and rounds once at the Float32Array store.
-    const double amount2 = amount * amount;
-    const double amount3 = amount2 * amount;
-    const double h00 = 2.0 * amount3 - 3.0 * amount2 + 1.0;
-    const double h10 = amount3 - 2.0 * amount2 + amount;
-    const double h01 = -2.0 * amount3 + 3.0 * amount2;
-    const double h11 = amount3 - amount2;
-    // The pinned evaluator scales tangents by the key delta before
-    // weighting, stores the Hermite sum into a Float32Array, and then
-    // normalizes the rounded components in place.
-    const Vec4 combined{
-        static_cast<float>(
-            h00 * left.x + h10 * (left_tangent.x * span) +
-            h01 * right.x + h11 * (right_tangent.x * span)),
-        static_cast<float>(
-            h00 * left.y + h10 * (left_tangent.y * span) +
-            h01 * right.y + h11 * (right_tangent.y * span)),
-        static_cast<float>(
-            h00 * left.z + h10 * (left_tangent.z * span) +
-            h01 * right.z + h11 * (right_tangent.z * span)),
-        static_cast<float>(
-            h00 * left.w + h10 * (left_tangent.w * span) +
-            h01 * right.w + h11 * (right_tangent.w * span)),
-    };
-    return normalize_quaternion(combined);
-}
-
-Vec3 cubic_vec3(
-    Vec3 left,
-    Vec3 left_tangent,
-    Vec3 right,
-    Vec3 right_tangent,
-    double amount,
-    double span) {
-    // Pinned sampler evaluation lifts float32 keyframes to JavaScript
-    // doubles and rounds once at the Float32Array store.
-    const double amount2 = amount * amount;
-    const double amount3 = amount2 * amount;
-    const double h00 = 2.0 * amount3 - 3.0 * amount2 + 1.0;
-    const double h10 = amount3 - 2.0 * amount2 + amount;
-    const double h01 = -2.0 * amount3 + 3.0 * amount2;
-    const double h11 = amount3 - amount2;
-    // The pinned evaluator scales tangents by the key delta before
-    // weighting and rounds once at the Float32Array store.
-    return Vec3{
-        static_cast<float>(
-            h00 * left.x + h10 * (left_tangent.x * span) +
-            h01 * right.x + h11 * (right_tangent.x * span)),
-        static_cast<float>(
-            h00 * left.y + h10 * (left_tangent.y * span) +
-            h01 * right.y + h11 * (right_tangent.y * span)),
-        static_cast<float>(
-            h00 * left.z + h10 * (left_tangent.z * span) +
-            h01 * right.z + h11 * (right_tangent.z * span)),
-    };
-}
+${lowered.animationInterpolation}
 
 Matrix identity_matrix() {
     Matrix result{};
@@ -675,150 +746,13 @@ Matrix identity_matrix() {
     return result;
 }
 
-Matrix multiply_matrix(const Matrix& left, const Matrix& right) {
-    // Pinned matrix multiplication runs in JavaScript double
-    // precision over float32 entries and rounds once per component
-    // at the Float32Array store; mirror that exactly.
-    Matrix result{};
-    for (int column = 0; column < 4; ++column) {
-        for (int row = 0; row < 4; ++row) {
-            double sum = 0.0;
-            for (int index = 0; index < 4; ++index) {
-                sum +=
-                    static_cast<double>(left[index * 4 + row]) *
-                    static_cast<double>(right[column * 4 + index]);
-            }
-            result[column * 4 + row] = static_cast<float>(sum);
-        }
-    }
-    return result;
-}
+${lowered.matrixMultiply}
 
-Matrix local_matrix(const JsonObject& node) {
-    if (const ts::JsonValue* matrix_value = optional(node, "matrix")) {
-        const std::vector<float> values = float_array(matrix_value);
-        if (values.size() != 16) throw std::runtime_error("glTF node matrix must have 16 values.");
-        Matrix result{};
-        std::copy(values.begin(), values.end(), result.begin());
-        return result;
-    }
-    const std::vector<float> translation = float_array(optional(node, "translation"));
-    const std::vector<float> rotation = float_array(optional(node, "rotation"));
-    const std::vector<float> scale = float_array(optional(node, "scale"));
-    const float tx = translation.size() == 3 ? translation[0] : 0.0f;
-    const float ty = translation.size() == 3 ? translation[1] : 0.0f;
-    const float tz = translation.size() == 3 ? translation[2] : 0.0f;
-    const float x = rotation.size() == 4 ? rotation[0] : 0.0f;
-    const float y = rotation.size() == 4 ? rotation[1] : 0.0f;
-    const float z = rotation.size() == 4 ? rotation[2] : 0.0f;
-    const float w = rotation.size() == 4 ? rotation[3] : 1.0f;
-    const float sx = scale.size() == 3 ? scale[0] : 1.0f;
-    const float sy = scale.size() == 3 ? scale[1] : 1.0f;
-    const float sz = scale.size() == 3 ? scale[2] : 1.0f;
-    Matrix result = identity_matrix();
-    result[0] = (1.0f - 2.0f * (y * y + z * z)) * sx;
-    result[1] = (2.0f * (x * y + z * w)) * sx;
-    result[2] = (2.0f * (x * z - y * w)) * sx;
-    result[4] = (2.0f * (x * y - z * w)) * sy;
-    result[5] = (1.0f - 2.0f * (x * x + z * z)) * sy;
-    result[6] = (2.0f * (y * z + x * w)) * sy;
-    result[8] = (2.0f * (x * z + y * w)) * sz;
-    result[9] = (2.0f * (y * z - x * w)) * sz;
-    result[10] = (1.0f - 2.0f * (x * x + y * y)) * sz;
-    result[12] = tx;
-    result[13] = ty;
-    result[14] = tz;
-    return result;
-}
+${lowered.matrixLocal}
 
-Matrix trs_matrix(
-    Vec3 translation,
-    Vec4 rotation,
-    Vec3 scale) {
-    // Pinned mat4ComposeInto runs in JavaScript double precision and
-    // rounds once at the Float32Array store; mirror its products and
-    // association exactly.
-    const double x = rotation.x;
-    const double y = rotation.y;
-    const double z = rotation.z;
-    const double w = rotation.w;
-    const double xx = x * x;
-    const double yy = y * y;
-    const double zz = z * z;
-    const double xy = x * y;
-    const double xz = x * z;
-    const double yz = y * z;
-    const double wx = w * x;
-    const double wy = w * y;
-    const double wz = w * z;
-    const double sx = scale.x;
-    const double sy = scale.y;
-    const double sz = scale.z;
-    Matrix result = identity_matrix();
-    result[0] = static_cast<float>((1.0 - 2.0 * (yy + zz)) * sx);
-    result[1] = static_cast<float>(2.0 * (xy + wz) * sx);
-    result[2] = static_cast<float>(2.0 * (xz - wy) * sx);
-    result[4] = static_cast<float>(2.0 * (xy - wz) * sy);
-    result[5] = static_cast<float>((1.0 - 2.0 * (xx + zz)) * sy);
-    result[6] = static_cast<float>(2.0 * (yz + wx) * sy);
-    result[8] = static_cast<float>(2.0 * (xz + wy) * sz);
-    result[9] = static_cast<float>(2.0 * (yz - wx) * sz);
-    result[10] = static_cast<float>((1.0 - 2.0 * (xx + yy)) * sz);
-    result[12] = translation.x;
-    result[13] = translation.y;
-    result[14] = translation.z;
-    return result;
-}
+${lowered.matrixCompose}
 
-Matrix inverse_affine(const Matrix& matrix) {
-    const float determinant =
-        matrix[0] * (matrix[5] * matrix[10] - matrix[9] * matrix[6]) -
-        matrix[4] * (matrix[1] * matrix[10] - matrix[9] * matrix[2]) +
-        matrix[8] * (matrix[1] * matrix[6] - matrix[5] * matrix[2]);
-    if (std::abs(determinant) < 0.000001f) {
-        return identity_matrix();
-    }
-    const float inverse_determinant = 1.0f / determinant;
-    Matrix result = identity_matrix();
-    result[0] = (matrix[5] * matrix[10] - matrix[9] * matrix[6]) * inverse_determinant;
-    result[1] = (matrix[9] * matrix[2] - matrix[1] * matrix[10]) * inverse_determinant;
-    result[2] = (matrix[1] * matrix[6] - matrix[5] * matrix[2]) * inverse_determinant;
-    result[4] = (matrix[8] * matrix[6] - matrix[4] * matrix[10]) * inverse_determinant;
-    result[5] = (matrix[0] * matrix[10] - matrix[8] * matrix[2]) * inverse_determinant;
-    result[6] = (matrix[4] * matrix[2] - matrix[0] * matrix[6]) * inverse_determinant;
-    result[8] = (matrix[4] * matrix[9] - matrix[8] * matrix[5]) * inverse_determinant;
-    result[9] = (matrix[8] * matrix[1] - matrix[0] * matrix[9]) * inverse_determinant;
-    result[10] = (matrix[0] * matrix[5] - matrix[4] * matrix[1]) * inverse_determinant;
-    result[12] = -(
-        result[0] * matrix[12] +
-        result[4] * matrix[13] +
-        result[8] * matrix[14]);
-    result[13] = -(
-        result[1] * matrix[12] +
-        result[5] * matrix[13] +
-        result[9] * matrix[14]);
-    result[14] = -(
-        result[2] * matrix[12] +
-        result[6] * matrix[13] +
-        result[10] * matrix[14]);
-    return result;
-}
-
-Matrix native_matrix(const Matrix& matrix) {
-    Matrix result{};
-    for (std::size_t column = 0; column < 4; ++column) {
-        for (std::size_t row = 0; row < 4; ++row) {
-            const float row_sign = row == 0 ? -1.0f : 1.0f;
-            const float column_sign =
-                column == 0 ? -1.0f : 1.0f;
-            result[column * 4 + row] =
-                matrix[column * 4 + row] *
-                row_sign *
-                column_sign;
-        }
-    }
-    return result;
-}
+${lowered.matrixNative}
 
 Vec3 transform_point_raw(const Matrix& matrix, Vec3 value) {
     return Vec3{
@@ -935,62 +869,7 @@ void set_color_channel(
     else color.b = value;
 }
 
-std::array<Color3, 9> pre_scale_harmonics(
-    const std::array<Color3, 9>& polynomial) {
-    constexpr float c00xy = 0.3333338747897695f;
-    constexpr float c00z = 0.33333298856284405f;
-    constexpr float c1 = 1.4999984284682104f;
-    constexpr float c2 = 3.999982863580422f;
-    constexpr float c20zz = 1.3333326611423701f;
-    constexpr float c20xy = 0.6666653397393608f;
-    constexpr float c22 = 1.999991431790211f;
-    std::array<Color3, 9> result{};
-    for (int channel = 0; channel < 3; ++channel) {
-        const float x =
-            color_channel(polynomial[0], channel);
-        const float y =
-            color_channel(polynomial[1], channel);
-        const float z =
-            color_channel(polynomial[2], channel);
-        const float xx =
-            color_channel(polynomial[3], channel);
-        const float yy =
-            color_channel(polynomial[4], channel);
-        const float zz =
-            color_channel(polynomial[5], channel);
-        const float yz =
-            color_channel(polynomial[6], channel);
-        const float zx =
-            color_channel(polynomial[7], channel);
-        const float xy =
-            color_channel(polynomial[8], channel);
-        set_color_channel(
-            result[0],
-            channel,
-            (xx + yy) * c00xy + zz * c00z);
-        set_color_channel(
-            result[1], channel, y * c1);
-        set_color_channel(
-            result[2], channel, z * c1);
-        set_color_channel(
-            result[3], channel, x * c1);
-        set_color_channel(
-            result[4], channel, xy * c2);
-        set_color_channel(
-            result[5], channel, yz * c2);
-        set_color_channel(
-            result[6],
-            channel,
-            zz * c20zz - (xx + yy) * c20xy);
-        set_color_channel(
-            result[7], channel, zx * c2);
-        set_color_channel(
-            result[8],
-            channel,
-            (xx - yy) * c22);
-    }
-    return result;
-}
+${lowered.shPrescale}
 
 bool load_image_based_environment(
     EnvironmentState& environment,
@@ -1045,95 +924,7 @@ bool load_image_based_environment(
         specular_images.empty()) {
         return false;
     }
-    const float intensity =
-        float_or(light, "intensity", 1.0f);
-    const float scale = intensity / pi;
-    const float inverse_pi = 1.0f / pi;
-    std::array<Color3, 9> source{};
-    for (
-        std::size_t coefficient = 0;
-        coefficient < source.size();
-        ++coefficient) {
-        const std::vector<float> values =
-            float_array(&coefficients[coefficient]);
-        if (values.size() != 3) {
-            throw std::runtime_error(
-                "Image-based light irradiance coefficient must be vec3.");
-        }
-        source[coefficient] = Color3{
-            values[0] * scale,
-            values[1] * scale,
-            values[2] * scale,
-        };
-    }
-    std::array<Color3, 9> polynomial{};
-    for (int channel = 0; channel < 3; ++channel) {
-        const float l00 =
-            color_channel(source[0], channel);
-        const float l1_1 =
-            color_channel(source[1], channel);
-        const float l10 =
-            color_channel(source[2], channel);
-        const float l11 =
-            color_channel(source[3], channel);
-        const float l2_2 =
-            color_channel(source[4], channel);
-        const float l2_1 =
-            color_channel(source[5], channel);
-        const float l20 =
-            color_channel(source[6], channel);
-        const float l21 =
-            color_channel(source[7], channel);
-        const float l22 =
-            color_channel(source[8], channel);
-        set_color_channel(
-            polynomial[0],
-            channel,
-            -1.02333f * l11 * inverse_pi);
-        set_color_channel(
-            polynomial[1],
-            channel,
-            -1.02333f * l1_1 * inverse_pi);
-        set_color_channel(
-            polynomial[2],
-            channel,
-            1.02333f * l10 * inverse_pi);
-        set_color_channel(
-            polynomial[3],
-            channel,
-            (
-                0.886277f * l00 -
-                0.247708f * l20 +
-                0.429043f * l22) *
-                inverse_pi);
-        set_color_channel(
-            polynomial[4],
-            channel,
-            (
-                0.886277f * l00 -
-                0.247708f * l20 -
-                0.429043f * l22) *
-                inverse_pi);
-        set_color_channel(
-            polynomial[5],
-            channel,
-            (
-                0.886277f * l00 +
-                0.495417f * l20) *
-                inverse_pi);
-        set_color_channel(
-            polynomial[6],
-            channel,
-            -0.858086f * l2_1 * inverse_pi);
-        set_color_channel(
-            polynomial[7],
-            channel,
-            -0.858086f * l21 * inverse_pi);
-        set_color_channel(
-            polynomial[8],
-            channel,
-            0.858086f * l2_2 * inverse_pi);
-    }
+${lowered.iblPolynomial}
     environment.has_irradiance = true;
     environment.spherical_harmonics =
         pre_scale_harmonics(polynomial);
@@ -1167,30 +958,8 @@ bool load_image_based_environment(
                     unsigned_value(face)));
         }
     }
-    environment.lod_generation_scale =
-        specular_images.size() > 1
-            ? static_cast<float>(
-                  specular_images.size() - 1) /
-                  std::log2(
-                      static_cast<float>(
-                          environment.specular_width))
-            : 0.0f;
-    const std::vector<float> rotation =
-        float_array(optional(light, "rotation"));
-    if (rotation.size() == 4) {
-        environment.rotation_y =
-            -2.0f *
-            std::atan2(rotation[1], rotation[3]);
-    }
-    environment.brdf_lut.bytes =
-        pal::read_binary_file(
-            asset_path(
-                "gltf-ibl-brdf-lut.rgba16f"));
-    environment.brdf_lut_width = 256;
-    environment.brdf_lut_rgba16f = true;
-    environment.exposure = 0.8f;
-    environment.contrast = 1.2f;
-    environment.tone_mapping_enabled = true;
+${lowered.iblEnvironmentScalars}
+${lowered.imageProcessingDefaults}
     return true;
 }
 
@@ -1211,36 +980,7 @@ TextureData texture_data(
     if (const ts::JsonValue* sampler_value = optional(texture, "sampler")) {
         sampler = &samplers.at(unsigned_value(*sampler_value)).as_object();
     }
-    const std::size_t min_filter =
-        sampler ? unsigned_or(*sampler, "minFilter", 9987) : 9987;
-    const std::size_t mag_filter =
-        sampler ? unsigned_or(*sampler, "magFilter", 9729) : 9729;
-    const bool min_nearest = min_filter % 2 == 0;
-    const bool mip_nearest = min_filter == 9984 || min_filter == 9985;
-    const bool no_mip = min_filter == 9728 || min_filter == 9729;
-    const bool mag_linear = mag_filter != 9728;
-    result.sampler.min_filter =
-        min_nearest ? TextureFilter::nearest : TextureFilter::linear;
-    result.sampler.mipmap_mode =
-        mip_nearest ? TextureMipmapMode::nearest : TextureMipmapMode::linear;
-    result.sampler.mag_filter =
-        mag_linear ? TextureFilter::linear : TextureFilter::nearest;
-    result.sampler.max_lod = no_mip ? 0.0f : 1000.0f;
-    result.sampler.max_anisotropy =
-        mag_linear && !min_nearest && !mip_nearest && !no_mip
-            ? 4.0f
-            : 1.0f;
-    const auto address_mode = [](std::size_t mode) {
-        return mode == 33071
-            ? TextureAddressMode::clamp
-            : mode == 33648
-                ? TextureAddressMode::mirror
-                : TextureAddressMode::repeat;
-    };
-    result.sampler.address_u = address_mode(
-        sampler ? unsigned_or(*sampler, "wrapS", 10497) : 10497);
-    result.sampler.address_v = address_mode(
-        sampler ? unsigned_or(*sampler, "wrapT", 10497) : 10497);
+${lowered.samplerMapping}
     const std::size_t image_index = texture_image_index(texture);
     result.bytes = image_data(
         buffer,
@@ -1285,9 +1025,9 @@ void apply_texture_transform(
     const JsonObject& transform =
         transform_value->as_object();
     const std::vector<float> scale =
-        float_array(optional(transform, "scale"));
+        float_array(optional(transform, "${materialDefaults.textureTransform.scaleKey}"));
     const std::vector<float> offset =
-        float_array(optional(transform, "offset"));
+        float_array(optional(transform, "${materialDefaults.textureTransform.offsetKey}"));
     if (scale.size() == 2) {
         slot.u_scale = scale[0];
         slot.v_scale = scale[1];
@@ -1296,41 +1036,10 @@ void apply_texture_transform(
         slot.u_offset = offset[0];
         slot.v_offset = offset[1];
     }
-    slot.rotation = float_or(transform, "rotation", 0.0f);
+    slot.rotation = float_or(transform, "${materialDefaults.textureTransform.rotation.key}", ${materialDefaults.textureTransform.rotation.literal});
 }
 
-// Babylon Lite bakes texture-less PBR factors into 1x1 factor
-// textures (gltf-pbr-builder uploadBaseColorFactorTexture /
-// uploadOrmFactorTexture) and leaves the shader uniforms at their
-// defaults, so the browser shades with the 8-bit quantized values.
-// Quantize the record factors identically: the native white-fallback
-// texture times the quantized uniform reproduces the browser's
-// quantized texel times the default uniform bit for bit.
-float quantized_unorm_factor(float value) {
-    return std::round(
-               std::clamp(value, 0.0f, 1.0f) * 255.0f) /
-        255.0f;
-}
-
-// The same rounding as a byte, which is what the pinned factor texture holds.
-std::uint8_t unorm_byte(float value) {
-    return static_cast<std::uint8_t>(
-        std::round(std::clamp(value, 0.0f, 1.0f) * 255.0f));
-}
-
-std::uint8_t linear_to_srgb_byte(float value) {
-    // Pinned linearToSrgbByte: the byte lands in an rgba8unorm-srgb
-    // texel whose hardware decode is the browser's effective value.
-    const double clamped = std::clamp(
-        static_cast<double>(value),
-        0.0,
-        1.0);
-    const double encoded = clamped <= 0.0031308
-        ? clamped * 12.92
-        : 1.055 * std::pow(clamped, 1.0 / 2.4) - 0.055;
-    return static_cast<std::uint8_t>(
-        std::round(encoded * 255.0));
-}
+${factorBake.helpers}
 
 // animation-pointer-basecolor.ts#collectBaseColorDefs: which materials have
 // their base colour factor driven by a KHR_animation_pointer channel. It is a
@@ -1393,14 +1102,14 @@ MaterialHandle load_material(
     const JsonArray& samplers,
     bool animated_base_color) {
     MaterialRecord material;
-    material.emissive_factor = Color3{0.0f, 0.0f, 0.0f};
+    material.emissive_factor = ${materialDefaults.emissiveFactor.identity};
     material.specular_aa = true;
     if (const ts::JsonValue* pbr_value = optional(material_json, "pbrMetallicRoughness")) {
         const JsonObject& pbr = pbr_value->as_object();
-        const std::vector<float> base = float_array(optional(pbr, "baseColorFactor"));
+        const std::vector<float> base = float_array(optional(pbr, "${materialDefaults.baseColorFactorKey}"));
         if (base.size() == 4) material.base_color_factor = Color4{base[0], base[1], base[2], base[3]};
-        material.metallic_factor = float_or(pbr, "metallicFactor", 1.0f);
-        material.roughness_factor = float_or(pbr, "roughnessFactor", 1.0f);
+        material.metallic_factor = float_or(pbr, "${materialDefaults.metallicFactor.key}", ${materialDefaults.metallicFactor.literal});
+        material.roughness_factor = float_or(pbr, "${materialDefaults.roughnessFactor.key}", ${materialDefaults.roughnessFactor.literal});
         const ts::JsonValue* base_color_texture =
             optional(pbr, "baseColorTexture");
         material.base_color_texture = texture_data(
@@ -1428,10 +1137,10 @@ MaterialHandle load_material(
             // kept the factor in the uniform against a white texel, which let
             // an animated factor resurrect a value the pin holds at zero.
             material.orm_fallback = {
-                255,
+                ${factorBake.opaqueByte},
                 unorm_byte(material.roughness_factor),
                 unorm_byte(material.metallic_factor),
-                255,
+                ${factorBake.opaqueByte},
             };
             material.metallic_factor = 1.0f;
             material.roughness_factor = 1.0f;
@@ -1461,9 +1170,9 @@ MaterialHandle load_material(
                         std::round(
                             std::clamp(
                                 material.base_color_factor.a,
-                                0.0f,
-                                1.0f) *
-                            255.0f)),
+                                ${factorBake.unormClampLo},
+                                ${factorBake.unormClampHi}) *
+                            ${factorBake.unormScale})),
                 };
                 material.base_color_factor.r = 1.0f;
                 material.base_color_factor.g = 1.0f;
@@ -1480,7 +1189,7 @@ MaterialHandle load_material(
         normal_texture);
     if (normal_texture) {
         material.normal_texture_scale =
-            float_or(normal_texture->as_object(), "scale", 1.0f);
+            float_or(normal_texture->as_object(), "${materialDefaults.normalScale.key}", ${materialDefaults.normalScale.literal});
     }
     const ts::JsonValue* occlusion_texture_info =
         optional(material_json, "occlusionTexture");
@@ -1518,8 +1227,8 @@ MaterialHandle load_material(
             };
         const std::size_t occlusion_uv = unsigned_or(
             occlusion_texture_info->as_object(),
-            "texCoord",
-            0);
+            "${materialDefaults.occlusionTexCoord.key}",
+            ${materialDefaults.occlusionTexCoord.literal});
         if (occlusion_uv == 1) {
             if (metallic_roughness_info) {
                 throw std::runtime_error(
@@ -1568,10 +1277,10 @@ MaterialHandle load_material(
                 optional(extensions, "KHR_materials_ior")) {
             material.has_ior = true;
             material.index_of_refraction =
-                float_or(ior_value->as_object(), "ior", 1.5f);
+                float_or(ior_value->as_object(), "${defaults.ior.key}", ${defaults.ior.literal});
             const float ratio =
-                (material.index_of_refraction - 1.0f) /
-                (material.index_of_refraction + 1.0f);
+                (material.index_of_refraction - ${materialDefaults.iorToF0.one}) /
+                (material.index_of_refraction + ${materialDefaults.iorToF0.one});
             material.reflectance = ratio * ratio;
         }
 ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
@@ -1594,31 +1303,31 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
             // the specular factor then replaces it, which is the spec's
             // "specular wins" rule and what the pinned loader does by
             // overwriting the same option.
-            const float base_reflectance = 0.04f;
+            const float base_reflectance = ${materialDefaults.iorToF0.baseReflectance};
             material.metallic_f0_factor =
                 material.has_ior
                     ? material.reflectance / base_reflectance
                     : 1.0f;
             material.reflectance = base_reflectance;
-            if (optional(specular, "specularFactor")) {
+            if (optional(specular, "${materialDefaults.specularFactor.key}")) {
                 const float factor =
-                    float_or(specular, "specularFactor", 1.0f);
+                    float_or(specular, "${materialDefaults.specularFactor.key}", ${materialDefaults.specularFactor.clear});
                 // A specular factor of one is the default: the pin drops both
                 // options rather than writing them, so an IOR-seeded factor
                 // does not survive it either.
                 material.metallic_f0_factor =
-                    std::abs(factor - 1.0f) > 0.000001f ? factor : 1.0f;
+                    std::abs(factor - ${materialDefaults.specularFactor.clear}) > ${materialDefaults.specularFactor.epsilon} ? factor : ${materialDefaults.specularFactor.clear};
                 material.specular_weight =
                     material.metallic_f0_factor;
             }
             const std::vector<float> specular_color =
                 float_array(
-                    optional(specular, "specularColorFactor"));
+                    optional(specular, "${materialDefaults.specularColor.key}"));
             if (
-                specular_color.size() == 3 &&
-                (specular_color[0] != 1.0f ||
-                 specular_color[1] != 1.0f ||
-                 specular_color[2] != 1.0f)) {
+                specular_color.size() == ${materialDefaults.specularColor.length} &&
+                (specular_color[0] != ${materialDefaults.specularColor.unit} ||
+                 specular_color[1] != ${materialDefaults.specularColor.unit} ||
+                 specular_color[2] != ${materialDefaults.specularColor.unit})) {
                 material.metallic_reflectance_color = Color3{
                     specular_color[0],
                     specular_color[1],
@@ -1632,7 +1341,7 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
             material.has_volume = true;
             material.use_thickness_as_depth = true;
             material.thickness =
-                float_or(volume, "thicknessFactor", 0.0f);
+                float_or(volume, "${defaults.thicknessFactor.key}", ${defaults.thicknessFactor.literal});
             const std::vector<float> attenuation =
                 float_array(optional(volume, "attenuationColor"));
             if (attenuation.size() == 3) {
@@ -1643,7 +1352,7 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                 };
             }
             material.attenuation_distance =
-                float_or(volume, "attenuationDistance", 1.0f);
+                float_or(volume, "${defaults.attenuationDistance.key}", ${defaults.attenuationDistance.literal});
             material.thickness_texture = texture_data(
                 buffer,
                 container,
@@ -1661,7 +1370,7 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
             const JsonObject& transmission =
                 transmission_value->as_object();
             material.transmission_factor =
-                float_or(transmission, "transmissionFactor", 0.0f);
+                float_or(transmission, "${defaults.transmissionFactor.key}", ${defaults.transmissionFactor.literal});
             material.transmission_texture = texture_data(
                 buffer,
                 container,
@@ -1680,8 +1389,8 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                     "KHR_materials_dispersion")) {
             const float dispersion = float_or(
                 dispersion_value->as_object(),
-                "dispersion",
-                0.0f);
+                "${defaults.dispersion.key}",
+                ${defaults.dispersion.literal});
             const bool has_refraction =
                 material.has_ior ||
                 material.transmission_factor > 0.0f ||
@@ -1693,7 +1402,7 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                 dispersion > 0.0f &&
                 has_refraction &&
                 has_thickness) {
-                material.dispersion = 20.0f / dispersion;
+                material.dispersion = ${defaults.dispersionScale} / dispersion;
             }
         }
         if (const ts::JsonValue* clearcoat_value =
@@ -1714,12 +1423,12 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                     "clearcoatNormalTexture");
             material.clearcoat_intensity = float_or(
                 clearcoat,
-                "clearcoatFactor",
-                clearcoat_texture ? 1.0f : 0.0f);
+                "${materialDefaults.clearcoatIntensity.key}",
+                clearcoat_texture ? ${materialDefaults.clearcoatIntensity.present} : ${materialDefaults.clearcoatIntensity.absent});
             material.clearcoat_roughness = float_or(
                 clearcoat,
-                "clearcoatRoughnessFactor",
-                clearcoat_roughness_texture ? 1.0f : 0.0f);
+                "${materialDefaults.clearcoatRoughness.key}",
+                clearcoat_roughness_texture ? ${materialDefaults.clearcoatRoughness.present} : ${materialDefaults.clearcoatRoughness.absent});
             material.clearcoat_texture = texture_data(
                 buffer,
                 container,
@@ -1750,9 +1459,9 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                     ? float_or(
                           clearcoat_normal_texture
                               ->as_object(),
-                          "scale",
-                          1.0f)
-                    : 1.0f;
+                          "${materialDefaults.clearcoatNormalScale.key}",
+                          ${materialDefaults.clearcoatNormalScale.literal})
+                    : ${materialDefaults.clearcoatNormalScale.literal};
             apply_texture_transform(
                 material.clearcoat_transform,
                 clearcoat_texture);
@@ -1773,19 +1482,19 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                 optional(sheen, "sheenRoughnessTexture");
             const std::vector<float> sheen_color =
                 float_array(
-                    optional(sheen, "sheenColorFactor"));
+                    optional(sheen, "${materialDefaults.sheenColor.key}"));
             material.sheen_color = sheen_color.size() == 3
                 ? Color3{
                       sheen_color[0],
                       sheen_color[1],
                       sheen_color[2],
                   }
-                : Color3{0.0f, 0.0f, 0.0f};
+                : ${materialDefaults.sheenColor.identity};
             material.sheen_roughness = float_or(
                 sheen,
-                "sheenRoughnessFactor",
-                0.0f);
-            material.sheen_intensity = 1.0f;
+                "${materialDefaults.sheenRoughness.key}",
+                ${materialDefaults.sheenRoughness.literal});
+            material.sheen_intensity = ${materialDefaults.sheenIntensity};
             material.sheen_color_texture = texture_data(
                 buffer,
                 container,
@@ -1852,18 +1561,18 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                     "iridescenceThicknessTexture");
             material.iridescence_intensity = float_or(
                 iridescence,
-                "iridescenceFactor",
-                0.0f);
+                "${defaults.iridescenceFactor.key}",
+                ${defaults.iridescenceFactor.literal});
             material.iridescence_index_of_refraction =
-                float_or(iridescence, "iridescenceIor", 1.3f);
+                float_or(iridescence, "${defaults.iridescenceIor.key}", ${defaults.iridescenceIor.literal});
             material.iridescence_minimum_thickness = float_or(
                 iridescence,
-                "iridescenceThicknessMinimum",
-                100.0f);
+                "${defaults.iridescenceThicknessMinimum.key}",
+                ${defaults.iridescenceThicknessMinimum.literal});
             material.iridescence_maximum_thickness = float_or(
                 iridescence,
-                "iridescenceThicknessMaximum",
-                400.0f);
+                "${defaults.iridescenceThicknessMaximum.key}",
+                ${defaults.iridescenceThicknessMaximum.literal});
             material.iridescence_texture = texture_data(
                 buffer,
                 container,
@@ -1903,7 +1612,7 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
             material.orm_transform,
             optional(material_json, "occlusionTexture"));
     }
-    const std::vector<float> emissive = float_array(optional(material_json, "emissiveFactor"));
+    const std::vector<float> emissive = float_array(optional(material_json, "${materialDefaults.emissiveFactor.key}"));
     if (emissive.size() == 3) material.emissive_factor = Color3{emissive[0], emissive[1], emissive[2]};${animationPointerMaterials ? `
     material.emissive_base_factor = material.emissive_factor;` : ""}
     if (const ts::JsonValue* extensions_value =
@@ -1916,23 +1625,23 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                     "KHR_materials_emissive_strength")) {
             const float strength = float_or(
                 strength_value->as_object(),
-                "emissiveStrength",
-                1.0f);${animationPointerMaterials ? `
+                "${materialDefaults.emissiveStrength.key}",
+                ${materialDefaults.emissiveStrength.literal});${animationPointerMaterials ? `
             material.emissive_strength = strength;` : ""}
             material.emissive_factor.r *= strength;
             material.emissive_factor.g *= strength;
             material.emissive_factor.b *= strength;
         }
     }
-    material.double_sided = bool_or(material_json, "doubleSided", false);
-    const std::string alpha_mode = string_or(material_json, "alphaMode", "OPAQUE");
+    material.double_sided = bool_or(material_json, "${materialDefaults.doubleSidedKey}", false);
+    const std::string alpha_mode = string_or(material_json, "${materialDefaults.alphaMode.key}", "${materialDefaults.alphaMode.literal}");
     material.alpha_mode =
         alpha_mode == "BLEND"
             ? MaterialAlphaMode::blend
             : alpha_mode == "MASK"
                 ? MaterialAlphaMode::mask
                 : MaterialAlphaMode::opaque;
-    material.alpha_cutoff = float_or(material_json, "alphaCutoff", 0.5f);
+    material.alpha_cutoff = float_or(material_json, "${materialDefaults.alphaCutoff.key}", ${materialDefaults.alphaCutoff.literal});
     engine.materials.push_back(std::move(material));
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }
@@ -2159,75 +1868,7 @@ ${animationPointer ? `    // Runtime lights indexed by their KHR_lights_punctual
                 const JsonObject& definition =
                     light_definitions[light_index]
                         .as_object();
-                const std::string type =
-                    string_or(definition, "type");
-                if (
-                    type != "point" &&
-                    type != "directional" &&
-                    type != "spot") {
-                    continue;
-                }
-                const Matrix& light_world =
-                    compute_world(node_index);
-                LightRecord light;
-                light.kind = type == "point"
-                    ? LightKind::point
-                    : type == "spot"
-                        ? LightKind::spot
-                        : LightKind::directional;
-                if (type == "spot") {
-                    // createSpotLight(position, direction, outer * 2, 1,
-                    // intensity): the pinned loader passes twice the outer
-                    // cone angle as the full cone, and the light stores
-                    // cos(angle / 2). innerConeAngle is read by neither the
-                    // pinned light nor its pointer handlers.
-                    const ts::JsonValue* spot_value =
-                        optional(definition, "spot");
-                    const float outer_cone_angle = spot_value
-                        ? float_or(
-                              spot_value->as_object(),
-                              "outerConeAngle",
-                              0.7853981633974483f)
-                        : 0.7853981633974483f;
-                    light.cos_half_angle =
-                        std::cos(outer_cone_angle);
-                }
-                light.position = Vec3{
-                    -light_world[12],
-                    light_world[13],
-                    light_world[14],
-                };
-                const Vec3 forward{
-                    light_world[8],
-                    -light_world[9],
-                    -light_world[10],
-                };
-                light.direction =
-                    normalize(forward);
-                const std::vector<float> color =
-                    float_array(
-                        optional(
-                            definition,
-                            "color"));
-                light.diffuse_color = color.size() == 3
-                    ? Color3{
-                          color[0],
-                          color[1],
-                          color[2],
-                      }
-                    : Color3{1.0f, 1.0f, 1.0f};
-                light.specular_color =
-                    light.diffuse_color;
-                light.intensity =
-                    float_or(
-                        definition,
-                        "intensity",
-                        1.0f);
-                light.range =
-                    float_or(
-                        definition,
-                        "range",
-                        std::numeric_limits<float>::max());
+${lowered.punctualLightLoading}
                 engine.lights.push_back(light);
                 const LightHandle light_handle{
                     static_cast<std::uint32_t>(
@@ -2636,16 +2277,7 @@ ${nonTrianglePrimitives
                         read_component(buffer, container, views, *texcoords1, index, 1),
                     };
                 }
-                if (colors) {
-                    vertex.color = Vec4{
-                        read_component(buffer, container, views, *colors, index, 0),
-                        read_component(buffer, container, views, *colors, index, 1),
-                        read_component(buffer, container, views, *colors, index, 2),
-                        colors->type == "VEC4"
-                            ? read_component(buffer, container, views, *colors, index, 3)
-                            : 1.0f,
-                    };
-                }
+${lowered.vertexColor}
                 if (joints && weights) {
                     for (std::size_t component = 0; component < 4; ++component) {
                         vertex.joints[component] =

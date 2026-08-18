@@ -11,7 +11,7 @@
 // The severity colour is checked with the value, because a row that
 // improves past a band boundary is as wrong when it keeps the old colour
 // as when it keeps the old number.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 interface ParityReport {
@@ -78,7 +78,27 @@ function measured(
         sceneId,
         "report-differential.json",
     );
-    if (existsSync(differentialPath)) {
+    const gpuSinglePath = resolve(
+        "artifacts/parity",
+        sceneId,
+        "report-gpu.json",
+    );
+    const dawnSinglePath = resolve(
+        "artifacts/parity",
+        sceneId,
+        "report-dawn.json",
+    );
+    // A differential report is preferred only while it is at least as fresh
+    // as the single-backend reports: a fresh single-backend rerun must not
+    // be shadowed by a stale differential from an earlier sweep.
+    const mtime = (path: string): number =>
+        existsSync(path) ? statSync(path).mtimeMs : -1;
+    const singlesFresh =
+        existsSync(gpuSinglePath) &&
+        existsSync(dawnSinglePath) &&
+        Math.max(mtime(gpuSinglePath), mtime(dawnSinglePath)) >
+            mtime(differentialPath);
+    if (existsSync(differentialPath) && !singlesFresh) {
         const report = JSON.parse(
             readFileSync(differentialPath, "utf8"),
         ) as DifferentialReport;

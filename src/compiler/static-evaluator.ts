@@ -1,5 +1,9 @@
 import ts from "typescript";
 import type { Value } from "./types.js";
+import {
+    doubleLiteral as cppDoubleLiteral,
+    floatLiteral as cppFloatLiteral,
+} from "../cpp-literals.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 type Lookup = (identifier: ts.Identifier) => Value;
@@ -810,16 +814,10 @@ export class StaticEvaluator {
     }
 
     private floatLiteral(value: number): string {
-        if (Number.isInteger(value)) {
-            return `${value}.0f`;
-        }
-        return `${value}f`;
+        return cppFloatLiteral(value);
     }
 
     private doubleLiteral(value: number): string {
-        if (Number.isInteger(value)) {
-            return `${value}.0`;
-        }
-        return `${value}`;
+        return cppDoubleLiteral(value);
     }
 }

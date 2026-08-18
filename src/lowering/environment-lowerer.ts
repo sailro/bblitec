@@ -399,7 +399,7 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
                 );
             }
         }
-        this.assertSceneSizeContract();
+        const sceneSize = this.readSceneSizeContract();
         if (
             !this.context.hasNode(
                 declaration,
@@ -532,7 +532,7 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
         scene.environment.skybox_uses_environment = false;
     }
     const float requested_skybox_size =
-        options.skybox_size > 0.0f ? options.skybox_size : 20.0f;
+        options.skybox_size > 0.0f ? options.skybox_size : ${this.context.floatLiteral(sceneSize.skyboxDefault)};
     scene.deferred_builders.push_back(
         [&scene, requested_skybox_size]() {
             // src/material/pbr/scene-size.ts computeSceneSize over
@@ -571,7 +571,7 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
                     geometry.bounds_min,
                     geometry.bounds_max);
             }
-            scene.environment.ground_size = 15.0f;
+            scene.environment.ground_size = ${this.context.floatLiteral(sceneSize.groundDefault)};
             scene.environment.skybox_size =
                 requested_skybox_size;
             scene.environment.ground_position = Vec3{};
@@ -582,23 +582,23 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
             const double dz = bounds_max[2] - bounds_min[2];
             const double diagonal =
                 std::sqrt(dx * dx + dy * dy + dz * dz);
-            double ground_size = 15.0;
+            double ground_size = ${this.context.doubleLiteral(sceneSize.groundDefault)};
             double skybox_size =
                 static_cast<double>(requested_skybox_size);
             if (diagonal > ground_size) {
-                ground_size = diagonal * 2.0;
+                ground_size = diagonal * ${this.context.doubleLiteral(sceneSize.diagonalScale)};
                 skybox_size = ground_size;
             }
-            ground_size *= 1.1;
-            skybox_size *= 1.5;
+            ground_size *= ${this.context.doubleLiteral(sceneSize.groundScale)};
+            skybox_size *= ${this.context.doubleLiteral(sceneSize.skyboxScale)};
             scene.environment.ground_size =
                 static_cast<float>(ground_size);
             scene.environment.skybox_size =
                 static_cast<float>(skybox_size);
             scene.environment.ground_position = Vec3{
-                static_cast<float>(bounds_min[0] + dx * 0.5),
-                static_cast<float>(bounds_min[1] - 0.00001),
-                static_cast<float>(bounds_min[2] + dz * 0.5),
+                static_cast<float>(bounds_min[0] + dx * ${this.context.doubleLiteral(sceneSize.rootHalf)}),
+                static_cast<float>(bounds_min[1] - ${this.context.doubleLiteral(sceneSize.rootDrop)}),
+                static_cast<float>(bounds_min[2] + dz * ${this.context.doubleLiteral(sceneSize.rootHalf)}),
             };
             scene.environment.skybox_position =
                 scene.environment.ground_position;
@@ -976,12 +976,22 @@ void load_hdr_environment(
     }
 
     /**
-     * The sizing the deferred builder above reproduces. Its numbers are the
-     * pin's own literals and its rootPosition is composed in JavaScript
-     * doubles; both are asserted here so a changed upstream formula stops
-     * generation instead of leaving a copy that agrees only today.
+     * The sizing the deferred builder reproduces. Round 1 pinned its
+     * numbers as an order-free literal bag; here each constant is read
+     * from its own parameter position — the empty-scene defaults, the
+     * diagonal override, the two final scales, and the root composition —
+     * and FLOWS into the emitted builder, so a moved literal cannot pass
+     * by matching a different parameter that happens to share its value.
      */
-    private assertSceneSizeContract(): void {
+    private readSceneSizeContract(): {
+        groundDefault: number;
+        skyboxDefault: number;
+        diagonalScale: number;
+        groundScale: number;
+        skyboxScale: number;
+        rootHalf: number;
+        rootDrop: number;
+    } {
         const sizeModule = "src/material/pbr/scene-size.ts";
         const boundsModule = "src/mesh/mesh-world-bounds.ts";
         const { file, declaration } =
@@ -1000,41 +1010,302 @@ void load_hdr_environment(
                 );
             }
         }
-        const literals = [15, 20, 2, 1.1, 1.5, 0.00001];
-        for (const literal of literals) {
+        // The empty-scene early return (the first object-literal return)
+        // and the main path's seeds must agree: the emitted builder stores
+        // the defaults once, before the finite check, and returns.
+        const emptyReturn = this.context.returnObject(declaration);
+        const emptyGround = this.context.numericValue(
+            this.context.propertyInitializer(
+                emptyReturn,
+                "groundSize",
+            ),
+            file,
+        );
+        const skyboxFallback = (
+            expression: ts.Expression,
+            label: string,
+        ): number => {
+            const unwrapped =
+                this.context.unwrapExpression(expression);
             if (
-                !this.context.hasNode(
-                    declaration,
-                    (node) =>
-                        ts.isNumericLiteral(node) &&
-                        this.context.numericValue(node, file) ===
-                            literal,
-                )
+                !ts.isBinaryExpression(unwrapped) ||
+                unwrapped.operatorToken.kind !==
+                    ts.SyntaxKind.QuestionQuestionToken ||
+                !ts.isIdentifier(unwrapped.left) ||
+                unwrapped.left.text !== "userSkyboxSize"
             ) {
                 this.context.contractError(
-                    declaration,
-                    `Expected the pinned scene-size constant ${literal}.`,
+                    expression,
+                    `Expected ${label} to default the user skybox size.`,
                 );
             }
+            return this.context.numericValue(
+                unwrapped.right,
+                file,
+            );
+        };
+        const emptySkybox = skyboxFallback(
+            this.context.propertyInitializer(
+                emptyReturn,
+                "skyboxSize",
+            ),
+            "the empty-scene skybox size",
+        );
+        const emptyRoot = this.context.numericTuple(
+            this.context.propertyInitializer(
+                emptyReturn,
+                "rootPosition",
+            ),
+            file,
+        );
+        if (emptyRoot.some((component) => component !== 0)) {
+            this.context.contractError(
+                emptyReturn,
+                "Expected the empty-scene root at the origin.",
+            );
         }
-        // The root is the box centre on x and z and the box floor minus an
-        // epsilon on y; the native builder stores exactly those three.
-        for (const marker of [
-            "minX + dx * 0.5",
-            "minY - 0.00001",
-            "minZ + dz * 0.5",
-        ]) {
-            if (
-                !this.context.store
-                    .getSource(sizeModule)
-                    .includes(marker)
-            ) {
+        const groundDefault = this.context.numericValue(
+            this.context.variableInitializer(
+                declaration,
+                "groundSize",
+            ),
+            file,
+        );
+        const skyboxDefault = skyboxFallback(
+            this.context.variableInitializer(
+                declaration,
+                "skyboxSize",
+            ),
+            "the skybox seed",
+        );
+        if (
+            groundDefault !== emptyGround ||
+            skyboxDefault !== emptySkybox
+        ) {
+            this.context.contractError(
+                declaration,
+                "Scene-size defaults no longer agree between the empty and sized paths.",
+            );
+        }
+        // The diagonal and its override arm, paired with the emitted
+        // deferred builder line by line. The pin carries a second arm that
+        // doubles the camera's upperRadiusLimit instead; it has no emitted
+        // counterpart and none is needed: setCameraLimits is the pin's only
+        // writer of that property and is outside the compiled surface, so
+        // the probe `"upperRadiusLimit" in cam` is false in every generated
+        // scene. The filter below selects the diagonal arm by its
+        // multiplicand, not by position, so that stays true if the pin
+        // reorders them.
+        for (const [name, expected] of [
+            ["dx", "maxX - minX"],
+            ["dy", "maxY - minY"],
+            ["dz", "maxZ - minZ"],
+            [
+                "sceneDiagonalLength",
+                "Math.sqrt(dx * dx + dy * dy + dz * dz)",
+            ],
+        ] as const) {
+            this.context.assertExpressionShape(
+                this.context.variableInitializer(
+                    declaration,
+                    name,
+                ),
+                expected,
+                `Scene-size '${name}'`,
+            );
+        }
+        const assignments = this.context.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node),
+        );
+        const diagonalGuards = assignments.filter(
+            (expression) =>
+                expression.operatorToken.kind ===
+                    ts.SyntaxKind.GreaterThanToken &&
+                ts.isIdentifier(expression.left) &&
+                expression.left.text ===
+                    "sceneDiagonalLength" &&
+                ts.isIdentifier(expression.right) &&
+                expression.right.text === "groundSize",
+        );
+        if (diagonalGuards.length !== 1) {
+            this.context.contractError(
+                declaration,
+                "Expected one diagonal-versus-ground guard.",
+            );
+        }
+        const diagonalOverrides = assignments.filter(
+            (expression) => {
+                if (
+                    expression.operatorToken.kind !==
+                        ts.SyntaxKind.EqualsToken ||
+                    !ts.isIdentifier(expression.left) ||
+                    expression.left.text !== "groundSize"
+                ) {
+                    return false;
+                }
+                const product = this.context.unwrapExpression(
+                    expression.right,
+                );
+                return (
+                    ts.isBinaryExpression(product) &&
+                    product.operatorToken.kind ===
+                        ts.SyntaxKind.AsteriskToken &&
+                    ts.isIdentifier(product.left) &&
+                    product.left.text ===
+                        "sceneDiagonalLength" &&
+                    ts.isNumericLiteral(product.right)
+                );
+            },
+        );
+        if (diagonalOverrides.length !== 1) {
+            this.context.contractError(
+                declaration,
+                "Expected one diagonal-driven ground override.",
+            );
+        }
+        const diagonalScale = this.context.numericValue(
+            (
+                this.context.unwrapExpression(
+                    diagonalOverrides[0]!.right,
+                ) as ts.BinaryExpression
+            ).right,
+            file,
+        );
+        const skyboxFollows = assignments.filter(
+            (expression) =>
+                expression.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                ts.isIdentifier(expression.left) &&
+                expression.left.text === "skyboxSize" &&
+                ts.isIdentifier(
+                    this.context.unwrapExpression(
+                        expression.right,
+                    ),
+                ),
+        );
+        if (
+            !skyboxFollows.some(
+                (expression) =>
+                    (
+                        this.context.unwrapExpression(
+                            expression.right,
+                        ) as ts.Identifier
+                    ).text === "groundSize",
+            )
+        ) {
+            this.context.contractError(
+                declaration,
+                "Expected the skybox to follow the overridden ground size.",
+            );
+        }
+        // The final scales, each tied to the variable it multiplies.
+        const scaleOf = (name: string): number => {
+            const scaled = assignments.filter(
+                (expression) =>
+                    expression.operatorToken.kind ===
+                        ts.SyntaxKind.AsteriskEqualsToken &&
+                    ts.isIdentifier(expression.left) &&
+                    expression.left.text === name,
+            );
+            if (scaled.length !== 1) {
                 this.context.contractError(
                     declaration,
-                    `Expected the pinned rootPosition term '${marker}'.`,
+                    `Expected one final '${name}' scale.`,
                 );
             }
+            return this.context.numericValue(
+                scaled[0]!.right,
+                file,
+            );
+        };
+        const groundScale = scaleOf("groundSize");
+        const skyboxScale = scaleOf("skyboxSize");
+        // The root: box centre on x and z (one shared half factor) and the
+        // box floor minus a drop on y, each read from its own slot of the
+        // pinned rootPosition tuple.
+        const root = this.context.unwrapExpression(
+            this.context.variableInitializer(
+                declaration,
+                "rootPosition",
+            ),
+        );
+        if (
+            !ts.isArrayLiteralExpression(root) ||
+            root.elements.length !== 3
+        ) {
+            this.context.contractError(
+                root,
+                "Expected a three-component root position.",
+            );
         }
+        const centreHalf = (
+            element: ts.Expression,
+            minName: string,
+            deltaName: string,
+        ): number => {
+            const unwrapped =
+                this.context.unwrapExpression(element);
+            if (
+                !ts.isBinaryExpression(unwrapped) ||
+                unwrapped.operatorToken.kind !==
+                    ts.SyntaxKind.PlusToken ||
+                !ts.isIdentifier(unwrapped.left) ||
+                unwrapped.left.text !== minName
+            ) {
+                this.context.contractError(
+                    element,
+                    `Expected the root to centre from ${minName}.`,
+                );
+            }
+            const product = this.context.unwrapExpression(
+                unwrapped.right,
+            );
+            if (
+                !ts.isBinaryExpression(product) ||
+                product.operatorToken.kind !==
+                    ts.SyntaxKind.AsteriskToken ||
+                !ts.isIdentifier(product.left) ||
+                product.left.text !== deltaName
+            ) {
+                this.context.contractError(
+                    element,
+                    `Expected the root to scale ${deltaName}.`,
+                );
+            }
+            return this.context.numericValue(
+                product.right,
+                file,
+            );
+        };
+        const halfX = centreHalf(root.elements[0]!, "minX", "dx");
+        const halfZ = centreHalf(root.elements[2]!, "minZ", "dz");
+        if (halfX !== halfZ) {
+            this.context.contractError(
+                root,
+                "Expected one shared root centre factor.",
+            );
+        }
+        const floor = this.context.unwrapExpression(
+            root.elements[1]!,
+        );
+        if (
+            !ts.isBinaryExpression(floor) ||
+            floor.operatorToken.kind !==
+                ts.SyntaxKind.MinusToken ||
+            !ts.isIdentifier(floor.left) ||
+            floor.left.text !== "minY"
+        ) {
+            this.context.contractError(
+                root.elements[1]!,
+                "Expected the root floor to drop below minY.",
+            );
+        }
+        const rootDrop = this.context.numericValue(
+            floor.right,
+            file,
+        );
         const { declaration: expand } =
             this.context.functionDeclaration(
                 boundsModule,
@@ -1051,6 +1322,15 @@ void load_hdr_environment(
                 );
             }
         }
+        return {
+            groundDefault,
+            skyboxDefault,
+            diagonalScale,
+            groundScale,
+            skyboxScale,
+            rootHalf: halfX,
+            rootDrop,
+        };
     }
 
     private extractConstants(): EnvironmentConstants {
@@ -1122,10 +1402,19 @@ void load_hdr_environment(
                 "Expected environment image-type fallback.",
             );
         }
+        // The constants live inside the pinned pre-scale conversion; scoping
+        // the search to that declaration ties each extracted value to the
+        // function whose term structure is anchored below.
+        const { declaration: preScale } =
+            this.context.functionDeclaration(
+                loaderModule,
+                "polynomialToPreScaledHarmonics",
+            );
+        this.assertHarmonicTermStructure(preScale, loader);
         const constant = (name: string): number =>
             this.context.numericValue(
                 this.context.variableInitializer(
-                    loader,
+                    preScale,
                     name,
                 ),
                 loader,
@@ -1144,6 +1433,153 @@ void load_hdr_environment(
                 constant("C22"),
             ],
         };
+    }
+
+    /**
+     * The pre-scale term structure the emitted pre_scale_harmonics
+     * transcribes. The seven constants flow separately through
+     * extractConstants; what is anchored here is which polynomial slot each
+     * pinned term consumes and which constant scales it, term by term, so
+     * an upstream retune of a single harmonic stops generation instead of
+     * shading slightly wrong. Two layouts are pinned alongside the terms:
+     * the input groups (the emitted channel(polynomial[k], index) reads
+     * pair with the pinned poly[3k + i] layout, group by group) and the
+     * stride-4 output slots (the emitted set_channel(result[k], ...) lines
+     * pair with the pinned out[4k + i] stores, in the same order).
+     */
+    private assertHarmonicTermStructure(
+        declaration: ts.FunctionDeclaration,
+        file: ts.SourceFile,
+    ): void {
+        const elementOffset = (
+            expression: ts.Expression,
+            label: string,
+        ): { array: string; offset: number } => {
+            const unwrapped =
+                this.context.unwrapExpression(expression);
+            if (
+                !ts.isElementAccessExpression(unwrapped) ||
+                !ts.isIdentifier(unwrapped.expression)
+            ) {
+                this.context.contractError(
+                    expression,
+                    `Expected ${label} to index a flat array.`,
+                );
+            }
+            const argument = this.context.unwrapExpression(
+                unwrapped.argumentExpression,
+            );
+            if (
+                ts.isIdentifier(argument) &&
+                argument.text === "i"
+            ) {
+                return {
+                    array: unwrapped.expression.text,
+                    offset: 0,
+                };
+            }
+            if (
+                ts.isBinaryExpression(argument) &&
+                argument.operatorToken.kind ===
+                    ts.SyntaxKind.PlusToken &&
+                ts.isIdentifier(argument.right) &&
+                argument.right.text === "i"
+            ) {
+                return {
+                    array: unwrapped.expression.text,
+                    offset: this.context.numericValue(
+                        argument.left,
+                        file,
+                    ),
+                };
+            }
+            return this.context.contractError(
+                argument,
+                `Expected ${label} to offset the channel index.`,
+            );
+        };
+        const groupNames = [
+            "x",
+            "y",
+            "z",
+            "xx",
+            "yy",
+            "zz",
+            "yz",
+            "zx",
+            "xy",
+        ];
+        groupNames.forEach((name, group) => {
+            const source = elementOffset(
+                this.context.variableInitializer(
+                    declaration,
+                    name,
+                ),
+                `poly group '${name}'`,
+            );
+            if (
+                source.array !== "poly" ||
+                source.offset !== group * 3
+            ) {
+                this.context.contractError(
+                    declaration,
+                    `Pinned poly group '${name}' moved from offset ${group * 3}.`,
+                );
+            }
+        });
+        const stores = this.context
+            .findNodes(
+                declaration,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node),
+            )
+            .filter(
+                (expression) =>
+                    expression.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken &&
+                    ts.isElementAccessExpression(
+                        expression.left,
+                    ) &&
+                    ts.isIdentifier(
+                        expression.left.expression,
+                    ) &&
+                    expression.left.expression.text === "out",
+            );
+        const expectedTerms = [
+            ["L00", "(xx + yy) * C00xy + zz * C00z"],
+            ["L1-1", "y * C1"],
+            ["L10", "z * C1"],
+            ["L11", "x * C1"],
+            ["L2-2", "xy * C2"],
+            ["L2-1", "yz * C2"],
+            ["L20", "zz * C20zz - (xx + yy) * C20xy"],
+            ["L21", "zx * C2"],
+            ["L22", "(xx - yy) * C22"],
+        ] as const;
+        if (stores.length !== expectedTerms.length) {
+            this.context.contractError(
+                declaration,
+                "Expected nine spherical-harmonic term stores.",
+            );
+        }
+        stores.forEach((store, term) => {
+            const [label, expected] = expectedTerms[term]!;
+            const target = elementOffset(
+                store.left,
+                `harmonic term ${label}`,
+            );
+            if (target.offset !== term * 4) {
+                this.context.contractError(
+                    store,
+                    `Harmonic term ${label} moved from its stride-4 slot.`,
+                );
+            }
+            this.context.assertExpressionShape(
+                store.right,
+                expected,
+                `Harmonic term ${label}`,
+            );
+        });
     }
 
     private assignmentExpression(

@@ -17,10 +17,11 @@
  */
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
-import { chromium } from "playwright-core";
-import ts from "typescript";
-import { resolveBrowserPath } from "./browser-path.js";
+import { basename, resolve } from "node:path";
+import {
+    transpileForBrowser,
+    withBrowserPage,
+} from "./browser-harness.js";
 
 /** A drawn atlas: the module that draws it and the factory that returns it. */
 export interface SpriteAtlasSource {
@@ -57,16 +58,6 @@ export function parseSpriteAtlasAssetSource(
     };
 }
 
-function transpileModule(modulePath: string): string {
-    return ts.transpileModule(readFileSync(modulePath, "utf8"), {
-        compilerOptions: {
-            module: ts.ModuleKind.ES2022,
-            target: ts.ScriptTarget.ES2022,
-        },
-        fileName: modulePath,
-    }).outputText;
-}
-
 function decodeDataUrl(dataUrl: string): Uint8Array {
     const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
     if (!match?.[1]) {
@@ -77,18 +68,6 @@ function decodeDataUrl(dataUrl: string): Uint8Array {
     return new Uint8Array(Buffer.from(match[1], "base64"));
 }
 
-/** Width and height from a PNG IHDR, so the baked bytes report their own size. */
-export function readPngSize(bytes: Uint8Array): {
-    width: number;
-    height: number;
-} {
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    if (bytes.length < 24 || view.getUint32(0) !== 0x89504e47) {
-        throw new Error("A drawn sprite atlas did not produce a PNG.");
-    }
-    return { width: view.getUint32(16), height: view.getUint32(20) };
-}
-
 /**
  * Run the pinned atlas module in headless Chromium and return the PNG bytes
  * its factory draws.
@@ -97,7 +76,10 @@ export async function drawSpriteAtlasPng(
     source: SpriteAtlasSource,
 ): Promise<Uint8Array> {
     const moduleName = basename(source.modulePath).replace(/\.ts$/, ".js");
-    const moduleSource = transpileModule(source.modulePath);
+    const moduleSource = transpileForBrowser(
+        readFileSync(source.modulePath, "utf8"),
+        source.modulePath,
+    );
     const html =
         "<!doctype html><html><head><title>Sprite atlas</title></head>" +
         "<body></body></html>";
@@ -115,25 +97,12 @@ export async function drawSpriteAtlasPng(
         });
         response.end(html);
     });
-    await new Promise<void>((ready) =>
-        server.listen(0, "127.0.0.1", ready),
-    );
-    const address = server.address();
-    if (!address || typeof address === "string") {
-        server.close();
-        throw new Error("Unable to start the sprite-atlas server.");
-    }
-
-    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
-    try {
-        browser = await chromium.launch({
-            executablePath: resolveBrowserPath(
-                "Drawing a canvas2D sprite atlas requires Chrome or Edge.",
-            ),
-            headless: true,
-        });
-        const page = await browser.newPage();
-        await page.goto(`http://127.0.0.1:${address.port}/`);
+    return withBrowserPage(server, {
+        serverName: "sprite-atlas server",
+        browserRequirement:
+            "Drawing a canvas2D sprite atlas requires Chrome or Edge.",
+    }, async (page, origin) => {
+        await page.goto(`${origin}/`);
         const dataUrl: unknown = await page.evaluate(
             `import("/${moduleName}").then((module) => {
                 const factory = module[${JSON.stringify(source.exportName)}];
@@ -151,27 +120,6 @@ export async function drawSpriteAtlasPng(
             );
         }
         return decodeDataUrl(dataUrl);
-    } finally {
-        await browser?.close();
-        server.close();
-    }
+    });
 }
 
-/** Provenance for the generated manifest: what drew these pixels. */
-export function getSpriteAtlasProvenance(
-    source: SpriteAtlasSource,
-    repositoryRoot: string,
-) {
-    return {
-        module: source.modulePath
-            .slice(repositoryRoot.length + 1)
-            .split(/[\\/]/)
-            .join("/"),
-        export: source.exportName,
-        rasterizer: "headless Chromium canvas2D",
-        directory: dirname(source.modulePath)
-            .slice(repositoryRoot.length + 1)
-            .split(/[\\/]/)
-            .join("/"),
-    } as const;
-}

@@ -18,35 +18,35 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
-    gltfAnimatedExtensionTargets,
-    gltfAnimatedMaterialPointers,
-    gltfImageResolver,
-    pinnedMaterialInputFromGltf,
-} from "./pinned-material-input.js";
+    captureShadersDirectory,
+    defaultCaptureDirectory,
+} from "./parity-scene.js";
+import {
+    asObject,
+    glbDocument,
+    type JsonObject,
+} from "./gltf-document.js";
+import {
+    gltfLinearImageProcessing,
+    materialSubjects,
+} from "./pinned-material-arms.js";
 import { composePinnedPbrVariant } from "./pinned-pbr-variants.js";
 import {
     pinnedSceneArms,
     pinnedSingleLightTypes,
     type PinnedSceneArm,
 } from "./pinned-scene-arms.js";
-import {
-    pinnedMeshFeaturesFromPrimitive,
-    skinnedMeshIndices,
-} from "./pinned-mesh-features.js";
 
-type JsonObject = Record<string, unknown>;
-
-const asObject = (value: unknown): JsonObject | undefined =>
-    typeof value === "object" && value !== null && !Array.isArray(value)
-        ? (value as JsonObject)
-        : undefined;
-
-const asNumber = (value: unknown): number | undefined =>
-    typeof value === "number" ? value : undefined;
-
-/** The browser's PBR fragments, by capture file name. */
-function capturedFragments(scene: string): Map<string, string> {
-    const directory = join("artifacts", "capture", scene, "shaders");
+/** The browser's PBR fragments, by capture file name. `--capture <dir>`
+ *  reads a capture written somewhere other than
+ *  `artifacts/capture/<scene>`. */
+function capturedFragments(
+    scene: string,
+    captureDirectory?: string,
+): Map<string, string> {
+    const directory = captureShadersDirectory(
+        captureDirectory ?? defaultCaptureDirectory(scene),
+    );
     const fragments = new Map<string, string>();
     if (!existsSync(directory)) return fragments;
     for (const name of readdirSync(directory)) {
@@ -58,19 +58,13 @@ function capturedFragments(scene: string): Map<string, string> {
     return fragments;
 }
 
-function glbDocument(scene: string): JsonObject | undefined {
+/** The scene's materialized .glb, through the shared tolerant reader. */
+function sceneGlbDocument(scene: string): JsonObject | undefined {
     const directory = join("generated", scene, "assets");
     if (!existsSync(directory)) return undefined;
     const glb = readdirSync(directory).find((name) => /\.glb$/i.test(name));
     if (!glb) return undefined;
-    const bytes = readFileSync(join(directory, glb));
-    if (bytes.length < 20 || bytes.readUInt32LE(0) !== 0x46546c67) {
-        return undefined;
-    }
-    const length = bytes.readUInt32LE(12);
-    return JSON.parse(
-        bytes.subarray(20, 20 + length).toString("utf8"),
-    ) as JsonObject;
+    return glbDocument(join(directory, glb));
 }
 
 const normalize = (text: string): string =>
@@ -109,13 +103,14 @@ export async function runComposeReport(
     idOrSource: string,
     scenes: readonly { id: string }[],
     resolve: (idOrSource: string) => { id: string },
+    captureDirectory?: string,
 ): Promise<void> {
     const selected = idOrSource === "all"
         ? scenes
         : [resolve(idOrSource)];
     let anyGap = false;
     for (const scene of selected) {
-        const gap = await reportScene(scene.id);
+        const gap = await reportScene(scene.id, captureDirectory);
         anyGap ||= gap;
     }
     if (anyGap) {
@@ -123,8 +118,11 @@ export async function runComposeReport(
     }
 }
 
-async function reportScene(scene: string): Promise<boolean> {
-    const document = glbDocument(scene);
+async function reportScene(
+    scene: string,
+    captureDirectory?: string,
+): Promise<boolean> {
+    const document = sceneGlbDocument(scene);
     const materials = Array.isArray(document?.["materials"])
         ? (document["materials"] as JsonObject[])
         : [];
@@ -132,54 +130,23 @@ async function reportScene(scene: string): Promise<boolean> {
         console.log(`${scene}: no glTF materials.`);
         return false;
     }
-    const captured = capturedFragments(scene);
-    const record = document as JsonObject;
-    const imageOf = gltfImageResolver(record);
-    const animatedBaseColor = gltfAnimatedMaterialPointers(
-        record,
-        "pbrMetallicRoughness/baseColorFactor",
-    );
-    const animatedUvTransform = gltfAnimatedMaterialPointers(
-        record,
-        ".*/KHR_texture_transform/(?:offset|scale|rotation)",
-    );
-    const animatedEmissive = new Set([
-        ...gltfAnimatedMaterialPointers(record, "emissiveFactor"),
-        ...gltfAnimatedMaterialPointers(
-            record,
-            "extensions/KHR_materials_emissive_strength/emissiveStrength",
-        ),
-    ]);
-    const animatedExtensions = gltfAnimatedExtensionTargets(record);
+    const captured = capturedFragments(scene, captureDirectory);
     const candidates = await sceneCandidates();
-    // A scene renders linear when any material transmits, because
-    // `set-transmission.ts` retargets the frame graph's colour buffer — and
-    // the refraction fragment composes its own image-processing arm then.
-    const linearImageProcessing = materials.some(
-        (entry) =>
-            (asNumber(
-                asObject(
-                    asObject(entry["extensions"])?.[
-                        "KHR_materials_transmission"
-                    ],
-                )?.["transmissionFactor"],
-            ) ?? 0) > 0,
-    );
-    const skinned = skinnedMeshIndices(record);
-    // Which primitive each material is drawn by, for its mesh features: a
-    // second UV set or a vertex-colour stream changes the composed fragment.
-    const primitiveOf = new Map<number, { mesh: number; primitive: JsonObject }>();
-    for (const [mesh, entry] of (
-        Array.isArray(record["meshes"]) ? (record["meshes"] as JsonObject[]) : []
-    ).entries()) {
-        for (const primitive of Array.isArray(entry["primitives"])
-            ? (entry["primitives"] as JsonObject[])
-            : []) {
-            const material = asNumber(primitive["material"]);
-            if (material === undefined || primitiveOf.has(material)) continue;
-            primitiveOf.set(material, { mesh, primitive });
-        }
-    }
+    // The subjects are generation's own construction — the animated-pointer
+    // scans, the loader flags, the first-primitive mesh features — consumed
+    // rather than duplicated, so this gate cannot drift from what generation
+    // composes. The linear flag is its asset-side derivation: a scene renders
+    // linear when any material transmits, because `set-transmission.ts`
+    // retargets the frame graph's colour buffer — and the refraction fragment
+    // composes its own image-processing arm then. The appended
+    // default-material subject is generation's concern; the capture
+    // comparison covers the declared materials, as it always has.
+    const subjects = (
+        await materialSubjects(document as JsonObject, {
+            linearImageProcessing:
+                gltfLinearImageProcessing(document as JsonObject),
+        })
+    ).filter((subject) => subject.index < materials.length);
 
     console.log(
         `${scene}: ${materials.length} material(s), ` +
@@ -189,30 +156,8 @@ async function reportScene(scene: string): Promise<boolean> {
     );
     let matched = 0;
     let gaps = 0;
-    for (const [index, material] of materials.entries()) {
-        const input = pinnedMaterialInputFromGltf(material, {
-            imageOf,
-            linearImageProcessing,
-            animatedBaseColorFactor: animatedBaseColor.has(index),
-            animatedEmissive: animatedEmissive.has(index),
-            animatedUvTransform: animatedUvTransform.has(index),
-            ...(animatedExtensions.has(index)
-                ? {
-                    animatedExtensionTargets:
-                        animatedExtensions.get(index)!,
-                }
-                : {}),
-        });
-        const uv2Mask = (input["_uv2Mask"] as number | undefined) ?? 0;
-        const drawn = primitiveOf.get(index);
-        const meshFeatures = drawn
-            ? await pinnedMeshFeaturesFromPrimitive(drawn.primitive, {
-                skinned: skinned.has(drawn.mesh),
-            })
-            : 0;
-        const name = typeof material["name"] === "string"
-            ? material["name"]
-            : `material ${index}`;
+    for (const { index, name, input, uv2Mask, meshFeatures } of subjects) {
+        const material = materials[index]!;
 
         let hit: { file: string; label: string } | undefined;
         let composed = "";

@@ -4,6 +4,11 @@ Only unfinished work belongs here. What is done is in [status](docs/status.md),
 the docs, and Git history. Entries state what remains and the facts needed to
 act on it — not what was tried.
 
+The 2026-08-18 repository audit tracked its findings separately in
+[AUDIT.md](AUDIT.md), under the same delete-when-fixed rule as this file.
+Its open entries are closed; what persists there is the verified-clean
+record future audits build on.
+
 ## Constraints
 
 - derive Babylon behavior from the pinned upstream TypeScript
@@ -34,13 +39,14 @@ Both backends stay long-term as mutually validating implementations;
 - [ ] Build a typed user-code IR from `ts.Program`/`TypeChecker` symbols.
 - [ ] Move statement, expression, and intrinsic lowering into focused compiler
   modules instead of extending the entry compiler monolith.
-- [ ] Extend shader IR to composed PBR/Grid/background fragments and replace the
-  renderer-lowerer source-text contracts: 16 marker rewrites over the converted
-  fragment text, 8 of them regexes redirecting a `textureSample` at a
-  transform-built UV. Order: parse the fragment and re-emit it byte-identically
-  across every generated tree first, then replace the per-slot UV redirects with
-  typed rewrites, then the structural splices (material extensions, fog) that
-  insert whole statement blocks.
+- [ ] Extend the typed shader IR to the WGSL still emitted as text outside
+  it: the shared material vertex stage (`src/shader-builtins-standard.ts`),
+  the sprite pair's binding re-homing shell (`src/shader-builtins-sprite.ts`),
+  the grid fragment's option-gate shell (`src/shader-builtins-grid.ts`), and
+  the project-owned blit/depth/diagnostic stages in
+  `src/shader-builtins-utility.ts`. The pinned bodies inside them are already
+  lifted or evaluated from the pin; the shells and the project-owned stages
+  are what the IR does not carry.
 - [ ] Lower string-literal switch discriminants.
 - [ ] Add discriminated unions and numeric-literal narrowing beyond the
   checker's null analysis.
@@ -49,9 +55,11 @@ Both backends stay long-term as mutually validating implementations;
   site, both fail explicitly. `canvas.width`/`canvas.height` name the engine's
   configured size; a scene reading them after a resize needs the live
   render-target size from the pinned `getRenderTargetSize`.
-- [ ] Replace the conservative alias rules (path-bound locals are read-only
-  copies; owned locals reject writes after escaping by copy) with real escape
-  analysis when a reached scene needs shared mutable objects.
+- [ ] Replace the conservative alias rules (const path-bound locals alias
+  natively and are poisoned when their container is resized; mutable
+  path-bound locals are read-only copies; owned locals reject writes after
+  escaping by copy) with real escape analysis when a reached scene needs
+  shared mutable objects.
 - [ ] Close the primary-slot directional specular residual: a directional light
   in the first analytic slot under mid/low roughness renders its specular
   highlight a few percent dim (sphere, roughness 0.35, max channel delta 10-15
@@ -119,15 +127,8 @@ Both backends stay long-term as mutually validating implementations;
 ### Material extensions
 
 - [ ] Anisotropy, including `setPbrAnisotropy`.
-- [ ] Compose clearcoat/sheen layers with punctual multi-light PBR; the
-  combination fails explicitly in the renderer lowerer.
 - [ ] Require typed metadata specialization, focused tests, and an independent
   parity scene for each extension.
-- [ ] Generalize Standard lighting beyond the per-scene unrolled slots. The pin
-  declares `array<LightEntry, MAX_LIGHTS>` and loops `min(mesh.lc, MAX_LIGHTS)`;
-  the slot count here is fixed at generation from the `.babylon` point lights,
-  so lights created in scene code beyond two slots and lights added after
-  registration fall outside what is lowered.
 - [ ] Carry a spot light's cone angle at the pin's precision. The pinned factory
   computes `Math.cos(angle * 0.5)` in doubles into a float UBO; the compiler
   passes scalars as `static_cast<float>(<double expression>)`, so the cosine is
@@ -138,16 +139,15 @@ Both backends stay long-term as mutually validating implementations;
   a double-valued scalar path.
 - [ ] Extend scene-code spot lights past the reached colour pair: the pinned
   light also exposes `angle`, `exponent`, and `range` as settable properties,
-  whose setters fail explicitly. Two compositions stay out for the same reason —
-  the slot component the cone cosine takes is the one that says whether the slot
-  holds a light: a spot in the first PBR analytic slot, and a spot with Standard
-  geometry outputs.
+  whose setters fail explicitly. One composition stays out: a spot landing in
+  the first PBR analytic slot refuses at run time, because that slot encodes
+  the light kind in `lightDirection.w` and carries no cone.
 - [ ] Extend Standard vertex colors past RGB: the pinned
   `std-vertex-color-fragment.ts` also consumes `vColor.a` under the
   `mesh.hasVertexAlpha` opt-in (output alpha, the vertex-alpha alpha test, the
-  transparent-phase source-over blend), and `standard-renderable.ts` composes
-  the fragment for the geometry outputs. Generation fails explicitly on the
-  geometry-output combination.
+  transparent-phase source-over blend). Composition already takes the
+  `vertexAlpha` flag; the compiler always passes false because the
+  `hasVertexAlpha` setter is not lowered.
 
 ### Packed native assets
 
@@ -166,7 +166,10 @@ Both backends stay long-term as mutually validating implementations;
   it SDL refuses a multisample texture carrying a read usage and the SDL_GPU
   backend cannot run the pinned per-sample image-processing pass. **3.6.0 is the
   release to watch**; when it carries the patch, move `builtin-baseline` to a
-  registry commit containing it and delete both paths.
+  registry commit containing it and delete both paths. Verify a candidate
+  release by creating a 4x multisample texture with
+  `SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ` (the shape the per-sample pass
+  needs) before moving the baseline.
 - [ ] Compose environment/camera sizing from object-local bounds through the
   pinned abs-matrix OBB-to-AABB world transform, and add the `upperRadiusLimit`
   ground/skybox override (upstream `scene-size.ts`, `mesh-world-bounds.ts`,
@@ -182,8 +185,13 @@ Both backends stay long-term as mutually validating implementations;
   explains 4.8% of it, so it is shading, not silhouette. The bone palettes are
   excluded — the two skins that differ from the browser's bone textures differ
   by exactly the mesh node translation, which the pin cancels against
-  `MeshUniforms.world`. A separate arc on the left arm is a displacement of
-  (-0.385, -0.503) px.
+  `MeshUniforms.world`. New suspect (2026-08-18 audit): the asset carries
+  JOINTS_1/WEIGHTS_1, so the browser skins eight influences per vertex
+  (`MSH_HAS_SKELETON_8`) where the generated loader truncates to four — now
+  recorded per scene as the `four-influence-skinning` adaptation. The dropped
+  tail weights matter exactly at blend regions like ridge creases, which is
+  where the residual sits. Test by summing the second pair's weights over the
+  residual tiles' vertices before implementing anything.
 - [ ] Add generation-checked handles and resource lifetime/leak checks.
 - [ ] Add dirty flags and incremental GPU updates.
 - [ ] Add device-loss and resize-safe resource recreation.
@@ -204,7 +212,6 @@ Both backends stay long-term as mutually validating implementations;
   `scene -- neutrality` excludes these two scenes' Dawn cells; delete that
   exclusion with this entry.
 - [ ] Add malformed asset and backend-layout tests.
-- [ ] Add a validation bundle command that preserves artifacts on failure.
 
 ## P1 — Developer experience
 
@@ -291,7 +298,6 @@ that does to the deferred lane by default.
   behind them.
 - [ ] Scenes 18, 25: support Standard ground diffuse textures.
 - [ ] Scene 20: lower an arrow function bound to a name and used as a value.
-- [ ] Scene 21: support the reached non-identifier variable declarations.
 - [ ] Scenes 26, 87: support image-processing `toneMapping`.
 - [ ] Scene 27: support glTF `selectVariant`.
 - [ ] Scene 36: support `loadBasisTexture2D`.

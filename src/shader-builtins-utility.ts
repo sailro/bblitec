@@ -1,3 +1,17 @@
+/**
+ * Utility WGSL. The image-processing function, its per-sample MSAA loop, and
+ * the fog falloff are lifted from the pinned package's own string literals —
+ * the same discipline as the background fragments. The blit stages, the
+ * depth-only fragment, and the diagnostic id/cluster fragments are
+ * project-owned tooling with no pinned counterpart and stay written here.
+ */
+import {
+    extractPackagedTemplateLiteral,
+    extractWgslFunction,
+    readPinnedLibraryModule,
+    splitWgslStatements,
+} from "./pinned-shader-composer.js";
+
 export function blitVertexWgsl(): string {
     return `struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -47,52 +61,132 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
 `;
 }
 
-/** The pinned `ip()` — exposure, optional Reinhard tonemap, gamma, contrast. */
-function imageProcessingFunctionWgsl(): string {
-    return `struct ImageProcessingUniforms {
-    parameters: vec4<f32>,
+function utilityLiftError(what: string): never {
+    throw new Error(`Pinned Babylon Lite ${what} changed.`);
 }
-@group(3) @binding(0) var<uniform> uniforms: ImageProcessingUniforms;
 
-struct FragmentInput {
+/** Re-indent a lifted statement list, one pinned statement per line. */
+function formatStatements(body: string): string {
+    return splitWgslStatements(body)
+        .map((statement) => `    ${statement}`)
+        .join("\n");
+}
+
+/**
+ * Applies a documented re-homing map, requiring every entry to occur so a
+ * pinned rename fails generation instead of leaving a dangling reference.
+ */
+function rehome(
+    source: string,
+    replacements: ReadonlyArray<readonly [string, string]>,
+    what: string,
+): string {
+    let text = source;
+    for (const [from, to] of replacements) {
+        if (!text.includes(from)) {
+            utilityLiftError(`${what} ('${from}' is gone)`);
+        }
+        text = text.split(from).join(to);
+    }
+    return text;
+}
+
+interface PinnedImageProcessing {
+    /** The pin's own parameter block, byte for byte: `struct P{e,c,t,p}`. */
+    uniformStruct: string;
+    /** The pin's uniform declaration, re-addressed to fragment space 3. */
+    uniformBinding: string;
+    /** The pin's `ip()` — exposure, optional tonemap, gamma, contrast. */
+    ip: string;
+    /** The pin's per-sample fragment body, re-homed onto our bindings. */
+    multisampledBody: string;
+}
+
+/**
+ * Lifts `frame-graph/image-processing-task.ts`'s shader text out of the
+ * packaged module. `common` and the two fragments are function-local template
+ * literals there, so they are read from the module text; `ip()` and the
+ * parameter block are then the pin's own bytes. The PAL pushes the same 16
+ * bytes upstream writes (`[exposure, contrast, toneMappingEnabled, 0]`), so
+ * the pin's scalar struct lays out identically to the vec4 it replaces.
+ */
+function pinnedImageProcessing(): PinnedImageProcessing {
+    const module = readPinnedLibraryModule(
+        "frame-graph/image-processing-task.js",
+    );
+    const common = extractPackagedTemplateLiteral(module, "common");
+    const uniformStruct = "struct P{e:f32,c:f32,t:f32,p:f32}";
+    if (!common.includes(uniformStruct)) {
+        utilityLiftError("image-processing parameter block");
+    }
+    if (!common.includes("@group(0)@binding(0)var<uniform> p:P;")) {
+        utilityLiftError("image-processing parameter binding");
+    }
+    const ip = extractWgslFunction(common, "ip");
+    if (!ip.includes("1.590579")) {
+        utilityLiftError("image-processing tone-mapping calibration");
+    }
+    const multisampled =
+        /`(@fragment fn fs[^`]*textureNumSamples[^`]*)`/.exec(module);
+    if (!multisampled) {
+        utilityLiftError("image-processing multisampled fragment");
+    }
+    const entry = /\{([\s\S]*)\}$/.exec(multisampled[1]!);
+    if (!entry) {
+        utilityLiftError("image-processing multisampled entry point");
+    }
+    const multisampledBody = rehome(
+        entry[1]!,
+        [
+            // The pin binds its source as `s` and reads its own position
+            // builtin `q`; natively the texture arrives through the storage
+            // slot declared below and the position through the shared blit
+            // varying block.
+            ["textureDimensions(s)", "textureDimensions(sourceTexture)"],
+            ["textureNumSamples(s)", "textureNumSamples(sourceTexture)"],
+            ["textureLoad(s,", "textureLoad(sourceTexture,"],
+            ["q.xy", "input.position.xy"],
+        ],
+        "image-processing multisampled fragment",
+    );
+    return {
+        uniformStruct,
+        uniformBinding: "@group(3)@binding(0)var<uniform> p:P;",
+        ip,
+        multisampledBody,
+    };
+}
+
+/** The blit varying block both image-processing entry points consume. */
+function imageProcessingFragmentInput(): string {
+    return `struct FragmentInput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
-};
-
-fn imageProcess(source: vec4<f32>) -> vec4<f32> {
-    var color = source.rgb * uniforms.parameters.x;
-    if (uniforms.parameters.z > 0.5) {
-        color = vec3<f32>(1.0) - exp2(-1.590579 * color);
-    }
-    color = clamp(
-        pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2)),
-        vec3<f32>(0.0),
-        vec3<f32>(1.0),
-    );
-    let highContrast =
-        color * color * (vec3<f32>(3.0) - 2.0 * color);
-    if (uniforms.parameters.y < 1.0) {
-        color = mix(vec3<f32>(0.5), color, uniforms.parameters.y);
-    } else {
-        color = mix(
-            color,
-            highContrast,
-            uniforms.parameters.y - 1.0,
-        );
-    }
-    return vec4<f32>(max(color, vec3<f32>(0.0)), source.a);
-}
-`;
+};`;
 }
 
+/**
+ * The single-sample image-processing pass. The pin's non-multisampled
+ * fragment `textureLoad`s an unfilterable source; SDL_GPU presents the
+ * resolved frame through a texture-sampler pair instead, so the wrapper
+ * samples the blit uv — which lands on exact texel centres — and everything
+ * inside `ip()` is the pin's bytes.
+ */
 export function imageProcessingFragmentWgsl(): string {
+    const pinned = pinnedImageProcessing();
     return `@group(2) @binding(0) var sourceTexture: texture_2d<f32>;
 @group(2) @binding(1) var sourceSampler: sampler;
 
-${imageProcessingFunctionWgsl()}
+${pinned.uniformStruct}
+${pinned.uniformBinding}
+
+${imageProcessingFragmentInput()}
+
+${pinned.ip}
+
 @fragment
 fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
-    return imageProcess(textureSampleLevel(
+    return ip(textureSampleLevel(
         sourceTexture,
         sourceSampler,
         input.uv,
@@ -106,31 +200,26 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
  * The pinned `image-processing-task.ts` shape: `ip()` per MSAA sample,
  * averaged after the loop rather than before it. Because tone mapping and
  * gamma are concave, processing the resolved pixel once is brighter than
- * this exactly on raster edges.
+ * this exactly on raster edges. The loop body is the pin's own text.
  *
  * The source is bound as a fragment *storage* texture, not a sampler pair:
  * a `Texture2DMS` is `Load()`-ed and has no sampler, so SDL_GPU takes it
  * through `SDL_BindGPUFragmentStorageTextures`.
  */
 export function imageProcessingMultisampledFragmentWgsl(): string {
+    const pinned = pinnedImageProcessing();
     return `@group(2) @binding(0) var sourceTexture: texture_multisampled_2d<f32>;
 
-${imageProcessingFunctionWgsl()}
+${pinned.uniformStruct}
+${pinned.uniformBinding}
+
+${imageProcessingFragmentInput()}
+
+${pinned.ip}
+
 @fragment
 fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
-    let bounds = vec2<i32>(textureDimensions(sourceTexture)) - vec2<i32>(1);
-    let coordinate = clamp(
-        vec2<i32>(input.position.xy),
-        vec2<i32>(0),
-        bounds,
-    );
-    let sampleCount = i32(textureNumSamples(sourceTexture));
-    var accumulated = vec4<f32>(0.0);
-    for (var index = 0; index < sampleCount; index = index + 1) {
-        accumulated = accumulated +
-            imageProcess(textureLoad(sourceTexture, coordinate, index));
-    }
-    return accumulated / f32(sampleCount);
+${formatStatements(pinned.multisampledBody)}
 }
 `;
 }
@@ -217,35 +306,37 @@ fn mainFragment(
 }
 
 /**
- * The pinned fog falloff, shared by every native fragment that reads
- * `uniforms.fogInfos`: the standard material fragment and the cubemap
- * skybox both had the same text written out.
+ * The pinned fog falloff (`shader/wgsl-fog.ts` `WGSL_FOG`), lifted from the
+ * packaged module and shared by every native fragment that reads
+ * `uniforms.fogInfos`: the standard material fragment and the cubemap skybox.
+ *
+ * The re-homing is a rename pair plus the uniform flattening: the pin's
+ * `calcFogFactor`/`E_FOG` become `bblCalcFogFactor`/`bblFogE` — the names the
+ * consuming fragments already call — and `scene.vFogInfos` reads the
+ * consumers' own `uniforms.fogInfos` slot.
  *
  * The PBR fragment keeps its own copy in the renderer lowerer. That one
- * is not this text -- it is the Tint-normalized dialect, naming
+ * is not this text — it is the Tint-normalized dialect, naming
  * `FragmentUniforms` and spelling every literal `1.0f`, and it carries a
  * provenance comment tying it line for line to the pinned WGSL module it
  * was converted from. Regenerating it from here would break that diff.
  */
 export function fogFactorWgsl(): string {
-    return `const bblFogE: f32 = 2.71828;
-
-fn bblCalcFogFactor(fogDistance: vec3<f32>) -> f32 {
-    var fogCoeff = 1.0;
-    let fogMode = uniforms.fogInfos.x;
-    let fogStart = uniforms.fogInfos.y;
-    let fogEnd = uniforms.fogInfos.z;
-    let fogDensity = uniforms.fogInfos.w;
-    let dist = length(fogDistance);
-    if (fogMode == 3.0) {
-        fogCoeff = (fogEnd - dist) / (fogEnd - fogStart);
-    } else if (fogMode == 1.0) {
-        fogCoeff = 1.0 / pow(bblFogE, dist * fogDensity);
-    } else if (fogMode == 2.0) {
-        fogCoeff =
-            1.0 / pow(bblFogE, dist * dist * fogDensity * fogDensity);
+    const fog = extractPackagedTemplateLiteral(
+        readPinnedLibraryModule("shader/wgsl-fog.js"),
+        "WGSL_FOG",
+    );
+    const rehomed = rehome(
+        fog,
+        [
+            ["E_FOG", "bblFogE"],
+            ["calcFogFactor", "bblCalcFogFactor"],
+            ["scene.vFogInfos", "uniforms.fogInfos"],
+        ],
+        "fog factor (WGSL_FOG)",
+    );
+    if (rehomed.includes("scene.")) {
+        utilityLiftError("fog factor (unmapped scene member)");
     }
-    return clamp(fogCoeff, 0.0, 1.0);
-}
-`;
+    return `${rehomed.trim()}\n`;
 }

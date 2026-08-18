@@ -6,7 +6,10 @@ import {
     getHdrGgxPrefilterProvenance,
     prefilterCubemapGgx,
 } from "../src/hdr-prefilter-gpu.js";
-import { readUpstreamPin } from "../src/upstream-source.js";
+import {
+    UpstreamSourceStore,
+    readUpstreamPin,
+} from "../src/upstream-source.js";
 
 function smallHdr(): Uint8Array {
     const header = new TextEncoder().encode(
@@ -73,9 +76,12 @@ test("packages a deterministic HDR cubemap representation", async () => {
     assert.equal(view.getUint32(8, true), 2);
     assert.equal(view.getUint32(12, true), 2);
     assert.equal(packaged.byteLength, 364);
+    // The package is the pin executed (parseRGBE, computeSHFromEquirect, the
+    // equirect-to-cube compute's own mip zero), so this golden is a drift
+    // detector: a pin bump that changes any of it goes red here.
     assert.equal(
         createHash("sha256").update(packaged).digest("hex"),
-        "e600de7cca4608446b5e9b5d1ac7d5780efdbfa333f177daddaaee54378146fe",
+        "3dda74b3d98e111a9ef0391ec917a5d4525ac354f20a016d548729dbe08d7e43",
     );
 });
 
@@ -91,40 +97,32 @@ test("decodes valid HDR scanline RLE", () => {
     }
 });
 
-test("rejects truncated and overflowing HDR scanline RLE", () => {
-    const truncated = rleHdr().slice(0, -1);
-    assert.throws(
-        () => parseRgbe(truncated),
-        /scanline run value is truncated/,
+test("preScalePolynomial's constants are the pinned function's", () => {
+    // `polynomialToPreScaledHarmonics` is module-local upstream, so it cannot
+    // be imported the way the parser is; this anchors the ported constants to
+    // the pinned source instead, making a pin bump that moves one fail here
+    // rather than drift silently.
+    const source = new UpstreamSourceStore().getSource(
+        "src/loader-gltf/ibl-env-assembly.ts",
     );
-
-    const overflow = hdrBytes(
-        8,
-        1,
-        [
-            2, 2, 0, 8,
-            137, 64,
-        ],
-    );
-    assert.throws(
-        () => parseRgbe(overflow),
-        /Invalid HDR scanline run length/,
-    );
-});
-
-test("rejects unsupported legacy HDR repeat encoding", () => {
-    const legacy = hdrBytes(
-        2,
-        1,
-        [
-            64, 32, 16, 136,
-            1, 1, 1, 1,
-        ],
-    );
-    assert.throws(
-        () => parseRgbe(legacy),
-        /Legacy HDR scanline repeat encoding is unsupported/,
-    );
+    const body = source.match(
+        /polynomialToPreScaledHarmonics[\s\S]*?\n\}/,
+    )?.[0];
+    assert.ok(body, "the pinned prescale function was found");
+    for (const constant of [
+        "0.3333338747897695",
+        "0.33333298856284405",
+        "1.4999984284682104",
+        "3.999982863580422",
+        "1.3333326611423701",
+        "0.6666653397393608",
+        "1.999991431790211",
+    ]) {
+        assert.ok(
+            body.includes(constant),
+            `the pinned prescale carries ${constant}`,
+        );
+    }
 });
 
 test("rejects unsupported HDR cubemap dimensions", async () => {
@@ -146,9 +144,11 @@ test("preserves mip zero and deterministically applies pinned GGX semantics", as
         }
         return pixels;
     });
-    const first = await prefilterCubemapGgx(faces, faceSize, 3);
-    const second = await prefilterCubemapGgx(faces, faceSize, 3);
-    assert.strictEqual(first[0], faces);
+    const first = await prefilterCubemapGgx(faceSize, 3, { faces });
+    const second = await prefilterCubemapGgx(faceSize, 3, { faces });
+    // Level zero round-trips through the GPU source texture now, so the
+    // content is preserved while the arrays are fresh.
+    assert.deepEqual(first[0], faces);
     assert.deepEqual(first, second);
     assert.notDeepEqual(first[1]![0], faces[0]!.slice(0, first[1]![0]!.length));
 

@@ -16,15 +16,17 @@
 #include <bblite/upstream/camera_math.hpp>
 
 #include "pal_camera_controls.hpp"
+// The CPU fallback benchmarks through the same shared contract as the
+// GPU backends: report_benchmark's line shape and the
+// benchmark_warmup_frames warmup policy both live in the shared header.
+#include "pal_gpu_shared.hpp"
 #endif
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdlib>
-#include <iomanip>
 #include <iostream>
-#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -220,16 +222,34 @@ void draw_ground(SDL_Renderer* renderer, const MeshRecord& mesh, const Projectio
 }
 
 Vec3 rotate(Vec3 value, Vec3 rotation) {
-    const float sin_x = std::sin(rotation.x);
-    const float cos_x = std::cos(rotation.x);
-    const float sin_y = std::sin(rotation.y);
-    const float cos_y = std::cos(rotation.y);
+    // The pinned Euler proxy converts through eulerToQuat's intrinsic XYZ
+    // order (src/math/quat-euler.ts), which applies Z, then Y, then X to a
+    // vector — the same body as `rotate_euler` in pal_gpu_shared.hpp, kept
+    // local because this translation unit also compiles for sprite-only
+    // scenes whose generated tree carries none of that header's includes.
+    // (This used to apply X, then Y, then Z, silently diverging from the
+    // GPU backends for any multi-axis rotation.)
     const float sin_z = std::sin(rotation.z);
     const float cos_z = std::cos(rotation.z);
-
-    value = Vec3{value.x, value.y * cos_x - value.z * sin_x, value.y * sin_x + value.z * cos_x};
-    value = Vec3{value.x * cos_y + value.z * sin_y, value.y, -value.x * sin_y + value.z * cos_y};
-    return Vec3{value.x * cos_z - value.y * sin_z, value.x * sin_z + value.y * cos_z, value.z};
+    value = Vec3{
+        value.x * cos_z - value.y * sin_z,
+        value.x * sin_z + value.y * cos_z,
+        value.z,
+    };
+    const float sin_y = std::sin(rotation.y);
+    const float cos_y = std::cos(rotation.y);
+    value = Vec3{
+        value.x * cos_y + value.z * sin_y,
+        value.y,
+        -value.x * sin_y + value.z * cos_y,
+    };
+    const float sin_x = std::sin(rotation.x);
+    const float cos_x = std::cos(rotation.x);
+    return Vec3{
+        value.x,
+        value.y * cos_x - value.z * sin_x,
+        value.y * sin_x + value.z * cos_x,
+    };
 }
 
 Vec3 rotate(Vec3 value, Vec4 quaternion) {
@@ -308,7 +328,6 @@ struct MaterialTextures {
 struct PreparedGeometry {
     std::vector<Vec3> normals;
     std::vector<Color3> base_colors;
-    std::vector<float> base_luminance;
     std::vector<float> occlusion;
     std::vector<float> roughness;
     std::vector<float> metallic;
@@ -521,7 +540,6 @@ std::vector<PreparedGeometry> prepare_geometries(
         PreparedGeometry& prepared = result[geometry_index];
         prepared.normals.reserve(geometry.vertices.size());
         prepared.base_colors.reserve(geometry.vertices.size());
-        prepared.base_luminance.reserve(geometry.vertices.size());
         prepared.occlusion.reserve(geometry.vertices.size());
         prepared.roughness.reserve(geometry.vertices.size());
         prepared.metallic.reserve(geometry.vertices.size());
@@ -543,8 +561,6 @@ std::vector<PreparedGeometry> prepare_geometries(
                     vertex.uv,
                     Color4{1.0f, 1.0f, 1.0f, 1.0f});
                 prepared.base_colors.push_back(Color3{base_color.r, base_color.g, base_color.b});
-                prepared.base_luminance.push_back(
-                    (base_color.r + base_color.g + base_color.b) / 3.0f);
 
                 const Color4 packed = sample_surface(
                     material_textures->metallic_roughness,
@@ -567,7 +583,6 @@ std::vector<PreparedGeometry> prepare_geometries(
                 }
             } else {
                 prepared.base_colors.push_back(Color3{});
-                prepared.base_luminance.push_back(1.0f);
             }
 
             prepared.normals.push_back(normal);
@@ -928,25 +943,13 @@ void render_models(
             Point2 p1;
             Point2 p2;
             RenderTriangle triangle;
-            const float height = geometry.bounds_max.y - geometry.bounds_min.y;
-            const float normalized_height =
-                height > 0.000001f
-                    ? (((geometry.vertices[i0].position.y + geometry.vertices[i1].position.y + geometry.vertices[i2].position.y) / 3.0f) -
-                       geometry.bounds_min.y) /
-                        height
-                    : 0.0f;
-            const float upward =
-                (prepared.normals[i0].y + prepared.normals[i1].y + prepared.normals[i2].y) / 3.0f;
-            const float luminance =
-                (prepared.base_luminance[i0] + prepared.base_luminance[i1] + prepared.base_luminance[i2]) / 3.0f;
-            const float roughness =
-                (prepared.roughness[i0] + prepared.roughness[i1] + prepared.roughness[i2]) / 3.0f;
-            const bool smoked_glass =
-                normalized_height > 0.575f &&
-                upward > 0.55f &&
-                luminance < 0.16f &&
-                roughness < 0.08f;
-            const float opacity = smoked_glass ? 0.72f : 1.0f;
+            // The fallback shades every triangle opaque. A geometry-position
+            // heuristic used to detect Scene 1's smoked-glass lid here
+            // (height/normal/luminance/roughness thresholds selecting 0.72
+            // opacity), against the repository's no-heuristics invariant; the
+            // scene-1 CPU thresholds are re-baselined to the honest opaque
+            // rendering instead.
+            const float opacity = 1.0f;
             triangle.vertices[0] = render_vertex(
                 geometry.vertices[i0],
                 prepared.normals[i0],
@@ -1069,31 +1072,6 @@ void render_models(
 long configured_frames(const char* name) {
     const std::string value = pal::environment_variable(name);
     return value.empty() ? 0 : std::strtol(value.c_str(), nullptr, 10);
-}
-
-void print_benchmark(const char* renderer_name, std::vector<double> samples) {
-    if (samples.empty()) {
-        return;
-    }
-    std::sort(samples.begin(), samples.end());
-    const double average =
-        std::accumulate(samples.begin(), samples.end(), 0.0) /
-        static_cast<double>(samples.size());
-    const double median = samples[samples.size() / 2];
-    const std::size_t p95_index =
-        std::min(samples.size() - 1, static_cast<std::size_t>(std::ceil(samples.size() * 0.95)) - 1);
-
-    std::cout
-        << std::fixed
-        << std::setprecision(3)
-        << "Babylon Lite native benchmark"
-        << " | renderer=" << (renderer_name ? renderer_name : "unknown")
-        << " | frames=" << samples.size()
-        << " | average=" << average << " ms"
-        << " | median=" << median << " ms"
-        << " | p95=" << samples[p95_index] << " ms"
-        << " | min=" << samples.front() << " ms"
-        << " | max=" << samples.back() << " ms\n";
 }
 
 } // namespace
@@ -1233,7 +1211,8 @@ void pal::run_engine(Engine& engine) {
     std::vector<PreparedGeometry> prepared_geometries = prepare_geometries(engine, material_textures);
     EnvironmentImages environment_images = create_environment_images(scene);
 #endif
-    const long warmup_frames = benchmarking ? std::min(120L, std::max(10L, benchmark_frame_count / 10)) : 0;
+    const long warmup_frames =
+        pal::benchmark_warmup_frames(benchmark_frame_count);
     const long frame_limit =
         benchmarking
             ? warmup_frames + benchmark_frame_count
@@ -1350,7 +1329,11 @@ void pal::run_engine(Engine& engine) {
     }
 
     if (benchmarking) {
-        print_benchmark(SDL_GetRendererName(renderer), std::move(benchmark_samples));
+        const char* renderer_name = SDL_GetRendererName(renderer);
+        pal::report_benchmark(
+            std::move(benchmark_samples),
+            "SDL_Renderer",
+            renderer_name ? renderer_name : "unknown");
     }
 
 #if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF

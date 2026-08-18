@@ -80,6 +80,17 @@ export interface UboWriterRequest {
             (baseName: string) => Readonly<Record<string, string | null>>
         >
     >;
+    /**
+     * Module-level installed hooks this port leaves uninstalled.
+     *
+     * The Standard UV writer reads `_uvOffsetResolver?.(material) ?? null`,
+     * where the resolver only exists after `enableStandardUvOffset()` — which
+     * no reached scene calls. The pin's own evaluation of the uninstalled
+     * state is `null`, so a local bound to such a call is null at generation
+     * and every read through it folds to its `?? default` arm — the pin's
+     * value, decided the way the pin decides it.
+     */
+    absentHooks?: readonly string[];
 }
 
 const mathFunctions: Readonly<Record<string, string>> = {
@@ -110,6 +121,18 @@ interface WriterState {
      */
     parameterFields?: Readonly<Record<string, string>>;
     locals: Set<string>;
+    /**
+     * Locals bound to null at generation: an uninstalled hook's `?.()` result.
+     * Reads through them fold to their `?? default` arms.
+     */
+    nullLocals: Set<string>;
+    /**
+     * Locals the pinned body reassigns. They lower as mutable floats where
+     * everything else stays `const` — and because an assignment to a local
+     * used to fail generation outright, every writer lowered before this
+     * construct existed has none, which keeps their emitted text identical.
+     */
+    mutatedLocals: ReadonlySet<string>;
     /**
      * Locals bound to a vector rather than a scalar, and how to index them: a
      * record colour by member (`.r`), the pin's own array default by lane.
@@ -273,6 +296,79 @@ function guardedFieldByHas(condition: ts.Expression): string | undefined {
     return match?.[1];
 }
 
+/**
+ * Every local the pinned body reassigns (`scaleY = -scaleY`, `offsetY += x`).
+ *
+ * Collected up front so the declaration site knows whether to emit a mutable
+ * float. Assignments to `data[...]` have an element-access target and never
+ * land here.
+ */
+function collectMutatedLocals(body: ts.Node): Set<string> {
+    const mutated = new Set<string>();
+    const visit = (node: ts.Node): void => {
+        if (
+            ts.isBinaryExpression(node) &&
+            ts.isIdentifier(node.left) &&
+            (node.operatorToken.kind === ts.SyntaxKind.EqualsToken ||
+                node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken ||
+                node.operatorToken.kind === ts.SyntaxKind.MinusEqualsToken ||
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.AsteriskEqualsToken)
+        ) {
+            mutated.add(node.left.text);
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(body);
+    return mutated;
+}
+
+/**
+ * Whether an initializer is an uninstalled hook's call — the pin's
+ * `_uvOffsetResolver?.(material) ?? null` shape. The hook names come from the
+ * request; the call's own result is the pin's uninstalled evaluation, null.
+ */
+function initializerIsAbsentHookCall(
+    state: WriterState,
+    expression: ts.Expression,
+): boolean {
+    let node = expression;
+    // `hook?.(x) ?? null` — the fallback is itself null, so either side of the
+    // `??` leaves the local null.
+    if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
+        (node.right.kind === ts.SyntaxKind.NullKeyword ||
+            (ts.isIdentifier(node.right) &&
+                node.right.text === "undefined"))
+    ) {
+        node = node.left;
+    }
+    return (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        (state.request.absentHooks ?? []).includes(node.expression.text)
+    );
+}
+
+/** Whether an expression reads through a local that is null at generation. */
+function readsNullLocal(
+    state: WriterState,
+    expression: ts.Expression,
+): boolean {
+    let node = expression;
+    if (ts.isNonNullExpression(node)) node = node.expression;
+    while (
+        ts.isPropertyAccessExpression(node) ||
+        ts.isPropertyAccessChain(node) ||
+        ts.isElementAccessExpression(node) ||
+        ts.isElementAccessChain(node)
+    ) {
+        node = node.expression;
+    }
+    return ts.isIdentifier(node) && state.nullLocals.has(node.text);
+}
+
 /** The lane count if this initializer reads a colour property. */
 function vectorPropertyLanes(
     state: WriterState,
@@ -432,6 +528,12 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
     ) {
+        // `offset?.[0] ?? 0` where `offset` is null at generation (an
+        // uninstalled hook's result): the pin's own evaluation takes the
+        // fallback, so the fallback is what lowers.
+        if (readsNullLocal(state, node.left)) {
+            return emitExpression(state, node.right);
+        }
         if (readsAbsentProperty(state, node.left)) {
             return emitExpression(state, node.right);
         }
@@ -637,6 +739,17 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
             const body = ts.isBlock(then) ? then.statements : [then];
             return body.flatMap((inner) => emitStatement(state, inner));
         }
+        // A branch the pin takes at write time on caller state — the
+        // Standard UV writer's `if (invertY)` — is a runtime condition here
+        // too, exactly like the else-carrying branches below. This runs only
+        // after every generation-time fold above declined, and a condition
+        // with no named source still fails inside `emitExpression`.
+        const body = ts.isBlock(then) ? then.statements : [then];
+        return [
+            `    if (${emitExpression(state, statement.expression)}) {`,
+            ...body.flatMap((inner) => emitStatement(state, inner)),
+            "    }",
+        ];
     }
     // A real branch the pin takes at write time — the UV transform picks its
     // rotation-free form when the angle is zero — is a runtime condition here,
@@ -659,6 +772,65 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
     if (ts.isVariableStatement(statement)) {
         const lines: string[] = [];
         for (const binding of statement.declarationList.declarations) {
+            // `const { diffuseColor: dc, ... } = mat` — the Standard material
+            // writer's shape. Each element is an alias of one record property,
+            // exactly as if the pin had written `const dc = mat.diffuseColor`,
+            // so each lowers through the same vector/scalar paths a property
+            // binding does.
+            if (
+                ts.isObjectBindingPattern(binding.name) &&
+                binding.initializer &&
+                ts.isIdentifier(binding.initializer) &&
+                binding.initializer.text === state.request.sourceLocal
+            ) {
+                for (const element of binding.name.elements) {
+                    if (
+                        !ts.isIdentifier(element.name) ||
+                        element.dotDotDotToken ||
+                        element.initializer
+                    ) {
+                        throw new Error(
+                            `Unsupported destructuring in pinned ` +
+                                `${state.request.symbolName}: ` +
+                                `${element.getText(state.file)}.`,
+                        );
+                    }
+                    const property =
+                        element.propertyName?.getText(state.file) ??
+                            element.name.text;
+                    const local = element.name.text;
+                    const source =
+                        state.request.propertySources[property];
+                    if (source === undefined || source === null) {
+                        throw new Error(
+                            `Pinned ${state.request.symbolName} destructures ` +
+                                `'${property}', which has no source on our ` +
+                                "record.",
+                        );
+                    }
+                    const lanes =
+                        state.request.vectorProperties?.[property];
+                    if (lanes !== undefined) {
+                        state.vectorLocals.set(local, {
+                            lanes,
+                            kind: "colour",
+                        });
+                        state.vectorLocalOrigins.set(local, property);
+                        if (
+                            state.request.laneSources?.[property] ===
+                                undefined
+                        ) {
+                            lines.push(
+                                `    const auto& ${local} = ${source};`,
+                            );
+                        }
+                        continue;
+                    }
+                    state.locals.add(local);
+                    lines.push(`    const float ${local} = ${source};`);
+                }
+                continue;
+            }
             if (!ts.isIdentifier(binding.name) || !binding.initializer) {
                 throw new Error(
                     `Unsupported binding in pinned ` +
@@ -667,6 +839,12 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
                 );
             }
             const name = binding.name.text;
+            // An uninstalled hook's result is the pin's own null; the local
+            // carries that fact so reads through it fold to their defaults.
+            if (initializerIsAbsentHookCall(state, binding.initializer)) {
+                state.nullLocals.add(name);
+                continue;
+            }
             // `const off = offsets.get("x") / 4` is the pin's own indexing, and
             // the offsets are known at generation, so the local folds away.
             if (isOffsetsLookup(binding.initializer)) {
@@ -755,9 +933,45 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
             }
             const value = emitExpression(state, binding.initializer);
             state.locals.add(name);
-            lines.push(`    const float ${name} = ${value};`);
+            // A local the pin later reassigns is mutable there, so it is
+            // mutable here; everything else keeps the const the pin's
+            // single-assignment form expresses.
+            lines.push(
+                state.mutatedLocals.has(name)
+                    ? `    float ${name} = ${value};`
+                    : `    const float ${name} = ${value};`,
+            );
         }
         return lines;
+    }
+    // A reassignment of the pin's own local — the Standard UV writer flips
+    // `scaleY` and accumulates `offsetY` under its invert arm. The target must
+    // already be a lowered local; anything else stays unsupported below.
+    if (
+        ts.isExpressionStatement(statement) &&
+        ts.isBinaryExpression(statement.expression) &&
+        ts.isIdentifier(statement.expression.left) &&
+        state.locals.has(statement.expression.left.text) &&
+        (statement.expression.operatorToken.kind ===
+            ts.SyntaxKind.EqualsToken ||
+            statement.expression.operatorToken.kind ===
+                ts.SyntaxKind.PlusEqualsToken ||
+            statement.expression.operatorToken.kind ===
+                ts.SyntaxKind.MinusEqualsToken ||
+            statement.expression.operatorToken.kind ===
+                ts.SyntaxKind.AsteriskEqualsToken)
+    ) {
+        const operators = new Map<ts.SyntaxKind, string>([
+            [ts.SyntaxKind.EqualsToken, "="],
+            [ts.SyntaxKind.PlusEqualsToken, "+="],
+            [ts.SyntaxKind.MinusEqualsToken, "-="],
+            [ts.SyntaxKind.AsteriskEqualsToken, "*="],
+        ]);
+        return [
+            `    ${statement.expression.left.text} ${
+                operators.get(statement.expression.operatorToken.kind)
+            } ${emitExpression(state, statement.expression.right)};`,
+        ];
     }
     if (
         ts.isExpressionStatement(statement) &&
@@ -899,6 +1113,7 @@ function lowerNested(
     propertySources: Readonly<Record<string, string | null>>,
     parameterFields: Readonly<Record<string, string>> = {},
 ): string[] {
+    const { declaration } = state.nestedDeclarations[symbolName]!;
     const nestedState: WriterState = {
         file: state.file,
         request: {
@@ -911,13 +1126,14 @@ function lowerNested(
         baseLane: fieldLane(state.request, `${base}m`),
         parameterFields,
         locals: new Set<string>(),
+        nullLocals: new Set<string>(),
+        mutatedLocals: collectMutatedLocals(declaration.body),
         vectorLocals: new Map(),
         offsetLocals: new Map<string, string>(),
         vectorLocalOrigins: new Map<string, string>(),
         laneSourceFor: () => undefined,
         nestedDeclarations: state.nestedDeclarations,
     };
-    const { declaration } = state.nestedDeclarations[symbolName]!;
     return declaration.body.statements.flatMap((statement) =>
         emitStatement(nestedState, statement)
     );
@@ -976,6 +1192,8 @@ export function lowerPinnedUboWriter(
         request,
         baseLane: fieldLane(request, request.baseField),
         locals: new Set<string>(),
+        nullLocals: new Set<string>(),
+        mutatedLocals: collectMutatedLocals(declaration.body),
         vectorLocals: new Map(),
         offsetLocals,
         vectorLocalOrigins: new Map<string, string>(),

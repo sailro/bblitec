@@ -27,7 +27,12 @@ export interface IntrinsicCallContext {
         kind: ValueKind,
         node: ts.Node,
     ): void;
-    reachFeature(feature: Feature): void;
+    /**
+     * Records the feature and its first reaching scene-source call
+     * site, so the activation inventory can cite file:line. `site` is
+     * the scene AST node being lowered — for an intrinsic, the call.
+     */
+    reachFeature(feature: Feature, site: ts.Node): void;
     /** Records a scene-code mesh creation for the per-renderable variant key. */
     /** Counts one scene-code material creation of any family. */
     recordSceneMaterialSlot(): number;

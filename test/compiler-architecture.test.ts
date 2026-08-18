@@ -144,19 +144,123 @@ test("resolves property reads from one declared table", () => {
 });
 
 test("matches custom shaders through typed WGSL IR", () => {
+    // The matching moved with the shader-material block: the compiler
+    // delegates, and the module is the one that lowers through the IR.
+    const shaderMaterial = source(
+        "src/compiler/shader-material.ts",
+    );
+    assert.match(shaderMaterial, /lowerWgslShaderProgram/);
+    for (const content of [
+        source("src/compiler.ts"),
+        shaderMaterial,
+    ]) {
+        assert.doesNotMatch(
+            content,
+            /normalizeShaderSource/,
+        );
+        assert.doesNotMatch(
+            content,
+            /vertexSource ===/,
+        );
+        assert.doesNotMatch(
+            content,
+            /fragmentSource ===/,
+        );
+    }
+});
+
+test("keeps extracted option and manifest blocks in their modules", () => {
+    // Each entry pins one moved block by a string that lived in
+    // compiler.ts before the extraction: the module must carry it and
+    // the entry orchestrator must not grow it back.
     const compiler = source("src/compiler.ts");
-    assert.match(compiler, /lowerWgslShaderProgram/);
+    const blocks: ReadonlyArray<[string, RegExp[]]> = [
+        [
+            "src/compiler/option-helpers.ts",
+            [
+                /Expected a positive integer literal\./,
+                /compileOptionalStaticBoolean/,
+            ],
+        ],
+        [
+            "src/compiler/intrinsics/mesh-options.ts",
+            [
+                /Sphere segments must be a positive static integer\./,
+                /Torus options support diameter, thickness, and tessellation\./,
+            ],
+        ],
+        [
+            "src/compiler/intrinsics/engine-options.ts",
+            [
+                /Geometry textureDescriptions must contain 1-8 entries\./,
+                /Copy task requires sourceTexture\./,
+                /defaultRenderTask must be a static boolean\./,
+            ],
+        ],
+        [
+            "src/compiler/intrinsics/material-options.ts",
+            [
+                /Reached PBR lowering supports/,
+                /Sheen albedoScaling must be a static boolean/,
+            ],
+        ],
+        [
+            "src/compiler/intrinsics/asset-options.ts",
+            [
+                /Reached DDS environment options support brdfUrl\./,
+                /HDR faceSize must be a power of two/,
+            ],
+        ],
+        [
+            "src/compiler/shader-material.ts",
+            [
+                /collides with a predeclared variant/,
+                /Shader uniform writes require a shader material\./,
+            ],
+        ],
+        [
+            "src/compiler/property-animation.ts",
+            [
+                /Unsupported property animation path/,
+                /cannot specify both fromTime and fromFrame/,
+            ],
+        ],
+        [
+            "src/compiler/adaptations.ts",
+            [
+                /entry-main-wrapper-erasure/,
+                /sdl-gpu-frame-graph/,
+            ],
+        ],
+        [
+            "src/compiler/assets.ts",
+            [
+                /A drawn sprite atlas factory takes no arguments\./,
+                /brdf-lut\.png/,
+            ],
+        ],
+    ];
+    for (const [path, patterns] of blocks) {
+        const moved = source(path);
+        for (const pattern of patterns) {
+            assert.match(moved, pattern);
+            assert.doesNotMatch(compiler, pattern);
+        }
+        // The compiler still reaches every moved block through its
+        // import, so the delegators cannot silently detach.
+        const specifier = path
+            .replace("src/", "./")
+            .replace(".ts", ".js");
+        assert.ok(
+            compiler.includes(`from "${specifier}"`),
+            `compiler.ts imports ${specifier}`,
+        );
+    }
+    // Round 1 established every call-expression path returns before the
+    // trailing canvas-lookup block; the dead remainder stays deleted.
     assert.doesNotMatch(
-        compiler,
-        /normalizeShaderSource/,
-    );
-    assert.doesNotMatch(
-        compiler,
-        /vertexSource ===/,
-    );
-    assert.doesNotMatch(
-        compiler,
-        /fragmentSource ===/,
+        source("src/compiler/browser-erasure.ts"),
+        /isCanvasLookup|isPerformanceNow/,
     );
 });
 

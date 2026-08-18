@@ -282,11 +282,13 @@ struct PbrMaterialOptions {
     float direct_intensity = 1.0f;
     float environment_intensity = 1.0f;
     float alpha = 1.0f;
+    // Pinned default: the dielectric F0 the PBR material seeds (0.04).
     float reflectance = 0.04f;
     bool unlit = false;
     bool double_sided = false;
     bool skybox_mode = false;
     float transmission_factor = 0.0f;
+    // Pinned default: gltf-ext-dielectric.ts treats ior 1.5 as neutral.
     float index_of_refraction = 1.5f;
     float thickness = 0.0f;
     bool use_thickness_as_depth = false;
@@ -339,7 +341,24 @@ struct TextureSamplerState {
 struct TextureData {
     std::vector<std::uint8_t> bytes;
     TextureSamplerState sampler{};
+    // The pin's *upload* flip: `loadTexture2D`'s `invertY` option, passed as
+    // `flipY` to `copyExternalImageToTexture` (texture-2d.ts). The PALs'
+    // shared `decode_uploadable_image` applies it as a row swap.
     bool invert_y = false;
+    // The pin's texture-OBJECT `invertY` property, a different thing from
+    // the upload flip above: `loadTexture2D` results never carry the
+    // property (its option only drives the flipped copy), so every image
+    // texture a loader or compiled setter creates leaves this false. The
+    // objects that do carry `invertY: true` are the ones whose pixels reach
+    // the GPU un-flippable or already top-down — KTX2/Basis and
+    // texture-array uploads, and colour render-target textures (rtt.ts;
+    // depth RTTs carry false) — and `isStandardUvInverted`
+    // (standard-pipeline.ts) reads exactly that property when it decides
+    // the Standard UV transform's v flip. Scene 9's browser capture
+    // carries `up = [1, 1, 0, 0]` for all 32 materials and Scene 24's for
+    // 127 of 128, which is that property evaluating false over `.babylon`
+    // textures.
+    bool uv_invert_y = false;
 };
 
 struct FileTexture {
@@ -616,6 +635,7 @@ struct MaterialRecord {
     float roughness_factor = 1.0f;
     float direct_intensity = 1.0f;
     float environment_intensity = 1.0f;
+    // Pinned default: the dielectric F0 the PBR material seeds (0.04).
     float reflectance = 0.04f;
     // KHR_materials_specular, through the pinned dielectric reflectance ext:
     // specularFactor scales the dielectric F0 and its grazing weight, and
@@ -629,6 +649,7 @@ struct MaterialRecord {
     Color3 metallic_reflectance_color{1.0f, 1.0f, 1.0f};
     float normal_texture_scale = 1.0f;
     float transmission_factor = 0.0f;
+    // Pinned default: gltf-ext-dielectric.ts treats ior 1.5 as neutral.
     float index_of_refraction = 1.5f;
     float thickness = 0.0f;
     bool use_thickness_as_depth = false;
@@ -637,12 +658,15 @@ struct MaterialRecord {
     float dispersion = 0.0f;
     float clearcoat_intensity = 0.0f;
     float clearcoat_roughness = 0.0f;
+    // Pinned default: the coat ior the clearcoat layer seeds.
     float clearcoat_index_of_refraction = 1.5f;
     float clearcoat_normal_scale = 1.0f;
     Color3 sheen_color{0.0f, 0.0f, 0.0f};
     float sheen_roughness = 0.0f;
     float sheen_intensity = 1.0f;
     float iridescence_intensity = 0.0f;
+    // Pinned defaults: KHR_materials_iridescence ior 1.3, thickness
+    // 100..400 nm (gltf-ext-iridescence.ts).
     float iridescence_index_of_refraction = 1.3f;
     float iridescence_minimum_thickness = 100.0f;
     float iridescence_maximum_thickness = 400.0f;
@@ -660,6 +684,12 @@ struct MaterialRecord {
     bool disable_lighting = false;
     bool has_emissive_render_texture = false;
     bool double_sided = false;
+    // The pin's opacityFromRGB (createStandardMaterial default false; the
+    // .babylon loader sets it from opacityTexture.getAlphaFromRGB,
+    // load-babylon.ts TEX_SLOTS opacity extra). Feeds OPACITY_FROM_RGB in
+    // _computeStandardMaterialFeatures, which selects the composed opacity
+    // fragment's dot(opSample.rgb, ...) luminance arm.
+    bool opacity_from_rgb = false;
     bool standard_material = false;
     bool shader_material = false;
     bool grid_material = false;
@@ -734,6 +764,16 @@ struct MaterialRecord {
     RenderTextureRef emissive_render_texture{};
     std::uint32_t reflection_cube = invalid_handle;
     float reflection_level = 1.0f;
+    // The pin's 2D reflection slot: the non-cube arm of the same
+    // reflectionTexture JSON slot the cube handle above consumes
+    // (load-babylon.ts TEX_SLOTS reflectionTexture, `skipIf: isCube`),
+    // sampled by the composed std-reflection fragment at computed
+    // reflCoords rather than mesh UVs.
+    TextureData reflection_texture;
+    // writeStdMaterialData's rCm lane: createStandardMaterial seeds 1
+    // (spherical, the fragment's `rCm < 1.5` arm); the pin's loader writes
+    // 2 only for coordinatesMode === 2 (planar), load-babylon.ts.
+    float reflection_coord_mode = 1.0f;
 };
 
 struct LightRecord {
@@ -844,6 +884,8 @@ struct EnvironmentState {
     bool has_irradiance = false;
     float exposure = 1.0f;
     float contrast = 1.0f;
+    // Pinned: the DDS environment loader uses LOD generation scale 0.8
+    // where the HDR loader uses 1.0 (load-dds-env.ts; docs/fidelity.md).
     float lod_generation_scale = 0.8f;
     float rotation_y = 0.0f;
     bool tone_mapping_enabled = false;
@@ -876,6 +918,9 @@ struct EnvironmentState {
     std::uint32_t skybox_data_offset = 0;
     Vec3 ground_position{};
     Vec3 skybox_position{};
+    // The pin's own environmentPrimaryColor default literals
+    // (load-env.ts: 0.08697355964132344, ..., 0.2122208331110881), stored
+    // at the float32 precision the shader uniforms carry.
     Color3 primary_color{0.08697356f, 0.08697356f, 0.21222083f};
 };
 

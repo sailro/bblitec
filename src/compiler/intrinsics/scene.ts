@@ -86,7 +86,7 @@ export function compileSceneIntrinsic(
                 call.arguments[1]!,
             );
             context.expectSameEngine(scene, resource, call);
-            context.reachFeature("scene:remove");
+            context.reachFeature("scene:remove", call);
             return {
                 kind: "void",
                 cpp:
@@ -170,7 +170,7 @@ export function compileSceneIntrinsic(
             );
             context.expectSameEngine(camera, scene, call);
             if (importedName === "attachFreeControl") {
-                context.reachFeature("camera:free");
+                context.reachFeature("camera:free", call);
             }
             return {
                 kind: "void",
@@ -221,7 +221,7 @@ export function compileSceneIntrinsic(
                     "setFog mode must be a static 0 (none), 1 (exp), 2 (exp2), or 3 (linear) literal.",
                 );
             }
-            context.reachFeature("renderer:fog");
+            context.reachFeature("renderer:fog", call);
             return {
                 kind: "void",
                 cpp:
@@ -258,7 +258,7 @@ export function compileSceneIntrinsic(
                 "engine",
                 call.arguments[0]!,
             );
-            context.reachFeature("backend:sdl");
+            context.reachFeature("backend:sdl", call);
             return {
                 kind: "void",
                 cpp: `bbl::start_engine(${engine.cpp})`,

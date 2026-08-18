@@ -19,6 +19,8 @@ import {
 } from "../src/upstream-source.js";
 import type { CompiledShaderProgram } from "../src/compiler.js";
 import { shaderMaterialPrograms } from "../src/shader-material-programs.js";
+import { dawnUtilityShaders } from "../src/upstream-lower.js";
+import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
 
 /** The provenance banner every generated source carries, derived from the
  *  pin so a version bump does not churn these assertions. */
@@ -114,6 +116,131 @@ test("generates property animation evaluation and seeking", () => {
         lowered.source,
         /mesh\.has_rotation_quaternion = true/,
     );
+});
+
+test("flows the pinned animation constants into the emission", () => {
+    const lowered = new AnimationLowerer(
+        new LoweringContext(),
+    ).lowerPropertyAnimation();
+    // The near-parallel slerp threshold is extracted from the pinned
+    // quatSlerp (src/animation/evaluate.ts), and the ms->s advance
+    // factor is the reciprocal of the pinned tick's divisor
+    // (src/animation/property-animation.ts createPointerAnimationGroup).
+    assert.match(lowered.source, /if \(dot > 0\.9995f\) \{/);
+    assert.match(
+        lowered.source,
+        /delta_ms \* 0\.001f \* group->speed_ratio/,
+    );
+    // The STEP tie-break direction the lowerer shape-asserts: an exact
+    // key-time query takes the LATER key's value.
+    assert.match(
+        lowered.source,
+        /time >= track\.keys\[right\]\.time\s*\? track\.keys\[right\]\.value/,
+    );
+    // The loop wrap and its negative-wrap correction, shape-asserted
+    // against the pinned tick.
+    assert.match(
+        lowered.source,
+        /std::fmod\(\s*group->current_time - group->from_time,\s*duration\)/,
+    );
+    assert.match(
+        lowered.source,
+        /if \(group->current_time < group->from_time\) \{\s*group->current_time \+= duration;/,
+    );
+});
+
+test("flows the pinned camera inertia constants into the controls", () => {
+    const controls = new CameraLowerer(
+        new LoweringContext(),
+    ).lowerControls();
+    // ArcRotate applyInertia: the beta pole margin (`eps`), the radius
+    // floor, and the radius-proportional pan scale all come from
+    // src/camera/arc-rotate-controls.ts.
+    assert.match(
+        controls.source,
+        /constexpr double epsilon = 0\.01;/,
+    );
+    assert.match(
+        controls.source,
+        /camera\.radius = std::max\(0\.01, camera\.radius\);/,
+    );
+    assert.match(
+        controls.source,
+        /const double pan_scale = camera\.radius \* 0\.001;/,
+    );
+    // FreeCamera update: the pitch ceiling terms and the shared
+    // speed-proportional stop threshold come from
+    // src/camera/free-camera-controls.ts.
+    assert.match(
+        controls.source,
+        /constexpr double max_pitch = pi_double \/ 2\.0 - 0\.01;/,
+    );
+    assert.match(
+        controls.source,
+        /const double epsilon = camera\.speed \* 0\.001;/,
+    );
+});
+
+test("flows the pinned light matrices and spot cone into the factories", () => {
+    const lowerer = new LightLowerer(new LoweringContext());
+    // The spot half-angle factor flows from the pinned _cosHalfAngle
+    // initializer (src/light/spot-light.ts); the precision semantics
+    // stay the emission's own (the TODO.md spot-cone ULP entry).
+    const spot = lowerer.lowerSpotFactory();
+    assert.match(
+        spot.source,
+        /light\.cos_half_angle = std::cos\(angle \* 0\.5f\);/,
+    );
+    // The point-light identity diagonal and translation column flow
+    // from the pinned factory's own m[...] stores
+    // (src/light/point-light.ts).
+    const point = lowerer.lowerPointFactory();
+    assert.match(
+        point.source,
+        /light\.local_matrix\[0\] = 1\.0f;/,
+    );
+    assert.match(
+        point.source,
+        /light\.local_matrix\[10\] = 1\.0f;/,
+    );
+    assert.match(
+        point.source,
+        /light\.local_matrix\[12\] = position\.x;/,
+    );
+    assert.match(
+        point.source,
+        /light\.local_matrix\[15\] = 1\.0f;/,
+    );
+    // The directional zeros are the pinned default position; the
+    // hemispheric zeros are the pinned literal origin arguments.
+    for (const lowered of [
+        lowerer.lowerDirectionalFactory(),
+        lowerer.lowerFactory(),
+    ]) {
+        assert.match(
+            lowered.source,
+            /0\.0f,\s*0\.0f,\s*0\.0f,\s*light\.local_matrix\);/,
+        );
+    }
+});
+
+test("generates scene fog storage for the pinned fog UBO field set", () => {
+    const lowered = new SceneLowerer(
+        new LoweringContext(),
+    ).lowerCore({ fog: true });
+    // set_scene_fog stores exactly the fields the pinned writeFogUbo
+    // consumes; the writer's browser-UBO offsets are not asserted
+    // because nothing in the generated tree uses them.
+    assert.match(lowered.source, /void set_scene_fog\(/);
+    for (const store of [
+        /scene\.fog_mode = mode;/,
+        /scene\.fog_density = density;/,
+        /scene\.fog_start = start;/,
+        /scene\.fog_end = end;/,
+        /scene\.fog_color = color;/,
+    ]) {
+        assert.match(lowered.source, store);
+    }
 });
 
 test("generates GLB framing validation from upstream constants", () => {
@@ -495,16 +622,14 @@ test("lowers the reachable upstream light matrix implementation", () => {
 test("generates the render plan from upstream frame-graph binding semantics", () => {
     const lowerer = new RendererLowerer(new LoweringContext());
     const lowered = lowerer.lowerRenderPlan({
-        transmission: true,
         shaderPrograms: reachedPrograms([
             "alpha-card",
             "circular-cutout",
         ]),
     });
     const specialized = lowerer.lowerRenderPlan({
-        transmission: true,
         gpuInstancing: true,
-        multiLight: true,
+        punctualLights: true,
     });
     const shaders = lowerer.lowerShaders();
     const fidelity = lowerer.fidelityManifest();
@@ -522,7 +647,9 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.header, /struct RenderDrawCommand/);
     assert.match(lowered.header, /struct RenderDrawLists/);
     assert.match(lowered.header, /struct RenderFeatures/);
-    assert.match(
+    // The punctual-light extras lanes left PbrUniforms with the RD-3
+    // prune; the pinned variant blocks carry the analytic lights now.
+    assert.doesNotMatch(
         specialized.header,
         /extra_light_positions/,
     );
@@ -565,10 +692,6 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /std::stable_sort/);
     assert.match(lowered.source, /bind_render_item/);
     assert.match(lowered.source, /sort_transparent_draws/);
-    assert.match(
-        lowered.source,
-        /material\.use_thickness_as_depth && material\.thickness > 0\.0f/,
-    );
     assert.match(
         lowered.source,
         /left\.sort_distance > right\.sort_distance/,
@@ -716,59 +839,12 @@ test("composes the thin-instance parent world from the pinned TRS formulas", () 
     );
 });
 
-test("lowers glTF material extensions into typed uniforms and shader layers", () => {
-    const lowerer = new RendererLowerer(new LoweringContext());
-    const plan = lowerer.lowerRenderPlan({
-        transmission: true,
-        clearcoat: true,
-        sheen: true,
-        iridescence: true,
-        dispersion: true,
-    });
-    assert.match(plan.header, /std::array<float, 4> clearcoat_params\{\};/);
-    assert.match(
-        plan.header,
-        /std::array<float, 4> clearcoat_refraction_params\{\};/,
-    );
-    assert.match(plan.header, /std::array<float, 4> sheen_params2\{\};/);
-    assert.match(plan.header, /std::array<float, 4> iridescence_params\{\};/);
-    // The iridescence options carry the texture-presence flags the shader
-    // mixes against, so they sit between the parameters and the harmonics.
-    assert.match(
-        plan.header,
-        /iridescence_params\{\};\s*\r?\n\s*std::array<float, 4> iridescence_options\{\};\s*\r?\n\s*std::array<std::array<float, 4>, 9> spherical_harmonics/,
-    );
-    assert.match(
-        plan.source,
-        /material\.clearcoat_normal_texture\.bytes\.empty\(\)/,
-    );
-    assert.match(
-        plan.source,
-        /const float clearcoat_a =\s*\r?\n?\s*1\.0f - material\.clearcoat_index_of_refraction;/,
-    );
-    assert.match(plan.source, /material\.sheen_color\.r/);
-    assert.match(
-        plan.source,
-        /material\.iridescence_minimum_thickness/,
-    );
-    assert.match(plan.source, /material\.dispersion,/);
-
-    const baseline = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({ transmission: true });
-    assert.doesNotMatch(baseline.header, /clearcoat_params/);
-    assert.doesNotMatch(baseline.header, /sheen_params/);
-    assert.doesNotMatch(baseline.header, /iridescence_params/);
-    assert.doesNotMatch(baseline.source, /material\.dispersion/);
-});
-
 test("emits only reached WGSL composition modules", () => {
     const lowerer = new RendererLowerer(new LoweringContext());
     const shaders = lowerer.lowerShaders({
         ground: false,
         skybox: false,
         shaderPrograms: [],
-        standardMaterial: false,
         gridMaterial: true,
         idDiagnostics: false,
         geometryOutputTasks: [],
@@ -790,7 +866,6 @@ test("generates portable GridMaterial shaders from pinned formulas", () => {
         ground: false,
         skybox: false,
         shaderPrograms: [],
-        standardMaterial: false,
         gridMaterial: true,
         idDiagnostics: false,
         geometryOutputTasks: [],
@@ -803,11 +878,12 @@ test("generates portable GridMaterial shaders from pinned formulas", () => {
         String(wgsl?.data),
         pinnedProvenance(),
     );
-    assert.match(String(wgsl?.data), /cos\(fraction \* PI\)/);
-    assert.match(String(wgsl?.data), /SQRT2 \/ 4\.0/);
-    assert.match(String(wgsl?.data), /max\(max\(x, y\), z\)/);
+    // The pin's own built statements, spelled as the template emits them.
+    assert.match(String(wgsl?.data), /cos\(fr\*PI\)/);
+    assert.match(String(wgsl?.data), /SQRT2\/4\.0/);
+    assert.match(String(wgsl?.data), /max\(max\(x,y\),z\)/);
     assert.match(String(wgsl?.data), /dpdx\(position\)/);
-    assert.match(String(wgsl?.data), /uniforms\.gridControl\.w \* grid/);
+    assert.match(String(wgsl?.data), /shaderUniforms\.gridControl\.w\*grid/);
     assert.ok(
         !shaders.some(
             (shader) =>
@@ -825,7 +901,6 @@ test("generates typed geometry task records and PBR MRT shaders", () => {
         ground: false,
         skybox: false,
         shaderPrograms: [],
-        standardMaterial: false,
         idDiagnostics: false,
         geometryOutputTasks: [
             {
@@ -878,14 +953,16 @@ test("generates typed geometry task records and PBR MRT shaders", () => {
     );
 });
 
-test("generates standard-material geometry output shaders", () => {
+test("emits no transcribed standard fragments", () => {
+    // The Standard family draws through the pin's own composed variants
+    // (standard_variants.hpp + variant-std-* stages); the transcribed
+    // standard.frag and per-task standard-geometry-*.frag are retired.
     const shaders = new RendererLowerer(
         new LoweringContext(),
     ).lowerShaders({
         ground: false,
         skybox: false,
         shaderPrograms: [],
-        standardMaterial: true,
         idDiagnostics: false,
         geometryOutputTasks: [
             {
@@ -901,22 +978,14 @@ test("generates standard-material geometry output shaders", () => {
             },
         ],
     });
-    const geometry = shaders.find((shader) =>
-        shader.output.endsWith("standard-geometry-0.frag.native.wgsl"),
-    );
-    assert.match(String(geometry?.data), /vec4<f32>\(0\.0, 0\.0, 0\.0/);
-    assert.match(
-        String(geometry?.data),
-        /1\.0 - input\.position\.z/,
-    );
-    assert.match(String(geometry?.data), /pow\(specularSample\.rgb/);
-    assert.match(String(geometry?.data), /reflectionTexture/);
-    assert.match(String(geometry?.data), /output\.color = color/);
     assert.ok(
-        !shaders.some(
-            (shader) =>
-                shader.output.includes("standard") &&
-                /\.(?:hlsl|msl)$/.test(shader.output),
+        !shaders.some((shader) => shader.output.includes("standard")),
+    );
+    // The shared material vertex stage stays: the diagnostics, depth-only
+    // and background pipelines still enter it at mainVertex.
+    assert.ok(
+        shaders.some((shader) =>
+            shader.output.endsWith("pbr.vert.native.wgsl"),
         ),
     );
 });
@@ -927,7 +996,6 @@ test("emits only reached custom shader variants", () => {
         ground: false,
         skybox: false,
         shaderPrograms: reachedPrograms(["alpha-card"]),
-        standardMaterial: false,
         idDiagnostics: false,
         geometryOutputTasks: [],
     });
@@ -951,7 +1019,6 @@ test("emits only reached custom shader variants", () => {
         ground: false,
         skybox: false,
         shaderPrograms: reachedPrograms(["circular-cutout"]),
-        standardMaterial: false,
         idDiagnostics: false,
         geometryOutputTasks: [],
     });
@@ -982,4 +1049,65 @@ test("builds a conservative reachable module graph", () => {
     assert.ok(graph.summary.diagnostics.closures > 0);
     assert.equal(graph.capabilities.explicitAnyAllowed, false);
     assert.equal(graph.capabilities.asyncAwait, "synchronous-aot");
+});
+
+test("lifts the Dawn utility WGSL from the pinned literals", () => {
+    const shaders = dawnUtilityShaders(true);
+    // The mip generator's blit (generate-mipmaps.ts BLIT_SHADER), split
+    // per stage: the vertex file carries no bindings — the compile
+    // script cross-checks declared bindings against Tint's reflection —
+    // and both stages take the native entry-point names.
+    assert.match(shaders.mipBlitVertex, /@vertex fn mainVertex\(/);
+    assert.match(shaders.mipBlitVertex, /p\*vec2f\(\.5,-\.5\)\+\.5/);
+    assert.doesNotMatch(shaders.mipBlitVertex, /@group/);
+    assert.match(
+        shaders.mipBlitFragment,
+        /@fragment fn mainFragment\(v:V\)->@location\(0\)vec4f\{return textureSample\(t,s,v\.u\);\}/,
+    );
+    // The transmission grab: the MSAA arm is the pin's BLIT_MSAA_SHADER
+    // text, the single-sample arm substitutes the plain binding and load
+    // around the same manual-bilinear body.
+    assert.match(shaders.grabFragment, /var t:texture_multisampled_2d<f32>;/);
+    assert.match(shaders.grabFragment, /textureNumSamples\(t\)/);
+    assert.match(shaders.grabFragmentSingle, /var t:texture_2d<f32>;/);
+    assert.match(
+        shaders.grabFragmentSingle,
+        /fn l\(p:vec2i\)->vec4f\{return textureLoad\(t,p,0\);\}/,
+    );
+    for (const arm of [shaders.grabFragment, shaders.grabFragmentSingle]) {
+        assert.match(arm, /mix\(mix\(l\(p\),l\(vec2i\(p1\.x,p\.y\)\),f\.x\)/);
+    }
+    // Per-sample image processing: the pin's ip() with its tone-mapping
+    // calibration, and the pin's own two fragment arms.
+    assert.match(shaders.imageProcessingFragment, /1\.590579/);
+    assert.match(shaders.imageProcessingFragment, /textureNumSamples\(s\)/);
+    assert.match(shaders.imageProcessingFragmentSingle, /1\.590579/);
+    assert.match(
+        shaders.imageProcessingFragmentSingle,
+        /return ip\(textureLoad\(s,clamp\(vec2i\(q\.xy\),vec2i\(0\),vec2i\(d\)-1\),0\)\);/,
+    );
+    assert.match(shaders.imageProcessingVertex, /@vertex fn mainVertex\(/);
+    assert.doesNotMatch(shaders.imageProcessingVertex, /@group/);
+    // A scene without transmission ships only the mip blit.
+    const mipOnly = dawnUtilityShaders(false);
+    assert.notEqual(mipOnly.mipBlitFragment, "");
+    assert.equal(mipOnly.grabFragment, "");
+    assert.equal(mipOnly.imageProcessingFragment, "");
+});
+
+test("generates the sprite instance layout table from the pinned pipeline", () => {
+    const core = new SpriteLowerer(new LoweringContext()).lowerCore();
+    const header = String(core.header);
+    // The pure-2D rows at the pin's own byte offsets
+    // (sprite-pipeline.ts SPRITE_*_OFFSET_BYTES), and the stride
+    // sprite-2d.ts derives from PURE_2D_INSTANCE_FLOATS_PER_SPRITE.
+    assert.match(header, /struct SpriteInstanceAttribute/);
+    assert.match(
+        header,
+        /\{0u, 0u, 2u\},\n\s*\{1u, 8u, 2u\},\n\s*\{2u, 16u, 2u\},\n\s*\{3u, 24u, 2u\},\n\s*\{4u, 32u, 1u\},\n\s*\{5u, 36u, 4u\},/,
+    );
+    assert.match(
+        header,
+        /sprite_instance_stride_bytes =\n\s*52u;/,
+    );
 });

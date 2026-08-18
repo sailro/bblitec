@@ -8,6 +8,11 @@
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
+// The generated material texture-slot table both render backends execute:
+// which record field fills each slot, its sRGB rule, its fallback texel and
+// the pinned binding names it serves. Emitted for every scene beside the
+// capability defines, so the include is unconditional.
+#include <bblite/upstream/material_texture_slots.hpp>
 // The render plan is generated only for scenes that register a
 // SceneContext; a sprite-only scene has none, and reaches this header for
 // the frame options, capture gate and clock alone.
@@ -22,6 +27,30 @@
 #if BBLITE_PBR_VARIANTS > 0
 #include <bblite/upstream/pbr_variants.hpp>
 #endif
+// The Standard family's composed variants: the same shape, one entry per
+// feature word the scene's materials and meshes reach, plus the selector and
+// lowered UBO writers its support block appends. When no pbr_variants.hpp is
+// emitted the header hoists the shared scene/lights/mesh mirrors itself, so
+// the include order here (after the PBR header) is what keeps one definition.
+#if BBLITE_STANDARD_VARIANTS > 0
+#include <bblite/upstream/standard_variants.hpp>
+#endif
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace bbl::pal {
 
 /**
  * The pin's `gpUniforms` block, declared by a geometry-output variant whose
@@ -35,20 +64,6 @@ struct PinnedGeometryParams {
     std::array<float, 16> previousViewProjection{};
     std::array<float, 4> cameraNearFar{};
 };
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <cstring>
-#include <iostream>
-#include <limits>
-#include <stdexcept>
-#include <string>
-#include <vector>
-
-namespace bbl::pal {
 
 struct GpuVertex {
     float position[3];
@@ -84,6 +99,200 @@ static_assert(sizeof(GpuVertex) == 200);
 #else
 static_assert(sizeof(GpuVertex) == 96);
 #endif
+
+// The generated `material_texture_slots` table's enums, translated against
+// the record once for both backends. Everything a slot *means* — which
+// field, which sRGB view, which fallback texel, which pinned names — is
+// table data; what stays per backend is upload mechanics and the
+// enum→API residue.
+
+/** The record field one slot reads, or nullptr when the family has none. */
+inline const TextureData* material_slot_texture(
+    const MaterialRecord& material,
+    upstream::MaterialTextureSource source,
+    bool standard_material) {
+    using Source = upstream::MaterialTextureSource;
+    switch (source) {
+        case Source::base_color:
+            return &material.base_color_texture;
+        case Source::specular_or_metallic_roughness:
+            return standard_material
+                ? &material.specular_texture
+                : &material.metallic_roughness_texture;
+        case Source::opacity_or_normal:
+            return standard_material
+                ? &material.opacity_texture
+                : &material.normal_texture;
+        case Source::ambient_or_emissive:
+            return standard_material
+                ? &material.ambient_texture
+                : &material.emissive_texture;
+        case Source::standard_emissive:
+            return standard_material ? &material.emissive_texture : nullptr;
+        case Source::transmission:
+            return standard_material
+                ? nullptr
+                : &material.transmission_texture;
+        case Source::thickness:
+            return standard_material ? nullptr : &material.thickness_texture;
+        case Source::clearcoat:
+            return standard_material ? nullptr : &material.clearcoat_texture;
+        case Source::clearcoat_roughness:
+            return standard_material
+                ? nullptr
+                : &material.clearcoat_roughness_texture;
+        case Source::clearcoat_normal:
+            return standard_material
+                ? nullptr
+                : &material.clearcoat_normal_texture;
+        case Source::sheen_color:
+            return standard_material
+                ? nullptr
+                : &material.sheen_color_texture;
+        case Source::sheen_roughness:
+            return standard_material
+                ? nullptr
+                : &material.sheen_roughness_texture;
+        case Source::iridescence:
+            return standard_material
+                ? nullptr
+                : &material.iridescence_texture;
+        case Source::iridescence_thickness:
+            return standard_material
+                ? nullptr
+                : &material.iridescence_thickness_texture;
+        case Source::occlusion_uv2:
+            return !standard_material && material.occlusion_texture_uv2
+                ? &material.occlusion_texture
+                : nullptr;
+        case Source::standard_bump:
+            return standard_material ? &material.bump_texture : nullptr;
+        case Source::standard_reflection:
+            return standard_material
+                ? &material.reflection_texture
+                : nullptr;
+        // Scene-owned resources carry no record field.
+        case Source::environment_cube:
+        case Source::brdf_lut:
+        case Source::scene_color:
+        case Source::bone_palette:
+            return nullptr;
+    }
+    return nullptr;
+}
+
+/** Whether one slot uploads through an sRGB view, per the table's rule. */
+inline bool material_slot_srgb(
+    upstream::MaterialTextureSrgb rule,
+    const TextureData* data,
+    const MaterialRecord* material,
+    bool standard_material) {
+    switch (rule) {
+        case upstream::MaterialTextureSrgb::linear:
+            return false;
+        case upstream::MaterialTextureSrgb::srgb:
+            return true;
+        case upstream::MaterialTextureSrgb::srgb_unless_standard:
+            return !standard_material;
+        case upstream::MaterialTextureSrgb::base_color:
+            // A slot with image bytes keeps the sRGB contract; a bare
+            // fallback texel takes the material's own encoding -- the pin's
+            // scene-code solid textures are rgba8unorm, sampled without
+            // decode.
+            return !standard_material &&
+                (data && !data->bytes.empty()
+                     ? true
+                     : material == nullptr ||
+                         material->base_color_fallback_srgb);
+    }
+    return false;
+}
+
+/** The 1x1 texel an image-less slot uploads, per the table's rule. */
+inline std::array<std::uint8_t, 4> material_slot_fallback(
+    upstream::MaterialTextureFallback rule,
+    const MaterialRecord* material,
+    bool standard_material) {
+    constexpr std::array<std::uint8_t, 4> white_texel{255, 255, 255, 255};
+    constexpr std::array<std::uint8_t, 4> black_texel{0, 0, 0, 255};
+    // A flat tangent-space normal, so a material with no map reads
+    // (0, 0, 1) out of the sample and keeps its interpolated normal.
+    constexpr std::array<std::uint8_t, 4> flat_normal_texel{
+        128, 128, 255, 255};
+    switch (rule) {
+        case upstream::MaterialTextureFallback::white:
+            return white_texel;
+        case upstream::MaterialTextureFallback::black:
+            return black_texel;
+        case upstream::MaterialTextureFallback::flat_normal:
+            return flat_normal_texel;
+        case upstream::MaterialTextureFallback::white_or_flat_normal:
+            return standard_material ? white_texel : flat_normal_texel;
+        case upstream::MaterialTextureFallback::base_color_record:
+            return !standard_material && material
+                ? material->base_color_fallback
+                : white_texel;
+        case upstream::MaterialTextureFallback::orm_record:
+            // The pinned ORM factor texel, so an animated metallic or
+            // roughness factor multiplies the authored value rather than
+            // white. Standard materials never carry one.
+            return !standard_material && material
+                ? material->orm_fallback
+                : white_texel;
+        case upstream::MaterialTextureFallback::white_or_emissive_factor: {
+            if (standard_material) return white_texel;
+            const bool has_emissive_factor = material &&
+                (material->emissive_factor.r != 0.0f ||
+                 material->emissive_factor.g != 0.0f ||
+                 material->emissive_factor.b != 0.0f);
+            return has_emissive_factor ? white_texel : black_texel;
+        }
+    }
+    return white_texel;
+}
+
+/**
+ * The table row serving one of the pin's own binding names, or nullptr.
+ *
+ * The names are Babylon's, the rows are generated, and this is where the
+ * two meet for both backends' pinned bind paths. A variant that declares a
+ * resource the table does not know fails by name rather than sampling
+ * whatever sat at that index.
+ */
+inline const upstream::MaterialTextureSlot* material_slot_for_binding(
+    std::string_view name) {
+    for (
+        const upstream::MaterialTextureSlot& slot :
+        upstream::material_texture_slots) {
+        if (slot.texture_name.empty()) continue;
+        if (name == slot.texture_name || name == slot.sampler_name) {
+            return &slot;
+        }
+    }
+    return nullptr;
+}
+
+/**
+ * The table row serving one slot source, or nullptr.
+ *
+ * The Standard family's generated `standard_binding_resources` rows carry
+ * the pin's own std binding names (`dT`, `oT`, `rT`, ...) while the slot
+ * table's names are the PBR pinned bindings, so a Standard row cannot be
+ * resolved by name -- its declared `source` is the join key (the row
+ * comment in pinned-standard-variants.ts says exactly that: a
+ * "material_texture_slots row source").
+ */
+inline const upstream::MaterialTextureSlot* material_slot_for_source(
+    upstream::MaterialTextureSource source) {
+    for (
+        const upstream::MaterialTextureSlot& slot :
+        upstream::material_texture_slots) {
+        if (slot.source == source) {
+            return &slot;
+        }
+    }
+    return nullptr;
+}
 
 #if BBLITE_GPU_DEFORMATION
 // Vertex deformation uniforms shared by both render backends (moved
@@ -391,6 +600,34 @@ inline std::vector<GpuVertex> transformed_vertices(
     return result;
 }
 
+/**
+ * One background-plan vertex (the skybox and ground quads) in GpuVertex
+ * layout: the local-normal lane mirrors the normal and every deformation
+ * lane stays zero. Both backends upload the plan quads from this one
+ * packing, so the vertex bytes cannot differ between them.
+ */
+inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
+    return GpuVertex{
+        {vertex.position.x, vertex.position.y, vertex.position.z},
+        {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+        {
+            vertex.tangent.x,
+            vertex.tangent.y,
+            vertex.tangent.z,
+            vertex.tangent.w,
+        },
+        {vertex.uv.x, vertex.uv.y},
+        {
+            vertex.local_position.x,
+            vertex.local_position.y,
+            vertex.local_position.z,
+        },
+        {vertex.uv2.x, vertex.uv2.y},
+        {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
+        {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+    };
+}
+
 #if BBLITE_PBR_VARIANTS > 0
 /**
  * The same vertices in Babylon's own convention.
@@ -462,6 +699,9 @@ inline std::vector<std::array<float, 16>> pinned_instance_matrices(
     return result;
 }
 
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
 /** Whether a record draws through the pin's thin-instance arm: stamped by
  *  the scene setter or filled by the glTF EXT_mesh_gpu_instancing pool. */
 inline bool pinned_record_instanced(const MeshRecord& record) {
@@ -469,24 +709,31 @@ inline bool pinned_record_instanced(const MeshRecord& record) {
 }
 
 /**
- * Whether a task's draw lists contain a PBR draw. A geometry task whose
- * draws are PBR renders through the pin's reverse-Z contract (reverse
- * matrix, GREATER pipelines, zero depth clear), and both backends make the
- * same decision from the same lists.
+ * Whether a task's draw lists contain a draw the pinned path owns — a PBR
+ * draw, or a Standard one now that both families run Babylon's own composed
+ * stages. A geometry task whose draws are pinned renders through the pin's
+ * reverse-Z contract (reverse matrix, GREATER pipelines, zero depth clear),
+ * and both backends make the same decision from the same lists.
  */
-inline bool pinned_lists_have_pbr(const upstream::RenderDrawLists& lists) {
+inline bool pinned_lists_have_pinned_draws(
+    const upstream::RenderDrawLists& lists) {
     for (const upstream::RenderDrawList* list :
          {&lists.opaque, &lists.transparent}) {
         for (const upstream::RenderDrawCommand& draw : list->commands) {
             if (
                 draw.item.material_kind ==
-                upstream::RenderMaterialKind::pbr) {
+                    upstream::RenderMaterialKind::pbr ||
+                draw.item.material_kind ==
+                    upstream::RenderMaterialKind::standard) {
                 return true;
             }
         }
     }
     return false;
 }
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0
 
 /** The identity, for a skinned draw whose palette already carries everything. */
 inline std::array<float, 16> pinned_identity_world() {
@@ -554,7 +801,7 @@ inline std::array<float, 16> pinned_draw_world(
 }
 #endif
 
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
 /**
  * The pin's per-pass scene block.
  *
@@ -691,8 +938,29 @@ inline upstream::MeshUniforms pinned_mesh_block(
         ++light_index;
     }
     block.lc = count;
+    // The velocity geometry arm's tail. The native worlds are constant
+    // frame to frame (node motion re-bakes vertices), so the previous
+    // world is the world itself and the flag stays on: the composed
+    // vertex then measures camera motion, which is what the pin's
+    // tracked previous clip reduces to for a static world. The generic
+    // lambda makes the access dependent: outside a template, both
+    // `if constexpr` branches must compile, and most scenes' mirrored
+    // MeshUniforms carries no velocity tail.
+    [&](auto& dependent) {
+        if constexpr (
+            requires {
+                dependent.previousWorld;
+                dependent.velocityEnabled;
+            }) {
+            dependent.previousWorld = world;
+            dependent.velocityEnabled = 1.0f;
+        }
+    }(block);
     return block;
 }
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0
 
 /**
  * The variant a draw composes, or `npos` when this scene cannot resolve one.
@@ -761,9 +1029,9 @@ inline std::size_t pinned_variant_for_draw(
     if (engine.materials.size() != upstream::pbr_variant_material_count) {
         return std::numeric_limits<std::size_t>::max();
     }
-    // A mesh whose node transform is not baked into its vertices needs the
-    // matrix the transcribed stage takes from elsewhere; until the pinned path
-    // carries it, those draws stay on the transcribed one.
+    // A mesh whose node transform is not baked into its vertices carries it
+    // in the record's parent matrix, which the composed stages consume; a
+    // record without it cannot resolve a variant and errors at the draw.
     bool has_bones = false;
     if (draw.item.mesh.value < engine.meshes.size()) {
         const MeshRecord& record = engine.meshes[draw.item.mesh.value];
@@ -860,6 +1128,203 @@ inline std::size_t pinned_variant_for_draw(
     }
     return variant;
 }
+
+/**
+ * The convention arms one pinned draw rides.
+ *
+ * A skinned draw takes the identity world with the MIRRORED vertex
+ * buffer: the loader's palette is the mirror-conjugated
+ * `jointWorld * IBM` (`M A M`), so against mirrored vertices the product
+ * collapses to the browser's own `M * jointWorld * IBM * v_unmirrored`,
+ * and adding the mirror world on top double-applies it -- the finding the
+ * Dawn backend's captured mesh blocks localised (world = bare mirror,
+ * palette translation 1.66 vs the browser's 0). An animated no-skin mesh
+ * rides the same convention with one matrix: its palette entry is
+ * `M * world * M`, passed as the pin's finalWorld against the mirrored
+ * buffer. Derived once so the backends cannot disagree about which draw
+ * takes which arm.
+ */
+struct PinnedDrawConventions {
+    bool skeleton_draw;
+    bool world_from_palette;
+    bool mirrored_vertices;
+};
+
+inline PinnedDrawConventions pinned_draw_conventions(
+    std::size_t variant,
+    const MeshRecord& record) {
+    const bool skeleton_draw = pinned_variant_skeleton(variant);
+    const bool world_from_palette =
+        !skeleton_draw && !record.bone_matrices.empty();
+    return PinnedDrawConventions{
+        skeleton_draw,
+        world_from_palette,
+        skeleton_draw || world_from_palette,
+    };
+}
+
+/**
+ * The pin's bone-palette texture shape: `skeleton-updater.ts` writes
+ * `invMeshWorld * jointWorld * IBM` per bone into one rgba32float row,
+ * four 16-byte texels per bone. Both backends size and fill their
+ * palette texture from this; only the upload mechanics stay per API.
+ */
+struct BonePaletteLayout {
+    std::uint32_t width;
+    std::uint32_t height;
+    // The whole palette, which for the single row is also the row pitch.
+    std::uint32_t bytes;
+};
+
+inline BonePaletteLayout bone_palette_layout(std::uint32_t bones) {
+    const std::uint32_t width = bones * 4u;
+    return BonePaletteLayout{width, 1u, width * 16u};
+}
+#endif
+
+#if BBLITE_STANDARD_VARIANTS > 0
+/**
+ * The Standard variant a draw composes, or `npos` when none was emitted.
+ *
+ * The key is the pin's own feature word, derived from the record by the
+ * generated `standard_material_features` — the same pinned
+ * `_computeStandardMaterialFeatures` generation executed to compose — plus
+ * the mesh bits: the static per-handle table with the pool and deformation
+ * bits ORed on at draw time, because thin instances attach and morph
+ * weights arrive after mesh creation. A no-color view's record ORs the
+ * pass bit the composition keyed its depth-only rows on.
+ */
+inline std::size_t standard_variant_for_draw(
+    const Scene& scene,
+    const Engine& engine,
+    const upstream::RenderDrawCommand& draw,
+    std::size_t geometry_task = std::numeric_limits<std::size_t>::max()) {
+    (void)scene;
+    if (
+        draw.item.material_kind !=
+        upstream::RenderMaterialKind::standard) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    if (draw.item.material.value >= engine.materials.size()) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    const MaterialRecord& material =
+        engine.materials[draw.item.material.value];
+    std::uint32_t features =
+        upstream::standard_material_features(material);
+    if (material.no_color) {
+        features |= upstream::standard_no_color_output_flag;
+    }
+    std::size_t mesh_features =
+        draw.item.mesh.value <
+            upstream::standard_renderable_mesh_features.size()
+            ? upstream::standard_renderable_mesh_features[
+                  draw.item.mesh.value]
+            : upstream::standard_runtime_mesh_features;
+    if (mesh_features == std::numeric_limits<std::size_t>::max()) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    if (draw.item.mesh.value < engine.meshes.size()) {
+        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        if (pinned_record_instanced(record)) {
+            mesh_features |= upstream::std_msh_has_thin_instances;
+        }
+    }
+    if (
+        draw.item.geometry < engine.geometries.size() &&
+        !engine.geometries[draw.item.geometry].morph_positions.empty()) {
+        mesh_features |= upstream::std_msh_has_morph_targets;
+    }
+    return upstream::standard_variant_for(
+        features,
+        static_cast<std::uint32_t>(mesh_features),
+        geometry_task);
+}
+
+/**
+ * The pin's mesh-block world for one Standard draw.
+ *
+ * The native side bakes a mesh's TRS into its vertices, so the pin's
+ * `finalWorld` collapses to the identity — the Standard families carry no
+ * glTF X-mirror. A thin-instanced draw keeps local vertices and rides the
+ * pin's own `mesh.world * instanceWorld` product, so it takes the record's
+ * parent TRS. A LOCAL_POSITION geometry variant reads the raw position
+ * attribute, so its draw binds the unbaked local lanes and needs the
+ * pin's node world back: the TRS the loader baked away and recorded in
+ * `instance_parent_matrix` (the identity for a mesh that never had one —
+ * scene 145's browser blocks carry exactly that TRS beside
+ * localMatrix-applied vertex uploads, so `world * local` reproduces the
+ * baked product). A record whose own transform is live bakes at packing
+ * time instead and records no such world, so it is refused by name
+ * rather than rendered with a silently-wrong varying.
+ */
+inline std::array<float, 16> standard_draw_world(
+    [[maybe_unused]] const MeshRecord& record,
+    bool uses_local_position) {
+#if BBLITE_GPU_INSTANCING
+    if (pinned_record_instanced(record)) {
+        return upstream::build_instance_parent_world(record);
+    }
+#endif
+    if (uses_local_position) {
+        const bool identity_transform =
+            record.position.x == 0.0f && record.position.y == 0.0f &&
+            record.position.z == 0.0f &&
+            record.scaling.x == 1.0f && record.scaling.y == 1.0f &&
+            record.scaling.z == 1.0f &&
+            !record.has_rotation_quaternion &&
+            record.rotation.x == 0.0f && record.rotation.y == 0.0f &&
+            record.rotation.z == 0.0f;
+        if (!identity_transform) {
+            throw std::runtime_error(
+                "A LOCAL_POSITION geometry variant over a transformed "
+                "Standard mesh is not wired: the baked vertices and the "
+                "raw position attribute disagree.");
+        }
+        return record.instance_parent_matrix;
+    }
+    return std::array<float, 16>{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
+}
+
+/**
+ * The Standard material block for one draw: the pin's own writer over the
+ * record-filled props. A material-less item keeps the pin's defaults, the
+ * way `createStandardMaterial` seeds them.
+ */
+inline upstream::StandardMaterialUniforms standard_material_block(
+    const MaterialRecord* material,
+    std::uint32_t features) {
+    const upstream::StandardMaterialProps props = material
+        ? upstream::standard_material_props(*material)
+        : upstream::StandardMaterialProps{};
+    upstream::StandardMaterialUniforms block{};
+    upstream::write_standard_material(
+        props,
+        upstream::standard_texture_level(features),
+        block);
+    return block;
+}
+
+/** The vertex-stage UV block for one draw, by the pin's own writer. */
+inline upstream::StandardUvTransformUniforms standard_uv_block(
+    const MaterialRecord* material,
+    std::uint32_t features) {
+    const upstream::StandardMaterialProps props = material
+        ? upstream::standard_material_props(*material)
+        : upstream::StandardMaterialProps{};
+    upstream::StandardUvTransformUniforms block{};
+    upstream::write_standard_uv_transform(
+        props,
+        material != nullptr &&
+            upstream::standard_uv_inverted(features, *material),
+        block);
+    return block;
+}
 #endif
 
 // Inverse image processing for the linear-frame clear color shared by
@@ -953,6 +1418,29 @@ inline std::vector<float> pack_morph_deltas(
     return deltas;
 }
 
+/**
+ * The float array behind the weights blob's 16-byte header: one weight
+ * per target, zero past the record's stored values. Split out because a
+ * version-gated re-upload may rewrite just this span (the header is
+ * constant after creation), and both backends must fill it identically.
+ */
+inline std::vector<float> morph_weight_values(
+    const ModelGeometry& geometry,
+    const MeshRecord& mesh_record) {
+    const std::size_t target_count = geometry.morph_positions.size();
+    std::vector<float> weights(target_count, 0.0f);
+    for (
+        std::size_t target = 0;
+        target < target_count;
+        ++target) {
+        weights[target] =
+            target < mesh_record.morph_storage_weights.size()
+                ? mesh_record.morph_storage_weights[target]
+                : 0.0f;
+    }
+    return weights;
+}
+
 inline std::vector<std::uint8_t> pack_morph_weights(
     const ModelGeometry& geometry,
     const MeshRecord& mesh_record) {
@@ -969,23 +1457,24 @@ inline std::vector<std::uint8_t> pack_morph_weights(
         weights_blob.data(),
         header,
         sizeof(header));
-    for (
-        std::size_t target = 0;
-        target < target_count;
-        ++target) {
-        const float weight =
-            target < mesh_record.morph_storage_weights.size()
-                ? mesh_record.morph_storage_weights[target]
-                : 0.0f;
+    const std::vector<float> weights =
+        morph_weight_values(geometry, mesh_record);
+    if (target_count > 0) {
         std::memcpy(
-            weights_blob.data() + 16 +
-                target * sizeof(float),
-            &weight,
-            sizeof(float));
+            weights_blob.data() + 16,
+            weights.data(),
+            target_count * sizeof(float));
     }
     return weights_blob;
 }
 #endif
+
+// The no-environment fallback face — the ported pinned contract both
+// backends must agree on: a compiled-PBR scene with no environment binds a
+// 1x1 cube of this colour, never zeros. (Dawn used to keep its
+// zero-initialized startup cube here while SDL_GPU uploaded this face — a
+// silent backend delta on any environment-less PBR scene.)
+inline constexpr float environment_fallback_face[4] = {0.15f, 0.16f, 0.2f, 1.0f};
 
 // RGBD decode and half-float packing shared by both render
 // backends (moved verbatim from pal_sdl_gpu.cpp).
@@ -1008,6 +1497,19 @@ inline std::vector<float> decode_rgbd(const TextureData& texture_data, int& widt
     return result;
 }
 
+/**
+ * The warmup every renderer's benchmark discards before sampling: a
+ * tenth of the requested frames, clamped to [10, 120]. One policy for
+ * the GPU frame loops, their sprite variants and the SDL_Renderer CPU
+ * fallback, so the published numbers of any two renderers cover the
+ * same measured span of a run.
+ */
+[[nodiscard]] inline long benchmark_warmup_frames(long benchmark_frames) {
+    return benchmark_frames > 0
+        ? std::min(120L, std::max(10L, benchmark_frames / 10))
+        : 0;
+}
+
 // How a measured run is driven, parsed once for whichever backend runs
 // it.
 //
@@ -1028,9 +1530,9 @@ struct FrameOptions {
     // instrumented capture.
     std::string render_capture_path;
     // Kept as written rather than pre-interpreted: the background and
-    // ground flags accept "1"/"true" as well as "0"/"false", and each
-    // default differs (a requested background is off unless asked for, a
-    // requested ground is on unless refused).
+    // ground flags accept "1"/"true" as well as "0"/"false", and the
+    // methods below hold the differing defaults (a requested background
+    // is off unless asked for, a requested ground is on unless refused).
     std::string background_flag;
     std::string ground_flag;
     bool gpu_debug = false;
@@ -1041,7 +1543,7 @@ struct FrameOptions {
     long benchmark_frames = 0;
     double animation_seek_seconds = 0.0;
 
-    /** Frames to run: a benchmark adds its fixed warmup to the request. */
+    /** Frames to run: a benchmark adds its warmup to the request. */
     [[nodiscard]] long frame_budget() const {
         return benchmark_frames > 0
             ? benchmark_frames + benchmark_warmup()
@@ -1058,7 +1560,34 @@ struct FrameOptions {
      */
     bool benchmark_requested = false;
     [[nodiscard]] long benchmark_warmup() const {
-        return benchmark_frames > 0 ? 30 : 0;
+        return benchmark_warmup_frames(benchmark_frames);
+    }
+
+    /**
+     * Whether the run draws the environment background: only when asked
+     * for, or when the scene enables it by default and the flag says
+     * nothing. Both frame loops read the flags through these three
+     * methods, so a run's flags cannot mean different draws per backend.
+     */
+    [[nodiscard]] bool background_enabled(
+        const EnvironmentState& environment) const {
+        return background_flag == "1" ||
+            background_flag == "true" ||
+            (background_flag.empty() &&
+             environment.background_enabled_by_default);
+    }
+    /** The skybox draws with the background when the scene carries one. */
+    [[nodiscard]] bool skybox_enabled(
+        const EnvironmentState& environment) const {
+        return background_enabled(environment) &&
+            environment.has_skybox;
+    }
+    /** The scene's ground draws unless the flag refuses it. */
+    [[nodiscard]] bool ground_enabled(
+        const EnvironmentState& environment) const {
+        return environment.has_ground &&
+            ground_flag != "0" &&
+            ground_flag != "false";
     }
 };
 
@@ -1099,6 +1628,89 @@ inline FrameOptions read_frame_options() {
     options.animation_seek_seconds =
         seek.empty() ? 0.0 : std::strtod(seek.c_str(), nullptr);
     return options;
+}
+
+/**
+ * A measured seek runs every registered animation seeker to the
+ * requested time before the first frame; both frame loops apply the same
+ * request so a seeked capture renders the same pose on either backend.
+ */
+inline void apply_animation_seek(
+    const FrameOptions& options,
+    const Scene& scene) {
+    if (options.animation_seek_seconds == 0.0) return;
+    const float time =
+        static_cast<float>(options.animation_seek_seconds);
+    for (const auto& seek : scene.animation_seekers) {
+        seek(time);
+    }
+}
+
+/**
+ * A scene that also registers sprite renderers composes two rendering
+ * contexts in one frame (the pinned HUD-on-3D shape, corpus scene 52).
+ * The sprite pass is recordable into any open render pass for exactly
+ * that, but neither backend records it yet, and drawing the scene while
+ * silently dropping the sprites would be measured as a parity residual
+ * rather than a missing feature.
+ */
+inline void reject_uncomposed_sprites(const Engine& engine) {
+    if (!engine.registered_sprite_renderers.empty()) {
+        throw std::runtime_error(
+            "A sprite renderer registered alongside a scene is not "
+            "composed into the scene's frame yet.");
+    }
+}
+
+/**
+ * A sprite renderer's layers in draw order: `spriteRendererUpdate` sorts
+ * the renderer's layers by `order` every frame, so registration order is
+ * not the draw order -- `layer.order` is. The sort is stable, which is
+ * what decides equal orders. Returned as indices into `renderer.layers`
+ * because each backend keeps its per-layer GPU state in registration
+ * order; both used to carry this walk verbatim.
+ */
+inline std::vector<std::size_t> sprite_layer_draw_order(
+    const Engine& engine,
+    const SpriteRendererRecord& renderer) {
+    std::vector<std::size_t> draw_order(renderer.layers.size());
+    for (std::size_t index = 0; index < draw_order.size(); ++index) {
+        draw_order[index] = index;
+    }
+    std::stable_sort(
+        draw_order.begin(),
+        draw_order.end(),
+        [&](std::size_t left, std::size_t right) {
+            return engine.sprite_layers[renderer.layers[left].value].order <
+                engine.sprite_layers[renderer.layers[right].value].order;
+        });
+    return draw_order;
+}
+
+/**
+ * The one blend descriptor a renderer's single pipeline serves. Layers
+ * with differing blend modes would need a pipeline each, which neither
+ * backend builds, so both refuse them with the same words rather than
+ * blending some layers wrongly.
+ */
+inline SpriteBlendDescriptor sprite_renderer_blend(
+    const Engine& engine,
+    const SpriteRendererRecord& renderer) {
+    const SpriteBlendDescriptor blend =
+        engine.sprite_layers[renderer.layers.front().value].blend;
+    for (const Sprite2DLayerHandle& handle : renderer.layers) {
+        const SpriteBlendDescriptor& other =
+            engine.sprite_layers[handle.value].blend;
+        if (other.color.src != blend.color.src ||
+            other.color.dst != blend.color.dst ||
+            other.alpha.src != blend.alpha.src ||
+            other.alpha.dst != blend.alpha.dst) {
+            throw std::runtime_error(
+                "Sprite layers with different blend modes need a "
+                "pipeline each.");
+        }
+    }
+    return blend;
 }
 
 /**
@@ -1167,6 +1779,182 @@ inline DecodedImage decode_uploadable_image(
 }
 
 /**
+ * Mip levels for a full chain over a base level:
+ * 1 + floor(log2(max(width, height))), computed through double exactly as
+ * both backends always have, so the same image sizes the same chain
+ * everywhere. (The transmission grab's shortened chain is derived from
+ * this by `transmission_grab_mip_count` below.)
+ */
+inline std::uint32_t full_mip_chain(
+    std::uint32_t width,
+    std::uint32_t height) {
+    return 1u + static_cast<std::uint32_t>(
+        std::floor(
+            std::log2(
+                static_cast<double>(std::max(width, height)))));
+}
+
+// ---------------------------------------------------------------------------
+// The pin's transmission scene-colour grab, stated once for both backends
+// (frame-graph/transmission.ts): a fixed 1024x1024 rgba16float texture
+// whatever the surface size, its full mip chain shortened by the fixed
+// 4-mip LOD bias, sampled through getTrilinearAnisotropicSampler (repeat
+// addressing, trilinear filtering, anisotropy 4). Pass mechanics — how the
+// grab is blitted and when the chain regenerates — stay per backend.
+
+/** The grab's fixed extent; both its width and its height. */
+inline constexpr std::uint32_t transmission_grab_size = 1024;
+
+/**
+ * The shortened chain: the full chain over the fixed extent minus the
+ * pin's 4-mip bias, never below one level. (Dawn used to hardcode 11-4
+ * while SDL_GPU derived the same 7 from the extent — one derivation now.)
+ */
+inline std::uint32_t transmission_grab_mip_count() {
+    const std::uint32_t full = full_mip_chain(
+        transmission_grab_size,
+        transmission_grab_size);
+    return std::max(1u, full > 4u ? full - 4u : 1u);
+}
+
+/** getTrilinearAnisotropicSampler's anisotropy; the filters are trilinear
+ *  and the addressing repeat, translated to each API where the sampler is
+ *  created. */
+inline constexpr std::uint32_t transmission_sampler_max_anisotropy = 4;
+
+/**
+ * Whether one draw's material is transmissive — the predicate behind the
+ * pinned mid-pass break: `executePassWithTransmission` grabs the scene
+ * colour before the FIRST draw this returns true for. The once-per-frame
+ * latch and the pass surgery around it stay per backend.
+ */
+inline bool transmissive_draw_material(const MaterialRecord* material) {
+    return material != nullptr &&
+        (material->transmission_factor > 0.0f ||
+         !material->transmission_texture.bytes.empty());
+}
+
+/**
+ * The format class and clear rule of one geometry-task attachment.
+ *
+ * Mirrors the pinned geometry-output attachments
+ * (`pbr-geometry-output-shader.ts`): reflectivity and albedo pack into
+ * rgba8, VIEW_DEPTH keeps full float precision, the normalized and
+ * screenspace depths take r16 (as does any attachment whose description
+ * requests r16 explicitly), and every other lane is rgba16. Each backend
+ * only translates the class to its API's format constant.
+ */
+enum class GeometryFormatClass {
+    rgba8_unorm,
+    r16_float,
+    r32_float,
+    rgba16_float,
+};
+
+inline GeometryFormatClass geometry_format_class(
+    const GeometryTextureDescription& description) {
+    if (description.format == GeometryTextureFormat::r16_float) {
+        return GeometryFormatClass::r16_float;
+    }
+    switch (description.type) {
+        case GeometryTextureType::reflectivity:
+        case GeometryTextureType::albedo:
+            return GeometryFormatClass::rgba8_unorm;
+        case GeometryTextureType::view_depth:
+            return GeometryFormatClass::r32_float;
+        case GeometryTextureType::normalized_view_depth:
+        case GeometryTextureType::screenspace_depth:
+            return GeometryFormatClass::r16_float;
+        case GeometryTextureType::irradiance:
+        case GeometryTextureType::world_position:
+        case GeometryTextureType::local_position:
+        case GeometryTextureType::view_normal:
+        case GeometryTextureType::world_normal:
+        case GeometryTextureType::linear_velocity:
+            return GeometryFormatClass::rgba16_float;
+    }
+    return GeometryFormatClass::rgba16_float;
+}
+
+/**
+ * All four channels of a geometry attachment clear to this value: the
+ * pinned NORMALIZED_VIEW_DEPTH lane clears to one (its far plane), every
+ * other lane to zero.
+ */
+inline float geometry_clear_component(GeometryTextureType type) {
+    return type == GeometryTextureType::normalized_view_depth
+        ? 1.0f
+        : 0.0f;
+}
+
+/**
+ * The two blend-factor tuples the corpus reaches, stated once. A
+ * transparent draw blends colour src-alpha over one-minus-src-alpha and
+ * accumulates alpha at one; the pinned background ground rides one over
+ * one-minus-src-alpha on both lanes. The operation is always add. Every
+ * blending pipeline in either backend translates one of these instances
+ * to its API's enums.
+ */
+enum class BlendFactor {
+    one,
+    src_alpha,
+    one_minus_src_alpha,
+};
+
+struct BlendFactors {
+    BlendFactor src_color;
+    BlendFactor dst_color;
+    BlendFactor src_alpha;
+    BlendFactor dst_alpha;
+};
+
+inline constexpr BlendFactors transparent_blend{
+    BlendFactor::src_alpha,
+    BlendFactor::one_minus_src_alpha,
+    BlendFactor::one,
+    BlendFactor::one_minus_src_alpha,
+};
+
+inline constexpr BlendFactors ground_blend{
+    BlendFactor::one,
+    BlendFactor::one_minus_src_alpha,
+    BlendFactor::one,
+    BlendFactor::one_minus_src_alpha,
+};
+
+/**
+ * The skybox stage in sub-draw order: load-env.ts pushes the solid cube
+ * before the DDS and .env arms, every background renderable carries
+ * order 0, and the image-skybox cube draws after the environment arm.
+ * Both backends walk this one array, so the stage cannot reorder on one
+ * of them.
+ */
+enum class SkyboxLayer {
+    solid,
+    environment,
+    image,
+};
+
+inline constexpr std::array<SkyboxLayer, 3> skybox_stage_order{
+    SkyboxLayer::solid,
+    SkyboxLayer::environment,
+    SkyboxLayer::image,
+};
+
+/**
+ * The pinned background skyboxes (DDS, HDR and solid) build their
+ * pipeline through createDefaultPipelineDescriptor without a `_cullMode`,
+ * so they take its "back" default; only the image skybox asks for "none"
+ * explicitly. Drawing the cube unculled leaves both the entry and the
+ * exit face rasterized once the camera is outside it, and depth writes
+ * are off, so the later face in index order wins instead of the nearer
+ * one.
+ */
+inline constexpr bool skybox_layer_culls_back(SkyboxLayer layer) {
+    return layer != SkyboxLayer::image;
+}
+
+/**
  * Cluster ids advance in fixed 128-triangle groups, and the id and
  * cluster buffers are compared against the browser's, so both backends
  * have to number them identically.
@@ -1208,6 +1996,73 @@ inline std::array<float, 4> diagnostic_alpha_options(
     options[1] = material->alpha_cutoff;
     options[2] = material->base_color_factor.a;
     return options;
+}
+
+/**
+ * The id and cluster diagnostic uniform blocks. The draw-id RGB packing
+ * (one little-endian byte per channel over 255) and the
+ * {cluster base, 128 triangles per cluster} pair are diffed against the
+ * browser's buffers, so both backends fill the blocks here.
+ */
+struct DiagnosticIdUniforms {
+    float id_color[4];
+    float alpha_options[4];
+};
+
+struct DiagnosticClusterUniforms {
+    std::uint32_t cluster_options[4];
+    float alpha_options[4];
+};
+
+inline DiagnosticIdUniforms diagnostic_id_uniforms(
+    std::uint32_t draw_id,
+    const std::array<float, 4>& alpha_options) {
+    DiagnosticIdUniforms uniforms{};
+    uniforms.id_color[0] =
+        static_cast<float>(draw_id & 0xffu) / 255.0f;
+    uniforms.id_color[1] =
+        static_cast<float>((draw_id >> 8) & 0xffu) / 255.0f;
+    uniforms.id_color[2] =
+        static_cast<float>((draw_id >> 16) & 0xffu) / 255.0f;
+    uniforms.id_color[3] = 1.0f;
+    std::copy_n(alpha_options.begin(), 4, uniforms.alpha_options);
+    return uniforms;
+}
+
+inline DiagnosticClusterUniforms diagnostic_cluster_uniforms(
+    std::uint32_t cluster_base,
+    const std::array<float, 4>& alpha_options) {
+    DiagnosticClusterUniforms uniforms{};
+    uniforms.cluster_options[0] = cluster_base;
+    uniforms.cluster_options[1] = 128;
+    std::copy_n(alpha_options.begin(), 4, uniforms.alpha_options);
+    return uniforms;
+}
+
+/**
+ * One custom-shader stage block, filled from the generated variant
+ * table: [optional 16-float scene worldViewProjection][the reflected
+ * gathers from the material's flat value storage]. The same floats reach
+ * an SDL_GPU push, a Dawn buffer write and the render capture, so the
+ * packing lives here. `system_matrix` is null on the arm that binds the
+ * shared scene-matrix buffer instead (the Dawn backend, which refuses
+ * combined matrix-plus-gather blocks before calling).
+ */
+inline std::vector<float> shader_stage_block_floats(
+    const upstream::ShaderVariantStageBlock& block,
+    const float* system_matrix,
+    const MaterialRecord& material) {
+    std::vector<float> floats(block.float_size, 0.0f);
+    if (block.system_matrix && system_matrix) {
+        std::copy_n(system_matrix, 16, floats.begin());
+    }
+    for (const std::array<std::uint32_t, 3>& gather : block.gather) {
+        for (std::uint32_t index = 0; index < gather[2]; ++index) {
+            floats[gather[0] + index] =
+                material.shader_uniform_values[gather[1] + index];
+        }
+    }
+    return floats;
 }
 #endif
 
@@ -1257,9 +2112,16 @@ private:
 };
 
 /**
- * The benchmark summary both backends print. The numbers are compared
- * across backends, so the shape of the line and the statistics behind it
- * have to be produced the same way.
+ * The benchmark summary every renderer prints -- the GPU frame loops,
+ * their sprite variants and the SDL_Renderer CPU fallback. The numbers
+ * are compared across backends, so both the shape of the line and the
+ * statistics behind it are produced in exactly one place. The contract:
+ * one line opening with the "Babylon Lite <backend> benchmark |
+ * driver=<driver>" identity prefix that names the renderer, then
+ * `frames=` and the average / median / p95 / min / max frame CPU times
+ * in milliseconds, fixed three-decimal precision. Samples are the
+ * post-warmup frames (`benchmark_warmup_frames` above holds the shared
+ * warmup policy); an empty run prints nothing.
  */
 inline void report_benchmark(
     std::vector<double> samples,
@@ -1269,36 +2131,53 @@ inline void report_benchmark(
     std::sort(samples.begin(), samples.end());
     double sum = 0.0;
     for (const double sample : samples) sum += sample;
+    const std::size_t p95_index = std::min(
+        samples.size() - 1,
+        static_cast<std::size_t>(
+            std::ceil(samples.size() * 0.95)) - 1);
+    const std::ios_base::fmtflags flags = std::cout.flags();
+    const std::streamsize precision = std::cout.precision();
     std::cout
+        << std::fixed
+        << std::setprecision(3)
         << "Babylon Lite " << backend << " benchmark | driver="
         << driver
         << " | frames=" << samples.size()
         << " | average=" << (sum / samples.size())
         << " ms | median=" << samples[samples.size() / 2]
+        << " ms | p95=" << samples[p95_index]
+        << " ms | min=" << samples.front()
+        << " ms | max=" << samples.back()
         << " ms\n";
+    std::cout.flags(flags);
+    std::cout.precision(precision);
 }
 
 /**
  * Refuse a flag this backend does not implement rather than rendering
  * something else: a silent no-op would be measured as a backend delta.
+ * `supported_backend` names the backend the refusal redirects to, so the
+ * error text cannot claim SDL_GPU support from a backend that has none.
  */
 inline void reject_unsupported_frame_options(
     const FrameOptions& options,
     const char* backend,
     bool supports_single_sample,
-    bool supports_copy_task) {
+    bool supports_copy_task,
+    const char* supported_backend = "SDL_GPU") {
     if (options.single_sample && !supports_single_sample) {
         throw std::runtime_error(
             std::string("BBLITE_MSAA is not supported by the ") +
             backend +
-            " backend; run the single-sample diagnostic through SDL_GPU.");
+            " backend; run the single-sample diagnostic through " +
+            supported_backend + ".");
     }
     if (!options.copy_task_filter.empty() && !supports_copy_task) {
         throw std::runtime_error(
             std::string("BBLITE_COPY_TASK is not supported by the ") +
             backend +
-            " backend; the geometry copy-task diagnostic runs through "
-            "SDL_GPU.");
+            " backend; the geometry copy-task diagnostic runs through " +
+            supported_backend + ".");
     }
 }
 
@@ -1370,6 +2249,86 @@ inline std::uint16_t float_to_half(float value) {
         sign |
         static_cast<std::uint16_t>(half_exponent << 10) |
         static_cast<std::uint16_t>(rounded >> 13));
+}
+
+// ---------------------------------------------------------------------------
+// Readback row conversion, shared by both backends' screenshot and
+// diagnostic-buffer paths. The copy/map mechanics stay per backend; what a
+// row of readback bytes MEANS as PNG pixels is decided once: rgba16float
+// decodes through the manual half conversion (clamped to bytes), r16float
+// lands in the red channel, 8-bit rows copy through with an optional
+// BGRA swap. Rows arrive 256-byte aligned, the way both APIs return them.
+
+enum class ReadbackFormatClass {
+    rgba16_float,
+    r16_float,
+    rgba8,
+    bgra8,
+};
+
+inline std::vector<std::uint8_t> convert_readback_rows(
+    const std::uint8_t* mapped,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t aligned_row_bytes,
+    ReadbackFormatClass format) {
+    const std::uint32_t output_row_bytes = width * 4;
+    std::vector<std::uint8_t> rgba(
+        static_cast<std::size_t>(output_row_bytes) * height);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        const std::uint8_t* source_row =
+            mapped + static_cast<std::size_t>(y) * aligned_row_bytes;
+        std::uint8_t* destination_row =
+            rgba.data() + static_cast<std::size_t>(y) * output_row_bytes;
+        if (format == ReadbackFormatClass::rgba16_float) {
+            const auto* source_pixels =
+                reinterpret_cast<const std::uint16_t*>(source_row);
+            for (std::uint32_t x = 0; x < width; ++x) {
+                for (std::uint32_t channel = 0; channel < 4; ++channel) {
+                    destination_row[x * 4 + channel] =
+                        half_to_byte(source_pixels[x * 4 + channel]);
+                }
+            }
+        } else if (format == ReadbackFormatClass::r16_float) {
+            const auto* source_pixels =
+                reinterpret_cast<const std::uint16_t*>(source_row);
+            for (std::uint32_t x = 0; x < width; ++x) {
+                destination_row[x * 4] = half_to_byte(source_pixels[x]);
+                destination_row[x * 4 + 1] = 0;
+                destination_row[x * 4 + 2] = 0;
+                destination_row[x * 4 + 3] = 255;
+            }
+        } else {
+            std::memcpy(destination_row, source_row, output_row_bytes);
+            if (format == ReadbackFormatClass::bgra8) {
+                for (std::uint32_t x = 0; x < width; ++x) {
+                    std::swap(
+                        destination_row[x * 4],
+                        destination_row[x * 4 + 2]);
+                }
+            }
+        }
+    }
+    return rgba;
+}
+
+/**
+ * The HDR diagnostic sidecar: the unpadded rgba16float rows, written to a
+ * stream the caller opened (opening — and cleaning up its own GPU
+ * resources when the open fails — stays per backend).
+ */
+inline void write_readback_raw_rows(
+    std::ostream& raw,
+    const std::uint8_t* mapped,
+    std::uint32_t height,
+    std::uint32_t aligned_row_bytes,
+    std::uint32_t source_row_bytes) {
+    for (std::uint32_t y = 0; y < height; ++y) {
+        raw.write(
+            reinterpret_cast<const char*>(
+                mapped + static_cast<std::size_t>(y) * aligned_row_bytes),
+            source_row_bytes);
+    }
 }
 
 } // namespace bbl::pal

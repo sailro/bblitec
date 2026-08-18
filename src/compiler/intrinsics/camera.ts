@@ -33,7 +33,7 @@ export function compileCameraIntrinsic(
         case "createArcRotateCamera": {
             context.expectArgumentCount(call, 4, 4);
             const engine = context.requireDefaultEngine(call);
-            context.reachFeature("camera:arc-rotate");
+            context.reachFeature("camera:arc-rotate", call);
             return {
                 kind: "camera",
                 cpp:
@@ -62,8 +62,8 @@ export function compileCameraIntrinsic(
                 call.arguments[0]!,
             );
             const engine = context.requireEngine(scene, call);
-            context.reachFeature("camera:arc-rotate");
-            context.reachFeature("camera:default");
+            context.reachFeature("camera:arc-rotate", call);
+            context.reachFeature("camera:default", call);
             return {
                 kind: "camera",
                 cpp:
@@ -77,7 +77,7 @@ export function compileCameraIntrinsic(
         case "createFreeCamera": {
             context.expectArgumentCount(call, 2, 2);
             const engine = context.requireDefaultEngine(call);
-            context.reachFeature("camera:free");
+            context.reachFeature("camera:free", call);
             return {
                 kind: "camera",
                 cpp:
@@ -137,7 +137,7 @@ export function compileCameraIntrinsic(
                         context.compileNumber(value, "double");
                 }
             }
-            context.reachFeature("camera:orthographic");
+            context.reachFeature("camera:orthographic", call);
             const engine = context.requireEngine(
                 camera,
                 call,

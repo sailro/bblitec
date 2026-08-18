@@ -130,14 +130,29 @@ different questions:
 | List | Source of truth | Decides |
 | --- | --- | --- |
 | `BBLITE_RUNTIME_FEATURES` in `features.cmake` | the scene's own TypeScript | which generated modules and PAL translation units compile |
-| `render_capabilities.hpp` | the materialized assets, after specialization | transmission, deformation, morph storage, instancing, material extensions, uv2 occlusion, Standard bump, image and solid-colour skyboxes |
+| `render_capabilities.hpp` | the materialized assets, after specialization | transmission, deformation, morph storage, instancing, material extensions, uv2 occlusion, Standard bump and 2D reflection, image and solid-colour skyboxes, and the composed PBR/Standard variant counts |
 | `BBLITE_IMAGE_CODECS` in `features.cmake` | the materialized assets' image types | which image decoders link and ship |
 
 The feature list is finalized during compilation, before remote assets are
-materialized, so no asset fact can reach it. A capability an asset reaches
-without the scene source naming it therefore lives in the capability header
-instead — scene transmission is the standing example, because Babylon Lite
-enables it from any transmissive material a loaded asset carries.
+materialized, with two deliberate exceptions joined afterwards: an asset's
+own lights — glTF `KHR_lights_punctual` kinds and `.babylon` point
+lights — and `EXT_lights_image_based` become `light:*` and
+`environment:ibl` features, because light features select `light_*.cpp`
+translation units, which only the feature list can. Every
+other capability an asset reaches without the scene source naming it lives
+in the capability header instead — scene transmission is the standing
+example, because Babylon Lite enables it from any transmissive material a
+loaded asset carries. Every activation across all the mechanisms — the
+feature list, the capability defines, the codecs, the emit options,
+variant composition, and the generation-time refusals — is recorded per
+scene in `upstream/feature-activation.json`, with the first reaching call
+site or asset and the pinned module each unit mirrors.
+
+The rule that decides which mechanism owns a feature: a runtime feature
+exists for API the scene's own source can reach, and a capability exists for
+what assets decide. An extension family with a scene-code setter therefore
+has both (clearcoat and sheen are feature-or-capability), and one without a
+setter has only the capability (iridescence, dispersion).
 
 **Why compile time:** there is no dynamic module loading, so upstream's own
 `import()`-behind-a-predicate boundaries have to be resolved somewhere, and
@@ -225,22 +240,26 @@ decided at generation.**
 #### Stage 1: composition and specialization
 
 **Compile time, both backends.** All native GPU shaders originate as WGSL,
-composed per scene from the pinned sources: material vertex and fragment
-stages, Standard and PBR variants, Grid, background ground and skybox,
-geometry MRT outputs, frame-graph blit and depth, and the sprite
-pair. Generation specializes them for SDL bindings,
-locations, and depth into `*.native.wgsl`, checks Tint's binding reflection
-against the result, and resolves custom uniform writes to reflected byte
+composed per scene from the pinned sources: the Standard and PBR variants the
+pin's own composer builds, the shared material vertex stage, Grid, background
+ground and skybox, geometry MRT outputs, frame-graph blit and depth, and the
+sprite pair. The pin-composed variants deploy with the pin's own
+`@group`/`@binding` scheme unchanged — SDL_GPU re-addresses them later,
+during HLSL register normalization — while the remaining stages are
+specialized for SDL bindings, locations, and depth at generation; either way
+the deployed text is `*.native.wgsl`, checked against Tint's binding
+reflection, with custom uniform writes resolved to reflected byte
 offsets. Scene-local custom shaders enter the same stage from the entry file's
 own WGSL through the typed shader IR — parse, validate, reflect, re-emit — with
 pipeline state from the pinned mapping. Every family originates as WGSL: no
 HLSL or MSL source templates remain under `src/`.
 
 **Why compile time:** Babylon Lite composes WGSL per material at run time
-through its own composer, and there is no native equivalent — the variant set
-is one answer per scene, the same tree-shaking question as feature selection.
+through its own composer, and there is no native equivalent — the composer is
+executed at generation instead, so the variant set is one answer per scene,
+the same tree-shaking question as feature selection.
 Both backends consume this stage's output unchanged: Dawn reads the same
-SDL-specialized `.native.wgsl`, whose `@group` scheme maps onto WebGPU
+deployed `.native.wgsl`, whose `@group` scheme maps onto WebGPU
 natively.
 
 #### Stage 2: compiling WGSL for the device
@@ -339,12 +358,18 @@ aliased, so flush and count updates re-read it per frame.
 ### Lights
 
 Directional, hemispheric, point, and spot lights with diffuse and specular
-colors. Standard surfaces shade one unrolled slot per light the scene
-declares — the slot *count* is fixed at generation, and which lights fill them
-is run-time state — with each mesh lit by the set its assets name. Spot cones
-shade under the pinned cosine-and-exponent falloff on Standard surfaces and
-the physical falloff in the PBR extra-light slots. PBR carries two analytic
-slots.
+colors. Standard surfaces shade through the pin's own composed fragment,
+which declares `array<LightEntry, MAX_LIGHTS>` and walks
+`min(mesh.lc, MAX_LIGHTS)` of it — light count, kind dispatch, and the
+per-mesh light sets an asset names are all run-time UBO data, written by the
+pin's own per-kind light writers. `MAX_LIGHTS` is the pin's frozen 16; an
+asset carrying more punctual light nodes refuses at generation where
+upstream would grow the constant. Spot cones shade under the pinned
+cosine-and-exponent falloff on Standard surfaces and the physical falloff in
+the PBR extra lights. PBR carries two analytic slots in single-light mode;
+under multi-light the second analytic slot is deliberately empty and every
+light past the primary is walked by the pin's own `min(mesh.lc, MAX_LIGHTS)`
+loop over the same lights buffer.
 
 ### Materials and material state
 
@@ -387,9 +412,10 @@ Those are the loader's own rules, ported rather than inferred; see
 ### Deformation and instancing
 
 Recursive skeleton hierarchies with inverse bind matrices, four-weight GPU
-skinning, GPU position/normal/tangent morph targets, direct single-target
-morph attachment on generated meshes, uncapped storage-buffer morphing above
-two targets, static `EXT_mesh_gpu_instancing`, and post-deformation flat
+skinning, GPU position and normal morph targets through the pin's uncapped
+storage-buffer path — Babylon Lite's one morph mechanism, compiled in for
+any morph target at all — direct single-target morph attachment on generated
+meshes, static `EXT_mesh_gpu_instancing`, and post-deformation flat
 normals. Morph deltas apply before skinning. Two narrow CPU fallbacks remain:
 skins beyond 64 joints, and face-normal recomputation for primitives with no
 source normals.
@@ -397,10 +423,10 @@ source normals.
 ### Sprites
 
 Pure-2D `depth: "none"` layers drawn by their own sprite renderer with no
-scene at all — the frame table is derived at load from the decoded atlas's own
-width and height, and each sprite's position, size, frame, tint, rotation and
-flip are written per frame into the pinned instance layout for the
-straight-alpha blend. Both GPU backends draw it from one generated WGSL pair.
+scene at all: the frame grid derived at load from the decoded atlas,
+per-sprite instance writes, and the straight-alpha blend, on both GPU
+backends from one generated WGSL pair. The pinned renderer split and
+instance layout are in [fidelity](fidelity.md#shader-contract).
 
 ### Frame graph
 
@@ -442,11 +468,11 @@ before it trusts a measurement.
 | --- | --- | --- |
 | glTF assets | download, Draco/meshopt decode, upstream feature-predicate specialization, capability defines | parse, build meshes/materials/skins, deindex, strip expansion, upload |
 | Environments | HDR and DDS packaged (GGX prefilter, SH projection); BRDF LUT integrated | `.env` parsed, RGBD decoded, cubes uploaded and sampled |
-| Shaders | composition, SDL specialization and reflection for both backends, plus DXIL/SPIR-V/MSL for SDL_GPU | Dawn's embedded Tint and DXC compile the same WGSL at startup; pipelines built lazily per kind |
+| Shaders | composition, specialization and reflection for both backends, plus DXIL/SPIR-V/MSL for SDL_GPU | Dawn's embedded Tint and DXC compile the same WGSL at startup; pipelines built lazily per kind |
 | Sprites | the atlas image executed and baked | the frame grid derived from it, instance writes, the pass |
 | Animation | property clips and groups lowered to typed records | glTF channel data read from the asset; all evaluation and seeking |
 | Deformation | which vertex layout and shader variant exist, from the asset | joint palettes, morph weights, skinning and morphing, CPU fallbacks |
-| Lights | how many Standard slots exist | which lights fill them, per-mesh light sets, uniforms |
+| Lights | which light-kind writers and `light_*.cpp` units exist | the lights buffer, per-mesh light sets, uniforms |
 | Textures | which image codecs link and ship | decode, mip generation, factor texels, sampler state |
 
 ## Knobs
@@ -471,11 +497,9 @@ of a measurement that does not mean what it looks like.
 
 Requested environment grounds and DDS/HDR/solid-colour skyboxes render by
 default and are disabled independently with `BBLITE_GROUND=0` and
-`BBLITE_BACKGROUND=0`. Which skybox a scene gets is decided at generation from
-the two URLs and the pinned `skipSkybox` flag, exactly as `load-env.ts`'s
-deferred builder decides it: a `.dds` URL takes the DDS arm, a URL naming the
-`.env` itself takes the environment cubemap, and a scene naming neither and
-skipping neither gets the solid-colour cube.
+`BBLITE_BACKGROUND=0`. Which skybox arm a scene gets is decided at generation
+from the two URLs and the pinned `skipSkybox` flag
+([fidelity](fidelity.md#shader-contract) carries the three-way rule).
 
 ## Boundaries
 
@@ -502,25 +526,25 @@ different image.
   slerp, group ranges/looping/speed, and deterministic seeking for the reached
   mesh `position`, `position.x`, `scaling`, and `rotationQuaternion` paths
 - glTF animation covers LINEAR/CUBICSPLINE rotation, translation, and scale
-  plus LINEAR morph weights. glTF STEP channels, multiple-clip controls,
-  broader property targets, and Standard scenes beyond two simultaneous lights
-  remain unsupported
+  plus LINEAR morph weights. glTF STEP channels, multiple-clip controls, and
+  broader property targets remain unsupported
 - direct `createMorphTargets` covers one target attached to one mesh
 - a spot light created in scene code carries its colors and intensity; its
-  `angle`, `exponent`, and `range` setters and a spot composed with Standard
-  geometry outputs all fail explicitly
+  `angle`, `exponent`, and `range` setters fail explicitly
 - scene fog is ported for PBR, Standard, and image-skybox surfaces; fog
   composed with Grid, custom-shader, environment-ground/DDS-skybox background,
   transmission, or geometry-output surfaces fails explicitly
 - PBR material extensions cover clearcoat, sheen, iridescence, and dispersion
-  with one shared UV transform; specular and anisotropy, and layered
-  composition combined with punctual multi-light, remain unsupported
+  with one shared UV transform; specular textures and anisotropy remain
+  unsupported, and an asset carrying an extension the pinned loader
+  implements that this port does not fails at generation naming it
 - custom shader variants are bounded by the supported WGSL subset and the
   `worldViewProjection` system uniform; arbitrary system-uniform sets and
   matrix-valued custom uniforms remain unsupported
-- Standard bump mapping composed with transmission or a PBR material extension
-  fails, because the fragment's binding index would have to be computed rather
-  than fixed
+- an asset carrying more punctual light nodes than the pinned `MAX_LIGHTS`
+  (16) fails, where upstream grows the constant at run time
+- a scene-code mesh or PBR material created before a later glTF load fails,
+  because it would interleave the variant table's creation-order key
 - an orthographic camera composed with an environment skybox or ground fails,
   because those build their own perspective view-projection
 
@@ -536,9 +560,12 @@ generated code refuses them explicitly instead of shading something plausible:
 
 ### Platform validation
 
-D3D12 is validated locally. Vulkan and Metal artifacts are generated but still
-require real-device validation, and the Dawn integration is Windows-only today
-by configuration rather than architecture. See [backends](backends.md).
+D3D12 is validated locally. Vulkan has one recorded device run (Windows NVIDIA
+through SDL_GPU: the Standard family correct, the PBR family mis-shading —
+[TODO](../TODO.md)'s Vulkan section carries the findings); Metal artifacts are
+generated but untested, and the Dawn integration is Windows-only today by
+configuration rather than architecture
+([backends](backends.md#honest-comparison)).
 
 ---
 

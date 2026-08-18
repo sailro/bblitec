@@ -85,6 +85,117 @@ export class SpriteLowerer {
     }
 
     /**
+     * `sprite-pipeline.ts`: the pure-2D per-instance vertex attributes at
+     * the pin's own byte offsets. The offsets are the module's named
+     * constants and the rows are `instanceAttributes`' base literal (the
+     * depth and uv-scroll rows append behind opt-ins the pure-2D slice
+     * never takes), so a moved slot or widened format fails generation
+     * instead of drifting inside two hand-written PAL tables.
+     */
+    private instanceAttributeRows(instanceFloats: number): Array<{
+        location: number;
+        offsetBytes: number;
+        floatCount: number;
+    }> {
+        const file = this.context.sourceFile(pipelineModule);
+        const array = this.context.unwrapExpression(
+            this.context.variableInitializer(file, "instanceAttributes"),
+        );
+        if (!ts.isArrayLiteralExpression(array)) {
+            return this.context.contractError(
+                array,
+                "Expected the pinned instanceAttributes array literal.",
+            );
+        }
+        const rows = array.elements.map((element) => {
+            const literal = this.context.unwrapExpression(element);
+            if (!ts.isObjectLiteralExpression(literal)) {
+                return this.context.contractError(
+                    literal,
+                    "Expected a pinned sprite attribute object literal.",
+                );
+            }
+            let location: number | undefined;
+            let offsetBytes: number | undefined;
+            let floatCount: number | undefined;
+            for (const property of literal.properties) {
+                if (!ts.isPropertyAssignment(property)) continue;
+                const name = this.context.propertyName(property.name);
+                if (name === "shaderLocation") {
+                    location = this.context.numericValue(
+                        property.initializer,
+                        file,
+                    );
+                } else if (name === "offset") {
+                    const reference = this.context.unwrapExpression(
+                        property.initializer,
+                    );
+                    if (!ts.isIdentifier(reference)) {
+                        return this.context.contractError(
+                            reference,
+                            "Expected a named sprite offset constant.",
+                        );
+                    }
+                    offsetBytes = this.context.numericValue(
+                        this.context.variableInitializer(
+                            file,
+                            reference.text,
+                        ),
+                        file,
+                    );
+                } else if (name === "format") {
+                    const format = this.context.unwrapExpression(
+                        property.initializer,
+                    );
+                    if (!ts.isStringLiteral(format)) {
+                        return this.context.contractError(
+                            format,
+                            "Expected a sprite attribute format string.",
+                        );
+                    }
+                    const match = /^float32(?:x([234]))?$/.exec(
+                        format.text,
+                    );
+                    if (!match) {
+                        return this.context.contractError(
+                            format,
+                            `Unsupported sprite attribute format '${format.text}'.`,
+                        );
+                    }
+                    floatCount =
+                        match[1] === undefined ? 1 : Number(match[1]);
+                }
+            }
+            if (
+                location === undefined ||
+                offsetBytes === undefined ||
+                floatCount === undefined
+            ) {
+                return this.context.contractError(
+                    literal,
+                    "Pinned sprite attribute misses shaderLocation, offset or format.",
+                );
+            }
+            return { location, offsetBytes, floatCount };
+        });
+        // The base rows must tile the pure-2D stride exactly: the last
+        // attribute ends where PURE_2D_INSTANCE_FLOATS_PER_SPRITE says the
+        // instance does, or the two pinned modules disagree.
+        const lastEnd = rows.reduce(
+            (max, row) =>
+                Math.max(max, row.offsetBytes + row.floatCount * 4),
+            0,
+        );
+        if (lastEnd !== instanceFloats * 4) {
+            this.context.contractError(
+                array,
+                `Pinned sprite attributes end at ${lastEnd} bytes, expected ${instanceFloats * 4}.`,
+            );
+        }
+        return rows;
+    }
+
+    /**
      * `writeInstance` writes thirteen numbered slots. The lowered writer
      * below reproduces them, so the slot expressions are pinned here
      * rather than trusted: a moved slot has to fail generation.
@@ -800,6 +911,9 @@ export class SpriteLowerer {
 
     public lowerCore(): LoweredSource {
         const layout = this.layout();
+        const attributeRows = this.instanceAttributeRows(
+            layout.instanceFloats,
+        );
         this.assertGridAtlas();
         this.assertFrameResolution();
         this.assertAtlasLoader();
@@ -824,8 +938,35 @@ export class SpriteLowerer {
 #include <bblite/runtime.hpp>
 
 #include <array>
+#include <cstdint>
 
 namespace bbl::upstream {
+
+/**
+ * sprite-pipeline.ts: the pure-2D per-instance vertex attributes at the
+ * pin's own byte offsets, and the stride sprite-2d.ts derives from
+ * PURE_2D_INSTANCE_FLOATS_PER_SPRITE. Both render backends translate
+ * these rows into their API's vertex-attribute descriptors, so the
+ * numbers exist once, here.
+ */
+struct SpriteInstanceAttribute {
+    std::uint32_t shader_location;
+    std::uint32_t byte_offset;
+    std::uint32_t float_count;
+};
+
+inline constexpr std::array<SpriteInstanceAttribute, ${attributeRows.length}>
+    sprite_instance_attributes{{
+${attributeRows
+    .map(
+        (row) =>
+            `        {${row.location}u, ${row.offsetBytes}u, ${row.floatCount}u},`,
+    )
+    .join("\n")}
+    }};
+
+inline constexpr std::uint32_t sprite_instance_stride_bytes =
+    ${layout.instanceFloats * 4}u;
 
 /**
  * The sixteen floats of the per-layer UBO, in the pinned order:

@@ -5,8 +5,10 @@ import {
     resolve,
 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright-core";
-import { resolveBrowserPath } from "./browser-path.js";
+import {
+    webgpuComputeBrowserArgs,
+    withBrowserPage,
+} from "./browser-harness.js";
 import {
     findRepositoryRoot,
     readUpstreamPin,
@@ -31,107 +33,6 @@ export interface HdrPrefilterSource {
     height: number;
     data: Float32Array;
 }
-
-export const hdrGgxPrefilterReferenceWgsl = String.raw`
-struct Params {
-    faceSize: u32,
-    mipLevel: u32,
-    totalMips: u32,
-    srcSize: u32,
-}
-
-@group(0) @binding(0) var srcCube: texture_cube<f32>;
-@group(0) @binding(1) var srcSampler: sampler;
-@group(0) @binding(2) var dstMip: texture_storage_2d_array<rgba16float, write>;
-@group(0) @binding(3) var<uniform> params: Params;
-
-const PI: f32 = 3.14159265359;
-const SAMPLE_COUNT: u32 = 1024u;
-const FACE_CORNERS = array<vec3<f32>, 24>(
-    vec3(1.0, -1.0, 1.0), vec3(-1.0, -1.0, 1.0), vec3(1.0, 1.0, 1.0), vec3(-1.0, 1.0, 1.0),
-    vec3(-1.0, -1.0, -1.0), vec3(1.0, -1.0, -1.0), vec3(-1.0, 1.0, -1.0), vec3(1.0, 1.0, -1.0),
-    vec3(-1.0, -1.0, -1.0), vec3(-1.0, -1.0, 1.0), vec3(1.0, -1.0, -1.0), vec3(1.0, -1.0, 1.0),
-    vec3(1.0, 1.0, -1.0), vec3(1.0, 1.0, 1.0), vec3(-1.0, 1.0, -1.0), vec3(-1.0, 1.0, 1.0),
-    vec3(1.0, -1.0, -1.0), vec3(1.0, -1.0, 1.0), vec3(1.0, 1.0, -1.0), vec3(1.0, 1.0, 1.0),
-    vec3(-1.0, -1.0, 1.0), vec3(-1.0, -1.0, -1.0), vec3(-1.0, 1.0, 1.0), vec3(-1.0, 1.0, -1.0),
-);
-
-fn faceDirection(face: u32, u: f32, v: f32) -> vec3<f32> {
-    let offset = face * 4u;
-    return normalize(
-        FACE_CORNERS[offset] * (1.0 - u) * (1.0 - v) +
-        FACE_CORNERS[offset + 1u] * u * (1.0 - v) +
-        FACE_CORNERS[offset + 2u] * (1.0 - u) * v +
-        FACE_CORNERS[offset + 3u] * u * v
-    );
-}
-
-fn radicalInverseVdc(bits: u32) -> f32 {
-    var value = bits;
-    value = (value << 16u) | (value >> 16u);
-    value = ((value & 0x55555555u) << 1u) | ((value & 0xAAAAAAAAu) >> 1u);
-    value = ((value & 0x33333333u) << 2u) | ((value & 0xCCCCCCCCu) >> 2u);
-    value = ((value & 0x0F0F0F0Fu) << 4u) | ((value & 0xF0F0F0F0u) >> 4u);
-    value = ((value & 0x00FF00FFu) << 8u) | ((value & 0xFF00FF00u) >> 8u);
-    return f32(value) * 2.3283064365386963e-10;
-}
-
-fn importanceSampleGgx(xiX: f32, xiY: f32, roughness: f32) -> vec3<f32> {
-    let alphaSquared = roughness * roughness;
-    let phi = 2.0 * PI * xiX;
-    let cosTheta = sqrt((1.0 - xiY) / (1.0 + (alphaSquared - 1.0) * xiY));
-    let sinTheta = sqrt(1.0 - cosTheta * cosTheta);
-    return vec3<f32>(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
-}
-
-fn distributionGgx(nDotH: f32, alphaSquared: f32) -> f32 {
-    let denominator = nDotH * nDotH * (alphaSquared - 1.0) + 1.0;
-    return alphaSquared / (PI * denominator * denominator);
-}
-
-@compute @workgroup_size(8, 8, 1)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-    let face = id.z;
-    let mipSize = params.faceSize >> params.mipLevel;
-    if (id.x >= mipSize || id.y >= mipSize || face >= 6u) {
-        return;
-    }
-
-    let u = f32(id.x) / f32(mipSize);
-    let v = f32(id.y) / f32(mipSize);
-    let normal = faceDirection(face, u, v);
-    let roughness = pow(2.0, f32(params.mipLevel) / 0.8) / f32(params.srcSize);
-    var up = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 0.0, 1.0), abs(normal.z) < 0.999);
-    let tangent = normalize(cross(up, normal));
-    let bitangent = cross(normal, tangent);
-    var color = vec3<f32>(0.0);
-    var weight = 0.0;
-    let sourceSize = f32(params.srcSize);
-    let texelSolidAngle = 4.0 * PI / (6.0 * sourceSize * sourceSize);
-    let maxMip = f32(params.totalMips) - 1.0;
-
-    for (var sample = 0u; sample < SAMPLE_COUNT; sample++) {
-        let xiX = f32(sample) / f32(SAMPLE_COUNT);
-        let xiY = radicalInverseVdc(sample);
-        let halfTangent = importanceSampleGgx(xiX, xiY, roughness);
-        let halfVector = tangent * halfTangent.x + bitangent * halfTangent.y + normal * halfTangent.z;
-        let nDotH = max(dot(normal, halfVector), 0.0);
-        let light = 2.0 * nDotH * halfVector - normal;
-        let nDotL = dot(normal, light);
-        if (nDotL > 0.0) {
-            let alphaSquared = roughness * roughness;
-            let pdf = distributionGgx(nDotH, alphaSquared) / 4.0;
-            let sampleSolidAngle = 1.0 / (f32(SAMPLE_COUNT) * max(pdf, 0.0001));
-            let lod = clamp(0.5 * log2(sampleSolidAngle / texelSolidAngle) + 1.0, 0.0, maxMip);
-            color += textureSampleLevel(srcCube, srcSampler, light, lod).rgb * nDotL;
-            weight += nDotL;
-        }
-    }
-    if (weight > 0.0) {
-        color /= weight;
-    }
-    textureStore(dstMip, vec2<i32>(id.xy), i32(face), vec4<f32>(color, 1.0));
-}`;
 
 function loadPinnedHdrShaders(): {
     equirectToCube: string;
@@ -198,43 +99,38 @@ function decodeMip(base64: string): Uint16Array[] {
 }
 
 export async function prefilterCubemapGgx(
-    mipZero: Uint16Array[],
     faceSize: number,
     mipCount: number,
-    equirect?: HdrPrefilterSource,
+    source: { equirect: HdrPrefilterSource } | { faces: Uint16Array[] },
 ): Promise<Uint16Array[][]> {
-    if (mipZero.length !== 6) throw new Error("HDR cubemap mip zero must contain six faces.");
-    if (mipCount === 1) return [mipZero];
+    const equirect = "equirect" in source ? source.equirect : undefined;
+    const faces = "faces" in source ? source.faces : undefined;
+    if (faces && faces.length !== 6) {
+        throw new Error("HDR cubemap mip zero must contain six faces.");
+    }
+    // With faces given and nothing to prefilter there is no GPU work at all;
+    // an equirect source still needs the pinned equirect-to-cube compute for
+    // its level zero, so it always launches.
+    if (faces && mipCount === 1) return [faces];
 
     const server = createServer((_request, response) => {
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         response.end("<!doctype html><title>HDR GGX prefilter</title>");
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
-    if (!address || typeof address === "string") {
-        server.close();
-        throw new Error("Unable to start the HDR prefilter server.");
-    }
-
-    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
-    try {
-        browser = await chromium.launch({
-            executablePath: resolveBrowserPath(
-                "Exact HDR GGX prefiltering requires Chrome or Edge.",
-            ),
-            headless: true,
-            args: ["--enable-unsafe-webgpu"],
-        });
-        const page = await browser.newPage();
-        await page.goto(`http://127.0.0.1:${address.port}`);
+    return withBrowserPage(server, {
+        serverName: "HDR prefilter server",
+        browserRequirement:
+            "Exact HDR GGX prefiltering requires Chrome or Edge.",
+        browserArgs: webgpuComputeBrowserArgs,
+    }, async (page, origin) => {
+        await page.goto(origin);
         const sourceBytes = equirect
             ? new Uint8Array(
                   equirect.data.buffer,
                   equirect.data.byteOffset,
                   equirect.data.byteLength,
               )
-            : concatenateFaces(mipZero);
+            : concatenateFaces(faces!);
         await page.evaluate(
             (source) => {
                 (
@@ -316,7 +212,7 @@ export async function prefilterCubemapGgx(
                 source = device.createTexture({
                     size: [faceSize, faceSize, 6],
                     format: "rgba16float",
-                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
+                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
                 });
                 const module = device.createShaderModule({ code: globalThis.hdrIblShaders.equirectToCube });
                 const pipeline = device.createComputePipeline({
@@ -352,7 +248,7 @@ export async function prefilterCubemapGgx(
                 source = device.createTexture({
                     size: { width: faceSize, height: faceSize, depthOrArrayLayers: 6 },
                     format: "rgba16float",
-                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
                 });
                 const sourceRowBytes = faceSize * 8;
                 const sourceRowPitch = Math.ceil(sourceRowBytes / 256) * 256;
@@ -451,6 +347,41 @@ export async function prefilterCubemapGgx(
                 readback.destroy();
                 paramsBuffer.destroy();
             }
+            {
+                // Level zero is the source cubemap itself — for an equirect
+                // source that is the pinned equirect-to-cube compute's own
+                // output, which is what ships as the package's mip zero.
+                const rowBytes = faceSize * 8;
+                const rowPitch = Math.ceil(rowBytes / 256) * 256;
+                const readback = device.createBuffer({
+                    size: rowPitch * faceSize * 6,
+                    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+                });
+                const encoder = device.createCommandEncoder();
+                encoder.copyTextureToBuffer(
+                    { texture: source },
+                    { buffer: readback, bytesPerRow: rowPitch, rowsPerImage: faceSize },
+                    { width: faceSize, height: faceSize, depthOrArrayLayers: 6 },
+                );
+                device.queue.submit([encoder.finish()]);
+                await readback.mapAsync(GPUMapMode.READ);
+                const mapped = new Uint8Array(readback.getMappedRange());
+                const packed = new Uint8Array(rowBytes * faceSize * 6);
+                for (let face = 0; face < 6; face++) {
+                    for (let row = 0; row < faceSize; row++) {
+                        const sourceOffset = (face * faceSize + row) * rowPitch;
+                        const destinationOffset = (face * faceSize + row) * rowBytes;
+                        packed.set(mapped.subarray(sourceOffset, sourceOffset + rowBytes), destinationOffset);
+                    }
+                }
+                let binary = "";
+                for (let offset = 0; offset < packed.length; offset += 0x8000) {
+                    binary += String.fromCharCode(...packed.subarray(offset, offset + 0x8000));
+                }
+                encodedMips.unshift(btoa(binary));
+                readback.unmap();
+                readback.destroy();
+            }
             source.destroy();
             output.destroy();
             device.destroy();
@@ -459,11 +390,6 @@ export async function prefilterCubemapGgx(
         if (!Array.isArray(result) || !result.every((entry) => typeof entry === "string")) {
             throw new Error("HDR GGX prefilter returned an invalid result.");
         }
-        return [mipZero, ...result.map((entry) => decodeMip(entry))];
-    } finally {
-        await browser?.close();
-        await new Promise<void>((resolve, reject) =>
-            server.close((error) => error ? reject(error) : resolve()),
-        );
-    }
+        return result.map((entry) => decodeMip(entry));
+    });
 }

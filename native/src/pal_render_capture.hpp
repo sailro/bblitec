@@ -22,6 +22,11 @@
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
 
+// The custom-shader stage blocks are reported through the same
+// `shader_stage_block_floats` packing both backends push, so a capture
+// diff can never disagree with an upload about the block's bytes.
+#include "pal_gpu_shared.hpp"
+
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 
 #include <bblite/upstream/build_stamp.hpp>
@@ -445,6 +450,7 @@ inline void write_texture_slot(
     json.field("byteLength", texture.bytes.size());
     json.field("digest", payload_digest(texture.bytes));
     json.field("invertY", texture.invert_y);
+    json.field("uvInvertY", texture.uv_invert_y);
     json.key("sampler");
     json.begin_object();
     json.field("minFilter", filter_name(texture.sampler.min_filter));
@@ -781,7 +787,9 @@ inline void write_environment(
 
 /**
  * The uniform blocks one draw uploads, rebuilt through the generated
- * builders both backends call.
+ * builders both backends call. The PBR arm is the one exception: no draw
+ * uploads `PbrUniforms` any more, so its dump is the reduced base-lane
+ * block documented at the arm itself.
  */
 inline void write_draw_uniforms(
     JsonWriter& json,
@@ -801,11 +809,29 @@ inline void write_draw_uniforms(
         view_projection.size());
     switch (draw.item.material_kind) {
         case upstream::RenderMaterialKind::standard: {
-            const upstream::StandardUniforms fragment =
-                upstream::build_standard_uniforms(
-                    scene, engine, camera, draw.item);
+#if BBLITE_STANDARD_VARIANTS > 0
+            // The transcribed StandardUniforms block is retired: the
+            // draw path fills the pin's own 96-byte material mirror, so
+            // the capture dumps the same bytes the same writer builds.
+            const MaterialRecord* material =
+                draw.item.material.value < engine.materials.size()
+                    ? &engine.materials[draw.item.material.value]
+                    : nullptr;
+            std::uint32_t features = material
+                ? upstream::standard_material_features(*material)
+                : 0u;
+            if (material && material->no_color) {
+                features |= upstream::standard_no_color_output_flag;
+            }
+            const upstream::StandardMaterialUniforms fragment =
+                standard_material_block(material, features);
             write_uniform_block(
-                json, "fragment", 0, "StandardUniforms", fragment);
+                json,
+                "fragment",
+                0,
+                "StandardMaterialUniforms",
+                fragment);
+#endif
             break;
         }
         case upstream::RenderMaterialKind::grid: {
@@ -829,21 +855,11 @@ inline void write_draw_uniforms(
                         const upstream::ShaderVariantStageBlock& block,
                         const char* stage) {
                         if (!block.present) return;
-                        std::vector<float> floats(block.float_size, 0.0f);
-                        if (block.system_matrix) {
-                            std::copy_n(
-                                view_projection.data(), 16, floats.begin());
-                        }
-                        for (const std::array<std::uint32_t, 3>& gather :
-                             block.gather) {
-                            for (std::uint32_t offset = 0;
-                                 offset < gather[2];
-                                 ++offset) {
-                                floats[gather[0] + offset] =
-                                    material.shader_uniform_values
-                                        [gather[1] + offset];
-                            }
-                        }
+                        const std::vector<float> floats =
+                            shader_stage_block_floats(
+                                block,
+                                view_projection.data(),
+                                material);
                         write_float_block(
                             json,
                             stage,
@@ -859,6 +875,17 @@ inline void write_draw_uniforms(
         }
         case upstream::RenderMaterialKind::pbr:
         default: {
+            // Reduced to the base lanes: PBR draws bind the pinned
+            // material, scene and lights blocks, so the transcribed
+            // struct now carries only the scene-and-light-derived values
+            // a diff still pairs by name (analytic light slots, camera
+            // basis, base material factors, harmonics). The option-gated
+            // extension lanes it used to mirror -- fog, transmission,
+            // texture transforms, specular, extra lights, clearcoat,
+            // sheen, iridescence, occlusion -- are pruned from the
+            // generated struct; their real values are the
+            // pinnedMaterialBlocks section below and the capture's own
+            // scene and lights dumps.
             const upstream::PbrUniforms fragment =
                 upstream::build_pbr_uniforms(
                     scene, engine, camera, draw.item);
@@ -1117,6 +1144,15 @@ inline void write_render_capture(
                     upstream::RenderMaterialKind::pbr) {
                     continue;
                 }
+                // Deliberately the identity world, not the draw's own
+                // `pinned_draw_world` chain: the capture rebuilds blocks
+                // from (scene, engine, item) without the per-draw
+                // instance context the encoders carry, so an instanced
+                // or local-position world here would be a re-derivation
+                // the diff could disagree with for the wrong reason. A
+                // wrong world in the real draw surfaces in the
+                // SDL-versus-Dawn differential and the mesh-matrix rows
+                // of `scene -- diff`, which read the browser's uploads.
                 const upstream::MeshUniforms block = pinned_mesh_block(
                     scene,
                     engine,

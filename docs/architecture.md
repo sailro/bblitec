@@ -42,29 +42,48 @@ Primary source ownership:
 
 | Source | Responsibility |
 | --- | --- |
+| `src/cli.ts` | the `bblitec` entry: one scene compile end to end — frontend, asset materialization, composition, emitters, generated tree |
+| `src/compose-pipeline.ts` | the pinned variant-composition orchestration between settled assets and emitter options: scene arms, PBR/Standard variant tables, mesh-feature tables |
+| `src/babylon-asset-features.ts` | the `.babylon` asset scans generation keys on: light slots, texture selections, per-light mesh lists |
+| `src/feature-activation.ts` | the per-scene `upstream/feature-activation.json` activation inventory |
 | `src/compiler.ts` | entry-scene AST lowering, features, assets, generated main/CMake |
 | `src/compiler/program.ts` | in-memory TypeScript `Program`/`TypeChecker` frontend |
 | `src/compiler/symbols.ts` | resolved Babylon import symbols and aliases |
 | `src/compiler/static-evaluator.ts` | typed static scalar/vector/color expression evaluation |
+| `src/compiler/expressions.ts` | the value switch and call dispatch every expression position goes through |
+| `src/compiler/browser-erasure.ts` | browser-only expression identification, compile-time values, erased instrumentation |
 | `src/compiler/data-types.ts` | plain-data type mapping (structs, enums, optionals, arrays, tables) and generated definition emission |
 | `src/compiler/data-lowering.ts` | data paths, typed literals/sinks, container methods, runtime `Math`, aliasing contracts, destructuring |
 | `src/compiler/native-functions.ts` | once-emitted real C++ functions for fully data-typed user functions |
 | `src/compiler/user-functions.ts` | inline lowering for handle-touching local functions, calls, parameters, and returns |
 | `src/compiler/statements.ts` | statement dispatch, conditions, expression statements, and method calls |
+| `src/compiler/classes.ts` | compile-time class instances: fields as locals, inlined methods and getters |
+| `src/compiler/promises.ts` | immediate AOT `Promise<T>` lowering |
 | `src/compiler/assignments.ts` | typed property-assignment validation and lowering |
 | `src/compiler/properties.ts` | the declared property reads: which native expression names a handle's property, and which properties are refused |
-| `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, and material intrinsic lowerers |
+| `src/compiler/property-animation.ts` | compile-time clip/track/key lowering and group options |
+| `src/compiler/shader-material.ts` | shader-material variant matching by IR identity and scene-local variant registration |
+| `src/compiler/assets.ts` | asset registration from scene URLs to packaged local files |
+| `src/compiler/adaptations.ts` | the reached-adaptation manifest entries generation records |
+| `src/compiler/option-helpers.ts` | the shared option-object validation contracts |
+| `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, material, and sprite intrinsic lowerers |
 | `src/compiler/types.ts` | compiler public result types and internal typed values/features |
 | `src/upstream-source.ts` | pinned source-map reconstruction |
 | `src/upstream-graph.ts` | conservative reachable-module analysis |
 | `src/upstream-lower.ts` | lowerer orchestration, provenance, generated capabilities |
 | `src/pinned-shader-composer.ts` | executes the pin's own `composeShader`, and lifts named declarations out of a composition verbatim |
-| `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant; supplies the generated shader's helper text |
-| `src/pinned-material-input.ts` | maps a glTF material to the shape `_computePbrMaterialFeatures` reads — the loader's rules ported, not the format's |
+| `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant |
+| `src/pinned-standard-variants.ts` | the Standard sibling: derives the pin's own feature words and composes the Standard colour and geometry variants |
+| `src/pinned-material-input.ts` | maps a glTF material to the shape `_computePbrMaterialFeatures` reads — the loader's own extension builders executed against a recording stub, not re-derived |
 | `src/pinned-material-arms.ts` | composes every material a scene loads and refuses a fragment missing an arm one of them reaches |
+| `src/pinned-scene-arms.ts` | the scene half of composition: light modes, tone mapping, fog bits |
+| `src/pinned-mesh-features.ts` | the pin's mesh feature bits, imported rather than restated |
+| `src/pinned-pbr-variant-cpp.ts` | the C++ mirrors of each variant's UBO layouts, offsets cross-checked against the composer's own, plus the generated variant-selector and material texture-slot tables |
+| `src/pinned-pbr-variant-output.ts` | writes the composed variant stages into the generated tree verbatim |
+| `src/lowering/pinned-ubo-writer-lowerer.ts` | lowers the pin's material/extension UBO writers from their own ASTs |
 | `src/lowering/context.ts` | source-located AST declarations, expression contracts, and diagnostics |
 | `src/lowering/*-lowerer.ts` | focused Babylon API and formula lowering |
-| `src/lowering/templates/` | generated C++ and portable shader templates |
+| `src/lowering/templates/` | the generated `.babylon`/glTF loader C++ templates |
 | `corpus/babylon-lite/` | byte-identical registered scene inputs from the pinned source commit |
 | `upstream/babylon-lite-scenes.json` | immutable corpus paths and SHA-256 evidence |
 | `native/include/bblite/` | typed runtime records, handles, PAL contracts |
@@ -73,10 +92,14 @@ Primary source ownership:
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
 | `native/src/pal_sdl_gpu_shared.hpp` | SDL_GPU-only mechanics: shader load, buffer/texture upload, sampler, PNG readback |
 | `native/src/pal_sdl_gpu_sprite.cpp` | the pure-2D sprite pass on SDL_GPU, a separate translation unit because a sprite-only scene generates no camera or render-plan headers |
-| `native/src/pal_dawn_shared.hpp` | Dawn-only device, surface and swapchain bring-up |
+| `native/src/pal_dawn_shared.hpp` | Dawn-only device, surface and swapchain bring-up, and WGSL module loading |
 | `native/src/pal_dawn_sprite.cpp` | the same sprite pass on Dawn |
 | `native/src/pal_dawn.cpp` | Dawn (WebGPU) resources, uploads, pipelines, readback, submission |
 | `native/src/pal_gpu_shared.hpp` | vertex packing, RGBD decode, deformation uniforms, and inverse image processing shared byte-identically by both GPU backends |
+| `native/src/pal_render_capture.hpp` | the `BBLITE_RENDER_CAPTURE` writer both backends share, `pinnedMaterialBlocks`/`pinnedMeshBlocks` included |
+| `native/src/pal_camera_controls.hpp` | SDL pointer/wheel/key translation into the generated camera inertia math |
+| `native/src/pal_sdl_gpu_sprite.hpp` | the SDL_GPU sprite pass mechanics its `.cpp` driver draws through |
+| `native/src/pal_dawn_sprite.hpp` | the Dawn sprite pass mechanics its `.cpp` driver draws through |
 
 `generated\` is disposable and never the source of a fix.
 
@@ -126,10 +149,12 @@ source-text matching. Mechanical refactors preserve compiler-owned generated
 artifacts byte-for-byte; unfinished compiler and shader-IR coverage belongs in
 `TODO.md`.
 
-Static custom WGSL is tokenized and lowered to `ShaderIrProgram` before a
-supported native variant is selected. Formatting and comments are not shader
-identity; generating arbitrary scene-local variants from the supported IR
-remains separate compiler coverage.
+Static custom WGSL is tokenized and lowered to `ShaderIrProgram`; a reached
+program either matches a predeclared variant by IR identity or registers the
+scene's own WGSL as a scene-local variant. Formatting and comments are not
+shader identity; reach order is the generated variant table's index order,
+and uniform setters resolve their offsets from the reached program's
+reflected layout.
 
 ## Upstream upgrades
 
@@ -145,7 +170,7 @@ An upstream change is expected to fail at semantic seams:
 - changed entry APIs fail typed intrinsic or assignment lowering
 - changed generated behavior fails compiler-output and parity gates
 
-This keeps a 1.18-to-2.0 migration explicit without spreading version checks
+This keeps a version migration explicit without spreading version checks
 through the compiler. Module paths and symbol contracts stay local to the
 lowerer that owns the behavior. Curated source URLs, documentation, formulas,
 and references remain intentionally reviewable evidence rather than being
@@ -157,7 +182,10 @@ silently rewritten from the pin.
 thresholds, environment overrides, and optional attribution. The same workflow
 also accepts unregistered repository-local TypeScript and derives defaults.
 
-`src/scene-command.ts` provides compile, build, process, and parity operations.
+`src/scene-command.ts` provides compile, build, process, parity, compose, and
+validate operations, plus the diagnostic commands (geometry, capture,
+uniforms, diff, stability, probe-variants, measure, neutrality,
+neutrality-generated) the debugging ladder is built from.
 `src/parity-scene.ts` is the common comparison runner. Generated output is
 scene-local under `generated\<scene>`.
 
@@ -176,7 +204,7 @@ The current generated slice includes:
 - tree-shaken vertex-shader morphing and four-weight skinning with per-mesh
   palettes and weights
 - a narrow CPU fallback for post-deformation flat normals and deformation
-  outside the reached 64-matrix/two-morph-target GPU slice
+  outside the reached 64-matrix GPU slice
 - the HillValley-required `.babylon` loader slice
 - Standard/PBR/Grid material records, no-color views, and typed custom shaders
 - metadata-driven `KHR_materials_clearcoat`, `KHR_materials_sheen`,
@@ -206,9 +234,11 @@ The current generated slice includes:
 - generated GridMaterial WGSL compiled exclusively through Tint
 - generated frame-graph blit/depth and diagnostic WGSL compiled through Tint
 - generated ground and cubemap-skybox WGSL compiled through Tint
-- shared material vertex and Standard fragment/geometry WGSL through Tint
-- directional/hemispheric two-light Standard shading where reached
-- PBR color, diagnostic, and geometry-output WGSL through Tint
+- the shared material vertex WGSL through Tint
+- Babylon's own composed PBR and Standard variant stages — colour and
+  geometry MRT — executed verbatim on both backends, selected per renderable
+- directional, hemispheric, point, and spot Standard shading through the
+  pin's own lights block and per-mesh light selection
 - content-addressed DXIL/SPIR-V reuse across identical scene shader variants
 
 Each scene records:
@@ -217,10 +247,16 @@ Each scene records:
 - `fidelity.json`: intentional semantic adaptations
 - `upstream/provenance.json`: upstream modules and symbols
 - `upstream/renderer-fidelity.json`: shader contracts and invariants
+- `upstream/feature-activation.json`: every activation unit — runtime
+  features, capability defines, codecs, emit options, composed variants,
+  refusals — with its concrete reason and pinned mirror
 - `upstream/shaders/shader-material-reflection.json`: reached custom shader
   entry points, attributes, varyings, uniform layouts, bindings, and sizes
 - `upstream/shaders/*.wgsl`: reached custom material source before IR lowering
 - `upstream/shaders/*.native.wgsl`: SDL binding/location/depth specialization
+- `upstream/shaders/variant-*.native.wgsl`: the pin's own composed PBR
+  (`variant-`) and Standard (`variant-std-`) stages, verbatim; processing
+  adds a `.slots` register sidecar per stage for SDL_GPU addressing
 - `upstream/shaders/*.tint-reflection.txt`: Tint binding reflection check
 - `upstream/shaders/shader-compiler.json`: selected offline compiler backend
 - `upstream/shaders/composition.json`: reached WGSL modules and content hashes
@@ -257,22 +293,23 @@ materialized glTF contains animation; direct `createMorphTargets` reachability
 enables the same variant for generated meshes. Other static scenes retain the
 compact 96-byte/8-attribute vertex layout and one vertex uniform block. Reached
 deformation scenes use the 200-byte/16-attribute layout and a second vertex
-uniform block containing up to 64 matrices and two morph targets. Assets
-with more than two morph targets additionally enable Babylon Lite's
-uncapped storage-buffer morph path: a flat 6-float delta buffer and a
+uniform block containing up to 64 matrices and two morph targets; when the
+scene also composes pinned PBR variants the layout appends an integer
+joint-index lane for the pin's own skinned stage (216 bytes) beside the
+transcribed float pair. Assets with morph targets enable Babylon Lite's
+uncapped storage-buffer morph path — the pin's one morph mechanism, which
+the composed variants read: a flat 6-float delta buffer and a
 16-byte-header weights buffer bound as vertex storage, evaluated with the
-pinned accumulation loop before skinning. Skins beyond 64 joints keep the
-general CPU deformation path rather than truncating.
+pinned accumulation loop before skinning; the two-slot vertex-attribute
+morph lanes remain for direct generated-mesh morph attachment. Skins beyond
+64 joints keep the general CPU deformation path rather than truncating.
 
-Two lists decide what a scene compiles, and they answer different questions.
-`BBLITE_RUNTIME_FEATURES` in `features.cmake` records what the scene's own
-TypeScript reached, and it is finalized during compilation — before remote
-assets are materialized, so no asset fact can reach it. `render_capabilities.hpp`
-records what the loaded assets reach, and it is written after asset
-specialization. A capability an asset can reach without the scene source naming
-it is therefore defined in the capability header rather than derived from the
-feature list; scene transmission is one, because Babylon Lite enables it from
-any transmissive material a loaded asset carries.
+Two generated lists decide what a scene compiles: `BBLITE_RUNTIME_FEATURES`
+in `features.cmake` from the scene's own TypeScript, and
+`render_capabilities.hpp` from the materialized assets. Which list answers
+which question — including the two deliberate asset-joined light and IBL
+exceptions — is in
+[features](features.md#feature-and-capability-selection).
 
 Generated `render_capabilities.hpp`, shader reflection, and native layout
 declarations must stay synchronized. The D3D12 pipeline failure encountered
@@ -294,30 +331,31 @@ architecture and comparison). The SDL_GPU offline shader targets:
 | Linux / Android | Vulkan | Tint HLSL → DXC SPIR-V (temporary) |
 | macOS / iOS | Metal | Tint MSL |
 
-The Dawn backend needs no offline shader artifacts: the generated
-WGSL feeds Dawn directly and its in-process Tint compiles per
-platform (D3D12 today).
+The Dawn backend needs none of these — it compiles the same WGSL
+in-process ([features](features.md#stage-2-compiling-wgsl-for-the-device)).
 
 Important contracts:
 
 - base-color/emissive textures are sRGB; normal/ORM textures are linear
-- `.env` RGBD cubemap rows are vertically reversed for SDL_GPU upload
+- `.env` RGBD cubemap faces upload Y-flipped — pinned behavior, not an SDL
+  adaptation ([backends](backends.md#ported-pinned-contracts))
 - compiled HDR cubemaps are linear RGBA16F with mip-major, face-major layout
 - DDS skyboxes are RGBA16F with face-major, mip-minor layout
 - alpha mode, cutoff, blending, culling, and coverage are material-driven
-- requested environment grounds render by default; their translated geometry
-  retains Babylon Lite's world-origin fade center
-- PBR material-extension textures and uniforms are appended after the base
-  and transmission bindings, selected only by the generated
-  `render_capabilities.hpp` defines for the reached glTF extensions
+- requested environment grounds render by default and keep Babylon Lite's
+  world-origin fade center ([fidelity](fidelity.md#shader-contract))
+- PBR material-extension texture pairs append after the base and
+  transmission bindings per the generated `material_texture_slots.hpp`
+  table, selected only by the `render_capabilities.hpp` defines for the
+  reached glTF extensions; extension uniform data lives in each composed
+  variant's own material block, written by the pin's lowered UBO writers
 - PAL executes generated draw-command indices and pipeline keys rather than
   rescanning every mesh once per pipeline
-- frame-graph viewport copies preserve Babylon Lite's double-precision
-  normalized coordinates, floor them to integer target bounds, and apply the
-  same scissor rectangle before drawing
-- transmission resolves and stores the multisample opaque color attachment,
-  copies the resolved RGBA16F scene color, then reloads the preserved
-  multisample color and depth attachments for transmissive draws
+- frame-graph viewport copies keep the pinned double-precision
+  floor-and-scissor viewport contract ([fidelity](fidelity.md#attribution))
+- transmission preserves the multisample color and depth attachments around
+  the scene-color grab ([fidelity](fidelity.md#shader-contract) carries the
+  pass shape)
 - screenshot capture uses a readable target, then blits to the swapchain
 - capture is deferred one frame when scene topology changes so D3D12 upload
   and readback commands do not share an invalid command list; the frame loop
@@ -346,24 +384,16 @@ same reached quaternion mesh transforms.
 
 ## Backend rationale
 
-The project keeps two complete GPU backends on purpose. The Dawn
-backend renders through the browser reference's own compiler and
-rasterization stack (the pinned Dawn commit shared with the Tint
-pin), which makes parity structural instead of adapted: it matches or
-beats SDL_GPU on every scene, and uniquely expresses the pinned
-per-sample image processing and multisampled scene-color reads. The
-SDL_GPU backend is the independent implementation: offline-compiled
-shaders through a different toolchain and API. Two stacks that must
-agree pixel-for-pixel form the project's sharpest diagnostic — their
-direct diff separates CPU-side causes from GPU-side ones immediately.
-[Backends](backends.md) carries the full comparison, build recipes,
-and the ported pinned contracts.
+The project keeps two complete GPU backends on purpose: two stacks
+that must agree pixel-for-pixel are a differential diagnostic that
+separates CPU-side causes from GPU-side ones immediately.
+[Backends](backends.md) carries the rationale, the full comparison,
+build recipes, and the ported pinned contracts.
 
 The shader-language migration is complete: all native GPU shaders originate as
-WGSL and compile through Tint. bblitec owns composition, SDL specialization,
-reflection checks, and fixed-function state. For SDL_GPU, Tint can emit SPIR-V
-directly, but its WGSL resource layout does not yet match SDL_GPU's dense
-paired texture/sampler convention; DXC therefore temporarily compiles
-normalized Tint HLSL for Vulkan too, and remains mandatory for DXIL. The Dawn
-backend consumes the same WGSL with no offline step. Remaining work is
-tracked only in [TODO](../TODO.md).
+WGSL and compile through Tint, with bblitec owning composition, SDL
+specialization, reflection checks, and fixed-function state. The SDL_GPU
+offline paths — including why DXC stays mandatory and why Vulkan temporarily
+recompiles Tint HLSL through it — are tabulated in
+[features](features.md#stage-2-compiling-wgsl-for-the-device). Remaining work
+is tracked only in [TODO](../TODO.md).

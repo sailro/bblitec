@@ -11,9 +11,8 @@
  * The bits come from the primitive's own accessors, which is where the pinned
  * loader reads them from too.
  */
+import type { JsonObject } from "./gltf-document.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
-
-type JsonObject = Record<string, unknown>;
 
 interface MeshFeatureBits {
     MSH_HAS_TANGENTS: number;

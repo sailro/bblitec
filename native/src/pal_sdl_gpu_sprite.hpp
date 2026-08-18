@@ -33,6 +33,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 
+#include "pal_gpu_shared.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 
 namespace bbl::pal {
@@ -116,39 +117,51 @@ inline SpritePass create_sprite_pass(
         "mainFragment");
 
     const SpriteBlendDescriptor blend =
-        engine.sprite_layers[renderer.layers.front().value].blend;
-    for (const Sprite2DLayerHandle& handle : renderer.layers) {
-        const SpriteBlendDescriptor& other =
-            engine.sprite_layers[handle.value].blend;
-        if (other.color.src != blend.color.src ||
-            other.color.dst != blend.color.dst ||
-            other.alpha.src != blend.alpha.src ||
-            other.alpha.dst != blend.alpha.dst) {
-            throw std::runtime_error(
-                "Sprite layers with different blend modes need a "
-                "pipeline each.");
-        }
-    }
+        sprite_renderer_blend(engine, renderer);
 
-    // sprite-pipeline.ts: instance-stepped attributes at the pinned
-    // byte offsets, triangle list, no culling, single sample.
-    const std::array<SDL_GPUVertexAttribute, 6> attributes{
-        SDL_GPUVertexAttribute{
-            0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 0},
-        SDL_GPUVertexAttribute{
-            1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 8},
-        SDL_GPUVertexAttribute{
-            2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 16},
-        SDL_GPUVertexAttribute{
-            3, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 24},
-        SDL_GPUVertexAttribute{
-            4, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT, 32},
-        SDL_GPUVertexAttribute{
-            5, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 36},
-    };
+    // The generated instance layout (sprite_layer.hpp, from
+    // sprite-pipeline.ts): instance-stepped attributes at the pinned byte
+    // offsets, triangle list, no culling, single sample. Only the float
+    // count is translated to this API's element formats.
+    std::array<
+        SDL_GPUVertexAttribute,
+        upstream::sprite_instance_attributes.size()>
+        attributes{};
+    for (
+        std::size_t index = 0;
+        index < upstream::sprite_instance_attributes.size();
+        ++index) {
+        const upstream::SpriteInstanceAttribute& row =
+            upstream::sprite_instance_attributes[index];
+        SDL_GPUVertexElementFormat format =
+            SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
+        switch (row.float_count) {
+            case 1u:
+                format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
+                break;
+            case 2u:
+                format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+                break;
+            case 3u:
+                format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+                break;
+            case 4u:
+                format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+                break;
+            default:
+                throw std::runtime_error(
+                    "Sprite instance attribute has an unsupported float "
+                    "count.");
+        }
+        attributes[index] = SDL_GPUVertexAttribute{
+            row.shader_location,
+            0,
+            format,
+            row.byte_offset};
+    }
     SDL_GPUVertexBufferDescription instance_buffer{};
     instance_buffer.slot = 0;
-    instance_buffer.pitch = 52;
+    instance_buffer.pitch = upstream::sprite_instance_stride_bytes;
     instance_buffer.input_rate = SDL_GPU_VERTEXINPUTRATE_INSTANCE;
     instance_buffer.instance_step_rate = 0;
 
@@ -271,20 +284,10 @@ inline void record_sprite_pass(
     SDL_BindGPUIndexBuffer(
         render_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
-    // `spriteRendererUpdate` sorts the renderer's layers by `order` every
-    // frame, so registration order is not the draw order -- `layer.order`
-    // is. The sort is stable, which is what decides equal orders.
-    std::vector<std::size_t> draw_order(renderer.layers.size());
-    for (std::size_t index = 0; index < draw_order.size(); ++index) {
-        draw_order[index] = index;
-    }
-    std::stable_sort(
-        draw_order.begin(),
-        draw_order.end(),
-        [&](std::size_t left, std::size_t right) {
-            return engine.sprite_layers[renderer.layers[left].value].order <
-                engine.sprite_layers[renderer.layers[right].value].order;
-        });
+    // The per-frame layer order (pal_gpu_shared.hpp): the pinned
+    // by-`order` stable sort both backends draw with.
+    const std::vector<std::size_t> draw_order =
+        sprite_layer_draw_order(engine, renderer);
     for (const std::size_t index : draw_order) {
         const Sprite2DLayerRecord& layer =
             engine.sprite_layers[renderer.layers[index].value];

@@ -1,5 +1,9 @@
 import ts from "typescript";
 import { UpstreamSourceStore } from "../upstream-source.js";
+import {
+    doubleLiteral as cppDoubleLiteral,
+    floatLiteral as cppFloatLiteral,
+} from "../cpp-literals.js";
 
 export interface LoweredSource {
     header: string;
@@ -545,8 +549,7 @@ export class LoweringContext {
     }
 
     public floatLiteral(value: number): string {
-        const text = String(value);
-        return text.includes(".") || /e/i.test(text) ? `${text}f` : `${text}.0f`;
+        return cppFloatLiteral(value);
     }
 
     /**
@@ -555,8 +558,7 @@ export class LoweringContext {
      * term a pinned writer computes before its single `Float32Array` store.
      */
     public doubleLiteral(value: number): string {
-        const text = String(value);
-        return text.includes(".") || /e/i.test(text) ? text : `${text}.0`;
+        return cppDoubleLiteral(value);
     }
 
     public cppColor3(values: [number, number, number]): string {

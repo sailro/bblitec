@@ -56,7 +56,6 @@ test("requires configured thresholds for CPU parity gates", () => {
                     kind: "source",
                     path: "reference.png",
                 },
-                actual: "actual.png",
                 outputDirectory: "output",
                 backgroundColor: [0, 0, 0],
                 backgroundThreshold: 0,

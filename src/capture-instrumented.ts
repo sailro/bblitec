@@ -9,12 +9,22 @@
 // pass-encoder hooks alone would miss every mesh draw.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { chromium } from "playwright-core";
 import {
     createSuiteSceneServer,
     suiteBrowserModule,
 } from "./capture-suite-reference.js";
-import { resolveBrowserPath } from "./browser-path.js";
+import {
+    screenshotCaptureBrowserArgs,
+    waitForSceneReady,
+    withBrowserPage,
+} from "./browser-harness.js";
+import {
+    captureBuffersPath,
+    captureDrawsPath,
+    captureMetaPath,
+    captureShadersDirectory,
+    defaultCaptureDirectory,
+} from "./parity-scene.js";
 import { resolveScene } from "./scene-registry.js";
 
 export interface InstrumentedCaptureOptions {
@@ -202,7 +212,7 @@ export async function runInstrumentedCapture(
     const animationGroups = scene.parity?.referenceAnimationGroups;
     const skipDrawIndexCount = options.skipDrawIndexCount ?? 0;
     const outputDirectory = resolve(
-        options.outputDirectory ?? join("artifacts", "capture", scene.id),
+        options.outputDirectory ?? defaultCaptureDirectory(scene.id),
     );
     const moduleSource = suiteBrowserModule(
         scene.source,
@@ -215,117 +225,106 @@ export async function runInstrumentedCapture(
         moduleSource,
         { sourcePath: scene.source },
     );
-    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-    const address = server.address();
-    if (!address || typeof address === "string") {
-        throw new Error("Unable to start the capture server.");
-    }
-    const browser = await chromium.launch({
-        executablePath: resolveBrowserPath(),
-        headless: true,
-        args: ["--force-color-profile=srgb", "--enable-unsafe-webgpu"],
-    });
-    try {
-        const page = await browser.newPage({
+    await withBrowserPage(
+        server,
+        {
+            serverName: "capture server",
+            browserArgs: screenshotCaptureBrowserArgs,
             viewport: { width: 1280, height: 720 },
-            deviceScaleFactor: 1,
-        });
-        page.on("pageerror", (error) => {
-            console.error(`Capture page error: ${error.message}`);
-        });
-        await page.addInitScript(initScript(skipDrawIndexCount));
-        await page.goto(`http://127.0.0.1:${address.port}/scene.html`, {
-            waitUntil: "domcontentloaded",
-            timeout: 120_000,
-        });
-        await page.waitForFunction(
-            () => document.getElementById("renderCanvas")?.dataset.ready === "true",
-            undefined,
-            { timeout: 120_000 },
-        );
-        if (seekSeconds !== undefined) {
-            await page.waitForFunction(
-                () =>
-                    document.getElementById("renderCanvas")
-                        ?.dataset.animationFrozen === "true",
-                undefined,
-                { timeout: 120_000 },
+            pageErrorPrefix: "Capture page error",
+        },
+        async (page, origin) => {
+            // The hooks must be installed before any scene script runs,
+            // which is why the init script precedes the navigation.
+            await page.addInitScript(initScript(skipDrawIndexCount));
+            await waitForSceneReady(
+                page,
+                origin,
+                seekSeconds !== undefined,
             );
-        }
-        await page.waitForTimeout(3000);
-        mkdirSync(join(outputDirectory, "shaders"), { recursive: true });
-        await page.locator("#renderCanvas").screenshot({
-            path: join(outputDirectory, "screenshot.png"),
-        });
+            mkdirSync(captureShadersDirectory(outputDirectory), {
+                recursive: true,
+            });
+            await page.locator("#renderCanvas").screenshot({
+                path: join(outputDirectory, "screenshot.png"),
+            });
 
-        const dump = (await page.evaluate("window.__wgpuDump")) as {
-            shaders: { label: string; code: string }[];
-            buffers: {
-                id: number;
-                label: string;
-                size: number;
-                usage: number;
-                writeCount: number;
-            }[];
-        };
-        const draws = await page.evaluate("window.__draws");
-        const textureUploads = await page.evaluate("window.__texUploads");
-        dump.shaders.forEach((shader, index) => {
-            const name = (shader.label || `module-${index}`)
-                .replace(/[^a-z0-9_.-]/gi, "_");
+            const dump = (await page.evaluate("window.__wgpuDump")) as {
+                shaders: { label: string; code: string }[];
+                buffers: {
+                    id: number;
+                    label: string;
+                    size: number;
+                    usage: number;
+                    writeCount: number;
+                }[];
+            };
+            const draws = await page.evaluate("window.__draws");
+            const textureUploads = await page.evaluate("window.__texUploads");
+            dump.shaders.forEach((shader, index) => {
+                const name = (shader.label || `module-${index}`)
+                    .replace(/[^a-z0-9_.-]/gi, "_");
+                writeFileSync(
+                    join(
+                        captureShadersDirectory(outputDirectory),
+                        `${String(index).padStart(2, "0")}-${name}.wgsl`,
+                    ),
+                    shader.code,
+                );
+            });
             writeFileSync(
-                join(
-                    outputDirectory,
-                    "shaders",
-                    `${String(index).padStart(2, "0")}-${name}.wgsl`,
-                ),
-                shader.code,
+                captureBuffersPath(outputDirectory),
+                JSON.stringify(dump.buffers, null, 1),
             );
-        });
-        writeFileSync(
-            join(outputDirectory, "buffers.json"),
-            JSON.stringify(dump.buffers, null, 1),
-        );
-        writeFileSync(
-            join(outputDirectory, "tex-uploads.json"),
-            JSON.stringify(textureUploads, null, 1),
-        );
-        writeFileSync(
-            join(outputDirectory, "draws.json"),
-            JSON.stringify(draws, null, 1),
-        );
-        const summary = dump.buffers
-            .map(
-                (buffer) =>
-                    `#${buffer.id} label='${buffer.label}' size=${buffer.size} ` +
-                    `usage=0x${buffer.usage.toString(16)} writes=${buffer.writeCount}`,
-            )
-            .join("\n");
-        writeFileSync(join(outputDirectory, "buffers-summary.txt"), summary);
-        console.log(`Instrumented capture written to ${outputDirectory}`);
-        console.log(`Draw calls: ${JSON.stringify(draws)}`);
-        console.log(summary);
+            writeFileSync(
+                join(outputDirectory, "tex-uploads.json"),
+                JSON.stringify(textureUploads, null, 1),
+            );
+            writeFileSync(
+                captureDrawsPath(outputDirectory),
+                JSON.stringify(draws, null, 1),
+            );
+            const summary = dump.buffers
+                .map(
+                    (buffer) =>
+                        `#${buffer.id} label='${buffer.label}' size=${buffer.size} ` +
+                        `usage=0x${buffer.usage.toString(16)} writes=${buffer.writeCount}`,
+                )
+                .join("\n");
+            writeFileSync(
+                join(outputDirectory, "buffers-summary.txt"),
+                summary,
+            );
+            // The capture's provenance, so a reuse path can tell whether this
+            // directory describes the pose it is about to be diffed at. `null`
+            // means captured with no seek; a missing file is a pre-provenance
+            // capture and reads as unknown.
+            writeFileSync(
+                captureMetaPath(outputDirectory),
+                `${JSON.stringify({ seekSeconds: seekSeconds ?? null })}\n`,
+            );
+            console.log(`Instrumented capture written to ${outputDirectory}`);
+            console.log(`Draw calls: ${JSON.stringify(draws)}`);
+            console.log(summary);
 
-        // Non-perturbation check: with no draw filter, the hooked
-        // render must stay byte-identical to the committed golden.
-        const referencePath = scene.parity?.reference.path;
-        if (
-            skipDrawIndexCount === 0 &&
-            referencePath &&
-            existsSync(referencePath)
-        ) {
-            const captured = readFileSync(
-                join(outputDirectory, "screenshot.png"),
-            );
-            const golden = readFileSync(resolve(referencePath));
-            console.log(
-                captured.equals(golden)
-                    ? "Screenshot is byte-identical to the committed golden."
-                    : "Screenshot DIFFERS from the committed golden — the pose, environment, or pinned package changed.",
-            );
-        }
-    } finally {
-        await browser.close();
-        await new Promise<void>((done) => server.close(() => done()));
-    }
+            // Non-perturbation check: with no draw filter, the hooked
+            // render must stay byte-identical to the committed golden.
+            const referencePath = scene.parity?.reference.path;
+            if (
+                skipDrawIndexCount === 0 &&
+                referencePath &&
+                existsSync(referencePath)
+            ) {
+                const captured = readFileSync(
+                    join(outputDirectory, "screenshot.png"),
+                );
+                const golden = readFileSync(resolve(referencePath));
+                console.log(
+                    captured.equals(golden)
+                        ? "Screenshot is byte-identical to the committed golden."
+                        : "Screenshot DIFFERS from the committed golden — the pose, environment, or pinned package changed.",
+                );
+            }
+        },
+    );
 }

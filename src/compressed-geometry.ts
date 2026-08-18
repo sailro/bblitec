@@ -14,19 +14,21 @@
 //
 // An asset that uses neither extension is returned unchanged, so the pass
 // cannot churn the assets that do not need it.
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createContext, runInContext } from "node:vm";
 
+import {
+    GLB_BINARY_CHUNK as BINARY_CHUNK,
+    GLB_JSON_CHUNK as JSON_CHUNK,
+    GLB_MAGIC,
+    asObject,
+    type JsonRecord,
+} from "./gltf-document.js";
 import { readUpstreamPin } from "./upstream-source.js";
 
 const DRACO_EXTENSION = "KHR_draco_mesh_compression";
 const MESHOPT_EXTENSION = "EXT_meshopt_compression";
-
-const GLB_MAGIC = 0x46546c67;
-const JSON_CHUNK = 0x4e4f534a;
-const BINARY_CHUNK = 0x004e4942;
 
 const COMPONENT_FLOAT = 5126;
 const COMPONENT_UNSIGNED_INT = 5125;
@@ -39,21 +41,15 @@ const ACCESSOR_TYPES: Record<number, string> = {
     4: "VEC4",
 };
 
-type JsonRecord = Record<string, unknown>;
-
 interface GlbChunks {
     json: JsonRecord;
     binary: Buffer;
 }
 
+// Cast-only on purpose, unlike gltf-document's filtering asRecords: the
+// chunk rewriter trusts documents it just parsed or built itself.
 function asRecords(value: unknown): JsonRecord[] {
     return Array.isArray(value) ? (value as JsonRecord[]) : [];
-}
-
-function asRecord(value: unknown): JsonRecord | undefined {
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-        ? (value as JsonRecord)
-        : undefined;
 }
 
 function numberValue(value: unknown, fallback = 0): number {
@@ -395,8 +391,8 @@ export async function decompressGeometry(
     let decodedPrimitives = 0;
     for (const mesh of asRecords(json.meshes)) {
         for (const primitive of asRecords(mesh.primitives)) {
-            const extensions = asRecord(primitive.extensions);
-            const draco = asRecord(extensions?.[DRACO_EXTENSION]);
+            const extensions = asObject(primitive.extensions);
+            const draco = asObject(extensions?.[DRACO_EXTENSION]);
             if (!extensions || !draco) continue;
 
             const view = bufferViews[numberValue(draco.bufferView)];
@@ -411,9 +407,9 @@ export async function decompressGeometry(
                 start + numberValue(view.byteLength),
             );
 
-            const attributeMap = (asRecord(draco.attributes) ??
+            const attributeMap = (asObject(draco.attributes) ??
                 {}) as Record<string, number>;
-            const declared = (asRecord(primitive.attributes) ??
+            const declared = (asObject(primitive.attributes) ??
                 {}) as Record<string, number>;
             const componentCounts: Record<string, number> = {};
             for (const name of Object.keys(attributeMap)) {
@@ -508,7 +504,3 @@ export async function decompressGeometry(
     return writeGlb(json, built);
 }
 
-/** A stable digest of an asset, for logging which bytes were produced. */
-export function assetDigest(bytes: Uint8Array): string {
-    return createHash("sha256").update(bytes).digest("hex").slice(0, 12);
-}

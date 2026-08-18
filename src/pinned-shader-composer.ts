@@ -9,18 +9,17 @@
  * legitimate answers in the project's own rule: lower the pinned AST, or
  * execute the pinned code.
  *
- * This matters because the alternative is what the renderer currently carries:
- * a transcription of the composed fragment plus a hand-written composer that
- * splices extension arms in by text marker. Every arm that transcription misses
- * reads as a small systematic shading bias — the clearcoat base-F0 remap is one
- * that reached a published gate.
- *
- * Nothing here is wired into generation yet. It exists so the swap can be
- * staged against measurements rather than against a rewrite.
+ * This matters because the alternative was a transcription of the composed
+ * fragment spliced by text marker, and every arm a transcription misses reads
+ * as a small systematic shading bias — the clearcoat base-F0 remap reached a
+ * published gate that way before the swap. Production composition goes through
+ * `createPbrComposer` and `composeSceneStandardVariants`; this module owns
+ * the pinned imports and extraction helpers they and the lifted builtins
+ * share.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 
 /** The composer's output; field names are the pinned module's own. */
@@ -67,6 +66,124 @@ function pinnedLibraryRoot(): string {
     return library;
 }
 
+/**
+ * Reads a packaged module's text from the pinned library, synchronously.
+ *
+ * The WGSL the background and utility builtins lift ships as string literals
+ * inside compiled modules (raw imports carry no source-map entry), so the
+ * literal has to be read out of the packaged text the way the solid skybox
+ * already does. Synchronous because `lowerShaders` is.
+ */
+export function readPinnedLibraryModule(relativePath: string): string {
+    return readFileSync(join(pinnedLibraryRoot(), relativePath), "utf8");
+}
+
+/**
+ * Extracts one `const <name> = "...";` literal out of packaged module text.
+ * The bundler emits these as single-line double-quoted JavaScript strings, so
+ * the value is recovered by scanning to the closing quote and parsing it as
+ * JSON rather than by a regex that would have to model every escape.
+ */
+export function extractPackagedStringLiteral(
+    source: string,
+    name: string,
+): string {
+    const marker = `const ${name} = "`;
+    const start = source.indexOf(marker);
+    if (start < 0) {
+        throw new Error(
+            `Pinned packaged literal '${name}' was not found.`,
+        );
+    }
+    let index = start + marker.length;
+    let escaped = "";
+    while (index < source.length && source[index] !== '"') {
+        if (source[index] === "\\") {
+            escaped += source[index]! + (source[index + 1] ?? "");
+            index += 2;
+            continue;
+        }
+        escaped += source[index];
+        index += 1;
+    }
+    if (index >= source.length) {
+        throw new Error(
+            `Pinned packaged literal '${name}' is unterminated.`,
+        );
+    }
+    return JSON.parse(`"${escaped}"`) as string;
+}
+
+/**
+ * Extracts one `const <name> = \`...\`;` template literal out of packaged
+ * module text. Only substitution-free templates qualify — a `${` inside means
+ * the pin turned the constant into a builder, which is a contract change the
+ * caller must see rather than a string to guess at.
+ */
+export function extractPackagedTemplateLiteral(
+    source: string,
+    name: string,
+): string {
+    const marker = `const ${name} = \``;
+    const start = source.indexOf(marker);
+    if (start < 0) {
+        throw new Error(
+            `Pinned packaged template literal '${name}' was not found.`,
+        );
+    }
+    const end = source.indexOf("`", start + marker.length);
+    if (end < 0) {
+        throw new Error(
+            `Pinned packaged template literal '${name}' is unterminated.`,
+        );
+    }
+    const value = source.slice(start + marker.length, end);
+    if (value.includes("${") || value.includes("\\")) {
+        throw new Error(
+            `Pinned packaged template literal '${name}' is no longer a plain string.`,
+        );
+    }
+    return value;
+}
+
+/**
+ * Splits a lifted WGSL statement list into one statement per entry, keeping
+ * every byte of each statement. Statements end at `;` outside any brace or
+ * parenthesis nesting, or at a top-level `}` (an `if` or `for` block) that no
+ * `else` continues — so a pinned `if (...) { ... } else { ... }` chain stays
+ * one statement, and the `;`s inside a `for` header stay inside it.
+ */
+export function splitWgslStatements(body: string): string[] {
+    const pieces: string[] = [];
+    let braces = 0;
+    let parens = 0;
+    let start = 0;
+    for (let index = 0; index < body.length; index++) {
+        const character = body[index];
+        if (character === "(") parens++;
+        else if (character === ")") parens--;
+        else if (character === "{") braces++;
+        else if (character === "}") {
+            braces--;
+            if (
+                braces === 0 &&
+                parens === 0 &&
+                !/^\s*else\b/.test(body.slice(index + 1))
+            ) {
+                pieces.push(body.slice(start, index + 1));
+                start = index + 1;
+            }
+        } else if (character === ";" && braces === 0 && parens === 0) {
+            pieces.push(body.slice(start, index + 1));
+            start = index + 1;
+        }
+    }
+    pieces.push(body.slice(start));
+    return pieces
+        .map((piece) => piece.trim())
+        .filter((piece) => piece.length > 0);
+}
+
 /** Import a module from the pinned package by its `lib`-relative path. */
 export async function importPinnedModule<T>(
     relativePath: string,
@@ -74,6 +191,37 @@ export async function importPinnedModule<T>(
     const url = pathToFileURL(
         join(pinnedLibraryRoot(), relativePath),
     ).href;
+    return (await import(url)) as T;
+}
+
+/**
+ * Imports a pinned module with named module-local symbols also exported.
+ *
+ * Not everything the pin runs sits on its export surface — the DDS loader's
+ * `computeSH` is module-local — and transcribing an internal function is the
+ * drift the project rule exists to prevent. So the pinned module's own text
+ * is imported through a `data:` URL with an export appended for the internal
+ * symbols. Relative specifiers do not resolve from a `data:` URL, so they
+ * are rewritten to absolute URLs against the module's own directory first;
+ * everything that executes is still the pin's text.
+ */
+export async function importPinnedModuleWithExports<T>(
+    relativePath: string,
+    extraExports: readonly string[],
+): Promise<T> {
+    const modulePath = join(pinnedLibraryRoot(), relativePath);
+    const anchored = readFileSync(modulePath, "utf8").replace(
+        /(from\s*|import\()(["'])(\.\.?\/[^"']+)\2/g,
+        (_match, keyword: string, quote: string, specifier: string) =>
+            `${keyword}${quote}${
+                pathToFileURL(resolve(dirname(modulePath), specifier)).href
+            }${quote}`,
+    );
+    const augmented = `${anchored}\nexport { ${extraExports.join(", ")} };\n`;
+    const url = `data:text/javascript;base64,${Buffer.from(
+        augmented,
+        "utf8",
+    ).toString("base64")}`;
     return (await import(url)) as T;
 }
 
@@ -129,42 +277,6 @@ export function extractWgslFunction(
     );
 }
 
-/**
- * Extracts one top-level `const` declaration from composed WGSL, verbatim.
- *
- * The iridescence fragment's XYZ→Rec.709 matrix is the case that needs this:
- * it is nine literals a transcription can only get right by luck.
- */
-export function extractWgslConst(source: string, name: string): string {
-    const start = source.indexOf(`const ${name}`);
-    if (start < 0) {
-        throw new Error(
-            `Pinned composed WGSL declares no const '${name}'.`,
-        );
-    }
-    const end = source.indexOf(";", start);
-    if (end < 0) {
-        throw new Error(
-            `Pinned composed WGSL const '${name}' is unterminated.`,
-        );
-    }
-    return source.slice(start, end + 1);
-}
-
-/**
- * Extracts a named declaration, whichever kind the pin used.
- *
- * Callers name what they need, not how it happens to be spelled upstream — a
- * helper that becomes a `const` (or stops being one) then still resolves.
- */
-export function extractWgslDeclaration(
-    source: string,
-    name: string,
-): string {
-    return source.includes(`fn ${name}(`)
-        ? extractWgslFunction(source, name)
-        : extractWgslConst(source, name);
-}
 
 /**
  * Composes the pinned PBR shader for a template configuration and a set of
@@ -175,6 +287,13 @@ export function extractWgslDeclaration(
  * plausible: `createClearcoatFragment(..., hasIbl = true, ...)` declares `ibl`
  * and the composer refuses it without `createIblFragment`. That refusal is the
  * point — it is the pin stating a contract we would otherwise have to know.
+ *
+ * Production composition goes through `createPbrComposer` in
+ * `pinned-pbr-variants.ts`; this thinner entry exists for
+ * `test/pinned-shader-composer.test.ts`, which guards the pinned composer's
+ * own contracts (the F0-remap text, the dependency refusal) independently of
+ * the production path. Deliberately kept: it is the test's harness, not dead
+ * code.
  */
 export async function composePinnedPbrShader(
     templateConfig: Record<string, unknown> = {},

@@ -12,11 +12,20 @@ import type { CompiledShaderProgram } from "./compiler.js";
 import type { Feature } from "./compiler/types.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
 import { shaderMaterialPrograms } from "./shader-material-programs.js";
-import { emitUpstreamGenerated } from "./upstream-lower.js";
+import {
+    emitUpstreamGenerated,
+    readPinnedMaxLights,
+    type UpstreamEmitOptions,
+} from "./upstream-lower.js";
 import { emitAssetSpecializations } from "./asset-specializer.js";
+import {
+    featureActivationPath,
+    featureActivationRows,
+} from "./feature-activation.js";
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
 import { decompressGeometry } from "./compressed-geometry.js";
+import { glbJsonText } from "./gltf-document.js";
 import { packageDdsEnvironment } from "./dds-packager.js";
 import { packageHdrEnvironment } from "./hdr-packager.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
@@ -32,26 +41,21 @@ import {
 } from "./sprite-atlas-packager.js";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
-import { pinnedShaderHelpers } from "./pinned-pbr-variants.js";
-import { writePinnedPbrVariants } from "./pinned-pbr-variant-output.js";
 import { downloadCached } from "./asset-download-cache.js";
 import {
-    assertArmsCovered,
-    composeGltfMaterials,
-    composeRenderableVariants,
-    composeScenePbrVariants,
     gltfHasImageBasedLight,
     gltfLightKinds,
-    gltfMaterialCount,
-    gltfRenderableFeatures,
-    proceduralRenderableFeatures,
-    type PinnedRenderableVariant,
+    gltfLightNodeCount,
 } from "./pinned-material-arms.js";
 import {
-    pinnedSceneArms,
-    pinnedSingleLightTypes,
-} from "./pinned-scene-arms.js";
-import { pinnedMeshFeaturesFromPrimitive } from "./pinned-mesh-features.js";
+    babylonLights,
+    reachedDiffuseUv2,
+    reachedStandardBump,
+    reachedStandardLightLists,
+    reachedStandardLights,
+    type BabylonLight,
+} from "./babylon-asset-features.js";
+import { composeScenePipeline } from "./compose-pipeline.js";
 
 interface CliOptions {
     input: string;
@@ -152,7 +156,7 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
     mkdirSync(dirname(destination), { recursive: true });
 
     if (asset.source === "generated:pinned-ibl-brdf-lut") {
-        writeFileSync(destination, generateIblBrdfLutRgba16f());
+        writeFileSync(destination, await generateIblBrdfLutRgba16f());
         return;
     }
 
@@ -250,16 +254,13 @@ const optionalImageCodecs: ReadonlyArray<{
 function glbImages(
     bytes: Buffer,
 ): { mimeType?: string; uri?: string }[] {
-    if (bytes.length < 20 || bytes.readUInt32LE(0) !== 0x46546c67) {
+    const text = glbJsonText(bytes);
+    if (text === undefined) {
         return [];
     }
-    const jsonLength = bytes.readUInt32LE(12);
-    if (bytes.length < 20 + jsonLength) {
-        return [];
-    }
-    const document = JSON.parse(
-        bytes.subarray(20, 20 + jsonLength).toString("utf8"),
-    ) as { images?: { mimeType?: string; uri?: string }[] };
+    const document = JSON.parse(text) as {
+        images?: { mimeType?: string; uri?: string }[];
+    };
     return document.images ?? [];
 }
 
@@ -314,127 +315,6 @@ function reachedImageCodecs(
     ];
 }
 
-/**
- * How many Standard light slots the scene's materialized `.babylon` assets
- * ask for. The pinned template sizes its light array at generation time from
- * `MAX_LIGHTS`; native unrolls one slot per light instead, and the count is
- * knowable here because the loader only accepts point lights (`type: 0`) and
- * the asset is on disk before the emitters run.
- */
-interface BabylonLight {
-    type?: number;
-    includedOnlyMeshesIds?: unknown[];
-    excludedMeshesIds?: unknown[];
-}
-
-function babylonLights(
-    outputPath: string,
-    assets: CompileAsset[],
-): BabylonLight[] {
-    const result: BabylonLight[] = [];
-    for (const asset of assets) {
-        if (asset.kind !== "babylon") {
-            continue;
-        }
-        const materialized = resolve(outputPath, "assets", asset.output);
-        if (!existsSync(materialized)) {
-            continue;
-        }
-        const document = JSON.parse(
-            readFileSync(materialized, "utf8"),
-        ) as { lights?: BabylonLight[] };
-        result.push(...(document.lights ?? []));
-    }
-    return result;
-}
-
-/**
- * Whether any reached `.babylon` material authors its diffuse texture
- * against the second UV set. The specular and ambient slots always carried
- * that selection; a scene needs it on the diffuse slot only when its assets
- * ask for it, which Sponza's upper walls do.
- */
-function reachedDiffuseUv2(
-    outputPath: string,
-    assets: CompileAsset[],
-): boolean {
-    for (const asset of assets) {
-        if (asset.kind !== "babylon") {
-            continue;
-        }
-        const materialized = resolve(outputPath, "assets", asset.output);
-        if (!existsSync(materialized)) {
-            continue;
-        }
-        const document = JSON.parse(
-            readFileSync(materialized, "utf8"),
-        ) as {
-            materials?: { diffuseTexture?: { coordinatesIndex?: number } }[];
-        };
-        if (
-            (document.materials ?? []).some(
-                (material) =>
-                    material.diffuseTexture?.coordinatesIndex === 1,
-            )
-        ) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/**
- * Whether any reached `.babylon` material carries a bump map. The pinned
- * Standard material composes its normal-map fragment per material, so a
- * scene with none emits the loader, uniform block, shader and texture slot
- * it emitted before.
- */
-function reachedStandardBump(
-    outputPath: string,
-    assets: CompileAsset[],
-): boolean {
-    for (const asset of assets) {
-        if (asset.kind !== "babylon") {
-            continue;
-        }
-        const materialized = resolve(outputPath, "assets", asset.output);
-        if (!existsSync(materialized)) {
-            continue;
-        }
-        const document = JSON.parse(
-            readFileSync(materialized, "utf8"),
-        ) as { materials?: { bumpTexture?: unknown }[] };
-        if (
-            (document.materials ?? []).some(
-                (material) => material.bumpTexture,
-            )
-        ) {
-            return true;
-        }
-    }
-    return false;
-}
-
-function reachedStandardLights(lights: BabylonLight[]): number {
-    return lights.filter((light) => light.type === 0).length;
-}
-
-/**
- * Whether any reached light names the meshes it applies to. The pinned
- * engine keeps that as a per-mesh light set, which the Standard uniform
- * block only has to express for a scene whose assets declare one.
- */
-function reachedStandardLightLists(
-    lights: BabylonLight[],
-): boolean {
-    return lights.some(
-        (light) =>
-            light.type === 0 &&
-            ((light.includedOnlyMeshesIds ?? []).length > 0 ||
-                (light.excludedMeshesIds ?? []).length > 0),
-    );
-}
-
 function materializedAssetSource(
     source: string,
     inputPath: string,
@@ -478,6 +358,28 @@ async function main(): Promise<void> {
     await Promise.all(result.manifest.assets.map((asset) => materializeAsset(asset, inputPath, outputPath)));
     const specializationFeatures =
         emitAssetSpecializations(outputPath, result.manifest.assets);
+    if (specializationFeatures.eightInfluenceSkinning) {
+        // The pinned loader reads the second influence pair and skins eight
+        // influences (MSH_HAS_SKELETON_8); the generated loader reads four.
+        // The divergence is intentional and bounded — the second pair
+        // carries the small weight tail — so it is recorded here instead of
+        // refused, per the repository's adaptation policy.
+        result.manifest.adaptations.push({
+            id: "four-influence-skinning",
+            category: "rendering",
+            sourceSemantics:
+                "An asset carries JOINTS_1/WEIGHTS_1 and the pinned loader " +
+                "skins eight influences per vertex (MSH_HAS_SKELETON_8).",
+            nativeSemantics:
+                "The generated loader reads the first influence pair and " +
+                "skins four; the second pair's weights are dropped.",
+            risk: "medium",
+            validation: [
+                "scene 7 parity thresholds",
+                "asset-specializer tests",
+            ],
+        });
+    }
     tree.keep("upstream/gltf-specialization.json");
     if (specializationFeatures.imageBasedLighting) {
         const brdfAsset: CompileAsset = {
@@ -487,7 +389,7 @@ async function main(): Promise<void> {
         };
         writeFileSync(
             resolve(outputPath, "assets", brdfAsset.output),
-            generateIblBrdfLutRgba16f(),
+            await generateIblBrdfLutRgba16f(),
         );
         result.manifest.assets.push(brdfAsset);
     }
@@ -525,12 +427,20 @@ async function main(): Promise<void> {
         clearcoat:
             specializationFeatures.clearcoat ||
             result.manifest.features.includes("material:clearcoat"),
+        // The coat's base-F0 remap is composed for every clearcoat except a
+        // glTF one: `gltf-ext-clearcoat.ts` is the single caller passing
+        // `useF0Remap: false`. So it follows the scene-code setter and not
+        // the asset specializer's `KHR_materials_clearcoat` flag.
         clearcoatF0Remap: result.manifest.features.includes(
             "material:clearcoat-f0-remap",
         ),
         sheen:
             specializationFeatures.sheen ||
             result.manifest.features.includes("material:sheen"),
+        // The two pinned sheen models are composed, not switched at run time,
+        // so one fragment cannot serve both. A glTF KHR_materials_sheen
+        // material takes the albedo-scaling arm; `setPbrSheen` defaults to
+        // the legacy one and can ask for the other explicitly.
         sheenAlbedoScaling:
             specializationFeatures.sheen ||
             result.manifest.features.includes(
@@ -547,24 +457,26 @@ async function main(): Promise<void> {
             result.manifest.features.includes("renderer:transmission") ||
             specializationFeatures.assetTransmission,
     };
-    // Every glTF material the scene loads, composed through Babylon Lite's own
-    // pipeline. An arm it reaches that the emitted fragment does not carry is
-    // refused here, where it names the material, rather than shipping as a
-    // shading bias nothing points at.
-    // The scene arms a renderable can reach: the light modes the scene compiles
-    // support for, and — with an environment loaded, which is what turns tone
-    // mapping on upstream — both tone-mapping states. Generation cannot know how
-    // many lights will end up affecting a given mesh, so it composes the arms
-    // and the runtime selects the one its own light walk produces.
     // An asset's own KHR_lights_punctual lights are the scene's lights: the
     // pin's loader creates them exactly like scene code does, and every
     // consumer keyed on the light features -- the composed arms, the pinned
     // light writers, the generated-source table -- reads the one authority,
     // so the kinds the assets reach join the manifest here.
-    let assetLightsAdded = false;
+    // Which features the join added and the asset that carried each,
+    // recorded for the activation inventory: a feature already reached by
+    // scene source is deliberately not re-attributed to an asset.
+    const assetJoinedFeatures = new Map<string, string>();
+    let assetLightNodes: { count: number; asset: string } | undefined;
     for (const asset of result.manifest.assets) {
         if (asset.kind !== "gltf") continue;
         const assetPath = resolve(outputPath, "assets", asset.output);
+        // The pin grows MAX_LIGHTS from this count at run time; the frozen
+        // constant makes exceeding it a generation refusal instead
+        // (`emitUpstreamGenerated` checks it beside the pinned constant).
+        const lightNodeCount = gltfLightNodeCount(assetPath);
+        if (lightNodeCount > (assetLightNodes?.count ?? 0)) {
+            assetLightNodes = { count: lightNodeCount, asset: asset.output };
+        }
         const assetFeatures = gltfLightKinds(assetPath).map(
             (kind) => `light:${kind}` as Feature,
         );
@@ -576,11 +488,33 @@ async function main(): Promise<void> {
         for (const feature of assetFeatures) {
             if (!result.manifest.features.includes(feature)) {
                 result.manifest.features.push(feature);
-                assetLightsAdded = true;
+                assetJoinedFeatures.set(feature, asset.output);
             }
         }
     }
-    if (assetLightsAdded) {
+    // A `.babylon` asset's own lights are the scene's lights the same way a
+    // glTF's KHR_lights_punctual lights are: the generated loader fills
+    // point LightRecords (`type: 0` is the only kind it accepts), and the
+    // pinned lights block consumes them through `write_pinned_light`, whose
+    // per-kind writers are emitted only for the light features the scene
+    // reaches. Joining `light:point` here is what routes the point writer
+    // (and the pinned light matrix it indexes) into the generated tree.
+    for (const asset of result.manifest.assets) {
+        if (asset.kind !== "babylon") continue;
+        const materialized = resolve(outputPath, "assets", asset.output);
+        if (!existsSync(materialized)) continue;
+        const document = JSON.parse(
+            readFileSync(materialized, "utf8"),
+        ) as { lights?: BabylonLight[] };
+        if (
+            (document.lights ?? []).some((light) => light.type === 0) &&
+            !result.manifest.features.includes("light:point")
+        ) {
+            result.manifest.features.push("light:point");
+            assetJoinedFeatures.set("light:point", asset.output);
+        }
+    }
+    if (assetJoinedFeatures.size > 0) {
         // The features drive the generated-source table and the CMake
         // projection, both rendered at compile time; re-render them from the
         // same authorities so the joined features stay declared everywhere.
@@ -593,156 +527,29 @@ async function main(): Promise<void> {
             result.manifest.generatedSources,
         );
     }
-    const hasEnvironment = result.manifest.features.includes(
-        "environment:ibl",
-    );
-    const lightKinds = pinnedSingleLightTypes.filter((kind) =>
-        result.manifest.features.includes(`light:${kind}`)
-    );
-    const sceneArms = await pinnedSceneArms({
+    const {
+        hasEnvironment,
         lightKinds,
-        multiLight: lightKinds.length > 0,
-        noLight: true,
-        toneMapping: hasEnvironment ? [false, true] : [false],
-        environment: hasEnvironment,
-        fog: result.manifest.features.includes("renderer:fog"),
+        linearImageProcessing,
+        gltfAssets,
+        materialIndexBase,
+        renderableMeshFeatures,
+        pinnedVariants,
+        runtimeMeshFeatures,
+        standardComposition,
+        standardRenderableMeshFeatures,
+    } = await composeScenePipeline({
+        result,
+        outputPath,
+        specializationFeatures,
+        emittedArms,
+        tree,
     });
-    // The pin's enableSceneTransmission marks every material in the scene
-    // `_linearImageProcessing` (markPbrMaterialsLinear), so each composed
-    // fragment wraps its processing tail in `if(scene.vImageInfos.w>=0.0)`
-    // and the retargeted linear pass runs with w = -1.
-    const linearImageProcessing =
-        result.manifest.features.includes("renderer:transmission") ||
-        // Asset-carried KHR_materials_transmission enables the runtime's
-        // transmission exactly like the feature does (scene_core stamps
-        // `transmission_enabled` from the same disjunction), and the pin
-        // marks every material linear either way.
-        specializationFeatures.assetTransmission;
-    // The runtime keys the variant table by material handle, which is
-    // creation order: each glTF load appends its materials, and a scene
-    // material appends where its `createPbrMaterial` runs. Every reached
-    // scene creates its materials after every load, so the sequence is the
-    // assets' materials in load order followed by the scene's; a material
-    // created before a later load would interleave, and stays a named error.
-    const composedVariants: PinnedRenderableVariant[] = [];
-    const gltfAssets = result.manifest.assets.filter(
-        (asset) => asset.kind === "gltf",
-    );
-    // The mesh half of the variant key, per runtime mesh handle: each glTF
-    // load appends its renderables in the pinned loader's node-order walk,
-    // and each scene-code builder appends one mesh of the fixed procedural
-    // attribute set, in the same creation order the runtime hands out
-    // handles. Computed before composition because a scene-code material can
-    // be assigned to any of these renderables, so its variants compose over
-    // every distinct set here.
-    const renderableMeshFeatures: number[] = [];
-    for (const asset of gltfAssets) {
-        renderableMeshFeatures.push(
-            ...(await gltfRenderableFeatures(
-                resolve(outputPath, "assets", asset.output),
-            )),
-        );
-    }
-    for (const mesh of result.manifest.sceneMeshes) {
-        if (mesh.gltfAssetsBefore !== gltfAssets.length) {
-            throw new Error(
-                "A scene-code mesh created before a later glTF load " +
-                    "would interleave the renderable key; no scene " +
-                    "reaches this yet.",
-            );
-        }
-        if (mesh.kind === "from-data") {
-            // The recorded streams, walked exactly the way a glTF primitive
-            // is: normals are a required argument, so the flat-normal arm is
-            // unreachable from this builder.
-            renderableMeshFeatures.push(
-                await pinnedMeshFeaturesFromPrimitive({
-                    attributes: {
-                        POSITION: 0,
-                        NORMAL: 0,
-                        TEXCOORD_0: 0,
-                        ...(mesh.hasUv2 ? { TEXCOORD_1: 0 } : {}),
-                        ...(mesh.hasTangents ? { TANGENT: 0 } : {}),
-                        ...(mesh.hasColors ? { COLOR_0: 0 } : {}),
-                    },
-                }),
-            );
-            continue;
-        }
-        renderableMeshFeatures.push(await proceduralRenderableFeatures());
-    }
-    let materialIndexBase = 0;
-    for (const asset of gltfAssets) {
-        const path = resolve(outputPath, "assets", asset.output);
-        const composed = await composeGltfMaterials(path, {
-            linearImageProcessing,
-        });
-        assertArmsCovered(composed, emittedArms, asset.output);
-        const variants = await composeRenderableVariants(
-            path,
-            sceneArms,
-            materialIndexBase,
-            { linearImageProcessing },
-            // A PBR mesh drawn in a geometry-output task resolves the pin's
-            // own MRT arm for that task's attachment list.
-            result.manifest.geometryOutputTasks.map((task, index) => ({
-                index,
-                attachments: task.attachments,
-                emitColor: task.emitColor,
-            })),
-        );
-        composedVariants.push(...variants);
-        materialIndexBase += gltfMaterialCount(path);
-    }
-    if (result.manifest.scenePbrMaterials.length > 0) {
-        for (const material of result.manifest.scenePbrMaterials) {
-            if (material.gltfAssetsBefore !== gltfAssets.length) {
-                throw new Error(
-                    "A scene-code PBR material created before a later glTF " +
-                        "load would interleave the variant table's " +
-                        "creation-order key; no scene reaches this yet.",
-                );
-            }
-        }
-        composedVariants.push(
-            ...(await composeScenePbrVariants(
-                result.manifest.scenePbrMaterials,
-                sceneArms,
-                materialIndexBase,
-                [
-                    ...new Set([
-                        ...renderableMeshFeatures,
-                        await proceduralRenderableFeatures(),
-                    ]),
-                ],
-                { linearImageProcessing },
-            )),
-        );
-    }
-    // The pin's own composed stages, one file per distinct variant. These are
-    // the artifacts that replace `templates/renderer/pbr.frag.wgsl`: the
-    // renderer selects per-material behaviour from uniform lanes inside one
-    // fragment where Babylon composes a fragment per feature set, and this is
-    // that set, written by the pin rather than transcribed here.
-    const pinnedVariants = writePinnedPbrVariants(tree, composedVariants);
-    // Scene code can keep creating meshes after registration -- the runtime
-    // sweep spawns per-frame boxes from one compiled call site -- so handles
-    // past the static table take this fallback when every scene-code mesh
-    // shares one attribute set, and refuse otherwise.
-    const sceneMeshFeatureValues = new Set(
-        renderableMeshFeatures.slice(
-            renderableMeshFeatures.length -
-                result.manifest.sceneMeshes.length,
-        ),
-    );
-    const runtimeMeshFeatures =
-        result.manifest.sceneMeshes.length === 0
-            ? await proceduralRenderableFeatures()
-            : sceneMeshFeatureValues.size === 1
-                ? [...sceneMeshFeatureValues][0]!
-                : undefined;
-    emitUpstreamGenerated(outputPath, result.manifest.features, {
+    // Named rather than inline so the activation inventory below records
+    // the exact values the emitters consumed, not a restatement of them.
+    const emitOptions: UpstreamEmitOptions = {
         idDiagnostics: options.idDiagnostics,
+        ...(assetLightNodes !== undefined ? { assetLightNodes } : {}),
         shaderPrograms,
         geometryOutputTasks: result.manifest.geometryOutputTasks,
         gpuDeformation:
@@ -750,7 +557,13 @@ async function main(): Promise<void> {
             result.manifest.features.includes(
                 "mesh:morph-targets",
             ),
-        morphStorage: specializationFeatures.morphStorage,
+        animatedWorldBounds: specializationFeatures.animatedWorldBounds,
+        // Scene-code morph targets join the storage arm: the pinned morph
+        // fragment (`morph-fragment-core`) reads its deltas and weights
+        // from storage buffers, and with the transcribed standard fragment
+        // retired there is no attribute-lane consumer left for them.
+        morphStorage: specializationFeatures.morphStorage ||
+            result.manifest.features.includes("mesh:morph-targets"),
         nonTrianglePrimitives:
             specializationFeatures.nonTrianglePrimitives,
         nodeVisibility: specializationFeatures.nodeVisibility,
@@ -784,24 +597,22 @@ async function main(): Promise<void> {
             result.manifest.features.includes(
                 "mesh:thin-instances-dynamic",
             ),
-        multiLight:
-            specializationFeatures.multiLight,
+        punctualLights:
+            specializationFeatures.punctualLights,
         clearcoat: emittedArms.clearcoat,
         sheen: emittedArms.sheen,
-        // The two pinned sheen models are composed, not switched at run time,
-        // so one fragment cannot serve both. A glTF KHR_materials_sheen
-        // material takes the albedo-scaling arm; `setPbrSheen` defaults to
-        // the legacy one and can ask for the other explicitly.
-        sheenAlbedoScaling: emittedArms.sheenAlbedoScaling,
-        // The coat's base-F0 remap is composed for every clearcoat except a
-        // glTF one: `gltf-ext-clearcoat.ts` is the single caller passing
-        // `useF0Remap: false`. So it follows the scene-code setter and not
-        // the asset specializer's `KHR_materials_clearcoat` flag.
-        clearcoatF0Remap: emittedArms.clearcoatF0Remap,
-        // Taken from a real composition rather than transcribed, so the coat's
-        // formulas are the pin's own text under the pin's own names.
-        pinnedHelpers: await pinnedShaderHelpers(),
         pinnedVariants,
+        ...(standardComposition !== undefined
+            ? {
+                pinnedStandardVariants: standardComposition.variants,
+                pinnedStandardSelectors: standardComposition.selectors,
+                standardRenderableMeshFeatures:
+                    standardRenderableMeshFeatures ?? [],
+                ...(runtimeMeshFeatures !== undefined
+                    ? { standardRuntimeMeshFeatures: runtimeMeshFeatures }
+                    : {}),
+            }
+            : {}),
         // The runtime's material-handle count: the assets' materials plus
         // every scene-code creation of any family, since handles are
         // creation-ordered across families.
@@ -814,7 +625,13 @@ async function main(): Promise<void> {
         iridescence: emittedArms.iridescence,
         dispersion: emittedArms.dispersion,
         occlusionUv2: emittedArms.occlusionUv2,
-    }, tree);
+    };
+    emitUpstreamGenerated(
+        outputPath,
+        result.manifest.features,
+        emitOptions,
+        tree,
+    );
     tree.write("main.cpp", result.cpp);
     const imageCodecs = reachedImageCodecs(
         outputPath,
@@ -842,6 +659,45 @@ ${imageCodecLines}
                 source: result.manifest.source,
                 adaptations: result.manifest.adaptations,
             },
+            null,
+            2,
+        )}\n`,
+    );
+    // The activation inventory: one row per unit across every mechanism
+    // generation used — runtime features, capability defines, codecs,
+    // emit options, composition, and the generation-time refusals — with
+    // the concrete reason for this scene and the pinned provenance each
+    // mirrors, built from the same values the emitters above consumed.
+    tree.write(
+        featureActivationPath,
+        `${JSON.stringify(
+            featureActivationRows({
+                features: result.manifest.features,
+                featureSites: result.manifest.featureSites,
+                assetJoinedFeatures,
+                specialization: specializationFeatures,
+                emit: emitOptions,
+                transmission: emittedArms.transmission,
+                imageCodecs,
+                gltfAssetNames: gltfAssets.map((asset) => asset.output),
+                pinnedMaxLights: readPinnedMaxLights(),
+                interleave: {
+                    sceneMeshGltfAssetsBefore:
+                        result.manifest.sceneMeshes.map(
+                            (mesh) => mesh.gltfAssetsBefore,
+                        ),
+                    scenePbrMaterialGltfAssetsBefore:
+                        result.manifest.scenePbrMaterials.map(
+                            (material) => material.gltfAssetsBefore,
+                        ),
+                    gltfAssetCount: gltfAssets.length,
+                },
+                composition: {
+                    lightKinds,
+                    toneMappingArms: hasEnvironment,
+                    linearImageProcessing,
+                },
+            }),
             null,
             2,
         )}\n`,

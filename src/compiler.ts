@@ -1,12 +1,72 @@
 import ts from "typescript";
+import { sanitizeCppIdentifier } from "./cpp-literals.js";
+import {
+    compileAdaptations,
+    type AdaptationContext,
+} from "./compiler/adaptations.js";
 import {
     emitPropertyAssignment,
     type AssignmentContext,
 } from "./compiler/assignments.js";
 import {
+    registerAsset,
+    registerSpriteAtlasAsset,
+    resolveBundledAsset,
+    type AssetRegistryContext,
+} from "./compiler/assets.js";
+import {
+    BrowserErasure,
+    type BrowserErasureContext,
+} from "./compiler/browser-erasure.js";
+import {
+    compileEnvironmentOptions,
+    compileDdsEnvironmentOptions,
+    compileHdrEnvironmentOptions,
+    type AssetOptionContext,
+} from "./compiler/intrinsics/asset-options.js";
+import {
+    compileRenderTargetOptions,
+    compileRenderTaskOptions,
+    compileGeometryTaskOptions,
+    compileCopyTaskOptions,
+    compileSceneDefaultRenderTask,
+    geometryEnumMember,
+    type EngineOptionContext,
+} from "./compiler/intrinsics/engine-options.js";
+import {
+    compilePbrMaterialOptions,
+    compileGridMaterialOptions,
+    compileClearCoatOptions,
+    compileSheenOptions,
+    type MaterialOptionContext,
+} from "./compiler/intrinsics/material-options.js";
+import {
+    compileBoxOptions,
+    compileGroundOptions,
+    compilePlaneOptions,
+    compileSphereOptions,
+    compileTorusOptions,
+    type MeshOptionContext,
+} from "./compiler/intrinsics/mesh-options.js";
+import {
     compileRegisteredIntrinsic,
     type IntrinsicContext,
 } from "./compiler/intrinsics/registry.js";
+import {
+    validateObjectProperties,
+} from "./compiler/option-helpers.js";
+import {
+    compilePropertyAnimationClip,
+    compilePropertyAnimationGroupOptions,
+    type PropertyAnimationContext,
+} from "./compiler/property-animation.js";
+import {
+    compileShaderMaterialOptions,
+    compileShaderUniformComponents,
+    reachedShaderProgram,
+    resolveShaderUniform,
+    type ShaderMaterialContext,
+} from "./compiler/shader-material.js";
 import {
     DataLowerer,
     type DataLoweringContext,
@@ -15,6 +75,10 @@ import {
     DataTypeRegistry,
     type DataType,
 } from "./compiler/data-types.js";
+import {
+    ExpressionLowerer,
+    type ExpressionContext,
+} from "./compiler/expressions.js";
 import {
     NativeFunctionLowerer,
     type NativeFunctionContext,
@@ -26,9 +90,8 @@ import {
     readProperty,
     type PropertyContext,
 } from "./compiler/properties.js";
-import {
-    compileImmediatePromise,
-    type PromiseLoweringContext,
+import type {
+    PromiseLoweringContext,
 } from "./compiler/promises.js";
 import {
     CompilerSymbols,
@@ -49,7 +112,6 @@ import type {
     CompileOptions,
     CompileResult,
     CompiledShaderProgram,
-    CompiledShaderUniformDefault,
     Feature,
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
@@ -63,32 +125,18 @@ import type {
 } from "./compiler/types.js";
 export type {
     CompileAsset,
-    CompileManifest,
     CompileOptions,
     CompileResult,
     CompiledShaderProgram,
-    CompiledShaderUniformDefault,
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
     ShaderMaterialVariantName,
 } from "./compiler/types.js";
-import type { CompileAdaptation } from "./fidelity.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import {
-    lowerWgslShaderProgram,
-    type ShaderIrProgram,
-} from "./shader-ir.js";
-import {
     shaderMaterialPrograms,
-    shaderUniformValueLayout,
 } from "./shader-material-programs.js";
-import {
-    findRepositoryRoot,
-    readUpstreamPin,
-} from "./upstream-source.js";
-import { spriteAtlasAssetSource } from "./sprite-atlas-packager.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
-import { dirname, relative, resolve, sep } from "node:path";
 
 const featureSources: Record<Feature, string[]> = {
     "animation:property": [],
@@ -141,11 +189,6 @@ const featureSources: Record<Feature, string[]> = {
 };
 
 const featureOrder = Object.keys(featureSources) as Feature[];
-
-function basenameWithoutExtension(name: string): string {
-    const dot = name.lastIndexOf(".");
-    return dot > 0 ? name.slice(0, dot) : name;
-}
 
 export class CompileError extends Error {
     public readonly fileName: string;
@@ -212,21 +255,33 @@ export function compileSource(source: string, options: CompileOptions = {}): Com
 class Compiler
     implements
         IntrinsicContext,
+        AdaptationContext,
+        AssetOptionContext,
+        AssetRegistryContext,
         AssignmentContext,
+        BrowserErasureContext,
         DataLoweringContext,
+        EngineOptionContext,
+        ExpressionContext,
+        MaterialOptionContext,
+        MeshOptionContext,
         NativeFunctionContext,
         PromiseLoweringContext,
+        PropertyAnimationContext,
         PropertyContext,
+        ShaderMaterialContext,
         StatementLoweringContext,
         UserFunctionContext {
-    private readonly symbols: CompilerSymbols;
-    private readonly evaluator: StaticEvaluator;
+    public readonly symbols: CompilerSymbols;
+    public readonly evaluator: StaticEvaluator;
     private readonly statements = new StatementLowerer();
-    private readonly userFunctions: UserFunctionLowerer;
+    public readonly userFunctions: UserFunctionLowerer;
     public readonly dataTypes: DataTypeRegistry;
     public readonly dataLowerer: DataLowerer;
-    private readonly classLowerer: ClassLowerer;
-    private readonly nativeFunctions: NativeFunctionLowerer;
+    public readonly classLowerer: ClassLowerer;
+    public readonly nativeFunctions: NativeFunctionLowerer;
+    private readonly browserErasure: BrowserErasure;
+    private readonly expressions: ExpressionLowerer;
     private readonly nativeFunctionPrototypes: string[] =
         [];
     private readonly nativeFunctionDefinitions: string[] =
@@ -235,14 +290,14 @@ class Compiler
         | { kind: "native"; type: DataType | "void" }
         | { kind: "inline"; wrapped: boolean }
     > = [];
-    private jsDataReached = false;
-    private jsRandomReached = false;
+    public jsDataReached = false;
+    public jsRandomReached = false;
     private readonly staticConstants = new Map<
         ts.Symbol,
         ts.Expression
     >();
     private readonly sourceCppNames = new Set<string>();
-    private readonly variableScopes: Array<
+    public readonly variableScopes: Array<
         Map<
             ts.Symbol,
             { name: string; value: Value }
@@ -250,29 +305,30 @@ class Compiler
     > = [new Map()];
     private readonly cppNamePrefixes: string[] = [""];
     private readonly features = new Set<Feature>(["core"]);
-    private readonly assets = new Map<string, CompileAsset>();
-    private readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
+    private readonly featureSites = new Map<Feature, string>();
+    public readonly assets = new Map<string, CompileAsset>();
+    public readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
     private thisInstance: Value | undefined;
     private readonly classInstances = new Map<Value, ts.ClassDeclaration>();
     private readonly body: string[] = [];
-    private readonly erasedBrowserExpressions = new Set<number>();
-    private readonly erasedBrowserInstrumentation = new Set<number>();
-    private readonly unwrappedAwaitExpressions = new Set<number>();
-    private readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
-    private readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
+    public readonly erasedBrowserExpressions = new Set<number>();
+    public readonly erasedBrowserInstrumentation = new Set<number>();
+    public readonly unwrappedAwaitExpressions = new Set<number>();
+    public readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
+    public readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
     private readonly sceneMeshes: SceneMeshManifest[] = [];
     private sceneMaterialCount = 0;
-    private hasMainEntry = false;
+    public hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
     private indentLevel = 2;
     private temporaryIndex = 0;
-    private defaultRenderTaskAdapted = false;
+    public defaultRenderTaskAdapted = false;
 
     public constructor(
         private readonly program: ts.Program,
-        private readonly sourceFile: ts.SourceFile,
+        public readonly sourceFile: ts.SourceFile,
         public readonly checker: ts.TypeChecker,
-        private readonly options: ResolvedCompileOptions,
+        public readonly options: ResolvedCompileOptions,
     ) {
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions =
@@ -285,6 +341,8 @@ class Compiler
         this.classLowerer = new ClassLowerer(this);
         this.nativeFunctions =
             new NativeFunctionLowerer(this);
+        this.browserErasure = new BrowserErasure(this);
+        this.expressions = new ExpressionLowerer(this);
         this.evaluator = new StaticEvaluator(
             this.staticConstants,
             (identifier) =>
@@ -319,6 +377,15 @@ class Compiler
         }
 
         const features = featureOrder.filter((feature) => this.features.has(feature));
+        // Emitted in `features` order so the parallel record serializes
+        // deterministically beside the array it annotates.
+        const featureSites: Record<string, string> = {};
+        for (const feature of features) {
+            const site = this.featureSites.get(feature);
+            if (site !== undefined) {
+                featureSites[feature] = site;
+            }
+        }
         // Two features can name the same PAL translation unit (the sprite
         // and PBR renderers share one), and CMake must list it once.
         const runtimeSources = [
@@ -338,6 +405,7 @@ class Compiler
             manifest: {
                 source: this.options.fileName,
                 features,
+                featureSites,
                 runtimeSources,
                 generatedSources,
                 assets: [...this.assets.values()],
@@ -353,7 +421,7 @@ class Compiler
                             ),
                     ),
                 geometryOutputTasks: this.geometryOutputTasks,
-                adaptations: this.compileAdaptations(features),
+                adaptations: compileAdaptations(this, features),
                 scenePbrMaterials: this.scenePbrMaterials,
                 sceneMaterialCount: this.sceneMaterialCount,
                 sceneMeshes: this.sceneMeshes,
@@ -963,420 +1031,9 @@ class Compiler
     }
 
     public compileValue(expression: ts.Expression): Value {
-        const unwrapped = this.unwrap(expression);
-
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.QuestionQuestionToken
-        ) {
-            return this.compileValue(
-                this.evaluator.resolveNullish(unwrapped),
-            );
-        }
-        if (
-            unwrapped.kind === ts.SyntaxKind.ThisKeyword
-        ) {
-            const instance = this.activeThis();
-            if (!instance) {
-                this.fail(
-                    unwrapped,
-                    "'this' is only reached inside a class constructor or method.",
-                );
-            }
-            return instance;
-        }
-        if (ts.isIdentifier(unwrapped)) {
-            const value = this.lookupOptional(unwrapped);
-            if (value) {
-                return value;
-            }
-            const resolved =
-                this.resolveStaticExpression(unwrapped);
-            if (resolved !== unwrapped) {
-                return this.compileValue(resolved);
-            }
-            return this.lookup(unwrapped);
-        }
-        if (ts.isPropertyAccessExpression(unwrapped)) {
-            const canvasSize =
-                this.canvasSizeValue(unwrapped);
-            if (canvasSize) {
-                return canvasSize;
-            }
-            const data = this.dataLowerer.compileDataPath(
-                unwrapped,
-                "read",
-            );
-            if (data) {
-                return data;
-            }
-            return this.compilePropertyAccess(unwrapped);
-        }
-        if (ts.isNewExpression(unwrapped)) {
-            const constructed =
-                this.dataLowerer.compileNewExpression(
-                    unwrapped,
-                );
-            if (constructed) {
-                return constructed;
-            }
-            const classDeclaration =
-                this.classLowerer.resolveClass(unwrapped);
-            if (classDeclaration) {
-                const instance =
-                    this.classLowerer.construct(
-                        unwrapped,
-                        classDeclaration,
-                    );
-                this.registerClassInstance(
-                    instance,
-                    classDeclaration,
-                );
-                return instance;
-            }
-            this.fail(
-                unwrapped,
-                "Unsupported constructor expression.",
-            );
-        }
-        if (ts.isElementAccessExpression(unwrapped)) {
-            const data = this.dataLowerer.compileDataPath(
-                unwrapped,
-                "read",
-            );
-            if (data) {
-                return data;
-            }
-            const owner = this.compileValue(
-                unwrapped.expression,
-            );
-            if (owner.kind === "camera-world-matrix") {
-                const index = this.compileValue(
-                    unwrapped.argumentExpression,
-                );
-                if (
-                    index.kind !== "number" ||
-                    index.staticNumber === undefined ||
-                    ![12, 13, 14].includes(
-                        index.staticNumber,
-                    )
-                ) {
-                    this.fail(
-                        unwrapped.argumentExpression,
-                        "Reached camera world-matrix access supports translation indices 12-14.",
-                    );
-                }
-                // The pinned `getCameraPosition` reads these three back out
-                // of the camera's float32 world matrix, so the rounded
-                // stored value is what a scene observes -- not the double
-                // the eye was composed at.
-                const element = index.staticNumber as
-                    | 12
-                    | 13
-                    | 14;
-                return {
-                    kind: "number",
-                    cpp: `bbl::upstream::camera_world_matrix(${this.requireEngine(owner, unwrapped)}.cameras[${owner.cpp}.value])[${element}]`,
-                    ...(owner.engineCpp
-                        ? { engineCpp: owner.engineCpp }
-                        : {}),
-                };
-            }
-            if (owner.kind !== "tuple") {
-                this.fail(
-                    unwrapped.expression,
-                    `Element access is not supported for ${owner.kind}.`,
-                );
-            }
-            const index = this.compileValue(
-                unwrapped.argumentExpression,
-            );
-            if (
-                index.kind !== "number" ||
-                index.staticNumber === undefined ||
-                !Number.isInteger(index.staticNumber)
-            ) {
-                this.fail(
-                    unwrapped.argumentExpression,
-                    "Static tuple access requires an integer index.",
-                );
-            }
-            const value =
-                owner.tupleElements?.[index.staticNumber];
-            if (!value) {
-                this.fail(
-                    unwrapped,
-                    `Tuple index ${index.staticNumber} is out of range.`,
-                );
-            }
-            return value;
-        }
-        if (ts.isCallExpression(unwrapped)) {
-            return this.compileCall(unwrapped);
-        }
-        if (ts.isConditionalExpression(unwrapped)) {
-            const whenTrue = this.compileValue(
-                unwrapped.whenTrue,
-            );
-            const whenFalse = this.compileValue(
-                unwrapped.whenFalse,
-            );
-            // A tuple value is a compile-time list of element values with
-            // no native expression of its own, so selecting between two
-            // tuples is selecting element by element. Same arity is the
-            // condition for that to be the same thing.
-            if (
-                whenTrue.kind === "tuple" &&
-                whenFalse.kind === "tuple"
-            ) {
-                const trueElements =
-                    whenTrue.tupleElements ?? [];
-                const falseElements =
-                    whenFalse.tupleElements ?? [];
-                if (
-                    trueElements.length !==
-                    falseElements.length
-                ) {
-                    this.fail(
-                        unwrapped,
-                        "Conditional tuple branches must have the same length.",
-                    );
-                }
-                const condition = this.compileCondition(
-                    unwrapped.condition,
-                );
-                return {
-                    kind: "tuple",
-                    cpp: "",
-                    tupleElements: trueElements.map(
-                        (element, index) =>
-                            this.selectValue(
-                                condition,
-                                element,
-                                falseElements[index]!,
-                                unwrapped,
-                            ),
-                    ),
-                };
-            }
-            return this.selectValue(
-                this.compileCondition(unwrapped.condition),
-                whenTrue,
-                whenFalse,
-                unwrapped,
-            );
-        }
-        if (ts.isArrayLiteralExpression(unwrapped)) {
-            return {
-                kind: "tuple",
-                cpp: "",
-                tupleElements: unwrapped.elements.map(
-                    (element) =>
-                        this.compileValue(element),
-                ),
-            };
-        }
-        if (ts.isObjectLiteralExpression(unwrapped)) {
-            const properties: Record<string, Value> = {};
-            const methods: Record<
-                string,
-                | ts.Identifier
-                | ts.ArrowFunction
-                | ts.FunctionExpression
-            > = {};
-            const getters: Record<
-                string,
-                ts.GetAccessorDeclaration
-            > = {};
-            for (const property of unwrapped.properties) {
-                if (
-                    ts.isGetAccessorDeclaration(property)
-                ) {
-                    const name = this.propertyName(
-                        property.name,
-                    );
-                    if (!name) {
-                        this.fail(
-                            property.name,
-                            "Static record properties require literal names.",
-                        );
-                    }
-                    getters[name] = property;
-                    continue;
-                }
-                if (ts.isPropertyAssignment(property)) {
-                    const name = this.propertyName(
-                        property.name,
-                    );
-                    if (!name) {
-                        this.fail(
-                            property.name,
-                            "Static record properties require literal names.",
-                        );
-                    }
-                    const initializer = this.unwrap(
-                        property.initializer,
-                    );
-                    if (
-                        ts.isIdentifier(initializer) &&
-                        this.namesLocalFunction(initializer)
-                    ) {
-                        methods[name] = initializer;
-                        continue;
-                    }
-                    if (
-                        ts.isArrowFunction(initializer) ||
-                        ts.isFunctionExpression(initializer)
-                    ) {
-                        methods[name] = initializer;
-                        continue;
-                    }
-                    properties[name] = this.compileValue(
-                        property.initializer,
-                    );
-                } else if (
-                    ts.isShorthandPropertyAssignment(
-                        property,
-                    )
-                ) {
-                    if (
-                        this.namesLocalFunction(
-                            property.name,
-                        )
-                    ) {
-                        methods[property.name.text] =
-                            property.name;
-                        continue;
-                    }
-                    properties[property.name.text] =
-                        this.compileValue(property.name);
-                } else {
-                    this.fail(
-                        property,
-                        "Static records support property assignments, getters, and properties naming a local function.",
-                    );
-                }
-            }
-            const closes =
-                Object.keys(methods).length > 0 ||
-                Object.keys(getters).length > 0;
-            return {
-                kind: "record",
-                cpp: "",
-                recordProperties: properties,
-                recordMethods: methods,
-                recordGetters: getters,
-                // Only a record with code in it needs its scope: a
-                // plain property already holds a resolved value.
-                ...(closes
-                    ? {
-                          recordScopes: [
-                              ...this.variableScopes,
-                          ],
-                      }
-                    : {}),
-            };
-        }
-        if (
-            ts.isStringLiteral(unwrapped) ||
-            ts.isNoSubstitutionTemplateLiteral(unwrapped) ||
-            ts.isTemplateExpression(unwrapped)
-        ) {
-            const value =
-                this.compileStringLiteral(unwrapped);
-            return {
-                kind: "string",
-                cpp: this.cppString(value),
-                staticString: value,
-            };
-        }
-        if (this.isNumberExpression(unwrapped)) {
-            const staticNumber =
-                ts.isNumericLiteral(unwrapped)
-                    ? Number(unwrapped.text)
-                    : undefined;
-            return {
-                kind: "number",
-                cpp: this.compileNumber(unwrapped),
-                ...(staticNumber === undefined
-                    ? {}
-                    : { staticNumber }),
-            };
-        }
-        if (this.evaluator.isBooleanExpression(unwrapped)) {
-            return {
-                kind: "boolean",
-                cpp: this.compileBoolean(unwrapped),
-            };
-        }
-        // A comparison in value position is the same expression a
-        // condition position already lowers; only where it lands differs.
-        if (
-            this.evaluator.isComparisonExpression(unwrapped)
-        ) {
-            return {
-                kind: "boolean",
-                cpp: this.compileCondition(unwrapped),
-            };
-        }
-        if (this.isBrowserOnlyExpression(unwrapped)) {
-            const browserValue =
-                this.evaluateBrowserValue(unwrapped);
-            return {
-                kind: "browser",
-                cpp: "",
-                ...(browserValue
-                    ? { browserValue }
-                    : {}),
-            };
-        }
-
-        this.fail(unwrapped, `Unsupported value expression: ${ts.SyntaxKind[unwrapped.kind]}.`);
+        return this.expressions.compileValue(expression);
     }
-
-    /**
-     * `condition ? whenTrue : whenFalse` for two already-compiled values.
-     * Both branches must name the same kind of native expression, since
-     * the result has to be one expression the caller can use.
-     */
-    private selectValue(
-        condition: string,
-        whenTrue: Value,
-        whenFalse: Value,
-        node: ts.Node,
-    ): Value {
-        if (
-            whenTrue.kind !== whenFalse.kind ||
-            whenTrue.cpp.length === 0 ||
-            whenFalse.cpp.length === 0 ||
-            (whenTrue.engineCpp &&
-                whenFalse.engineCpp &&
-                whenTrue.engineCpp !== whenFalse.engineCpp)
-        ) {
-            this.fail(
-                node,
-                "Conditional expressions require matching native value branches.",
-            );
-        }
-        const conditional: Value = {
-            ...whenTrue,
-            cpp: `(${condition} ? ${whenTrue.cpp} : ${whenFalse.cpp})`,
-        };
-        if (
-            whenTrue.staticNumber !== whenFalse.staticNumber
-        ) {
-            delete conditional.staticNumber;
-        }
-        if (
-            whenTrue.staticString !== whenFalse.staticString
-        ) {
-            delete conditional.staticString;
-        }
-        return conditional;
-    }
-
-    private compilePropertyAccess(expression: ts.PropertyAccessExpression): Value {
+    public compilePropertyAccess(expression: ts.PropertyAccessExpression): Value {
         const ownerExpression = this.unwrap(
             expression.expression,
         );
@@ -1451,615 +1108,62 @@ class Compiler
         );
     }
 
-    private compileCall(call: ts.CallExpression): Value {
-        const promise = compileImmediatePromise(
+    public compileRegisteredIntrinsic(
+        importedName: string,
+        call: ts.CallExpression,
+    ): Value | undefined {
+        return compileRegisteredIntrinsic(
             this,
+            importedName,
             call,
-        );
-        if (promise) {
-            return promise;
-        }
-        const callee = this.unwrap(call.expression);
-        if (ts.isPropertyAccessExpression(callee)) {
-            const math =
-                this.dataLowerer.compileMathCall(call);
-            if (math) {
-                return math;
-            }
-            const method =
-                this.dataLowerer.compileDataMethodCall(
-                    call,
-                );
-            if (method) {
-                return method;
-            }
-            // A method on a constructed instance inlines with `this`
-            // bound to that instance's field record.
-            const receiver = this.unwrap(callee.expression);
-            if (
-                ts.isIdentifier(receiver) ||
-                receiver.kind === ts.SyntaxKind.ThisKeyword
-            ) {
-                const instance = ts.isIdentifier(receiver)
-                    ? this.lookupOptional(receiver)
-                    : this.activeThis();
-                const declaration = instance
-                    ? this.classOf(instance)
-                    : undefined;
-                // A record property naming a local function inlines at
-                // the call site exactly as a direct call to that
-                // function does, by handing the identifier the literal
-                // wrote to the same resolver.
-                const recordMethod =
-                    instance?.kind === "record"
-                        ? instance.recordMethods?.[
-                              callee.name.text
-                          ]
-                        : undefined;
-                if (instance && recordMethod) {
-                    // A literal written in the record has no identifier
-                    // to resolve, so it takes the callback path a
-                    // function-literal argument already takes. Both
-                    // arrive at the same inliner.
-                    if (!ts.isIdentifier(recordMethod)) {
-                        return this.userFunctions.compileCallbackCall(
-                            this,
-                            call,
-                            recordMethod,
-                            (work) =>
-                                this.withRecordScopes(
-                                    instance,
-                                    work,
-                                ),
-                        );
-                    }
-                    const method =
-                        this.userFunctions.compile(
-                            this,
-                            call,
-                            recordMethod,
-                            // Only the body runs in the record's
-                            // scope; the arguments were written at
-                            // the call site and resolve there.
-                            (work) =>
-                                this.withRecordScopes(
-                                    instance,
-                                    work,
-                                ),
-                        );
-                    if (method) {
-                        return method;
-                    }
-                }
-                if (instance && declaration) {
-                    return this.classLowerer.compileMethodCall(
-                        instance,
-                        callee.name.text,
-                        call,
-                        declaration,
-                    );
-                }
-            }
-        }
-        if (!ts.isIdentifier(callee)) {
-            this.fail(callee, `Unsupported call target '${callee.getText()}'.`);
-        }
-
-        const bound = this.lookupOptional(callee);
-        if (bound?.kind === "callback") {
-            if (!bound.callbackDeclaration) {
-                this.fail(
-                    callee,
-                    "Callback value is missing its declaration.",
-                );
-            }
-            return this.userFunctions.compileCallbackCall(
-                this,
-                call,
-                bound.callbackDeclaration,
-            );
-        }
-
-        const importedName =
-            this.symbols.importedName(callee);
-        if (importedName) {
-            const registered = compileRegisteredIntrinsic(
-                this,
-                importedName,
-                call,
-            );
-            if (registered) {
-                return registered;
-            }
-            this.fail(
-                callee,
-                `Babylon Lite intrinsic '${importedName}' is not supported by this prototype. Supported scene APIs are documented in README.md.`,
-            );
-        }
-        const nativeFunction =
-            this.nativeFunctions.tryCompileCall(
-                call,
-                callee,
-            );
-        if (nativeFunction) {
-            return nativeFunction;
-        }
-        const userFunction = this.userFunctions.compile(
-            this,
-            call,
-            callee,
-        );
-        if (userFunction) {
-            return userFunction;
-        }
-        this.fail(
-            callee,
-            `Call '${callee.text}' does not resolve to a supported Babylon intrinsic or local function declaration.`,
         );
     }
 
     public compileBoxOptions(
         expression: ts.Expression,
     ): [string, string, string] {
-        const unwrapped = this.unwrap(expression);
-        if (ts.isObjectLiteralExpression(unwrapped)) {
-            this.validateObjectProperties(
-                unwrapped,
-                ["size", "width", "height", "depth"],
-                "Box options support size, width, height, and depth.",
-            );
-            const size = this.objectProperty(unwrapped, "size");
-            const width = this.objectProperty(unwrapped, "width");
-            const height = this.objectProperty(unwrapped, "height");
-            const depth = this.objectProperty(unwrapped, "depth");
-            const compiledSize = size
-                ? this.compileNumber(size)
-                : "1.0f";
-            return [
-                width ? this.compileNumber(width) : compiledSize,
-                height ? this.compileNumber(height) : compiledSize,
-                depth ? this.compileNumber(depth) : compiledSize,
-            ];
-        }
-        const size = this.compileNumber(unwrapped);
-        return [size, size, size];
+        return compileBoxOptions(this, expression);
     }
 
     public compileRenderTargetOptions(expression: ts.Expression): string {
-        const object = this.expectObjectLiteral(expression);
-        const samples = this.objectProperty(object, "samples");
-        const colorFormat = this.objectProperty(object, "format");
-        const depthFormat = this.objectProperty(object, "dFormat");
-        const size = this.objectProperty(object, "size");
-        let width = "0u";
-        let height = "0u";
-        if (size) {
-            const unwrappedSize = this.unwrap(size);
-            if (ts.isObjectLiteralExpression(unwrappedSize)) {
-                const widthExpression = this.objectProperty(
-                    unwrappedSize,
-                    "width",
-                );
-                const heightExpression = this.objectProperty(
-                    unwrappedSize,
-                    "height",
-                );
-                if (!widthExpression || !heightExpression) {
-                    this.fail(
-                        unwrappedSize,
-                        "Fixed render target size requires width and height.",
-                    );
-                }
-                width = this.compilePositiveInteger(widthExpression);
-                height = this.compilePositiveInteger(heightExpression);
-            } else {
-                const surface = this.compileValue(unwrappedSize);
-                this.expectKind(surface, "engine", unwrappedSize);
-            }
-        }
-        return `bbl::RenderTargetOptions{${samples ? this.compilePositiveInteger(samples) : "1u"}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`;
+        return compileRenderTargetOptions(this, expression);
     }
 
     public compileRenderTaskOptions(expression: ts.Expression): string {
-        const object = this.expectObjectLiteral(expression);
-        const nameExpression = this.objectProperty(object, "name");
-        const targetExpression = this.objectProperty(object, "rt");
-        if (!targetExpression) {
-            this.fail(object, "Render task requires an rt render target.");
-        }
-        const target = this.compileValue(targetExpression);
-        this.expectKind(target, "render-target", targetExpression);
-        const clearColor = this.objectProperty(object, "clrColor");
-        const clear = this.objectProperty(object, "clr");
-        const cameraExpression = this.objectProperty(object, "cam");
-        const camera = cameraExpression
-            ? this.compileValue(cameraExpression)
-            : undefined;
-        if (camera && cameraExpression) {
-            this.expectKind(camera, "camera", cameraExpression);
-            this.expectSameEngine(target, camera, object);
-        }
-        const canvasSize = this.objectProperty(object, "cs");
-        const autoMirror = this.objectProperty(object, "autoMirror");
-        return `bbl::RenderTaskOptions{${this.cppString(
-            nameExpression ? this.compileStringLiteral(nameExpression) : "render-task",
-        )}, ${target.cpp}, ${clearColor ? this.compileColor4(clearColor) : "bbl::Color4{}"}, ${clear ? this.compileBoolean(clear) : "true"}, ${camera?.cpp ?? "bbl::CameraHandle{}"}, ${camera ? "true" : "false"}, ${canvasSize ? this.compileBoolean(canvasSize) : "false"}, ${autoMirror ? this.compileBoolean(autoMirror) : "true"}}`;
+        return compileRenderTaskOptions(this, expression);
     }
 
     public compileGeometryTaskOptions(expression: ts.Expression): {
         cpp: string;
         manifest: GeometryOutputTaskManifest;
     } {
-        const object = this.expectObjectLiteral(expression);
-        const nameExpression = this.objectProperty(object, "name");
-        const samplesExpression = this.objectProperty(object, "samples");
-        const descriptionsExpression = this.objectProperty(
-            object,
-            "textureDescriptions",
-        );
-        if (!descriptionsExpression) {
-            this.fail(object, "Geometry renderer task requires textureDescriptions.");
-        }
-        const descriptions = this.unwrap(descriptionsExpression);
-        if (!ts.isArrayLiteralExpression(descriptions)) {
-            this.fail(descriptions, "Geometry textureDescriptions must be an array literal.");
-        }
-        if (
-            descriptions.elements.length === 0 ||
-            descriptions.elements.length > 8
-        ) {
-            this.fail(
-                descriptions,
-                "Geometry textureDescriptions must contain 1-8 entries.",
-            );
-        }
-        const attachments: GeometryTextureTypeName[] = [];
-        const compiledDescriptions = descriptions.elements.map((element) => {
-            const description = this.expectObjectLiteral(element);
-            const typeExpression = this.objectProperty(description, "type");
-            if (!typeExpression) {
-                this.fail(description, "Geometry texture description requires type.");
-            }
-            const type = this.compileGeometryTextureType(typeExpression);
-            if (attachments.includes(type)) {
-                this.fail(typeExpression, `Duplicate geometry texture type ${type}.`);
-            }
-            attachments.push(type);
-            const formatExpression = this.objectProperty(description, "format");
-            const format = formatExpression
-                ? this.compileStringLiteral(formatExpression)
-                : "";
-            if (format && format !== "r16float") {
-                this.fail(
-                    formatExpression!,
-                    `Unsupported geometry texture format override '${format}'.`,
-                );
-            }
-            return `bbl::GeometryTextureDescription{bbl::GeometryTextureType::${this.geometryEnumMember(type)}, ${format === "r16float" ? "bbl::GeometryTextureFormat::r16_float" : "bbl::GeometryTextureFormat::automatic"}}`;
-        });
-        const targetExpression = this.objectProperty(object, "targetTexture");
-        const target = targetExpression
-            ? this.compileValue(targetExpression)
-            : undefined;
-        if (target && targetExpression) {
-            this.expectKind(target, "render-target", targetExpression);
-        }
-        const clearColorExpression = this.objectProperty(
-            object,
-            "targetTextureClearColor",
-        );
-        if (clearColorExpression && !target) {
-            this.fail(
-                clearColorExpression,
-                "targetTextureClearColor requires targetTexture.",
-            );
-        }
-        const manifest: GeometryOutputTaskManifest = {
-            shaderIndex: this.geometryOutputTasks.length,
-            attachments,
-            emitColor: target !== undefined,
-        };
-        return {
-            cpp: `bbl::GeometryTaskOptions{${this.cppString(
-                nameExpression
-                    ? this.compileStringLiteral(nameExpression)
-                    : `geometry-${manifest.shaderIndex}`,
-            )}, ${manifest.shaderIndex}u, ${samplesExpression ? this.compilePositiveInteger(samplesExpression) : "1u"}, {${compiledDescriptions.join(", ")}}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${clearColorExpression ? "true" : "false"}, ${clearColorExpression ? this.compileColor4(clearColorExpression) : "bbl::Color4{}"}}`,
-            manifest,
-        };
+        return compileGeometryTaskOptions(this, expression);
     }
 
     public compileCopyTaskOptions(expression: ts.Expression): string {
-        const object = this.expectObjectLiteral(expression);
-        const nameExpression = this.objectProperty(object, "name");
-        const sourceExpression = this.objectProperty(object, "sourceTexture");
-        if (!sourceExpression) {
-            this.fail(object, "Copy task requires sourceTexture.");
-        }
-        const source = this.compileValue(sourceExpression);
-        const sourceCpp =
-            source.kind === "render-target"
-                ? `bbl::render_target_texture(${source.cpp})`
-                : source.kind === "render-texture"
-                    ? source.cpp
-                    : this.fail(
-                          sourceExpression,
-                          `Copy source must be a render texture, received ${source.kind}.`,
-                      );
-        const targetExpression = this.objectProperty(object, "targetTexture");
-        const resolveExpression = this.objectProperty(object, "resolveTexture");
-        const target = targetExpression
-            ? this.compileValue(targetExpression)
-            : undefined;
-        const resolveTarget = resolveExpression
-            ? this.compileValue(resolveExpression)
-            : undefined;
-        if (!target && !resolveTarget) {
-            this.fail(object, "Copy task requires targetTexture or resolveTexture.");
-        }
-        if (target && targetExpression) {
-            this.expectKind(target, "render-target", targetExpression);
-        }
-        if (resolveTarget && resolveExpression) {
-            this.expectKind(resolveTarget, "render-target", resolveExpression);
-        }
-        const viewportExpression = this.objectProperty(object, "viewport");
-        let viewport = "bbl::NormalizedViewport{}";
-        if (viewportExpression) {
-            const viewportObject = this.expectObjectLiteral(viewportExpression);
-            viewport = `bbl::NormalizedViewport{${this.requiredObjectNumber(viewportObject, "x", "double")}, ${this.requiredObjectNumber(viewportObject, "y", "double")}, ${this.requiredObjectNumber(viewportObject, "width", "double")}, ${this.requiredObjectNumber(viewportObject, "height", "double")}}`;
-        }
-        return `bbl::CopyTaskOptions{${this.cppString(
-            nameExpression ? this.compileStringLiteral(nameExpression) : "copy-task",
-        )}, ${sourceCpp}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${resolveTarget?.cpp ?? "bbl::RenderTargetHandle{}"}, ${viewportExpression ? "true" : "false"}, ${viewport}}`;
-    }
-
-    private compileGeometryTextureType(
-        expression: ts.Expression,
-    ): GeometryTextureTypeName {
-        const unwrapped = this.unwrap(expression);
-        if (
-            !ts.isPropertyAccessExpression(unwrapped) ||
-            !ts.isIdentifier(unwrapped.expression) ||
-            this.symbols.importedName(unwrapped.expression) !==
-                "GeometryTextureType"
-        ) {
-            this.fail(
-                unwrapped,
-                "Expected a GeometryTextureType enum member.",
-            );
-        }
-        const type = unwrapped.name.text as GeometryTextureTypeName;
-        const supported = new Set<GeometryTextureTypeName>([
-            "IRRADIANCE",
-            "WORLD_POSITION",
-            "LOCAL_POSITION",
-            "REFLECTIVITY",
-            "VIEW_DEPTH",
-            "NORMALIZED_VIEW_DEPTH",
-            "SCREENSPACE_DEPTH",
-            "VIEW_NORMAL",
-            "WORLD_NORMAL",
-            "ALBEDO",
-            "LINEAR_VELOCITY",
-        ]);
-        if (!supported.has(type)) {
-            this.fail(unwrapped.name, `Unsupported geometry texture type '${type}'.`);
-        }
-        return type;
-    }
-
-    private geometryEnumMember(type: GeometryTextureTypeName): string {
-        return type.toLowerCase();
+        return compileCopyTaskOptions(this, expression);
     }
 
     public compileGroundOptions(
         expression: ts.Expression,
     ): [string, string, string, string, string] {
-        const object = this.expectObjectLiteral(expression);
-        this.validateObjectProperties(
-            object,
-            ["width", "height", "subdivisions", "uvScale"],
-            "Ground options support width, height, subdivisions, and uvScale.",
-        );
-        const width = this.objectProperty(object, "width");
-        const height = this.objectProperty(object, "height");
-        const subdivisions = this.objectProperty(
-            object,
-            "subdivisions",
-        );
-        const uvScale = this.objectProperty(object, "uvScale");
-        let compiledUvScale: [string, string] = ["1.0f", "1.0f"];
-        if (uvScale) {
-            const values = this.expectStaticArrayLiteral(uvScale);
-            if (values.elements.length !== 2) {
-                this.fail(
-                    values,
-                    "Ground uvScale requires [uScale, vScale].",
-                );
-            }
-            compiledUvScale = [
-                this.compileNumber(values.elements[0]!),
-                this.compileNumber(values.elements[1]!),
-            ];
-        }
-        return [
-            width ? this.compileNumber(width) : "1.0f",
-            height ? this.compileNumber(height) : "1.0f",
-            subdivisions
-                ? this.compilePositiveInteger(subdivisions)
-                : "1u",
-            compiledUvScale[0],
-            compiledUvScale[1],
-        ];
+        return compileGroundOptions(this, expression);
     }
 
     public compilePlaneOptions(expression: ts.Expression): [string, string] {
-        const object = this.expectObjectLiteral(expression);
-        this.validateObjectProperties(
-            object,
-            ["size", "width", "height"],
-            "Plane options support only size, width, and height.",
-        );
-        const size = this.objectProperty(object, "size");
-        const width = this.objectProperty(object, "width");
-        const height = this.objectProperty(object, "height");
-        const compiledSize = size ? this.compileNumber(size) : "1.0f";
-        return [
-            width ? this.compileNumber(width) : compiledSize,
-            height ? this.compileNumber(height) : compiledSize,
-        ];
+        return compilePlaneOptions(this, expression);
     }
 
     public compileSphereOptions(
         expression: ts.Expression,
     ): [string, string, string, string] {
-        const unwrapped = this.unwrap(expression);
-        if (!ts.isObjectLiteralExpression(unwrapped)) {
-            const record = this.compileValue(unwrapped);
-            if (
-                record.kind !== "record" ||
-                !record.recordProperties
-            ) {
-                this.fail(
-                    unwrapped,
-                    "Expected sphere options as an object literal or static record.",
-                );
-            }
-            const supported = new Set([
-                "segments",
-                "diameter",
-                "diameterX",
-                "diameterY",
-                "diameterZ",
-            ]);
-            for (const name of Object.keys(
-                record.recordProperties,
-            )) {
-                if (!supported.has(name)) {
-                    this.fail(
-                        unwrapped,
-                        "Sphere options support segments, diameter, diameterX, diameterY, and diameterZ.",
-                    );
-                }
-            }
-            const number = (
-                name: string,
-                fallback: string,
-            ): string => {
-                const value =
-                    record.recordProperties?.[name];
-                if (!value) {
-                    return fallback;
-                }
-                if (value.kind !== "number") {
-                    this.fail(
-                        unwrapped,
-                        `Sphere option '${name}' must be numeric.`,
-                    );
-                }
-                return value.cpp;
-            };
-            const diameter = number(
-                "diameter",
-                "1.0f",
-            );
-            const segments =
-                record.recordProperties.segments;
-            if (
-                segments &&
-                (segments.kind !== "number" ||
-                    segments.staticNumber === undefined ||
-                    !Number.isInteger(
-                        segments.staticNumber,
-                    ) ||
-                    segments.staticNumber <= 0)
-            ) {
-                this.fail(
-                    unwrapped,
-                    "Sphere segments must be a positive static integer.",
-                );
-            }
-            return [
-                segments
-                    ? `${segments.staticNumber}u`
-                    : "32u",
-                number("diameterX", diameter),
-                number("diameterY", diameter),
-                number("diameterZ", diameter),
-            ];
-        }
-        const object = unwrapped;
-        this.validateObjectProperties(
-            object,
-            [
-                "segments",
-                "diameter",
-                "diameterX",
-                "diameterY",
-                "diameterZ",
-            ],
-            "Sphere options support segments, diameter, diameterX, diameterY, and diameterZ.",
-        );
-        const segments = this.objectProperty(object, "segments");
-        const diameter = this.objectProperty(object, "diameter");
-        const diameterX = this.objectProperty(object, "diameterX");
-        const diameterY = this.objectProperty(object, "diameterY");
-        const diameterZ = this.objectProperty(object, "diameterZ");
-        const compiledDiameter = diameter
-            ? this.compileNumber(diameter)
-            : "1.0f";
-        return [
-            segments ? this.compilePositiveInteger(segments) : "32u",
-            diameterX
-                ? this.compileNumber(diameterX)
-                : compiledDiameter,
-            diameterY
-                ? this.compileNumber(diameterY)
-                : compiledDiameter,
-            diameterZ
-                ? this.compileNumber(diameterZ)
-                : compiledDiameter,
-        ];
-    }
-
-    private validateObjectProperties(
-        object: ts.ObjectLiteralExpression,
-        supported: readonly string[],
-        message: string,
-    ): void {
-        const supportedNames = new Set(supported);
-        for (const property of object.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? this.propertyName(property.name)
-                    : undefined;
-            if (!name || !supportedNames.has(name)) {
-                this.fail(property, message);
-            }
-        }
+        return compileSphereOptions(this, expression);
     }
 
     public compileTorusOptions(
         expression: ts.Expression,
     ): [string, string, string] {
-        const object = this.expectObjectLiteral(expression);
-        this.validateObjectProperties(
-            object,
-            ["diameter", "thickness", "tessellation"],
-            "Torus options support diameter, thickness, and tessellation.",
-        );
-        const diameter = this.objectProperty(object, "diameter");
-        const thickness = this.objectProperty(object, "thickness");
-        const tessellation = this.objectProperty(object, "tessellation");
-        return [
-            diameter ? this.compileNumber(diameter) : "1.0f",
-            thickness ? this.compileNumber(thickness) : "0.5f",
-            tessellation
-                ? this.compilePositiveInteger(tessellation)
-                : "16u",
-        ];
+        return compileTorusOptions(this, expression);
     }
 
     public compilePbrMaterialOptions(
@@ -2084,294 +1188,19 @@ class Compiler
         string,
         string,
     ] {
-        const object = this.expectObjectLiteral(expression);
-        this.validateObjectProperties(
-            object,
-            [
-                "baseColorTexture",
-                "ormTexture",
-                "metallicFactor",
-                "roughnessFactor",
-                "directIntensity",
-                "environmentIntensity",
-                "alpha",
-                "reflectance",
-                "doubleSided",
-                "transmissive",
-                "subsurface",
-            ],
-            "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, lighting intensities, skybox mode, and transmission subsurface fields.",
-        );
-        const baseColorExpression = this.objectProperty(object, "baseColorTexture");
-        const ormExpression = this.objectProperty(object, "ormTexture");
-        if (!baseColorExpression || !ormExpression) {
-            this.fail(object, "PBR material requires baseColorTexture and ormTexture.");
-        }
-        const baseColor = this.compileValue(baseColorExpression);
-        const orm = this.compileValue(ormExpression);
-        this.expectKind(baseColor, "texture", baseColorExpression);
-        this.expectKind(orm, "texture", ormExpression);
-        const metallic = this.objectProperty(object, "metallicFactor");
-        const roughness = this.objectProperty(object, "roughnessFactor");
-        const direct = this.objectProperty(object, "directIntensity");
-        const environment = this.objectProperty(
-            object,
-            "environmentIntensity",
-        );
-        const alpha = this.objectProperty(object, "alpha");
-        const reflectance = this.objectProperty(object, "reflectance");
-        const doubleSided = this.objectProperty(object, "doubleSided");
-        const transmissive = this.objectProperty(object, "transmissive");
-        const subsurfaceExpression = this.objectProperty(object, "subsurface");
-        let transmission = "0.0f";
-        let ior = "1.5f";
-        let thickness = "0.0f";
-        let useThicknessAsDepth = "false";
-        let hasVolume = "false";
-        let attenuationColor = "bbl::Color3{1.0f, 1.0f, 1.0f}";
-        let attenuationDistance = "1.0f";
-        if (subsurfaceExpression) {
-            const subsurface = this.expectObjectLiteral(subsurfaceExpression);
-            const refractionExpression = this.objectProperty(
-                subsurface,
-                "refraction",
-            );
-            if (refractionExpression) {
-                const refraction = this.expectObjectLiteral(refractionExpression);
-                const intensity = this.objectProperty(refraction, "intensity");
-                const indexOfRefraction = this.objectProperty(
-                    refraction,
-                    "indexOfRefraction",
-                );
-                const thicknessAsDepth = this.objectProperty(
-                    refraction,
-                    "useThicknessAsDepth",
-                );
-                transmission = intensity
-                    ? this.compileNumber(intensity)
-                    : transmissive
-                        ? "1.0f"
-                        : "0.0f";
-                ior = indexOfRefraction
-                    ? this.compileNumber(indexOfRefraction)
-                    : "1.5f";
-                useThicknessAsDepth = thicknessAsDepth
-                    ? this.compileBoolean(thicknessAsDepth)
-                    : "false";
-            }
-            const thicknessExpression = this.objectProperty(
-                subsurface,
-                "thickness",
-            );
-            if (thicknessExpression) {
-                const thicknessObject =
-                    this.expectObjectLiteral(thicknessExpression);
-                const maximum = this.objectProperty(thicknessObject, "max");
-                thickness = maximum ? this.compileNumber(maximum) : "1.0f";
-            }
-            const tintExpression = this.objectProperty(subsurface, "tint");
-            if (tintExpression) {
-                const tint = this.expectObjectLiteral(tintExpression);
-                const color = this.objectProperty(tint, "color");
-                const distance = this.objectProperty(tint, "atDistance");
-                hasVolume = distance ? "true" : "false";
-                attenuationColor = color
-                    ? this.compileColor3(color)
-                    : attenuationColor;
-                attenuationDistance = distance
-                    ? this.compileNumber(distance)
-                    : attenuationDistance;
-            }
-        }
-        const metallicCpp = metallic
-            ? this.compileNumber(metallic)
-            : "1.0f";
-        const roughnessCpp = roughness
-            ? this.compileNumber(roughness)
-            : "1.0f";
-        const directCpp = direct ? this.compileNumber(direct) : "1.0f";
-        const environmentCpp = environment
-            ? this.compileNumber(environment)
-            : "1.0f";
-        const alphaCpp = alpha ? this.compileNumber(alpha) : "1.0f";
-        const reflectanceCpp = reflectance
-            ? this.compileNumber(reflectance)
-            : "0.04f";
-        const doubleSidedCpp = doubleSided
-            ? this.compileBoolean(doubleSided)
-            : "false";
-        // The resolved option values, in creation order, for the pinned
-        // composer: the pin's `createPbrMaterial` is `{...props}`, so these
-        // ARE the material record its feature derivation reads. Every value
-        // above compiles from a static literal, which is why parsing the C++
-        // text back is exact.
-        this.scenePbrMaterials.push({
-            materialsBefore: this.recordSceneMaterialSlot(),
-            gltfAssetsBefore: [...this.assets.values()].filter(
-                (asset) => asset.kind === "gltf",
-            ).length,
-            hasBaseColorTexture: true,
-            hasOrmTexture: true,
-            metallicFactor: Number.parseFloat(metallicCpp),
-            roughnessFactor: Number.parseFloat(roughnessCpp),
-            directIntensity: Number.parseFloat(directCpp),
-            environmentIntensity: Number.parseFloat(environmentCpp),
-            alpha: Number.parseFloat(alphaCpp),
-            reflectance: Number.parseFloat(reflectanceCpp),
-            doubleSided: doubleSidedCpp === "true",
-            transmission: Number.parseFloat(transmission),
-            ior: Number.parseFloat(ior),
-            thickness: Number.parseFloat(thickness),
-        });
-        return [
-            baseColor,
-            orm,
-            metallicCpp,
-            roughnessCpp,
-            directCpp,
-            environmentCpp,
-            alphaCpp,
-            reflectanceCpp,
-            "false",
-            doubleSidedCpp,
-            "false",
-            transmission,
-            ior,
-            thickness,
-            useThicknessAsDepth,
-            hasVolume,
-            attenuationColor,
-            attenuationDistance,
-        ];
+        return compilePbrMaterialOptions(this, expression);
     }
 
     public compileGridMaterialOptions(expression: ts.Expression): string[] {
-        const object = this.expectObjectLiteral(expression);
-        this.validateObjectProperties(
-            object,
-            [
-                "name",
-                "mainColor",
-                "lineColor",
-                "gridRatio",
-                "gridOffset",
-                "majorUnitFrequency",
-                "minorUnitVisibility",
-                "opacity",
-                "antialias",
-                "preMultiplyAlpha",
-                "useMaxLine",
-                "visibility",
-                "backFaceCulling",
-            ],
-            "Grid material options support colors, object-space spacing/offset, line frequency/visibility, opacity, antialiasing, premultiplication, max-line composition, visibility, and culling.",
-        );
-        const mainColor = this.objectProperty(object, "mainColor");
-        const lineColor = this.objectProperty(object, "lineColor");
-        const gridRatio = this.objectProperty(object, "gridRatio");
-        const gridOffset = this.objectProperty(object, "gridOffset");
-        const majorUnitFrequency = this.objectProperty(
-            object,
-            "majorUnitFrequency",
-        );
-        const minorUnitVisibility = this.objectProperty(
-            object,
-            "minorUnitVisibility",
-        );
-        const opacity = this.objectProperty(object, "opacity");
-        const visibility = this.objectProperty(object, "visibility");
-        const antialias = this.objectProperty(object, "antialias");
-        const preMultiplyAlpha = this.objectProperty(
-            object,
-            "preMultiplyAlpha",
-        );
-        const useMaxLine = this.objectProperty(object, "useMaxLine");
-        const backFaceCulling = this.objectProperty(
-            object,
-            "backFaceCulling",
-        );
-        return [
-            mainColor
-                ? this.compileColor3(mainColor)
-                : "bbl::Color3{0.0f, 0.0f, 0.0f}",
-            lineColor
-                ? this.compileColor3(lineColor)
-                : "bbl::Color3{0.0f, 0.5f, 0.5f}",
-            gridRatio ? this.compileNumber(gridRatio) : "1.0f",
-            gridOffset ? this.compileVec3(gridOffset) : "bbl::Vec3{}",
-            majorUnitFrequency
-                ? this.compileNumber(majorUnitFrequency)
-                : "10.0f",
-            minorUnitVisibility
-                ? this.compileNumber(minorUnitVisibility)
-                : "0.33f",
-            opacity ? this.compileNumber(opacity) : "1.0f",
-            visibility ? this.compileNumber(visibility) : "1.0f",
-            antialias ? this.compileBoolean(antialias) : "true",
-            preMultiplyAlpha
-                ? this.compileBoolean(preMultiplyAlpha)
-                : "false",
-            useMaxLine ? this.compileBoolean(useMaxLine) : "false",
-            backFaceCulling
-                ? this.compileBoolean(backFaceCulling)
-                : "true",
-        ];
+        return compileGridMaterialOptions(this, expression);
     }
 
-    /**
-     * The reached slice of `ClearCoatProps`. The pinned defaults come from
-     * `writeClearcoatUBO`, which is also where the `isEnabled` guard lives:
-     * a disabled coat writes no slice at all. The three optional textures
-     * are rejected rather than ignored — no reached scene carries one, and
-     * they would need their own binding pairs.
-     */
     public compileClearCoatOptions(
         expression: ts.Expression,
     ): [string, string, string, string, string] {
-        const object = this.expectObjectLiteral(expression);
-        this.validateObjectProperties(
-            object,
-            [
-                "isEnabled",
-                "intensity",
-                "roughness",
-                "indexOfRefraction",
-                "bumpTextureScale",
-            ],
-            "Reached clearcoat options support isEnabled, intensity, roughness, indexOfRefraction, and bumpTextureScale.",
-        );
-        const isEnabled = this.objectProperty(object, "isEnabled");
-        const intensity = this.objectProperty(object, "intensity");
-        const roughness = this.objectProperty(object, "roughness");
-        const indexOfRefraction = this.objectProperty(
-            object,
-            "indexOfRefraction",
-        );
-        const bumpTextureScale = this.objectProperty(
-            object,
-            "bumpTextureScale",
-        );
-        return [
-            isEnabled ? this.compileBoolean(isEnabled) : "false",
-            intensity ? this.compileNumber(intensity) : "1.0f",
-            roughness ? this.compileNumber(roughness) : "0.0f",
-            indexOfRefraction
-                ? this.compileNumber(indexOfRefraction)
-                : "1.5f",
-            bumpTextureScale
-                ? this.compileNumber(bumpTextureScale)
-                : "1.0f",
-        ];
+        return compileClearCoatOptions(this, expression);
     }
 
-    /**
-     * The reached slice of `SheenProps`. The pinned defaults come from
-     * `writeSheenUBO`, which is also where the `isEnabled` guard lives.
-     * `albedoScaling` is read here rather than rejected because it selects
-     * which of the two pinned sheen models the fragment composes, and the
-     * reached scene leaves it at its legacy default. `roughnessTexture` is
-     * rejected: it would need its own binding pair and its own UV.
-     */
     public compileSheenOptions(
         expression: ts.Expression,
     ): {
@@ -2382,384 +1211,20 @@ class Compiler
         texture: ts.Expression | undefined;
         albedoScaling: boolean;
     } {
-        const object = this.expectObjectLiteral(expression);
-        this.validateObjectProperties(
-            object,
-            [
-                "isEnabled",
-                "color",
-                "roughness",
-                "intensity",
-                "texture",
-                "albedoScaling",
-            ],
-            "Reached sheen options support isEnabled, color, roughness, intensity, texture, and albedoScaling.",
-        );
-        const isEnabled = this.objectProperty(object, "isEnabled");
-        const color = this.objectProperty(object, "color");
-        const roughness = this.objectProperty(object, "roughness");
-        const intensity = this.objectProperty(object, "intensity");
-        const albedoScaling = this.objectProperty(
-            object,
-            "albedoScaling",
-        );
-        const albedoScalingValue = albedoScaling
-            ? this.compileBoolean(albedoScaling)
-            : "false";
-        if (
-            albedoScalingValue !== "true" &&
-            albedoScalingValue !== "false"
-        ) {
-            this.fail(
-                albedoScaling ?? object,
-                "Sheen albedoScaling must be a static boolean; it selects the composed fragment.",
-            );
-        }
-        return {
-            enabled: isEnabled
-                ? this.compileBoolean(isEnabled)
-                : "false",
-            color: color
-                ? this.compileColor3(color)
-                : "bbl::Color3{1.0f, 1.0f, 1.0f}",
-            roughness: roughness
-                ? this.compileNumber(roughness)
-                : "0.0f",
-            intensity: intensity
-                ? this.compileNumber(intensity)
-                : "1.0f",
-            texture: this.objectProperty(object, "texture"),
-            albedoScaling: albedoScalingValue === "true",
-        };
+        return compileSheenOptions(this, expression);
     }
 
     public compileShaderMaterialOptions(
         expression: ts.Expression,
     ): { name: string; id: number } {
-        const object = this.expectObjectLiteral(expression);
-        this.validateObjectProperties(
-            object,
-            [
-                "name",
-                "vertexSource",
-                "fragmentSource",
-                "attributes",
-                "uniforms",
-                "needAlphaBlending",
-                "needAlphaTesting",
-                "backFaceCulling",
-                "depthWrite",
-            ],
-            "Reached shader materials support source, attributes, uniforms, alpha state, culling, and depthWrite only.",
-        );
-
-        const vertexExpression = this.objectProperty(object, "vertexSource");
-        const fragmentExpression = this.objectProperty(object, "fragmentSource");
-        const attributesExpression = this.objectProperty(object, "attributes");
-        const uniformsExpression = this.objectProperty(object, "uniforms");
-        if (
-            !vertexExpression ||
-            !fragmentExpression ||
-            !attributesExpression ||
-            !uniformsExpression
-        ) {
-            this.fail(
-                object,
-                "Shader material requires vertexSource, fragmentSource, attributes, and uniforms.",
-            );
-        }
-
-        const vertexSource =
-            this.compileStaticString(vertexExpression);
-        const fragmentSource =
-            this.compileStaticString(fragmentExpression);
-        const attributes = this.compileStaticStringArray(attributesExpression);
-        const { signatures: uniforms, defaults: uniformDefaults } =
-            this.compileShaderUniformSignatures(uniformsExpression);
-        const needAlphaBlending = this.compileOptionalStaticBoolean(
-            this.objectProperty(object, "needAlphaBlending"),
-            false,
-        );
-        const needAlphaTesting = this.compileOptionalStaticBoolean(
-            this.objectProperty(object, "needAlphaTesting"),
-            false,
-        );
-        const backFaceCulling = this.compileOptionalStaticBoolean(
-            this.objectProperty(object, "backFaceCulling"),
-            true,
-        );
-        const depthWrite = this.compileOptionalStaticBoolean(
-            this.objectProperty(object, "depthWrite"),
-            !needAlphaBlending,
-        );
-
-        for (const program of shaderMaterialPrograms) {
-            if (
-                this.stringArraysEqual(attributes, program.attributes) &&
-                this.stringArraysEqual(uniforms, program.uniforms) &&
-                needAlphaBlending === program.needAlphaBlending &&
-                needAlphaTesting === program.needAlphaTesting &&
-                backFaceCulling === program.backFaceCulling &&
-                depthWrite === program.depthWrite
-            ) {
-                let candidate: ShaderIrProgram;
-                try {
-                    candidate = lowerWgslShaderProgram({
-                        ...program,
-                        vertexSource,
-                        fragmentSource,
-                        attributes,
-                        uniforms,
-                        needAlphaBlending,
-                        needAlphaTesting,
-                        backFaceCulling,
-                        depthWrite,
-                    });
-                } catch (error: unknown) {
-                    const message =
-                        error instanceof Error
-                            ? error.message
-                            : String(error);
-                    this.fail(
-                        object,
-                        `Invalid reached shader material WGSL: ${message}`,
-                    );
-                }
-                const expected =
-                    lowerWgslShaderProgram(program);
-                if (
-                    JSON.stringify(candidate) ===
-                    JSON.stringify(expected)
-                ) {
-                    return this.reachShaderProgram({
-                        name: program.name,
-                        vertexSource: program.vertexSource,
-                        fragmentSource: program.fragmentSource,
-                        attributes: program.attributes,
-                        uniforms: program.uniforms,
-                        uniformDefaults: [],
-                        needAlphaBlending: program.needAlphaBlending,
-                        needAlphaTesting: program.needAlphaTesting,
-                        backFaceCulling: program.backFaceCulling,
-                        depthWrite: program.depthWrite,
-                        clipDepth: program.clipDepth,
-                    });
-                }
-            }
-        }
-
-        // Scene-local variant: the entry file's own WGSL compiles through
-        // the typed shader IR instead of matching a predeclared program.
-        const nameExpression = this.objectProperty(object, "name");
-        if (!nameExpression) {
-            this.fail(
-                object,
-                "Scene-local shader materials require a name (it becomes the generated variant identity).",
-            );
-        }
-        const slug = this.compileStaticString(nameExpression)
-            .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-            .replace(/[^A-Za-z0-9]+/g, "-")
-            .replace(/^-+|-+$/g, "")
-            .toLowerCase();
-        if (slug.length === 0) {
-            this.fail(
-                nameExpression,
-                "Scene-local shader material names must contain letters or digits.",
-            );
-        }
-        if (
-            shaderMaterialPrograms.some(
-                ({ name }) => name === slug,
-            )
-        ) {
-            this.fail(
-                nameExpression,
-                `Shader material name '${slug}' collides with a predeclared variant.`,
-            );
-        }
-        // The reached subset composes the system block from
-        // worldViewProjection alone (or none); other system uniforms
-        // (view, world, projection splits) stay unreached.
-        for (const signature of uniforms) {
-            if (
-                !signature.includes(":") &&
-                signature !== "worldViewProjection"
-            ) {
-                this.fail(
-                    uniformsExpression,
-                    `Reached scene-local shader materials support the worldViewProjection system uniform only, received '${signature}'.`,
-                );
-            }
-        }
-        const sceneProgram: CompiledShaderProgram = {
-            name: slug,
-            vertexSource,
-            fragmentSource,
-            attributes,
-            uniforms,
-            uniformDefaults,
-            needAlphaBlending,
-            needAlphaTesting,
-            backFaceCulling,
-            depthWrite,
-            // The pinned prelude clips through the composed matrix when
-            // one is requested; matrix-free programs write clip
-            // positions directly like the pinned alpha-card.
-            clipDepth: uniforms.includes("worldViewProjection")
-                ? "matrix"
-                : "direct-webgpu",
-        };
-        try {
-            lowerWgslShaderProgram(sceneProgram);
-        } catch (error: unknown) {
-            const message =
-                error instanceof Error
-                    ? error.message
-                    : String(error);
-            this.fail(
-                object,
-                `Invalid reached shader material WGSL: ${message}`,
-            );
-        }
-        const reflection =
-            lowerWgslShaderProgram(sceneProgram).reflection;
-        for (const entry of uniformDefaults) {
-            const declared = uniforms.find((signature) =>
-                signature.startsWith(`${entry.name}:`),
-            );
-            if (!declared) {
-                this.fail(
-                    uniformsExpression,
-                    `Shader uniform default '${entry.name}' has no typed declaration.`,
-                );
-            }
-            const componentCount =
-                declared.endsWith(":f32")
-                    ? 1
-                    : declared.endsWith(":vec2<f32>")
-                        ? 2
-                        : declared.endsWith(":vec3<f32>")
-                            ? 3
-                            : declared.endsWith(":vec4<f32>")
-                                ? 4
-                                : 0;
-            if (componentCount === 0) {
-                this.fail(
-                    uniformsExpression,
-                    `Shader uniform default '${entry.name}' has an unsupported type.`,
-                );
-            }
-            if (entry.values.length !== componentCount) {
-                this.fail(
-                    uniformsExpression,
-                    `Shader uniform default '${entry.name}' expects ${componentCount} component(s).`,
-                );
-            }
-        }
-        void reflection;
-        return this.reachShaderProgram(sceneProgram);
-    }
-
-    private compileShaderUniformSignatures(expression: ts.Expression): {
-        signatures: string[];
-        defaults: CompiledShaderUniformDefault[];
-    } {
-        const array = this.expectStaticArrayLiteral(expression);
-        const defaults: CompiledShaderUniformDefault[] = [];
-        const signatures = array.elements.map((element) => {
-            const resolved = this.resolveStaticExpression(element);
-            if (
-                ts.isStringLiteral(resolved) ||
-                ts.isNoSubstitutionTemplateLiteral(resolved)
-            ) {
-                return resolved.text;
-            }
-            if (!ts.isObjectLiteralExpression(resolved)) {
-                this.fail(
-                    resolved,
-                    "Shader uniforms must be string or typed object literals.",
-                );
-            }
-            for (const property of resolved.properties) {
-                const propertyName =
-                    ts.isPropertyAssignment(property) ||
-                    ts.isShorthandPropertyAssignment(property)
-                        ? this.propertyName(property.name)
-                        : undefined;
-                if (
-                    !propertyName ||
-                    !["name", "type", "defaultValue"].includes(propertyName)
-                ) {
-                    this.fail(
-                        property,
-                        "Typed shader uniforms support name, type, and defaultValue.",
-                    );
-                }
-            }
-            const name = this.objectProperty(resolved, "name");
-            const type = this.objectProperty(resolved, "type");
-            if (!name || !type) {
-                this.fail(
-                    resolved,
-                    "Typed shader uniforms require name and type.",
-                );
-            }
-            const uniformName = this.compileStaticString(name);
-            const defaultExpression = this.objectProperty(
-                resolved,
-                "defaultValue",
-            );
-            if (defaultExpression) {
-                const resolvedDefault =
-                    this.resolveStaticExpression(defaultExpression);
-                const values = ts.isArrayLiteralExpression(resolvedDefault)
-                    ? resolvedDefault.elements.map((entry) =>
-                          this.expectStaticNumber(entry),
-                      )
-                    : [this.expectStaticNumber(resolvedDefault)];
-                defaults.push({ name: uniformName, values });
-            }
-            return `${uniformName}:${this.compileStaticString(type)}`;
-        });
-        return { signatures, defaults };
-    }
-
-    /**
-     * Registers a reached shader program (predeclared or scene-local)
-     * and returns its stable generated variant identity: the id indexes
-     * the emitted variant table in reach order.
-     */
-    private reachShaderProgram(
-        program: CompiledShaderProgram,
-    ): { name: string; id: number } {
-        const existing = this.reachedShaderPrograms.findIndex(
-            ({ name }) => name === program.name,
-        );
-        if (existing >= 0) {
-            return { name: program.name, id: existing };
-        }
-        this.reachedShaderPrograms.push(program);
-        return {
-            name: program.name,
-            id: this.reachedShaderPrograms.length - 1,
-        };
+        return compileShaderMaterialOptions(this, expression);
     }
 
     public reachedShaderProgram(
         name: string,
         node: ts.Node,
     ): CompiledShaderProgram {
-        const program = this.reachedShaderPrograms.find(
-            (candidate) => candidate.name === name,
-        );
-        if (!program) {
-            this.fail(
-                node,
-                `Shader variant '${name}' was not created in this scene.`,
-            );
-        }
-        return program;
+        return reachedShaderProgram(this, name, node);
     }
 
     public resolveShaderUniform(
@@ -2767,65 +1232,22 @@ class Compiler
         nameExpression: ts.Expression,
         expectedCounts: number[],
     ): { offset: number; count: number } {
-        if (!material.shaderVariant) {
-            this.fail(
-                nameExpression,
-                "Shader uniform writes require a shader material.",
-            );
-        }
-        const program = this.reachedShaderProgram(
-            material.shaderVariant,
+        return resolveShaderUniform(
+            this,
+            material,
             nameExpression,
+            expectedCounts,
         );
-        const name =
-            this.compileStringLiteral(nameExpression);
-        const entry = shaderUniformValueLayout(
-            program.uniforms,
-        ).get(name);
-        if (!entry) {
-            this.fail(
-                nameExpression,
-                `Shader variant '${program.name}' declares no custom uniform '${name}'.`,
-            );
-        }
-        if (!expectedCounts.includes(entry.count)) {
-            this.fail(
-                nameExpression,
-                `Shader uniform '${name}' has ${entry.count} component(s); this setter expects ${expectedCounts.join(" or ")}.`,
-            );
-        }
-        return entry;
     }
 
     public compileShaderUniformComponents(
         expression: ts.Expression,
         count: number,
     ): string[] {
-        if (count === 1) {
-            return [this.compileNumber(expression)];
-        }
-        const resolved =
-            this.resolveStaticExpression(expression);
-        if (
-            ts.isArrayLiteralExpression(resolved) &&
-            resolved.elements.length === count
-        ) {
-            return resolved.elements.map((element) =>
-                this.compileNumber(element),
-            );
-        }
-        const value = this.compileValue(expression);
-        if (
-            value.kind === "tuple" &&
-            value.tupleElements?.length === count
-        ) {
-            return value.tupleElements.map(
-                (element) => element.cpp,
-            );
-        }
-        this.fail(
+        return compileShaderUniformComponents(
+            this,
             expression,
-            `Expected a ${count}-component array value.`,
+            count,
         );
     }
 
@@ -2838,242 +1260,22 @@ class Compiler
         frameRate: string;
         duration: string;
     } {
-        const tracks = this.expectStaticArrayLiteral(tracksExpression);
-        if (tracks.elements.length === 0) {
-            this.fail(
-                tracks,
-                "createPropertyAnimationClip requires at least one track.",
-            );
-        }
-        let frameRate = optionsExpression
-            ? this.compilePropertyAnimationFrameRate(
-                  optionsExpression,
-              )
-            : undefined;
-        if (!frameRate) {
-            const trackFrameRates = tracks.elements
-                .map((element) =>
-                    this.objectProperty(
-                        this.expectObjectLiteral(element),
-                        "frameRate",
-                    ),
-                )
-                .filter(
-                    (
-                        value,
-                    ): value is ts.Expression =>
-                        value !== undefined,
-                )
-                .map((value) =>
-                    this.compileNumber(value),
-                );
-            const distinct = [
-                ...new Set(trackFrameRates),
-            ];
-            if (distinct.length > 1) {
-                this.fail(
-                    tracks,
-                    "Property animation tracks require one shared frame rate when clip options omit frameRate.",
-                );
-            }
-            frameRate = distinct[0] ?? "60.0f";
-        }
-        const compiledTracks = tracks.elements.map((element) => {
-            const track = this.expectObjectLiteral(
-                this.resolveStaticExpression(element),
-            );
-            const pathExpression = this.objectProperty(track, "path");
-            const keysExpression = this.objectProperty(track, "keys");
-            if (!pathExpression || !keysExpression) {
-                this.fail(
-                    track,
-                    "Property animation tracks require path and keys.",
-                );
-            }
-            const path = this.compileStaticString(pathExpression);
-            const pathInfo = new Map<
-                string,
-                { native: string; components: number }
-            >([
-                [
-                    "position",
-                    {
-                        native: "position",
-                        components: 3,
-                    },
-                ],
-                [
-                    "position.x",
-                    {
-                        native: "position_x",
-                        components: 1,
-                    },
-                ],
-                [
-                    "scaling",
-                    {
-                        native: "scaling",
-                        components: 3,
-                    },
-                ],
-                [
-                    "rotationQuaternion",
-                    {
-                        native: "rotation_quaternion",
-                        components: 4,
-                    },
-                ],
-            ]).get(path);
-            if (!pathInfo) {
-                this.fail(
-                    pathExpression,
-                    `Unsupported property animation path '${path}'.`,
-                );
-            }
-            const interpolationExpression =
-                this.objectProperty(track, "interpolation");
-            const interpolation = interpolationExpression
-                ? this.compileStaticString(interpolationExpression)
-                : "linear";
-            if (!["linear", "step"].includes(interpolation)) {
-                this.fail(
-                    interpolationExpression!,
-                    `Unsupported property animation interpolation '${interpolation}'.`,
-                );
-            }
-            const trackFrameRateExpression =
-                this.objectProperty(track, "frameRate");
-            const trackFrameRate = trackFrameRateExpression
-                ? this.compileNumber(trackFrameRateExpression)
-                : frameRate;
-            const keys = this.expectStaticArrayLiteral(keysExpression);
-            if (keys.elements.length === 0) {
-                this.fail(
-                    keys,
-                    `Property animation track '${path}' requires at least one key.`,
-                );
-            }
-            const compiledKeys = keys.elements.map((keyElement) => {
-                const key = this.expectObjectLiteral(
-                    this.resolveStaticExpression(keyElement),
-                );
-                const timeExpression = this.objectProperty(key, "time");
-                const frameExpression = this.objectProperty(key, "frame");
-                const valueExpression = this.objectProperty(key, "value");
-                if (
-                    (!timeExpression && !frameExpression) ||
-                    (timeExpression && frameExpression) ||
-                    !valueExpression
-                ) {
-                    this.fail(
-                        key,
-                        "Property animation keys require value and exactly one of time or frame.",
-                    );
-                }
-                const time = timeExpression
-                    ? this.compileNumber(timeExpression)
-                    : `(${this.compileNumber(frameExpression!)} / ${trackFrameRate})`;
-                const value = this.compilePropertyAnimationKeyValue(
-                    valueExpression,
-                    pathInfo.components,
-                );
-                return `bbl::PropertyAnimationKey{${time}, ${value}}`;
-            });
-            return `bbl::PropertyAnimationTrack{bbl::PropertyAnimationPath::${pathInfo.native}, bbl::PropertyAnimationInterpolation::${interpolation}, {${compiledKeys.join(", ")}}}`;
-        });
-        const name = this.compileStaticString(nameExpression);
-        return {
-            cpp: `bbl::create_property_animation_clip(${this.cppString(name)}, {${compiledTracks.join(", ")}}, ${frameRate})`,
-            frameRate,
-            duration: "0.0f",
-        };
-    }
-
-    private compilePropertyAnimationFrameRate(
-        expression: ts.Expression,
-    ): string {
-        const options = this.expectObjectLiteral(expression);
-        const frameRate = this.objectProperty(options, "frameRate");
-        return frameRate
-            ? this.compileNumber(frameRate)
-            : "60.0f";
-    }
-
-    private compilePropertyAnimationKeyValue(
-        expression: ts.Expression,
-        components: number,
-    ): string {
-        const resolved = this.resolveStaticExpression(expression);
-        const values =
-            components === 1
-                ? [this.compileNumber(resolved)]
-                : this.expectStaticArrayLiteral(resolved).elements.map(
-                      (element) => this.compileNumber(element),
-                  );
-        if (values.length !== components) {
-            this.fail(
-                resolved,
-                `Property animation value requires ${components} components.`,
-            );
-        }
-        while (values.length < 4) values.push("0.0f");
-        return `std::array<float, 4>{${values.join(", ")}}`;
+        return compilePropertyAnimationClip(
+            this,
+            nameExpression,
+            tracksExpression,
+            optionsExpression,
+        );
     }
 
     public compilePropertyAnimationGroupOptions(
         expression: ts.Expression | undefined,
         clip: Value,
     ): string {
-        const frameRate =
-            clip.animationFrameRate ??
-            this.fail(
-                expression ?? this.sourceFile,
-                "Property animation clip frame rate is unavailable.",
-            );
-        const duration =
-            clip.animationDuration ??
-            this.fail(
-                expression ?? this.sourceFile,
-                "Property animation clip duration is unavailable.",
-            );
-        if (!expression) {
-            return `bbl::PropertyAnimationGroupOptions{0.0f, ${duration}, 1.0f, true}`;
-        }
-        const options = this.expectObjectLiteral(expression);
-        const fromTime = this.objectProperty(options, "fromTime");
-        const fromFrame = this.objectProperty(options, "fromFrame");
-        const toTime = this.objectProperty(options, "toTime");
-        const toFrame = this.objectProperty(options, "toFrame");
-        if (fromTime && fromFrame) {
-            this.fail(
-                options,
-                "Property animation group cannot specify both fromTime and fromFrame.",
-            );
-        }
-        if (toTime && toFrame) {
-            this.fail(
-                options,
-                "Property animation group cannot specify both toTime and toFrame.",
-            );
-        }
-        const from = fromTime
-            ? this.compileNumber(fromTime)
-            : fromFrame
-                ? `(${this.compileNumber(fromFrame)} / ${frameRate})`
-                : "0.0f";
-        const to = toTime
-            ? this.compileNumber(toTime)
-            : toFrame
-                ? `(${this.compileNumber(toFrame)} / ${frameRate})`
-                : duration;
-        const speedRatio = this.objectProperty(options, "speedRatio");
-        const loop = this.objectProperty(options, "loop");
-        return `bbl::PropertyAnimationGroupOptions{${from}, ${to}, ${speedRatio ? this.compileNumber(speedRatio) : "1.0f"}, ${loop ? this.compileBoolean(loop) : "true"}}`;
-    }
-
-    private compileStaticStringArray(expression: ts.Expression): string[] {
-        return this.expectStaticArrayLiteral(expression).elements.map(
-            (element) => this.compileStaticString(element),
+        return compilePropertyAnimationGroupOptions(
+            this,
+            expression,
+            clip,
         );
     }
 
@@ -3085,74 +1287,6 @@ class Compiler
         );
     }
 
-    private compileOptionalStaticBoolean(
-        expression: ts.Expression | undefined,
-        fallback: boolean,
-    ): boolean {
-        if (!expression) return fallback;
-        return this.compileBoolean(this.resolveStaticExpression(expression)) ===
-            "true";
-    }
-
-    private expectStaticNumber(expression: ts.Expression): number {
-        const resolved = this.resolveStaticExpression(expression);
-        if (ts.isNumericLiteral(resolved)) {
-            return Number(resolved.text);
-        }
-        if (
-            ts.isPrefixUnaryExpression(resolved) &&
-            resolved.operator === ts.SyntaxKind.MinusToken &&
-            ts.isNumericLiteral(resolved.operand)
-        ) {
-            return -Number(resolved.operand.text);
-        }
-        this.fail(resolved, "Expected a static numeric literal.");
-    }
-
-    private stringArraysEqual(left: string[], right: string[]): boolean {
-        return (
-            left.length === right.length &&
-            left.every((value, index) => value === right[index])
-        );
-    }
-
-    private compilePositiveInteger(expression: ts.Expression): string {
-        const unwrapped = this.resolveStaticExpression(
-            expression,
-        );
-        if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.name.text === "msaaSamples" &&
-            this.lookup(unwrapped.expression).kind ===
-                "engine"
-        ) {
-            const engine = this.lookup(
-                unwrapped.expression,
-            );
-            return `${engine.msaaSamples ?? 4}u`;
-        }
-        if (ts.isIdentifier(unwrapped)) {
-            const value = this.lookup(unwrapped);
-            if (
-                value.kind === "number" &&
-                value.staticNumber !== undefined &&
-                Number.isInteger(value.staticNumber) &&
-                value.staticNumber > 0
-            ) {
-                return `${value.staticNumber}u`;
-            }
-        }
-        if (!ts.isNumericLiteral(unwrapped)) {
-            this.fail(unwrapped, "Expected a positive integer literal.");
-        }
-        const value = Number(unwrapped.text);
-        if (!Number.isInteger(value) || value <= 0) {
-            this.fail(unwrapped, "Expected a positive integer literal.");
-        }
-        return `${value}u`;
-    }
-
     public compileEnvironmentOptions(expression: ts.Expression): {
         groundTextureUrl: string;
         skyboxUrl: string;
@@ -3161,98 +1295,19 @@ class Compiler
         skipSkybox: boolean;
         skipGround: boolean;
     } {
-        const object = this.expectObjectLiteral(expression);
-        this.validateObjectProperties(
-            object,
-            [
-                "groundTextureUrl",
-                "skyboxUrl",
-                "skyboxSize",
-                "brdfUrl",
-                "skipSkybox",
-                "skipGround",
-            ],
-            "Reached environment options support groundTextureUrl, skyboxUrl, skyboxSize, brdfUrl, skipSkybox, and skipGround.",
-        );
-        const groundTextureUrl = this.objectProperty(object, "groundTextureUrl");
-        const skyboxUrl = this.objectProperty(object, "skyboxUrl");
-        const skyboxSize = this.objectProperty(object, "skyboxSize");
-        const brdfUrl = this.objectProperty(object, "brdfUrl");
-        // `skipSkybox` and `skipGround` decide whether `loadEnvironment`'s
-        // deferred builder pushes a background renderable at all, so they are
-        // read rather than tolerated: the solid-colour skybox is what a scene
-        // gets when it sets neither.
-        const skipFlag = (name: "skipSkybox" | "skipGround"): boolean => {
-            const property = this.objectProperty(object, name);
-            if (!property) {
-                return false;
-            }
-            const compiled = this.compileBoolean(property);
-            if (compiled !== "true" && compiled !== "false") {
-                this.fail(
-                    property,
-                    `${name} must be a static boolean.`,
-                );
-            }
-            return compiled === "true";
-        };
-        return {
-            groundTextureUrl: groundTextureUrl ? this.compileStringLiteral(groundTextureUrl) : "",
-            skyboxUrl: skyboxUrl ? this.compileStringLiteral(skyboxUrl) : "",
-            // Zero asks the loader for the pinned default rather than
-            // inventing one here: `createDefaultEnvironment`'s skyboxSize is
-            // 20, and the generated loader already resolves it. Passing a
-            // size of our own produced a skybox large enough for the camera's
-            // far plane to clip it, which shows as a straight-edged hole in
-            // the background once the camera moves off the reference pose.
-            skyboxSize: skyboxSize ? this.compileNumber(skyboxSize) : "0.0f",
-            brdfUrl: brdfUrl ? this.compileStringLiteral(brdfUrl) : "",
-            skipSkybox: skipFlag("skipSkybox"),
-            skipGround: skipFlag("skipGround"),
-        };
+        return compileEnvironmentOptions(this, expression);
     }
 
-    /**
-     * `loadDdsEnvironment` takes a required `brdfUrl` plus `skipSkybox` and
-     * `skipGround`, which it accepts and never acts on — it creates neither.
-     * Rejecting them keeps a scene that sets one from compiling as though it
-     * had been honoured.
-     */
     public compileDdsEnvironmentOptions(
         expression: ts.Expression,
     ): string {
-        const object = this.expectObjectLiteral(expression);
-        this.validateObjectProperties(
-            object,
-            ["brdfUrl"],
-            "Reached DDS environment options support brdfUrl.",
-        );
-        const brdfUrl = this.objectProperty(object, "brdfUrl");
-        return brdfUrl ? this.compileStringLiteral(brdfUrl) : "";
+        return compileDdsEnvironmentOptions(this, expression);
     }
 
     public compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean {
-        if (!expression) {
-            return true;
-        }
-        const options = this.expectObjectLiteral(expression);
-        const value = this.objectProperty(
-            options,
-            "defaultRenderTask",
-        );
-        if (!value) {
-            return true;
-        }
-        const compiled = this.compileBoolean(value);
-        if (compiled !== "true" && compiled !== "false") {
-            this.fail(
-                value,
-                "defaultRenderTask must be a static boolean.",
-            );
-        }
-        return compiled === "true";
+        return compileSceneDefaultRenderTask(this, expression);
     }
 
     public compileHdrEnvironmentOptions(expression: ts.Expression): {
@@ -3262,53 +1317,7 @@ class Compiler
         skyboxSize: string;
         skyboxPosition: string;
     } {
-        const object = this.expectObjectLiteral(expression);
-        this.validateObjectProperties(
-            object,
-            [
-                "faceSize",
-                "useCubemapSkybox",
-                "skipGround",
-                "skyboxSize",
-                "skyboxPosition",
-            ],
-            "HDR environment options support faceSize, cubemap skybox, ground skipping, skybox size, and skybox position.",
-        );
-        const faceSizeExpression = this.objectProperty(object, "faceSize");
-        const faceSize = faceSizeExpression
-            ? Number(this.compilePositiveInteger(faceSizeExpression).slice(0, -1))
-            : 256;
-        if ((faceSize & (faceSize - 1)) !== 0 || faceSize > 2048) {
-            this.fail(
-                faceSizeExpression ?? object,
-                "HDR faceSize must be a power of two no larger than 2048.",
-            );
-        }
-        const useCubemapSkybox = this.compileOptionalStaticBoolean(
-            this.objectProperty(object, "useCubemapSkybox"),
-            false,
-        );
-        const skipGround = this.compileOptionalStaticBoolean(
-            this.objectProperty(object, "skipGround"),
-            false,
-        );
-        const skyboxSize = this.objectProperty(object, "skyboxSize");
-        const skyboxPosition = this.objectProperty(object, "skyboxPosition");
-        if (useCubemapSkybox && (!skyboxSize || !skyboxPosition)) {
-            this.fail(
-                object,
-                "Reached HDR cubemap skyboxes require explicit skyboxSize and skyboxPosition.",
-            );
-        }
-        return {
-            faceSize,
-            useCubemapSkybox,
-            skipGround,
-            skyboxSize: skyboxSize ? this.compileNumber(skyboxSize) : "0.0f",
-            skyboxPosition: skyboxPosition
-                ? this.compileVec3(skyboxPosition)
-                : "bbl::Vec3{}",
-        };
+        return compileHdrEnvironmentOptions(this, expression);
     }
 
     public compileVec3(
@@ -3509,7 +1518,7 @@ class Compiler
         );
     }
 
-    private isNumberExpression(expression: ts.Expression): boolean {
+    public isNumberExpression(expression: ts.Expression): boolean {
         return this.evaluator.isNumberExpression(expression);
     }
 
@@ -3533,19 +1542,7 @@ class Compiler
         return undefined;
     }
 
-    private requiredObjectNumber(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-        precision: "float" | "double" = "float",
-    ): string {
-        const value = this.objectProperty(object, name);
-        if (!value) {
-            this.fail(object, `Object literal is missing numeric property '${name}'.`);
-        }
-        return this.compileNumber(value, precision);
-    }
-
-    private propertyName(name: ts.PropertyName): string | undefined {
+    public propertyName(name: ts.PropertyName): string | undefined {
         if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
             return name.text;
         }
@@ -3582,7 +1579,8 @@ class Compiler
             const options = this.expectObjectLiteral(
                 call.arguments[1],
             );
-            this.validateObjectProperties(
+            validateObjectProperties(
+                this,
                 options,
                 ["msaaSamples", "requiredLimits"],
                 "Reached engine options support msaaSamples and requiredLimits.",
@@ -3650,7 +1648,7 @@ class Compiler
         return `${this.cppNamePrefixes.at(-1) ?? ""}block${this.temporaryIndex++}_`;
     }
 
-    private compileStaticString(expression: ts.Expression): string {
+    public compileStaticString(expression: ts.Expression): string {
         return this.compileStringLiteral(expression);
     }
 
@@ -3779,7 +1777,7 @@ class Compiler
      * method or getter of that record sees the state it closed over
      * even when the scope that built it has since been left.
      */
-    private withRecordScopes<T>(
+    public withRecordScopes<T>(
         owner: Value,
         work: () => T,
     ): T {
@@ -4085,116 +2083,17 @@ class Compiler
         kind: CompileAsset["kind"],
         faceSize?: number,
     ): CompileAsset {
-        source = this.resolveBundledAsset(source);
-        const key = `${kind}:${source}:${faceSize ?? ""}`;
-        const existing = this.assets.get(key);
-        if (existing) {
-            return existing;
-        }
-
-        const sourcePath = source.split(/[?#]/, 1)[0] ?? source;
-        const sourceName = sourcePath.split(/[\\/]/).pop() || `${kind}.bin`;
-        const packagedName =
-            kind === "gltf" && /\.gltf$/i.test(sourceName)
-                ? sourceName.replace(/\.gltf$/i, ".glb")
-                : kind === "hdr-environment"
-                    ? sourceName.replace(/\.hdr$/i, ".bblhdr")
-                : kind === "dds-environment"
-                    ? sourceName.replace(/\.dds$/i, ".bblhdr")
-                // A drawn atlas names the module that draws it; what lands
-                // beside the executable is the PNG that module returns.
-                : kind === "sprite-atlas"
-                    ? `${basenameWithoutExtension(sourceName)}.png`
-                : sourceName;
-        const safeName = packagedName.replace(/[^A-Za-z0-9._-]/g, "_");
-        const output =
-            kind === "babylon"
-                ? `${this.hash(source)}-${basenameWithoutExtension(safeName)}/${safeName}`
-                : `${this.hash(source)}-${safeName}`;
-        const asset: CompileAsset = {
-            source,
-            output,
-            kind,
-            ...(faceSize === undefined ? {} : { faceSize }),
-        };
-        this.assets.set(key, asset);
-        return asset;
+        return registerAsset(this, source, kind, faceSize);
     }
 
-    /**
-     * A sprite atlas that is DRAWN rather than fetched.
-     *
-     * `getSpriteAtlasDataUrl()` builds its image with canvas2D and returns a
-     * data URL, so there is no URL to materialize and no pixels to lower.
-     * The call resolves to the module that draws them, and generation runs
-     * that module in headless Chromium and bakes the PNG it returns — the
-     * same executable route the pinned GGX prefilter already takes.
-     */
     public registerSpriteAtlasAsset(
         expression: ts.Expression,
     ): string {
-        const unwrapped = this.unwrap(expression);
-        if (ts.isCallExpression(unwrapped)) {
-            const callee = this.unwrap(unwrapped.expression);
-            const modulePath = ts.isIdentifier(callee)
-                ? this.symbols.declarationSourcePath(callee)
-                : undefined;
-            if (modulePath && ts.isIdentifier(callee)) {
-                if (unwrapped.arguments.length !== 0) {
-                    this.fail(
-                        unwrapped,
-                        "A drawn sprite atlas factory takes no arguments.",
-                    );
-                }
-                const root = findRepositoryRoot(
-                    dirname(resolve(this.options.fileName)),
-                );
-                const asset = this.registerAsset(
-                    spriteAtlasAssetSource(
-                        relative(root, modulePath)
-                            .split(sep)
-                            .join("/"),
-                        callee.text,
-                    ),
-                    "sprite-atlas",
-                );
-                return this.cppString(asset.output);
-            }
-        }
-        // A plain URL still works: the atlas is an image either way.
-        const url = this.compileStringLiteral(expression);
-        return this.cppString(
-            this.registerAsset(url, "texture").output,
-        );
+        return registerSpriteAtlasAsset(this, expression);
     }
 
     public resolveBundledAsset(source: string): string {
-        if (source === "/brdf-lut.png") {
-            const pin = readUpstreamPin();
-            return `https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${pin.sourceVersion}/packages/babylon-lite/assets/brdf-lut.png`;
-        }
-        if (source.startsWith("/")) {
-            // Root-relative asset paths always mean the pinned lab/public
-            // root: corpus scenes and project-owned gates share the demo
-            // asset conventions, and repository-local fixtures use
-            // relative paths instead.
-            const pin = readUpstreamPin();
-            return (
-                "https://raw.githubusercontent.com/" +
-                `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
-                `/lab/public${source}`
-            );
-        }
-        return source;
-    }
-
-    private hash(value: string): string {
-        let hash = 0x811c9dc5;
-        for (let index = 0; index < value.length; index += 1) {
-            hash ^= value.charCodeAt(index);
-            hash = Math.imul(hash, 0x01000193);
-        }
-        return (hash >>> 0).toString(16).padStart(8, "0");
+        return resolveBundledAsset(source);
     }
 
     /**
@@ -4206,7 +2105,7 @@ class Compiler
      * pixels (the pinned sprite grid centres itself in it), so the read
      * has to produce a number rather than being erased with its owner.
      */
-    private canvasSizeProperty(
+    public canvasSizeProperty(
         expression: ts.Expression,
     ): "width" | "height" | undefined {
         const unwrapped = this.unwrap(expression);
@@ -4242,351 +2141,39 @@ class Compiler
             : undefined;
     }
 
-    public isBrowserOnlyExpression(expression: ts.Expression): boolean {
-        const unwrapped = this.unwrap(expression);
-        if (this.canvasSizeProperty(unwrapped)) {
-            return false;
-        }
-        if (ts.isIdentifier(unwrapped)) {
-            if (
-                [
-                    "console",
-                    "document",
-                    "performance",
-                    "window",
-                ].includes(unwrapped.text)
-            ) {
-                return true;
-            }
-            return (
-                this.lookupOptional(unwrapped)?.kind ===
-                "browser"
-            );
-        }
-        if (
-            ts.isNewExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "URLSearchParams"
-        ) {
-            return true;
-        }
-        if (ts.isPropertyAccessExpression(unwrapped)) {
-            return this.isBrowserOnlyExpression(
-                unwrapped.expression,
-            );
-        }
-        if (ts.isBinaryExpression(unwrapped)) {
-            return (
-                this.isBrowserOnlyExpression(
-                    unwrapped.left,
-                ) ||
-                this.isBrowserOnlyExpression(
-                    unwrapped.right,
-                )
-            );
-        }
-        if (ts.isPrefixUnaryExpression(unwrapped)) {
-            return this.isBrowserOnlyExpression(
-                unwrapped.operand,
-            );
-        }
-        if (ts.isCallExpression(unwrapped)) {
-            if (
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                ) &&
-                this.isBrowserOnlyExpression(
-                    unwrapped.expression.expression,
-                )
-            ) {
-                return true;
-            }
-            const browserArgument =
-                unwrapped.arguments.some((argument) =>
-                    this.isBrowserOnlyExpression(argument),
-                );
-            if (
-                ts.isIdentifier(unwrapped.expression) &&
-                ["isNaN", "parseFloat"].includes(
-                    unwrapped.expression.text,
-                )
-            ) {
-                return browserArgument;
-            }
-            if (
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                ) &&
-                ts.isIdentifier(
-                    unwrapped.expression.expression,
-                ) &&
-                unwrapped.expression.expression.text ===
-                    "Number" &&
-                unwrapped.expression.name.text === "isFinite"
-            ) {
-                return browserArgument;
-            }
-            return false;
-        }
-        const isCanvasLookup =
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            ts.isIdentifier(unwrapped.expression.expression) &&
-            unwrapped.expression.expression.text === "document" &&
-            (unwrapped.expression.name.text === "getElementById" || unwrapped.expression.name.text === "querySelector");
-        const isPerformanceNow =
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            ts.isIdentifier(unwrapped.expression.expression) &&
-            unwrapped.expression.expression.text === "performance" &&
-            unwrapped.expression.name.text === "now";
-        return isCanvasLookup || isPerformanceNow;
+    public isBrowserOnlyExpression(
+        expression: ts.Expression,
+    ): boolean {
+        return this.browserErasure.isBrowserOnlyExpression(
+            expression,
+        );
     }
 
     public evaluateBrowserCondition(
         expression: ts.Expression,
     ): boolean | undefined {
-        const value =
-            this.evaluateBrowserValue(expression);
-        return value?.kind === "boolean"
-            ? value.value
-            : undefined;
+        return this.browserErasure.evaluateBrowserCondition(
+            expression,
+        );
     }
 
-    private evaluateBrowserValue(
+    public evaluateBrowserValue(
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
-        const unwrapped = this.unwrap(expression);
-        if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) {
-            return { kind: "boolean", value: true };
-        }
-        if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) {
-            return { kind: "boolean", value: false };
-        }
-        if (unwrapped.kind === ts.SyntaxKind.NullKeyword) {
-            return { kind: "null" };
-        }
-        if (ts.isStringLiteral(unwrapped)) {
-            return {
-                kind: "string",
-                value: unwrapped.text,
-            };
-        }
-        if (ts.isNumericLiteral(unwrapped)) {
-            return {
-                kind: "number",
-                value: Number(unwrapped.text),
-            };
-        }
-        if (ts.isIdentifier(unwrapped)) {
-            return this.lookupOptional(unwrapped)
-                ?.browserValue;
-        }
-        if (
-            ts.isNewExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "URLSearchParams"
-        ) {
-            return { kind: "search-params" };
-        }
-        if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            unwrapped.name.text === "search" &&
-            ts.isPropertyAccessExpression(
-                unwrapped.expression,
-            ) &&
-            unwrapped.expression.name.text === "location" &&
-            ts.isIdentifier(
-                unwrapped.expression.expression,
-            ) &&
-            unwrapped.expression.expression.text === "window"
-        ) {
-            return { kind: "string", value: "" };
-        }
-        if (
-            ts.isPrefixUnaryExpression(unwrapped) &&
-            unwrapped.operator ===
-                ts.SyntaxKind.ExclamationToken
-        ) {
-            const operand = this.evaluateBrowserValue(
-                unwrapped.operand,
-            );
-            const truthy = this.browserTruthy(operand);
-            return truthy === undefined
-                ? undefined
-                : { kind: "boolean", value: !truthy };
-        }
-        if (ts.isBinaryExpression(unwrapped)) {
-            const left = this.evaluateBrowserValue(
-                unwrapped.left,
-            );
-            if (
-                unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.AmpersandAmpersandToken
-            ) {
-                const truthy = this.browserTruthy(left);
-                if (truthy === false) {
-                    return {
-                        kind: "boolean",
-                        value: false,
-                    };
-                }
-                return truthy
-                    ? this.evaluateBrowserValue(
-                          unwrapped.right,
-                      )
-                    : undefined;
-            }
-            if (
-                unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.BarBarToken
-            ) {
-                const truthy = this.browserTruthy(left);
-                if (truthy === true) {
-                    return left;
-                }
-                return truthy === false
-                    ? this.evaluateBrowserValue(
-                          unwrapped.right,
-                      )
-                    : undefined;
-            }
-            return undefined;
-        }
-        if (ts.isCallExpression(unwrapped)) {
-            if (
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                ) &&
-                ts.isIdentifier(
-                    unwrapped.expression.expression,
-                )
-            ) {
-                const owner = this.lookupOptional(
-                    unwrapped.expression.expression,
-                )?.browserValue;
-                if (owner?.kind === "search-params") {
-                    if (
-                        unwrapped.expression.name.text ===
-                        "has"
-                    ) {
-                        return {
-                            kind: "boolean",
-                            value: false,
-                        };
-                    }
-                    if (
-                        unwrapped.expression.name.text ===
-                        "get"
-                    ) {
-                        return { kind: "null" };
-                    }
-                }
-            }
-            if (
-                ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "parseFloat"
-            ) {
-                const argument =
-                    this.evaluateBrowserValue(
-                        unwrapped.arguments[0]!,
-                    );
-                const text =
-                    argument?.kind === "string"
-                        ? argument.value
-                        : "";
-                return {
-                    kind: "number",
-                    value: Number.parseFloat(text),
-                };
-            }
-            if (
-                ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "isNaN"
-            ) {
-                const argument =
-                    this.evaluateBrowserValue(
-                        unwrapped.arguments[0]!,
-                    );
-                return argument?.kind === "number"
-                    ? {
-                          kind: "boolean",
-                          value: Number.isNaN(
-                              argument.value,
-                          ),
-                      }
-                    : undefined;
-            }
-            if (
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                ) &&
-                ts.isIdentifier(
-                    unwrapped.expression.expression,
-                ) &&
-                unwrapped.expression.expression.text ===
-                    "Number" &&
-                unwrapped.expression.name.text === "isFinite"
-            ) {
-                const argument =
-                    this.evaluateBrowserValue(
-                        unwrapped.arguments[0]!,
-                    );
-                return argument?.kind === "number"
-                    ? {
-                          kind: "boolean",
-                          value: Number.isFinite(
-                              argument.value,
-                          ),
-                      }
-                    : undefined;
-            }
-        }
-        return undefined;
+        return this.browserErasure.evaluateBrowserValue(
+            expression,
+        );
     }
 
-    private browserTruthy(
-        value: Value["browserValue"] | undefined,
-    ): boolean | undefined {
-        if (!value) {
-            return undefined;
-        }
-        switch (value.kind) {
-            case "boolean":
-                return value.value;
-            case "null":
-                return false;
-            case "number":
-                return (
-                    value.value !== 0 &&
-                    !Number.isNaN(value.value)
-                );
-            case "search-params":
-                return true;
-            case "string":
-                return value.value.length > 0;
-        }
+    public isBrowserInstrumentationCall(
+        call: ts.CallExpression,
+    ): boolean {
+        return this.browserErasure.isBrowserInstrumentationCall(
+            call,
+        );
     }
 
-    public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
-        const objectAssign =
-            ts.isPropertyAccessExpression(call.expression) &&
-            ts.isIdentifier(call.expression.expression) &&
-            call.expression.expression.text === "Object" &&
-            call.expression.name.text === "assign";
-        const deviceEvent =
-            ts.isPropertyAccessExpression(call.expression) &&
-            call.expression.name.text ===
-                "addEventListener" &&
-            ts.isPropertyAccessExpression(
-                call.expression.expression,
-            ) &&
-            call.expression.expression.name.text ===
-                "_device";
-        return objectAssign || deviceEvent;
-    }
-
-    private lookupOptional(
+    public lookupOptional(
         identifier: ts.Identifier,
     ): Value | undefined {
         const symbol =
@@ -4800,7 +2387,7 @@ class Compiler
         }
         return {
             kind: "render-texture",
-            cpp: `bbl::geometry_task_texture(${owner.cpp}, bbl::GeometryTextureType::${this.geometryEnumMember(type)})`,
+            cpp: `bbl::geometry_task_texture(${owner.cpp}, bbl::GeometryTextureType::${geometryEnumMember(type)})`,
             ...engineCpp,
         };
     }
@@ -4820,198 +2407,6 @@ class Compiler
             current = current.expression;
         }
         return current;
-    }
-
-    private compileAdaptations(features: Feature[]): CompileAdaptation[] {
-        const adaptations: CompileAdaptation[] = [];
-        if (this.hasMainEntry) {
-            adaptations.push({
-                id: "entry-main-wrapper-erasure",
-                category: "browser-erasure",
-                sourceSemantics: "The TypeScript scene setup is wrapped in a browser-facing main function.",
-                nativeSemantics: "The compiler emits the body of main into the native entry point and omits the browser promise wrapper.",
-                risk: "low",
-                validation: ["compiler entry-order tests", "source-located unsupported syntax errors"],
-            });
-        }
-        const erasedBrowserCount =
-            this.erasedBrowserExpressions.size + this.erasedBrowserInstrumentation.size;
-        if (erasedBrowserCount > 0) {
-            adaptations.push({
-                id: "browser-setup-erasure",
-                category: "browser-erasure",
-                sourceSemantics: `${erasedBrowserCount} DOM, performance, or dataset instrumentation expression(s) execute in the browser.`,
-                nativeSemantics: "Those expressions are erased because window creation, timing, and diagnostics are provided by PAL.",
-                risk: "medium",
-                validation: ["compiler browser-erasure tests", "generated main.cpp inspection"],
-            });
-        }
-        if (this.unwrappedAwaitExpressions.size > 0) {
-            adaptations.push({
-                id: "synchronous-aot-await",
-                category: "async",
-                sourceSemantics: `${this.unwrappedAwaitExpressions.size} await expression(s) suspend JavaScript promises.`,
-                nativeSemantics: "Reachable asset promises resolve immediately because remote data is materialized during compilation.",
-                risk: "medium",
-                validation: ["typed Promise<T> runtime", "local asset manifest", "generated glTF loader tests"],
-            });
-        }
-        if (this.jsDataReached) {
-            adaptations.push({
-                id: "plain-data-value-model",
-                category: "language",
-                sourceSemantics: "JavaScript objects and arrays are heap references with garbage collection; sparse arrays read undefined.",
-                nativeSemantics: "Plain-data objects compile to structs and vectors: a const local bound to an element or member binds a native reference, so writes through it reach the container, while a mutable local stays a copy that rejects writes; function object parameters pass by native reference; new Array elements zero-initialize. A structural mutation of a container makes references taken into it unusable, and later use is a compile error rather than a dangling read.",
-                risk: "medium",
-                validation: ["compiler data-model tests", "differential logic parity gates"],
-            });
-        }
-        if (this.jsRandomReached) {
-            adaptations.push({
-                id: "deterministic-seeded-random",
-                category: "determinism",
-                sourceSemantics: "Math.random draws from the host's nondeterministic generator.",
-                nativeSemantics: "Math.random lowers to a pinned mulberry32 sequence (seed 1); the browser reference capture installs the identical generator before module load.",
-                risk: "medium",
-                validation: ["seeded-random unit tests", "deterministic parity gates"],
-            });
-        }
-        if (this.assets.size > 0) {
-            adaptations.push({
-                id: "compile-time-asset-materialization",
-                category: "asset-materialization",
-                sourceSemantics: `${this.assets.size} asset URL(s) are fetched at runtime by Babylon Lite.`,
-                nativeSemantics: "The compiler downloads them into the generated asset directory and generated code performs deterministic local reads.",
-                risk: "medium",
-                validation: ["asset paths in manifest.json", "typed asset specialization tests"],
-            });
-        }
-        if (
-            [...this.assets.values()].some(
-                (asset) => asset.kind === "sprite-atlas",
-            )
-        ) {
-            adaptations.push({
-                id: "drawn-sprite-atlas",
-                category: "asset-materialization",
-                sourceSemantics:
-                    "The atlas is drawn at run time with canvas2D and handed to loadSpriteAtlas as a data URL.",
-                nativeSemantics:
-                    "Generation runs the same module in headless Chromium and bakes the PNG it returns, so the pixels are a browser rasterizer's rather than a reimplementation. The bytes depend on the Chrome that compiled them, exactly as the pinned GGX prefilter already does.",
-                risk: "medium",
-                validation: [
-                    "scene 50 parity against the browser golden",
-                    "byte-stable across repeated compilations",
-                ],
-            });
-        }
-        if (features.includes("backend:sdl")) {
-            adaptations.push({
-                id: "sdl-platform-boundary",
-                category: "platform",
-                sourceSemantics: "Canvas, pointer, keyboard, timing, and presentation use browser platform APIs.",
-                nativeSemantics: "SDL implements the platform boundary and translates input into generated Babylon camera state.",
-                risk: "medium",
-                validation: ["ArcRotate constant extraction tests", "native input smoke tests"],
-            });
-        }
-        if (features.includes("renderer:pbr")) {
-            adaptations.push({
-                id: "sdl-gpu-shader-backends",
-                category: "rendering",
-                sourceSemantics: "Babylon Lite composes WGSL and renders through WebGPU.",
-                nativeSemantics: "The compiler emits native-specialized WGSL; pinned Tint produces HLSL/MSL, register normalization and DXC produce SDL-compatible DXIL/SPIR-V, and SDL_GPU selects the native backend.",
-                risk: "high",
-                validation: ["upstream formula marker tests", "renderer-fidelity.json", "CPU/GPU visual parity"],
-            });
-        }
-        if (features.includes("renderer:transmission")) {
-            adaptations.push({
-                id: "sdl-gpu-scene-transmission",
-                category: "rendering",
-                sourceSemantics: "Babylon Lite copies scene color before transmissive draws and applies KHR_materials_transmission, IOR Fresnel, and KHR_materials_volume attenuation.",
-                nativeSemantics: "Generated render stages copy opaque scene color into an SDL_GPU sampled texture; Tint WGSL applies dielectric F0 ((ior-1)/(ior+1))^2 and Beer-Lambert exp(log(color)/distance*thickness) attenuation.",
-                risk: "high",
-                validation: [
-                    "independent skybox/transmission/IOR/volume gates",
-                    "scene 176 MosquitoInAmber parity",
-                    "Tint binding reflection",
-                ],
-            });
-        }
-        if (features.includes("environment:hdr")) {
-            adaptations.push({
-                id: "compile-time-hdr-cubemap",
-                category: "asset-materialization",
-                sourceSemantics: "Babylon Lite decodes RGBE, converts the equirectangular panorama to RGBA16F cubemap faces, and generates a GGX-prefiltered mip chain on the GPU.",
-                nativeSemantics: "The compiler performs the pinned RGBE decode, spherical-harmonics integration, and cubemap projection, preserves mip zero exactly, then uses the pinned 1024-sample GGX WebGPU prefilter to store a deterministic RGBA16F mip chain for native upload.",
-                risk: "high",
-                validation: [
-                    "pinned HDR parser and cubemap marker tests",
-                    "generated HDR package validation",
-                    "scene 8 native/reference parity",
-                ],
-            });
-        }
-        if (features.includes("material:grid")) {
-            adaptations.push({
-                id: "grid-tint-specialization",
-                category: "rendering",
-                sourceSemantics: "Babylon Lite composes GridMaterial WGSL variants from antialias, max-line, transparency, premultiplication, and opacity-texture features, with world/view/projection system uniforms.",
-                nativeSemantics: "The compiler emits one generated native WGSL program parameterized by the reached GridMaterial controls, uses the native view-projection matrix plus local position/normal attributes, and compiles it through pinned Tint.",
-                risk: "medium",
-                validation: [
-                    "pinned GridMaterial formula marker tests",
-                    "Tint binding reflection",
-                    "scene 213 native/reference parity",
-                ],
-            });
-        }
-        if (this.reachedShaderPrograms.length > 0) {
-            adaptations.push({
-                id: "typed-reached-shader-variants",
-                category: "rendering",
-                sourceSemantics: `Babylon Lite composes the reached custom WGSL shader variant(s): ${this.reachedShaderPrograms.map(({ name }) => name).join(", ")}.`,
-                nativeSemantics: "The compiler validates reached WGSL, attributes, uniforms, and fixed-function state, lowers the supported WGSL subset into typed shader IR, reflects interfaces and uniform layouts, and emits native-specialized WGSL. Pinned Tint emits HLSL/MSL; register normalization and DXC emit SDL-compatible DXIL/SPIR-V.",
-                risk: "high",
-                validation: [
-                    "shader variant compiler tests",
-                    "typed WGSL IR and reflection tests",
-                    "portable shader compilation",
-                    "scene 163/274 native/reference parity",
-                ],
-            });
-        }
-        if (features.includes("renderer:geometry-output")) {
-            adaptations.push({
-                id: "sdl-gpu-frame-graph",
-                category: "rendering",
-                sourceSemantics: `Babylon Lite frame-graph tasks execute with ${this.geometryOutputTasks.length} typed geometry renderer task(s), explicit render lists, render-target textures, and ordered copy/resolve tasks.`,
-                nativeSemantics: "Generated task records preserve cameras, material overrides, geometry attachment order, depth-only targets, shader semantics, and source-derived integer viewport/scissor bounds while PAL executes SDL_GPU passes, reverse-depth views, MSAA resolve, and viewport blits.",
-                risk: "high",
-                validation: [
-                    "geometry task compiler tests",
-                    "pinned geometry shader marker tests",
-                    "scene 116/145/146 native/reference parity",
-                ],
-            });
-        }
-        if (this.defaultRenderTaskAdapted) {
-            adaptations.push({
-                id: "readable-default-render-task",
-                category: "rendering",
-                sourceSemantics:
-                    "Babylon Lite creates a default scene render task that resolves directly to the swapchain.",
-                nativeSemantics:
-                    "The compiler creates an equivalent readable MSAA target, resolves it to a single-sample target, then presents it so SDL_GPU screenshot capture never reads the swapchain.",
-                risk: "medium",
-                validation: [
-                    "default render-task compiler test",
-                    "scene 116 exact-source parity",
-                ],
-            });
-        }
-        return adaptations;
     }
 
     public lookup(identifier: ts.Identifier): Value {
@@ -5314,8 +2709,33 @@ class Compiler
         });
     }
 
-    public reachFeature(feature: Feature): void {
+    /**
+     * Adds a runtime feature to the reached set and records the first
+     * reaching scene-source call site as "file:line" for the manifest's
+     * `featureSites` record. First-reach wins: the walk is a single
+     * deterministic pass (entry statements in document order,
+     * sub-expressions depth-first), so ties resolve by document order
+     * and regeneration is stable — a repeat reach never moves the
+     * recorded site. Files are named the way `fail` names them: the
+     * entry file by its option name, an imported file by its program
+     * name.
+     */
+    public reachFeature(feature: Feature, site?: ts.Node): void {
         this.features.add(feature);
+        if (site !== undefined && !this.featureSites.has(feature)) {
+            const file = site.getSourceFile();
+            const position = file.getLineAndCharacterOfPosition(
+                site.getStart(file),
+            );
+            const fileName =
+                file === this.sourceFile
+                    ? this.options.fileName
+                    : file.fileName;
+            this.featureSites.set(
+                feature,
+                `${fileName}:${position.line + 1}`,
+            );
+        }
     }
 
     public ensureDefaultRenderTask(
@@ -5331,8 +2751,8 @@ class Compiler
         scene.defaultRenderTaskEmitted = true;
         this.defaultRenderTaskAdapted = true;
         const engine = this.requireEngine(scene, node);
-        this.reachFeature("renderer:pbr");
-        this.reachFeature("renderer:geometry-output");
+        this.reachFeature("renderer:pbr", node);
+        this.reachFeature("renderer:geometry-output", node);
         const target =
             this.allocateTemporaryCppName(
                 "default_target",
@@ -5420,7 +2840,7 @@ class Compiler
 
     public cppIdentifier(sourceName: string): string {
         const prefix = this.cppNamePrefixes.at(-1) ?? "";
-        return `v_${prefix}${sourceName.replace(/[^A-Za-z0-9_]/g, "_")}`;
+        return `v_${prefix}${sanitizeCppIdentifier(sourceName)}`;
     }
 
     public cppString(value: string): string {
