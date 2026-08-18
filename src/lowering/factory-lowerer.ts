@@ -16,17 +16,17 @@ export class FactoryLowerer {
                 boxModule,
                 "createBoxData",
             );
-        const { declaration: ground } =
+        const { file: groundFile, declaration: ground } =
             this.context.functionDeclaration(
                 groundModule,
                 "createFlatGroundData",
             );
-        const { declaration: plane } =
+        const { file: planeFile, declaration: plane } =
             this.context.functionDeclaration(
                 planeModule,
                 "createPlaneData",
             );
-        const { declaration: sphere } =
+        const { file: sphereFile, declaration: sphere } =
             this.context.functionDeclaration(
                 sphereModule,
                 "createSphereData",
@@ -87,17 +87,17 @@ export class FactoryLowerer {
                         expression.left.expression.text ===
                             arrayName,
                 );
-        const numericConstructorArray = (
-            file: ts.SourceFile,
+        const constructorArrayElements = (
+            root: ts.Node,
             variableName: string,
             constructorName: string,
         ): {
             expression: ts.Expression;
-            values: number[];
+            elements: readonly ts.Expression[];
         } => {
             const expression =
                 this.context.variableInitializer(
-                    file,
+                    root,
                     variableName,
                 );
             const unwrapped =
@@ -118,30 +118,29 @@ export class FactoryLowerer {
             }
             return {
                 expression,
-                values: unwrapped.arguments[0].elements.map(
-                    (element) =>
-                        this.context.numericValue(element, file),
-                ),
+                elements: unwrapped.arguments[0].elements,
             };
         };
-        const assertNumbers = (
-            expression: ts.Expression,
-            actual: number[],
-            expected: number[],
-            label: string,
-        ): void => {
-            if (
-                actual.length !== expected.length ||
-                actual.some(
-                    (value, index) =>
-                        value !== expected[index],
-                )
-            ) {
-                this.context.contractError(
-                    expression,
-                    `${label} changed.`,
+        const numericConstructorArray = (
+            file: ts.SourceFile,
+            variableName: string,
+            constructorName: string,
+        ): {
+            expression: ts.Expression;
+            values: number[];
+        } => {
+            const { expression, elements } =
+                constructorArrayElements(
+                    file,
+                    variableName,
+                    constructorName,
                 );
-            }
+            return {
+                expression,
+                values: elements.map((element) =>
+                    this.context.numericValue(element, file),
+                ),
+            };
         };
 
         assertVariable(
@@ -163,68 +162,203 @@ export class FactoryLowerer {
             "Morph target count",
         );
 
-        assertVariable(
-            boxFile,
-            "BOX_POSITION_SIGNS",
-            "[0x4b213fa5, 0xded6426f, 0x80]",
-            "Box position signs",
+        // The box tables FLOW from the pin instead of being compared against
+        // re-typed copies. The emitted add_face helper is structurally a
+        // quad (four explicit corners and a vertices.size() - 4 base), so
+        // the tables are asserted to still factor into four-corner faces;
+        // everything else — corner signs, per-face normals, the shared UV
+        // quad, and the two-triangle local index pattern — is decoded from
+        // the pinned constants and interpolated into the emission.
+        const boxSigns = this.context.unwrapExpression(
+            this.context.variableInitializer(
+                boxFile,
+                "BOX_POSITION_SIGNS",
+            ),
+        );
+        if (!ts.isArrayLiteralExpression(boxSigns)) {
+            this.context.contractError(
+                boxSigns,
+                "Expected BOX_POSITION_SIGNS to be an array literal.",
+            );
+        }
+        const boxSignWords = boxSigns.elements.map((element) =>
+            this.context.numericValue(element, boxFile),
         );
         const boxNormals = numericConstructorArray(
             boxFile,
             "BOX_NORMALS",
             "F32",
         );
-        const expectedNormals = [
-            [0, 0, 1],
-            [0, 0, -1],
-            [1, 0, 0],
-            [-1, 0, 0],
-            [0, 1, 0],
-            [0, -1, 0],
-        ].flatMap((normal) =>
-            Array.from({ length: 4 }, () => normal).flat(),
-        );
-        assertNumbers(
-            boxNormals.expression,
-            boxNormals.values,
-            expectedNormals,
-            "Box face normals",
-        );
         const boxUvs = numericConstructorArray(
             boxFile,
             "BOX_UVS",
             "F32",
-        );
-        assertNumbers(
-            boxUvs.expression,
-            boxUvs.values,
-            Array.from(
-                { length: 6 },
-                () => [1, 1, 0, 1, 0, 0, 1, 0],
-            ).flat(),
-            "Box UVs",
         );
         const boxIndices = numericConstructorArray(
             boxFile,
             "BOX_INDICES",
             "U32",
         );
-        assertNumbers(
-            boxIndices.expression,
-            boxIndices.values,
-            Array.from({ length: 6 }, (_, face) => {
-                const base = face * 4;
-                return [
-                    base,
-                    base + 1,
-                    base + 2,
-                    base,
-                    base + 2,
-                    base + 3,
-                ];
-            }).flat(),
-            "Box indices",
+        const boxQuadSize = 4;
+        const boxFaceCount =
+            boxNormals.values.length / (boxQuadSize * 3);
+        if (
+            !Number.isInteger(boxFaceCount) ||
+            boxFaceCount === 0 ||
+            boxUvs.values.length !==
+                boxFaceCount * boxQuadSize * 2 ||
+            boxIndices.values.length % boxFaceCount !== 0 ||
+            boxSignWords.length * 32 <
+                boxFaceCount * boxQuadSize * 3
+        ) {
+            this.context.contractError(
+                boxNormals.expression,
+                "Box tables no longer factor into four-corner faces.",
+            );
+        }
+        // Corner positions, decoded with the same bit order the pinned
+        // builder uses — asserted below so a re-packed table cannot be
+        // read with a stale decode: bit (face*4+corner)*3+axis, where a
+        // set bit is the +half extent of that axis dimension.
+        const boxHalfNames = [
+            "half_width",
+            "half_height",
+            "half_depth",
+        ] as const;
+        const boxFaceCorners = Array.from(
+            { length: boxFaceCount },
+            (_, face) =>
+                Array.from({ length: boxQuadSize }, (_, corner) => {
+                    const parts = boxHalfNames.map((name, axis) => {
+                        const index =
+                            (face * boxQuadSize + corner) * 3 +
+                            axis;
+                        const sign =
+                            (boxSignWords[index >> 5]! >>>
+                                (index & 31)) &
+                            1;
+                        return `${sign === 1 ? "" : "-"}${name}`;
+                    });
+                    return `Vec3{${parts.join(", ")}}`;
+                }),
         );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(box, "sign"),
+            "(BOX_POSITION_SIGNS[index >> 5] >>> (index & 31)) & 1",
+            "Box sign decode",
+        );
+        const boxPositionStores = indexedAssignments(
+            box,
+            "positions",
+        );
+        if (boxPositionStores.length !== 1) {
+            this.context.contractError(
+                box,
+                "Expected one box position expansion.",
+            );
+        }
+        // Pins that a set sign bit means +0.5 of the axis dimension, the
+        // polarity the decoded corners above rely on.
+        this.context.assertExpressionShape(
+            boxPositionStores[0]!.right,
+            "(sign - 0.5) * dimensions[index % 3]",
+            "Box position expansion",
+        );
+        // Per-face constants: the emitted add_face takes one normal for its
+        // four corners and one UV quad shared by every face, so the tables
+        // must still collapse that way.
+        const boxFaceNormals = Array.from(
+            { length: boxFaceCount },
+            (_, face) => {
+                const base = face * boxQuadSize * 3;
+                const normal = boxNormals.values.slice(
+                    base,
+                    base + 3,
+                );
+                for (
+                    let corner = 1;
+                    corner < boxQuadSize;
+                    corner += 1
+                ) {
+                    for (let axis = 0; axis < 3; axis += 1) {
+                        if (
+                            boxNormals.values[
+                                base + corner * 3 + axis
+                            ] !== normal[axis]
+                        ) {
+                            this.context.contractError(
+                                boxNormals.expression,
+                                "Box face normals are no longer uniform per face.",
+                            );
+                        }
+                    }
+                }
+                return `Vec3{${normal
+                    .map((value) =>
+                        this.context.floatLiteral(value),
+                    )
+                    .join(", ")}}`;
+            },
+        );
+        const boxUvQuad = boxUvs.values.slice(
+            0,
+            boxQuadSize * 2,
+        );
+        boxUvs.values.forEach((value, index) => {
+            if (value !== boxUvQuad[index % (boxQuadSize * 2)]) {
+                this.context.contractError(
+                    boxUvs.expression,
+                    "Box UV quad is no longer shared by every face.",
+                );
+            }
+        });
+        const boxIndicesPerFace =
+            boxIndices.values.length / boxFaceCount;
+        const boxQuadPattern = boxIndices.values.slice(
+            0,
+            boxIndicesPerFace,
+        );
+        boxIndices.values.forEach((value, position) => {
+            const face = Math.floor(
+                position / boxIndicesPerFace,
+            );
+            const local = value - face * boxQuadSize;
+            if (
+                local !==
+                    boxQuadPattern[
+                        position % boxIndicesPerFace
+                    ] ||
+                local < 0 ||
+                local >= boxQuadSize
+            ) {
+                this.context.contractError(
+                    boxIndices.expression,
+                    "Box faces no longer share one local index pattern.",
+                );
+            }
+        });
+        // The pinned totals must agree with the factored tables the
+        // emission is built from.
+        const boxReturn = this.context.returnObject(box);
+        for (const [name, expected] of [
+            ["vertexCount", boxFaceCount * boxQuadSize],
+            ["indexCount", boxIndices.values.length],
+        ] as const) {
+            if (
+                this.context.numericValue(
+                    this.context.propertyInitializer(
+                        boxReturn,
+                        name,
+                    ),
+                    boxFile,
+                ) !== expected
+            ) {
+                this.context.contractError(
+                    boxReturn,
+                    `Box '${name}' no longer matches its tables.`,
+                );
+            }
+        }
         const boxBindings = this.context.findNodes(
             box,
             (node): node is ts.BindingElement =>
@@ -278,6 +412,10 @@ export class FactoryLowerer {
             ["subdivisions", "opts.subdivisions ?? 1"],
             ["uScale", "opts.uvScale?.[0] ?? 1"],
             ["vScale", "opts.uvScale?.[1] ?? 1"],
+            // Paired with the emitted columns = subdivisions + 1 and the
+            // square row loop.
+            ["cols", "subdivisions + 1"],
+            ["rows", "cols"],
         ] as const) {
             assertVariable(
                 ground,
@@ -286,55 +424,125 @@ export class FactoryLowerer {
                 `Ground '${name}'`,
             );
         }
-        const groundIndices = indexedAssignments(
+        // The ground vertex, paired with the emitted ModelVertex: the
+        // column/row positions (the emission precomputes width * 0.5f for
+        // the exact -width / 2), the constant up normal (which flows), and
+        // the UV generation whose tiling scale the emission folds into the
+        // generated coordinate — exact, because scaling by the default 1 is
+        // an identity in float.
+        assertVariable(
             ground,
-            "indices",
+            "x",
+            "-width / 2 + (col / subdivisions) * width",
+            "Ground column position",
         );
-        const expectedGroundIndices = [
-            "bottomRight",
-            "topRight",
-            "topLeft",
-            "bottomLeft",
-            "bottomRight",
-            "topLeft",
+        assertVariable(
+            ground,
+            "z",
+            "-height / 2 + (1 - row / subdivisions) * height",
+            "Ground row position",
+        );
+        const groundNormalStores = indexedAssignments(
+            ground,
+            "normals",
+        );
+        if (groundNormalStores.length !== 3) {
+            this.context.contractError(
+                ground,
+                "Expected three ground normal components.",
+            );
+        }
+        const groundNormal = `Vec3{${groundNormalStores
+            .map((assignment) =>
+                this.context.floatLiteral(
+                    this.context.numericValue(
+                        assignment.right,
+                        groundFile,
+                    ),
+                ),
+            )
+            .join(", ")}}`;
+        const groundUvStores = indexedAssignments(
+            ground,
+            "uvs",
+        );
+        const expectedGroundUvs = [
+            "col / subdivisions",
+            "1 - row / subdivisions",
+            "uvs[i] * uScale",
+            "uvs[i + 1] * vScale",
         ];
         if (
-            groundIndices.length !==
-            expectedGroundIndices.length
+            groundUvStores.length !== expectedGroundUvs.length
         ) {
+            this.context.contractError(
+                ground,
+                "Unexpected ground UV stores.",
+            );
+        }
+        groundUvStores.forEach((assignment, index) =>
+            this.context.assertExpressionShape(
+                assignment.right,
+                expectedGroundUvs[index]!,
+                `Ground UV term ${index}`,
+            ),
+        );
+        // The quad corners the pinned winding names, asserted so the
+        // emitted snake_case locals keep computing the same offsets, and
+        // the winding itself, which FLOWS into the emitted index insert in
+        // the pin's own order.
+        for (const [name, expected] of [
+            ["topLeft", "row * cols + col"],
+            ["topRight", "topLeft + 1"],
+            ["bottomLeft", "(row + 1) * cols + col"],
+            ["bottomRight", "bottomLeft + 1"],
+        ] as const) {
+            assertVariable(
+                ground,
+                name,
+                expected,
+                `Ground corner '${name}'`,
+            );
+        }
+        const groundCornerNames: Record<string, string> = {
+            topLeft: "top_left",
+            topRight: "top_right",
+            bottomLeft: "bottom_left",
+            bottomRight: "bottom_right",
+        };
+        const groundWinding = indexedAssignments(
+            ground,
+            "indices",
+        ).map((assignment) => {
+            const right = this.context.unwrapExpression(
+                assignment.right,
+            );
+            const mapped = ts.isIdentifier(right)
+                ? groundCornerNames[right.text]
+                : undefined;
+            if (!mapped) {
+                this.context.contractError(
+                    assignment,
+                    "Expected the ground winding to name a quad corner.",
+                );
+            }
+            return mapped;
+        });
+        if (groundWinding.length !== 6) {
             this.context.contractError(
                 ground,
                 "Unexpected ground index count.",
             );
         }
-        groundIndices.forEach((assignment, index) =>
-            this.context.assertExpressionShape(
-                assignment.right,
-                expectedGroundIndices[index]!,
-                `Ground index ${index}`,
-            ),
-        );
 
         for (const [name, expected] of [
             ["size", "options.size ?? 1"],
             ["width", "options.width ?? size"],
             ["height", "options.height ?? size"],
-            [
-                "positions",
-                "new F32([-hw, -hh, 0, hw, -hh, 0, hw, hh, 0, -hw, hh, 0])",
-            ],
-            [
-                "normals",
-                "new F32([0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1])",
-            ],
-            [
-                "uvs",
-                "new F32([0, 0, 1, 0, 1, 1, 0, 1])",
-            ],
-            [
-                "indices",
-                "new U32([0, 1, 2, 0, 2, 3])",
-            ],
+            // Paired with the emitted half_width/half_height, which multiply
+            // by 0.5f — exact for the pinned divide by two.
+            ["hw", "width / 2"],
+            ["hh", "height / 2"],
         ] as const) {
             assertVariable(
                 plane,
@@ -343,12 +551,113 @@ export class FactoryLowerer {
                 `Plane '${name}'`,
             );
         }
+        // The plane tables FLOW from the pin: each position corner is read
+        // as a signed half-extent (or zero) term, the constant normal and
+        // the UV corners are read numerically, and the two-triangle index
+        // list is read verbatim. Re-typing them as expected shapes is what
+        // this replaces.
+        const planeHalfNames: Record<string, string> = {
+            hw: "half_width",
+            hh: "half_height",
+        };
+        const planeToken = (element: ts.Expression): string => {
+            const unwrapped =
+                this.context.unwrapExpression(element);
+            if (
+                ts.isPrefixUnaryExpression(unwrapped) &&
+                unwrapped.operator === ts.SyntaxKind.MinusToken &&
+                ts.isIdentifier(unwrapped.operand)
+            ) {
+                const mapped =
+                    planeHalfNames[unwrapped.operand.text];
+                if (!mapped) {
+                    this.context.contractError(
+                        unwrapped,
+                        "Unexpected plane corner term.",
+                    );
+                }
+                return `-${mapped}`;
+            }
+            if (ts.isIdentifier(unwrapped)) {
+                const mapped = planeHalfNames[unwrapped.text];
+                if (!mapped) {
+                    this.context.contractError(
+                        unwrapped,
+                        "Unexpected plane corner term.",
+                    );
+                }
+                return mapped;
+            }
+            return this.context.floatLiteral(
+                this.context.numericValue(unwrapped, planeFile),
+            );
+        };
+        const planePositions = constructorArrayElements(
+            plane,
+            "positions",
+            "F32",
+        ).elements.map(planeToken);
+        const planeNormals = constructorArrayElements(
+            plane,
+            "normals",
+            "F32",
+        ).elements.map(planeToken);
+        const planeUvs = constructorArrayElements(
+            plane,
+            "uvs",
+            "F32",
+        ).elements.map(planeToken);
+        const planeIndicesTable = constructorArrayElements(
+            plane,
+            "indices",
+            "U32",
+        );
+        const planeIndices = planeIndicesTable.elements.map(
+            (element) =>
+                this.context.numericValue(element, planeFile),
+        );
+        const planeVertexCount = planePositions.length / 3;
+        if (
+            planeVertexCount !== 4 ||
+            planeNormals.length !== planeVertexCount * 3 ||
+            planeUvs.length !== planeVertexCount * 2 ||
+            planeIndices.some(
+                (value) =>
+                    !Number.isInteger(value) ||
+                    value < 0 ||
+                    value >= planeVertexCount,
+            )
+        ) {
+            this.context.contractError(
+                planeIndicesTable.expression,
+                "Plane tables no longer describe an indexed quad.",
+            );
+        }
+        // The emitted quad carries one constant normal on all corners.
+        const planeNormalHead = planeNormals.slice(0, 3);
+        planeNormals.forEach((value, index) => {
+            if (value !== planeNormalHead[index % 3]) {
+                this.context.contractError(
+                    plane,
+                    "Plane normals are no longer uniform.",
+                );
+            }
+        });
+        const planeVertices = Array.from(
+            { length: planeVertexCount },
+            (_, vertex) =>
+                `        ModelVertex{
+            Vec3{${planePositions
+                .slice(vertex * 3, vertex * 3 + 3)
+                .join(", ")}},
+            Vec3{${planeNormalHead.join(", ")}},
+            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
+            Vec2{${planeUvs
+                .slice(vertex * 2, vertex * 2 + 2)
+                .join(", ")}}},`,
+        ).join("\n");
 
         for (const [name, expected] of [
-            [
-                "segments",
-                "Math.max(3, options.segments ?? 32)",
-            ],
             [
                 "baseDiameter",
                 "options.diameter ?? 1",
@@ -373,6 +682,170 @@ export class FactoryLowerer {
                 `Sphere '${name}'`,
             );
         }
+        // The sphere tessellation arithmetic, each constant FLOWING into
+        // the emitted build_sphere_geometry rather than being re-typed
+        // there: the minimum segment clamp, the polar-step base
+        // (z_steps = <base> + segments), the azimuthal doubling, and the
+        // full-turn factor on the Y angle. The `?? 32` segment default
+        // stays an assert: the compiler applies it at the call site, so no
+        // literal in this emission carries it.
+        const sphereSegments = this.context.unwrapExpression(
+            this.context.variableInitializer(
+                sphere,
+                "segments",
+            ),
+        );
+        if (
+            !ts.isCallExpression(sphereSegments) ||
+            this.context
+                .propertyPath(sphereSegments.expression)
+                ?.join(".") !== "Math.max" ||
+            sphereSegments.arguments.length !== 2
+        ) {
+            this.context.contractError(
+                sphereSegments,
+                "Expected the sphere segment clamp.",
+            );
+        }
+        const sphereMinSegments = this.context.numericValue(
+            sphereSegments.arguments[0]!,
+            sphereFile,
+        );
+        this.context.assertExpressionShape(
+            sphereSegments.arguments[1]!,
+            "options.segments ?? 32",
+            "Sphere segment default",
+        );
+        const spherePolarSteps = this.context.unwrapExpression(
+            this.context.variableInitializer(
+                sphere,
+                "totalZRotationSteps",
+            ),
+        );
+        if (
+            !ts.isBinaryExpression(spherePolarSteps) ||
+            spherePolarSteps.operatorToken.kind !==
+                ts.SyntaxKind.PlusToken ||
+            !ts.isIdentifier(spherePolarSteps.right) ||
+            spherePolarSteps.right.text !== "segments"
+        ) {
+            this.context.contractError(
+                spherePolarSteps,
+                "Expected the polar step count to add a base to the segments.",
+            );
+        }
+        const spherePolarBase = this.context.numericValue(
+            spherePolarSteps.left,
+            sphereFile,
+        );
+        const sphereAzimuthSteps =
+            this.context.unwrapExpression(
+                this.context.variableInitializer(
+                    sphere,
+                    "totalYRotationSteps",
+                ),
+            );
+        if (
+            !ts.isBinaryExpression(sphereAzimuthSteps) ||
+            sphereAzimuthSteps.operatorToken.kind !==
+                ts.SyntaxKind.AsteriskToken ||
+            !ts.isIdentifier(sphereAzimuthSteps.right) ||
+            sphereAzimuthSteps.right.text !==
+                "totalZRotationSteps"
+        ) {
+            this.context.contractError(
+                sphereAzimuthSteps,
+                "Expected the azimuthal step count to scale the polar count.",
+            );
+        }
+        const sphereAzimuthFactor = this.context.numericValue(
+            sphereAzimuthSteps.left,
+            sphereFile,
+        );
+        // The reserve sizes, paired with the emitted reserve calls; the
+        // indices-per-quad factor is destructured so it can both FLOW into
+        // the emitted reserve and be checked against the quad pattern
+        // extracted below.
+        assertVariable(
+            sphere,
+            "totalVertices",
+            "(totalZRotationSteps + 1) * (totalYRotationSteps + 1)",
+            "Sphere vertex total",
+        );
+        const sphereIndexTotal = this.context.unwrapExpression(
+            this.context.variableInitializer(
+                sphere,
+                "totalIndices",
+            ),
+        );
+        if (
+            !ts.isBinaryExpression(sphereIndexTotal) ||
+            sphereIndexTotal.operatorToken.kind !==
+                ts.SyntaxKind.AsteriskToken ||
+            !ts.isNumericLiteral(sphereIndexTotal.right)
+        ) {
+            this.context.contractError(
+                sphereIndexTotal,
+                "Expected the sphere index total to scale by a quad factor.",
+            );
+        }
+        this.context.assertExpressionShape(
+            sphereIndexTotal.left,
+            "totalZRotationSteps * totalYRotationSteps",
+            "Sphere quad count",
+        );
+        const sphereIndicesPerQuad = this.context.numericValue(
+            sphereIndexTotal.right,
+            sphereFile,
+        );
+        // The angles, paired with the emitted angle_z/angle_y (the turn
+        // factor flows), and the normal components, paired with the
+        // emitted Vec3 normal.
+        assertVariable(
+            sphere,
+            "angleZ",
+            "normalizedZ * Math.PI",
+            "Sphere polar angle",
+        );
+        const sphereAzimuthAngle =
+            this.context.unwrapExpression(
+                this.context.variableInitializer(
+                    sphere,
+                    "angleY",
+                ),
+            );
+        if (
+            !ts.isBinaryExpression(sphereAzimuthAngle) ||
+            sphereAzimuthAngle.operatorToken.kind !==
+                ts.SyntaxKind.AsteriskToken ||
+            !ts.isNumericLiteral(sphereAzimuthAngle.right)
+        ) {
+            this.context.contractError(
+                sphereAzimuthAngle,
+                "Expected the azimuthal angle to scale by a turn factor.",
+            );
+        }
+        this.context.assertExpressionShape(
+            sphereAzimuthAngle.left,
+            "normalizedY * Math.PI",
+            "Sphere azimuthal angle base",
+        );
+        const sphereTurnFactor = this.context.numericValue(
+            sphereAzimuthAngle.right,
+            sphereFile,
+        );
+        for (const [name, expected] of [
+            ["nx", "Math.sin(angleZ) * Math.cos(angleY)"],
+            ["ny", "Math.cos(angleZ)"],
+            ["nz", "-Math.sin(angleZ) * Math.sin(angleY)"],
+        ] as const) {
+            assertVariable(
+                sphere,
+                name,
+                expected,
+                `Sphere normal '${name}'`,
+            );
+        }
         const spherePositions = indexedAssignments(
             sphere,
             "positions",
@@ -395,6 +868,79 @@ export class FactoryLowerer {
                 `Sphere position component ${index}`,
             );
         }
+        // The UV order, paired with the emitted Vec2{normalized_y,
+        // normalized_z} — the direction is the pin's, not a choice.
+        const sphereUvStores = indexedAssignments(
+            sphere,
+            "uvs",
+        );
+        const expectedSphereUvs = ["normalizedY", "normalizedZ"];
+        if (
+            sphereUvStores.length !== expectedSphereUvs.length
+        ) {
+            this.context.contractError(
+                sphere,
+                "Unexpected sphere UV stores.",
+            );
+        }
+        sphereUvStores.forEach((assignment, index) =>
+            this.context.assertExpressionShape(
+                assignment.right,
+                expectedSphereUvs[index]!,
+                `Sphere UV component ${index}`,
+            ),
+        );
+        // The quad corners and the six-entry triangulation, which FLOWS
+        // into the emitted index insert from the pinned store order.
+        assertVariable(
+            sphere,
+            "a",
+            "zStep * (totalYRotationSteps + 1) + yStep",
+            "Sphere quad base",
+        );
+        assertVariable(
+            sphere,
+            "b",
+            "a + totalYRotationSteps + 1",
+            "Sphere quad step",
+        );
+        const sphereQuadPattern = indexedAssignments(
+            sphere,
+            "indices",
+        ).map((assignment) => {
+            const right = this.context.unwrapExpression(
+                assignment.right,
+            );
+            if (
+                ts.isIdentifier(right) &&
+                (right.text === "a" || right.text === "b")
+            ) {
+                return right.text;
+            }
+            if (
+                ts.isBinaryExpression(right) &&
+                right.operatorToken.kind ===
+                    ts.SyntaxKind.PlusToken &&
+                ts.isIdentifier(right.left) &&
+                (right.left.text === "a" ||
+                    right.left.text === "b") &&
+                ts.isNumericLiteral(right.right)
+            ) {
+                return `${right.left.text} + ${this.context.numericValue(right.right, sphereFile)}`;
+            }
+            return this.context.contractError(
+                assignment,
+                "Expected the sphere triangulation to offset the quad corners.",
+            );
+        });
+        if (
+            sphereQuadPattern.length !== sphereIndicesPerQuad
+        ) {
+            this.context.contractError(
+                sphereIndexTotal,
+                "Sphere quad factor no longer matches its triangulation.",
+            );
+        }
 
         const torusDiameterExpression = assertVariable(
             torus,
@@ -414,46 +960,296 @@ export class FactoryLowerer {
             "opts.tessellation ?? 16",
             "Torus tessellation",
         );
-        assertVariable(
-            torus,
-            "outerAngle",
-            "(i * TWO_PI) / tessellation - Math.PI / 2",
-            "Torus outer angle",
+        // The torus radii, grid stride, and parameterization, paired with
+        // the emitted create_torus lines (the emission multiplies by 0.5f
+        // where the pin divides by two — exact — and inlines px as
+        // dx * minor_radius with the same operation order).
+        for (const [name, expected] of [
+            ["R", "diameter / 2"],
+            ["r", "thickness / 2"],
+            ["stride", "tessellation + 1"],
+            ["vertexCount", "stride * stride"],
+            ["px", "dx * r"],
+            ["x", "(px + R) * cosOuter"],
+            ["y", "dy * r"],
+            ["z", "-(px + R) * sinOuter"],
+            ["nextI", "(i + 1) % stride"],
+            ["nextJ", "(j + 1) % stride"],
+        ] as const) {
+            assertVariable(
+                torus,
+                name,
+                expected,
+                `Torus '${name}'`,
+            );
+        }
+        // The angles: the full-turn factor comes from the pinned TWO_PI and
+        // FLOWS into both emitted angle products, and the outer phase
+        // divisor flows as the reciprocal the emission multiplies by.
+        const torusTwoPi = this.context.unwrapExpression(
+            this.context.variableInitializer(torus, "TWO_PI"),
         );
-        assertVariable(
-            torus,
-            "innerAngle",
-            "(j * TWO_PI) / tessellation + Math.PI",
-            "Torus inner angle",
-        );
-        const torusIndices = indexedAssignments(
-            torus,
-            "indices",
-        );
-        const expectedTorusIndices = [
-            "i * stride + j",
-            "i * stride + nextJ",
-            "nextI * stride + j",
-            "i * stride + nextJ",
-            "nextI * stride + nextJ",
-            "nextI * stride + j",
-        ];
         if (
-            torusIndices.length !==
-            expectedTorusIndices.length
+            !ts.isBinaryExpression(torusTwoPi) ||
+            torusTwoPi.operatorToken.kind !==
+                ts.SyntaxKind.AsteriskToken ||
+            this.context
+                .propertyPath(torusTwoPi.left)
+                ?.join(".") !== "Math.PI" ||
+            !ts.isNumericLiteral(torusTwoPi.right)
+        ) {
+            this.context.contractError(
+                torusTwoPi,
+                "Expected TWO_PI to scale Math.PI.",
+            );
+        }
+        const torusTurnFactor = this.context.numericValue(
+            torusTwoPi.right,
+            torusFile,
+        );
+        const torusOuterAngle = this.context.unwrapExpression(
+            this.context.variableInitializer(
+                torus,
+                "outerAngle",
+            ),
+        );
+        if (
+            !ts.isBinaryExpression(torusOuterAngle) ||
+            torusOuterAngle.operatorToken.kind !==
+                ts.SyntaxKind.MinusToken
+        ) {
+            this.context.contractError(
+                torusOuterAngle,
+                "Expected the torus outer angle to subtract a phase.",
+            );
+        }
+        this.context.assertExpressionShape(
+            torusOuterAngle.left,
+            "(i * TWO_PI) / tessellation",
+            "Torus outer angle sweep",
+        );
+        const torusOuterPhase = this.context.unwrapExpression(
+            torusOuterAngle.right,
+        );
+        if (
+            !ts.isBinaryExpression(torusOuterPhase) ||
+            torusOuterPhase.operatorToken.kind !==
+                ts.SyntaxKind.SlashToken ||
+            this.context
+                .propertyPath(torusOuterPhase.left)
+                ?.join(".") !== "Math.PI"
+        ) {
+            this.context.contractError(
+                torusOuterPhase,
+                "Expected the torus outer phase to divide Math.PI.",
+            );
+        }
+        const torusPhaseDivisor = this.context.numericValue(
+            torusOuterPhase.right,
+            torusFile,
+        );
+        const torusInnerAngle = this.context.unwrapExpression(
+            this.context.variableInitializer(
+                torus,
+                "innerAngle",
+            ),
+        );
+        if (
+            !ts.isBinaryExpression(torusInnerAngle) ||
+            torusInnerAngle.operatorToken.kind !==
+                ts.SyntaxKind.PlusToken ||
+            this.context
+                .propertyPath(torusInnerAngle.right)
+                ?.join(".") !== "Math.PI"
+        ) {
+            this.context.contractError(
+                torusInnerAngle,
+                "Expected the torus inner angle to add the half-turn phase.",
+            );
+        }
+        this.context.assertExpressionShape(
+            torusInnerAngle.left,
+            "(j * TWO_PI) / tessellation",
+            "Torus inner angle sweep",
+        );
+        // The stores, paired with the emitted ModelVertex: position and
+        // normal component order, and the UV pair whose V complement flows.
+        const torusPositionStores = indexedAssignments(
+            torus,
+            "positions",
+        );
+        const expectedTorusPositions = ["x", "y", "z"];
+        if (
+            torusPositionStores.length !==
+            expectedTorusPositions.length
         ) {
             this.context.contractError(
                 torus,
-                "Unexpected torus index count.",
+                "Unexpected torus position stores.",
             );
         }
-        torusIndices.forEach((assignment, index) =>
+        torusPositionStores.forEach((assignment, index) =>
             this.context.assertExpressionShape(
                 assignment.right,
-                expectedTorusIndices[index]!,
-                `Torus index ${index}`,
+                expectedTorusPositions[index]!,
+                `Torus position component ${index}`,
             ),
         );
+        const torusNormalStores = indexedAssignments(
+            torus,
+            "normals",
+        );
+        const expectedTorusNormals = [
+            "dx * cosOuter",
+            "dy",
+            "-dx * sinOuter",
+        ];
+        if (
+            torusNormalStores.length !==
+            expectedTorusNormals.length
+        ) {
+            this.context.contractError(
+                torus,
+                "Unexpected torus normal stores.",
+            );
+        }
+        torusNormalStores.forEach((assignment, index) =>
+            this.context.assertExpressionShape(
+                assignment.right,
+                expectedTorusNormals[index]!,
+                `Torus normal component ${index}`,
+            ),
+        );
+        const torusUvStores = indexedAssignments(torus, "uvs");
+        if (torusUvStores.length !== 2) {
+            this.context.contractError(
+                torus,
+                "Unexpected torus UV stores.",
+            );
+        }
+        this.context.assertExpressionShape(
+            torusUvStores[0]!.right,
+            "i / tessellation",
+            "Torus UV u",
+        );
+        const torusUvV = this.context.unwrapExpression(
+            torusUvStores[1]!.right,
+        );
+        if (
+            !ts.isBinaryExpression(torusUvV) ||
+            torusUvV.operatorToken.kind !==
+                ts.SyntaxKind.MinusToken ||
+            !ts.isNumericLiteral(torusUvV.left)
+        ) {
+            this.context.contractError(
+                torusUvV,
+                "Expected the torus V coordinate to complement a unit.",
+            );
+        }
+        const torusUvUnit = this.context.numericValue(
+            torusUvV.left,
+            torusFile,
+        );
+        this.context.assertExpressionShape(
+            torusUvV.right,
+            "j / tessellation",
+            "Torus UV v sweep",
+        );
+        // The triangulation FLOWS from the pinned store order: each entry
+        // is destructured as <corner> * stride + <corner> and re-emitted
+        // with the snake_case corner names.
+        const torusCornerNames: Record<string, string> = {
+            i: "outer_index",
+            j: "inner_index",
+            nextI: "next_outer",
+            nextJ: "next_inner",
+        };
+        const torusCorner = (
+            expression: ts.Expression,
+        ): string => {
+            const unwrapped =
+                this.context.unwrapExpression(expression);
+            const mapped = ts.isIdentifier(unwrapped)
+                ? torusCornerNames[unwrapped.text]
+                : undefined;
+            if (!mapped) {
+                this.context.contractError(
+                    expression,
+                    "Expected a torus grid corner.",
+                );
+            }
+            return mapped;
+        };
+        const torusTriangulation = indexedAssignments(
+            torus,
+            "indices",
+        ).map((assignment) => {
+            const right = this.context.unwrapExpression(
+                assignment.right,
+            );
+            if (
+                !ts.isBinaryExpression(right) ||
+                right.operatorToken.kind !==
+                    ts.SyntaxKind.PlusToken
+            ) {
+                this.context.contractError(
+                    assignment,
+                    "Expected a torus index of the form corner * stride + corner.",
+                );
+            }
+            const scaled = this.context.unwrapExpression(
+                right.left,
+            );
+            if (
+                !ts.isBinaryExpression(scaled) ||
+                scaled.operatorToken.kind !==
+                    ts.SyntaxKind.AsteriskToken ||
+                !ts.isIdentifier(scaled.right) ||
+                scaled.right.text !== "stride"
+            ) {
+                this.context.contractError(
+                    assignment,
+                    "Expected a torus index of the form corner * stride + corner.",
+                );
+            }
+            return `${torusCorner(scaled.left)} * stride + ${torusCorner(right.right)}`;
+        });
+        // The reserve factor, checked against the pinned indexCount and
+        // FLOWING into the emitted reserve.
+        const torusIndexTotal = this.context.unwrapExpression(
+            this.context.variableInitializer(
+                torus,
+                "indexCount",
+            ),
+        );
+        if (
+            !ts.isBinaryExpression(torusIndexTotal) ||
+            torusIndexTotal.operatorToken.kind !==
+                ts.SyntaxKind.AsteriskToken ||
+            !ts.isNumericLiteral(torusIndexTotal.right)
+        ) {
+            this.context.contractError(
+                torusIndexTotal,
+                "Expected the torus index total to scale by a quad factor.",
+            );
+        }
+        this.context.assertExpressionShape(
+            torusIndexTotal.left,
+            "stride * stride",
+            "Torus quad count",
+        );
+        if (
+            torusTriangulation.length !==
+            this.context.numericValue(
+                torusIndexTotal.right,
+                torusFile,
+            )
+        ) {
+            this.context.contractError(
+                torusIndexTotal,
+                "Torus quad factor no longer matches its triangulation.",
+            );
+        }
         const numericNullishFallback = (
             expression: ts.Expression,
         ): number => {
@@ -519,6 +1315,36 @@ export class FactoryLowerer {
             "flushThinInstances",
         );
         const value = (input: number): string => this.context.floatLiteral(input);
+        // The emitted fragments the decoded tables above compose. Each is
+        // plain text interpolation: the byte-for-byte C++ is unchanged as
+        // long as the pin is, and moves with the pin when it moves.
+        const boxFaceVertexLines = ["a", "b", "c", "d"]
+            .map(
+                (name, corner) =>
+                    `                ModelVertex{${name}, normal, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{${value(
+                        boxUvQuad[corner * 2]!,
+                    )}, ${value(boxUvQuad[corner * 2 + 1]!)}}},`,
+            )
+            .join("\n");
+        const boxQuadIndexList = boxQuadPattern
+            .map((local) =>
+                local === 0 ? "start" : `start + ${local}`,
+            )
+            .join(", ");
+        const boxAddFaceCalls = boxFaceCorners
+            .map(
+                (corners, face) =>
+                    `    add_face(\n${corners
+                        .map((corner) => `        ${corner},`)
+                        .join("\n")}\n        ${boxFaceNormals[face]});`,
+            )
+            .join("\n");
+        const groundWindingList = groundWinding
+            .map((corner) => `                    ${corner},`)
+            .join("\n");
+        const torusTriangulationList = torusTriangulation
+            .map((term) => `                    ${term},`)
+            .join("\n");
         return {
             modulePath,
             symbolName: "createBox,createGround,createPlane,createSphere,createSphereData,createMorphTargets,setMorphTargetWeights,createTorus,createMeshFromData",
@@ -555,53 +1381,15 @@ MeshHandle create_box(Engine& engine, BoxOptions options) {
         geometry.vertices.insert(
             geometry.vertices.end(),
             {
-                ModelVertex{a, normal, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{1.0f, 1.0f}},
-                ModelVertex{b, normal, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{0.0f, 1.0f}},
-                ModelVertex{c, normal, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{0.0f, 0.0f}},
-                ModelVertex{d, normal, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{1.0f, 0.0f}},
+${boxFaceVertexLines}
             });
         const std::uint32_t start =
-            static_cast<std::uint32_t>(geometry.vertices.size() - 4);
+            static_cast<std::uint32_t>(geometry.vertices.size() - ${boxQuadSize});
         geometry.indices.insert(
             geometry.indices.end(),
-            {start, start + 1, start + 2, start, start + 2, start + 3});
+            {${boxQuadIndexList}});
     };
-    add_face(
-        Vec3{half_width, -half_height, half_depth},
-        Vec3{-half_width, -half_height, half_depth},
-        Vec3{-half_width, half_height, half_depth},
-        Vec3{half_width, half_height, half_depth},
-        Vec3{0.0f, 0.0f, 1.0f});
-    add_face(
-        Vec3{half_width, half_height, -half_depth},
-        Vec3{-half_width, half_height, -half_depth},
-        Vec3{-half_width, -half_height, -half_depth},
-        Vec3{half_width, -half_height, -half_depth},
-        Vec3{0.0f, 0.0f, -1.0f});
-    add_face(
-        Vec3{half_width, half_height, -half_depth},
-        Vec3{half_width, -half_height, -half_depth},
-        Vec3{half_width, -half_height, half_depth},
-        Vec3{half_width, half_height, half_depth},
-        Vec3{1.0f, 0.0f, 0.0f});
-    add_face(
-        Vec3{-half_width, half_height, half_depth},
-        Vec3{-half_width, -half_height, half_depth},
-        Vec3{-half_width, -half_height, -half_depth},
-        Vec3{-half_width, half_height, -half_depth},
-        Vec3{-1.0f, 0.0f, 0.0f});
-    add_face(
-        Vec3{-half_width, half_height, half_depth},
-        Vec3{-half_width, half_height, -half_depth},
-        Vec3{half_width, half_height, -half_depth},
-        Vec3{half_width, half_height, half_depth},
-        Vec3{0.0f, 1.0f, 0.0f});
-    add_face(
-        Vec3{half_width, -half_height, half_depth},
-        Vec3{half_width, -half_height, -half_depth},
-        Vec3{-half_width, -half_height, -half_depth},
-        Vec3{-half_width, -half_height, half_depth},
-        Vec3{0.0f, -1.0f, 0.0f});
+${boxAddFaceCalls}
     geometry.bounds_min =
         Vec3{-half_width, -half_height, -half_depth};
     geometry.bounds_max =
@@ -652,7 +1440,7 @@ MeshHandle create_ground(Engine& engine, GroundOptions options) {
                     -half_height +
                         (1.0f - normalized_row) * height,
                 },
-                Vec3{0.0f, 1.0f, 0.0f},
+                ${groundNormal},
                 Vec4{1.0f, 0.0f, 0.0f, 1.0f},
                 Vec2{
                     normalized_column * options.uv_scale.x,
@@ -677,12 +1465,7 @@ MeshHandle create_ground(Engine& engine, GroundOptions options) {
             geometry.indices.insert(
                 geometry.indices.end(),
                 {
-                    bottom_right,
-                    top_right,
-                    top_left,
-                    bottom_left,
-                    bottom_right,
-                    top_left,
+${groundWindingList}
                 });
         }
     }
@@ -706,28 +1489,9 @@ MeshHandle create_plane(Engine& engine, PlaneOptions options) {
     const float half_height = options.height * 0.5f;
     ModelGeometry geometry;
     geometry.vertices = {
-        ModelVertex{
-            Vec3{-half_width, -half_height, 0.0f},
-            Vec3{0.0f, 0.0f, -1.0f},
-            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
-            Vec2{0.0f, 0.0f}},
-        ModelVertex{
-            Vec3{half_width, -half_height, 0.0f},
-            Vec3{0.0f, 0.0f, -1.0f},
-            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
-            Vec2{1.0f, 0.0f}},
-        ModelVertex{
-            Vec3{half_width, half_height, 0.0f},
-            Vec3{0.0f, 0.0f, -1.0f},
-            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
-            Vec2{1.0f, 1.0f}},
-        ModelVertex{
-            Vec3{-half_width, half_height, 0.0f},
-            Vec3{0.0f, 0.0f, -1.0f},
-            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
-            Vec2{0.0f, 1.0f}},
+${planeVertices}
     };
-    geometry.indices = {0, 1, 2, 0, 2, 3};
+    geometry.indices = {${planeIndices.join(", ")}};
     geometry.bounds_min = Vec3{-half_width, -half_height, 0.0f};
     geometry.bounds_max = Vec3{half_width, half_height, 0.0f};
     for (ModelVertex& vertex : geometry.vertices) {
@@ -743,19 +1507,19 @@ MeshHandle create_plane(Engine& engine, PlaneOptions options) {
 
 static ModelGeometry build_sphere_geometry(SphereOptions options) {
     const std::uint32_t segments =
-        std::max<std::uint32_t>(3, options.segments);
+        std::max<std::uint32_t>(${sphereMinSegments}, options.segments);
     const Vec3 radius{
         options.diameter_x * 0.5f,
         options.diameter_y * 0.5f,
         options.diameter_z * 0.5f,
     };
-    const std::uint32_t z_steps = 2 + segments;
-    const std::uint32_t y_steps = 2 * z_steps;
+    const std::uint32_t z_steps = ${spherePolarBase} + segments;
+    const std::uint32_t y_steps = ${sphereAzimuthFactor} * z_steps;
     ModelGeometry geometry;
     geometry.vertices.reserve(
         static_cast<std::size_t>(z_steps + 1) * (y_steps + 1));
     geometry.indices.reserve(
-        static_cast<std::size_t>(z_steps) * y_steps * 6);
+        static_cast<std::size_t>(z_steps) * y_steps * ${sphereIndicesPerQuad});
     for (std::uint32_t z_step = 0; z_step <= z_steps; ++z_step) {
         const float normalized_z =
             static_cast<float>(z_step) / static_cast<float>(z_steps);
@@ -763,7 +1527,7 @@ static ModelGeometry build_sphere_geometry(SphereOptions options) {
         for (std::uint32_t y_step = 0; y_step <= y_steps; ++y_step) {
             const float normalized_y =
                 static_cast<float>(y_step) / static_cast<float>(y_steps);
-            const float angle_y = normalized_y * pi * 2.0f;
+            const float angle_y = normalized_y * pi * ${value(sphereTurnFactor)};
             const Vec3 normal{
                 std::sin(angle_z) * std::cos(angle_y),
                 std::cos(angle_z),
@@ -788,7 +1552,7 @@ static ModelGeometry build_sphere_geometry(SphereOptions options) {
             const std::uint32_t b = a + y_steps + 1;
             geometry.indices.insert(
                 geometry.indices.end(),
-                {a, a + 1, b, b, a + 1, b + 1});
+                {${sphereQuadPattern.join(", ")}});
         }
     }
     geometry.bounds_min =
@@ -968,21 +1732,21 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
     geometry.vertices.reserve(
         static_cast<std::size_t>(stride) * stride);
     geometry.indices.reserve(
-        static_cast<std::size_t>(stride) * stride * 6);
+        static_cast<std::size_t>(stride) * stride * ${torusTriangulation.length});
     for (std::uint32_t outer_index = 0;
          outer_index <= tessellation;
          ++outer_index) {
         const float outer_angle =
-            static_cast<float>(outer_index) * 2.0f * pi /
+            static_cast<float>(outer_index) * ${value(torusTurnFactor)} * pi /
                 static_cast<float>(tessellation) -
-            pi * 0.5f;
+            pi * ${value(1 / torusPhaseDivisor)};
         const float cos_outer = std::cos(outer_angle);
         const float sin_outer = std::sin(outer_angle);
         for (std::uint32_t inner_index = 0;
              inner_index <= tessellation;
              ++inner_index) {
             const float inner_angle =
-                static_cast<float>(inner_index) * 2.0f * pi /
+                static_cast<float>(inner_index) * ${value(torusTurnFactor)} * pi /
                     static_cast<float>(tessellation) +
                 pi;
             const float dx = std::cos(inner_angle);
@@ -999,7 +1763,7 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
                 Vec2{
                     static_cast<float>(outer_index) /
                         static_cast<float>(tessellation),
-                    1.0f -
+                    ${value(torusUvUnit)} -
                         static_cast<float>(inner_index) /
                             static_cast<float>(tessellation),
                 },
@@ -1013,12 +1777,7 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
             geometry.indices.insert(
                 geometry.indices.end(),
                 {
-                    outer_index * stride + inner_index,
-                    outer_index * stride + next_inner,
-                    next_outer * stride + inner_index,
-                    outer_index * stride + next_inner,
-                    next_outer * stride + next_inner,
-                    next_outer * stride + inner_index,
+${torusTriangulationList}
                 });
         }
     }

@@ -83,6 +83,11 @@ export class GeometryOutputLowerer {
                 "buildBlitPath",
             );
         for (const [name, expected] of [
+            // The extents the boundaries are floored against are the
+            // TARGET's, matching the emitted resolve_copy_viewport
+            // parameters — the flip below runs in target space.
+            ["w", "target._width"],
+            ["h", "target._height"],
             ["x", "Math.floor(v.x * w)"],
             [
                 "vw",
@@ -102,6 +107,70 @@ export class GeometryOutputLowerer {
                 expected,
                 `Copy viewport '${name}'`,
             );
+        }
+        // The composed pixel rectangle, field by field — and with it the
+        // upstream provenance of the emitted Y-flip. The pinned
+        // buildBlitPath converts the BJS-space viewport (y = 0 at the
+        // visual bottom) to a top-origin pixel row as `h - yTop - vh`, and
+        // the emitted resolve_copy_viewport carries exactly that expression
+        // as `target_height - y_top - viewport_height`. The flip is the
+        // pin's own convention, not a native render-target choice, so it is
+        // anchored here rather than documented as ours.
+        const viewportCompositions = this.context
+            .findNodes(
+                buildBlitPath,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node),
+            )
+            .filter(
+                (expression) =>
+                    expression.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken &&
+                    ts.isIdentifier(expression.left) &&
+                    expression.left.text === "viewportRect" &&
+                    ts.isObjectLiteralExpression(
+                        this.context.unwrapExpression(
+                            expression.right,
+                        ),
+                    ),
+            );
+        if (viewportCompositions.length !== 1) {
+            this.context.contractError(
+                buildBlitPath,
+                "Expected one composed pixel viewport.",
+            );
+        }
+        const viewportRect = this.context.unwrapExpression(
+            viewportCompositions[0]!.right,
+        ) as ts.ObjectLiteralExpression;
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(
+                viewportRect,
+                "y",
+            ),
+            "h - yTop - vh",
+            "Copy viewport Y-flip",
+        );
+        for (const [field, source] of [
+            ["x", "x"],
+            ["w", "vw"],
+            ["h", "vh"],
+        ] as const) {
+            const initializer = this.context.unwrapExpression(
+                this.context.propertyInitializer(
+                    viewportRect,
+                    field,
+                ),
+            );
+            if (
+                !ts.isIdentifier(initializer) ||
+                initializer.text !== source
+            ) {
+                this.context.contractError(
+                    viewportRect,
+                    `Expected pixel viewport '${field}' to carry '${source}'.`,
+                );
+            }
         }
         const { declaration: createCopyTask } =
             this.context.functionDeclaration(
