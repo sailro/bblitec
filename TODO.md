@@ -4,6 +4,10 @@ Only unfinished work belongs here. What is done is in [status](docs/status.md),
 the docs, and Git history. Entries state what remains and the facts needed to
 act on it — not what was tried.
 
+The 2026-08-18 repository audit tracks its findings separately in
+[AUDIT.md](AUDIT.md) — verified defects, re-derivation backlog, structure,
+docs, and tooling items, with the same delete-when-fixed rule as this file.
+
 ## Constraints
 
 - derive Babylon behavior from the pinned upstream TypeScript
