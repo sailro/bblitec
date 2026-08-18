@@ -622,14 +622,12 @@ test("lowers the reachable upstream light matrix implementation", () => {
 test("generates the render plan from upstream frame-graph binding semantics", () => {
     const lowerer = new RendererLowerer(new LoweringContext());
     const lowered = lowerer.lowerRenderPlan({
-        transmission: true,
         shaderPrograms: reachedPrograms([
             "alpha-card",
             "circular-cutout",
         ]),
     });
     const specialized = lowerer.lowerRenderPlan({
-        transmission: true,
         gpuInstancing: true,
         punctualLights: true,
     });

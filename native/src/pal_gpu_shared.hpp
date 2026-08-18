@@ -42,6 +42,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -1496,6 +1497,19 @@ inline std::vector<float> decode_rgbd(const TextureData& texture_data, int& widt
     return result;
 }
 
+/**
+ * The warmup every renderer's benchmark discards before sampling: a
+ * tenth of the requested frames, clamped to [10, 120]. One policy for
+ * the GPU frame loops, their sprite variants and the SDL_Renderer CPU
+ * fallback, so the published numbers of any two renderers cover the
+ * same measured span of a run.
+ */
+[[nodiscard]] inline long benchmark_warmup_frames(long benchmark_frames) {
+    return benchmark_frames > 0
+        ? std::min(120L, std::max(10L, benchmark_frames / 10))
+        : 0;
+}
+
 // How a measured run is driven, parsed once for whichever backend runs
 // it.
 //
@@ -1529,7 +1543,7 @@ struct FrameOptions {
     long benchmark_frames = 0;
     double animation_seek_seconds = 0.0;
 
-    /** Frames to run: a benchmark adds its fixed warmup to the request. */
+    /** Frames to run: a benchmark adds its warmup to the request. */
     [[nodiscard]] long frame_budget() const {
         return benchmark_frames > 0
             ? benchmark_frames + benchmark_warmup()
@@ -1546,7 +1560,7 @@ struct FrameOptions {
      */
     bool benchmark_requested = false;
     [[nodiscard]] long benchmark_warmup() const {
-        return benchmark_frames > 0 ? 30 : 0;
+        return benchmark_warmup_frames(benchmark_frames);
     }
 
     /**
@@ -2098,9 +2112,16 @@ private:
 };
 
 /**
- * The benchmark summary both backends print. The numbers are compared
- * across backends, so the shape of the line and the statistics behind it
- * have to be produced the same way.
+ * The benchmark summary every renderer prints -- the GPU frame loops,
+ * their sprite variants and the SDL_Renderer CPU fallback. The numbers
+ * are compared across backends, so both the shape of the line and the
+ * statistics behind it are produced in exactly one place. The contract:
+ * one line opening with the "Babylon Lite <backend> benchmark |
+ * driver=<driver>" identity prefix that names the renderer, then
+ * `frames=` and the average / median / p95 / min / max frame CPU times
+ * in milliseconds, fixed three-decimal precision. Samples are the
+ * post-warmup frames (`benchmark_warmup_frames` above holds the shared
+ * warmup policy); an empty run prints nothing.
  */
 inline void report_benchmark(
     std::vector<double> samples,
@@ -2110,13 +2131,26 @@ inline void report_benchmark(
     std::sort(samples.begin(), samples.end());
     double sum = 0.0;
     for (const double sample : samples) sum += sample;
+    const std::size_t p95_index = std::min(
+        samples.size() - 1,
+        static_cast<std::size_t>(
+            std::ceil(samples.size() * 0.95)) - 1);
+    const std::ios_base::fmtflags flags = std::cout.flags();
+    const std::streamsize precision = std::cout.precision();
     std::cout
+        << std::fixed
+        << std::setprecision(3)
         << "Babylon Lite " << backend << " benchmark | driver="
         << driver
         << " | frames=" << samples.size()
         << " | average=" << (sum / samples.size())
         << " ms | median=" << samples[samples.size() / 2]
+        << " ms | p95=" << samples[p95_index]
+        << " ms | min=" << samples.front()
+        << " ms | max=" << samples.back()
         << " ms\n";
+    std::cout.flags(flags);
+    std::cout.precision(precision);
 }
 
 /**

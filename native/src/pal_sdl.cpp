@@ -16,15 +16,17 @@
 #include <bblite/upstream/camera_math.hpp>
 
 #include "pal_camera_controls.hpp"
+// The CPU fallback benchmarks through the same shared contract as the
+// GPU backends: report_benchmark's line shape and the
+// benchmark_warmup_frames warmup policy both live in the shared header.
+#include "pal_gpu_shared.hpp"
 #endif
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdlib>
-#include <iomanip>
 #include <iostream>
-#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -1072,31 +1074,6 @@ long configured_frames(const char* name) {
     return value.empty() ? 0 : std::strtol(value.c_str(), nullptr, 10);
 }
 
-void print_benchmark(const char* renderer_name, std::vector<double> samples) {
-    if (samples.empty()) {
-        return;
-    }
-    std::sort(samples.begin(), samples.end());
-    const double average =
-        std::accumulate(samples.begin(), samples.end(), 0.0) /
-        static_cast<double>(samples.size());
-    const double median = samples[samples.size() / 2];
-    const std::size_t p95_index =
-        std::min(samples.size() - 1, static_cast<std::size_t>(std::ceil(samples.size() * 0.95)) - 1);
-
-    std::cout
-        << std::fixed
-        << std::setprecision(3)
-        << "Babylon Lite native benchmark"
-        << " | renderer=" << (renderer_name ? renderer_name : "unknown")
-        << " | frames=" << samples.size()
-        << " | average=" << average << " ms"
-        << " | median=" << median << " ms"
-        << " | p95=" << samples[p95_index] << " ms"
-        << " | min=" << samples.front() << " ms"
-        << " | max=" << samples.back() << " ms\n";
-}
-
 } // namespace
 #endif
 #endif
@@ -1234,7 +1211,8 @@ void pal::run_engine(Engine& engine) {
     std::vector<PreparedGeometry> prepared_geometries = prepare_geometries(engine, material_textures);
     EnvironmentImages environment_images = create_environment_images(scene);
 #endif
-    const long warmup_frames = benchmarking ? std::min(120L, std::max(10L, benchmark_frame_count / 10)) : 0;
+    const long warmup_frames =
+        pal::benchmark_warmup_frames(benchmark_frame_count);
     const long frame_limit =
         benchmarking
             ? warmup_frames + benchmark_frame_count
@@ -1351,7 +1329,11 @@ void pal::run_engine(Engine& engine) {
     }
 
     if (benchmarking) {
-        print_benchmark(SDL_GetRendererName(renderer), std::move(benchmark_samples));
+        const char* renderer_name = SDL_GetRendererName(renderer);
+        pal::report_benchmark(
+            std::move(benchmark_samples),
+            "SDL_Renderer",
+            renderer_name ? renderer_name : "unknown");
     }
 
 #if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF

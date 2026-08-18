@@ -497,23 +497,12 @@ export class RendererLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
     public lowerRenderPlan(options: {
-        transmission?: boolean;
         fog?: boolean;
         imageSkybox?: boolean;
         solidSkybox?: boolean;
-        textureTransform?: boolean;
-        materialSpecular?: boolean;
-        occlusionUv2?: boolean;
         environmentRotation?: boolean;
         gpuInstancing?: boolean;
         punctualLights?: boolean;
-        clearcoat?: boolean;
-        sheen?: boolean;
-        sheenAlbedoScaling?: boolean;
-        clearcoatF0Remap?: boolean;
-        pinnedHelpers?: Readonly<Record<string, string>>;
-        iridescence?: boolean;
-        dispersion?: boolean;
         nodeVisibility?: boolean;
         orthographicCamera?: boolean;
         background?: boolean;
@@ -2194,7 +2183,6 @@ ${pinnedFogInfosPacking()}    };
         solidSkybox?: boolean;
         transmission?: boolean;
         fog?: boolean;
-        normalTextureScale?: boolean;
         shaderPrograms: CompiledShaderProgram[];
         gridMaterial?: boolean;
         idDiagnostics: boolean;
@@ -2202,24 +2190,15 @@ ${pinnedFogInfosPacking()}    };
         frameGraph?: boolean;
         gpuDeformation?: boolean;
         morphStorage?: boolean;
-        textureTransform?: boolean;
-        environmentRotation?: boolean;
         gpuInstancing?: boolean;
-        punctualLights?: boolean;
         clearcoat?: boolean;
         sheen?: boolean;
-        sheenAlbedoScaling?: boolean;
-        clearcoatF0Remap?: boolean;
-        pinnedHelpers?: Readonly<Record<string, string>>;
         iridescence?: boolean;
         dispersion?: boolean;
-        occlusionUv2?: boolean;
-        materialSpecular?: boolean;
     } = {
         ground: true,
         skybox: true,
         transmission: true,
-        normalTextureScale: true,
         shaderPrograms: shaderMaterialPrograms.map((program) => ({
             ...program,
             uniformDefaults: program.uniformDefaults ?? [],
@@ -2229,10 +2208,7 @@ ${pinnedFogInfosPacking()}    };
         geometryOutputTasks: [],
         gpuDeformation: false,
         morphStorage: false,
-        textureTransform: false,
-        environmentRotation: false,
         gpuInstancing: false,
-        punctualLights: false,
         clearcoat: false,
         sheen: false,
         iridescence: false,

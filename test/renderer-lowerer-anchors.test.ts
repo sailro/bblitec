@@ -118,17 +118,8 @@ test("anchors the fogInfos packing order to the pinned WGSL_FOG reads", () => {
 test("prunes the PbrUniforms extension lanes to the fixed base block", () => {
     const lowerer = new RendererLowerer(new LoweringContext());
     const specialized = lowerer.lowerRenderPlan({
-        transmission: true,
         fog: true,
-        textureTransform: true,
-        materialSpecular: true,
-        occlusionUv2: true,
         punctualLights: true,
-        clearcoat: true,
-        sheen: true,
-        sheenAlbedoScaling: true,
-        iridescence: true,
-        dispersion: true,
     });
     const struct = pbrUniformsStruct(specialized.header);
     for (const lane of prunedLaneNames) {
@@ -243,7 +234,6 @@ test("lifts the cubemap-skybox stages from the packaged pin", () => {
         imageSkybox: true,
         fog: true,
         transmission: false,
-        normalTextureScale: false,
         shaderPrograms: [],
         gridMaterial: false,
         idDiagnostics: false,
@@ -557,21 +547,12 @@ test("derives the background geometry from the pinned builders", () => {
 
 test("re-lowering emits byte-identical renderer text", () => {
     const options = {
-        transmission: true,
         fog: true,
         imageSkybox: true,
         solidSkybox: true,
-        textureTransform: true,
-        materialSpecular: true,
-        occlusionUv2: true,
         environmentRotation: true,
         gpuInstancing: true,
         punctualLights: true,
-        clearcoat: true,
-        sheen: true,
-        sheenAlbedoScaling: true,
-        iridescence: true,
-        dispersion: true,
         nodeVisibility: true,
     };
     const first = new RendererLowerer(
@@ -588,7 +569,6 @@ test("re-lowering emits byte-identical renderer text", () => {
         imageSkybox: true,
         fog: true,
         transmission: false,
-        normalTextureScale: false,
         shaderPrograms: [],
         gridMaterial: false,
         idDiagnostics: false,

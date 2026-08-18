@@ -546,7 +546,6 @@ class GeneratedSourceWriter {
             this.writeSource(
                 "upstream/src/renderer_plan.cpp",
                 renderer.lowerRenderPlan({
-                    transmission: transmission,
                     fog: features.includes("renderer:fog"),
                     imageSkybox: features.includes(
                         "background:image-skybox",
@@ -554,30 +553,12 @@ class GeneratedSourceWriter {
                     solidSkybox: features.includes(
                         "background:solid-skybox",
                     ),
-                    textureTransform:
-                        options.textureTransform,
-                    materialSpecular: options.materialSpecular,
-                    occlusionUv2: options.occlusionUv2,
                     environmentRotation:
                         options.imageBasedLighting,
                     gpuInstancing:
                         options.gpuInstancing,
                     punctualLights:
                         options.punctualLights,
-                    clearcoat: options.clearcoat,
-                    sheen: options.sheen,
-                    sheenAlbedoScaling:
-                        options.sheenAlbedoScaling,
-                    clearcoatF0Remap:
-                        options.clearcoatF0Remap,
-                    ...(options.pinnedHelpers === undefined
-                        ? {}
-                        : {
-                            pinnedHelpers:
-                                options.pinnedHelpers,
-                        }),
-                    iridescence: options.iridescence,
-                    dispersion: options.dispersion,
                     nodeVisibility: options.nodeVisibility,
                     orthographicCamera: features.includes(
                         "camera:orthographic",
@@ -611,7 +592,6 @@ class GeneratedSourceWriter {
                 ),
                 transmission: transmission,
                 fog: features.includes("renderer:fog"),
-                normalTextureScale: features.includes("loader:gltf"),
                 shaderPrograms: options.shaderPrograms,
                 gridMaterial: features.includes("material:grid"),
                 idDiagnostics: options.idDiagnostics,
@@ -619,28 +599,12 @@ class GeneratedSourceWriter {
                 frameGraph: features.includes("renderer:geometry-output"),
                 gpuDeformation: options.gpuDeformation,
                 morphStorage: options.morphStorage,
-                textureTransform:
-                    options.textureTransform,
-                materialSpecular: options.materialSpecular,
-                environmentRotation:
-                    options.imageBasedLighting,
                 gpuInstancing:
                     options.gpuInstancing,
-                punctualLights:
-                    options.punctualLights,
                 clearcoat: options.clearcoat,
                 sheen: options.sheen,
-                sheenAlbedoScaling: options.sheenAlbedoScaling,
-                clearcoatF0Remap: options.clearcoatF0Remap,
-                ...(options.pinnedHelpers === undefined
-                    ? {}
-                    : {
-                        pinnedHelpers:
-                            options.pinnedHelpers,
-                    }),
                 iridescence: options.iridescence,
                 dispersion: options.dispersion,
-                occlusionUv2: options.occlusionUv2,
             });
             composedShaders.push(...shaders);
             // The Dawn backend's utility passes, deployed like every other

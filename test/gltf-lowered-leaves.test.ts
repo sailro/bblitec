@@ -1816,21 +1816,17 @@ test("a changed emissive strength default flows into the emitted keys", () => {
 const colorModulePath = "src/math/color.ts";
 const builderModule = "src/loader-gltf/gltf-pbr-builder.ts";
 
-/** What the loader template carried by hand before the lowering. */
+/**
+ * What the loader template carried by hand before the lowering, minus
+ * the never-called `quantized_unorm_factor` float variant the deletion
+ * batch trimmed.
+ */
 const expectedFactorBakeHelpers = `// Babylon Lite bakes texture-less PBR factors into 1x1 factor
 // textures (gltf-pbr-builder uploadBaseColorFactorTexture /
 // uploadOrmFactorTexture) and leaves the shader uniforms at their
 // defaults, so the browser shades with the 8-bit quantized values.
-// Quantize the record factors identically: the native white-fallback
-// texture times the quantized uniform reproduces the browser's
-// quantized texel times the default uniform bit for bit.
-float quantized_unorm_factor(float value) {
-    return std::round(
-               std::clamp(value, 0.0f, 1.0f) * 255.0f) /
-        255.0f;
-}
-
-// The same rounding as a byte, which is what the pinned factor texture holds.
+// Bake the record factors to the same rounded byte, which is what
+// the pinned factor texture holds.
 std::uint8_t unorm_byte(float value) {
     return static_cast<std::uint8_t>(
         std::round(std::clamp(value, 0.0f, 1.0f) * 255.0f));

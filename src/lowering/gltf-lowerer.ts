@@ -8058,18 +8058,8 @@ export function lowerGltfFactorBake(
         "// textures (gltf-pbr-builder uploadBaseColorFactorTexture /",
         "// uploadOrmFactorTexture) and leaves the shader uniforms at their",
         "// defaults, so the browser shades with the 8-bit quantized values.",
-        "// Quantize the record factors identically: the native white-fallback",
-        "// texture times the quantized uniform reproduces the browser's",
-        "// quantized texel times the default uniform bit for bit.",
-        "float quantized_unorm_factor(float value) {",
-        "    return std::round(",
-        `               std::clamp(value, ${floatLiteral(unorm.lo)}, ${
-            floatLiteral(unorm.hi)
-        }) * ${floatLiteral(unorm.scale)}) /`,
-        `        ${floatLiteral(unorm.scale)};`,
-        "}",
-        "",
-        "// The same rounding as a byte, which is what the pinned factor texture holds.",
+        "// Bake the record factors to the same rounded byte, which is what",
+        "// the pinned factor texture holds.",
         "std::uint8_t unorm_byte(float value) {",
         "    return static_cast<std::uint8_t>(",
         `        std::round(std::clamp(value, ${floatLiteral(unorm.lo)}, ${

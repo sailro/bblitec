@@ -122,7 +122,7 @@ the vendored SDL patch let SDL_GPU run the pinned per-sample pass —
 and HillValley and the Standard geometry MRTs land closest on Dawn.
 
 **Performance.** Scene 1 (BoomBox), Release, 1280x720, 2000 frames
-after 30 warmup, immediate present, same session
+after adaptive warmup (min(120, max(10, frames/10))), immediate present, same session
 (`BBLITE_BENCHMARK_FRAMES=2000`; frame CPU time across the whole loop
 body — scene callbacks and uploads, surface acquire, submit and
 present):
@@ -134,8 +134,9 @@ present):
 
 Dawn's ~60% higher CPU cost at this (sub-millisecond) scale comes from
 always-on validation and robustness — which must stay on, since the
-browser reference runs with both — and per-draw uniform-buffer writes
-where SDL_GPU uses push constants. Neither backend is close to being a
+browser reference runs with both — and uniform-buffer writes (per frame
+for mesh state, per draw for material blocks) where SDL_GPU uses push
+constants. Neither backend is close to being a
 frame-budget concern for the corpus.
 
 **Portability.** Dawn the library targets D3D12, Vulkan, and Metal;

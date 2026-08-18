@@ -139,10 +139,10 @@ export interface GltfLoweredDefault {
 }
 
 /**
- * The pinned factor bakes: `quantized_unorm_factor` / `unorm_byte` /
- * `linear_to_srgb_byte` emitted whole, plus the round-clamp-scale
- * constants the material build inlines for the base-color alpha lane
- * and the ORM texel's constant opaque lanes.
+ * The pinned factor bakes: `unorm_byte` / `linear_to_srgb_byte`
+ * emitted whole, plus the round-clamp-scale constants the material
+ * build inlines for the base-color alpha lane and the ORM texel's
+ * constant opaque lanes.
  */
 export interface GltfFactorBake {
     helpers: string;

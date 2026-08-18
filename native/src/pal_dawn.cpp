@@ -5273,8 +5273,8 @@ bool run_dawn_engine(Engine& engine) {
                 instance_matrices.push_back(identity);
             }
             // The buffer holds the full capacity pool; dynamic pools
-            // draw the record count and re-upload through the
-            // version-gated per-frame sync in the encode loop.
+            // draw the record count and re-upload through the frame
+            // loop's version-gated mesh-sync pass.
             mesh.instances = create_buffer(
                 state,
                 WGPUBufferUsage_Vertex,
@@ -6261,6 +6261,150 @@ bool run_dawn_engine(Engine& engine) {
                 scene.mesh_membership_version;
             topology_updated = true;
         }
+        // One mesh-sync pass per frame over the plan's items, the same
+        // walk and skip logic as the SDL_GPU backend's loop: the
+        // thin-instance pool re-upload, the GPU-deformation skip (the
+        // palette carries those meshes' world, so a CPU rebake would
+        // re-upload the same bytes), the version-gated morph-weight
+        // span, and the CPU vertex rebake for everything else. The two
+        // per-mesh vertex-stage blocks SDL_GPU pushes per draw --
+        // WebGPU has no push constants -- are rewritten here once per
+        // frame instead: bone palettes and parent worlds carry no
+        // version, so both writes are unconditional, exactly as the
+        // per-draw pushes are. The per-draw material blocks stay with
+        // their draws in `write_material_uniforms` below.
+        for (
+            std::size_t index = 0;
+            index < render_plan.items.size() &&
+            index < state.meshes.size();
+            ++index) {
+            const upstream::RenderItem& item =
+                render_plan.items[index];
+            const MeshRecord& mesh =
+                engine.meshes[item.mesh.value];
+            DawnMesh& dawn_mesh = state.meshes[index];
+            // Grid and shader-variant vertex stages own no
+            // deformation or instancing uniforms.
+            const bool mesh_uniform_item =
+                item.material_kind !=
+                    upstream::RenderMaterialKind::grid &&
+                item.material_kind !=
+                    upstream::RenderMaterialKind::shader;
+            (void)mesh_uniform_item;
+#if BBLITE_GPU_INSTANCING
+            if (
+                mesh.thin_instanced &&
+                dawn_mesh.instance_version !=
+                    mesh.instance_version) {
+                // Re-upload the pinned dirty range [0, count) from
+                // the record pool; slots past the active count keep
+                // their previous contents and are never drawn.
+                const std::size_t active_count = std::min(
+                    static_cast<std::size_t>(
+                        mesh.instance_count),
+                    mesh.instance_matrices.size());
+                if (active_count > 0) {
+                    wgpuQueueWriteBuffer(
+                        state.queue,
+                        dawn_mesh.instances,
+                        0,
+                        mesh.instance_matrices.data(),
+                        active_count *
+                            sizeof(mesh.instance_matrices
+                                       .front()));
+                }
+                dawn_mesh.instance_count =
+                    static_cast<std::uint32_t>(active_count);
+                dawn_mesh.instance_version =
+                    mesh.instance_version;
+            }
+            if (mesh_uniform_item) {
+                const std::array<float, 16> parent_world =
+                    upstream::build_instance_parent_world(mesh);
+                wgpuQueueWriteBuffer(
+                    state.queue,
+                    dawn_mesh.instance_uniform,
+                    0,
+                    parent_world.data(),
+                    64);
+            }
+#endif
+#if BBLITE_GPU_DEFORMATION
+            if (mesh_uniform_item) {
+                const DeformationUniforms deformation =
+                    build_deformation_uniforms(
+                        mesh,
+                        engine.geometries[item.geometry]
+                            .flat_normals);
+                wgpuQueueWriteBuffer(
+                    state.queue,
+                    dawn_mesh.deformation_uniforms,
+                    0,
+                    &deformation,
+                    sizeof(deformation));
+            }
+#endif
+            if (
+                mesh.gpu_deformation &&
+                !engine.geometries[item.geometry].flat_normals) {
+#if BBLITE_GPU_MORPH_STORAGE
+                if (
+                    dawn_mesh.owns_morph_buffers &&
+                    dawn_mesh.morph_weights_version !=
+                        mesh.morph_weights_version) {
+                    // The shared value packer behind the blob's
+                    // constant header; this backend rewrites just
+                    // the weight span.
+                    const std::vector<float> weights =
+                        morph_weight_values(
+                            engine.geometries[item.geometry],
+                            mesh);
+                    wgpuQueueWriteBuffer(
+                        state.queue,
+                        dawn_mesh.morph_weights,
+                        16,
+                        weights.data(),
+                        weights.size() * sizeof(float));
+                    dawn_mesh.morph_weights_version =
+                        mesh.morph_weights_version;
+                }
+#endif
+                dawn_mesh.transform_version =
+                    mesh.transform_version;
+                continue;
+            }
+            if (
+                dawn_mesh.transform_version ==
+                mesh.transform_version) {
+                continue;
+            }
+            const std::vector<GpuVertex> vertices =
+                transformed_vertices(
+                    engine.geometries[item.geometry],
+                    mesh);
+            wgpuQueueWriteBuffer(
+                state.queue,
+                dawn_mesh.vertices,
+                0,
+                vertices.data(),
+                vertices.size() * sizeof(GpuVertex));
+#if BBLITE_PBR_VARIANTS > 0
+            if (dawn_mesh.pinned_vertices) {
+                const std::vector<GpuVertex> pinned =
+                    pinned_convention_vertices(
+                        vertices,
+                        mesh.mirrored_x);
+                wgpuQueueWriteBuffer(
+                    state.queue,
+                    dawn_mesh.pinned_vertices,
+                    0,
+                    pinned.data(),
+                    pinned.size() * sizeof(GpuVertex));
+            }
+#endif
+            dawn_mesh.transform_version =
+                mesh.transform_version;
+        }
         update_camera(camera);
         upstream::sort_transparent_draws(
             render_plan.draw_lists.transparent,
@@ -6317,132 +6461,16 @@ bool run_dawn_engine(Engine& engine) {
                 for (const upstream::RenderDrawCommand& draw :
                      list.commands) {
                     DawnMesh& draw_mesh = state.meshes[draw.item_index];
-                    const MeshRecord& draw_record =
-                        engine.meshes[draw.item.mesh.value];
                     const bool grid_draw =
                         draw.item.material_kind ==
                         upstream::RenderMaterialKind::grid;
                     const bool shader_draw =
                         draw.item.material_kind ==
                         upstream::RenderMaterialKind::shader;
-                    // Grid and shader-variant vertex stages own no
-                    // deformation or instancing uniforms.
-                    const bool mesh_uniform_draw =
-                        !grid_draw && !shader_draw;
-                    (void)draw_record;
-                    (void)mesh_uniform_draw;
-                    if (
-                        draw_mesh.transform_version !=
-                        draw_record.transform_version) {
-                        const std::vector<GpuVertex> vertices =
-                            transformed_vertices(
-                                engine.geometries[draw.item.geometry],
-                                draw_record);
-                        wgpuQueueWriteBuffer(
-                            state.queue,
-                            draw_mesh.vertices,
-                            0,
-                            vertices.data(),
-                            vertices.size() * sizeof(GpuVertex));
-#if BBLITE_PBR_VARIANTS > 0
-                        if (draw_mesh.pinned_vertices) {
-                            const std::vector<GpuVertex> pinned =
-                                pinned_convention_vertices(
-                                    vertices,
-                                    draw_record.mirrored_x);
-                            wgpuQueueWriteBuffer(
-                                state.queue,
-                                draw_mesh.pinned_vertices,
-                                0,
-                                pinned.data(),
-                                pinned.size() * sizeof(GpuVertex));
-                        }
-#endif
-                        draw_mesh.transform_version =
-                            draw_record.transform_version;
-                    }
-#if BBLITE_GPU_DEFORMATION
-                    if (mesh_uniform_draw) {
-                        const DeformationUniforms deformation =
-                            build_deformation_uniforms(
-                                draw_record,
-                                engine.geometries[draw.item.geometry]
-                                    .flat_normals);
-                        wgpuQueueWriteBuffer(
-                            state.queue,
-                            draw_mesh.deformation_uniforms,
-                            0,
-                            &deformation,
-                            sizeof(deformation));
-                    }
-#endif
-#if BBLITE_GPU_INSTANCING
-                    if (mesh_uniform_draw) {
-                        const std::array<float, 16> parent_world =
-                            upstream::build_instance_parent_world(
-                                draw_record);
-                        wgpuQueueWriteBuffer(
-                            state.queue,
-                            draw_mesh.instance_uniform,
-                            0,
-                            parent_world.data(),
-                            64);
-                        if (
-                            draw_record.thin_instanced &&
-                            draw_mesh.instance_version !=
-                                draw_record.instance_version) {
-                            // Re-upload the pinned dirty range
-                            // [0, count) from the record pool; slots
-                            // past the active count keep their previous
-                            // contents and are never drawn.
-                            const std::size_t active_count = std::min(
-                                static_cast<std::size_t>(
-                                    draw_record.instance_count),
-                                draw_record.instance_matrices
-                                    .size());
-                            if (active_count > 0) {
-                                wgpuQueueWriteBuffer(
-                                    state.queue,
-                                    draw_mesh.instances,
-                                    0,
-                                    draw_record.instance_matrices
-                                        .data(),
-                                    active_count *
-                                        sizeof(
-                                            draw_record
-                                                .instance_matrices
-                                                .front()));
-                            }
-                            draw_mesh.instance_count =
-                                static_cast<std::uint32_t>(
-                                    active_count);
-                            draw_mesh.instance_version =
-                                draw_record.instance_version;
-                        }
-                    }
-#endif
-#if BBLITE_GPU_MORPH_STORAGE
-                    if (
-                        draw_mesh.owns_morph_buffers &&
-                        draw_mesh.morph_weights_version !=
-                            draw_record.morph_weights_version) {
-                        // The shared value packer behind the blob's
-                        // constant header; this backend rewrites just the
-                        // weight span.
-                        const std::vector<float> weights =
-                            morph_weight_values(
-                                engine.geometries[draw.item.geometry],
-                                draw_record);
-                        wgpuQueueWriteBuffer(
-                            state.queue,
-                            draw_mesh.morph_weights,
-                            16,
-                            weights.data(),
-                            weights.size() * sizeof(float));
-                        draw_mesh.morph_weights_version =
-                            draw_record.morph_weights_version;
-                    }
-#endif
+                    // The per-mesh vertex, deformation, instancing and
+                    // morph state is synced once per frame by the item
+                    // pass above; a draw writes only the blocks its
+                    // material kind owns.
                     if (
                         draw.item.material_kind ==
                         upstream::RenderMaterialKind::standard) {
