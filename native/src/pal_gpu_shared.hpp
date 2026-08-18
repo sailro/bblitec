@@ -419,6 +419,34 @@ inline std::vector<GpuVertex> pinned_convention_vertices(
     return result;
 }
 
+/**
+ * The record's instance matrices in Babylon's own convention. The glTF
+ * loader stores EXT_mesh_gpu_instancing matrices through `native_matrix`
+ * -- the X-mirror conjugation M*A*M -- where the pin uploads the authored
+ * values and carries the mirror in the mesh block's world; the conjugation
+ * is involutive, so applying it again recovers them. Scene-code thin
+ * instances adopt the caller's floats verbatim -- the same floats the
+ * pin's own setThinInstances receives -- so they pass through untouched.
+ * `thin_instanced` is stamped by both, so the discriminator is
+ * `instance_source`, which only the scene-code setter fills.
+ */
+inline std::vector<std::array<float, 16>> pinned_instance_matrices(
+    const MeshRecord& record) {
+    std::vector<std::array<float, 16>> result = record.instance_matrices;
+    if (record.instance_source != nullptr) return result;
+    for (std::array<float, 16>& matrix : result) {
+        for (std::size_t column = 0; column < 4; ++column) {
+            for (std::size_t row = 0; row < 4; ++row) {
+                if ((row == 0) != (column == 0)) {
+                    matrix[column * 4 + row] =
+                        -matrix[column * 4 + row];
+                }
+            }
+        }
+    }
+    return result;
+}
+
 /** The identity, for a skinned draw whose palette already carries everything. */
 inline std::array<float, 16> pinned_identity_world() {
     return {
@@ -659,15 +687,12 @@ inline std::size_t pinned_variant_for_draw(
     bool has_bones = false;
     if (draw.item.mesh.value < engine.meshes.size()) {
         const MeshRecord& record = engine.meshes[draw.item.mesh.value];
-        // An animated node needs no guard: the PAL re-transforms its vertices on
-        // the CPU when `transform_version` moves, so the GPU always sees world
-        // space and the pin's `finalWorld` stays the identity. Instancing is a
-        // different mechanism -- the transcribed stage reads per-instance
-        // columns from a second vertex buffer where the pin composes its own
-        // arm -- so those draws stay transcribed.
-        if (record.thin_instanced || !record.instance_matrices.empty()) {
-            return std::numeric_limits<std::size_t>::max();
-        }
+        // An animated node needs no guard: the PAL re-transforms its vertices
+        // on the CPU when `transform_version` moves, so the GPU always sees
+        // world space and the pin's `finalWorld` stays the identity. An
+        // instanced mesh resolves the pin's own thin-instance arm -- its
+        // renderable features carry MSH_HAS_THIN_INSTANCES -- and the draw
+        // binds the per-instance matrix buffer as the arm's second stream.
         // `bone_matrices` is not only a skin: the glTF loader pushes the mesh's
         // own world matrix into it for an *animated* mesh with no skin at all,
         // and the transcribed vertex stage takes the transform from there. A

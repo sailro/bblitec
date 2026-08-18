@@ -328,7 +328,8 @@ export async function composePinnedPbrVariant(
     options: PinnedComposeOptions = {},
 ): Promise<PinnedPbrVariant> {
     const { features, features2 } = await pinnedMaterialFeatures(material);
-    const [compose, templateExt, flatNormal, fog] = await Promise.all([
+    const [compose, templateExt, flatNormal, fog, thinInstance] =
+        await Promise.all([
         importPinnedModule<{
             createPbrComposer: (deps: Record<string, unknown>) => PinnedComposeFn;
         }>("material/pbr/pbr-compose.js"),
@@ -350,6 +351,11 @@ export async function composePinnedPbrVariant(
             PBR_FOG_HELPER: string;
             PBR_FOG_BLOCK: string;
         }>("material/pbr/pbr-fog-wgsl.js"),
+        // Gated by `MSH_HAS_THIN_INSTANCES` exactly like the flat-normal and
+        // fog snippets by their bits.
+        importPinnedModule<{
+            createThinInstanceFragment: (hasInstanceColor: boolean) => unknown;
+        }>("shader/fragments/thin-instance-fragment.js"),
     ]);
     const composer = compose.createPbrComposer({
         _singleLightWGSL: options.singleLightWgsl ?? "",
@@ -366,7 +372,8 @@ export async function composePinnedPbrVariant(
         _flatNormalWgsl: flatNormal.FLAT_NORMAL_WGSL,
         _createPbrShadowFragment: null,
         _shadowLights: [],
-        _createThinInstanceFragment: null,
+        _createThinInstanceFragment:
+            thinInstance.createThinInstanceFragment,
     });
     const composed = composer(
         features | (options.passFeatures ?? 0),

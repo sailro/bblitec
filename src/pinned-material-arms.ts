@@ -392,17 +392,26 @@ export async function composeRenderableVariants(
     // primitives with different attribute sets composes two variants; the
     // renderable table keys on `(material, meshFeatures)` so both are reached.
     const featureSets = new Map<number, Set<number>>();
-    for (const [mesh, entry] of (
-        Array.isArray(record["meshes"]) ? record["meshes"] : []
-    ).entries()) {
-        const primitives = (entry as Record<string, unknown>)["primitives"];
+    const nodes = Array.isArray(record["nodes"])
+        ? (record["nodes"] as Record<string, unknown>[])
+        : [];
+    const meshes = Array.isArray(record["meshes"])
+        ? (record["meshes"] as Record<string, unknown>[])
+        : [];
+    for (const node of nodes) {
+        const meshIndex = node["mesh"];
+        if (typeof meshIndex !== "number") continue;
+        const primitives = meshes[meshIndex]?.["primitives"];
         if (!Array.isArray(primitives)) continue;
         for (const primitive of primitives as Record<string, unknown>[]) {
             const material = typeof primitive["material"] === "number"
                 ? (primitive["material"] as number)
                 : (document.materials?.length ?? 0);
             const features = await pinnedMeshFeaturesFromPrimitive(primitive, {
-                skinned: skinned.has(mesh),
+                skinned: skinned.has(meshIndex),
+                instanced:
+                    (node["extensions"] as Record<string, unknown> | undefined)
+                        ?.["EXT_mesh_gpu_instancing"] !== undefined,
             });
             const set = featureSets.get(material) ?? new Set<number>();
             set.add(features);
@@ -621,6 +630,11 @@ export async function gltfRenderableFeatures(
             features.push(
                 await pinnedMeshFeaturesFromPrimitive(primitive, {
                     skinned: node["skin"] !== undefined,
+                    instanced:
+                        (node["extensions"] as
+                            | Record<string, unknown>
+                            | undefined)?.["EXT_mesh_gpu_instancing"] !==
+                        undefined,
                 }),
             );
         }

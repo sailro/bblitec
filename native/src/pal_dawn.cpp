@@ -130,6 +130,10 @@ struct DawnMesh {
     // `tangent.w` against that, so a bitangent built with `cross()` inside the
     // pin's own vertex stage comes out negated unless the conversion is undone.
     WGPUBuffer pinned_vertices = nullptr;
+    // The instance matrices in Babylon's own convention, for the pin's
+    // thin-instance arm. `pinned_instance_matrices` states the conversion;
+    // aliased to `instances` for thin-instanced meshes, owned otherwise.
+    WGPUBuffer pinned_instances = nullptr;
     WGPUTexture pinned_bone_texture = nullptr;
     // Whether this frame's pinned draw reads the mirrored buffer: skinned
     // draws and palette-world animated meshes both do.
@@ -585,6 +589,13 @@ struct DawnState : DawnDevice {
             if (mesh.instance_uniform) {
                 wgpuBufferRelease(mesh.instance_uniform);
             }
+#if BBLITE_PBR_VARIANTS > 0
+            if (mesh.pinned_instances &&
+                mesh.pinned_instances != mesh.instances) {
+                wgpuBufferRelease(mesh.pinned_instances);
+            }
+            mesh.pinned_instances = nullptr;
+#endif
             if (mesh.instances) wgpuBufferRelease(mesh.instances);
 #endif
 #if BBLITE_GPU_MORPH_STORAGE
@@ -2560,6 +2571,9 @@ WGPURenderPipeline pinned_variant_pipeline(
     // are the pin's; where each sits in our vertex is the PAL's, so a variant
     // asking for something we do not carry fails by name here.
     std::vector<WGPUVertexAttribute> attributes;
+    // The pin's thin-instance arm reads the per-instance matrix as four vec4
+    // columns from a second, instance-stepped stream.
+    std::vector<WGPUVertexAttribute> instance_attributes;
     attributes.reserve(entry.attribute_count);
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::PbrVariantAttribute& input =
@@ -2584,6 +2598,14 @@ WGPURenderPipeline pinned_variant_pipeline(
         } else if (input.name == "color") {
             attribute.format = WGPUVertexFormat_Float32x4;
             attribute.offset = offsetof(GpuVertex, color);
+        } else if (
+            input.name == "world0" || input.name == "world1" ||
+            input.name == "world2" || input.name == "world3") {
+            attribute.format = WGPUVertexFormat_Float32x4;
+            attribute.offset = static_cast<std::uint64_t>(
+                16 * (input.name.back() - '0'));
+            instance_attributes.push_back(attribute);
+            continue;
         }
 #if BBLITE_GPU_DEFORMATION
         else if (input.name == "joints") {
@@ -2605,19 +2627,23 @@ WGPURenderPipeline pinned_variant_pipeline(
         }
         attributes.push_back(attribute);
     }
-    WGPUVertexBufferLayout vertex_layout{};
-    vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
-    vertex_layout.arrayStride = sizeof(GpuVertex);
-    vertex_layout.attributeCount = attributes.size();
-    vertex_layout.attributes = attributes.data();
+    std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
+    vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
+    vertex_layouts[0].arrayStride = sizeof(GpuVertex);
+    vertex_layouts[0].attributeCount = attributes.size();
+    vertex_layouts[0].attributes = attributes.data();
+    vertex_layouts[1].stepMode = WGPUVertexStepMode_Instance;
+    vertex_layouts[1].arrayStride = sizeof(std::array<float, 16>);
+    vertex_layouts[1].attributeCount = instance_attributes.size();
+    vertex_layouts[1].attributes = instance_attributes.data();
 
     WGPURenderPipelineDescriptor descriptor =
         WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = pinned_pipeline_layout_for(state, variant);
     descriptor.vertex.module = state.pinned_vertex_modules[variant];
     descriptor.vertex.entryPoint = string_view("main");
-    descriptor.vertex.bufferCount = 1;
-    descriptor.vertex.buffers = &vertex_layout;
+    descriptor.vertex.bufferCount = instance_attributes.empty() ? 1 : 2;
+    descriptor.vertex.buffers = vertex_layouts.data();
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     descriptor.primitive.frontFace = traits.front;
     descriptor.primitive.cullMode = traits.cull;
@@ -4561,6 +4587,24 @@ bool run_dawn_engine(Engine& engine) {
                 WGPUBufferUsage_Uniform,
                 nullptr,
                 64);
+#if BBLITE_PBR_VARIANTS > 0
+            if (mesh_record.instance_source != nullptr) {
+                // Scene-code thin instances already carry Babylon's own
+                // values, so the pinned draw shares the buffer -- and
+                // with it the version-gated dynamic re-upload.
+                mesh.pinned_instances = mesh.instances;
+            } else if (!mesh_record.instance_matrices.empty()) {
+                const std::vector<std::array<float, 16>>
+                    pinned_matrices =
+                        pinned_instance_matrices(mesh_record);
+                mesh.pinned_instances = create_buffer(
+                    state,
+                    WGPUBufferUsage_Vertex,
+                    pinned_matrices.data(),
+                    pinned_matrices.size() *
+                        sizeof(pinned_matrices.front()));
+            }
+#endif
         }
 #endif
         const upstream::ShaderVariantInfo* mesh_shader_info =
@@ -6291,6 +6335,25 @@ bool run_dawn_engine(Engine& engine) {
                             : mesh.pinned_vertices,
                         0,
                         WGPU_WHOLE_SIZE);
+                    // The thin-instance arm's second stream and the instance
+                    // count; a non-instanced variant binds neither and draws
+                    // once.
+                    std::uint32_t pinned_instances = 1;
+#if BBLITE_GPU_INSTANCING
+                    const MeshRecord& instance_record =
+                        engine.meshes[draw.item.mesh.value];
+                    if ((instance_record.thin_instanced ||
+                         !instance_record.instance_matrices.empty()) &&
+                        mesh.pinned_instances) {
+                        wgpuRenderPassEncoderSetVertexBuffer(
+                            list_pass,
+                            1,
+                            mesh.pinned_instances,
+                            0,
+                            WGPU_WHOLE_SIZE);
+                        pinned_instances = mesh.instance_count;
+                    }
+#endif
                     wgpuRenderPassEncoderSetIndexBuffer(
                         list_pass,
                         mesh.indices,
@@ -6298,7 +6361,12 @@ bool run_dawn_engine(Engine& engine) {
                         0,
                         WGPU_WHOLE_SIZE);
                     wgpuRenderPassEncoderDrawIndexed(
-                        list_pass, mesh.index_count, 1, 0, 0, 0);
+                        list_pass,
+                        mesh.index_count,
+                        pinned_instances,
+                        0,
+                        0,
+                        0);
                     continue;
                 }
                 // The write phase resolves and binds every PBR draw or

@@ -98,6 +98,9 @@ struct GpuMesh {
     // layout.
     SDL_GPUTexture* pinned_bone_texture = nullptr;
     std::uint32_t pinned_bone_count = 0;
+    // The instance matrices in Babylon's own convention, for the pin's
+    // thin-instance arm. `pinned_instance_matrices` states the conversion.
+    SDL_GPUBuffer* pinned_instances = nullptr;
 #endif
     SDL_GPUBuffer* indices = nullptr;
     SDL_GPUBuffer* instances = nullptr;
@@ -677,6 +680,15 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         } else if (input.name == "color") {
             attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
             attribute.offset = offsetof(GpuVertex, color);
+        } else if (
+            input.name == "world0" || input.name == "world1" ||
+            input.name == "world2" || input.name == "world3") {
+            // The pin's thin-instance arm: the per-instance matrix as four
+            // vec4 columns from the second, instance-stepped stream.
+            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+            attribute.buffer_slot = 1;
+            attribute.offset = static_cast<Uint32>(
+                16 * (input.name.back() - '0'));
         }
 #if BBLITE_GPU_DEFORMATION
         else if (input.name == "joints") {
@@ -734,15 +746,23 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = vertex_shader;
     info.fragment_shader = fragment_shader;
-    // One buffer: the gate refuses instanced meshes, whose second per-instance
-    // buffer the pin reaches through its own arm rather than ours.
-    SDL_GPUVertexBufferDescription vertex_buffer{};
-    vertex_buffer.slot = 0;
-    vertex_buffer.pitch = sizeof(GpuVertex);
-    vertex_buffer.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    const bool instanced = std::any_of(
+        attributes.begin(),
+        attributes.end(),
+        [](const SDL_GPUVertexAttribute& attribute) {
+            return attribute.buffer_slot == 1;
+        });
+    std::array<SDL_GPUVertexBufferDescription, 2> vertex_buffers{};
+    vertex_buffers[0].slot = 0;
+    vertex_buffers[0].pitch = sizeof(GpuVertex);
+    vertex_buffers[0].input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    // The thin-instance arm's second stream: one 64-byte matrix per instance.
+    vertex_buffers[1].slot = 1;
+    vertex_buffers[1].pitch = sizeof(std::array<float, 16>);
+    vertex_buffers[1].input_rate = SDL_GPU_VERTEXINPUTRATE_INSTANCE;
     info.vertex_input_state = SDL_GPUVertexInputState{
-        &vertex_buffer,
-        1,
+        vertex_buffers.data(),
+        instanced ? 2u : 1u,
         attributes.data(),
         static_cast<Uint32>(attributes.size()),
     };
@@ -1094,6 +1114,23 @@ void draw_pinned_variant(
         0,
         &pinned_vertex_binding,
         1);
+    // The thin-instance arm's second stream and the instance count; a
+    // non-instanced variant binds neither and draws once.
+    const MeshRecord& instance_record = engine.meshes[item.mesh.value];
+    const bool instanced_draw =
+        instance_record.thin_instanced ||
+        !instance_record.instance_matrices.empty();
+    if (instanced_draw && mesh.pinned_instances) {
+        const SDL_GPUBufferBinding pinned_instance_binding{
+            mesh.pinned_instances,
+            0,
+        };
+        SDL_BindGPUVertexBuffers(
+            pass,
+            1,
+            &pinned_instance_binding,
+            1);
+    }
     const SDL_GPUBufferBinding pinned_index_binding{
         mesh.indices,
         0,
@@ -1105,7 +1142,7 @@ void draw_pinned_variant(
     SDL_DrawGPUIndexedPrimitives(
         pass,
         mesh.index_count,
-        1,
+        instanced_draw ? mesh.instance_count : 1,
         0,
         0,
         0);
@@ -2309,6 +2346,11 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
         mesh.pinned_bone_texture = nullptr;
         mesh.pinned_bone_count = 0;
     }
+    // Aliased to `instances` for thin-instanced meshes, owned otherwise.
+    if (mesh.pinned_instances && mesh.pinned_instances != mesh.instances) {
+        SDL_ReleaseGPUBuffer(state.device, mesh.pinned_instances);
+    }
+    mesh.pinned_instances = nullptr;
 #endif
     SDL_ReleaseGPUBuffer(state.device, mesh.indices);
     SDL_ReleaseGPUBuffer(state.device, mesh.instances);
@@ -4134,6 +4176,26 @@ bool run_gpu_engine(Engine& engine) {
                 instance_matrices.data(),
                 instance_matrices.size() *
                     sizeof(instance_matrices.front()));
+#if BBLITE_PBR_VARIANTS > 0
+            if (mesh_record.instance_source != nullptr) {
+                // Scene-code thin instances already carry Babylon's own
+                // values, so the pinned draw shares the buffer -- and with
+                // it the version-gated dynamic re-upload below.
+                gpu_mesh.pinned_instances = gpu_mesh.instances;
+            } else {
+                const std::vector<std::array<float, 16>>
+                    pinned_matrices =
+                        pinned_instance_matrices(mesh_record);
+                if (!pinned_matrices.empty()) {
+                    gpu_mesh.pinned_instances = upload_buffer(
+                        state.device,
+                        SDL_GPU_BUFFERUSAGE_VERTEX,
+                        pinned_matrices.data(),
+                        pinned_matrices.size() *
+                            sizeof(pinned_matrices.front()));
+                }
+            }
+#endif
             gpu_mesh.instance_count =
                 mesh_record.thin_instanced
                     ? mesh_record.instance_count
