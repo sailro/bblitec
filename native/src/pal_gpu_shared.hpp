@@ -401,8 +401,10 @@ inline std::vector<GpuVertex> pinned_convention_vertices(
         vertex.position[0] = -vertex.position[0];
         vertex.normal[0] = -vertex.normal[0];
         vertex.tangent[0] = -vertex.tangent[0];
-        vertex.local_position[0] = -vertex.local_position[0];
-        vertex.local_normal[0] = -vertex.local_normal[0];
+        // The local lanes stay untouched: the loader stores them RAW from
+        // the glTF (no native mirror), which is exactly the pin's own
+        // convention -- the LOCAL_POSITION geometry arm reads them as the
+        // browser reads its unmirrored attribute.
         // `gltf-loader` multiplies the authored sign by -1 for a right-handed
         // node and by +1 for a mirrored one; the pin's stage wants the authored
         // value, so the same factor undoes it.
@@ -446,6 +448,17 @@ inline std::vector<std::array<float, 16>> pinned_instance_matrices(
     }
     return result;
 }
+
+/**
+ * The pin's `gpUniforms` block, declared by a geometry-output variant whose
+ * attachments include NORMALIZED_VIEW_DEPTH or LINEAR_VELOCITY
+ * (`pbr-geometry-output-shader.ts` createPbrGeometryParamsFragment):
+ * the task's previous-frame view-projection and the camera's near/far.
+ */
+struct PinnedGeometryParams {
+    std::array<float, 16> previousViewProjection{};
+    std::array<float, 4> cameraNearFar{};
+};
 
 /** The identity, for a skinned draw whose palette already carries everything. */
 inline std::array<float, 16> pinned_identity_world() {
@@ -698,7 +711,11 @@ inline bool pinned_variant_supported(std::size_t variant) {
 inline std::size_t pinned_variant_for_draw(
     const Scene& scene,
     const Engine& engine,
-    const upstream::RenderDrawCommand& draw) {
+    const upstream::RenderDrawCommand& draw,
+    // The geometry-output task the draw belongs to, npos for the colour
+    // passes: the selector table keys on it, so a geometry draw resolves
+    // its own MRT arm and never a colour variant.
+    std::size_t geometry_task = std::numeric_limits<std::size_t>::max()) {
     if (upstream::pbr_variants.empty()) {
         return std::numeric_limits<std::size_t>::max();
     }
@@ -794,7 +811,8 @@ inline std::size_t pinned_variant_for_draw(
         static_cast<std::uint32_t>(mesh_features),
         light_mode,
         single_light_type,
-        scene.environment.tone_mapping_enabled);
+        scene.environment.tone_mapping_enabled,
+        geometry_task);
     if (
         variant == std::numeric_limits<std::size_t>::max() ||
         !pinned_variant_supported(variant)) {

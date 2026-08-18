@@ -2423,8 +2423,11 @@ ${nonTrianglePrimitives
                                   *optional(target, "TANGENT")))
                         : nullptr);
             }
+            // The node's own world in the native convention, for every mesh:
+            // the thin-instance arm composes through it, and a geometry
+            // LOCAL_POSITION variant pairs it with the vertex's local lanes.
             Matrix instance_parent_matrix =
-                identity_matrix();
+                native_matrix(compute_world(node_index));
             std::vector<Matrix> instance_matrices;
             if (const ts::JsonValue* extensions_value =
                     optional(node, "extensions")) {

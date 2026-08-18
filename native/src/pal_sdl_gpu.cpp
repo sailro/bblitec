@@ -313,6 +313,10 @@ struct GpuGeometryTask {
     std::vector<SDL_GPUTexture*> colors;
     std::vector<SDL_GPUTexture*> sampled_colors;
     SDL_GPUTexture* depth = nullptr;
+    // The pin's gpUniforms.previousViewProjection: last frame's task
+    // matrix, seeded with the current one on the first frame.
+    std::array<float, 16> previous_view_projection{};
+    bool has_previous_view_projection = false;
     SDL_GPUGraphicsPipeline* standard_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* standard_transparent_pipeline = nullptr;
@@ -617,6 +621,12 @@ void ensure_pinned_slots(GpuState& state, std::size_t variant) {
         read_pinned_stage_slots(pinned_stage_name(entry.fragment_shader));
 }
 
+SDL_GPUSampleCount task_sample_count(
+    const GpuState& state,
+    std::uint32_t requested);
+SDL_GPUTextureFormat geometry_texture_format(
+    const GeometryTextureDescription& description);
+
 /**
  * The graphics pipeline for one composed variant under one pipeline kind.
  *
@@ -629,7 +639,11 @@ void ensure_pinned_slots(GpuState& state, std::size_t variant) {
 SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     GpuState& state,
     std::size_t variant,
-    upstream::RenderPipelineKind kind) {
+    upstream::RenderPipelineKind kind,
+    // The geometry-output task an MRT variant draws in. A geometry variant
+    // is composed for exactly one task, so the variant-keyed cache stays
+    // valid with the task's targets baked into its pipeline.
+    const FrameTaskRecord* geometry_task = nullptr) {
     const std::size_t key =
         variant * 64 + static_cast<std::size_t>(kind);
     const auto existing = state.pinned_pipelines.find(key);
@@ -669,7 +683,13 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         attribute.buffer_slot = 0;
         if (input.name == "position") {
             attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
-            attribute.offset = offsetof(GpuVertex, position);
+            // A LOCAL_POSITION geometry variant's varying reads the raw
+            // attribute, so it binds the vertex's local lanes; its mesh
+            // world is the real node world, keeping worldPos the same
+            // product the baked pair produces.
+            attribute.offset = entry.uses_local_position
+                ? offsetof(GpuVertex, local_position)
+                : offsetof(GpuVertex, position);
         } else if (input.name == "normal") {
             attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
             attribute.offset = offsetof(GpuVertex, normal);
@@ -799,6 +819,48 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     info.target_info.num_color_targets = entry.no_color_output ? 0 : 1;
     info.target_info.depth_stencil_format = state.depth_format;
     info.target_info.has_depth_stencil_target = true;
+    // A geometry-output MRT variant draws into its task's own attachments:
+    // one target per attachment in the task's formats, plus the optional
+    // trailing colour output, at the task's sample count -- the same
+    // fixed-function state the transcribed geometry pipelines carried.
+    std::vector<SDL_GPUColorTargetDescription> geometry_targets;
+    if (geometry_task) {
+        geometry_targets.reserve(
+            geometry_task->geometry.attachments.size() + 1u);
+        for (const GeometryTextureDescription& description :
+             geometry_task->geometry.attachments) {
+            SDL_GPUColorTargetDescription target{};
+            target.format = geometry_texture_format(description);
+            if (transparent) target.blend_state = blend;
+            geometry_targets.push_back(target);
+        }
+        if (geometry_task->geometry.target.value != invalid_handle) {
+            SDL_GPUColorTargetDescription target{};
+            target.format = state.pinned_color_format;
+            if (transparent) target.blend_state = blend;
+            geometry_targets.push_back(target);
+        }
+        if (geometry_targets.size() != entry.color_target_count) {
+            gpu_error(
+                ("pinned geometry variant writes " +
+                 std::to_string(entry.color_target_count) +
+                 " targets where its task carries " +
+                 std::to_string(geometry_targets.size()) + ".")
+                    .c_str());
+        }
+        info.target_info.color_target_descriptions =
+            geometry_targets.data();
+        info.target_info.num_color_targets =
+            static_cast<Uint32>(geometry_targets.size());
+        info.multisample_state.sample_count =
+            task_sample_count(state, geometry_task->geometry.samples);
+        // The pin's geometry tasks are reverse-Z -- SCREENSPACE_DEPTH is
+        // documented as far->0, near->1 and the composed fragment reports
+        // `input.clipPos.z` raw -- so the pinned pass renders with the
+        // reverse matrix, GREATER, and a zero depth clear.
+        info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_GREATER;
+        info.depth_stencil_state.enable_depth_write = true;
+    }
     SDL_GPUGraphicsPipeline* pipeline =
         SDL_CreateGPUGraphicsPipeline(state.device, &info);
     if (!pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline pinned variant");
@@ -909,13 +971,19 @@ void draw_pinned_variant(
     const GpuMesh& mesh,
     const MaterialRecord* material,
     std::size_t pinned_variant,
-    SDL_GPUGraphicsPipeline*& bound_pipeline) {
+    SDL_GPUGraphicsPipeline*& bound_pipeline,
+    // Set for a draw inside a geometry-output task: the task whose targets
+    // the MRT pipeline binds, and the pin's gpUniforms block when the
+    // variant declares one.
+    const FrameTaskRecord* geometry_task = nullptr,
+    const PinnedGeometryParams* geometry_params = nullptr) {
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline =
         pinned_variant_pipeline(
             state,
             pinned_variant,
-            draw.pipeline);
+            draw.pipeline,
+            geometry_task);
     if (variant_pipeline != bound_pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
         bound_pipeline = variant_pipeline;
@@ -958,8 +1026,12 @@ void draw_pinned_variant(
                 ? pinned_identity_world()
                 : world_from_palette
                     ? pinned_record.bone_matrices[0]
-                    : pinned_record.thin_instanced ||
+                    : variant_entry.uses_local_position ||
+                            pinned_record.thin_instanced ||
                             !pinned_record.instance_matrices.empty()
+                        // The real node world: the LOCAL_POSITION arm binds
+                        // local vertex lanes, so the world carries what
+                        // baking otherwise would.
                         ? pinned_instanced_world(pinned_record)
                         : pinned_mesh_world(),
             item.mesh.value);
@@ -1002,6 +1074,16 @@ void draw_pinned_variant(
             } else if (block == "material") {
                 data = pinned_material.data();
                 size = pinned_material.size();
+            } else if (block == "gp") {
+                // The geometry-params block: previous view-projection and
+                // camera near/far, built by the geometry task's caller.
+                if (!geometry_params) {
+                    gpu_error(
+                        "pinned variant declares gpUniforms outside a "
+                        "geometry task.");
+                }
+                data = geometry_params;
+                size = sizeof(*geometry_params);
             } else {
                 gpu_error(
                     ("pinned variant declares an unmapped "
@@ -5009,7 +5091,9 @@ bool run_gpu_engine(Engine& engine) {
                                           const std::vector<SDL_GPUGraphicsPipeline*>& shader_variant_a2c_pipelines,
                                           const std::array<float, 16>& draw_matrix,
                                           const CameraRecord& draw_camera,
-                                          const upstream::RenderDrawLists& draw_lists) {
+                                          const upstream::RenderDrawLists& draw_lists,
+                                          const FrameTaskRecord* geometry_task,
+                                          const PinnedGeometryParams* geometry_params) {
                     bool scene_matrix_bound = true;
                     const auto pipeline_for =
                         [&](
@@ -5098,7 +5182,13 @@ bool run_gpu_engine(Engine& engine) {
                                     pinned_variant_for_draw(
                                         scene,
                                         engine,
-                                        draw);
+                                        draw,
+                                        geometry_task
+                                            ? static_cast<std::size_t>(
+                                                  geometry_task->geometry
+                                                      .shader_index)
+                                            : std::numeric_limits<
+                                                  std::size_t>::max());
                                 if (
                                     pinned_variant ==
                                     std::numeric_limits<
@@ -5127,7 +5217,9 @@ bool run_gpu_engine(Engine& engine) {
                                     mesh,
                                     material,
                                     pinned_variant,
-                                    bound_pipeline);
+                                    bound_pipeline,
+                                    geometry_task,
+                                    geometry_params);
                                 continue;
                             }
 #endif
@@ -5610,7 +5702,9 @@ bool run_gpu_engine(Engine& engine) {
                             state.shader_a2c_pipelines,
                             task_matrix,
                             task_camera,
-                            task_draw_lists[handle.value]);
+                            task_draw_lists[handle.value],
+                            nullptr,
+                            nullptr);
                         SDL_EndGPURenderPass(task_pass);
                         continue;
                     }
@@ -5674,9 +5768,34 @@ bool run_gpu_engine(Engine& engine) {
                                     : output_target.sampled_color;
                             target_infos.push_back(target_info);
                         }
+                        // A task whose draws are PBR renders through the
+                        // pin's own reverse-Z geometry contract: reverse
+                        // matrix, GREATER pipelines, zero depth clear. The
+                        // Standard geometry pipelines keep the forward pair
+                        // (their fragment reports `1 - z` instead).
+                        bool task_has_pbr = false;
+#if BBLITE_PBR_VARIANTS > 0
+                        for (const auto* list : {
+                                 &task_draw_lists[handle.value].opaque,
+                                 &task_draw_lists[handle.value]
+                                      .transparent,
+                             }) {
+                            for (const upstream::RenderDrawCommand& draw :
+                                 list->commands) {
+                                if (
+                                    draw.item.material_kind ==
+                                    upstream::RenderMaterialKind::pbr) {
+                                    task_has_pbr = true;
+                                    break;
+                                }
+                            }
+                            if (task_has_pbr) break;
+                        }
+#endif
                         SDL_GPUDepthStencilTargetInfo task_depth{};
                         task_depth.texture = geometry.depth;
-                        task_depth.clear_depth = 1.0f;
+                        task_depth.clear_depth =
+                            task_has_pbr ? 0.0f : 1.0f;
                         task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
                         task_depth.store_op =
                             SDL_GPU_STOREOP_DONT_CARE;
@@ -5699,6 +5818,35 @@ bool run_gpu_engine(Engine& engine) {
                             task_draw_lists[handle.value].transparent,
                             engine,
                             camera);
+                        // The pinned draws take the reverse-Z matrix the
+                        // pin's geometry tasks render with; the Standard
+                        // path keeps the forward one pushed above.
+                        const std::array<float, 16> geometry_matrix =
+                            task_has_pbr
+                                ? upstream::build_view_projection(
+                                      camera,
+                                      static_cast<double>(width) /
+                                          static_cast<double>(height),
+                                      true)
+                                : matrix;
+                        // The pin's gpUniforms for the task's MRT variants:
+                        // last frame's view-projection (seeded with the
+                        // current one on the first frame) and the camera's
+                        // near/far planes.
+                        if (!geometry.has_previous_view_projection) {
+                            geometry.previous_view_projection =
+                                geometry_matrix;
+                            geometry.has_previous_view_projection = true;
+                        }
+                        const PinnedGeometryParams geometry_params{
+                            geometry.previous_view_projection,
+                            {
+                                static_cast<float>(camera.near_plane),
+                                static_cast<float>(camera.far_plane),
+                                0.0f,
+                                0.0f,
+                            },
+                        };
                         draw_scene(
                             task_pass,
                             geometry.standard_pipeline,
@@ -5712,9 +5860,13 @@ bool run_gpu_engine(Engine& engine) {
                             nullptr,
                             {},
                             {},
-                            matrix,
+                            geometry_matrix,
                             camera,
-                            task_draw_lists[handle.value]);
+                            task_draw_lists[handle.value],
+                            &task,
+                            &geometry_params);
+                        geometry.previous_view_projection =
+                            geometry_matrix;
                         SDL_EndGPURenderPass(task_pass);
                         continue;
                     }

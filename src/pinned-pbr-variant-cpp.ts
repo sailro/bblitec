@@ -1212,7 +1212,16 @@ export function pinnedPbrVariantsHeader(
                         ? "false"
                         : "true"
                 }, ` +
-                `${colorTargetCount}},`,
+                `${colorTargetCount}, ` +
+                // The geometry LOCAL_POSITION arm's varying reads the raw
+                // `position` attribute, which this backend maps onto the
+                // vertex's local lanes with the real node world so worldPos
+                // stays the identical product.
+                `${
+                    variant.vertexWgsl.includes("vLocalPos")
+                        ? "true"
+                        : "false"
+                }},`,
         );
         for (const attribute of attributes) {
             attributeRows.push(
@@ -1353,6 +1362,10 @@ struct PbrVariantEntry {
      *  zero for a depth-only view, and the attachment count (plus the
      *  optional trailing colour) for a geometry-output MRT arm. */
     std::size_t color_target_count;
+    /** Whether the vertex stage carries the LOCAL_POSITION varying, which
+     *  reads the raw \`position\` attribute: the PAL binds the vertex's
+     *  local lanes and the real node world for such variants. */
+    bool uses_local_position;
 };
 
 inline constexpr std::array<PbrVariantEntry, ${variants.length}>
