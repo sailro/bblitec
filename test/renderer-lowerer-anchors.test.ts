@@ -1,13 +1,50 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
-import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
+import {
+    RendererLowerer,
+    lowerOpaqueOrderStamp,
+} from "../src/lowering/renderer-lowerer.js";
 import {
     extractPackagedStringLiteral,
     extractPackagedTemplateLiteral,
     readPinnedLibraryModule,
 } from "../src/pinned-shader-composer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
+
+const sharedStore = new UpstreamSourceStore();
+
+/** A doctored pin: the module's source with exact edits applied. */
+function doctoredSourceFile(
+    modulePath: string,
+    edits: readonly [needle: string, replacement: string][],
+): ts.SourceFile {
+    let source = sharedStore.getSource(modulePath);
+    for (const [needle, replacement] of edits) {
+        assert.ok(
+            source.includes(needle),
+            `the pinned source no longer contains '${needle}'`,
+        );
+        source = source.replaceAll(needle, replacement);
+    }
+    return ts.createSourceFile(
+        modulePath,
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+    );
+}
+
+const orderStampModules = [
+    "src/material/pbr/pbr-renderable.ts",
+    "src/material/pbr/pbr-geometry-renderable.ts",
+    "src/material/standard/standard-renderable.ts",
+    "src/material/standard/standard-geometry-renderable.ts",
+    "src/material/shader/shader-renderable.ts",
+    "src/material/shader/shader-thin-instance.ts",
+] as const;
 
 /**
  * RD-3 anchors: the renderer lowerer's math emissions are paired with their
@@ -307,6 +344,146 @@ test("anchors the draw-list rules to the pinned bucket fork", () => {
             !plan.header.includes("pbr_transparent_back_clockwise"),
     );
     assert.match(plan.header, /pbr_opaque_none_clockwise/);
+});
+
+test("adopts the pinned opaque order: append order, stamps proven shared", () => {
+    // Every reachable renderable module stamps the same non-transparent
+    // order, so the pinned buildBindings sort (by renderable.order
+    // alone) is the identity on the emitted opaque list.
+    assert.equal(
+        lowerOpaqueOrderStamp(
+            orderStampModules.map((modulePath) =>
+                sharedStore.getSourceFile(modulePath)
+            ),
+        ),
+        "100",
+    );
+    const plan = new RendererLowerer(
+        new LoweringContext(),
+    ).lowerRenderPlan({});
+    // The invented grouping is gone (the marker comment may still name
+    // it); the adopted rule and the proven stamp are stated at the seam.
+    assert.ok(!plan.source.includes("pipeline_order("));
+    assert.match(plan.source, /pin-adopted\(opaque-order\)/);
+    assert.match(
+        plan.source,
+        /order 100 -- mesh\.renderOrder has no record transport/,
+    );
+    assert.match(
+        plan.source,
+        /void order_draw_lists\(RenderDrawLists&\) \{\}/,
+    );
+});
+
+test("a moved shared opaque stamp flows out of the lowering", () => {
+    const stamp = lowerOpaqueOrderStamp([
+        doctoredSourceFile("src/material/pbr/pbr-renderable.ts", [
+            ["needsTaskRefraction ? 150 : 100", "needsTaskRefraction ? 150 : 90"],
+        ]),
+        doctoredSourceFile("src/material/pbr/pbr-geometry-renderable.ts", [
+            ["isAlphaBlend ? 200 : 100", "isAlphaBlend ? 200 : 90"],
+        ]),
+        doctoredSourceFile("src/material/standard/standard-renderable.ts", [
+            ["isTransparent ? 200 : 100", "isTransparent ? 200 : 90"],
+        ]),
+        doctoredSourceFile(
+            "src/material/standard/standard-geometry-renderable.ts",
+            [["isAlphaBlend ? 200 : 100", "isAlphaBlend ? 200 : 90"]],
+        ),
+        doctoredSourceFile("src/material/shader/shader-renderable.ts", [
+            ["renderOrder ?? 100", "renderOrder ?? 90"],
+        ]),
+        doctoredSourceFile("src/material/shader/shader-thin-instance.ts", [
+            ["isTransparent ? 200 : 100", "isTransparent ? 200 : 90"],
+        ]),
+    ]);
+    assert.equal(stamp, "90");
+});
+
+test("opaque stamps that split across families refuse generation", () => {
+    assert.throws(
+        () =>
+            lowerOpaqueOrderStamp([
+                doctoredSourceFile("src/material/pbr/pbr-renderable.ts", [
+                    [
+                        "needsTaskRefraction ? 150 : 100",
+                        "needsTaskRefraction ? 150 : 90",
+                    ],
+                ]),
+                sharedStore.getSourceFile(
+                    "src/material/standard/standard-renderable.ts",
+                ),
+            ]),
+        /no longer stamp one shared opaque order/,
+    );
+});
+
+test("an order stamp that stops substituting renderOrder refuses", () => {
+    assert.throws(
+        () =>
+            lowerOpaqueOrderStamp([
+                doctoredSourceFile(
+                    "src/material/standard/standard-renderable.ts",
+                    [[
+                        "order: mesh.renderOrder ?? (isTransparent ? 200 : 100),",
+                        "order: mesh.drawRank ?? (isTransparent ? 200 : 100),",
+                    ]],
+                ),
+            ]),
+        /no longer substitutes mesh\.renderOrder/,
+    );
+});
+
+test("a plain stamp with no literal transparency to classify it refuses", () => {
+    assert.throws(
+        () =>
+            lowerOpaqueOrderStamp([
+                doctoredSourceFile(
+                    "src/material/shader/shader-renderable.ts",
+                    [["isTransparent: false,", "isTransparent: opaqueFlag,"]],
+                ),
+            ]),
+        /no literal isTransparent sibling/,
+    );
+});
+
+test("adopts the pinned transparent sort center: the draw world's translation", () => {
+    // The pinned families store sortCenter = worldMatrix[12..14]; the
+    // record carries that world as instance_parent_matrix composed with
+    // the live TRS position. The pinned lines are anchored inside
+    // lowerRenderPlan, so drift throws there.
+    for (const [modulePath, marker] of [
+        [
+            "src/material/pbr/pbr-renderable.ts",
+            "const sortCenter = isTransparent || needsTaskRefraction ? ([mesh.worldMatrix[12]!, mesh.worldMatrix[13]!, mesh.worldMatrix[14]!] as [number, number, number]) : null;",
+        ],
+        [
+            "src/material/standard/standard-renderable.ts",
+            "const sortCenter = [mesh.worldMatrix[12]!, mesh.worldMatrix[13]!, mesh.worldMatrix[14]!] as [number, number, number];",
+        ],
+    ] as const) {
+        assert.ok(
+            sharedStore.getSource(modulePath).includes(marker),
+            `pinned ${modulePath} no longer stores the world-translation sort center`,
+        );
+    }
+    const plan = new RendererLowerer(
+        new LoweringContext(),
+    ).lowerRenderPlan({});
+    assert.match(plan.source, /pin-adopted\(sort-center\)/);
+    assert.match(
+        plan.source,
+        /const std::array<float, 16>& parent = mesh\.instance_parent_matrix;/,
+    );
+    assert.match(
+        plan.source,
+        /parent\[0\] \* mesh\.position\.x \+ parent\[4\] \* mesh\.position\.y \+\s*\r?\n\s*parent\[8\] \* mesh\.position\.z \+ parent\[12\],/,
+    );
+    // The bounds-center derivation and its euler helper are gone; the
+    // anchored comparator and view-forward distance stay.
+    assert.ok(!plan.source.includes("rotate_euler"));
+    assert.ok(!plan.source.includes("bounds_min"));
+    assert.match(plan.source, /command\.sort_distance = dot\(delta, forward\);/);
 });
 
 test("anchors the light-slot packing to the pinned lights-ubo module", () => {

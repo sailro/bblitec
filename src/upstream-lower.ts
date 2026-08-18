@@ -477,6 +477,8 @@ class GeneratedSourceWriter {
                 { modulePath: "src/light/spot-light.ts", symbolName: "createSpotLight" },
                 { modulePath: "src/loader-gltf/gltf-parser.ts", symbolName: "computeNodeWorldMatrix" },
                 { modulePath: "src/loader-gltf/gltf-material.ts", symbolName: "assembleMaterial" },
+                { modulePath: "src/loader-gltf/gltf-pbr-builder.ts", symbolName: "uploadBaseColorFactorTexture,uploadOrmFactorTexture" },
+                { modulePath: "src/math/color.ts", symbolName: "linearToSrgbByte" },
                 { modulePath: "src/loader-gltf/gltf-ext-uv-transform.ts", symbolName: "wrapTexture" },
                 { modulePath: "src/material/pbr/fragments/uv-transform-fragment.ts", symbolName: "writeOne" },
                 { modulePath: "src/loader-gltf/gltf-ext-clearcoat.ts", symbolName: "applyMaterial" },

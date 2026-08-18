@@ -3,6 +3,7 @@ import { doubleLiteral, floatLiteral } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
     GltfExtensionDefaults,
+    GltfFactorBake,
     GltfLoweredDefault,
     GltfMaterialDefaults,
     gltfLoaderCpp,
@@ -244,29 +245,6 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 );
             }
         }
-        const reflectance = this.context.findNodes(
-            dielectric,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
-                this.context
-                    .propertyPath(node.left)
-                    ?.join(".") ===
-                    "reflOpts.f0Factor",
-        )[0];
-        if (!reflectance) {
-            this.context.contractError(
-                dielectric,
-                "Expected dielectric reflectance assignment.",
-            );
-        }
-        this.context.assertExpressionShape(
-            reflectance.right,
-            "((ior - 1) / (ior + 1)) ** 2 / 0.04",
-            "glTF dielectric reflectance",
-        );
-
         // The sampler mapping and the keyframe interpolation used to pair
         // hand-written template C++ with assertions that never fed it — a
         // pin change failed the assertion while the stale text still
@@ -314,6 +292,12 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
             dielectric,
             this.context.sourceFile(
                 "src/loader-gltf/gltf-ext-iridescence.ts",
+            ),
+        );
+        const factorBake = lowerGltfFactorBake(
+            this.context.sourceFile("src/math/color.ts"),
+            this.context.sourceFile(
+                "src/loader-gltf/gltf-pbr-builder.ts",
             ),
         );
         const materialDefaults = lowerGltfMaterialDefaults({
@@ -385,6 +369,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     imageProcessingDefaults,
                     extensionDefaults,
                     materialDefaults,
+                    factorBake,
                     matrixMultiply,
                     matrixLocal,
                     matrixCompose,
@@ -7123,6 +7108,233 @@ function dielectricSpecularDefault(file: ts.SourceFile): {
 }
 
 /**
+ * The IOR-to-F0 fold (`gltf-ext-dielectric.ts`):
+ * `reflOpts.f0Factor = ((ior - 1) / (ior + 1)) ** 2 / 0.04`. The
+ * squaring is the template's `ratio * ratio` shape, so an exponent
+ * that stops being two refuses; the unit and the base reflectance
+ * flow into the emitted fold and its undo.
+ */
+function dielectricIorFold(file: ts.SourceFile): {
+    one: string;
+    baseReflectance: string;
+} {
+    const symbol = "KHR_materials_dielectric";
+    const applyMaterial = featureMethod(file, symbol, "applyMaterial");
+    const folds = collectNodes(
+        applyMaterial.body,
+        (node): node is ts.BinaryExpression =>
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            pinnedPropertyPath(node.left)?.join(".") ===
+                "reflOpts.f0Factor" &&
+            ts.isBinaryExpression(unwrapPin(node.right)) &&
+            (unwrapPin(node.right) as ts.BinaryExpression)
+                    .operatorToken.kind ===
+                ts.SyntaxKind.SlashToken,
+    );
+    if (folds.length !== 1) {
+        refuseModule(
+            symbol,
+            "no longer computes the IOR fold in a single assignment",
+        );
+    }
+    const division = unwrapPin(folds[0]!.right) as ts.BinaryExpression;
+    const base = unwrapPin(division.right);
+    if (!ts.isNumericLiteral(base)) {
+        refuseNode(
+            symbol,
+            file,
+            division,
+            "no longer divides the fold by a constant base reflectance",
+        );
+    }
+    const power = unwrapPin(division.left);
+    if (
+        !ts.isBinaryExpression(power) ||
+        power.operatorToken.kind !==
+            ts.SyntaxKind.AsteriskAsteriskToken ||
+        signedNumericValue(symbol, file, power.right) !== 2
+    ) {
+        refuseNode(
+            symbol,
+            file,
+            division,
+            "no longer squares the IOR ratio",
+        );
+    }
+    const ratio = unwrapPin(power.left);
+    if (
+        !ts.isBinaryExpression(ratio) ||
+        ratio.operatorToken.kind !== ts.SyntaxKind.SlashToken
+    ) {
+        refuseNode(symbol, file, power, "no longer folds an IOR ratio");
+    }
+    const numerator = unwrapPin(ratio.left);
+    const denominator = unwrapPin(ratio.right);
+    if (
+        !ts.isBinaryExpression(numerator) ||
+        numerator.operatorToken.kind !== ts.SyntaxKind.MinusToken ||
+        !ts.isBinaryExpression(denominator) ||
+        denominator.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
+        identifierText(numerator.left) === undefined ||
+        identifierText(numerator.left) !==
+            identifierText(denominator.left)
+    ) {
+        refuseNode(
+            symbol,
+            file,
+            ratio,
+            "no longer folds (ior - one) over (ior + one)",
+        );
+    }
+    const one = signedNumericValue(symbol, file, numerator.right);
+    if (one !== signedNumericValue(symbol, file, denominator.right)) {
+        refuseModule(
+            symbol,
+            "no longer folds the IOR ratio around a single unit",
+        );
+    }
+    return {
+        one: floatLiteral(one),
+        baseReflectance: floatLiteral(Number(base.text)),
+    };
+}
+
+/**
+ * The dielectric tint gate (`gltf-ext-dielectric.ts`): both pinned
+ * sites test `specularColorFactor.length === 3` and compare lanes
+ * 0..2 against one — the record's `!= 1.0f` triple. The unit and the
+ * lane count flow; sites that disagree, a moved lane set, or a lane
+ * count the record's three-lane `Color3` cannot store refuse.
+ */
+function dielectricSpecularColor(file: ts.SourceFile): {
+    key: string;
+    length: string;
+    unit: string;
+} {
+    const symbol = "KHR_materials_dielectric";
+    const applyMaterial = featureMethod(file, symbol, "applyMaterial");
+    const key = "specularColorFactor";
+    // Locals declared as reads of the factor (`specColFactor`).
+    const aliases = new Set<string>();
+    for (const binding of collectNodes(
+        applyMaterial.body,
+        (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            node.initializer !== undefined &&
+            ts.isIdentifier(node.name),
+    )) {
+        const read = unwrapPin(binding.initializer!);
+        if (
+            (ts.isPropertyAccessExpression(read) ||
+                ts.isPropertyAccessChain(read)) &&
+            read.name.text === key
+        ) {
+            aliases.add((binding.name as ts.Identifier).text);
+        }
+    }
+    const readsFactor = (expression: ts.Expression): boolean => {
+        const node = unwrapPin(expression);
+        if (
+            (ts.isPropertyAccessExpression(node) ||
+                ts.isPropertyAccessChain(node)) &&
+            node.name.text === key
+        ) {
+            return true;
+        }
+        return ts.isIdentifier(node) && aliases.has(node.text);
+    };
+    const laneCounts = new Map<number, number>();
+    const units: number[] = [];
+    const lengths: number[] = [];
+    const visit = (node: ts.Node): void => {
+        ts.forEachChild(node, visit);
+        if (!ts.isBinaryExpression(node)) return;
+        if (
+            node.operatorToken.kind ===
+                ts.SyntaxKind.ExclamationEqualsEqualsToken
+        ) {
+            const lane = unwrapPin(node.left);
+            if (
+                !ts.isElementAccessExpression(lane) ||
+                !readsFactor(lane.expression)
+            ) {
+                return;
+            }
+            const index = signedNumericValue(
+                symbol,
+                file,
+                lane.argumentExpression,
+            );
+            laneCounts.set(index, (laneCounts.get(index) ?? 0) + 1);
+            units.push(signedNumericValue(symbol, file, node.right));
+            return;
+        }
+        if (
+            node.operatorToken.kind ===
+                ts.SyntaxKind.EqualsEqualsEqualsToken
+        ) {
+            const read = unwrapPin(node.left);
+            if (
+                !(ts.isPropertyAccessExpression(read) ||
+                    ts.isPropertyAccessChain(read)) ||
+                read.name.text !== "length" ||
+                !readsFactor(read.expression)
+            ) {
+                return;
+            }
+            lengths.push(signedNumericValue(symbol, file, node.right));
+        }
+    };
+    visit(applyMaterial.body);
+    const unit = units[0];
+    const length = lengths[0];
+    if (unit === undefined || length === undefined) {
+        refuseModule(
+            symbol,
+            "no longer gates the dielectric tint on the factor lanes",
+        );
+    }
+    if (units.some((value) => value !== unit)) {
+        refuseModule(
+            symbol,
+            "no longer agrees with itself on the tint unit",
+        );
+    }
+    if (lengths.some((value) => value !== length)) {
+        refuseModule(
+            symbol,
+            "no longer agrees with itself on the tint lane count",
+        );
+    }
+    // The emitted `Color3{[0], [1], [2]}` consumes exactly three lanes.
+    if (length !== 3) {
+        refuseModule(
+            symbol,
+            "no longer stores a three-lane tint the record's Color3 " +
+                "can carry",
+        );
+    }
+    const perLane = laneCounts.get(0);
+    const indices = [...laneCounts.keys()].sort((a, b) => a - b);
+    if (
+        perLane === undefined ||
+        indices.join(",") !== "0,1,2" ||
+        [...laneCounts.values()].some((count) => count !== perLane)
+    ) {
+        refuseModule(
+            symbol,
+            "no longer compares exactly lanes 0..2 at every tint site",
+        );
+    }
+    return {
+        key,
+        length: String(length),
+        unit: floatLiteral(unit),
+    };
+}
+
+/**
  * The KHR_texture_transform identity (`gltf-ext-uv-transform.ts` +
  * the pinned writer's `??` defaults in `uv-transform-fragment.ts`),
  * verified against the record's native `TextureTransform` identity —
@@ -7334,6 +7546,8 @@ export function lowerGltfMaterialDefaults(files: {
 }): GltfMaterialDefaults {
     const core = assembleMaterialDefaults(files.material);
     const specularFactor = dielectricSpecularDefault(files.dielectric);
+    const iorToF0 = dielectricIorFold(files.dielectric);
+    const specularColor = dielectricSpecularColor(files.dielectric);
     const textureTransform = textureTransformDefaults(
         files.uvTransform,
         files.uvTransformWriter,
@@ -7464,6 +7678,8 @@ export function lowerGltfMaterialDefaults(files: {
     return {
         ...core,
         specularFactor,
+        iorToF0,
+        specularColor,
         textureTransform,
         clearcoatIntensity,
         clearcoatRoughness,
@@ -7485,5 +7701,405 @@ export function lowerGltfMaterialDefaults(files: {
         },
         sheenIntensity: floatLiteral(Number(sheenIntensity.text)),
         emissiveStrength: strengthDefaults[0]!,
+    };
+}
+
+/** `Math.round(Math.max(lo, Math.min(hi, v)) * scale)` → constants. */
+function roundClampScale(
+    symbol: string,
+    file: ts.SourceFile,
+    expression: ts.Expression,
+): { lo: number; hi: number; scale: number; value: ts.Expression } {
+    const round = mathCall(expression, "round");
+    const product = round && round.arguments.length === 1
+        ? unwrapPin(round.arguments[0]!)
+        : undefined;
+    if (
+        !product ||
+        !ts.isBinaryExpression(product) ||
+        product.operatorToken.kind !== ts.SyntaxKind.AsteriskToken
+    ) {
+        refuseNode(
+            symbol,
+            file,
+            expression,
+            "no longer rounds a scaled clamp",
+        );
+    }
+    const scale = signedNumericValue(symbol, file, product.right);
+    const max = mathCall(product.left, "max");
+    const lo = max && max.arguments.length === 2
+        ? signedNumericValue(symbol, file, max.arguments[0]!)
+        : undefined;
+    const min = max && max.arguments.length === 2
+        ? mathCall(max.arguments[1]!, "min")
+        : undefined;
+    const hi = min && min.arguments.length === 2
+        ? signedNumericValue(symbol, file, min.arguments[0]!)
+        : undefined;
+    if (lo === undefined || hi === undefined) {
+        refuseNode(
+            symbol,
+            file,
+            expression,
+            "no longer clamps through Math.max over Math.min",
+        );
+    }
+    // `hi` proves the two-argument Math.min exists.
+    return { lo, hi, scale, value: min!.arguments[1]! };
+}
+
+/** The single four-lane `new U8([…])` texel build under `root`. */
+function pinnedTexelBuild(
+    symbol: string,
+    root: ts.Node,
+): readonly ts.Expression[] {
+    const builds = collectNodes(
+        root,
+        (node): node is ts.NewExpression =>
+            ts.isNewExpression(node) &&
+            identifierText(node.expression) === "U8",
+    );
+    const lanes = builds.length === 1 &&
+            builds[0]!.arguments?.length === 1
+        ? unwrapPin(builds[0]!.arguments[0]!)
+        : undefined;
+    if (
+        !lanes ||
+        !ts.isArrayLiteralExpression(lanes) ||
+        lanes.elements.length !== 4
+    ) {
+        refuseModule(
+            symbol,
+            "no longer bakes a single four-lane factor texel",
+        );
+    }
+    return lanes.elements;
+}
+
+/**
+ * The factor bakes, lowered from the pinned factor-texture module and
+ * the pinned sRGB curve: `uploadOrmFactorTexture`'s round-clamp-scale
+ * closure and constant opaque lanes, `uploadBaseColorFactorTexture`'s
+ * three `linearToSrgbByte` lanes plus the same unorm alpha rounding,
+ * and `linearToSrgbByte`'s transfer-curve constants
+ * (`src/loader-gltf/gltf-pbr-builder.ts`, `src/math/color.ts`). The
+ * emitted helpers quantize record factors exactly as the pin bakes
+ * texels — see the emitted comment for the record-side rationale.
+ */
+export function lowerGltfFactorBake(
+    colorFile: ts.SourceFile,
+    builderFile: ts.SourceFile,
+): GltfFactorBake {
+    const symbol = "gltf-pbr-builder";
+    // uploadOrmFactorTexture: the clamp closure and the texel lanes.
+    const ormUpload = topLevelFunction(
+        builderFile,
+        "uploadOrmFactorTexture",
+    );
+    const clampClosures = collectNodes(
+        ormUpload.body,
+        (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            node.initializer !== undefined &&
+            ts.isArrowFunction(unwrapPin(node.initializer)),
+    );
+    const closure = clampClosures.length === 1
+        ? unwrapPin(clampClosures[0]!.initializer!) as ts.ArrowFunction
+        : undefined;
+    if (!closure || ts.isBlock(closure.body)) {
+        refuseModule(
+            symbol,
+            "no longer clamps the ORM factors through one closure",
+        );
+    }
+    const unorm = roundClampScale(symbol, builderFile, closure.body);
+    const closureName = ts.isIdentifier(clampClosures[0]!.name)
+        ? clampClosures[0]!.name.text
+        : undefined;
+    const ormLanes = pinnedTexelBuild(symbol, ormUpload.body);
+    const opaqueLanes = [ormLanes[0]!, ormLanes[3]!].map((lane) =>
+        signedNumericValue(symbol, builderFile, lane)
+    );
+    if (opaqueLanes[0] !== opaqueLanes[1]) {
+        refuseModule(
+            symbol,
+            "no longer bakes one opaque byte into both ORM guard lanes",
+        );
+    }
+    // Lane order: G is roughness, B is metallic — the record's
+    // orm_fallback build maps them by name.
+    for (const [lane, parameter] of [
+        [ormLanes[1]!, "roughness"],
+        [ormLanes[2]!, "metallic"],
+    ] as const) {
+        const call = unwrapPin(lane);
+        if (
+            !ts.isCallExpression(call) ||
+            identifierText(call.expression) !== closureName ||
+            call.arguments.length !== 1 ||
+            identifierText(call.arguments[0]!) !== parameter
+        ) {
+            refuseModule(
+                symbol,
+                `no longer bakes '${parameter}' through the clamp in ` +
+                    "its pinned lane",
+            );
+        }
+    }
+    // uploadBaseColorFactorTexture: three sRGB lanes + the unorm alpha.
+    const baseUpload = topLevelFunction(
+        builderFile,
+        "uploadBaseColorFactorTexture",
+    );
+    const baseLanes = pinnedTexelBuild(symbol, baseUpload.body);
+    baseLanes.slice(0, 3).forEach((lane, index) => {
+        const call = unwrapPin(lane);
+        const argument = ts.isCallExpression(call) &&
+                call.arguments.length === 1
+            ? unwrapPin(call.arguments[0]!)
+            : undefined;
+        if (
+            !call ||
+            !ts.isCallExpression(call) ||
+            identifierText(call.expression) !== "linearToSrgbByte" ||
+            !argument ||
+            !ts.isElementAccessExpression(argument) ||
+            signedNumericValue(
+                    symbol,
+                    builderFile,
+                    argument.argumentExpression,
+                ) !== index
+        ) {
+            refuseModule(
+                symbol,
+                `no longer encodes base-color lane ${index} through ` +
+                    "linearToSrgbByte",
+            );
+        }
+    });
+    const alpha = roundClampScale(symbol, builderFile, baseLanes[3]!);
+    if (
+        alpha.lo !== unorm.lo ||
+        alpha.hi !== unorm.hi ||
+        alpha.scale !== unorm.scale
+    ) {
+        refuseModule(
+            symbol,
+            "no longer shares one unorm rounding between the ORM and " +
+                "alpha lanes",
+        );
+    }
+    const alphaRead = unwrapPin(alpha.value);
+    if (
+        !ts.isElementAccessExpression(alphaRead) ||
+        signedNumericValue(
+                symbol,
+                builderFile,
+                alphaRead.argumentExpression,
+            ) !== 3
+    ) {
+        refuseModule(
+            symbol,
+            "no longer bakes the alpha lane from factor lane 3",
+        );
+    }
+    // linearToSrgbByte: the clamp and the IEC transfer curve.
+    const srgbSymbol = "linearToSrgbByte";
+    const srgb = topLevelFunction(colorFile, srgbSymbol);
+    const statements = srgb.body.statements;
+    const clampBinding = statements[0] &&
+            ts.isVariableStatement(statements[0])
+        ? statements[0].declarationList.declarations[0]
+        : undefined;
+    const clampMax = clampBinding?.initializer
+        ? mathCall(clampBinding.initializer, "max")
+        : undefined;
+    const clampMin = clampMax && clampMax.arguments.length === 2
+        ? mathCall(clampMax.arguments[1]!, "min")
+        : undefined;
+    const clampedName = clampBinding && ts.isIdentifier(clampBinding.name)
+        ? clampBinding.name.text
+        : undefined;
+    if (!clampMax || !clampMin || clampMin.arguments.length !== 2 ||
+        clampedName === undefined) {
+        refuseModule(
+            srgbSymbol,
+            "no longer clamps its input through Math.max over Math.min",
+        );
+    }
+    const srgbLo = signedNumericValue(
+        srgbSymbol,
+        colorFile,
+        clampMax.arguments[0]!,
+    );
+    const srgbHi = signedNumericValue(
+        srgbSymbol,
+        colorFile,
+        clampMin.arguments[0]!,
+    );
+    const returnStatement = statements[1];
+    const round = returnStatement &&
+            ts.isReturnStatement(returnStatement) &&
+            returnStatement.expression
+        ? mathCall(returnStatement.expression, "round")
+        : undefined;
+    const scaled = round && round.arguments.length === 1
+        ? unwrapPin(round.arguments[0]!)
+        : undefined;
+    if (
+        !scaled ||
+        !ts.isBinaryExpression(scaled) ||
+        scaled.operatorToken.kind !== ts.SyntaxKind.AsteriskToken
+    ) {
+        refuseModule(
+            srgbSymbol,
+            "no longer rounds a scaled transfer curve",
+        );
+    }
+    const byteScale = signedNumericValue(
+        srgbSymbol,
+        colorFile,
+        scaled.right,
+    );
+    const curve = unwrapPin(scaled.left);
+    if (!ts.isConditionalExpression(curve)) {
+        refuseModule(
+            srgbSymbol,
+            "no longer forks the transfer curve on a threshold",
+        );
+    }
+    const condition = unwrapPin(curve.condition);
+    if (
+        !ts.isBinaryExpression(condition) ||
+        condition.operatorToken.kind !==
+            ts.SyntaxKind.LessThanEqualsToken ||
+        identifierText(condition.left) !== clampedName
+    ) {
+        refuseModule(
+            srgbSymbol,
+            "no longer tests the clamped value against the threshold",
+        );
+    }
+    const threshold = signedNumericValue(
+        srgbSymbol,
+        colorFile,
+        condition.right,
+    );
+    const linear = unwrapPin(curve.whenTrue);
+    if (
+        !ts.isBinaryExpression(linear) ||
+        linear.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
+        identifierText(linear.left) !== clampedName
+    ) {
+        refuseModule(
+            srgbSymbol,
+            "no longer scales the linear segment from the clamped value",
+        );
+    }
+    const linearScale = signedNumericValue(
+        srgbSymbol,
+        colorFile,
+        linear.right,
+    );
+    const gamma = unwrapPin(curve.whenFalse);
+    if (
+        !ts.isBinaryExpression(gamma) ||
+        gamma.operatorToken.kind !== ts.SyntaxKind.MinusToken
+    ) {
+        refuseModule(
+            srgbSymbol,
+            "no longer offsets the gamma segment",
+        );
+    }
+    const gammaOffset = signedNumericValue(
+        srgbSymbol,
+        colorFile,
+        gamma.right,
+    );
+    const gammaProduct = unwrapPin(gamma.left);
+    const pow = ts.isBinaryExpression(gammaProduct) &&
+            gammaProduct.operatorToken.kind ===
+                ts.SyntaxKind.AsteriskToken
+        ? mathCall(gammaProduct.right, "pow")
+        : undefined;
+    const exponent = pow && pow.arguments.length === 2 &&
+            identifierText(pow.arguments[0]!) === clampedName
+        ? unwrapPin(pow.arguments[1]!)
+        : undefined;
+    if (
+        !pow ||
+        !exponent ||
+        !ts.isBinaryExpression(exponent) ||
+        exponent.operatorToken.kind !== ts.SyntaxKind.SlashToken
+    ) {
+        refuseModule(
+            srgbSymbol,
+            "no longer raises the clamped value to a ratio exponent",
+        );
+    }
+    const gammaScale = signedNumericValue(
+        srgbSymbol,
+        colorFile,
+        (gammaProduct as ts.BinaryExpression).left,
+    );
+    const exponentNumerator = signedNumericValue(
+        srgbSymbol,
+        colorFile,
+        exponent.left,
+    );
+    const exponentDenominator = signedNumericValue(
+        srgbSymbol,
+        colorFile,
+        exponent.right,
+    );
+    const helpers = [
+        "// Babylon Lite bakes texture-less PBR factors into 1x1 factor",
+        "// textures (gltf-pbr-builder uploadBaseColorFactorTexture /",
+        "// uploadOrmFactorTexture) and leaves the shader uniforms at their",
+        "// defaults, so the browser shades with the 8-bit quantized values.",
+        "// Quantize the record factors identically: the native white-fallback",
+        "// texture times the quantized uniform reproduces the browser's",
+        "// quantized texel times the default uniform bit for bit.",
+        "float quantized_unorm_factor(float value) {",
+        "    return std::round(",
+        `               std::clamp(value, ${floatLiteral(unorm.lo)}, ${
+            floatLiteral(unorm.hi)
+        }) * ${floatLiteral(unorm.scale)}) /`,
+        `        ${floatLiteral(unorm.scale)};`,
+        "}",
+        "",
+        "// The same rounding as a byte, which is what the pinned factor texture holds.",
+        "std::uint8_t unorm_byte(float value) {",
+        "    return static_cast<std::uint8_t>(",
+        `        std::round(std::clamp(value, ${floatLiteral(unorm.lo)}, ${
+            floatLiteral(unorm.hi)
+        }) * ${floatLiteral(unorm.scale)}));`,
+        "}",
+        "",
+        "std::uint8_t linear_to_srgb_byte(float value) {",
+        "    // Pinned linearToSrgbByte: the byte lands in an rgba8unorm-srgb",
+        "    // texel whose hardware decode is the browser's effective value.",
+        "    const double clamped = std::clamp(",
+        "        static_cast<double>(value),",
+        `        ${doubleLiteral(srgbLo)},`,
+        `        ${doubleLiteral(srgbHi)});`,
+        `    const double encoded = clamped <= ${doubleLiteral(threshold)}`,
+        `        ? clamped * ${doubleLiteral(linearScale)}`,
+        `        : ${doubleLiteral(gammaScale)} * std::pow(clamped, ${
+            doubleLiteral(exponentNumerator)
+        } / ${doubleLiteral(exponentDenominator)}) - ${
+            doubleLiteral(gammaOffset)
+        };`,
+        "    return static_cast<std::uint8_t>(",
+        `        std::round(encoded * ${doubleLiteral(byteScale)}));`,
+        "}",
+    ].join("\n");
+    return {
+        helpers,
+        unormClampLo: floatLiteral(unorm.lo),
+        unormClampHi: floatLiteral(unorm.hi),
+        unormScale: floatLiteral(unorm.scale),
+        opaqueByte: String(opaqueLanes[0]),
     };
 }

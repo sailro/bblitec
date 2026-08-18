@@ -333,6 +333,166 @@ interface LoweredShader {
     data: string;
 }
 
+/** `as`/parenthesis/non-null unwrap for the pinned stamp walks. */
+function unwrapStampExpression(expression: ts.Expression): ts.Expression {
+    let current = expression;
+    while (
+        ts.isAsExpression(current) ||
+        ts.isParenthesizedExpression(current) ||
+        ts.isNonNullExpression(current)
+    ) {
+        current = current.expression;
+    }
+    return current;
+}
+
+/** The non-transparent `mesh.renderOrder ?? …` arms of one module. */
+function opaqueOrderArmsOf(file: ts.SourceFile): number[] {
+    const arms: number[] = [];
+    const numeric = (expression: ts.Expression): number => {
+        const node = unwrapStampExpression(expression);
+        if (!ts.isNumericLiteral(node)) {
+            throw new Error(
+                `Pinned ${file.fileName} order stamp is not a ` +
+                    `numeric constant: ${expression.getText(file)}.`,
+            );
+        }
+        return Number(node.text);
+    };
+    // The enclosing renderable object's literal `isTransparent`, when
+    // one exists — classifies the plain-numeric shader-material stamps.
+    const literalTransparency = (
+        node: ts.Node,
+    ): boolean | undefined => {
+        for (
+            let current: ts.Node | undefined = node;
+            current;
+            current = current.parent
+        ) {
+            if (!ts.isObjectLiteralExpression(current)) continue;
+            for (const property of current.properties) {
+                if (
+                    !ts.isPropertyAssignment(property) ||
+                    !ts.isIdentifier(property.name) ||
+                    property.name.text !== "isTransparent"
+                ) {
+                    continue;
+                }
+                const value = unwrapStampExpression(
+                    property.initializer,
+                );
+                if (value.kind === ts.SyntaxKind.TrueKeyword) {
+                    return true;
+                }
+                if (value.kind === ts.SyntaxKind.FalseKeyword) {
+                    return false;
+                }
+                return undefined;
+            }
+        }
+        return undefined;
+    };
+    const collectFallbacks = (root: ts.Expression): void => {
+        const visit = (node: ts.Node): void => {
+            ts.forEachChild(node, visit);
+            if (
+                !ts.isBinaryExpression(node) ||
+                node.operatorToken.kind !==
+                    ts.SyntaxKind.QuestionQuestionToken
+            ) {
+                return;
+            }
+            const read = unwrapStampExpression(node.left);
+            if (
+                !(ts.isPropertyAccessExpression(read) ||
+                    ts.isPropertyAccessChain(read)) ||
+                read.name.text !== "renderOrder"
+            ) {
+                throw new Error(
+                    `Pinned ${file.fileName} order stamp no longer ` +
+                        "substitutes mesh.renderOrder (the record " +
+                        "transports none).",
+                );
+            }
+            const fallback = unwrapStampExpression(node.right);
+            if (ts.isConditionalExpression(fallback)) {
+                // `transparent ? a : b` — the opaque arm is whenFalse;
+                // both arms must be constants.
+                numeric(fallback.whenTrue);
+                arms.push(numeric(fallback.whenFalse));
+                return;
+            }
+            const transparent = literalTransparency(node);
+            if (transparent === undefined) {
+                throw new Error(
+                    `Pinned ${file.fileName} order stamp has no ` +
+                        "conditional arm and no literal isTransparent " +
+                        "sibling to classify it.",
+                );
+            }
+            if (!transparent) {
+                arms.push(numeric(fallback));
+            }
+        };
+        visit(root);
+    };
+    const visit = (node: ts.Node): void => {
+        ts.forEachChild(node, visit);
+        if (
+            ts.isPropertyAssignment(node) &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === "order"
+        ) {
+            collectFallbacks(node.initializer);
+        }
+        if (
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === "order" &&
+            node.initializer !== undefined
+        ) {
+            collectFallbacks(node.initializer);
+        }
+    };
+    visit(file);
+    return arms;
+}
+
+/**
+ * The pinned per-family order stamps behind the adopted buildBindings
+ * opaque sort: every renderable module that can reach the native draw
+ * lists stamps `mesh.renderOrder ?? <arm>`, and the non-transparent
+ * arms must agree on one constant for the pinned stable sort to be
+ * the identity on the emitted opaque list. A missing substitution, a
+ * numeric fallback with no literal `isTransparent` sibling, or arms
+ * that disagree refuse generation — the moment the retired pipeline
+ * grouping question has to be reopened.
+ */
+export function lowerOpaqueOrderStamp(
+    files: readonly ts.SourceFile[],
+): string {
+    const opaqueArms: number[] = [];
+    for (const file of files) {
+        const arms = opaqueOrderArmsOf(file);
+        if (arms.length === 0) {
+            throw new Error(
+                `Pinned ${file.fileName} no longer stamps an opaque ` +
+                    "renderable order.",
+            );
+        }
+        opaqueArms.push(...arms);
+    }
+    const first = opaqueArms[0]!;
+    if (opaqueArms.some((arm) => arm !== first)) {
+        throw new Error(
+            "Pinned renderable modules no longer stamp one shared " +
+                "opaque order; the adopted buildBindings sort is no " +
+                "longer the identity on the emitted opaque list.",
+        );
+    }
+    return String(first);
+}
+
 export class RendererLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
@@ -611,6 +771,19 @@ export class RendererLowerer {
         this.assertPinnedMultiplyWriter();
         this.assertPinnedDrawListRules();
         this.assertPinnedLightSlotPacking();
+        // The adopted buildBindings opaque sort: prove every reachable
+        // family still stamps one shared non-transparent order, so the
+        // emitted lists can stay in append order (see order_draw_lists).
+        const opaqueOrderStamp = lowerOpaqueOrderStamp(
+            [
+                "src/material/pbr/pbr-renderable.ts",
+                "src/material/pbr/pbr-geometry-renderable.ts",
+                "src/material/standard/standard-renderable.ts",
+                "src/material/standard/standard-geometry-renderable.ts",
+                "src/material/shader/shader-renderable.ts",
+                "src/material/shader/shader-thin-instance.ts",
+            ].map((modulePath) => this.context.sourceFile(modulePath)),
+        );
         const backgroundGeometry = this.pinnedBackgroundGeometry();
         const viewMatrixBody = this.pinnedViewMatrixBody();
         if (options.fog) {
@@ -1001,30 +1174,6 @@ Vec3 cross(Vec3 left, Vec3 right) {
     };
 }
 
-Vec3 rotate_euler(Vec3 value, const Vec3& rotation) {
-    const float sin_x = std::sin(rotation.x);
-    const float cos_x = std::cos(rotation.x);
-    value = Vec3{
-        value.x,
-        value.y * cos_x - value.z * sin_x,
-        value.y * sin_x + value.z * cos_x,
-    };
-    const float sin_y = std::sin(rotation.y);
-    const float cos_y = std::cos(rotation.y);
-    value = Vec3{
-        value.x * cos_y + value.z * sin_y,
-        value.y,
-        -value.x * sin_y + value.z * cos_y,
-    };
-    const float sin_z = std::sin(rotation.z);
-    const float cos_z = std::cos(rotation.z);
-    return Vec3{
-        value.x * cos_z - value.y * sin_z,
-        value.x * sin_z + value.y * cos_z,
-        value.z,
-    };
-}
-
 } // namespace
 
 // src/camera/camera.ts getViewMatrix: the rotation is the transpose of
@@ -1165,45 +1314,15 @@ void append_draw(
     list.commands.push_back(command);
 }
 
-std::uint32_t pipeline_order(RenderPipelineKind kind) {
-    switch (kind) {
-        case RenderPipelineKind::pbr_opaque_back:
-        case RenderPipelineKind::pbr_transparent_back:
-            return 0;
-        case RenderPipelineKind::pbr_opaque_none:
-        case RenderPipelineKind::pbr_transparent_none:
-            return 1;
-        case RenderPipelineKind::standard_opaque_back:
-        case RenderPipelineKind::standard_transparent_back:
-            return 2;
-        case RenderPipelineKind::standard_opaque_none:
-        case RenderPipelineKind::standard_transparent_none:
-            return 3;
-        case RenderPipelineKind::grid_opaque_back:
-        case RenderPipelineKind::grid_transparent_back:
-            return 4;
-        case RenderPipelineKind::grid_opaque_none:
-        case RenderPipelineKind::grid_transparent_none:
-            return 5;
-        case RenderPipelineKind::shader:
-        case RenderPipelineKind::shader_a2c:
-            return 6;
-    }
-    return 7;
-}
-
-void order_draw_lists(RenderDrawLists& lists) {
-    const auto compare = [](
-                             const RenderDrawCommand& left,
-                             const RenderDrawCommand& right) {
-        return pipeline_order(left.pipeline) <
-            pipeline_order(right.pipeline);
-    };
-    std::stable_sort(
-        lists.opaque.commands.begin(),
-        lists.opaque.commands.end(),
-        compare);
-}
+// pin-adopted(opaque-order): the pinned buildBindings sorts the opaque
+// and direct buckets by renderable.order alone (render-task.ts), and
+// every renderable this port reaches stamps the same non-transparent
+// order ${opaqueOrderStamp} -- mesh.renderOrder has no record transport
+// and no corpus scene sets it -- so the pinned stable sort is the
+// identity permutation here: the draws keep the append order the pin's
+// own _renderables walk produces. The pipeline_order grouping that used
+// to reorder this list was an invention of this port.
+void order_draw_lists(RenderDrawLists&) {}
 
 } // namespace
 
@@ -1374,27 +1493,28 @@ void sort_transparent_draws(
     const Vec3& eye = basis.eye;
     const Vec3& forward = basis.forward;
     for (RenderDrawCommand& command : transparent.commands) {
-        if (
-            command.item.mesh.value >= engine.meshes.size() ||
-            command.item.geometry >= engine.geometries.size()) {
+        if (command.item.mesh.value >= engine.meshes.size()) {
             command.sort_distance = 0.0f;
             continue;
         }
         const MeshRecord& mesh = engine.meshes[command.item.mesh.value];
-        const ModelGeometry& geometry =
-            engine.geometries[command.item.geometry];
-        Vec3 center{
-            (geometry.bounds_min.x + geometry.bounds_max.x) * 0.5f *
-                mesh.scaling.x,
-            (geometry.bounds_min.y + geometry.bounds_max.y) * 0.5f *
-                mesh.scaling.y,
-            (geometry.bounds_min.z + geometry.bounds_max.z) * 0.5f *
-                mesh.scaling.z,
+        // pin-adopted(sort-center): both pinned families store sortCenter =
+        // worldMatrix[12..14] (pbr-renderable.ts / standard-renderable.ts),
+        // the draw world's translation -- never the bounds center. The
+        // record splits that world into the loader-baked node world
+        // (instance_parent_matrix, identity for scene-code meshes) and the
+        // live TRS whose translation is mesh.position (identity for
+        // loader-baked meshes), so the pinned center is the parent matrix
+        // applied to the record position.
+        const std::array<float, 16>& parent = mesh.instance_parent_matrix;
+        const Vec3 center{
+            parent[0] * mesh.position.x + parent[4] * mesh.position.y +
+                parent[8] * mesh.position.z + parent[12],
+            parent[1] * mesh.position.x + parent[5] * mesh.position.y +
+                parent[9] * mesh.position.z + parent[13],
+            parent[2] * mesh.position.x + parent[6] * mesh.position.y +
+                parent[10] * mesh.position.z + parent[14],
         };
-        center = rotate_euler(center, mesh.rotation);
-        center.x += mesh.position.x;
-        center.y += mesh.position.y;
-        center.z += mesh.position.z;
         const Vec3 delta{
             center.x - eye.x,
             center.y - eye.y,
@@ -3397,14 +3517,18 @@ ${lifted.fragmentBody}
      * for double-sided mirrored materials and rewinds single-sided mirrored
      * indices instead, mirroring the pin's frontFace="cw" through data.
      *
-     * Two emitted rules deliberately have no anchor because they do not
-     * transcribe a pinned expression — they are open RD-3 divergences, not
-     * ports: `order_draw_lists` stable-groups opaque draws by pipeline kind
-     * where the pinned buildBindings orders them by `renderable.order`
-     * alone, and `sort_transparent_draws` builds its sort center from the
-     * scaled rotated bounds center where both pinned mesh families store
-     * the world-matrix translation (`pbr-renderable.ts` /
-     * `standard-renderable.ts` `sortCenter`).
+     * `order_draw_lists` adopts the pinned buildBindings rule: opaque and
+     * direct draws sort by `renderable.order` alone, and because every
+     * reachable family stamps one shared non-transparent order (proven by
+     * `lowerOpaqueOrderStamp` on each generation) the emitted lists stay
+     * in append order with nothing to reorder.
+     *
+     * `sort_transparent_draws` adopts the pinned sort center: both pinned
+     * mesh families store `sortCenter` = the world-matrix translation
+     * (`pbr-renderable.ts` / `standard-renderable.ts`, anchored below),
+     * which the record carries as `instance_parent_matrix` composed with
+     * the live TRS position — the retired scaled-rotated bounds center
+     * was an invention of this port.
      */
     private assertPinnedDrawListRules(): void {
         const { declaration: buildBindings } =
@@ -3562,6 +3686,16 @@ ${lifted.fragmentBody}
                 "src/material/standard/standard-renderable.ts",
                 "order: mesh.renderOrder ?? (isTransparent ? 200 : 100),",
                 "Standard order stamp",
+            ],
+            [
+                "src/material/pbr/pbr-renderable.ts",
+                "const sortCenter = isTransparent || needsTaskRefraction ? ([mesh.worldMatrix[12]!, mesh.worldMatrix[13]!, mesh.worldMatrix[14]!] as [number, number, number]) : null;",
+                "PBR sort center",
+            ],
+            [
+                "src/material/standard/standard-renderable.ts",
+                "const sortCenter = [mesh.worldMatrix[12]!, mesh.worldMatrix[13]!, mesh.worldMatrix[14]!] as [number, number, number];",
+                "Standard sort center",
             ],
             [
                 "src/material/shader/shader-renderable.ts",

@@ -68,6 +68,13 @@ export interface GltfLoaderLoweredSegments {
      */
     materialDefaults: GltfMaterialDefaults;
     /**
+     * The factor-bake helpers and their byte constants, lowered from
+     * `src/math/color.ts#linearToSrgbByte` and the pinned factor-texture
+     * bakes (`src/loader-gltf/gltf-pbr-builder.ts`
+     * `uploadBaseColorFactorTexture` / `uploadOrmFactorTexture`).
+     */
+    factorBake: GltfFactorBake;
+    /**
      * `multiply_matrix`, lowered from
      * `src/math/mat4-multiply-into.ts#mat4MultiplyInto` — the pin's fully
      * unrolled product sums verified term by term, emitted as the loop
@@ -131,6 +138,22 @@ export interface GltfLoweredDefault {
     literal: string;
 }
 
+/**
+ * The pinned factor bakes: `quantized_unorm_factor` / `unorm_byte` /
+ * `linear_to_srgb_byte` emitted whole, plus the round-clamp-scale
+ * constants the material build inlines for the base-color alpha lane
+ * and the ORM texel's constant opaque lanes.
+ */
+export interface GltfFactorBake {
+    helpers: string;
+    /** `Math.round(clamp(v, lo, hi) * scale)` as float literals. */
+    unormClampLo: string;
+    unormClampHi: string;
+    unormScale: string;
+    /** The pinned ORM texel's constant occlusion/alpha byte. */
+    opaqueByte: string;
+}
+
 export interface GltfExtensionDefaults {
     ior: GltfLoweredDefault;
     transmissionFactor: GltfLoweredDefault;
@@ -168,6 +191,10 @@ export interface GltfMaterialDefaults {
     alphaCutoff: GltfLoweredDefault;
     /** A factor within `epsilon` of `clear` drops both pinned options. */
     specularFactor: { key: string; clear: string; epsilon: string };
+    /** `((ior - one) / (ior + one)) ** 2 / baseReflectance`. */
+    iorToF0: { one: string; baseReflectance: string };
+    /** The `!== unit` triple gating the dielectric tint, and its length. */
+    specularColor: { key: string; length: string; unit: string };
     /** KHR_texture_transform: the three field keys; rotation's identity. */
     textureTransform: {
         rotation: GltfLoweredDefault;
@@ -197,6 +224,7 @@ export function gltfLoaderCpp(
 ): string {
     const defaults = lowered.extensionDefaults;
     const materialDefaults = lowered.materialDefaults;
+    const factorBake = lowered.factorBake;
     return `// ${provenance}
 #include <bblite/pal_gltf.hpp>
 #include <bblite/runtime.hpp>
@@ -1011,38 +1039,7 @@ void apply_texture_transform(
     slot.rotation = float_or(transform, "${materialDefaults.textureTransform.rotation.key}", ${materialDefaults.textureTransform.rotation.literal});
 }
 
-// Babylon Lite bakes texture-less PBR factors into 1x1 factor
-// textures (gltf-pbr-builder uploadBaseColorFactorTexture /
-// uploadOrmFactorTexture) and leaves the shader uniforms at their
-// defaults, so the browser shades with the 8-bit quantized values.
-// Quantize the record factors identically: the native white-fallback
-// texture times the quantized uniform reproduces the browser's
-// quantized texel times the default uniform bit for bit.
-float quantized_unorm_factor(float value) {
-    return std::round(
-               std::clamp(value, 0.0f, 1.0f) * 255.0f) /
-        255.0f;
-}
-
-// The same rounding as a byte, which is what the pinned factor texture holds.
-std::uint8_t unorm_byte(float value) {
-    return static_cast<std::uint8_t>(
-        std::round(std::clamp(value, 0.0f, 1.0f) * 255.0f));
-}
-
-std::uint8_t linear_to_srgb_byte(float value) {
-    // Pinned linearToSrgbByte: the byte lands in an rgba8unorm-srgb
-    // texel whose hardware decode is the browser's effective value.
-    const double clamped = std::clamp(
-        static_cast<double>(value),
-        0.0,
-        1.0);
-    const double encoded = clamped <= 0.0031308
-        ? clamped * 12.92
-        : 1.055 * std::pow(clamped, 1.0 / 2.4) - 0.055;
-    return static_cast<std::uint8_t>(
-        std::round(encoded * 255.0));
-}
+${factorBake.helpers}
 
 // animation-pointer-basecolor.ts#collectBaseColorDefs: which materials have
 // their base colour factor driven by a KHR_animation_pointer channel. It is a
@@ -1140,10 +1137,10 @@ MaterialHandle load_material(
             // kept the factor in the uniform against a white texel, which let
             // an animated factor resurrect a value the pin holds at zero.
             material.orm_fallback = {
-                255,
+                ${factorBake.opaqueByte},
                 unorm_byte(material.roughness_factor),
                 unorm_byte(material.metallic_factor),
-                255,
+                ${factorBake.opaqueByte},
             };
             material.metallic_factor = 1.0f;
             material.roughness_factor = 1.0f;
@@ -1173,9 +1170,9 @@ MaterialHandle load_material(
                         std::round(
                             std::clamp(
                                 material.base_color_factor.a,
-                                0.0f,
-                                1.0f) *
-                            255.0f)),
+                                ${factorBake.unormClampLo},
+                                ${factorBake.unormClampHi}) *
+                            ${factorBake.unormScale})),
                 };
                 material.base_color_factor.r = 1.0f;
                 material.base_color_factor.g = 1.0f;
@@ -1282,8 +1279,8 @@ MaterialHandle load_material(
             material.index_of_refraction =
                 float_or(ior_value->as_object(), "${defaults.ior.key}", ${defaults.ior.literal});
             const float ratio =
-                (material.index_of_refraction - 1.0f) /
-                (material.index_of_refraction + 1.0f);
+                (material.index_of_refraction - ${materialDefaults.iorToF0.one}) /
+                (material.index_of_refraction + ${materialDefaults.iorToF0.one});
             material.reflectance = ratio * ratio;
         }
 ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
@@ -1306,7 +1303,7 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
             // the specular factor then replaces it, which is the spec's
             // "specular wins" rule and what the pinned loader does by
             // overwriting the same option.
-            const float base_reflectance = 0.04f;
+            const float base_reflectance = ${materialDefaults.iorToF0.baseReflectance};
             material.metallic_f0_factor =
                 material.has_ior
                     ? material.reflectance / base_reflectance
@@ -1325,12 +1322,12 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
             }
             const std::vector<float> specular_color =
                 float_array(
-                    optional(specular, "specularColorFactor"));
+                    optional(specular, "${materialDefaults.specularColor.key}"));
             if (
-                specular_color.size() == 3 &&
-                (specular_color[0] != 1.0f ||
-                 specular_color[1] != 1.0f ||
-                 specular_color[2] != 1.0f)) {
+                specular_color.size() == ${materialDefaults.specularColor.length} &&
+                (specular_color[0] != ${materialDefaults.specularColor.unit} ||
+                 specular_color[1] != ${materialDefaults.specularColor.unit} ||
+                 specular_color[2] != ${materialDefaults.specularColor.unit})) {
                 material.metallic_reflectance_color = Color3{
                     specular_color[0],
                     specular_color[1],

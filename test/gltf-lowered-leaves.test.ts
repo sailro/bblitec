@@ -21,6 +21,7 @@ import {
     lowerAccessorNormalizationCpp,
     lowerAnimationInterpolationCpp,
     lowerGltfExtensionDefaults,
+    lowerGltfFactorBake,
     lowerGltfMaterialDefaults,
     lowerIblEnvironmentScalarsCpp,
     lowerIblPolynomialCpp,
@@ -80,6 +81,28 @@ function mutatedFileAll(
     replacement: string,
 ): ts.SourceFile {
     return doctoredFile(modulePath, needle, replacement, true);
+}
+
+/** A doctored pin with several exact edits applied in sequence. */
+function mutatedFileEdits(
+    modulePath: string,
+    edits: readonly [needle: string, replacement: string][],
+): ts.SourceFile {
+    let source = store.getSource(modulePath);
+    for (const [needle, replacement] of edits) {
+        assert.ok(
+            source.includes(needle),
+            `the pinned source no longer contains '${needle}'`,
+        );
+        source = source.replace(needle, replacement);
+    }
+    return ts.createSourceFile(
+        modulePath,
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+    );
 }
 
 const evaluateModule = "src/animation/evaluate.ts";
@@ -1557,6 +1580,12 @@ test("lowers the pinned material defaults to the shipped keys and constants", ()
             clear: "1.0f",
             epsilon: "0.000001f",
         },
+        iorToF0: { one: "1.0f", baseReflectance: "0.04f" },
+        specularColor: {
+            key: "specularColorFactor",
+            length: "3",
+            unit: "1.0f",
+        },
         textureTransform: {
             rotation: { key: "rotation", literal: "0.0f" },
             scaleKey: "scale",
@@ -1780,4 +1809,252 @@ test("a changed emissive strength default flows into the emitted keys", () => {
         key: "emissiveStrength",
         literal: "3.0f",
     });
+});
+
+/* ─────────────── round 4 — factor bakes and the specular surround ─────────────── */
+
+const colorModulePath = "src/math/color.ts";
+const builderModule = "src/loader-gltf/gltf-pbr-builder.ts";
+
+/** What the loader template carried by hand before the lowering. */
+const expectedFactorBakeHelpers = `// Babylon Lite bakes texture-less PBR factors into 1x1 factor
+// textures (gltf-pbr-builder uploadBaseColorFactorTexture /
+// uploadOrmFactorTexture) and leaves the shader uniforms at their
+// defaults, so the browser shades with the 8-bit quantized values.
+// Quantize the record factors identically: the native white-fallback
+// texture times the quantized uniform reproduces the browser's
+// quantized texel times the default uniform bit for bit.
+float quantized_unorm_factor(float value) {
+    return std::round(
+               std::clamp(value, 0.0f, 1.0f) * 255.0f) /
+        255.0f;
+}
+
+// The same rounding as a byte, which is what the pinned factor texture holds.
+std::uint8_t unorm_byte(float value) {
+    return static_cast<std::uint8_t>(
+        std::round(std::clamp(value, 0.0f, 1.0f) * 255.0f));
+}
+
+std::uint8_t linear_to_srgb_byte(float value) {
+    // Pinned linearToSrgbByte: the byte lands in an rgba8unorm-srgb
+    // texel whose hardware decode is the browser's effective value.
+    const double clamped = std::clamp(
+        static_cast<double>(value),
+        0.0,
+        1.0);
+    const double encoded = clamped <= 0.0031308
+        ? clamped * 12.92
+        : 1.055 * std::pow(clamped, 1.0 / 2.4) - 0.055;
+    return static_cast<std::uint8_t>(
+        std::round(encoded * 255.0));
+}`;
+
+test("lowers the pinned factor bakes byte-identically to the shipped loader text", () => {
+    assert.deepEqual(
+        lowerGltfFactorBake(
+            pinnedFile(colorModulePath),
+            pinnedFile(builderModule),
+        ),
+        {
+            helpers: expectedFactorBakeHelpers,
+            unormClampLo: "0.0f",
+            unormClampHi: "1.0f",
+            unormScale: "255.0f",
+            opaqueByte: "255",
+        },
+    );
+});
+
+test("the emitted loader carries the factor bakes and the specular surround", () => {
+    const adapter = new GltfLowerer(new LoweringContext(store))
+        .lowerLoaderAdapter();
+    assert.ok(adapter.source.includes(expectedFactorBakeHelpers));
+    for (const line of [
+        "                255,\n                unorm_byte(material.roughness_factor),",
+        "unorm_byte(material.metallic_factor),\n                255,",
+        "                                0.0f,\n                                1.0f) *\n                            255.0f)),",
+        "(material.index_of_refraction - 1.0f) /",
+        "(material.index_of_refraction + 1.0f);",
+    ]) {
+        assert.ok(
+            adapter.source.includes(line),
+            `the emitted loader no longer carries '${line}'`,
+        );
+    }
+    const specular = new GltfLowerer(new LoweringContext(store))
+        .lowerLoaderAdapter(
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+        );
+    for (const line of [
+        "const float base_reflectance = 0.04f;",
+        'optional(specular, "specularColorFactor"));',
+        "specular_color.size() == 3 &&",
+        "(specular_color[0] != 1.0f ||",
+        " specular_color[1] != 1.0f ||",
+        " specular_color[2] != 1.0f))",
+    ]) {
+        assert.ok(
+            specular.source.includes(line),
+            `the specular loader no longer carries '${line}'`,
+        );
+    }
+});
+
+test("a changed sRGB threshold flows into the emitted bytes", () => {
+    const bake = lowerGltfFactorBake(
+        mutatedFile(
+            colorModulePath,
+            "c <= 0.0031308 ? c * 12.92",
+            "c <= 0.0041308 ? c * 12.92",
+        ),
+        pinnedFile(builderModule),
+    );
+    assert.notEqual(bake.helpers, expectedFactorBakeHelpers);
+    assert.match(bake.helpers, /clamped <= 0\.0041308/);
+});
+
+test("a changed sRGB exponent flows into the emitted bytes", () => {
+    const bake = lowerGltfFactorBake(
+        mutatedFile(colorModulePath, "Math.pow(c, 1 / 2.4)", "Math.pow(c, 1 / 2.2)"),
+        pinnedFile(builderModule),
+    );
+    assert.match(bake.helpers, /std::pow\(clamped, 1\.0 \/ 2\.2\)/);
+});
+
+test("a changed unorm scale flows through the helpers and the alpha lane", () => {
+    const bake = lowerGltfFactorBake(
+        pinnedFile(colorModulePath),
+        mutatedFileEdits(builderModule, [
+            [
+                "Math.round(Math.max(0, Math.min(1, value)) * 255)",
+                "Math.round(Math.max(0, Math.min(1, value)) * 127)",
+            ],
+            [
+                "Math.round(Math.max(0, Math.min(1, factor[3]!)) * 255)",
+                "Math.round(Math.max(0, Math.min(1, factor[3]!)) * 127)",
+            ],
+        ]),
+    );
+    assert.equal(bake.unormScale, "127.0f");
+    assert.match(
+        bake.helpers,
+        /std::clamp\(value, 0\.0f, 1\.0f\) \* 127\.0f/,
+    );
+});
+
+test("factor bakes that split the unorm rounding refuse", () => {
+    // The ORM closure and the base-color alpha lane are one pinned
+    // rounding; a value moved in only one is a pin defect to surface.
+    assert.throws(
+        () =>
+            lowerGltfFactorBake(
+                pinnedFile(colorModulePath),
+                mutatedFile(
+                    builderModule,
+                    "Math.round(Math.max(0, Math.min(1, value)) * 255)",
+                    "Math.round(Math.max(0, Math.min(1, value)) * 127)",
+                ),
+            ),
+        /no longer shares one unorm rounding/,
+    );
+});
+
+test("a swapped ORM bake lane refuses", () => {
+    assert.throws(
+        () =>
+            lowerGltfFactorBake(
+                pinnedFile(colorModulePath),
+                mutatedFile(
+                    builderModule,
+                    "new U8([255, clamp(roughness), clamp(metallic), 255])",
+                    "new U8([255, clamp(metallic), clamp(roughness), 255])",
+                ),
+            ),
+        /no longer bakes 'roughness' through the clamp in its pinned lane/,
+    );
+});
+
+test("a changed base reflectance flows into the emitted keys", () => {
+    const defaults = lowerGltfMaterialDefaults(materialDefaultFiles({
+        dielectric: mutatedFile(
+            dielectricModule,
+            "((ior - 1) / (ior + 1)) ** 2 / 0.04",
+            "((ior - 1) / (ior + 1)) ** 2 / 0.05",
+        ),
+    }));
+    assert.deepEqual(defaults.iorToF0, {
+        one: "1.0f",
+        baseReflectance: "0.05f",
+    });
+});
+
+test("an IOR fold that stops squaring refuses", () => {
+    assert.throws(
+        () =>
+            lowerGltfMaterialDefaults(materialDefaultFiles({
+                dielectric: mutatedFile(
+                    dielectricModule,
+                    "((ior - 1) / (ior + 1)) ** 2 / 0.04",
+                    "((ior - 1) / (ior + 1)) ** 3 / 0.04",
+                ),
+            })),
+        /no longer squares the IOR ratio/,
+    );
+});
+
+test("a changed tint unit flows through both pinned sites", () => {
+    const defaults = lowerGltfMaterialDefaults(materialDefaultFiles({
+        dielectric: mutatedFileEdits(dielectricModule, [
+            [
+                "specColFactor[0] !== 1 || specColFactor[1] !== 1 || specColFactor[2] !== 1",
+                "specColFactor[0] !== 0.5 || specColFactor[1] !== 0.5 || specColFactor[2] !== 0.5",
+            ],
+            [
+                "eSp.specularColorFactor[0] !== 1 || eSp.specularColorFactor[1] !== 1 || eSp.specularColorFactor[2] !== 1",
+                "eSp.specularColorFactor[0] !== 0.5 || eSp.specularColorFactor[1] !== 0.5 || eSp.specularColorFactor[2] !== 0.5",
+            ],
+        ]),
+    }));
+    assert.deepEqual(defaults.specularColor, {
+        key: "specularColorFactor",
+        length: "3",
+        unit: "0.5f",
+    });
+});
+
+test("tint sites that disagree on the unit refuse", () => {
+    assert.throws(
+        () =>
+            lowerGltfMaterialDefaults(materialDefaultFiles({
+                dielectric: mutatedFile(
+                    dielectricModule,
+                    "specColFactor[0] !== 1 || specColFactor[1] !== 1 || specColFactor[2] !== 1",
+                    "specColFactor[0] !== 0.5 || specColFactor[1] !== 0.5 || specColFactor[2] !== 0.5",
+                ),
+            })),
+        /no longer agrees with itself on the tint unit/,
+    );
+});
+
+test("a tint the record's Color3 cannot store refuses", () => {
+    assert.throws(
+        () =>
+            lowerGltfMaterialDefaults(materialDefaultFiles({
+                dielectric: mutatedFileEdits(dielectricModule, [
+                    ["specColFactor.length === 3", "specColFactor.length === 4"],
+                    [
+                        "eSp.specularColorFactor.length === 3",
+                        "eSp.specularColorFactor.length === 4",
+                    ],
+                ]),
+            })),
+        /no longer stores a three-lane tint/,
+    );
 });
