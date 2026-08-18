@@ -42,6 +42,7 @@ import {
     composeScenePbrVariants,
     gltfHasImageBasedLight,
     gltfLightKinds,
+    gltfLightNodeCount,
     gltfMaterialCount,
     gltfRenderableFeatures,
     proceduralRenderableFeatures,
@@ -562,9 +563,17 @@ async function main(): Promise<void> {
     // light writers, the generated-source table -- reads the one authority,
     // so the kinds the assets reach join the manifest here.
     let assetLightsAdded = false;
+    let assetLightNodes: { count: number; asset: string } | undefined;
     for (const asset of result.manifest.assets) {
         if (asset.kind !== "gltf") continue;
         const assetPath = resolve(outputPath, "assets", asset.output);
+        // The pin grows MAX_LIGHTS from this count at run time; the frozen
+        // constant makes exceeding it a generation refusal instead
+        // (`emitUpstreamGenerated` checks it beside the pinned constant).
+        const lightNodeCount = gltfLightNodeCount(assetPath);
+        if (lightNodeCount > (assetLightNodes?.count ?? 0)) {
+            assetLightNodes = { count: lightNodeCount, asset: asset.output };
+        }
         const assetFeatures = gltfLightKinds(assetPath).map(
             (kind) => `light:${kind}` as Feature,
         );
@@ -743,6 +752,7 @@ async function main(): Promise<void> {
                 : undefined;
     emitUpstreamGenerated(outputPath, result.manifest.features, {
         idDiagnostics: options.idDiagnostics,
+        ...(assetLightNodes !== undefined ? { assetLightNodes } : {}),
         shaderPrograms,
         geometryOutputTasks: result.manifest.geometryOutputTasks,
         gpuDeformation:

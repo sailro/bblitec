@@ -86,6 +86,14 @@ import type {
  */
 export interface UpstreamEmitOptions {
     idDiagnostics: boolean;
+    /**
+     * The largest per-asset `KHR_lights_punctual` light-node count. The pin
+     * grows `MAX_LIGHTS` past its constant at run time (`setMaxLights` in
+     * `gltf-feature-lights-punctual.ts`); this port freezes the constant and
+     * the native writers stop at it, so a count beyond it must refuse at
+     * generation rather than silently unlight the excess.
+     */
+    assetLightNodes?: { count: number; asset: string };
     shaderPrograms: CompiledShaderProgram[];
     geometryOutputTasks: GeometryOutputTaskManifest[];
     gpuDeformation: boolean;
@@ -640,6 +648,26 @@ class GeneratedSourceWriter {
                 factories.lowerMeshFactories(),
                 generated,
             );
+        }
+
+        // The pin grows MAX_LIGHTS at run time when an asset carries more
+        // punctual light nodes (`gltf-feature-lights-punctual.ts`,
+        // `setMaxLights`). The constant is frozen here and the native light
+        // writers stop at it, so the excess would render silently unlit —
+        // refuse at generation, naming the asset and both counts.
+        if (options.assetLightNodes !== undefined) {
+            const maxLights = pinnedMaxLights(context);
+            if (options.assetLightNodes.count > maxLights) {
+                throw new Error(
+                    `Asset ${options.assetLightNodes.asset} carries ` +
+                        `${options.assetLightNodes.count} KHR_lights_punctual ` +
+                        `light nodes, but the pinned MAX_LIGHTS is ` +
+                        `${maxLights} and this port freezes it where the pin ` +
+                        `grows the lights buffer (setMaxLights). Lights past ` +
+                        `the constant would not shade; integrate the grown ` +
+                        `constant or reduce the asset's light nodes.`,
+                );
+            }
         }
 
         // The pin's composed variants join the deployed shader set. They need

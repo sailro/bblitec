@@ -176,6 +176,33 @@ export function gltfLightKinds(path: string): readonly string[] {
 }
 
 /**
+ * How many nodes reference a punctual light — the count the pin grows
+ * `MAX_LIGHTS` from: `gltf-feature-lights-punctual.ts` walks the node array
+ * and calls `setMaxLights(lightNodeCount)` when it exceeds the constant.
+ * This port freezes the pin's constant and the native writers stop at it, so
+ * the same count is read at generation to refuse what upstream would grow.
+ */
+export function gltfLightNodeCount(path: string): number {
+    const document = glbDocument(path);
+    if (!document) return 0;
+    const record = document as unknown as Record<string, unknown>;
+    const nodes = Array.isArray(record["nodes"])
+        ? (record["nodes"] as Record<string, unknown>[])
+        : [];
+    let count = 0;
+    for (const node of nodes) {
+        const extensions = node?.["extensions"] as
+            | Record<string, unknown>
+            | undefined;
+        const punctual = extensions?.["KHR_lights_punctual"] as
+            | { light?: unknown }
+            | undefined;
+        if (punctual?.light !== undefined) count += 1;
+    }
+    return count;
+}
+
+/**
  * Whether the asset installs its own image-based light.
  *
  * `EXT_lights_image_based` carries the irradiance SH9 and the prefiltered
