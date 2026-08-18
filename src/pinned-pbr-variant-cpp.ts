@@ -399,7 +399,8 @@ interface VariantBinding {
         | "texture2dLoad"
         | "textureCube"
         | "sampler"
-        | "storageBuffer";
+        | "storageBuffer"
+        | "uniformBuffer";
     /** Which stages declare it; group 1 is shared by both. */
     vertex: boolean;
     fragment: boolean;
@@ -441,6 +442,11 @@ function variantBindings(
             // storage buffers in the vertex stage.
             const kind = addressSpace.startsWith("storage")
                 ? "storageBuffer"
+                // Group-1 uniform blocks past the hand-managed mesh (0) and
+                // material (1): the geometry arms' gpUniforms is the reached
+                // one, and Dawn builds its layout entry from this row.
+                : addressSpace.startsWith("uniform")
+                ? (Number(match[1]) > 1 ? "uniformBuffer" : undefined)
                 : type.startsWith("texture_cube")
                 ? "textureCube"
                 : type.startsWith("texture_")
@@ -1302,6 +1308,9 @@ enum class PbrBindingKind {
     sampler,
     // A read-only storage buffer; the morph arms' deltas and weights.
     storageBuffer,
+    // A group-1 uniform block past mesh (0) and material (1): the geometry
+    // arms' gpUniforms.
+    uniformBuffer,
 };
 
 struct PbrVariantBinding {

@@ -163,6 +163,17 @@ struct DawnMesh {
     std::uint32_t instance_count = 1;
     std::uint64_t instance_version = 0;
 #endif
+#if BBLITE_PBR_VARIANTS > 0
+    // The geometry-output MRT arms' per-variant draw state: a mesh drawn in
+    // the main pass and in two geometry tasks holds three live bind groups
+    // at encode time, so these are keyed by variant beside `pinned_group`.
+    struct PinnedGeometryDrawState {
+        WGPUBindGroup group = nullptr;
+        WGPUBuffer mesh_uniforms = nullptr;
+        WGPUBuffer material_uniforms = nullptr;
+    };
+    std::map<std::size_t, PinnedGeometryDrawState> pinned_geometry_states;
+#endif
 #if BBLITE_GPU_MORPH_STORAGE
     // Owned when the mesh has storage morphs; otherwise these alias
     // the shared empty fallbacks.
@@ -216,6 +227,11 @@ struct DawnGeometryTask {
     WGPUShaderModule standard_fragment = nullptr;
     std::map<upstream::RenderPipelineKind, WGPURenderPipeline>
         pipelines;
+    // The pin's gpUniforms for the task's MRT arms: previous-frame
+    // view-projection and the camera near/far.
+    WGPUBuffer pinned_geometry_params = nullptr;
+    std::array<float, 16> previous_view_projection{};
+    bool has_previous_view_projection = false;
 };
 
 struct DawnState : DawnDevice {
@@ -337,6 +353,11 @@ struct DawnState : DawnDevice {
         pinned_variant_pipelines;
     WGPUBuffer pinned_scene_uniforms = nullptr;
     WGPUBuffer pinned_lights_uniforms = nullptr;
+    // The geometry tasks' scene block: the same struct with the reverse-Z
+    // view-projection the pin's geometry contract renders with, sharing the
+    // lights buffer through its own group 0.
+    WGPUBuffer pinned_geometry_scene_uniforms = nullptr;
+    WGPUBindGroup pinned_geometry_frame_group = nullptr;
 #endif
     WGPUShaderModule ground_module = nullptr;
     WGPURenderPipeline ground_pipeline = nullptr;
@@ -516,6 +537,11 @@ struct DawnState : DawnDevice {
             if (task.depth) wgpuTextureRelease(task.depth);
             task.depth = nullptr;
             task.depth_view = nullptr;
+            if (task.pinned_geometry_params) {
+                wgpuBufferRelease(task.pinned_geometry_params);
+                task.pinned_geometry_params = nullptr;
+            }
+            task.has_previous_view_projection = false;
         }
         frame_graph_width = 0;
         frame_graph_height = 0;
@@ -573,6 +599,19 @@ struct DawnState : DawnDevice {
             mesh.pinned_group = nullptr;
             mesh.pinned_mesh_uniforms = nullptr;
             mesh.pinned_material_uniforms = nullptr;
+            for (auto& [variant, draw_state] :
+                 mesh.pinned_geometry_states) {
+                if (draw_state.group) {
+                    wgpuBindGroupRelease(draw_state.group);
+                }
+                if (draw_state.mesh_uniforms) {
+                    wgpuBufferRelease(draw_state.mesh_uniforms);
+                }
+                if (draw_state.material_uniforms) {
+                    wgpuBufferRelease(draw_state.material_uniforms);
+                }
+            }
+            mesh.pinned_geometry_states.clear();
 #endif
             if (mesh.material_uniforms) {
                 wgpuBufferRelease(mesh.material_uniforms);
@@ -1873,6 +1912,11 @@ WGPUBindGroupLayout pinned_draw_layout_for(
             // The morph arms' deltas and weights.
             layout_entry.buffer.type =
                 WGPUBufferBindingType_ReadOnlyStorage;
+        } else if (
+            binding.kind == upstream::PbrBindingKind::uniformBuffer) {
+            // A group-1 uniform block past mesh and material: the geometry
+            // arms' gpUniforms.
+            layout_entry.buffer.type = WGPUBufferBindingType_Uniform;
         } else {
             // An rgba32float texture read with textureLoad cannot be bound as
             // filterable; the pin's bone palette is exactly that.
@@ -1969,6 +2013,46 @@ WGPUBindGroup pinned_frame_group(DawnState& state) {
         dawn_error("pinned frame bind group creation failed.");
     }
     return state.pinned_frame_group;
+}
+
+/** Group 0 for the geometry tasks: the reverse-Z scene block beside the
+ *  shared lights buffer, in the same layout as the main frame group. */
+WGPUBindGroup pinned_geometry_frame_group(DawnState& state) {
+    if (state.pinned_geometry_frame_group) {
+        return state.pinned_geometry_frame_group;
+    }
+    ensure_pinned_frame_buffers(state);
+    if (!state.pinned_geometry_scene_uniforms) {
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.size = sizeof(upstream::SceneUniforms);
+        descriptor.usage =
+            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        state.pinned_geometry_scene_uniforms =
+            wgpuDeviceCreateBuffer(state.device, &descriptor);
+        if (!state.pinned_geometry_scene_uniforms) {
+            dawn_error("pinned geometry scene buffer creation failed.");
+        }
+    }
+    std::array<WGPUBindGroupEntry, 2> entries{};
+    entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+    entries[0].binding = 0;
+    entries[0].buffer = state.pinned_geometry_scene_uniforms;
+    entries[0].size = sizeof(upstream::SceneUniforms);
+    entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+    entries[1].binding = 1;
+    entries[1].buffer = state.pinned_lights_uniforms;
+    entries[1].size =
+        16 + upstream::pinned_max_lights * sizeof(upstream::LightEntry);
+    WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    descriptor.layout = pinned_frame_layout_for(state);
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    state.pinned_geometry_frame_group =
+        wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    if (!state.pinned_geometry_frame_group) {
+        dawn_error("pinned geometry frame bind group creation failed.");
+    }
+    return state.pinned_geometry_frame_group;
 }
 
 /**
@@ -2216,6 +2300,250 @@ void ensure_pinned_draw_bindings(
         dawn_error("pinned variant draw bind group creation failed.");
     }
     mesh.pinned_variant = variant;
+}
+
+/**
+ * The per-draw buffers and group-1 bind group for one geometry-output MRT
+ * variant of a mesh, keyed by variant beside the main `pinned_group`: the
+ * encoder references the main group and every geometry group of a mesh in
+ * the same frame, so none can replace another.
+ */
+DawnMesh::PinnedGeometryDrawState& ensure_pinned_geometry_bindings(
+    DawnState& state,
+    DawnMesh& mesh,
+    std::size_t variant,
+    WGPUBuffer geometry_params) {
+    auto existing = mesh.pinned_geometry_states.find(variant);
+    if (existing != mesh.pinned_geometry_states.end()) {
+        return existing->second;
+    }
+    DawnMesh::PinnedGeometryDrawState draw_state{};
+    const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
+    const auto uniform_buffer = [&](std::size_t size) {
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.size = static_cast<std::uint64_t>(size);
+        descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        WGPUBuffer buffer = wgpuDeviceCreateBuffer(state.device, &descriptor);
+        if (!buffer) dawn_error("pinned geometry buffer creation failed.");
+        return buffer;
+    };
+    draw_state.mesh_uniforms =
+        uniform_buffer(sizeof(upstream::MeshUniforms));
+    draw_state.material_uniforms =
+        uniform_buffer(entry.material_ubo_bytes);
+    std::vector<WGPUBindGroupEntry> entries;
+    entries.reserve(2 + entry.binding_count);
+    WGPUBindGroupEntry mesh_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    mesh_entry.binding = 0;
+    mesh_entry.buffer = draw_state.mesh_uniforms;
+    mesh_entry.size = sizeof(upstream::MeshUniforms);
+    entries.push_back(mesh_entry);
+    WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    material_entry.binding = 1;
+    material_entry.buffer = draw_state.material_uniforms;
+    material_entry.size = entry.material_ubo_bytes;
+    entries.push_back(material_entry);
+    for (std::size_t index = 0; index < entry.binding_count; ++index) {
+        const upstream::PbrVariantBinding& binding =
+            upstream::pbr_variant_bindings[entry.first_binding + index];
+        WGPUBindGroupEntry group_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        group_entry.binding = binding.binding;
+        if (binding.kind == upstream::PbrBindingKind::uniformBuffer) {
+            // The geometry arms' gpUniforms, per task.
+            if (binding.name != "gp" || !geometry_params) {
+                dawn_error(
+                    ("pinned geometry variant declares an unmapped uniform "
+                     "block '" + std::string(binding.name) + "'.")
+                        .c_str());
+            }
+            group_entry.buffer = geometry_params;
+            group_entry.size = sizeof(PinnedGeometryParams);
+            entries.push_back(group_entry);
+            continue;
+        }
+        if (binding.kind == upstream::PbrBindingKind::storageBuffer) {
+#if BBLITE_GPU_MORPH_STORAGE
+            if (binding.name == "morphDeltas") {
+                group_entry.buffer = mesh.morph_deltas;
+            } else if (binding.name == "morph") {
+                group_entry.buffer = mesh.morph_weights;
+            }
+#endif
+            if (!group_entry.buffer) {
+                dawn_error(
+                    ("pinned geometry variant declares an unmapped storage "
+                     "buffer '" + std::string(binding.name) + "'.")
+                        .c_str());
+            }
+            group_entry.size = WGPU_WHOLE_SIZE;
+            entries.push_back(group_entry);
+            continue;
+        }
+        const PinnedResource resource =
+            pinned_resource_for(state, mesh, binding.name);
+        if (binding.kind == upstream::PbrBindingKind::sampler) {
+            group_entry.sampler = resource.sampler;
+        } else {
+            group_entry.textureView = resource.view;
+        }
+        entries.push_back(group_entry);
+    }
+    WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    descriptor.layout = pinned_draw_layout_for(state, variant);
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    draw_state.group =
+        wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    if (!draw_state.group) {
+        dawn_error("pinned geometry bind group creation failed.");
+    }
+    return mesh.pinned_geometry_states
+        .emplace(variant, draw_state)
+        .first->second;
+}
+
+/**
+ * Writes one geometry task's pinned blocks for the frame.
+ *
+ * The pin's geometry contract is reverse-Z, so the shared geometry scene
+ * block carries the reverse view-projection; the task's gpUniforms holds
+ * last frame's matrix (seeded with the current one) and the camera's
+ * near/far; and every PBR draw's mesh and material blocks are written
+ * against the MRT variant the selector table keys on this task.
+ */
+void write_pinned_geometry_task(
+    DawnState& state,
+    const Scene& scene,
+    const Engine& engine,
+    const CameraRecord& camera,
+    double aspect,
+    const FrameTaskRecord& task,
+    DawnGeometryTask& geometry,
+    const upstream::RenderDrawLists& draw_lists) {
+    bool task_has_pbr = false;
+    for (const auto* list : {&draw_lists.opaque, &draw_lists.transparent}) {
+        for (const upstream::RenderDrawCommand& draw : list->commands) {
+            if (
+                draw.item.material_kind ==
+                upstream::RenderMaterialKind::pbr) {
+                task_has_pbr = true;
+                break;
+            }
+        }
+        if (task_has_pbr) break;
+    }
+    if (!task_has_pbr) return;
+    const std::array<float, 16> geometry_matrix =
+        upstream::build_view_projection(camera, aspect, true);
+    pinned_geometry_frame_group(state);
+    const upstream::SceneUniforms scene_block =
+        pinned_scene_block(scene, camera, geometry_matrix);
+    wgpuQueueWriteBuffer(
+        state.queue,
+        state.pinned_geometry_scene_uniforms,
+        0,
+        &scene_block,
+        sizeof(scene_block));
+    if (!geometry.pinned_geometry_params) {
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.size = sizeof(PinnedGeometryParams);
+        descriptor.usage =
+            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        geometry.pinned_geometry_params =
+            wgpuDeviceCreateBuffer(state.device, &descriptor);
+        if (!geometry.pinned_geometry_params) {
+            dawn_error("pinned geometry params buffer creation failed.");
+        }
+    }
+    if (!geometry.has_previous_view_projection) {
+        geometry.previous_view_projection = geometry_matrix;
+        geometry.has_previous_view_projection = true;
+    }
+    const PinnedGeometryParams params{
+        geometry.previous_view_projection,
+        {
+            static_cast<float>(camera.near_plane),
+            static_cast<float>(camera.far_plane),
+            0.0f,
+            0.0f,
+        },
+    };
+    wgpuQueueWriteBuffer(
+        state.queue,
+        geometry.pinned_geometry_params,
+        0,
+        &params,
+        sizeof(params));
+    geometry.previous_view_projection = geometry_matrix;
+    for (const auto* list : {&draw_lists.opaque, &draw_lists.transparent}) {
+        for (const upstream::RenderDrawCommand& draw : list->commands) {
+            if (
+                draw.item.material_kind !=
+                upstream::RenderMaterialKind::pbr) {
+                continue;
+            }
+            if (draw.item_index >= state.meshes.size()) continue;
+            const std::size_t variant = pinned_variant_for_draw(
+                scene,
+                engine,
+                draw,
+                static_cast<std::size_t>(task.geometry.shader_index));
+            if (variant == std::numeric_limits<std::size_t>::max()) {
+                dawn_error(
+                    ("PBR draw for mesh " +
+                     std::to_string(draw.item.mesh.value) +
+                     ", material " +
+                     std::to_string(draw.item.material.value) +
+                     " resolves no pinned variant in a geometry task.")
+                        .c_str());
+            }
+            DawnMesh& mesh = state.meshes[draw.item_index];
+            const MeshRecord& record =
+                engine.meshes[draw.item.mesh.value];
+            DawnMesh::PinnedGeometryDrawState& draw_state =
+                ensure_pinned_geometry_bindings(
+                    state,
+                    mesh,
+                    variant,
+                    geometry.pinned_geometry_params);
+            const upstream::PbrVariantEntry& entry =
+                upstream::pbr_variants[variant];
+            const upstream::MeshUniforms mesh_block =
+                pinned_mesh_block(
+                    scene,
+                    engine,
+                    // The LOCAL_POSITION arm binds local vertex lanes, so
+                    // the world carries what baking otherwise would; every
+                    // other arm keeps the mirror over baked vertices.
+                    entry.uses_local_position ||
+                            record.thin_instanced ||
+                            !record.instance_matrices.empty()
+                        ? pinned_instanced_world(record)
+                        : pinned_mesh_world(),
+                    draw.item.mesh.value);
+            wgpuQueueWriteBuffer(
+                state.queue,
+                draw_state.mesh_uniforms,
+                0,
+                &mesh_block,
+                sizeof(mesh_block));
+            std::vector<std::uint8_t> material_block(
+                entry.material_ubo_bytes,
+                0);
+            upstream::write_pbr_variant_material(
+                variant,
+                engine.materials[draw.item.material.value],
+                material_block.data(),
+                entry.material_ubo_bytes,
+                record.baked_world_scale);
+            wgpuQueueWriteBuffer(
+                state.queue,
+                draw_state.material_uniforms,
+                0,
+                material_block.data(),
+                entry.material_ubo_bytes);
+        }
+    }
 }
 
 // Fill and upload the pin's per-pass blocks.
@@ -2536,7 +2864,11 @@ WGPURenderPipeline pinned_variant_pipeline(
     std::size_t variant,
     upstream::RenderPipelineKind kind,
     std::uint32_t samples,
-    bool has_depth) {
+    bool has_depth,
+    // The geometry-output task an MRT variant draws in. A geometry variant
+    // is composed for exactly one task, so the variant-keyed cache stays
+    // valid with the task's targets baked into its pipeline.
+    const FrameTaskRecord* geometry_task = nullptr) {
     // The same traits the transcribed pipeline reads, from the same kind. The
     // winding matters: a mesh whose node matrix mirrors draws through
     // `pbr_*_none_clockwise`, and hardcoding counter-clockwise here inverted
@@ -2582,7 +2914,13 @@ WGPURenderPipeline pinned_variant_pipeline(
         attribute.shaderLocation = input.location;
         if (input.name == "position") {
             attribute.format = WGPUVertexFormat_Float32x3;
-            attribute.offset = offsetof(GpuVertex, position);
+            // A LOCAL_POSITION geometry variant's varying reads the raw
+            // attribute, so it binds the vertex's local lanes; its mesh
+            // world is the real node world, keeping worldPos the same
+            // product the baked pair produces.
+            attribute.offset = entry.uses_local_position
+                ? offsetof(GpuVertex, local_position)
+                : offsetof(GpuVertex, position);
         } else if (input.name == "normal") {
             attribute.format = WGPUVertexFormat_Float32x3;
             attribute.offset = offsetof(GpuVertex, normal);
@@ -2683,6 +3021,40 @@ WGPURenderPipeline pinned_variant_pipeline(
     // draws in carries none either.
     fragment.targetCount = entry.no_color_output ? 0 : 1;
     fragment.targets = entry.no_color_output ? nullptr : &color_target;
+    // A geometry-output MRT variant draws into its task's own attachments:
+    // one target per attachment in the task's formats plus the optional
+    // trailing colour. The pin's geometry contract is reverse-Z, so the
+    // depth pair is GREATER with writes on.
+    std::vector<WGPUColorTargetState> geometry_targets;
+    if (geometry_task) {
+        geometry_targets.reserve(
+            geometry_task->geometry.attachments.size() + 1u);
+        for (const GeometryTextureDescription& description :
+             geometry_task->geometry.attachments) {
+            WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
+            target.format = geometry_texture_format(description);
+            if (traits.transparent) target.blend = &blend;
+            geometry_targets.push_back(target);
+        }
+        if (geometry_task->geometry.target.value != invalid_handle) {
+            WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
+            target.format = state.frame_color_format;
+            if (traits.transparent) target.blend = &blend;
+            geometry_targets.push_back(target);
+        }
+        if (geometry_targets.size() != entry.color_target_count) {
+            dawn_error(
+                ("pinned geometry variant writes " +
+                 std::to_string(entry.color_target_count) +
+                 " targets where its task carries " +
+                 std::to_string(geometry_targets.size()) + ".")
+                    .c_str());
+        }
+        fragment.targetCount = geometry_targets.size();
+        fragment.targets = geometry_targets.data();
+        depth_stencil.depthCompare = WGPUCompareFunction_Greater;
+        depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
+    }
     descriptor.fragment = &fragment;
     WGPURenderPipeline pipeline =
         wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
@@ -6229,6 +6601,23 @@ bool run_dawn_engine(Engine& engine) {
                             .draw_lists.transparent,
                         engine,
                         camera);
+#if BBLITE_PBR_VARIANTS > 0
+                    // The pin's geometry tasks are reverse-Z; a task whose
+                    // draws are PBR writes its blocks here: the shared
+                    // reverse scene block, the task's gpUniforms, and each
+                    // draw's mesh and material blocks against the MRT
+                    // variant the selector table keys on this task.
+                    write_pinned_geometry_task(
+                        state,
+                        scene,
+                        engine,
+                        camera,
+                        static_cast<double>(width) /
+                            static_cast<double>(height),
+                        task,
+                        state.geometry_tasks[handle.value],
+                        state.render_tasks[handle.value].draw_lists);
+#endif
                     continue;
                 }
                 if (task.kind != FrameTaskKind::render) continue;
@@ -7070,10 +7459,33 @@ bool run_dawn_engine(Engine& engine) {
                     }
                     color_attachments.push_back(attachment);
                 }
+                // A task whose draws are PBR renders through the pin's own
+                // reverse-Z geometry contract: reverse matrix, GREATER
+                // pipelines, zero depth clear. The Standard geometry path
+                // keeps the forward pair.
+                bool task_has_pbr = false;
+#if BBLITE_PBR_VARIANTS > 0
+                for (const auto* pbr_list : {
+                         &render_task.draw_lists.opaque,
+                         &render_task.draw_lists.transparent,
+                     }) {
+                    for (const upstream::RenderDrawCommand& pbr_draw :
+                         pbr_list->commands) {
+                        if (
+                            pbr_draw.item.material_kind ==
+                            upstream::RenderMaterialKind::pbr) {
+                            task_has_pbr = true;
+                            break;
+                        }
+                    }
+                    if (task_has_pbr) break;
+                }
+#endif
                 WGPURenderPassDepthStencilAttachment depth_attachment{};
                 depth_attachment.view = geometry.depth_view;
                 depth_attachment.depthLoadOp = WGPULoadOp_Clear;
-                depth_attachment.depthClearValue = 1.0f;
+                depth_attachment.depthClearValue =
+                    task_has_pbr ? 0.0f : 1.0f;
                 depth_attachment.depthStoreOp = WGPUStoreOp_Discard;
                 depth_attachment.stencilLoadOp = WGPULoadOp_Clear;
                 depth_attachment.stencilStoreOp = WGPUStoreOp_Discard;
@@ -7101,6 +7513,92 @@ bool run_dawn_engine(Engine& engine) {
                             }
                             DawnMesh& mesh =
                                 state.meshes[draw.item_index];
+#if BBLITE_PBR_VARIANTS > 0
+                            // The pin's own MRT arm for a PBR draw: the
+                            // variant the selector table keys on this
+                            // task, its bindings built in the write phase.
+                            if (
+                                draw.item.material_kind ==
+                                upstream::RenderMaterialKind::pbr) {
+                                const std::size_t variant =
+                                    pinned_variant_for_draw(
+                                        scene,
+                                        engine,
+                                        draw,
+                                        static_cast<std::size_t>(
+                                            task.geometry.shader_index));
+                                if (
+                                    variant ==
+                                    std::numeric_limits<
+                                        std::size_t>::max()) {
+                                    dawn_error(
+                                        ("PBR draw for mesh " +
+                                         std::to_string(
+                                             draw.item.mesh.value) +
+                                         " resolves no pinned variant in "
+                                         "a geometry task.")
+                                            .c_str());
+                                }
+                                const auto draw_state_it =
+                                    mesh.pinned_geometry_states.find(
+                                        variant);
+                                if (
+                                    draw_state_it ==
+                                    mesh.pinned_geometry_states.end()) {
+                                    dawn_error(
+                                        "pinned geometry draw reached the "
+                                        "encoder with no bindings.");
+                                }
+                                WGPURenderPipeline variant_pipeline =
+                                    pinned_variant_pipeline(
+                                        state,
+                                        variant,
+                                        draw.pipeline,
+                                        samples,
+                                        true,
+                                        &task);
+                                if (variant_pipeline != bound_pipeline) {
+                                    wgpuRenderPassEncoderSetPipeline(
+                                        task_pass,
+                                        variant_pipeline);
+                                    bound_pipeline = variant_pipeline;
+                                }
+                                wgpuRenderPassEncoderSetBindGroup(
+                                    task_pass,
+                                    0,
+                                    pinned_geometry_frame_group(state),
+                                    0,
+                                    nullptr);
+                                wgpuRenderPassEncoderSetBindGroup(
+                                    task_pass,
+                                    1,
+                                    draw_state_it->second.group,
+                                    0,
+                                    nullptr);
+                                wgpuRenderPassEncoderSetVertexBuffer(
+                                    task_pass,
+                                    0,
+                                    mesh.pinned_mirrored_vertices
+                                        ? mesh.vertices
+                                        : mesh.pinned_vertices,
+                                    0,
+                                    WGPU_WHOLE_SIZE);
+                                wgpuRenderPassEncoderSetIndexBuffer(
+                                    task_pass,
+                                    mesh.indices,
+                                    WGPUIndexFormat_Uint32,
+                                    0,
+                                    WGPU_WHOLE_SIZE);
+                                wgpuRenderPassEncoderDrawIndexed(
+                                    task_pass,
+                                    mesh.index_count,
+                                    1,
+                                    0,
+                                    0,
+                                    0);
+                                continue;
+                            }
+#endif
                             WGPURenderPipeline pipeline =
                                 geometry_pipeline_for(
                                     state,
