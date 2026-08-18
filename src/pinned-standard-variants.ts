@@ -30,15 +30,19 @@
  *   `SPECULAR_USES_UV2`.
  * - `ambientTexture` → `HAS_AMBIENT_TEXTURE`; `coordinatesIndex === 1` →
  *   `AMBIENT_USES_UV2`.
- * - `opacityTexture` → `HAS_OPACITY_TEXTURE` (`opacityFromRGB` →
- *   `OPACITY_FROM_RGB`, unreached by this port's loader).
+ * - `opacityTexture` → `HAS_OPACITY_TEXTURE`; its `getAlphaFromRGB` →
+ *   `opacityFromRGB` → `OPACITY_FROM_RGB`, exactly the pin's own loader
+ *   write (`load-babylon.ts` TEX_SLOTS opacity `extra`). Sponza's chain,
+ *   plant and Deg masks are the reached case.
  * - `lightmapTexture` → `HAS_LIGHTMAP_TEXTURE` family — no reached scene
  *   carries one; composes here regardless, since the pin's ext owns it.
  * - `backFaceCulling === false` → `DOUBLE_SIDED` (pipeline cull state; no
  *   WGSL change).
  * - `reflectionCubeTexture` → `HAS_CUBE_REFLECTION`; a 2D
- *   `reflectionTexture` → `HAS_REFLECTION_TEXTURE` (unreached: this port
- *   loads only the cube form).
+ *   `reflectionTexture` → `HAS_REFLECTION_TEXTURE` (`load-babylon.ts`
+ *   TEX_SLOTS reflectionTexture, `skipIf` isCube — Sponza's vase and lion
+ *   reflections are the reached case; `level` and `coordinatesMode` are
+ *   uniform lanes, not composition inputs).
  * - `disableLighting` → `DISABLE_LIGHTING`; `alpha < 1` →
  *   `MATERIAL_ALPHA_BLEND`.
  * - Feature `material:standard-vertex-colors` → the pin's opt-in
@@ -618,11 +622,15 @@ const standardFeatureRecordSources: Readonly<
     lightmapCoordIndex: null,
     useLightmapAsShadowmap: null,
     opacityTexture: "!material.opacity_texture.bytes.empty()",
-    // The loader never reads getAlphaFromRGB, so the record cannot carry it.
-    opacityFromRGB: null,
-    // texture_data() drops isCube entries and the loader keeps only the cube
-    // form of reflectionTexture, so the 2D arm is unreachable natively.
-    reflectionTexture: null,
+    // babylon-loader-cpp.ts reads opacityTexture.getAlphaFromRGB into the
+    // record, mirroring the pin's own loader write (load-babylon.ts
+    // TEX_SLOTS opacity extra: `if (t.getAlphaFromRGB) m.opacityFromRGB`).
+    opacityFromRGB: "material.opacity_from_rgb",
+    // babylon-loader-cpp.ts fills reflection_texture from the non-cube arm
+    // of reflectionTexture (texture_data() drops isCube entries), the same
+    // split the pin's loader makes (TEX_SLOTS `skipIf: isCube` vs the
+    // separate cube branch).
+    reflectionTexture: "!material.reflection_texture.bytes.empty()",
     reflectionCubeTexture: "material.reflection_cube != invalid_handle",
     backFaceCulling: "!material.double_sided",
     disableLighting: "material.disable_lighting",
@@ -848,6 +856,7 @@ interface BabylonTextureJson {
     name?: string;
     isCube?: boolean;
     coordinatesIndex?: number;
+    getAlphaFromRGB?: boolean;
 }
 
 interface BabylonMaterialJson {
@@ -880,9 +889,11 @@ function babylonTexture2d(
 /**
  * A `.babylon` material as the pin's feature derivation must see it to match
  * the generated loader's record — every absence below mirrors a loader fact
- * (`babylon-loader-cpp.ts`): no emissive/lightmap slots, no 2D reflections,
- * the bump slot only under its option, the diffuse coordinate index only
- * under its option, and `disableLighting` never read.
+ * (`babylon-loader-cpp.ts`): no emissive/lightmap slots, the bump slot only
+ * under its option, the diffuse coordinate index only under its option, and
+ * `disableLighting` never read. The opacity `getAlphaFromRGB` and the 2D
+ * reflection presence mirror the loader's record fields the same way, which
+ * are themselves the pin's own loader writes (`load-babylon.ts` TEX_SLOTS).
  */
 function babylonMaterialInput(
     material: BabylonMaterialJson,
@@ -906,7 +917,15 @@ function babylonMaterialInput(
             }
             : {}),
         ...(babylonTexture2d(material.opacityTexture)
-            ? { opacityTexture: {} }
+            ? {
+                opacityTexture: {},
+                // The pin's own conditional write (load-babylon.ts
+                // TEX_SLOTS opacity extra), mirrored by the generated
+                // loader's opacity_from_rgb read.
+                ...(material.opacityTexture.getAlphaFromRGB === true
+                    ? { opacityFromRGB: true }
+                    : {}),
+            }
             : {}),
         ...(babylonTexture2d(material.ambientTexture)
             ? {
@@ -921,6 +940,14 @@ function babylonMaterialInput(
                 typeof material.reflectionTexture.name === "string" &&
                 material.reflectionTexture.name !== ""
             ? { reflectionCubeTexture: {} }
+            : {}),
+        // The non-cube arm of the same slot: the pin's TEX_SLOTS
+        // reflection entry (`skipIf: isCube`) fills mat.reflectionTexture,
+        // and the generated loader fills reflection_texture through the
+        // same texture_data() cube drop. Its level and coordinatesMode are
+        // writeStdMaterialData uniform lanes (rLvl, rCm), not feature bits.
+        ...(babylonTexture2d(material.reflectionTexture)
+            ? { reflectionTexture: {} }
             : {}),
         backFaceCulling: material.backFaceCulling ?? true,
         alpha: material.alpha ?? 1,
@@ -1327,9 +1354,13 @@ inline bool standard_uv_inverted(
 //    authored level itself, so the fill inverts the record back.
 //  - alpha: rides base_color_factor.a (the compiled setter and the loader
 //    both write it there).
-//  - lightmap_level / reflection_coord_mode: no record field exists and no
-//    generated loader fills the pin's inputs, so the pin's own defaults in
-//    StandardMaterialProps stand.
+//  - reflection_coord_mode: the record mirrors the pin's own loader write
+//    (load-babylon.ts: coordinatesMode === 2 -> 2, else the
+//    createStandardMaterial default 1), feeding writeStdMaterialData's
+//    rCm lane the composed fragment forks on (rCm < 1.5 -> spherical).
+//  - lightmap_level: no record field exists and no generated loader fills
+//    the pin's input, so the pin's own default in StandardMaterialProps
+//    stands.
 inline StandardMaterialProps standard_material_props(
     const MaterialRecord& material) {
     StandardMaterialProps props{};
@@ -1346,6 +1377,7 @@ inline StandardMaterialProps standard_material_props(
     props.opacity_level = material.opacity_level;
     props.alpha_cutoff = material.alpha_cutoff;
     props.reflection_level = material.reflection_level;
+    props.reflection_coord_mode = material.reflection_coord_mode;
     props.uv_scale = {
         material.diffuse_u_scale,
         material.diffuse_v_scale,
@@ -1365,7 +1397,7 @@ struct StandardBindingResource {
     bool reflection_cube;
 };
 
-inline constexpr std::array<StandardBindingResource, 7>
+inline constexpr std::array<StandardBindingResource, 8>
     standard_binding_resources{{
     // The template's own diffuse pair (standard-template.ts).
     {"dT", "dS", MaterialTextureSource::base_color, false},
@@ -1380,6 +1412,10 @@ inline constexpr std::array<StandardBindingResource, 7>
     {"eT", "eS", MaterialTextureSource::standard_emissive, false},
     // normal-map-fragment.ts.
     {"bT", "bS", MaterialTextureSource::standard_bump, false},
+    // std-reflection-fragment.ts: the 2D reflection the pin samples at
+    // computed reflCoords. A slot-table 2D pair like the six above, not
+    // the cube path.
+    {"rT", "rS", MaterialTextureSource::standard_reflection, false},
     // std-cube-reflection-fragment.ts; outside the slot table.
     {"cRT", "cRS", MaterialTextureSource::base_color, true},
 }};

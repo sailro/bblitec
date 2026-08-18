@@ -667,6 +667,12 @@ struct MaterialRecord {
     bool disable_lighting = false;
     bool has_emissive_render_texture = false;
     bool double_sided = false;
+    // The pin's opacityFromRGB (createStandardMaterial default false; the
+    // .babylon loader sets it from opacityTexture.getAlphaFromRGB,
+    // load-babylon.ts TEX_SLOTS opacity extra). Feeds OPACITY_FROM_RGB in
+    // _computeStandardMaterialFeatures, which selects the composed opacity
+    // fragment's dot(opSample.rgb, ...) luminance arm.
+    bool opacity_from_rgb = false;
     bool standard_material = false;
     bool shader_material = false;
     bool grid_material = false;
@@ -741,6 +747,16 @@ struct MaterialRecord {
     RenderTextureRef emissive_render_texture{};
     std::uint32_t reflection_cube = invalid_handle;
     float reflection_level = 1.0f;
+    // The pin's 2D reflection slot: the non-cube arm of the same
+    // reflectionTexture JSON slot the cube handle above consumes
+    // (load-babylon.ts TEX_SLOTS reflectionTexture, `skipIf: isCube`),
+    // sampled by the composed std-reflection fragment at computed
+    // reflCoords rather than mesh UVs.
+    TextureData reflection_texture;
+    // writeStdMaterialData's rCm lane: createStandardMaterial seeds 1
+    // (spherical, the fragment's `rCm < 1.5` arm); the pin's loader writes
+    // 2 only for coordinatesMode === 2 (planar), load-babylon.ts.
+    float reflection_coord_mode = 1.0f;
 };
 
 struct LightRecord {

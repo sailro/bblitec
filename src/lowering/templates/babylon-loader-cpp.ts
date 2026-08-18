@@ -287,6 +287,23 @@ MaterialHandle load_material(
                 texture->value("level", 1.0f);
         }
     }
+    // The non-cube arm of the same slot, exactly the pin's TEX_SLOTS
+    // reflection entry (load-babylon.ts: \`skipIf: (t) => t.isCube === true\`,
+    // \`level\` -> reflectionLevel, \`coordinatesMode === 2\` ->
+    // reflectionCoordMode = 2 over the createStandardMaterial default 1).
+    // texture_data() applies the same cube drop, so the record's
+    // reflection_texture carries bytes only for a 2D reflection.
+    if (const auto texture = source.find("reflectionTexture");
+        texture != source.end() &&
+        texture->is_object() &&
+        !texture->value("isCube", false)) {
+        material.reflection_texture =
+            texture_data(source, "reflectionTexture", base_path);
+        material.reflection_level = texture->value("level", 1.0f);
+        if (texture->value("coordinatesMode", 0) == 2) {
+            material.reflection_coord_mode = 2.0f;
+        }
+    }
     if (const auto texture = source.find("diffuseTexture");
         texture != source.end() && texture->is_object()) {
         material.diffuse_level = texture->value("level", 1.0f);
@@ -309,6 +326,13 @@ MaterialHandle load_material(
     if (const auto texture = source.find("opacityTexture");
         texture != source.end() && texture->is_object()) {
         material.opacity_level = texture->value("level", 1.0f);
+        // The pin's own conditional write (load-babylon.ts TEX_SLOTS
+        // opacity extra: \`if (t.getAlphaFromRGB) m.opacityFromRGB = true\`),
+        // which _computeStandardMaterialFeatures turns into
+        // OPACITY_FROM_RGB and the composed fragment into the
+        // dot(opSample.rgb, ...) luminance arm.
+        material.opacity_from_rgb =
+            texture->value("getAlphaFromRGB", false);
     }
 ${bumpTexture ? `    if (const auto texture = source.find("bumpTexture");
         texture != source.end() && texture->is_object()) {

@@ -122,9 +122,14 @@ constexpr std::size_t standard_bump_slots =
     BBLITE_MATERIAL_STANDARD_BUMP ? 1 : 0;
 constexpr std::size_t standard_bump_slot =
     5 + transmission_texture_slots + material_extension_slots;
+// The Standard 2D reflection slot appends after bump the same way (the
+// generated slot table's own order); only the composed variant bind path
+// consults it, through its generated slot index.
+constexpr std::size_t standard_reflection_slots =
+    BBLITE_MATERIAL_STANDARD_REFLECTION ? 1 : 0;
 constexpr std::size_t mesh_texture_slots =
     5 + transmission_texture_slots + material_extension_slots +
-    standard_bump_slots;
+    standard_bump_slots + standard_reflection_slots;
 static_assert(
     mesh_texture_slots == upstream::material_texture_mesh_slots,
     "This backend's slot constants must match the generated material "
@@ -2768,8 +2773,13 @@ WGPUBindGroup build_standard_draw_group(
                 view = emissive_render_view;
                 sampler = state.nearest_sampler;
             } else {
+                // By source, not by name: the row names are the pin's own
+                // std bindings (dT/oT/rT...), the slot table's names are
+                // the PBR pinned bindings, and the row's declared source
+                // is the join key -- the same resolution the SDL sibling's
+                // mesh_slot_members makes.
                 const upstream::MaterialTextureSlot* slot =
-                    material_slot_for_binding(row.texture_name);
+                    material_slot_for_source(row.source);
                 if (
                     slot == nullptr ||
                     slot->slot == upstream::material_texture_no_slot) {

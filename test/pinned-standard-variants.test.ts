@@ -156,6 +156,106 @@ test("extension fragments compose under the pin's ids", async () => {
     );
 });
 
+test("getAlphaFromRGB composes the pin's luminance opacity arm", async () => {
+    const flags = await importPinnedModule<{
+        HAS_OPACITY_TEXTURE: number;
+        OPACITY_FROM_RGB: number;
+    }>("material/standard/standard-flags.js");
+    // The .a arm without the flag, unchanged.
+    const plain = await composePinnedStandardVariant({
+        opacityTexture: {},
+    });
+    assert.equal(plain.features & flags.OPACITY_FROM_RGB, 0);
+    assert.ok(
+        plain.fragmentWgsl.includes(
+            "alpha *= textureSample(oT, oS, input.vu).a * mat.opLvl;",
+        ),
+    );
+    // The flag selects the pin's dot() luminance arm
+    // (std-opacity-fragment.ts createStdOpacityFragment(fromRGB)) — the
+    // Sponza chain/plant/Deg masks, browser module 18-module-18.wgsl.
+    const fromRgb = await composePinnedStandardVariant({
+        opacityTexture: {},
+        opacityFromRGB: true,
+    });
+    assert.equal(
+        fromRgb.features &
+            (flags.HAS_OPACITY_TEXTURE | flags.OPACITY_FROM_RGB),
+        flags.HAS_OPACITY_TEXTURE | flags.OPACITY_FROM_RGB,
+    );
+    assert.ok(
+        fromRgb.fragmentWgsl.includes(
+            "{ let opSample = textureSample(oT, oS, input.vu); " +
+                "alpha *= dot(opSample.rgb, " +
+                "vec3<f32>(0.3, 0.59, 0.11)) * mat.opLvl; }",
+        ),
+    );
+    assert.ok(
+        !fromRgb.fragmentWgsl.includes(
+            "textureSample(oT, oS, input.vu).a",
+        ),
+    );
+    // Fragment-only fork: the vertex stage is byte-identical either way.
+    assert.equal(fromRgb.vertexWgsl, plain.vertexWgsl);
+});
+
+test("a 2D reflection composes the pin's std-reflection arm", async () => {
+    const flags = await importPinnedModule<{
+        HAS_REFLECTION_TEXTURE: number;
+        HAS_CUBE_REFLECTION: number;
+    }>("material/standard/standard-flags.js");
+    const variant = await composePinnedStandardVariant({
+        diffuseTexture: {},
+        reflectionTexture: {},
+    });
+    assert.equal(
+        variant.features & flags.HAS_REFLECTION_TEXTURE,
+        flags.HAS_REFLECTION_TEXTURE,
+    );
+    assert.equal(variant.features & flags.HAS_CUBE_REFLECTION, 0);
+    assert.equal(variant.fragmentKey, "std-reflection");
+    const fragment = variant.fragmentWgsl;
+    // The pin's own AD slot (std-reflection-fragment.ts): the coordinate
+    // mode is a uniform fork (rCm < 1.5 spherical, else planar), not a
+    // composition fork — Sponza carries both modes through one arm.
+    assert.ok(
+        fragment.includes("if (mat.rCm < 1.5) { reflCoords = " +
+            "computeSphericalCoords(input.vp, normalW); }"),
+    );
+    assert.ok(
+        fragment.includes(
+            "else { reflCoords = computePlanarCoords(input.vp, normalW); }",
+        ),
+    );
+    assert.ok(
+        fragment.includes(
+            "reflectionColor = textureSample(rT, rS, reflCoords).rgb " +
+                "* mat.rLvl;",
+        ),
+    );
+    // Both helper derivations, verbatim from the pin's REFLECTION_HELPERS.
+    assert.match(
+        fragment,
+        /fn computeSphericalCoords\(worldPos: vec3<f32>, worldNormal: vec3<f32>\) -> vec2<f32> \{/,
+    );
+    assert.match(fragment, /r\.z = r\.z - 1\.0;/);
+    assert.match(
+        fragment,
+        /return vec2<f32>\(coords\.x, 1\.0 - coords\.y\);/,
+    );
+    // The bindings are the pin's rT/rS 2D pair, not the cube's.
+    assert.match(fragment, /var rT:texture_2d<f32>;/);
+    assert.match(fragment, /var rS:sampler;/);
+    assert.ok(!fragment.includes("cRT"));
+    // Fragment-only fork: the vertex stage matches the same word without
+    // the reflection (reflCoords derive from the vp/vn varyings already
+    // carried, so no vertex-stage arm exists to compose).
+    const without = await composePinnedStandardVariant({
+        diffuseTexture: {},
+    });
+    assert.equal(variant.vertexWgsl, without.vertexWgsl);
+});
+
 test("fog composes the pin's scene-shader fragment", async () => {
     const variant = await composePinnedStandardVariant(
         { diffuseTexture: {} },
@@ -449,6 +549,25 @@ test("the babylon walk mirrors the generated loader's records", async () => {
                 alpha: 0.4,
                 reflectionTexture: { name: "sky", isCube: true },
             },
+            {
+                // Sponza's chain shape: a luminance opacity mask.
+                id: "chain",
+                diffuseTexture: { name: "chain.jpg" },
+                opacityTexture: {
+                    name: "chain_mask.jpg",
+                    getAlphaFromRGB: true,
+                },
+            },
+            {
+                // Sponza's vase shape: a 2D reflection (isCube absent).
+                id: "vase",
+                diffuseTexture: { name: "vase.jpg" },
+                reflectionTexture: {
+                    name: "ref.jpg",
+                    level: 0.07,
+                    coordinatesMode: 1,
+                },
+            },
         ],
         meshes: [
             {
@@ -473,6 +592,9 @@ test("the babylon walk mirrors the generated loader's records", async () => {
         AMBIENT_USES_UV2: number;
         HAS_CUBE_REFLECTION: number;
         MATERIAL_ALPHA_BLEND: number;
+        HAS_OPACITY_TEXTURE: number;
+        OPACITY_FROM_RGB: number;
+        HAS_REFLECTION_TEXTURE: number;
     }>("material/standard/standard-flags.js");
     const composition = await composeSceneStandardVariants(
         {
@@ -506,6 +628,19 @@ test("the babylon walk mirrors the generated loader's records", async () => {
             flags.HAS_CUBE_REFLECTION | flags.MATERIAL_ALPHA_BLEND,
         ),
         "the glass material's word composes",
+    );
+    assert.ok(
+        words.includes(
+            flags.HAS_DIFFUSE_TEXTURE | flags.HAS_OPACITY_TEXTURE |
+                flags.OPACITY_FROM_RGB,
+        ),
+        "the chain material's getAlphaFromRGB word composes",
+    );
+    assert.ok(
+        words.includes(
+            flags.HAS_DIFFUSE_TEXTURE | flags.HAS_REFLECTION_TEXTURE,
+        ),
+        "the vase material's 2D-reflection word composes",
     );
     // The loader's lazily-created fallback material composes the plain word.
     assert.ok(words.includes(0));
@@ -583,7 +718,29 @@ test("the native-support block flows from the pin's own declarations", async () 
         block.includes("props.alpha = material.base_color_factor.a;"),
     );
     assert.ok(!block.includes("props.lightmap_level"));
-    assert.ok(!block.includes("props.reflection_coord_mode"));
+    // The rCm lane flows from the record's own field (the .babylon
+    // loader's coordinatesMode === 2 write over the pin's default 1).
+    assert.ok(
+        block.includes(
+            "props.reflection_coord_mode = material.reflection_coord_mode;",
+        ),
+    );
+    // The lowered derivation reaches both new record sources: the nested
+    // OPACITY_FROM_RGB arm and the 2D reflection presence.
+    assert.ok(block.includes("if (material.opacity_from_rgb) {"));
+    assert.ok(
+        block.includes(
+            "if (!material.reflection_texture.bytes.empty()) {",
+        ),
+    );
+    // The composed variants' rT/rS pair resolves through the slot table,
+    // not the cube path.
+    assert.ok(
+        block.includes(
+            '{"rT", "rS", MaterialTextureSource::standard_reflection, ' +
+                "false},",
+        ),
+    );
     // Selector rows and tables land as given.
     assert.ok(block.includes(`{${flags.DISABLE_LIGHTING}u, 0u, 1, 1},`));
     assert.ok(block.includes("standard_renderable_mesh_features"));

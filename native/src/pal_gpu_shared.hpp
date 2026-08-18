@@ -166,6 +166,10 @@ inline const TextureData* material_slot_texture(
                 : nullptr;
         case Source::standard_bump:
             return standard_material ? &material.bump_texture : nullptr;
+        case Source::standard_reflection:
+            return standard_material
+                ? &material.reflection_texture
+                : nullptr;
         // Scene-owned resources carry no record field.
         case Source::environment_cube:
         case Source::brdf_lut:
@@ -261,6 +265,28 @@ inline const upstream::MaterialTextureSlot* material_slot_for_binding(
         upstream::material_texture_slots) {
         if (slot.texture_name.empty()) continue;
         if (name == slot.texture_name || name == slot.sampler_name) {
+            return &slot;
+        }
+    }
+    return nullptr;
+}
+
+/**
+ * The table row serving one slot source, or nullptr.
+ *
+ * The Standard family's generated `standard_binding_resources` rows carry
+ * the pin's own std binding names (`dT`, `oT`, `rT`, ...) while the slot
+ * table's names are the PBR pinned bindings, so a Standard row cannot be
+ * resolved by name -- its declared `source` is the join key (the row
+ * comment in pinned-standard-variants.ts says exactly that: a
+ * "material_texture_slots row source").
+ */
+inline const upstream::MaterialTextureSlot* material_slot_for_source(
+    upstream::MaterialTextureSource source) {
+    for (
+        const upstream::MaterialTextureSlot& slot :
+        upstream::material_texture_slots) {
+        if (slot.source == source) {
             return &slot;
         }
     }

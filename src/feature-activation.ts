@@ -27,6 +27,7 @@
 //   a new activation unit cannot land without naming what it mirrors.
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import type { Feature } from "./compiler/types.js";
+import { variantBindings } from "./pinned-pbr-variant-cpp.js";
 import type { UpstreamEmitOptions } from "./upstream-lower.js";
 
 /** Where the inventory is written, beside the other upstream artifacts. */
@@ -505,6 +506,15 @@ function capabilityRows(
     const { specialization: spec, emit, features } = inputs;
     const has = (feature: Feature): boolean => features.includes(feature);
     const variantCount = (emit.pinnedVariants ?? []).length;
+    // The same derivation upstream-lower makes for the define: a composed
+    // Standard variant binding the pin's 2D reflection pair.
+    const standardReflection = (emit.pinnedStandardVariants ?? [])
+        .some((variant) =>
+            variantBindings(
+                variant.vertexWgsl,
+                variant.fragmentWgsl,
+            ).some((binding) => binding.name === "rT")
+        );
     return [
         checkedRow(
             "BBLITE_RENDERER_TRANSMISSION",
@@ -724,6 +734,22 @@ function capabilityRows(
                 "Standard material composes its normal-map fragment per " +
                 "material with a bumpTexture " +
                 "(src/loader-babylon/load-babylon.ts reads the slot)",
+            ["render_capabilities.hpp", "material_texture_slots.hpp"],
+        ),
+        row(
+            "BBLITE_MATERIAL_STANDARD_REFLECTION",
+            "capability",
+            standardReflection,
+            standardReflection
+                ? "a composed Standard variant binds the pin's 2D " +
+                    "reflection pair (rT/rS)"
+                : "no composed Standard variant binds a 2D reflection",
+            "src/material/standard/fragments/std-reflection-fragment.ts: " +
+                "the pinned Standard material composes its std-reflection " +
+                "fragment for a non-cube reflectionTexture " +
+                "(src/loader-babylon/load-babylon.ts TEX_SLOTS, skipIf " +
+                "isCube); upstream-lower derives the define from the " +
+                "composed set through the same variantBindings walk",
             ["render_capabilities.hpp", "material_texture_slots.hpp"],
         ),
         checkedRow(

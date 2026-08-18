@@ -125,6 +125,11 @@ struct GpuMesh {
 #if BBLITE_MATERIAL_STANDARD_BUMP
     SDL_GPUTexture* standard_bump = nullptr;
 #endif
+#if BBLITE_MATERIAL_STANDARD_REFLECTION
+    // The Standard 2D reflection slot (std-reflection-fragment.ts rT/rS);
+    // `reflection` below stays the cube.
+    SDL_GPUTexture* standard_reflection = nullptr;
+#endif
     SDL_GPUTexture* reflection = nullptr;
     SDL_GPUSampler* base_color_sampler = nullptr;
     SDL_GPUSampler* metallic_roughness_sampler = nullptr;
@@ -151,6 +156,9 @@ struct GpuMesh {
     SDL_GPUSampler* standard_emissive_sampler = nullptr;
 #if BBLITE_MATERIAL_STANDARD_BUMP
     SDL_GPUSampler* standard_bump_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_STANDARD_REFLECTION
+    SDL_GPUSampler* standard_reflection_sampler = nullptr;
 #endif
     std::uint32_t index_count = 0;
     std::uint32_t instance_count = 1;
@@ -230,6 +238,12 @@ GpuMeshSlotMembers mesh_slot_members(
             return {
                 &GpuMesh::standard_bump,
                 &GpuMesh::standard_bump_sampler};
+#endif
+#if BBLITE_MATERIAL_STANDARD_REFLECTION
+        case Source::standard_reflection:
+            return {
+                &GpuMesh::standard_reflection,
+                &GpuMesh::standard_reflection_sampler};
 #endif
         default:
             return {};

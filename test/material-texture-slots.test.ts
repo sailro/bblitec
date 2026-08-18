@@ -22,6 +22,7 @@ const noFeatures: MaterialTextureSlotFeatures = {
     iridescence: false,
     occlusionUv2: false,
     standardBump: false,
+    standardReflection: false,
 };
 
 /** A composed-variant fixture carrying just the group-1 declarations. */
@@ -110,13 +111,14 @@ test("extension rows append in the pinned registration order", () => {
             iridescence: true,
             occlusionUv2: true,
             standardBump: true,
+            standardReflection: true,
         },
         [],
         "test",
     );
     assert.ok(
         header.includes(
-            "inline constexpr std::size_t material_texture_mesh_slots = 16;",
+            "inline constexpr std::size_t material_texture_mesh_slots = 17;",
         ),
     );
     rowOrder(header, [
@@ -149,10 +151,16 @@ test("extension rows append in the pinned registration order", () => {
         `    {14, MaterialTextureSource::occlusion_uv2, ` +
         `MaterialTextureSrgb::linear, MaterialTextureFallback::white, ` +
         `"occlusionTexture", "occlusionSampler_"},`,
-        // ...and the Standard bump pair last, so no index above moves.
+        // ...then the Standard bump pair, so no index above moves...
         `    {15, MaterialTextureSource::standard_bump, ` +
         `MaterialTextureSrgb::linear, ` +
         `MaterialTextureFallback::flat_normal, ` +
+        `"", ""},`,
+        // ...and the Standard 2D reflection pair after bump, the same
+        // append-only contract.
+        `    {16, MaterialTextureSource::standard_reflection, ` +
+        `MaterialTextureSrgb::linear, ` +
+        `MaterialTextureFallback::white, ` +
         `"", ""},`,
         // The transmission scene-colour grab joins the scene-owned rows.
         `    {material_texture_no_slot, ` +

@@ -422,7 +422,7 @@ interface VariantBinding {
  * to bind an rgba32float texture as filterable, and the pin's bone palette is
  * exactly that.
  */
-function variantBindings(
+export function variantBindings(
     vertexWgsl: string,
     fragmentWgsl: string,
 ): readonly VariantBinding[] {
@@ -1600,6 +1600,10 @@ export interface MaterialTextureSlotFeatures {
     iridescence: boolean;
     occlusionUv2: boolean;
     standardBump: boolean;
+    /** A composed Standard variant binds the pin's 2D reflection pair
+     *  (std-reflection-fragment.ts `rT`/`rS`), so the record's
+     *  reflection_texture needs a mesh slot. */
+    standardReflection: boolean;
 }
 
 /** One emitted row; `slot: null` marks a scene-owned resource. */
@@ -1625,8 +1629,9 @@ interface MaterialSlotRow {
  * each hand-encoded: which record field fills which slot, the per-slot sRGB
  * rule, the per-slot fallback texel, and the pin's own binding names for the
  * slot. The order is a contract — the five base slots, the transmission
- * pair, the reached material-extension pairs in registration order, and the
- * Standard bump pair last so no existing slot index moves when it appears.
+ * pair, the reached material-extension pairs in registration order, then
+ * the Standard bump and 2D reflection pairs, each appended after
+ * everything before it so no existing slot index moves when one appears.
  */
 function materialTextureSlotRows(
     features: MaterialTextureSlotFeatures,
@@ -1765,6 +1770,21 @@ function materialTextureSlotRows(
             samplerName: "",
         });
     }
+    if (features.standardReflection) {
+        // Appended after the bump slot for the same reason bump appends
+        // last: no existing slot index moves. The pin uploads the 2D
+        // reflection through the same loadTexture2D path as the diffuse
+        // (linear rgba8unorm, load-babylon.ts TEX_SLOTS), and no variant
+        // binds the slot without HAS_REFLECTION_TEXTURE, so the white
+        // fallback is never sampled.
+        mesh.push({
+            source: "standard_reflection",
+            srgb: "linear",
+            fallback: "white",
+            textureName: "",
+            samplerName: "",
+        });
+    }
     const state: MaterialSlotRow[] = [
         {
             source: "environment_cube",
@@ -1871,8 +1891,9 @@ export function materialTextureSlotsHeader(
 // backends bind -- the five base slots, the transmission pair, reached
 // material-extension pairs in registration order (clearcoat intensity/
 // roughness/normal, sheen color/roughness, iridescence intensity/
-// thickness, dedicated uv2 occlusion), and the Standard bump pair last so
-// no existing slot index moves. Scene-owned resources follow with no mesh
+// thickness, dedicated uv2 occlusion), then the Standard bump and 2D
+// reflection pairs, each appended after everything before it so no
+// existing slot index moves. Scene-owned resources follow with no mesh
 // slot. A per-slot rule hand-kept in a PAL is the drift this table exists
 // to remove; change the emitter instead.
 #pragma once
@@ -1914,6 +1935,10 @@ enum class MaterialTextureSource {
     occlusion_uv2,
     /** Standard bump map; a PBR material leaves the fallback. */
     standard_bump,
+    /** Standard 2D reflection map (std-reflection-fragment.ts rT/rS,
+     *  sampled at computed reflCoords); a PBR material leaves the
+     *  fallback. */
+    standard_reflection,
     // Scene-owned resources the pinned bindings also name: no mesh slot,
     // no record field -- each backend resolves these from its own state.
     environment_cube,

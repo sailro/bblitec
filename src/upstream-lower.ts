@@ -27,6 +27,7 @@ import {
     pinnedPbrVariantsHeader,
     pinnedStandardVariantsHeader,
     sceneUniformsStruct,
+    variantBindings,
 } from "./pinned-pbr-variant-cpp.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
 import {
@@ -209,6 +210,18 @@ class GeneratedSourceWriter {
         const transmission =
             features.includes("renderer:transmission") ||
             options.assetTransmission;
+        // A composed Standard variant binding the pin's 2D reflection pair
+        // (std-reflection-fragment.ts `rT`/`rS`) is exactly the condition
+        // under which the record's reflection_texture needs a mesh slot, so
+        // the capability is derived from the composed set rather than being
+        // a separate reach signal.
+        const standardReflection = (options.pinnedStandardVariants ?? [])
+            .some((variant) =>
+                variantBindings(
+                    variant.vertexWgsl,
+                    variant.fragmentWgsl,
+                ).some((binding) => binding.name === "rT")
+            );
         this.tree.write(
             "upstream/include/bblite/upstream/render_capabilities.hpp",
             `#pragma once
@@ -224,6 +237,7 @@ class GeneratedSourceWriter {
 #define BBLITE_MATERIAL_DISPERSION ${options.dispersion ? 1 : 0}
 #define BBLITE_MATERIAL_OCCLUSION_UV2 ${options.occlusionUv2 ? 1 : 0}
 #define BBLITE_MATERIAL_STANDARD_BUMP ${options.standardBump ? 1 : 0}
+#define BBLITE_MATERIAL_STANDARD_REFLECTION ${standardReflection ? 1 : 0}
 #define BBLITE_IMAGE_SKYBOX ${features.includes("background:image-skybox") ? 1 : 0}
 #define BBLITE_SOLID_SKYBOX ${features.includes("background:solid-skybox") ? 1 : 0}
 
@@ -254,6 +268,7 @@ class GeneratedSourceWriter {
                     iridescence: options.iridescence,
                     occlusionUv2: options.occlusionUv2,
                     standardBump: options.standardBump,
+                    standardReflection,
                 },
                 options.pinnedVariants ?? [],
                 "src/pinned-pbr-variant-cpp.ts materialTextureSlotsHeader",
