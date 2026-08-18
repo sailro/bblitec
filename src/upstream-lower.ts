@@ -20,7 +20,10 @@ import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
-import { pinnedPbrVariantsHeader } from "./pinned-pbr-variant-cpp.js";
+import {
+    materialTextureSlotsHeader,
+    pinnedPbrVariantsHeader,
+} from "./pinned-pbr-variant-cpp.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
 
 /**
@@ -189,6 +192,27 @@ class GeneratedSourceWriter {
 // Zero for a scene with no glTF materials, which emits no variant header.
 #define BBLITE_PBR_VARIANTS ${(options.pinnedVariants ?? []).length}
 `,
+        );
+        // The texture-slot table both render backends execute. Emitted for
+        // every scene beside the capability defines above (the base slots
+        // serve the Standard family too, so it cannot ride pbr_variants.hpp,
+        // which a scene with no glTF materials does not emit); the scene's
+        // composed variants are the cross-check that every pinned binding
+        // name is served.
+        this.tree.write(
+            "upstream/include/bblite/upstream/material_texture_slots.hpp",
+            materialTextureSlotsHeader(
+                {
+                    transmission,
+                    clearcoat: options.clearcoat,
+                    sheen: options.sheen,
+                    iridescence: options.iridescence,
+                    occlusionUv2: options.occlusionUv2,
+                    standardBump: options.standardBump,
+                },
+                options.pinnedVariants ?? [],
+                "src/pinned-pbr-variant-cpp.ts materialTextureSlotsHeader",
+            ),
         );
 
         this.writeSource(

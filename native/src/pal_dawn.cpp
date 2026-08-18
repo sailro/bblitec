@@ -94,16 +94,12 @@ constexpr std::uint32_t instance_uniform_binding = 1;
 #endif
 #endif
 
-// Texture pair slots 0-3 and 5 mirror the SDL_GPU order; slot 4 is
-// the environment or reflection cube bound from shared state. When the
-// scene compiles the transmission renderer, the scene-color/
-// transmission/thickness trio follows the base six pairs; reached
-// material-extension pairs append after that in the
-// append_material_extension_bindings order: clearcoat intensity/
-// roughness/normal, sheen color/roughness, iridescence intensity/
-// thickness, dedicated uv2 occlusion. Mesh-owned slots: 0-3 material
-// textures, 4 standard emissive, then transmission/thickness, then
-// extension textures.
+// The mesh-owned slot order, the per-slot sRGB rules and fallback texels,
+// and the pinned binding names all live in the generated
+// `material_texture_slots` table (material_texture_slots.hpp) both
+// backends execute; the constants below only size this backend's arrays
+// and place the transcribed bind path's pairs, and the static_assert under
+// them keeps the two in step.
 #if BBLITE_RENDERER_TRANSMISSION
 constexpr std::size_t transmission_texture_slots = 2;
 // The bound trio is one pair wider than the mesh-owned slots: the
@@ -129,6 +125,10 @@ constexpr std::size_t standard_bump_slot =
 constexpr std::size_t mesh_texture_slots =
     5 + transmission_texture_slots + material_extension_slots +
     standard_bump_slots;
+static_assert(
+    mesh_texture_slots == upstream::material_texture_mesh_slots,
+    "This backend's slot constants must match the generated material "
+    "texture-slot table.");
 
 struct DawnMesh {
     WGPUBuffer vertices = nullptr;
@@ -2078,89 +2078,41 @@ PinnedResource pinned_resource_for(
     DawnState& state,
     const DawnMesh& mesh,
     std::string_view name) {
-    const auto slot = [&](std::size_t index) {
-        return PinnedResource{mesh.views[index], mesh.samplers[index]};
-    };
-    if (name == "boneSampler") {
-        return PinnedResource{mesh.pinned_bone_view, nullptr};
+    const upstream::MaterialTextureSlot* slot =
+        material_slot_for_binding(name);
+    if (slot != nullptr) {
+        if (slot->slot != upstream::material_texture_no_slot) {
+            // The material's own textures, in the generated slot order the
+            // upload loop fills.
+            return PinnedResource{
+                mesh.views[slot->slot],
+                mesh.samplers[slot->slot]};
+        }
+        switch (slot->source) {
+            case upstream::MaterialTextureSource::environment_cube:
+                return PinnedResource{
+                    state.environment_cube_view,
+                    state.default_sampler};
+            case upstream::MaterialTextureSource::brdf_lut:
+                return PinnedResource{state.brdf_view, state.clamp_sampler};
+            case upstream::MaterialTextureSource::scene_color:
+                // The scene-colour grab the pin refracts through. The
+                // persistent bind group needs a complete entry before the
+                // grab exists, so the base-colour pair stands in until the
+                // group is rebuilt with the real texture.
+                return PinnedResource{
+                    state.transmission_color_view
+                        ? state.transmission_color_view
+                        : mesh.views[0],
+                    state.transmission_color_view
+                        ? state.transmission_sampler
+                        : mesh.samplers[0]};
+            case upstream::MaterialTextureSource::bone_palette:
+                return PinnedResource{mesh.pinned_bone_view, nullptr};
+            default:
+                break;
+        }
     }
-    // The material's own textures, in the slot order the loader fills.
-    if (name == "baseColorTexture" || name == "baseColorSampler") {
-        return slot(0);
-    }
-    if (name == "ormTexture" || name == "ormSampler") return slot(1);
-    if (name == "normalTexture" || name == "normalSampler_") return slot(2);
-    if (name == "emissiveTexture" || name == "emissiveSampler") {
-        return slot(3);
-    }
-    // Scene-wide resources.
-    if (name == "brdfLUT" || name == "brdfSampler_") {
-        return PinnedResource{state.brdf_view, state.clamp_sampler};
-    }
-    if (name == "iblTexture" || name == "iblSampler") {
-        return PinnedResource{
-            state.environment_cube_view,
-            state.default_sampler};
-    }
-#if BBLITE_RENDERER_TRANSMISSION
-    // The scene-colour grab the pin refracts through, and the material's own
-    // transmission and thickness maps.
-    if (name == "refractionTexture" || name == "refractionSampler_") {
-        return PinnedResource{
-            state.transmission_color_view
-                ? state.transmission_color_view
-                : mesh.views[0],
-            state.transmission_color_view
-                ? state.transmission_sampler
-                : mesh.samplers[0]};
-    }
-    if (name == "refractionMapTexture" || name == "refractionMapSampler") {
-        return slot(5);
-    }
-    if (name == "thicknessTexture_" || name == "thicknessSampler_") {
-        return slot(6);
-    }
-#endif
-    std::size_t extension_slot = material_extension_slot_base;
-#if BBLITE_MATERIAL_CLEARCOAT
-    if (name == "ccIntensityTexture" || name == "ccIntensitySampler_") {
-        return slot(extension_slot);
-    }
-    if (name == "ccRoughnessTexture" || name == "ccRoughnessSampler_") {
-        return slot(extension_slot + 1);
-    }
-    if (name == "ccNormalTexture" || name == "ccNormalSampler_") {
-        return slot(extension_slot + 2);
-    }
-    extension_slot += 3;
-#endif
-#if BBLITE_MATERIAL_SHEEN
-    if (name == "sheenTexture_" || name == "sheenSampler_") {
-        return slot(extension_slot);
-    }
-    if (name == "sheenRoughTexture_" || name == "sheenRoughSampler_") {
-        return slot(extension_slot + 1);
-    }
-    extension_slot += 2;
-#endif
-#if BBLITE_MATERIAL_IRIDESCENCE
-    if (name == "iridescenceTexture" || name == "iridescenceSampler_") {
-        return slot(extension_slot);
-    }
-    if (
-        name == "iridescenceThicknessTexture" ||
-        name == "iridescenceThicknessSampler_") {
-        return slot(extension_slot + 1);
-    }
-    extension_slot += 2;
-#endif
-#if BBLITE_MATERIAL_OCCLUSION_UV2
-    if (name == "occlusionTexture" || name == "occlusionSampler_") {
-        return slot(extension_slot);
-    }
-    extension_slot += 1;
-#endif
-    (void)extension_slot;
     dawn_error(
         (std::string("pinned variant declares an unmapped resource '") +
          std::string(name) + "'.")
@@ -4681,170 +4633,61 @@ bool run_dawn_engine(Engine& engine) {
         mesh.transform_version =
             mesh_record.transform_version;
 
-        // Per-slot texture selection mirrors the SDL_GPU backend's
-        // material remapping for the Standard and PBR families.
+        // Per-slot texture selection reads the generated
+        // `material_texture_slots` table -- the same rows the SDL_GPU
+        // backend executes -- so which record field a slot takes, its
+        // sRGB view and its fallback texel are decided once, at
+        // generation; this backend keeps only the upload mechanics.
         const bool standard_material =
             item.material_kind == upstream::RenderMaterialKind::standard;
-        const TextureData* slot_data[mesh_texture_slots] = {};
-        bool slot_srgb[mesh_texture_slots] = {};
-        std::array<std::uint8_t, 4>
-            slot_fallback[mesh_texture_slots] = {};
-        bool has_pbr_emissive_factor = false;
-        std::array<std::uint8_t, 4> orm_fallback{255, 255, 255, 255};
-        std::array<std::uint8_t, 4> base_color_fallback{
-            255, 255, 255, 255};
-        bool base_color_fallback_srgb = true;
+        const MaterialRecord* material = nullptr;
         if (item.material.value < engine.materials.size()) {
-            const MaterialRecord& material =
-                engine.materials[item.material.value];
-            if (!standard_material) {
-                base_color_fallback = material.base_color_fallback;
-                base_color_fallback_srgb =
-                    material.base_color_fallback_srgb;
-                orm_fallback = material.orm_fallback;
-            }
+            material = &engine.materials[item.material.value];
             if (
                 standard_material &&
-                material.reflection_cube <
+                material->reflection_cube <
                     state.reflection_cube_views.size()) {
                 mesh.reflection =
                     state.reflection_cube_views[
-                        material.reflection_cube];
-            }
-            slot_data[0] = &material.base_color_texture;
-            slot_data[1] = standard_material
-                ? &material.specular_texture
-                : &material.metallic_roughness_texture;
-            slot_data[2] = standard_material
-                ? &material.opacity_texture
-                : &material.normal_texture;
-            slot_data[3] = standard_material
-                ? &material.ambient_texture
-                : &material.emissive_texture;
-            slot_data[4] = standard_material
-                ? &material.emissive_texture
-                : nullptr;
-#if BBLITE_MATERIAL_STANDARD_BUMP
-            slot_data[standard_bump_slot] = standard_material
-                ? &material.bump_texture
-                : nullptr;
-#endif
-            has_pbr_emissive_factor =
-                material.emissive_factor.r != 0.0f ||
-                material.emissive_factor.g != 0.0f ||
-                material.emissive_factor.b != 0.0f;
-            if (!standard_material) {
-#if BBLITE_RENDERER_TRANSMISSION
-                slot_data[5] = &material.transmission_texture;
-                slot_data[6] = &material.thickness_texture;
-#endif
-                std::size_t extension_slot =
-                    material_extension_slot_base;
-#if BBLITE_MATERIAL_CLEARCOAT
-                slot_data[extension_slot++] =
-                    &material.clearcoat_texture;
-                slot_data[extension_slot++] =
-                    &material.clearcoat_roughness_texture;
-                slot_data[extension_slot++] =
-                    &material.clearcoat_normal_texture;
-#endif
-#if BBLITE_MATERIAL_SHEEN
-                slot_data[extension_slot++] =
-                    &material.sheen_color_texture;
-                slot_data[extension_slot++] =
-                    &material.sheen_roughness_texture;
-#endif
-#if BBLITE_MATERIAL_IRIDESCENCE
-                slot_data[extension_slot++] =
-                    &material.iridescence_texture;
-                slot_data[extension_slot++] =
-                    &material.iridescence_thickness_texture;
-#endif
-#if BBLITE_MATERIAL_OCCLUSION_UV2
-                slot_data[extension_slot++] =
-                    material.occlusion_texture_uv2
-                        ? &material.occlusion_texture
-                        : nullptr;
-#endif
-                (void)extension_slot;
+                        material->reflection_cube];
             }
         }
-        // A base-color slot with image bytes keeps the sRGB contract; a bare
-        // fallback texel takes the material's own encoding -- the pin's
-        // scene-code solid textures are rgba8unorm, sampled without decode.
-        slot_srgb[0] = !standard_material &&
-            (slot_data[0] && !slot_data[0]->bytes.empty()
-                 ? true
-                 : base_color_fallback_srgb);
-        slot_srgb[3] = !standard_material;
-#if BBLITE_MATERIAL_STANDARD_BUMP
-        // A flat tangent-space normal, so a material with no bump map reads
-        // (0, 0, 1) out of the sample and keeps its interpolated normal.
-        slot_fallback[standard_bump_slot] = {128, 128, 255, 255};
-#endif
-        slot_fallback[0] = base_color_fallback;
-        // The pinned ORM factor texel, so an animated metallic or roughness
-        // factor multiplies the authored value rather than white.
-        slot_fallback[1] = standard_material
-            ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
-            : orm_fallback;
-        slot_fallback[2] = standard_material
-            ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
-            : std::array<std::uint8_t, 4>{128, 128, 255, 255};
-        slot_fallback[3] = standard_material
-            ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
-            : has_pbr_emissive_factor
-                ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
-                : std::array<std::uint8_t, 4>{0, 0, 0, 255};
-        slot_fallback[4] = {0, 0, 0, 255};
-        {
-            // sRGB flags and fallbacks mirror the SDL upload_texture
-            // calls for the transmission trio and each extension pair.
-#if BBLITE_RENDERER_TRANSMISSION
-            slot_fallback[5] = {255, 255, 255, 255};
-            slot_fallback[6] = {255, 255, 255, 255};
-#endif
-            std::size_t extension_slot = material_extension_slot_base;
-#if BBLITE_MATERIAL_CLEARCOAT
-            slot_fallback[extension_slot++] = {255, 255, 255, 255};
-            slot_fallback[extension_slot++] = {255, 255, 255, 255};
-            slot_fallback[extension_slot++] = {128, 128, 255, 255};
-#endif
-#if BBLITE_MATERIAL_SHEEN
-            slot_srgb[extension_slot] = true;
-            slot_fallback[extension_slot++] = {255, 255, 255, 255};
-            slot_fallback[extension_slot++] = {255, 255, 255, 255};
-#endif
-#if BBLITE_MATERIAL_IRIDESCENCE
-            slot_srgb[extension_slot] = true;
-            slot_fallback[extension_slot++] = {255, 255, 255, 255};
-            slot_srgb[extension_slot] = true;
-            slot_fallback[extension_slot++] = {255, 255, 255, 255};
-#endif
-#if BBLITE_MATERIAL_OCCLUSION_UV2
-            slot_fallback[extension_slot++] = {255, 255, 255, 255};
-#endif
-            (void)extension_slot;
-        }
-        for (std::size_t slot = 0; slot < mesh_texture_slots; ++slot) {
+        for (
+            const upstream::MaterialTextureSlot& slot_row :
+            upstream::material_texture_slots) {
+            if (slot_row.slot == upstream::material_texture_no_slot) {
+                continue;
+            }
+            const TextureData* slot_data = material
+                ? material_slot_texture(
+                      *material,
+                      slot_row.source,
+                      standard_material)
+                : nullptr;
             const TextureData empty{};
-            const TextureData& data =
-                slot_data[slot] ? *slot_data[slot] : empty;
+            const TextureData& data = slot_data ? *slot_data : empty;
             std::uint32_t mip_count = 1;
-            mesh.owned_textures[slot] = upload_material_texture(
+            mesh.owned_textures[slot_row.slot] = upload_material_texture(
                 state,
                 data,
-                slot_srgb[slot],
-                slot_fallback[slot],
+                material_slot_srgb(
+                    slot_row.srgb,
+                    slot_data,
+                    material,
+                    standard_material),
+                material_slot_fallback(
+                    slot_row.fallback,
+                    material,
+                    standard_material),
                 mip_count);
-            mesh.owned_views[slot] = wgpuTextureCreateView(
-                mesh.owned_textures[slot],
+            mesh.owned_views[slot_row.slot] = wgpuTextureCreateView(
+                mesh.owned_textures[slot_row.slot],
                 nullptr);
-            mesh.views[slot] = mesh.owned_views[slot];
-            mesh.samplers[slot] = create_texture_sampler(
+            mesh.views[slot_row.slot] = mesh.owned_views[slot_row.slot];
+            mesh.samplers[slot_row.slot] = create_texture_sampler(
                 state,
-                slot_data[slot]
-                    ? slot_data[slot]->sampler
+                slot_data
+                    ? slot_data->sampler
                     : TextureSamplerState{});
         }
         state.meshes.push_back(std::move(mesh));

@@ -8,6 +8,11 @@
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
+// The generated material texture-slot table both render backends execute:
+// which record field fills each slot, its sRGB rule, its fallback texel and
+// the pinned binding names it serves. Emitted for every scene beside the
+// capability defines, so the include is unconditional.
+#include <bblite/upstream/material_texture_slots.hpp>
 // The render plan is generated only for scenes that register a
 // SceneContext; a sprite-only scene has none, and reaches this header for
 // the frame options, capture gate and clock alone.
@@ -46,6 +51,7 @@ struct PinnedGeometryParams {
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace bbl::pal {
@@ -84,6 +90,174 @@ static_assert(sizeof(GpuVertex) == 200);
 #else
 static_assert(sizeof(GpuVertex) == 96);
 #endif
+
+// The generated `material_texture_slots` table's enums, translated against
+// the record once for both backends. Everything a slot *means* — which
+// field, which sRGB view, which fallback texel, which pinned names — is
+// table data; what stays per backend is upload mechanics and the
+// enum→API residue.
+
+/** The record field one slot reads, or nullptr when the family has none. */
+inline const TextureData* material_slot_texture(
+    const MaterialRecord& material,
+    upstream::MaterialTextureSource source,
+    bool standard_material) {
+    using Source = upstream::MaterialTextureSource;
+    switch (source) {
+        case Source::base_color:
+            return &material.base_color_texture;
+        case Source::specular_or_metallic_roughness:
+            return standard_material
+                ? &material.specular_texture
+                : &material.metallic_roughness_texture;
+        case Source::opacity_or_normal:
+            return standard_material
+                ? &material.opacity_texture
+                : &material.normal_texture;
+        case Source::ambient_or_emissive:
+            return standard_material
+                ? &material.ambient_texture
+                : &material.emissive_texture;
+        case Source::standard_emissive:
+            return standard_material ? &material.emissive_texture : nullptr;
+        case Source::transmission:
+            return standard_material
+                ? nullptr
+                : &material.transmission_texture;
+        case Source::thickness:
+            return standard_material ? nullptr : &material.thickness_texture;
+        case Source::clearcoat:
+            return standard_material ? nullptr : &material.clearcoat_texture;
+        case Source::clearcoat_roughness:
+            return standard_material
+                ? nullptr
+                : &material.clearcoat_roughness_texture;
+        case Source::clearcoat_normal:
+            return standard_material
+                ? nullptr
+                : &material.clearcoat_normal_texture;
+        case Source::sheen_color:
+            return standard_material
+                ? nullptr
+                : &material.sheen_color_texture;
+        case Source::sheen_roughness:
+            return standard_material
+                ? nullptr
+                : &material.sheen_roughness_texture;
+        case Source::iridescence:
+            return standard_material
+                ? nullptr
+                : &material.iridescence_texture;
+        case Source::iridescence_thickness:
+            return standard_material
+                ? nullptr
+                : &material.iridescence_thickness_texture;
+        case Source::occlusion_uv2:
+            return !standard_material && material.occlusion_texture_uv2
+                ? &material.occlusion_texture
+                : nullptr;
+        case Source::standard_bump:
+            return standard_material ? &material.bump_texture : nullptr;
+        // Scene-owned resources carry no record field.
+        case Source::environment_cube:
+        case Source::brdf_lut:
+        case Source::scene_color:
+        case Source::bone_palette:
+            return nullptr;
+    }
+    return nullptr;
+}
+
+/** Whether one slot uploads through an sRGB view, per the table's rule. */
+inline bool material_slot_srgb(
+    upstream::MaterialTextureSrgb rule,
+    const TextureData* data,
+    const MaterialRecord* material,
+    bool standard_material) {
+    switch (rule) {
+        case upstream::MaterialTextureSrgb::linear:
+            return false;
+        case upstream::MaterialTextureSrgb::srgb:
+            return true;
+        case upstream::MaterialTextureSrgb::srgb_unless_standard:
+            return !standard_material;
+        case upstream::MaterialTextureSrgb::base_color:
+            // A slot with image bytes keeps the sRGB contract; a bare
+            // fallback texel takes the material's own encoding -- the pin's
+            // scene-code solid textures are rgba8unorm, sampled without
+            // decode.
+            return !standard_material &&
+                (data && !data->bytes.empty()
+                     ? true
+                     : material == nullptr ||
+                         material->base_color_fallback_srgb);
+    }
+    return false;
+}
+
+/** The 1x1 texel an image-less slot uploads, per the table's rule. */
+inline std::array<std::uint8_t, 4> material_slot_fallback(
+    upstream::MaterialTextureFallback rule,
+    const MaterialRecord* material,
+    bool standard_material) {
+    constexpr std::array<std::uint8_t, 4> white_texel{255, 255, 255, 255};
+    constexpr std::array<std::uint8_t, 4> black_texel{0, 0, 0, 255};
+    // A flat tangent-space normal, so a material with no map reads
+    // (0, 0, 1) out of the sample and keeps its interpolated normal.
+    constexpr std::array<std::uint8_t, 4> flat_normal_texel{
+        128, 128, 255, 255};
+    switch (rule) {
+        case upstream::MaterialTextureFallback::white:
+            return white_texel;
+        case upstream::MaterialTextureFallback::black:
+            return black_texel;
+        case upstream::MaterialTextureFallback::flat_normal:
+            return flat_normal_texel;
+        case upstream::MaterialTextureFallback::white_or_flat_normal:
+            return standard_material ? white_texel : flat_normal_texel;
+        case upstream::MaterialTextureFallback::base_color_record:
+            return !standard_material && material
+                ? material->base_color_fallback
+                : white_texel;
+        case upstream::MaterialTextureFallback::orm_record:
+            // The pinned ORM factor texel, so an animated metallic or
+            // roughness factor multiplies the authored value rather than
+            // white. Standard materials never carry one.
+            return !standard_material && material
+                ? material->orm_fallback
+                : white_texel;
+        case upstream::MaterialTextureFallback::white_or_emissive_factor: {
+            if (standard_material) return white_texel;
+            const bool has_emissive_factor = material &&
+                (material->emissive_factor.r != 0.0f ||
+                 material->emissive_factor.g != 0.0f ||
+                 material->emissive_factor.b != 0.0f);
+            return has_emissive_factor ? white_texel : black_texel;
+        }
+    }
+    return white_texel;
+}
+
+/**
+ * The table row serving one of the pin's own binding names, or nullptr.
+ *
+ * The names are Babylon's, the rows are generated, and this is where the
+ * two meet for both backends' pinned bind paths. A variant that declares a
+ * resource the table does not know fails by name rather than sampling
+ * whatever sat at that index.
+ */
+inline const upstream::MaterialTextureSlot* material_slot_for_binding(
+    std::string_view name) {
+    for (
+        const upstream::MaterialTextureSlot& slot :
+        upstream::material_texture_slots) {
+        if (slot.texture_name.empty()) continue;
+        if (name == slot.texture_name || name == slot.sampler_name) {
+            return &slot;
+        }
+    }
+    return nullptr;
+}
 
 #if BBLITE_GPU_DEFORMATION
 // Vertex deformation uniforms shared by both render backends (moved

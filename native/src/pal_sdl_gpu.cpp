@@ -194,6 +194,85 @@ struct GpuMesh {
     std::uint64_t transform_version = 0;
 };
 
+/**
+ * This backend's member pair for one generated texture-slot row.
+ *
+ * The enum→member residue the generated `material_texture_slots` table
+ * leaves per backend: what a slot means (field, sRGB, fallback, pinned
+ * names) is table data, and this only says where this backend stores it.
+ * Null members mean the row has no storage here, which the callers treat
+ * as the generation bug it would be.
+ */
+struct GpuMeshSlotMembers {
+    SDL_GPUTexture* GpuMesh::* texture = nullptr;
+    SDL_GPUSampler* GpuMesh::* sampler = nullptr;
+};
+
+GpuMeshSlotMembers mesh_slot_members(
+    upstream::MaterialTextureSource source) {
+    using Source = upstream::MaterialTextureSource;
+    switch (source) {
+        case Source::base_color:
+            return {&GpuMesh::base_color, &GpuMesh::base_color_sampler};
+        case Source::specular_or_metallic_roughness:
+            return {
+                &GpuMesh::metallic_roughness,
+                &GpuMesh::metallic_roughness_sampler};
+        case Source::opacity_or_normal:
+            return {&GpuMesh::normal, &GpuMesh::normal_sampler};
+        case Source::ambient_or_emissive:
+            return {&GpuMesh::emissive, &GpuMesh::emissive_sampler};
+        case Source::standard_emissive:
+            return {
+                &GpuMesh::standard_emissive,
+                &GpuMesh::standard_emissive_sampler};
+        case Source::transmission:
+            return {&GpuMesh::transmission, &GpuMesh::transmission_sampler};
+        case Source::thickness:
+            return {&GpuMesh::thickness, &GpuMesh::thickness_sampler};
+#if BBLITE_MATERIAL_CLEARCOAT
+        case Source::clearcoat:
+            return {&GpuMesh::clearcoat, &GpuMesh::clearcoat_sampler};
+        case Source::clearcoat_roughness:
+            return {
+                &GpuMesh::clearcoat_roughness,
+                &GpuMesh::clearcoat_roughness_sampler};
+        case Source::clearcoat_normal:
+            return {
+                &GpuMesh::clearcoat_normal,
+                &GpuMesh::clearcoat_normal_sampler};
+#endif
+#if BBLITE_MATERIAL_SHEEN
+        case Source::sheen_color:
+            return {&GpuMesh::sheen_color, &GpuMesh::sheen_color_sampler};
+        case Source::sheen_roughness:
+            return {
+                &GpuMesh::sheen_roughness,
+                &GpuMesh::sheen_roughness_sampler};
+#endif
+#if BBLITE_MATERIAL_IRIDESCENCE
+        case Source::iridescence:
+            return {&GpuMesh::iridescence, &GpuMesh::iridescence_sampler};
+        case Source::iridescence_thickness:
+            return {
+                &GpuMesh::iridescence_thickness,
+                &GpuMesh::iridescence_thickness_sampler};
+#endif
+#if BBLITE_MATERIAL_OCCLUSION_UV2
+        case Source::occlusion_uv2:
+            return {&GpuMesh::occlusion, &GpuMesh::occlusion_sampler};
+#endif
+#if BBLITE_MATERIAL_STANDARD_BUMP
+        case Source::standard_bump:
+            return {
+                &GpuMesh::standard_bump,
+                &GpuMesh::standard_bump_sampler};
+#endif
+        default:
+            return {};
+    }
+}
+
 void bind_mesh_vertex_buffers(
     SDL_GPURenderPass* pass,
     const GpuMesh& mesh) {
@@ -475,83 +554,48 @@ struct GpuState {
 /**
  * Which of our resources the pin's own name for a binding refers to.
  *
- * The names are Babylon's, the textures are the PAL's, and this is where the two
- * meet — the same join the Dawn backend makes, against this backend's own named
- * fields rather than its slot array. A variant that declares a resource this does
- * not know fails by name instead of sampling whatever sat at that index.
+ * The name→slot association is the generated `material_texture_slots`
+ * table — the same rows the Dawn backend resolves — so this keeps only the
+ * translation onto this backend's own storage: named mesh members for the
+ * slot rows, named state for the scene-owned rows. A variant that declares
+ * a resource the table does not know fails by name instead of sampling
+ * whatever sat at that index.
  */
 PinnedResource pinned_resource_for(
     const GpuState& state,
     const GpuMesh& mesh,
     const std::string& name) {
-    if (name == "boneSampler") {
-        return {mesh.pinned_bone_texture, state.pinned_bone_sampler};
+    const upstream::MaterialTextureSlot* slot =
+        material_slot_for_binding(name);
+    if (slot != nullptr) {
+        if (slot->slot != upstream::material_texture_no_slot) {
+            const GpuMeshSlotMembers members =
+                mesh_slot_members(slot->source);
+            if (members.texture != nullptr) {
+                return {mesh.*members.texture, mesh.*members.sampler};
+            }
+        } else {
+            switch (slot->source) {
+                case upstream::MaterialTextureSource::environment_cube:
+                    return {state.environment, state.sampler};
+                case upstream::MaterialTextureSource::brdf_lut:
+                    return {state.brdf_lut, state.background_sampler};
+                case upstream::MaterialTextureSource::scene_color:
+                    // The pin's transmission grab: the 1024x1024
+                    // mip-chained scene colour copied out mid-pass,
+                    // sampled trilinear-anisotropic.
+                    return {
+                        state.transmission_color,
+                        state.transmission_sampler};
+                case upstream::MaterialTextureSource::bone_palette:
+                    return {
+                        mesh.pinned_bone_texture,
+                        state.pinned_bone_sampler};
+                default:
+                    break;
+            }
+        }
     }
-    if (name == "baseColorTexture" || name == "baseColorSampler") {
-        return {mesh.base_color, mesh.base_color_sampler};
-    }
-    if (name == "ormTexture" || name == "ormSampler") {
-        return {mesh.metallic_roughness, mesh.metallic_roughness_sampler};
-    }
-    if (name == "normalTexture" || name == "normalSampler_") {
-        return {mesh.normal, mesh.normal_sampler};
-    }
-    if (name == "emissiveTexture" || name == "emissiveSampler") {
-        return {mesh.emissive, mesh.emissive_sampler};
-    }
-    if (name == "brdfLUT" || name == "brdfSampler_") {
-        return {state.brdf_lut, state.background_sampler};
-    }
-    if (name == "iblTexture" || name == "iblSampler") {
-        return {state.environment, state.sampler};
-    }
-    if (name == "refractionMapTexture" || name == "refractionMapSampler") {
-        return {mesh.transmission, mesh.transmission_sampler};
-    }
-    if (name == "refractionTexture" || name == "refractionSampler_") {
-        // The pin's transmission grab: the 1024x1024 mip-chained scene
-        // colour copied out mid-pass, sampled trilinear-anisotropic.
-        return {state.transmission_color, state.transmission_sampler};
-    }
-    if (name == "thicknessTexture_" || name == "thicknessSampler_") {
-        return {mesh.thickness, mesh.thickness_sampler};
-    }
-#if BBLITE_MATERIAL_CLEARCOAT
-    if (name == "ccIntensityTexture" || name == "ccIntensitySampler_") {
-        return {mesh.clearcoat, mesh.clearcoat_sampler};
-    }
-    if (name == "ccRoughnessTexture" || name == "ccRoughnessSampler_") {
-        return {mesh.clearcoat_roughness, mesh.clearcoat_roughness_sampler};
-    }
-    if (name == "ccNormalTexture" || name == "ccNormalSampler_") {
-        return {mesh.clearcoat_normal, mesh.clearcoat_normal_sampler};
-    }
-#endif
-#if BBLITE_MATERIAL_SHEEN
-    if (name == "sheenTexture_" || name == "sheenSampler_") {
-        return {mesh.sheen_color, mesh.sheen_color_sampler};
-    }
-    if (name == "sheenRoughTexture_" || name == "sheenRoughSampler_") {
-        return {mesh.sheen_roughness, mesh.sheen_roughness_sampler};
-    }
-#endif
-#if BBLITE_MATERIAL_IRIDESCENCE
-    if (name == "iridescenceTexture" || name == "iridescenceSampler_") {
-        return {mesh.iridescence, mesh.iridescence_sampler};
-    }
-    if (
-        name == "iridescenceThicknessTexture" ||
-        name == "iridescenceThicknessSampler_") {
-        return {
-            mesh.iridescence_thickness,
-            mesh.iridescence_thickness_sampler};
-    }
-#endif
-#if BBLITE_MATERIAL_OCCLUSION_UV2
-    if (name == "occlusionTexture" || name == "occlusionSampler_") {
-        return {mesh.occlusion, mesh.occlusion_sampler};
-    }
-#endif
     gpu_error(
         ("pinned variant declares an unmapped resource '" + name + "'.")
             .c_str());
@@ -2154,66 +2198,18 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
         SDL_ReleaseGPUBuffer(state.device, mesh.morph_weights);
     }
 #endif
-    SDL_ReleaseGPUTexture(state.device, mesh.base_color);
-    SDL_ReleaseGPUTexture(state.device, mesh.metallic_roughness);
-    SDL_ReleaseGPUTexture(state.device, mesh.normal);
-    SDL_ReleaseGPUTexture(state.device, mesh.emissive);
-    SDL_ReleaseGPUTexture(state.device, mesh.transmission);
-    SDL_ReleaseGPUTexture(state.device, mesh.thickness);
-#if BBLITE_MATERIAL_CLEARCOAT
-    SDL_ReleaseGPUTexture(state.device, mesh.clearcoat);
-    SDL_ReleaseGPUTexture(state.device, mesh.clearcoat_roughness);
-    SDL_ReleaseGPUTexture(state.device, mesh.clearcoat_normal);
-#endif
-#if BBLITE_MATERIAL_SHEEN
-    SDL_ReleaseGPUTexture(state.device, mesh.sheen_color);
-    SDL_ReleaseGPUTexture(state.device, mesh.sheen_roughness);
-#endif
-#if BBLITE_MATERIAL_IRIDESCENCE
-    SDL_ReleaseGPUTexture(state.device, mesh.iridescence);
-    SDL_ReleaseGPUTexture(state.device, mesh.iridescence_thickness);
-#endif
-#if BBLITE_MATERIAL_OCCLUSION_UV2
-    SDL_ReleaseGPUTexture(state.device, mesh.occlusion);
-#endif
-    SDL_ReleaseGPUTexture(state.device, mesh.standard_emissive);
-#if BBLITE_MATERIAL_STANDARD_BUMP
-    SDL_ReleaseGPUTexture(state.device, mesh.standard_bump);
-#endif
-    SDL_ReleaseGPUSampler(state.device, mesh.base_color_sampler);
-    SDL_ReleaseGPUSampler(state.device, mesh.metallic_roughness_sampler);
-    SDL_ReleaseGPUSampler(state.device, mesh.normal_sampler);
-    SDL_ReleaseGPUSampler(state.device, mesh.emissive_sampler);
-    SDL_ReleaseGPUSampler(state.device, mesh.transmission_sampler);
-    SDL_ReleaseGPUSampler(state.device, mesh.thickness_sampler);
-#if BBLITE_MATERIAL_CLEARCOAT
-    SDL_ReleaseGPUSampler(state.device, mesh.clearcoat_sampler);
-    SDL_ReleaseGPUSampler(
-        state.device,
-        mesh.clearcoat_roughness_sampler);
-    SDL_ReleaseGPUSampler(state.device, mesh.clearcoat_normal_sampler);
-#endif
-#if BBLITE_MATERIAL_SHEEN
-    SDL_ReleaseGPUSampler(state.device, mesh.sheen_color_sampler);
-    SDL_ReleaseGPUSampler(state.device, mesh.sheen_roughness_sampler);
-#endif
-#if BBLITE_MATERIAL_IRIDESCENCE
-    SDL_ReleaseGPUSampler(state.device, mesh.iridescence_sampler);
-    SDL_ReleaseGPUSampler(
-        state.device,
-        mesh.iridescence_thickness_sampler);
-#endif
-#if BBLITE_MATERIAL_OCCLUSION_UV2
-    SDL_ReleaseGPUSampler(state.device, mesh.occlusion_sampler);
-#endif
-    SDL_ReleaseGPUSampler(
-        state.device,
-        mesh.standard_emissive_sampler);
-#if BBLITE_MATERIAL_STANDARD_BUMP
-    SDL_ReleaseGPUSampler(
-        state.device,
-        mesh.standard_bump_sampler);
-#endif
+    // One release per generated texture-slot row, which is exactly the set
+    // the upload loop created.
+    for (
+        const upstream::MaterialTextureSlot& slot_row :
+        upstream::material_texture_slots) {
+        if (slot_row.slot == upstream::material_texture_no_slot) continue;
+        const GpuMeshSlotMembers members =
+            mesh_slot_members(slot_row.source);
+        if (members.texture == nullptr) continue;
+        SDL_ReleaseGPUTexture(state.device, mesh.*members.texture);
+        SDL_ReleaseGPUSampler(state.device, mesh.*members.sampler);
+    }
 }
 
 void release(GpuState& state) {
@@ -3834,307 +3830,65 @@ bool run_gpu_engine(Engine& engine) {
             gpu_mesh.index_count =             static_cast<std::uint32_t>(geometry.indices.size());
             gpu_mesh.transform_version =
             mesh_record.transform_version;
-            const TextureData* texture = nullptr;
-            const TextureData* metallic_roughness = nullptr;
-            const TextureData* normal = nullptr;
-            const TextureData* emissive = nullptr;
-            const TextureData* transmission = nullptr;
-            const TextureData* thickness = nullptr;
-#if BBLITE_MATERIAL_CLEARCOAT
-            const TextureData* clearcoat = nullptr;
-            const TextureData* clearcoat_roughness = nullptr;
-            const TextureData* clearcoat_normal = nullptr;
-#endif
-#if BBLITE_MATERIAL_SHEEN
-            const TextureData* sheen_color = nullptr;
-            const TextureData* sheen_roughness = nullptr;
-#endif
-#if BBLITE_MATERIAL_IRIDESCENCE
-            const TextureData* iridescence = nullptr;
-            const TextureData* iridescence_thickness = nullptr;
-#endif
-#if BBLITE_MATERIAL_OCCLUSION_UV2
-            const TextureData* occlusion = nullptr;
-#endif
-            const TextureData* standard_emissive = nullptr;
-#if BBLITE_MATERIAL_STANDARD_BUMP
-            const TextureData* standard_bump = nullptr;
-#endif
-            bool has_pbr_emissive_factor = false;
-            std::array<std::uint8_t, 4> orm_fallback{
-                255, 255, 255, 255};
-            std::array<std::uint8_t, 4> base_color_fallback{
-                255, 255, 255, 255};
-            bool base_color_fallback_srgb = true;
             const bool standard_material =
                 item.material_kind == upstream::RenderMaterialKind::standard;
+            const MaterialRecord* material = nullptr;
             if (item.material.value < engine.materials.size()) {
-                const MaterialRecord& material =
-                    engine.materials[item.material.value];
-                texture = &material.base_color_texture;
-                metallic_roughness = standard_material
-                    ? &material.specular_texture
-                    : &material.metallic_roughness_texture;
-                normal = standard_material
-                    ? &material.opacity_texture
-                    : &material.normal_texture;
-                emissive = standard_material
-                    ? &material.ambient_texture
-                    : &material.emissive_texture;
-                has_pbr_emissive_factor =
-                    material.emissive_factor.r != 0.0f ||
-                    material.emissive_factor.g != 0.0f ||
-                    material.emissive_factor.b != 0.0f;
-                if (!standard_material) {
-                    base_color_fallback =
-                        material.base_color_fallback;
-                    base_color_fallback_srgb =
-                        material.base_color_fallback_srgb;
-                    orm_fallback = material.orm_fallback;
-                }
-                transmission = standard_material
-                    ? nullptr
-                    : &material.transmission_texture;
-                thickness = standard_material
-                    ? nullptr
-                    : &material.thickness_texture;
-                standard_emissive = standard_material
-                    ? &material.emissive_texture
-                    : nullptr;
-#if BBLITE_MATERIAL_STANDARD_BUMP
-                standard_bump = standard_material
-                    ? &material.bump_texture
-                    : nullptr;
-#endif
-#if BBLITE_MATERIAL_CLEARCOAT
-                clearcoat = standard_material
-                    ? nullptr
-                    : &material.clearcoat_texture;
-                clearcoat_roughness = standard_material
-                    ? nullptr
-                    : &material.clearcoat_roughness_texture;
-                clearcoat_normal = standard_material
-                    ? nullptr
-                    : &material.clearcoat_normal_texture;
-#endif
-#if BBLITE_MATERIAL_SHEEN
-                sheen_color = standard_material
-                    ? nullptr
-                    : &material.sheen_color_texture;
-                sheen_roughness = standard_material
-                    ? nullptr
-                    : &material.sheen_roughness_texture;
-#endif
-#if BBLITE_MATERIAL_IRIDESCENCE
-                iridescence = standard_material
-                    ? nullptr
-                    : &material.iridescence_texture;
-                iridescence_thickness = standard_material
-                    ? nullptr
-                    : &material.iridescence_thickness_texture;
-#endif
-#if BBLITE_MATERIAL_OCCLUSION_UV2
-                occlusion =
-                    standard_material ||
-                            !material.occlusion_texture_uv2
-                        ? nullptr
-                        : &material.occlusion_texture;
-#endif
+                material = &engine.materials[item.material.value];
                 if (
                     standard_material &&
-                    material.reflection_cube <
+                    material->reflection_cube <
                         state.reflection_cubes.size()) {
                     gpu_mesh.reflection =
                         state.reflection_cubes[
-                            material.reflection_cube];
+                            material->reflection_cube];
                 }
             }
             if (standard_material && !gpu_mesh.reflection) {
                 gpu_mesh.reflection =
                     state.reflection_fallback;
             }
-            gpu_mesh.base_color = upload_texture(
-                state.device,
-                texture ? *texture : TextureData{},
-                // A slot with image bytes keeps the sRGB contract; a bare
-                // fallback texel takes the material's own encoding -- the
-                // pin's scene-code solid textures are rgba8unorm, sampled
-                // without decode.
-                texture && !texture->bytes.empty()
-                    ? !standard_material
-                    : !standard_material && base_color_fallback_srgb,
-                base_color_fallback);
-            gpu_mesh.base_color_sampler = create_texture_sampler(
-                state.device,
-                texture ? texture->sampler : TextureSamplerState{});
-            gpu_mesh.metallic_roughness = upload_texture(
-                state.device,
-                metallic_roughness ? *metallic_roughness : TextureData{},
-                false,
-                // The pinned ORM factor texel, so an animated metallic or
-                // roughness factor multiplies the authored value rather than
-                // white. Standard materials never carry one.
-                standard_material
-                    ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
-                    : orm_fallback);
-            gpu_mesh.metallic_roughness_sampler = create_texture_sampler(
-                state.device,
-                metallic_roughness
-                    ? metallic_roughness->sampler
-                    : TextureSamplerState{});
-            gpu_mesh.normal = upload_texture(
-                state.device,
-                normal ? *normal : TextureData{},
-                false,
-                standard_material
-                    ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
-                    : std::array<std::uint8_t, 4>{128, 128, 255, 255});
-            gpu_mesh.normal_sampler = create_texture_sampler(
-                state.device,
-                normal ? normal->sampler : TextureSamplerState{});
-            gpu_mesh.emissive = upload_texture(
-                state.device,
-                emissive ? *emissive : TextureData{},
-                !standard_material,
-                standard_material
-                    ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
-                    : has_pbr_emissive_factor
-                        ? std::array<std::uint8_t, 4>{255, 255, 255, 255}
-                        : std::array<std::uint8_t, 4>{0, 0, 0, 255});
-            gpu_mesh.emissive_sampler = create_texture_sampler(
-                state.device,
-                emissive ? emissive->sampler : TextureSamplerState{});
-            gpu_mesh.transmission = upload_texture(
-                state.device,
-                transmission ? *transmission : TextureData{},
-                false,
-                {255, 255, 255, 255});
-            gpu_mesh.transmission_sampler = create_texture_sampler(
-                state.device,
-                transmission
-                    ? transmission->sampler
-                    : TextureSamplerState{});
-            gpu_mesh.thickness = upload_texture(
-                state.device,
-                thickness ? *thickness : TextureData{},
-                false,
-                {255, 255, 255, 255});
-            gpu_mesh.thickness_sampler = create_texture_sampler(
-                state.device,
-                thickness ? thickness->sampler : TextureSamplerState{});
-#if BBLITE_MATERIAL_CLEARCOAT
-            gpu_mesh.clearcoat = upload_texture(
-                state.device,
-                clearcoat ? *clearcoat : TextureData{},
-                false,
-                {255, 255, 255, 255});
-            gpu_mesh.clearcoat_sampler = create_texture_sampler(
-                state.device,
-                clearcoat ? clearcoat->sampler : TextureSamplerState{});
-            gpu_mesh.clearcoat_roughness = upload_texture(
-                state.device,
-                clearcoat_roughness
-                    ? *clearcoat_roughness
-                    : TextureData{},
-                false,
-                {255, 255, 255, 255});
-            gpu_mesh.clearcoat_roughness_sampler =
-                create_texture_sampler(
+            // One upload per generated texture-slot row: which record
+            // field fills the slot, its sRGB view and its fallback texel
+            // are the table's, resolved through the shared helpers; this
+            // backend keeps the upload mechanics and the enum→member
+            // residue in `mesh_slot_members`.
+            for (
+                const upstream::MaterialTextureSlot& slot_row :
+                upstream::material_texture_slots) {
+                if (
+                    slot_row.slot ==
+                    upstream::material_texture_no_slot) {
+                    continue;
+                }
+                const GpuMeshSlotMembers members =
+                    mesh_slot_members(slot_row.source);
+                if (members.texture == nullptr) {
+                    gpu_error(
+                        "generated texture slot has no SDL_GPU member.");
+                }
+                const TextureData* data = material
+                    ? material_slot_texture(
+                          *material,
+                          slot_row.source,
+                          standard_material)
+                    : nullptr;
+                gpu_mesh.*members.texture = upload_texture(
                     state.device,
-                    clearcoat_roughness
-                        ? clearcoat_roughness->sampler
-                        : TextureSamplerState{});
-            gpu_mesh.clearcoat_normal = upload_texture(
-                state.device,
-                clearcoat_normal ? *clearcoat_normal : TextureData{},
-                false,
-                {128, 128, 255, 255});
-            gpu_mesh.clearcoat_normal_sampler = create_texture_sampler(
-                state.device,
-                clearcoat_normal
-                    ? clearcoat_normal->sampler
-                    : TextureSamplerState{});
-#endif
-#if BBLITE_MATERIAL_SHEEN
-            gpu_mesh.sheen_color = upload_texture(
-                state.device,
-                sheen_color ? *sheen_color : TextureData{},
-                true,
-                {255, 255, 255, 255});
-            gpu_mesh.sheen_color_sampler = create_texture_sampler(
-                state.device,
-                sheen_color ? sheen_color->sampler : TextureSamplerState{});
-            gpu_mesh.sheen_roughness = upload_texture(
-                state.device,
-                sheen_roughness ? *sheen_roughness : TextureData{},
-                false,
-                {255, 255, 255, 255});
-            gpu_mesh.sheen_roughness_sampler = create_texture_sampler(
-                state.device,
-                sheen_roughness
-                    ? sheen_roughness->sampler
-                    : TextureSamplerState{});
-#endif
-#if BBLITE_MATERIAL_IRIDESCENCE
-            gpu_mesh.iridescence = upload_texture(
-                state.device,
-                iridescence ? *iridescence : TextureData{},
-                true,
-                {255, 255, 255, 255});
-            gpu_mesh.iridescence_sampler = create_texture_sampler(
-                state.device,
-                iridescence ? iridescence->sampler : TextureSamplerState{});
-            gpu_mesh.iridescence_thickness = upload_texture(
-                state.device,
-                iridescence_thickness
-                    ? *iridescence_thickness
-                    : TextureData{},
-                true,
-                {255, 255, 255, 255});
-            gpu_mesh.iridescence_thickness_sampler =
-                create_texture_sampler(
+                    data ? *data : TextureData{},
+                    material_slot_srgb(
+                        slot_row.srgb,
+                        data,
+                        material,
+                        standard_material),
+                    material_slot_fallback(
+                        slot_row.fallback,
+                        material,
+                        standard_material));
+                gpu_mesh.*members.sampler = create_texture_sampler(
                     state.device,
-                    iridescence_thickness
-                        ? iridescence_thickness->sampler
-                        : TextureSamplerState{});
-#endif
-#if BBLITE_MATERIAL_OCCLUSION_UV2
-            gpu_mesh.occlusion = upload_texture(
-                state.device,
-                occlusion ? *occlusion : TextureData{},
-                false,
-                {255, 255, 255, 255});
-            gpu_mesh.occlusion_sampler = create_texture_sampler(
-                state.device,
-                occlusion ? occlusion->sampler : TextureSamplerState{});
-#endif
-#if BBLITE_MATERIAL_STANDARD_BUMP
-            // A flat tangent-space normal, so a material with no bump map
-            // reads (0, 0, 1) and keeps its interpolated normal.
-            gpu_mesh.standard_bump = upload_texture(
-                state.device,
-                standard_bump ? *standard_bump : TextureData{},
-                false,
-                {128, 128, 255, 255});
-            gpu_mesh.standard_bump_sampler = create_texture_sampler(
-                state.device,
-                standard_bump
-                    ? standard_bump->sampler
-                    : TextureSamplerState{});
-#endif
-            gpu_mesh.standard_emissive = upload_texture(
-                state.device,
-                standard_emissive
-                    ? *standard_emissive
-                    : TextureData{},
-                false,
-                {0, 0, 0, 255});
-            gpu_mesh.standard_emissive_sampler =
-                create_texture_sampler(
-                    state.device,
-                    standard_emissive
-                        ? standard_emissive->sampler
-                        : TextureSamplerState{});
+                    data ? data->sampler : TextureSamplerState{});
+            }
             return gpu_mesh;
         };
         for (const upstream::RenderItem& item : render_plan.items) {

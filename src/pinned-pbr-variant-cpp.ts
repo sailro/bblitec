@@ -1543,3 +1543,396 @@ inline std::size_t pbr_variant_for(
 } // namespace bbl::upstream
 `;
 }
+
+/** Which slot groups a scene compiles, mirroring the render capabilities. */
+export interface MaterialTextureSlotFeatures {
+    transmission: boolean;
+    clearcoat: boolean;
+    sheen: boolean;
+    iridescence: boolean;
+    occlusionUv2: boolean;
+    standardBump: boolean;
+}
+
+/** One emitted row; `slot: null` marks a scene-owned resource. */
+interface MaterialSlotRow {
+    source: string;
+    srgb: "linear" | "srgb" | "srgb_unless_standard" | "base_color";
+    fallback:
+        | "white"
+        | "black"
+        | "flat_normal"
+        | "white_or_flat_normal"
+        | "base_color_record"
+        | "orm_record"
+        | "white_or_emissive_factor";
+    textureName: string;
+    samplerName: string;
+}
+
+/**
+ * The material texture-slot rows, in the append order both backends bind.
+ *
+ * This list is the single copy of what `pal_sdl_gpu.cpp` and `pal_dawn.cpp`
+ * each hand-encoded: which record field fills which slot, the per-slot sRGB
+ * rule, the per-slot fallback texel, and the pin's own binding names for the
+ * slot. The order is a contract — the five base slots, the transmission
+ * pair, the reached material-extension pairs in registration order, and the
+ * Standard bump pair last so no existing slot index moves when it appears.
+ */
+function materialTextureSlotRows(
+    features: MaterialTextureSlotFeatures,
+): { mesh: MaterialSlotRow[]; state: MaterialSlotRow[] } {
+    const mesh: MaterialSlotRow[] = [
+        {
+            source: "base_color",
+            srgb: "base_color",
+            fallback: "base_color_record",
+            textureName: "baseColorTexture",
+            samplerName: "baseColorSampler",
+        },
+        {
+            source: "specular_or_metallic_roughness",
+            srgb: "linear",
+            fallback: "orm_record",
+            textureName: "ormTexture",
+            samplerName: "ormSampler",
+        },
+        {
+            source: "opacity_or_normal",
+            srgb: "linear",
+            fallback: "white_or_flat_normal",
+            textureName: "normalTexture",
+            samplerName: "normalSampler_",
+        },
+        {
+            source: "ambient_or_emissive",
+            srgb: "srgb_unless_standard",
+            fallback: "white_or_emissive_factor",
+            textureName: "emissiveTexture",
+            samplerName: "emissiveSampler",
+        },
+        {
+            source: "standard_emissive",
+            srgb: "linear",
+            fallback: "black",
+            textureName: "",
+            samplerName: "",
+        },
+    ];
+    if (features.transmission) {
+        mesh.push(
+            {
+                source: "transmission",
+                srgb: "linear",
+                fallback: "white",
+                textureName: "refractionMapTexture",
+                samplerName: "refractionMapSampler",
+            },
+            {
+                source: "thickness",
+                srgb: "linear",
+                fallback: "white",
+                textureName: "thicknessTexture_",
+                samplerName: "thicknessSampler_",
+            },
+        );
+    }
+    if (features.clearcoat) {
+        mesh.push(
+            {
+                source: "clearcoat",
+                srgb: "linear",
+                fallback: "white",
+                textureName: "ccIntensityTexture",
+                samplerName: "ccIntensitySampler_",
+            },
+            {
+                source: "clearcoat_roughness",
+                srgb: "linear",
+                fallback: "white",
+                textureName: "ccRoughnessTexture",
+                samplerName: "ccRoughnessSampler_",
+            },
+            {
+                source: "clearcoat_normal",
+                srgb: "linear",
+                fallback: "flat_normal",
+                textureName: "ccNormalTexture",
+                samplerName: "ccNormalSampler_",
+            },
+        );
+    }
+    if (features.sheen) {
+        mesh.push(
+            {
+                source: "sheen_color",
+                srgb: "srgb",
+                fallback: "white",
+                textureName: "sheenTexture_",
+                samplerName: "sheenSampler_",
+            },
+            {
+                source: "sheen_roughness",
+                srgb: "linear",
+                fallback: "white",
+                textureName: "sheenRoughTexture_",
+                samplerName: "sheenRoughSampler_",
+            },
+        );
+    }
+    if (features.iridescence) {
+        mesh.push(
+            {
+                source: "iridescence",
+                srgb: "srgb",
+                fallback: "white",
+                textureName: "iridescenceTexture",
+                samplerName: "iridescenceSampler_",
+            },
+            {
+                source: "iridescence_thickness",
+                srgb: "srgb",
+                fallback: "white",
+                textureName: "iridescenceThicknessTexture",
+                samplerName: "iridescenceThicknessSampler_",
+            },
+        );
+    }
+    if (features.occlusionUv2) {
+        mesh.push({
+            source: "occlusion_uv2",
+            srgb: "linear",
+            fallback: "white",
+            textureName: "occlusionTexture",
+            samplerName: "occlusionSampler_",
+        });
+    }
+    if (features.standardBump) {
+        mesh.push({
+            source: "standard_bump",
+            srgb: "linear",
+            fallback: "flat_normal",
+            textureName: "",
+            samplerName: "",
+        });
+    }
+    const state: MaterialSlotRow[] = [
+        {
+            source: "environment_cube",
+            srgb: "linear",
+            fallback: "white",
+            textureName: "iblTexture",
+            samplerName: "iblSampler",
+        },
+        {
+            source: "brdf_lut",
+            srgb: "linear",
+            fallback: "white",
+            textureName: "brdfLUT",
+            samplerName: "brdfSampler_",
+        },
+    ];
+    if (features.transmission) {
+        state.push({
+            source: "scene_color",
+            srgb: "linear",
+            fallback: "white",
+            textureName: "refractionTexture",
+            samplerName: "refractionSampler_",
+        });
+    }
+    state.push({
+        source: "bone_palette",
+        srgb: "linear",
+        fallback: "white",
+        textureName: "boneSampler",
+        samplerName: "",
+    });
+    return { mesh, state };
+}
+
+/**
+ * Emits `upstream/material_texture_slots.hpp`: the one texture-slot table
+ * both render backends execute.
+ *
+ * The rows carry everything the five hand-kept copies used to restate —
+ * the material-field→slot association, the per-slot sRGB rule, the fallback
+ * texel and the pinned binding names — so each backend keeps only its own
+ * upload mechanics and an enum→API residue. Emitted for every scene: the
+ * base slots serve the Standard family too, which is why this is not part
+ * of `pbr_variants.hpp` (a scene with no glTF materials emits no variant
+ * header but still fills its texture slots).
+ *
+ * The composed variants are the cross-check: every texture, cube and
+ * sampler name a variant declares must be served by some row, so a pin
+ * binding this table does not know fails at generation, named, rather than
+ * in both PALs at draw time.
+ */
+export function materialTextureSlotsHeader(
+    features: MaterialTextureSlotFeatures,
+    variants: readonly { vertexWgsl: string; fragmentWgsl: string }[],
+    provenance: string,
+): string {
+    const { mesh, state } = materialTextureSlotRows(features);
+    const served = new Set<string>();
+    for (const row of [...mesh, ...state]) {
+        if (row.textureName !== "") served.add(row.textureName);
+        if (row.samplerName !== "") served.add(row.samplerName);
+    }
+    const unserved = new Set<string>();
+    for (const variant of variants) {
+        for (
+            const binding of variantBindings(
+                variant.vertexWgsl,
+                variant.fragmentWgsl,
+            )
+        ) {
+            if (
+                binding.kind === "storageBuffer" ||
+                binding.kind === "uniformBuffer"
+            ) {
+                continue;
+            }
+            if (!served.has(binding.name)) unserved.add(binding.name);
+        }
+    }
+    if (unserved.size > 0) {
+        throw new Error(
+            `Pinned variants declare ${
+                [...unserved].sort().map((name) => `'${name}'`).join(", ")
+            } which the material texture-slot table does not serve. Add ` +
+                "the row to materialTextureSlotRows in " +
+                "src/pinned-pbr-variant-cpp.ts; an unserved name fails in " +
+                "both PALs at draw time.",
+        );
+    }
+    const rows = [
+        ...mesh.map((row, slot) => ({ ...row, slot: `${slot}` })),
+        ...state.map((row) => ({ ...row, slot: "material_texture_no_slot" })),
+    ].map((row) =>
+        `    {${row.slot}, MaterialTextureSource::${row.source}, ` +
+        `MaterialTextureSrgb::${row.srgb}, ` +
+        `MaterialTextureFallback::${row.fallback}, ` +
+        `"${row.textureName}", "${row.samplerName}"},`
+    );
+    return `// ${provenance}
+// The material texture-slot table both render backends execute: which
+// record field fills each slot, the slot's sRGB rule and fallback texel,
+// and the pin's own binding names for it. Rows follow the append order the
+// backends bind -- the five base slots, the transmission pair, reached
+// material-extension pairs in registration order (clearcoat intensity/
+// roughness/normal, sheen color/roughness, iridescence intensity/
+// thickness, dedicated uv2 occlusion), and the Standard bump pair last so
+// no existing slot index moves. Scene-owned resources follow with no mesh
+// slot. A per-slot rule hand-kept in a PAL is the drift this table exists
+// to remove; change the emitter instead.
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <limits>
+#include <string_view>
+
+namespace bbl::upstream {
+
+// Which material-record field fills a slot. Paired values name the
+// Standard and PBR families' fields for the one slot both bind -- the
+// upload path resolves the family at run time; the association itself is
+// decided here.
+enum class MaterialTextureSource {
+    /** Both families' base colour texture. */
+    base_color,
+    /** Standard specular map / PBR metallic-roughness (ORM) map. */
+    specular_or_metallic_roughness,
+    /** Standard opacity map / PBR normal map. */
+    opacity_or_normal,
+    /** Standard ambient map / PBR emissive map. */
+    ambient_or_emissive,
+    /** Standard emissive map; a PBR material leaves the fallback. */
+    standard_emissive,
+    /** KHR_materials_transmission map (PBR only). */
+    transmission,
+    /** KHR_materials_volume thickness map (PBR only). */
+    thickness,
+    clearcoat,
+    clearcoat_roughness,
+    clearcoat_normal,
+    sheen_color,
+    sheen_roughness,
+    iridescence,
+    iridescence_thickness,
+    /** The dedicated uv2 occlusion map, when the record flags it. */
+    occlusion_uv2,
+    /** Standard bump map; a PBR material leaves the fallback. */
+    standard_bump,
+    // Scene-owned resources the pinned bindings also name: no mesh slot,
+    // no record field -- each backend resolves these from its own state.
+    environment_cube,
+    brdf_lut,
+    /** The transmission scene-colour grab the pin refracts through. */
+    scene_color,
+    /** The skinned variants' rgba32float bone palette (textureLoad). */
+    bone_palette,
+};
+
+enum class MaterialTextureSrgb {
+    linear,
+    srgb,
+    /** sRGB for the PBR family, linear for Standard. */
+    srgb_unless_standard,
+    /**
+     * The base-colour rule: a slot with image bytes keeps the sRGB
+     * contract; a bare fallback texel takes the record's own encoding --
+     * the pin's scene-code solid textures are rgba8unorm, sampled without
+     * decode. Standard uploads linear either way.
+     */
+    base_color,
+};
+
+enum class MaterialTextureFallback {
+    white,
+    black,
+    /** A flat tangent-space normal (128, 128, 255), so a material with
+     *  no map reads (0, 0, 1) and keeps its interpolated normal. */
+    flat_normal,
+    /** White for Standard, the flat normal for PBR. */
+    white_or_flat_normal,
+    /** The record's own baked base-colour texel; white for Standard. */
+    base_color_record,
+    /** The pinned ORM factor texel, so an animated metallic or roughness
+     *  factor multiplies the authored value rather than white; white for
+     *  Standard. */
+    orm_record,
+    /** White when the PBR emissive factor is non-zero (the factor scales
+     *  the sample), black otherwise; white for Standard. */
+    white_or_emissive_factor,
+};
+
+/** The slot value for a scene-owned row: no per-mesh storage. */
+inline constexpr std::size_t material_texture_no_slot =
+    std::numeric_limits<std::size_t>::max();
+
+struct MaterialTextureSlot {
+    /** Mesh-owned storage slot, or material_texture_no_slot. */
+    std::size_t slot;
+    MaterialTextureSource source;
+    MaterialTextureSrgb srgb;
+    MaterialTextureFallback fallback;
+    /** The pin's own binding names; empty when no composed variant binds
+     *  the slot (the Standard-only slots). */
+    std::string_view texture_name;
+    std::string_view sampler_name;
+};
+
+/** How many mesh-owned texture slots this scene compiles. */
+inline constexpr std::size_t material_texture_mesh_slots = ${mesh.length};
+
+inline constexpr std::array<MaterialTextureSlot, ${rows.length}>
+    material_texture_slots{{
+${rows.join("\n")}
+}};
+
+} // namespace bbl::upstream
+`;
+}
