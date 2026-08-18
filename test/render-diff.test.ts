@@ -168,7 +168,7 @@ test("pairs a native capture against a browser capture end to end", () => {
                 "pass.draw(3,1,0)": 700,
             }),
         );
-        const nativeCapture = join(capture, "native-sdl_gpu.json");
+        const nativeCapture = join(capture, "native-gpu.json");
         writeFileSync(
             nativeCapture,
             JSON.stringify({

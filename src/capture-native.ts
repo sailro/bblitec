@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+    backendFileToken,
+    canonicalBackend,
     defaultExecutable,
     spawnNativeMeasured,
     verifyBuildIdentity,
@@ -24,7 +26,7 @@ import { resolveScene } from "./scene-registry.js";
  * hour this tooling exists to avoid.
  */
 export interface NativeCaptureOptions {
-    /** `sdl_gpu` (default) or `dawn`. */
+    /** `sdl_gpu` (default) or `dawn`; `gpu` is accepted for `sdl_gpu`. */
     backend?: string;
     seekSeconds?: number;
     outputDirectory?: string;
@@ -41,7 +43,15 @@ export function runNativeCapture(
     options: NativeCaptureOptions = {},
 ): NativeCaptureResult {
     const scene = resolveScene(idOrSource);
-    const backend = options.backend ?? "sdl_gpu";
+    const backend = canonicalBackend(
+        options.backend ?? "sdl_gpu",
+        ["sdl_gpu", "dawn"],
+        "capture",
+    );
+    // Filenames use the shared token ("gpu" for SDL_GPU), matching the
+    // parity artifacts; the pre-token `native-sdl_gpu.*` spelling is
+    // still read by `scene -- diff` for one transition.
+    const token = backendFileToken(backend);
     const outputDirectory = resolve(
         options.outputDirectory ?? join("artifacts", "capture", scene.id),
     );
@@ -54,8 +64,8 @@ export function runNativeCapture(
     }
     verifyDeployedPayload(executable, scene.output);
 
-    const capturePath = join(outputDirectory, `native-${backend}.json`);
-    const screenshotPath = join(outputDirectory, `native-${backend}.png`);
+    const capturePath = join(outputDirectory, `native-${token}.json`);
+    const screenshotPath = join(outputDirectory, `native-${token}.png`);
     const stampPath = `${screenshotPath}.build-stamp`;
     // The seek pairs the native frame to the browser frame the golden was
     // captured at; without it an animated scene is described at a
@@ -92,7 +102,7 @@ export function runNativeCapture(
     // Seek provenance for the reuse path; the build stamp is already inside
     // the capture itself, written by the native run.
     writeFileSync(
-        join(outputDirectory, `native-${backend}.meta.json`),
+        join(outputDirectory, `native-${token}.meta.json`),
         `${JSON.stringify({ seekSeconds: seekSeconds ?? null })}\n`,
     );
     return { capturePath, screenshotPath, backend };

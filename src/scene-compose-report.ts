@@ -33,9 +33,17 @@ import {
     type PinnedSceneArm,
 } from "./pinned-scene-arms.js";
 
-/** The browser's PBR fragments, by capture file name. */
-function capturedFragments(scene: string): Map<string, string> {
-    const directory = join("artifacts", "capture", scene, "shaders");
+/** The browser's PBR fragments, by capture file name. `--capture <dir>`
+ *  reads a capture written somewhere other than
+ *  `artifacts/capture/<scene>`. */
+function capturedFragments(
+    scene: string,
+    captureDirectory?: string,
+): Map<string, string> {
+    const directory = join(
+        captureDirectory ?? join("artifacts", "capture", scene),
+        "shaders",
+    );
     const fragments = new Map<string, string>();
     if (!existsSync(directory)) return fragments;
     for (const name of readdirSync(directory)) {
@@ -92,13 +100,14 @@ export async function runComposeReport(
     idOrSource: string,
     scenes: readonly { id: string }[],
     resolve: (idOrSource: string) => { id: string },
+    captureDirectory?: string,
 ): Promise<void> {
     const selected = idOrSource === "all"
         ? scenes
         : [resolve(idOrSource)];
     let anyGap = false;
     for (const scene of selected) {
-        const gap = await reportScene(scene.id);
+        const gap = await reportScene(scene.id, captureDirectory);
         anyGap ||= gap;
     }
     if (anyGap) {
@@ -106,7 +115,10 @@ export async function runComposeReport(
     }
 }
 
-async function reportScene(scene: string): Promise<boolean> {
+async function reportScene(
+    scene: string,
+    captureDirectory?: string,
+): Promise<boolean> {
     const document = sceneGlbDocument(scene);
     const materials = Array.isArray(document?.["materials"])
         ? (document["materials"] as JsonObject[])
@@ -115,7 +127,7 @@ async function reportScene(scene: string): Promise<boolean> {
         console.log(`${scene}: no glTF materials.`);
         return false;
     }
-    const captured = capturedFragments(scene);
+    const captured = capturedFragments(scene, captureDirectory);
     const candidates = await sceneCandidates();
     // The subjects are generation's own construction — the animated-pointer
     // scans, the loader flags, the first-primitive mesh features — consumed

@@ -2,7 +2,6 @@ import {
     existsSync,
     mkdirSync,
     readFileSync,
-    writeFileSync,
 } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -10,8 +9,12 @@ import {
     type SuiteSourceTransform,
 } from "./capture-suite-reference.js";
 import {
+    applyGpuBackendEnvironment,
+    backendFileToken,
     defaultExecutable,
+    resolveBackend,
     runNative,
+    writeReport,
 } from "./parity-scene.js";
 import {
     compareImages,
@@ -111,10 +114,37 @@ function taskSlug(task: string): string {
     return task.slice(task.indexOf("-impostor-") + "-impostor-".length);
 }
 
+export interface GeometryDiagnosticsOptions {
+    recaptureReference?: boolean;
+    /** `sdl_gpu` (default; `gpu` accepted) or `dawn`; the ambient
+     *  `BBLITE_GPU_BACKEND` variable is the fallback. */
+    backend?: string;
+    /** Override the pose for both sides; requires `recaptureReference`. */
+    seekSeconds?: number;
+}
+
 export async function runGeometryOutputDiagnostics(
     idOrSource: string,
-    recaptureReference: boolean,
+    options: GeometryDiagnosticsOptions = {},
 ): Promise<void> {
+    const recaptureReference = options.recaptureReference ?? false;
+    const backend = resolveBackend(
+        options.backend,
+        ["sdl_gpu", "dawn"],
+        "geometry",
+    );
+    applyGpuBackendEnvironment(backend);
+    // Backend-produced files carry the shared filename token
+    // (`-gpu`/`-dawn`) so the two backends' attachments sit side by side;
+    // the browser reference has no native backend and stays `-lite`.
+    const token = backendFileToken(backend);
+    const seek = options.seekSeconds;
+    if (seek !== undefined && !recaptureReference) {
+        throw new Error(
+            "geometry: --seek compares a seeked native frame against references captured at another pose, which measures nothing. " +
+                "Add --recapture-reference to recapture the references at this seek.",
+        );
+    }
     const scene = resolveScene(idOrSource);
     const tasks = geometryCopyTasks(resolve(scene.output));
     if (tasks.length === 0) {
@@ -138,18 +168,18 @@ export async function runGeometryOutputDiagnostics(
         );
         const actual = resolve(
             outputDirectory,
-            `${slug}-native.png`,
+            `${slug}-native-${token}.png`,
         );
         const diff = resolve(
             outputDirectory,
-            `${slug}-diff.png`,
+            `${slug}-diff-${token}.png`,
         );
         await captureSuiteReference(
             scene.source,
             reference,
             recaptureReference,
             impostorShimTransform(),
-            undefined,
+            seek,
             undefined,
             undefined,
             { virtualModules: { [impostorShimPath]: impostorShimModule(task) } },
@@ -158,7 +188,12 @@ export async function runGeometryOutputDiagnostics(
             defaultExecutable(scene.buildDirectory),
             actual,
             true,
-            { BBLITE_COPY_TASK: task },
+            {
+                BBLITE_COPY_TASK: task,
+                ...(seek !== undefined
+                    ? { BBLITE_ANIMATION_SEEK_SECONDS: String(seek) }
+                    : {}),
+            },
             undefined,
             undefined,
             resolve(scene.output),
@@ -178,10 +213,15 @@ export async function runGeometryOutputDiagnostics(
                 `max=${comparison.maxDiff}`,
         );
     }
-    const report = resolve(outputDirectory, "report.json");
-    writeFileSync(
+    const report = resolve(outputDirectory, `report-${token}.json`);
+    writeReport(
         report,
-        `${JSON.stringify({ scene: scene.id, results }, null, 2)}\n`,
+        {
+            tool: "geometry",
+            backend,
+            generatedDirectory: resolve(scene.output),
+        },
+        { scene: scene.id, results },
     );
     console.log(`Report: ${report}`);
 }

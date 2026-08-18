@@ -52,10 +52,6 @@ test("registers unique generated scene targets", () => {
             `reference/${scene.id}/babylon-lite-golden.png`,
         );
         assert.equal(
-            scene.parity.actual,
-            `artifacts/parity/${scene.id}-native.png`,
-        );
-        assert.equal(
             scene.parity.outputDirectory,
             `artifacts/parity/${scene.id}`,
         );
