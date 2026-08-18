@@ -844,8 +844,7 @@ function codecRows(inputs: FeatureActivationInputs): FeatureActivationRow[] {
 function emitOptionRows(
     inputs: FeatureActivationInputs,
 ): FeatureActivationRow[] {
-    const { specialization: spec, emit, features } = inputs;
-    const has = (feature: Feature): boolean => features.includes(feature);
+    const { emit } = inputs;
     return [
         row(
             "animatedWorldBounds",
@@ -1022,48 +1021,6 @@ function emitOptionRows(
                 "(src/material/standard/standard-template.ts) — specular " +
                 "and ambient always carried the selection",
             ["loader flag", "renderer plan"],
-        ),
-        checkedRow(
-            "sheenAlbedoScaling",
-            "emit-option",
-            emit.sheenAlbedoScaling,
-            [
-                [
-                    spec.sheen,
-                    "a glTF KHR_materials_sheen material takes the " +
-                        "albedo-scaling arm",
-                ],
-                [
-                    has("material:sheen-albedo-scaling"),
-                    "scene source asks for the albedo-scaling arm explicitly",
-                ],
-            ],
-            "the legacy sheen model (the setPbrSheen default), or no sheen " +
-                "at all",
-            "src/material/pbr/fragments/sheen-fragment.ts: the two pinned " +
-                "sheen models are composed, not switched at run time; " +
-                "src/loader-gltf/gltf-ext-sheen.ts always takes albedo " +
-                "scaling, src/material/pbr/set-sheen.ts defaults legacy",
-            ["renderer plan", "variant table"],
-        ),
-        checkedRow(
-            "clearcoatF0Remap",
-            "emit-option",
-            emit.clearcoatF0Remap,
-            [
-                [
-                    has("material:clearcoat-f0-remap"),
-                    "a scene-code setPbrClearcoat composes the base-F0 remap",
-                ],
-            ],
-            "no scene-code clearcoat asks for the remap (a glTF clearcoat " +
-                "never does)",
-            "src/material/pbr/fragments/clearcoat-fragment.ts useF0Remap: " +
-                "composed for every clearcoat except a glTF one — " +
-                "src/loader-gltf/gltf-ext-clearcoat.ts is the single pinned " +
-                "caller passing false — so the option follows the " +
-                "scene-code setter and not the asset extension",
-            ["renderer plan", "variant table"],
         ),
         row(
             "idDiagnostics",

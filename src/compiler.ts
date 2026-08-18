@@ -128,7 +128,6 @@ export type {
     CompileOptions,
     CompileResult,
     CompiledShaderProgram,
-    CompiledShaderUniformDefault,
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
     ShaderMaterialVariantName,

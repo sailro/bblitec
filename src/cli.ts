@@ -41,7 +41,6 @@ import {
 } from "./sprite-atlas-packager.js";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
-import { pinnedShaderHelpers } from "./pinned-pbr-variants.js";
 import { downloadCached } from "./asset-download-cache.js";
 import {
     gltfHasImageBasedLight,
@@ -428,12 +427,20 @@ async function main(): Promise<void> {
         clearcoat:
             specializationFeatures.clearcoat ||
             result.manifest.features.includes("material:clearcoat"),
+        // The coat's base-F0 remap is composed for every clearcoat except a
+        // glTF one: `gltf-ext-clearcoat.ts` is the single caller passing
+        // `useF0Remap: false`. So it follows the scene-code setter and not
+        // the asset specializer's `KHR_materials_clearcoat` flag.
         clearcoatF0Remap: result.manifest.features.includes(
             "material:clearcoat-f0-remap",
         ),
         sheen:
             specializationFeatures.sheen ||
             result.manifest.features.includes("material:sheen"),
+        // The two pinned sheen models are composed, not switched at run time,
+        // so one fragment cannot serve both. A glTF KHR_materials_sheen
+        // material takes the albedo-scaling arm; `setPbrSheen` defaults to
+        // the legacy one and can ask for the other explicitly.
         sheenAlbedoScaling:
             specializationFeatures.sheen ||
             result.manifest.features.includes(
@@ -594,19 +601,6 @@ async function main(): Promise<void> {
             specializationFeatures.punctualLights,
         clearcoat: emittedArms.clearcoat,
         sheen: emittedArms.sheen,
-        // The two pinned sheen models are composed, not switched at run time,
-        // so one fragment cannot serve both. A glTF KHR_materials_sheen
-        // material takes the albedo-scaling arm; `setPbrSheen` defaults to
-        // the legacy one and can ask for the other explicitly.
-        sheenAlbedoScaling: emittedArms.sheenAlbedoScaling,
-        // The coat's base-F0 remap is composed for every clearcoat except a
-        // glTF one: `gltf-ext-clearcoat.ts` is the single caller passing
-        // `useF0Remap: false`. So it follows the scene-code setter and not
-        // the asset specializer's `KHR_materials_clearcoat` flag.
-        clearcoatF0Remap: emittedArms.clearcoatF0Remap,
-        // Taken from a real composition rather than transcribed, so the coat's
-        // formulas are the pin's own text under the pin's own names.
-        pinnedHelpers: await pinnedShaderHelpers(),
         pinnedVariants,
         ...(standardComposition !== undefined
             ? {

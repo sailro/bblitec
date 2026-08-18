@@ -278,42 +278,6 @@ export function extractWgslFunction(
     );
 }
 
-/**
- * Extracts one top-level `const` declaration from composed WGSL, verbatim.
- *
- * The iridescence fragment's XYZ→Rec.709 matrix is the case that needs this:
- * it is nine literals a transcription can only get right by luck.
- */
-export function extractWgslConst(source: string, name: string): string {
-    const start = source.indexOf(`const ${name}`);
-    if (start < 0) {
-        throw new Error(
-            `Pinned composed WGSL declares no const '${name}'.`,
-        );
-    }
-    const end = source.indexOf(";", start);
-    if (end < 0) {
-        throw new Error(
-            `Pinned composed WGSL const '${name}' is unterminated.`,
-        );
-    }
-    return source.slice(start, end + 1);
-}
-
-/**
- * Extracts a named declaration, whichever kind the pin used.
- *
- * Callers name what they need, not how it happens to be spelled upstream — a
- * helper that becomes a `const` (or stops being one) then still resolves.
- */
-export function extractWgslDeclaration(
-    source: string,
-    name: string,
-): string {
-    return source.includes(`fn ${name}(`)
-        ? extractWgslFunction(source, name)
-        : extractWgslConst(source, name);
-}
 
 /**
  * Composes the pinned PBR shader for a template configuration and a set of

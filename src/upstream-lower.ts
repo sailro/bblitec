@@ -145,10 +145,6 @@ export interface UpstreamEmitOptions {
     punctualLights: boolean;
     clearcoat: boolean;
     sheen: boolean;
-    sheenAlbedoScaling: boolean;
-    clearcoatF0Remap: boolean;
-    /** The pin's own helper declarations; see `pinnedShaderHelpers()`. */
-    pinnedHelpers?: Readonly<Record<string, string>>;
     /**
      * The pin's own composed PBR variants. Emitted into the deployed shader
      * directory so the offline path compiles them for SDL_GPU and Dawn reads
@@ -1351,8 +1347,6 @@ export function emitUpstreamGenerated(
         punctualLights: false,
         clearcoat: false,
         sheen: false,
-        sheenAlbedoScaling: false,
-        clearcoatF0Remap: false,
         iridescence: false,
         dispersion: false,
         occlusionUv2: false,
