@@ -1,7 +1,11 @@
 import ts from "typescript";
 import { doubleLiteral, floatLiteral } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
-import { gltfLoaderCpp } from "./templates/gltf-loader-cpp.js";
+import {
+    GltfExtensionDefaults,
+    GltfLoweredDefault,
+    gltfLoaderCpp,
+} from "./templates/gltf-loader-cpp.js";
 
 export class GltfLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -280,6 +284,37 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     "src/animation/evaluate.ts",
                 ),
             );
+        const quantization = this.context.sourceFile(
+            "src/loader-gltf/gltf-ext-quantization.ts",
+        );
+        const accessorNormalization =
+            lowerAccessorNormalizationCpp(quantization);
+        const vertexColor = lowerVertexColorCpp(
+            this.context.sourceFile(
+                "src/loader-gltf/gltf-color-normalize.ts",
+            ),
+            quantization,
+        );
+        const shPrescale = lowerShPrescaleCpp(
+            this.context.sourceFile(
+                "src/loader-gltf/ibl-env-assembly.ts",
+            ),
+            this.context.sourceFile(
+                "src/loader-env/load-env.ts",
+            ),
+        );
+        const imageProcessingDefaults =
+            lowerImageProcessingDefaultsCpp(
+                this.context.sourceFile(
+                    "src/loader-gltf/gltf-ext-lights-image-based.ts",
+                ),
+            );
+        const extensionDefaults = lowerGltfExtensionDefaults(
+            dielectric,
+            this.context.sourceFile(
+                "src/loader-gltf/gltf-ext-iridescence.ts",
+            ),
+        );
         return {
             modulePath,
             symbolName,
@@ -289,7 +324,15 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     modulePath,
                     symbolName,
                 ),
-                { animationInterpolation, samplerMapping },
+                {
+                    animationInterpolation,
+                    samplerMapping,
+                    accessorNormalization,
+                    vertexColor,
+                    shPrescale,
+                    imageProcessingDefaults,
+                    extensionDefaults,
+                },
                 nonTrianglePrimitives,
                 nodeVisibility,
                 animationPointer,
@@ -305,12 +348,20 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
 /*
  * ──────────────────────── lowered loader leaves ────────────────────────
  *
- * The two segments below used to live verbatim inside the loader
- * template. They are now emitted from the pinned declarations' own ASTs,
+ * The segments below used to live verbatim inside the loader template.
+ * They are now emitted from the pinned declarations' own ASTs,
  * the way `pinned-ubo-writer-lowerer.ts` and `light-lowerer.ts`'s
  * `lowerMatrix` emit theirs: every constant, operator, and field name in
  * the output comes from the pin, and a construct the walk cannot carry
  * refuses generation instead of shipping a stale transcription.
+ *
+ * Round 1 lowered the animation interpolation and the sampler mapping;
+ * round 2 adds the accessor normalization scales
+ * (`gltf-ext-quantization.ts`), the COLOR_0 build
+ * (`gltf-color-normalize.ts`), the dielectric/iridescence JSON defaults
+ * (`gltf-ext-dielectric.ts`, `gltf-ext-iridescence.ts`), the SH prescale
+ * (`ibl-env-assembly.ts`, proven identical to `load-env.ts`'s canonical),
+ * and the image-processing defaults (`gltf-ext-lights-image-based.ts`).
  *
  * What these emitters own is the translation, never the formula:
  * JavaScript numbers become C++ doubles with one `static_cast<float>`
@@ -2598,4 +2649,1600 @@ function wrapLambdaLines(
     }
     lines.push(`${"    ".repeat(level)}        : ${arm(node)};`, "    };");
     return lines;
+}
+
+/*
+ * ──────────────────── round-2 loader leaves ────────────────────
+ *
+ * Same contract as above: the emitters own the translation, never the
+ * formula. The specific rules they carry, documented once here:
+ *   - A pinned `Math.max(x / N, L)` clamp emits `std::max(Lf, x / Nf)` —
+ *     C++ names the clamp bound first; `max` is symmetric over the finite
+ *     inputs an int8/int16 divide can produce.
+ *   - The pinned color path multiplies by a precomputed reciprocal
+ *     (`c * (1 / N)`) in JavaScript doubles where the C++ record path
+ *     divides by `N` in float. The results are bit-identical for every
+ *     representable input: N is 2^k - 1, so no quotient sits within the
+ *     reciprocal's double error of a float rounding boundary. The
+ *     equivalence is conditional on N matching between the two pinned
+ *     modules, which `lowerVertexColorCpp` proves on every generation.
+ *   - `refuseModule` refusals fire where the anchor is a whole module
+ *     rather than one node (a missing assignment, a count that changed).
+ */
+
+function refuseModule(symbol: string, reason: string): never {
+    throw new Error(`Pinned ${symbol} ${reason}.`);
+}
+
+/** A numeric literal, allowing one leading unary minus. */
+function signedNumericValue(
+    symbol: string,
+    file: ts.SourceFile,
+    expression: ts.Expression,
+): number {
+    const node = unwrapPin(expression);
+    if (
+        ts.isPrefixUnaryExpression(node) &&
+        node.operator === ts.SyntaxKind.MinusToken
+    ) {
+        const operand = unwrapPin(node.operand);
+        if (ts.isNumericLiteral(operand)) {
+            return -Number(operand.text);
+        }
+    }
+    if (ts.isNumericLiteral(node)) {
+        return Number(node.text);
+    }
+    refuseNode(
+        symbol,
+        file,
+        expression,
+        "uses a constant this lowering cannot evaluate",
+    );
+}
+
+/** The `a.b.c` property path of an assignment target, or undefined. */
+function pinnedPropertyPath(
+    expression: ts.Expression,
+): string[] | undefined {
+    const node = unwrapPin(expression);
+    if (ts.isIdentifier(node)) {
+        return [node.text];
+    }
+    if (ts.isPropertyAccessExpression(node)) {
+        const owner = pinnedPropertyPath(node.expression);
+        return owner ? [...owner, node.name.text] : undefined;
+    }
+    return undefined;
+}
+
+/** Every `path = …` assignment under `root`, matched by property path. */
+function pinnedAssignments(
+    root: ts.Node,
+    path: string,
+): ts.BinaryExpression[] {
+    const result: ts.BinaryExpression[] = [];
+    const visit = (node: ts.Node): void => {
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            pinnedPropertyPath(node.left)?.join(".") === path
+        ) {
+            result.push(node);
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(root);
+    return result;
+}
+
+/**
+ * DataView getter → the C++ read `read_component` performs for it. Only
+ * the widths the pinned accessor normalization reads are named; a new
+ * getter upstream misses the map and refuses.
+ */
+const accessorReadsByGetter: Readonly<
+    Record<string, { cppType: string; littleEndian: boolean }>
+> = {
+    getInt8: { cppType: "std::int8_t", littleEndian: false },
+    getUint8: { cppType: "std::uint8_t", littleEndian: false },
+    getInt16: { cppType: "std::int16_t", littleEndian: true },
+    getUint16: { cppType: "std::uint16_t", littleEndian: true },
+    getFloat32: { cppType: "float", littleEndian: true },
+};
+
+interface PinnedAccessorClause {
+    componentType: number;
+    cppType: string;
+    getter: string;
+    divisor: number;
+    /** The lower clamp bound of the signed arms; unsigned arms carry none. */
+    clamp?: number;
+}
+
+/**
+ * The componentType switch of the pinned `readComponent`
+ * (`gltf-ext-quantization.ts`): four integer clauses that read one
+ * component and normalize it behind the accessor's flag, then the raw
+ * float clause, then a throwing default. Exactly that shape — a clause
+ * added or removed on either side refuses generation.
+ */
+function pinnedAccessorClauses(
+    file: ts.SourceFile,
+): PinnedAccessorClause[] {
+    const symbol = "readComponent";
+    const declaration = topLevelFunction(file, symbol);
+    const parameters = identifierParameters(symbol, file, declaration);
+    if (parameters.length !== 4) {
+        refuseNode(
+            symbol,
+            file,
+            declaration,
+            "no longer takes (view, offset, componentType, normalized)",
+        );
+    }
+    const viewName = parameters[0]!;
+    const offsetName = parameters[1]!;
+    const componentTypeName = parameters[2]!;
+    const normalizedName = parameters[3]!;
+    const only = declaration.body.statements.length === 1
+        ? declaration.body.statements[0]
+        : undefined;
+    if (!only || !ts.isSwitchStatement(only)) {
+        refuseNode(
+            symbol,
+            file,
+            declaration,
+            "no longer dispatches through a single componentType switch",
+        );
+    }
+    const dispatch = unwrapPin(only.expression);
+    if (
+        !ts.isIdentifier(dispatch) ||
+        dispatch.text !== componentTypeName
+    ) {
+        refuseNode(
+            symbol,
+            file,
+            only,
+            "no longer switches on the component type",
+        );
+    }
+    const caseConstant = (clause: ts.CaseClause): number => {
+        const label = unwrapPin(clause.expression);
+        if (ts.isNumericLiteral(label)) {
+            return Number(label.text);
+        }
+        if (ts.isIdentifier(label)) {
+            for (const statement of file.statements) {
+                if (!ts.isVariableStatement(statement)) continue;
+                for (const binding of
+                    statement.declarationList.declarations) {
+                    if (
+                        ts.isIdentifier(binding.name) &&
+                        binding.name.text === label.text &&
+                        binding.initializer
+                    ) {
+                        const value = unwrapPin(binding.initializer);
+                        if (ts.isNumericLiteral(value)) {
+                            return Number(value.text);
+                        }
+                    }
+                }
+            }
+        }
+        refuseNode(
+            symbol,
+            file,
+            clause,
+            "labels a case this lowering cannot resolve to a component type",
+        );
+    };
+    /** `view.getX(offset)` / `view.getX(offset, true)` → the getter. */
+    const readGetter = (expression: ts.Expression): string => {
+        const call = unwrapPin(expression);
+        const getter = ts.isCallExpression(call) &&
+                ts.isPropertyAccessExpression(call.expression) &&
+                ts.isIdentifier(call.expression.expression) &&
+                call.expression.expression.text === viewName
+            ? call.expression.name.text
+            : undefined;
+        const config = getter !== undefined
+            ? accessorReadsByGetter[getter]
+            : undefined;
+        if (getter === undefined || !ts.isCallExpression(call)) {
+            refuseNode(
+                symbol,
+                file,
+                expression,
+                "no longer reads the component through the DataView",
+            );
+        }
+        if (!config) {
+            refuseNode(
+                symbol,
+                file,
+                expression,
+                `reads through DataView.${getter}, which has no ` +
+                    "lowering entry",
+            );
+        }
+        const first = call.arguments[0]
+            ? unwrapPin(call.arguments[0])
+            : undefined;
+        const offsetOk = first !== undefined &&
+            ts.isIdentifier(first) &&
+            first.text === offsetName;
+        const endianOk = config.littleEndian
+            ? call.arguments.length === 2 &&
+                call.arguments[1]!.kind === ts.SyntaxKind.TrueKeyword
+            : call.arguments.length === 1;
+        if (!offsetOk || !endianOk) {
+            refuseNode(
+                symbol,
+                file,
+                call,
+                "no longer reads the little-endian component at the offset",
+            );
+        }
+        return getter;
+    };
+    const clauses: PinnedAccessorClause[] = [];
+    const caseList = only.caseBlock.clauses;
+    let index = 0;
+    while (index < caseList.length) {
+        const clause = caseList[index]!;
+        const body = ts.isCaseClause(clause) &&
+                clause.statements.length === 1 &&
+                ts.isBlock(clause.statements[0]!)
+            ? (clause.statements[0] as ts.Block).statements
+            : undefined;
+        if (!ts.isCaseClause(clause) || !body) break;
+        index += 1;
+        const componentType = caseConstant(clause);
+        const binding = singleBinding(symbol, file, body[0], clause);
+        const getter = readGetter(binding.initializer);
+        const config = accessorReadsByGetter[getter]!;
+        const trailing = body[1];
+        const conditional = body.length === 2 &&
+                trailing !== undefined &&
+                ts.isReturnStatement(trailing) &&
+                trailing.expression
+            ? unwrapPin(trailing.expression)
+            : undefined;
+        if (!conditional || !ts.isConditionalExpression(conditional)) {
+            refuseNode(
+                symbol,
+                file,
+                clause,
+                "no longer normalizes behind the accessor's flag",
+            );
+        }
+        const condition = unwrapPin(conditional.condition);
+        const raw = unwrapPin(conditional.whenFalse);
+        if (
+            !ts.isIdentifier(condition) ||
+            condition.text !== normalizedName ||
+            !ts.isIdentifier(raw) ||
+            raw.text !== binding.name
+        ) {
+            refuseNode(
+                symbol,
+                file,
+                conditional,
+                "no longer keeps the raw component when unnormalized",
+            );
+        }
+        let scaled = unwrapPin(conditional.whenTrue);
+        let clamp: number | undefined;
+        if (ts.isCallExpression(scaled)) {
+            const callee = scaled.expression;
+            const isMathMax = ts.isPropertyAccessExpression(callee) &&
+                ts.isIdentifier(callee.expression) &&
+                callee.expression.text === "Math" &&
+                callee.name.text === "max";
+            if (!isMathMax || scaled.arguments.length !== 2) {
+                refuseNode(
+                    symbol,
+                    file,
+                    scaled,
+                    "clamps through a call this lowering cannot carry",
+                );
+            }
+            clamp = signedNumericValue(
+                symbol,
+                file,
+                scaled.arguments[1]!,
+            );
+            scaled = unwrapPin(scaled.arguments[0]!);
+        }
+        const divisor = ts.isBinaryExpression(scaled) &&
+                scaled.operatorToken.kind === ts.SyntaxKind.SlashToken &&
+                ts.isIdentifier(unwrapPin(scaled.left)) &&
+                (unwrapPin(scaled.left) as ts.Identifier).text ===
+                    binding.name &&
+                ts.isNumericLiteral(unwrapPin(scaled.right))
+            ? Number((unwrapPin(scaled.right) as ts.NumericLiteral).text)
+            : undefined;
+        if (divisor === undefined) {
+            refuseNode(
+                symbol,
+                file,
+                conditional.whenTrue,
+                "no longer normalizes by dividing the component",
+            );
+        }
+        clauses.push({
+            componentType,
+            cppType: config.cppType,
+            getter,
+            divisor,
+            ...(clamp === undefined ? {} : { clamp }),
+        });
+    }
+    if (clauses.length !== 4) {
+        refuseNode(
+            symbol,
+            file,
+            only,
+            "no longer carries exactly four integer component types",
+        );
+    }
+    // The tail: the raw float clause the template's own 5126 case
+    // mirrors, then the throwing default. Anything else — a fifth
+    // integer width, a clause between them — refuses.
+    const floatClause = caseList[index];
+    index += 1;
+    const floatReturn = floatClause !== undefined &&
+            ts.isCaseClause(floatClause) &&
+            floatClause.statements.length === 1 &&
+            ts.isReturnStatement(floatClause.statements[0]!) &&
+            (floatClause.statements[0] as ts.ReturnStatement).expression
+        ? (floatClause.statements[0] as ts.ReturnStatement).expression
+        : undefined;
+    if (
+        !floatClause ||
+        !ts.isCaseClause(floatClause) ||
+        caseConstant(floatClause) !== 5126 ||
+        !floatReturn ||
+        readGetter(floatReturn) !== "getFloat32"
+    ) {
+        refuseNode(
+            symbol,
+            file,
+            floatClause ?? only,
+            "no longer returns the raw float component for type 5126",
+        );
+    }
+    const defaultClause = caseList[index];
+    index += 1;
+    const defaultThrows = defaultClause !== undefined &&
+        ts.isDefaultClause(defaultClause) &&
+        defaultClause.statements.length === 1 &&
+        ts.isThrowStatement(defaultClause.statements[0]!);
+    if (!defaultThrows || index !== caseList.length) {
+        refuseNode(
+            symbol,
+            file,
+            defaultClause ?? only,
+            "no longer rejects every other component type",
+        );
+    }
+    return clauses;
+}
+
+/**
+ * The four integer componentType clauses of the loader's
+ * `read_component`, emitted from the pinned `readComponent`
+ * (`gltf-ext-quantization.ts`): each scale constant, each signed clamp,
+ * and each read width comes from the pin.
+ */
+export function lowerAccessorNormalizationCpp(
+    file: ts.SourceFile,
+): string {
+    const lines: string[] = [];
+    for (const clause of pinnedAccessorClauses(file)) {
+        const scaled = "static_cast<float>(value) / " +
+            floatLiteral(clause.divisor);
+        const normalized = clause.clamp === undefined
+            ? scaled
+            : `std::max(${floatLiteral(clause.clamp)}, ${scaled})`;
+        lines.push(
+            `        case ${clause.componentType}: {`,
+            `            const ${clause.cppType} value = ` +
+                `read_value<${clause.cppType}>(data);`,
+            `            return accessor.normalized ? ${normalized} : value;`,
+            "        }",
+        );
+    }
+    return lines.join("\n");
+}
+
+interface PinnedColorBuild {
+    /** Vec4 lane → the pin's source component, for the three colors. */
+    components: [number, number, number];
+    alphaComponent: number;
+    alphaFallback: number;
+    /** Typed-array constructor name → the branch's divisor. */
+    divisors: ReadonlyMap<string, number>;
+}
+
+/** The integer branches `normalizeColorToVec4` carries, by array type. */
+const colorDivisorGetters: Readonly<Record<string, string>> = {
+    Uint8Array: "getUint8",
+    Uint16Array: "getUint16",
+};
+
+/**
+ * `normalizeColorToVec4` (`gltf-color-normalize.ts`): a float branch and
+ * one branch per integer width, each storing the same four lanes. All
+ * branches must agree on the lane order and the absent-alpha fallback —
+ * a branch that drifts refuses rather than picking one.
+ */
+function pinnedColorBuild(file: ts.SourceFile): PinnedColorBuild {
+    const symbol = "normalizeColorToVec4";
+    const declaration = topLevelFunction(file, symbol);
+    const parameters = identifierParameters(symbol, file, declaration);
+    if (parameters.length !== 3) {
+        refuseNode(
+            symbol,
+            file,
+            declaration,
+            "no longer takes (data, count, comps)",
+        );
+    }
+    const dataName = parameters[0]!;
+    const countName = parameters[1]!;
+    const compsName = parameters[2]!;
+    const statements = declaration.body.statements;
+    // `const out = new Float32Array(count * 4);` — the four-lane record.
+    const outBinding = singleBinding(
+        symbol,
+        file,
+        statements[0],
+        declaration,
+    );
+    const outNew = unwrapPin(outBinding.initializer);
+    const outStride = ts.isNewExpression(outNew) &&
+            ts.isIdentifier(outNew.expression) &&
+            outNew.expression.text === "Float32Array" &&
+            outNew.arguments?.length === 1 &&
+            ts.isBinaryExpression(unwrapPin(outNew.arguments[0]!)) &&
+            (unwrapPin(outNew.arguments[0]!) as ts.BinaryExpression)
+                    .operatorToken.kind === ts.SyntaxKind.AsteriskToken
+        ? unwrapPin(
+            (unwrapPin(outNew.arguments[0]!) as ts.BinaryExpression)
+                .right,
+        )
+        : undefined;
+    if (
+        outStride === undefined ||
+        !ts.isNumericLiteral(outStride) ||
+        Number(outStride.text) !== 4
+    ) {
+        refuseNode(
+            symbol,
+            file,
+            outBinding.statement,
+            "no longer builds a four-lane color",
+        );
+    }
+    // `const hasAlpha = comps >= 4;` — what makes the record's fixed
+    // `colors->type == "VEC4"` test the pin's own predicate: among the
+    // VEC3/VEC4 layouts glTF admits for COLOR_0, `comps >= 4` holds
+    // exactly for VEC4.
+    const alphaBinding = singleBinding(
+        symbol,
+        file,
+        statements[1],
+        declaration,
+    );
+    const alphaShape = unwrapPin(alphaBinding.initializer);
+    const alphaShapeOk = ts.isBinaryExpression(alphaShape) &&
+        alphaShape.operatorToken.kind ===
+            ts.SyntaxKind.GreaterThanEqualsToken &&
+        ts.isIdentifier(unwrapPin(alphaShape.left)) &&
+        (unwrapPin(alphaShape.left) as ts.Identifier).text ===
+            compsName &&
+        ts.isNumericLiteral(unwrapPin(alphaShape.right)) &&
+        Number(
+            (unwrapPin(alphaShape.right) as ts.NumericLiteral).text,
+        ) === 4;
+    if (!alphaShapeOk) {
+        refuseNode(
+            symbol,
+            file,
+            alphaBinding.statement,
+            "no longer keys the alpha lane on a four-component source",
+        );
+    }
+    const hasAlphaName = alphaBinding.name;
+    interface BranchBuild {
+        components: [number, number, number];
+        alphaComponent: number;
+        alphaFallback: number;
+        divisor?: number;
+    }
+    /** `data[v * comps]` / `data[v * comps + k]` → component k. */
+    const componentOf = (
+        expression: ts.Expression,
+        loopName: string,
+        scaleName: string | undefined,
+    ): number => {
+        let read = unwrapPin(expression);
+        if (scaleName !== undefined) {
+            const product = read;
+            const scaledRead = ts.isBinaryExpression(product) &&
+                    product.operatorToken.kind ===
+                        ts.SyntaxKind.AsteriskToken &&
+                    ts.isIdentifier(unwrapPin(product.right)) &&
+                    (unwrapPin(product.right) as ts.Identifier).text ===
+                        scaleName
+                ? unwrapPin(product.left)
+                : undefined;
+            if (scaledRead === undefined) {
+                refuseNode(
+                    symbol,
+                    file,
+                    expression,
+                    "no longer scales the lane by the branch inverse",
+                );
+            }
+            read = scaledRead;
+        }
+        if (
+            !ts.isElementAccessExpression(read) ||
+            !ts.isIdentifier(read.expression) ||
+            read.expression.text !== dataName
+        ) {
+            refuseNode(
+                symbol,
+                file,
+                expression,
+                "no longer reads the source component the lowered way",
+            );
+        }
+        const index = unwrapPin(read.argumentExpression);
+        const base = (node: ts.Expression): boolean => {
+            const product = unwrapPin(node);
+            return ts.isBinaryExpression(product) &&
+                product.operatorToken.kind ===
+                    ts.SyntaxKind.AsteriskToken &&
+                ts.isIdentifier(unwrapPin(product.left)) &&
+                (unwrapPin(product.left) as ts.Identifier).text ===
+                    loopName &&
+                ts.isIdentifier(unwrapPin(product.right)) &&
+                (unwrapPin(product.right) as ts.Identifier).text ===
+                    compsName;
+        };
+        if (base(index)) return 0;
+        if (
+            ts.isBinaryExpression(index) &&
+            index.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+            base(index.left) &&
+            ts.isNumericLiteral(unwrapPin(index.right))
+        ) {
+            return Number(
+                (unwrapPin(index.right) as ts.NumericLiteral).text,
+            );
+        }
+        refuseNode(
+            symbol,
+            file,
+            read,
+            "no longer offsets the component read from the vertex base",
+        );
+    };
+    const analyzeBranch = (
+        block: ts.Block,
+        scaled: boolean,
+        anchor: ts.Node,
+    ): BranchBuild => {
+        const branch = block.statements;
+        let cursor = 0;
+        let divisor: number | undefined;
+        let scaleName: string | undefined;
+        if (scaled) {
+            const invBinding = singleBinding(
+                symbol,
+                file,
+                branch[cursor],
+                anchor,
+            );
+            cursor += 1;
+            const inverse = unwrapPin(invBinding.initializer);
+            const inverseDivisor = ts.isBinaryExpression(inverse) &&
+                    inverse.operatorToken.kind ===
+                        ts.SyntaxKind.SlashToken &&
+                    ts.isNumericLiteral(unwrapPin(inverse.left)) &&
+                    Number(
+                        (unwrapPin(inverse.left) as ts.NumericLiteral)
+                            .text,
+                    ) === 1 &&
+                    ts.isNumericLiteral(unwrapPin(inverse.right))
+                ? Number(
+                    (unwrapPin(inverse.right) as ts.NumericLiteral).text,
+                )
+                : undefined;
+            if (inverseDivisor === undefined) {
+                refuseNode(
+                    symbol,
+                    file,
+                    invBinding.statement,
+                    "no longer derives the inverse from one over the divisor",
+                );
+            }
+            divisor = inverseDivisor;
+            scaleName = invBinding.name;
+        }
+        const loop = branch[cursor];
+        cursor += 1;
+        if (
+            !loop ||
+            !ts.isForStatement(loop) ||
+            !loop.initializer ||
+            !ts.isVariableDeclarationList(loop.initializer) ||
+            loop.initializer.declarations.length !== 1 ||
+            !ts.isIdentifier(loop.initializer.declarations[0]!.name) ||
+            !loop.condition ||
+            !ts.isBinaryExpression(loop.condition) ||
+            loop.condition.operatorToken.kind !==
+                ts.SyntaxKind.LessThanToken ||
+            !ts.isIdentifier(unwrapPin(loop.condition.right)) ||
+            (unwrapPin(loop.condition.right) as ts.Identifier).text !==
+                countName ||
+            !ts.isBlock(loop.statement) ||
+            cursor !== branch.length
+        ) {
+            refuseNode(
+                symbol,
+                file,
+                loop ?? anchor,
+                "no longer loops once over the vertices",
+            );
+        }
+        const loopName = (
+            loop.initializer.declarations[0]!.name as ts.Identifier
+        ).text;
+        const laneOf = (
+            target: ts.ElementAccessExpression,
+        ): number | undefined => {
+            if (
+                !ts.isIdentifier(target.expression) ||
+                target.expression.text !== outBinding.name
+            ) {
+                return undefined;
+            }
+            const index = unwrapPin(target.argumentExpression);
+            const stride = (node: ts.Expression): boolean => {
+                const product = unwrapPin(node);
+                return ts.isBinaryExpression(product) &&
+                    product.operatorToken.kind ===
+                        ts.SyntaxKind.AsteriskToken &&
+                    ts.isIdentifier(unwrapPin(product.left)) &&
+                    (unwrapPin(product.left) as ts.Identifier).text ===
+                        loopName &&
+                    ts.isNumericLiteral(unwrapPin(product.right)) &&
+                    Number(
+                        (unwrapPin(product.right) as ts.NumericLiteral)
+                            .text,
+                    ) === 4;
+            };
+            if (stride(index)) return 0;
+            if (
+                ts.isBinaryExpression(index) &&
+                index.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+                stride(index.left) &&
+                ts.isNumericLiteral(unwrapPin(index.right))
+            ) {
+                return Number(
+                    (unwrapPin(index.right) as ts.NumericLiteral).text,
+                );
+            }
+            return undefined;
+        };
+        const stores = collectLaneStores(
+            { symbol, file, names: new Map(), numeric: pinnedDoubleLiteral },
+            loop.statement.statements,
+            0,
+            4,
+            laneOf,
+        );
+        if (stores.next !== loop.statement.statements.length) {
+            refuseNode(
+                symbol,
+                file,
+                loop,
+                "carries statements after the lane stores",
+            );
+        }
+        const components = stores.expressions
+            .slice(0, 3)
+            .map((expression) =>
+                componentOf(expression, loopName, scaleName)
+            ) as [number, number, number];
+        const alpha = unwrapPin(stores.expressions[3]!);
+        const fallback = ts.isConditionalExpression(alpha) &&
+                ts.isIdentifier(unwrapPin(alpha.condition)) &&
+                (unwrapPin(alpha.condition) as ts.Identifier).text ===
+                    hasAlphaName &&
+                ts.isNumericLiteral(unwrapPin(alpha.whenFalse))
+            ? Number(
+                (unwrapPin(alpha.whenFalse) as ts.NumericLiteral).text,
+            )
+            : undefined;
+        if (!ts.isConditionalExpression(alpha) || fallback === undefined) {
+            refuseNode(
+                symbol,
+                file,
+                stores.expressions[3]!,
+                "no longer defaults the alpha lane behind the alpha test",
+            );
+        }
+        return {
+            components,
+            alphaComponent: componentOf(
+                alpha.whenTrue,
+                loopName,
+                scaleName,
+            ),
+            alphaFallback: fallback,
+            ...(divisor === undefined ? {} : { divisor }),
+        };
+    };
+    // The instanceof chain: Float32Array first, then the integer widths.
+    const branches: { typeName: string; build: BranchBuild }[] = [];
+    let chain: ts.Statement | undefined = statements[2];
+    while (chain !== undefined) {
+        if (!ts.isIfStatement(chain) || !ts.isBlock(chain.thenStatement)) {
+            refuseNode(
+                symbol,
+                file,
+                chain,
+                "no longer selects the source layout by instanceof",
+            );
+        }
+        const condition = unwrapPin(chain.expression);
+        const typeName = ts.isBinaryExpression(condition) &&
+                condition.operatorToken.kind ===
+                    ts.SyntaxKind.InstanceOfKeyword &&
+                ts.isIdentifier(unwrapPin(condition.left)) &&
+                (unwrapPin(condition.left) as ts.Identifier).text ===
+                    dataName &&
+                ts.isIdentifier(unwrapPin(condition.right))
+            ? (unwrapPin(condition.right) as ts.Identifier).text
+            : undefined;
+        if (typeName === undefined) {
+            refuseNode(
+                symbol,
+                file,
+                chain.expression,
+                "no longer tests the source array type",
+            );
+        }
+        const scaled = typeName !== "Float32Array";
+        if (scaled && colorDivisorGetters[typeName] === undefined) {
+            refuseNode(
+                symbol,
+                file,
+                chain.expression,
+                `normalizes ${typeName}, which has no lowering entry`,
+            );
+        }
+        branches.push({
+            typeName,
+            build: analyzeBranch(chain.thenStatement, scaled, chain),
+        });
+        chain = chain.elseStatement;
+    }
+    const trailing = statements[3];
+    if (
+        branches.length !== 3 ||
+        branches[0]!.typeName !== "Float32Array" ||
+        statements.length !== 4 ||
+        !trailing ||
+        !ts.isReturnStatement(trailing) ||
+        !trailing.expression ||
+        !ts.isIdentifier(unwrapPin(trailing.expression)) ||
+        (unwrapPin(trailing.expression) as ts.Identifier).text !==
+            outBinding.name
+    ) {
+        refuseNode(
+            symbol,
+            file,
+            declaration,
+            "no longer carries the float and two integer branches",
+        );
+    }
+    const first = branches[0]!.build;
+    const divisors = new Map<string, number>();
+    for (const { typeName, build } of branches) {
+        if (
+            build.components.join(",") !== first.components.join(",") ||
+            build.alphaComponent !== first.alphaComponent ||
+            build.alphaFallback !== first.alphaFallback
+        ) {
+            refuseNode(
+                symbol,
+                file,
+                declaration,
+                `no longer stores the same lanes in the ${typeName} branch`,
+            );
+        }
+        if (build.divisor !== undefined) {
+            divisors.set(typeName, build.divisor);
+        }
+    }
+    return {
+        components: first.components,
+        alphaComponent: first.alphaComponent,
+        alphaFallback: first.alphaFallback,
+        divisors,
+    };
+}
+
+/**
+ * The COLOR_0 → Vec4 build of the loader's vertex loop, emitted from the
+ * pinned `normalizeColorToVec4`: the channel order and the VEC3 alpha
+ * default come from the pin. The record path normalizes integer colors
+ * inside `read_component` rather than here, so generation also proves
+ * that the pin's per-width divisors are exactly the divisors the pinned
+ * accessor normalization applies — a divergence between the two modules
+ * refuses instead of shipping either.
+ */
+export function lowerVertexColorCpp(
+    file: ts.SourceFile,
+    quantizationFile: ts.SourceFile,
+): string {
+    const build = pinnedColorBuild(file);
+    const clauses = pinnedAccessorClauses(quantizationFile);
+    for (const [typeName, getter] of Object.entries(colorDivisorGetters)) {
+        const colorDivisor = build.divisors.get(typeName);
+        const accessor = clauses.find(
+            (clause) => clause.getter === getter,
+        );
+        if (
+            colorDivisor === undefined ||
+            accessor === undefined ||
+            accessor.divisor !== colorDivisor ||
+            accessor.clamp !== undefined
+        ) {
+            throw new Error(
+                `Pinned normalizeColorToVec4 scales ${typeName} by a ` +
+                    "rule the pinned readComponent does not apply, so " +
+                    "routing COLOR_0 through read_component would no " +
+                    "longer reproduce the pin.",
+            );
+        }
+    }
+    const read = (component: number): string =>
+        "read_component(buffer, container, views, *colors, index, " +
+        `${component})`;
+    return [
+        "                if (colors) {",
+        "                    vertex.color = Vec4{",
+        `                        ${read(build.components[0])},`,
+        `                        ${read(build.components[1])},`,
+        `                        ${read(build.components[2])},`,
+        '                        colors->type == "VEC4"',
+        `                            ? ${read(build.alphaComponent)}`,
+        `                            : ${floatLiteral(build.alphaFallback)},`,
+        "                    };",
+        "                }",
+    ].join("\n");
+}
+
+/** Pin constant name → the C++ constexpr the prescale emits. */
+const preScaleConstantRenames: Readonly<Record<string, string>> = {
+    C00xy: "c00xy",
+    C00z: "c00z",
+    C1: "c1",
+    C2: "c2",
+    C20zz: "c20zz",
+    C20xy: "c20xy",
+    C22: "c22",
+};
+
+/**
+ * One pinned `polynomialToPreScaledHarmonics` body →
+ * `pre_scale_harmonics`. The seven band constants, the nine polynomial
+ * reads, and the nine store expressions all come from the pin; the
+ * stride-4 output offsets collapse to the record's nine Color3 slots.
+ */
+function emitPreScaleHarmonics(file: ts.SourceFile): string {
+    const symbol = "polynomialToPreScaledHarmonics";
+    const declaration = topLevelFunction(file, symbol);
+    const parameters = identifierParameters(symbol, file, declaration);
+    if (parameters.length !== 1) {
+        refuseNode(
+            symbol,
+            file,
+            declaration,
+            "no longer takes the polynomial alone",
+        );
+    }
+    const polyName = parameters[0]!;
+    const statements = declaration.body.statements;
+    const names = new Map<string, string>();
+    const scope: CppExpressionScope = {
+        symbol,
+        file,
+        names,
+        numeric: (literal) => floatLiteral(Number(literal.text)),
+    };
+    const lines: string[] = [
+        "std::array<Color3, 9> pre_scale_harmonics(",
+        "    const std::array<Color3, 9>& polynomial) {",
+    ];
+    let index = 0;
+    let constants = 0;
+    while (index < statements.length) {
+        const statement = statements[index];
+        if (!statement || !ts.isVariableStatement(statement)) break;
+        const binding = singleBinding(symbol, file, statement, declaration);
+        const value = unwrapPin(binding.initializer);
+        if (!ts.isNumericLiteral(value)) break;
+        index += 1;
+        const cpp = preScaleConstantRenames[binding.name];
+        if (cpp === undefined) {
+            refuseNode(
+                symbol,
+                file,
+                binding.statement,
+                `binds '${binding.name}', which has no lowering entry`,
+            );
+        }
+        names.set(binding.name, cpp);
+        lines.push(
+            `    constexpr float ${cpp} = ` +
+                `${floatLiteral(Number(value.text))};`,
+        );
+        constants += 1;
+    }
+    if (constants !== Object.keys(preScaleConstantRenames).length) {
+        refuseNode(
+            symbol,
+            file,
+            declaration,
+            "no longer binds the seven band constants",
+        );
+    }
+    // `const out = new F32(36);` — nine stride-4 float32 harmonics, the
+    // rounding the C++ float math mirrors.
+    const outBinding = singleBinding(
+        symbol,
+        file,
+        statements[index],
+        declaration,
+    );
+    index += 1;
+    const outNew = unwrapPin(outBinding.initializer);
+    const outSize = ts.isNewExpression(outNew) &&
+            ts.isIdentifier(outNew.expression) &&
+            (outNew.expression.text === "F32" ||
+                outNew.expression.text === "Float32Array") &&
+            outNew.arguments?.length === 1 &&
+            ts.isNumericLiteral(unwrapPin(outNew.arguments[0]!))
+        ? Number(
+            (unwrapPin(outNew.arguments[0]!) as ts.NumericLiteral).text,
+        )
+        : undefined;
+    if (outSize !== 36) {
+        refuseNode(
+            symbol,
+            file,
+            outBinding.statement,
+            "no longer stores nine stride-four float32 harmonics",
+        );
+    }
+    lines.push(
+        "    std::array<Color3, 9> result{};",
+        "    for (int channel = 0; channel < 3; ++channel) {",
+    );
+    const loop = statements[index];
+    index += 1;
+    if (
+        !loop ||
+        !ts.isForStatement(loop) ||
+        !loop.initializer ||
+        !ts.isVariableDeclarationList(loop.initializer) ||
+        loop.initializer.declarations.length !== 1 ||
+        !ts.isIdentifier(loop.initializer.declarations[0]!.name) ||
+        !loop.condition ||
+        !ts.isBinaryExpression(loop.condition) ||
+        loop.condition.operatorToken.kind !==
+            ts.SyntaxKind.LessThanToken ||
+        !ts.isNumericLiteral(unwrapPin(loop.condition.right)) ||
+        Number(
+            (unwrapPin(loop.condition.right) as ts.NumericLiteral).text,
+        ) !== 3 ||
+        !ts.isBlock(loop.statement)
+    ) {
+        refuseNode(
+            symbol,
+            file,
+            loop ?? declaration,
+            "no longer loops once per color channel",
+        );
+    }
+    const channelName = (
+        loop.initializer.declarations[0]!.name as ts.Identifier
+    ).text;
+    const slotOf = (
+        expression: ts.Expression,
+        stride: number,
+    ): number | undefined => {
+        const node = unwrapPin(expression);
+        if (ts.isIdentifier(node) && node.text === channelName) return 0;
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+            ts.isNumericLiteral(unwrapPin(node.left)) &&
+            ts.isIdentifier(unwrapPin(node.right)) &&
+            (unwrapPin(node.right) as ts.Identifier).text === channelName
+        ) {
+            const offset = Number(
+                (unwrapPin(node.left) as ts.NumericLiteral).text,
+            );
+            return offset % stride === 0 ? offset / stride : undefined;
+        }
+        return undefined;
+    };
+    const body = loop.statement.statements;
+    let bodyIndex = 0;
+    for (let slot = 0; slot < 9; slot += 1) {
+        const binding = singleBinding(symbol, file, body[bodyIndex], loop);
+        bodyIndex += 1;
+        const readValue = unwrapPin(binding.initializer);
+        if (
+            !ts.isElementAccessExpression(readValue) ||
+            !ts.isIdentifier(readValue.expression) ||
+            readValue.expression.text !== polyName ||
+            slotOf(readValue.argumentExpression, 3) !== slot
+        ) {
+            refuseNode(
+                symbol,
+                file,
+                binding.statement,
+                `no longer reads polynomial slot ${slot}`,
+            );
+        }
+        names.set(binding.name, binding.name);
+        lines.push(
+            `        const float ${binding.name} =`,
+            `            color_channel(polynomial[${slot}], channel);`,
+        );
+    }
+    for (let slot = 0; slot < 9; slot += 1) {
+        const statement = body[bodyIndex];
+        bodyIndex += 1;
+        const assignment = statement !== undefined &&
+                ts.isExpressionStatement(statement) &&
+                ts.isBinaryExpression(statement.expression) &&
+                statement.expression.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken
+            ? statement.expression
+            : undefined;
+        const target = assignment
+            ? unwrapPin(assignment.left)
+            : undefined;
+        if (
+            !assignment ||
+            target === undefined ||
+            !ts.isElementAccessExpression(target) ||
+            !ts.isIdentifier(target.expression) ||
+            target.expression.text !== outBinding.name ||
+            slotOf(target.argumentExpression, 4) !== slot
+        ) {
+            refuseNode(
+                symbol,
+                file,
+                statement ?? loop,
+                `no longer stores harmonic slot ${slot}`,
+            );
+        }
+        const rendered = renderCppExpression(scope, assignment.right).text;
+        // The segment's fixed layout: a bare product stays inline, any
+        // composed expression splits one argument per line.
+        if (rendered.includes("(")) {
+            lines.push(
+                "        set_color_channel(",
+                `            result[${slot}],`,
+                "            channel,",
+                `            ${rendered});`,
+            );
+        } else {
+            lines.push(
+                "        set_color_channel(",
+                `            result[${slot}], channel, ${rendered});`,
+            );
+        }
+    }
+    if (bodyIndex !== body.length) {
+        refuseNode(
+            symbol,
+            file,
+            body[bodyIndex] ?? loop,
+            "carries statements after the harmonic stores",
+        );
+    }
+    const trailing = statements[index];
+    index += 1;
+    if (
+        !trailing ||
+        !ts.isReturnStatement(trailing) ||
+        !trailing.expression ||
+        !ts.isIdentifier(unwrapPin(trailing.expression)) ||
+        (unwrapPin(trailing.expression) as ts.Identifier).text !==
+            outBinding.name ||
+        index !== statements.length
+    ) {
+        refuseNode(
+            symbol,
+            file,
+            trailing ?? declaration,
+            "no longer ends by returning the harmonics",
+        );
+    }
+    lines.push("    }", "    return result;", "}");
+    return lines.join("\n");
+}
+
+/**
+ * `pre_scale_harmonics` for the glTF loader, emitted from the private
+ * `polynomialToPreScaledHarmonics` copy the pinned
+ * EXT_lights_image_based feature executes (`ibl-env-assembly.ts`). The
+ * pin keeps that copy byte-for-byte against `load-env.ts`'s canonical —
+ * the one the .env path lowers — so both are emitted and compared: a
+ * divergence is a pin defect to surface, not a value to pick.
+ */
+export function lowerShPrescaleCpp(
+    assemblyFile: ts.SourceFile,
+    canonicalFile: ts.SourceFile,
+): string {
+    const emitted = emitPreScaleHarmonics(assemblyFile);
+    const canonical = emitPreScaleHarmonics(canonicalFile);
+    if (emitted !== canonical) {
+        throw new Error(
+            "Pinned polynomialToPreScaledHarmonics diverged between " +
+                `${assemblyFile.fileName} and ${canonicalFile.fileName}; ` +
+                "the glTF loader executes the former and the .env path " +
+                "the latter, so the divergence must be resolved upstream " +
+                "rather than lowered from either copy.",
+        );
+    }
+    return emitted;
+}
+
+/**
+ * The image-processing defaults the pinned EXT_lights_image_based
+ * `_sceneSetup` writes (`gltf-ext-lights-image-based.ts`): exposure and
+ * contrast flow as constants, and tone mapping must be enabled — the
+ * environment record has no arm for an IBL asset that leaves it off.
+ */
+export function lowerImageProcessingDefaultsCpp(
+    file: ts.SourceFile,
+): string {
+    const symbol = "EXT_lights_image_based";
+    const numericFor = (property: string): number => {
+        const path = `scene.imageProcessing.${property}`;
+        const found = pinnedAssignments(file, path);
+        if (found.length !== 1) {
+            refuseModule(
+                symbol,
+                `no longer writes ${path} exactly once`,
+            );
+        }
+        const value = unwrapPin(found[0]!.right);
+        if (!ts.isNumericLiteral(value)) {
+            refuseNode(
+                symbol,
+                file,
+                found[0]!,
+                `no longer writes a constant ${property}`,
+            );
+        }
+        return Number(value.text);
+    };
+    const exposure = numericFor("exposure");
+    const contrast = numericFor("contrast");
+    const toneMapping = pinnedAssignments(
+        file,
+        "scene.imageProcessing.toneMappingEnabled",
+    );
+    if (
+        toneMapping.length !== 1 ||
+        unwrapPin(toneMapping[0]!.right).kind !==
+            ts.SyntaxKind.TrueKeyword
+    ) {
+        refuseModule(
+            symbol,
+            "no longer enables tone mapping exactly once",
+        );
+    }
+    return [
+        `    environment.exposure = ${floatLiteral(exposure)};`,
+        `    environment.contrast = ${floatLiteral(contrast)};`,
+        "    environment.tone_mapping_enabled = true;",
+    ].join("\n");
+}
+
+/**
+ * The single `memberName` handler of a pinned feature module — the
+ * `applyMaterial` method on the module's exported feature literal.
+ */
+function featureMethod(
+    file: ts.SourceFile,
+    symbol: string,
+    memberName: string,
+): ts.FunctionLikeDeclarationBase & { body: ts.Block } {
+    const found: (ts.FunctionLikeDeclarationBase & { body: ts.Block })[] =
+        [];
+    const visit = (node: ts.Node): void => {
+        if (
+            (ts.isMethodDeclaration(node) ||
+                ts.isPropertyAssignment(node)) &&
+            node.name !== undefined &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === memberName
+        ) {
+            const candidate = ts.isMethodDeclaration(node)
+                ? node
+                : ts.isFunctionExpression(node.initializer) ||
+                        ts.isArrowFunction(node.initializer)
+                    ? node.initializer
+                    : undefined;
+            if (candidate?.body && ts.isBlock(candidate.body)) {
+                found.push(
+                    candidate as ts.FunctionLikeDeclarationBase & {
+                        body: ts.Block;
+                    },
+                );
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(file);
+    if (found.length !== 1) {
+        refuseModule(
+            symbol,
+            `no longer declares a single '${memberName}' handler`,
+        );
+    }
+    return found[0]!;
+}
+
+interface PinnedJsonDefault {
+    key: string;
+    bindingName: string;
+    /** The substituted constant; undefined for a `: undefined` fallback. */
+    value: number | undefined;
+}
+
+/**
+ * Every `const x = typeof e?.key === "number" ? e.key : fallback`
+ * binding under `root` — the shape the pinned dielectric loader uses for
+ * each JSON default it substitutes.
+ */
+function pinnedTypeofDefaults(
+    symbol: string,
+    file: ts.SourceFile,
+    root: ts.Node,
+): PinnedJsonDefault[] {
+    const result: PinnedJsonDefault[] = [];
+    const visit = (node: ts.Node): void => {
+        ts.forEachChild(node, visit);
+        if (
+            !ts.isVariableDeclaration(node) ||
+            !ts.isIdentifier(node.name) ||
+            !node.initializer
+        ) {
+            return;
+        }
+        const conditional = unwrapPin(node.initializer);
+        if (!ts.isConditionalExpression(conditional)) return;
+        const condition = unwrapPin(conditional.condition);
+        const typeofRead = ts.isBinaryExpression(condition) &&
+                condition.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsEqualsToken &&
+                ts.isTypeOfExpression(unwrapPin(condition.left)) &&
+                ts.isStringLiteral(unwrapPin(condition.right)) &&
+                (unwrapPin(condition.right) as ts.StringLiteral).text ===
+                    "number"
+            ? unwrapPin(
+                (unwrapPin(condition.left) as ts.TypeOfExpression)
+                    .expression,
+            )
+            : undefined;
+        const key = typeofRead !== undefined &&
+                (ts.isPropertyAccessExpression(typeofRead) ||
+                    ts.isPropertyAccessChain(typeofRead))
+            ? typeofRead.name.text
+            : undefined;
+        if (key === undefined) return;
+        const whenTrue = unwrapPin(conditional.whenTrue);
+        const readsKey = (ts.isPropertyAccessExpression(whenTrue) ||
+            ts.isPropertyAccessChain(whenTrue)) &&
+            whenTrue.name.text === key;
+        if (!readsKey) {
+            refuseNode(
+                symbol,
+                file,
+                conditional,
+                `no longer substitutes '${key}' behind its own typeof test`,
+            );
+        }
+        const whenFalse = unwrapPin(conditional.whenFalse);
+        if (ts.isIdentifier(whenFalse) && whenFalse.text === "undefined") {
+            result.push({
+                key,
+                bindingName: node.name.text,
+                value: undefined,
+            });
+            return;
+        }
+        result.push({
+            key,
+            bindingName: node.name.text,
+            value: signedNumericValue(symbol, file, whenFalse),
+        });
+    };
+    visit(root);
+    return result;
+}
+
+/**
+ * The dielectric and iridescence JSON defaults the loader template used
+ * to hand-type, extracted from the pinned extension handlers
+ * (`gltf-ext-dielectric.ts`, `gltf-ext-iridescence.ts`). Both the JSON
+ * key and the substituted constant flow; a default the pin adds that no
+ * entry consumes refuses, as does an entry the pin no longer carries.
+ */
+export function lowerGltfExtensionDefaults(
+    dielectricFile: ts.SourceFile,
+    iridescenceFile: ts.SourceFile,
+): GltfExtensionDefaults {
+    const dielectricSymbol = "KHR_materials_dielectric";
+    const applyMaterial = featureMethod(
+        dielectricFile,
+        dielectricSymbol,
+        "applyMaterial",
+    );
+    const collected = pinnedTypeofDefaults(
+        dielectricSymbol,
+        dielectricFile,
+        applyMaterial.body,
+    );
+    const byKey = new Map(collected.map((entry) => [entry.key, entry]));
+    if (byKey.size !== collected.length) {
+        refuseModule(dielectricSymbol, "substitutes a JSON default twice");
+    }
+    const consumed = new Set<string>();
+    const numericDefault = (key: string): GltfLoweredDefault => {
+        const entry = byKey.get(key);
+        if (!entry || entry.value === undefined) {
+            refuseModule(
+                dielectricSymbol,
+                `no longer defaults '${key}' to a constant`,
+            );
+        }
+        consumed.add(key);
+        return { key, literal: floatLiteral(entry.value) };
+    };
+    const ior = numericDefault("ior");
+    const transmissionFactor = numericDefault("transmissionFactor");
+    const thicknessFactor = numericDefault("thicknessFactor");
+    const dispersion = numericDefault("dispersion");
+    // attenuationDistance is authored-or-undefined at its read; the
+    // constant the record carries is the white-tint fallback the pin
+    // applies when a volume declares no attenuation at all.
+    const attenuationRead = byKey.get("attenuationDistance");
+    if (!attenuationRead || attenuationRead.value !== undefined) {
+        refuseModule(
+            dielectricSymbol,
+            "no longer reads 'attenuationDistance' as authored-or-absent",
+        );
+    }
+    consumed.add("attenuationDistance");
+    for (const entry of collected) {
+        if (!consumed.has(entry.key)) {
+            refuseModule(
+                dielectricSymbol,
+                `defaults '${entry.key}', which no lowering entry consumes`,
+            );
+        }
+    }
+    // The white tint at unit distance. The record's attenuation_color
+    // default is that same white, so only the distance is emitted — a
+    // fallback tint that stops being white refuses.
+    const fallbacks: { color: number[]; distance: number }[] = [];
+    const findFallback = (node: ts.Node): void => {
+        ts.forEachChild(node, findFallback);
+        if (!ts.isObjectLiteralExpression(node)) return;
+        if (node.properties.length !== 2) return;
+        const entries = new Map<string, ts.Expression>();
+        for (const property of node.properties) {
+            if (
+                ts.isPropertyAssignment(property) &&
+                ts.isIdentifier(property.name)
+            ) {
+                entries.set(property.name.text, property.initializer);
+            }
+        }
+        const color = entries.get("color");
+        const distance = entries.get("atDistance");
+        if (!color || !distance) return;
+        const colorValue = unwrapPin(color);
+        const distanceValue = unwrapPin(distance);
+        if (
+            !ts.isArrayLiteralExpression(colorValue) ||
+            !ts.isNumericLiteral(distanceValue)
+        ) {
+            return;
+        }
+        fallbacks.push({
+            color: colorValue.elements.map((element) =>
+                signedNumericValue(
+                    dielectricSymbol,
+                    dielectricFile,
+                    element,
+                )
+            ),
+            distance: Number(distanceValue.text),
+        });
+    };
+    findFallback(applyMaterial.body);
+    const fallback = fallbacks.length === 1 ? fallbacks[0]! : undefined;
+    if (!fallback || fallback.color.join(",") !== "1,1,1") {
+        refuseModule(
+            dielectricSymbol,
+            "no longer falls back to a white tint at a constant distance",
+        );
+    }
+    const attenuationDistance: GltfLoweredDefault = {
+        key: attenuationRead.key,
+        literal: floatLiteral(fallback.distance),
+    };
+    // Babylon's fixed Abbe numerator: `setPbrDispersion(out, N / d)`.
+    const dispersionEntry = byKey.get("dispersion")!;
+    const dispersionCalls: ts.CallExpression[] = [];
+    const findDispersion = (node: ts.Node): void => {
+        ts.forEachChild(node, findDispersion);
+        if (
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.name.text === "setPbrDispersion"
+        ) {
+            dispersionCalls.push(node);
+        }
+    };
+    findDispersion(applyMaterial.body);
+    const strength = dispersionCalls.length === 1 &&
+            dispersionCalls[0]!.arguments.length === 2
+        ? unwrapPin(dispersionCalls[0]!.arguments[1]!)
+        : undefined;
+    const scale = strength !== undefined &&
+            ts.isBinaryExpression(strength) &&
+            strength.operatorToken.kind === ts.SyntaxKind.SlashToken &&
+            ts.isNumericLiteral(unwrapPin(strength.left)) &&
+            ts.isIdentifier(unwrapPin(strength.right)) &&
+            (unwrapPin(strength.right) as ts.Identifier).text ===
+                dispersionEntry.bindingName
+        ? Number((unwrapPin(strength.left) as ts.NumericLiteral).text)
+        : undefined;
+    if (scale === undefined) {
+        refuseModule(
+            dielectricSymbol,
+            "no longer derives the dispersion strength as a constant " +
+                "over the authored dispersion",
+        );
+    }
+    // Iridescence: the setter options object, keys and defaults by name.
+    const iridescenceSymbol = "KHR_materials_iridescence";
+    const iridescenceApply = featureMethod(
+        iridescenceFile,
+        iridescenceSymbol,
+        "applyMaterial",
+    );
+    const setterCalls: ts.CallExpression[] = [];
+    const findSetter = (node: ts.Node): void => {
+        ts.forEachChild(node, findSetter);
+        if (
+            ts.isCallExpression(node) &&
+            ts.isIdentifier(node.expression) &&
+            node.expression.text === "setPbrIridescence"
+        ) {
+            setterCalls.push(node);
+        }
+    };
+    findSetter(iridescenceApply.body);
+    const options = setterCalls.length === 1 &&
+            setterCalls[0]!.arguments.length === 2 &&
+            ts.isObjectLiteralExpression(
+                unwrapPin(setterCalls[0]!.arguments[1]!),
+            )
+        ? unwrapPin(
+            setterCalls[0]!.arguments[1]!,
+        ) as ts.ObjectLiteralExpression
+        : undefined;
+    if (!options) {
+        refuseModule(
+            iridescenceSymbol,
+            "no longer passes setPbrIridescence one options object",
+        );
+    }
+    /** Setter option → the template slot its `iri.key ?? value` fills. */
+    const iridescenceSlots: Readonly<Record<string, string>> = {
+        intensity: "iridescenceFactor",
+        indexOfRefraction: "iridescenceIor",
+        minimumThickness: "iridescenceThicknessMinimum",
+        maximumThickness: "iridescenceThicknessMaximum",
+    };
+    const iridescenceDefaults = new Map<string, GltfLoweredDefault>();
+    for (const property of options.properties) {
+        if (
+            !ts.isPropertyAssignment(property) ||
+            !ts.isIdentifier(property.name)
+        ) {
+            continue;
+        }
+        const coalesce = unwrapPin(property.initializer);
+        if (
+            !ts.isBinaryExpression(coalesce) ||
+            coalesce.operatorToken.kind !==
+                ts.SyntaxKind.QuestionQuestionToken
+        ) {
+            continue;
+        }
+        const readValue = unwrapPin(coalesce.left);
+        const key = (ts.isPropertyAccessExpression(readValue) ||
+                ts.isPropertyAccessChain(readValue))
+            ? readValue.name.text
+            : undefined;
+        const slot = iridescenceSlots[property.name.text];
+        if (key === undefined || slot === undefined) {
+            refuseNode(
+                iridescenceSymbol,
+                iridescenceFile,
+                property,
+                "defaults an option no lowering entry consumes",
+            );
+        }
+        iridescenceDefaults.set(slot, {
+            key,
+            literal: floatLiteral(
+                signedNumericValue(
+                    iridescenceSymbol,
+                    iridescenceFile,
+                    coalesce.right,
+                ),
+            ),
+        });
+    }
+    const iridescenceSlot = (slot: string): GltfLoweredDefault => {
+        const entry = iridescenceDefaults.get(slot);
+        if (!entry) {
+            refuseModule(
+                iridescenceSymbol,
+                `no longer defaults the '${slot}' option`,
+            );
+        }
+        return entry;
+    };
+    return {
+        ior,
+        transmissionFactor,
+        thicknessFactor,
+        attenuationDistance,
+        dispersion,
+        dispersionScale: floatLiteral(scale),
+        iridescenceFactor: iridescenceSlot("iridescenceFactor"),
+        iridescenceIor: iridescenceSlot("iridescenceIor"),
+        iridescenceThicknessMinimum: iridescenceSlot(
+            "iridescenceThicknessMinimum",
+        ),
+        iridescenceThicknessMaximum: iridescenceSlot(
+            "iridescenceThicknessMaximum",
+        ),
+    };
 }

@@ -27,6 +27,58 @@ export interface GltfLoaderLoweredSegments {
      * `src/loader-gltf/gltf-sampler-desc.ts#gltfTexSamplerDesc`.
      */
     samplerMapping: string;
+    /**
+     * The four integer componentType clauses of `read_component`, lowered
+     * from `src/loader-gltf/gltf-ext-quantization.ts#readComponent` — the
+     * byte/ubyte/short/ushort scale factors and the signed clamps.
+     */
+    accessorNormalization: string;
+    /**
+     * The COLOR_0 → Vec4 build, lowered from
+     * `src/loader-gltf/gltf-color-normalize.ts#normalizeColorToVec4`: the
+     * channel order, the VEC3 alpha default, and the proof that the pinned
+     * color divisors are the accessor divisors `read_component` applies.
+     */
+    vertexColor: string;
+    /**
+     * `pre_scale_harmonics`, lowered from
+     * `src/loader-gltf/ibl-env-assembly.ts#polynomialToPreScaledHarmonics`
+     * (the private copy the pinned EXT_lights_image_based feature executes,
+     * proven identical to `src/loader-env/load-env.ts`'s canonical).
+     */
+    shPrescale: string;
+    /**
+     * The image-processing defaults the pinned EXT_lights_image_based
+     * `_sceneSetup` writes, lowered from
+     * `src/loader-gltf/gltf-ext-lights-image-based.ts`.
+     */
+    imageProcessingDefaults: string;
+    /**
+     * The dielectric/ior/dispersion/iridescence JSON keys and default
+     * constants, lowered from `src/loader-gltf/gltf-ext-dielectric.ts` and
+     * `src/loader-gltf/gltf-ext-iridescence.ts`.
+     */
+    extensionDefaults: GltfExtensionDefaults;
+}
+
+/** One lowered glTF extension default: the JSON key and the C++ literal. */
+export interface GltfLoweredDefault {
+    key: string;
+    literal: string;
+}
+
+export interface GltfExtensionDefaults {
+    ior: GltfLoweredDefault;
+    transmissionFactor: GltfLoweredDefault;
+    thicknessFactor: GltfLoweredDefault;
+    attenuationDistance: GltfLoweredDefault;
+    dispersion: GltfLoweredDefault;
+    /** Babylon's fixed Abbe numerator in `strength = 20 / dispersion`. */
+    dispersionScale: string;
+    iridescenceFactor: GltfLoweredDefault;
+    iridescenceIor: GltfLoweredDefault;
+    iridescenceThicknessMinimum: GltfLoweredDefault;
+    iridescenceThicknessMaximum: GltfLoweredDefault;
 }
 
 export function gltfLoaderCpp(
@@ -40,6 +92,7 @@ export function gltfLoaderCpp(
     assetTransmission = false,
     materialSpecular = false,
 ): string {
+    const defaults = lowered.extensionDefaults;
     return `// ${provenance}
 #include <bblite/pal_gltf.hpp>
 #include <bblite/runtime.hpp>
@@ -516,22 +569,7 @@ float read_component(
         component_offset;
     const std::uint8_t* data = buffer.data() + offset;
     switch (accessor.component_type) {
-        case 5120: {
-            const std::int8_t value = read_value<std::int8_t>(data);
-            return accessor.normalized ? std::max(-1.0f, static_cast<float>(value) / 127.0f) : value;
-        }
-        case 5121: {
-            const std::uint8_t value = read_value<std::uint8_t>(data);
-            return accessor.normalized ? static_cast<float>(value) / 255.0f : value;
-        }
-        case 5122: {
-            const std::int16_t value = read_value<std::int16_t>(data);
-            return accessor.normalized ? std::max(-1.0f, static_cast<float>(value) / 32767.0f) : value;
-        }
-        case 5123: {
-            const std::uint16_t value = read_value<std::uint16_t>(data);
-            return accessor.normalized ? static_cast<float>(value) / 65535.0f : value;
-        }
+${lowered.accessorNormalization}
         case 5125:
             return static_cast<float>(read_value<std::uint32_t>(data));
         case 5126:
@@ -825,62 +863,7 @@ void set_color_channel(
     else color.b = value;
 }
 
-std::array<Color3, 9> pre_scale_harmonics(
-    const std::array<Color3, 9>& polynomial) {
-    constexpr float c00xy = 0.3333338747897695f;
-    constexpr float c00z = 0.33333298856284405f;
-    constexpr float c1 = 1.4999984284682104f;
-    constexpr float c2 = 3.999982863580422f;
-    constexpr float c20zz = 1.3333326611423701f;
-    constexpr float c20xy = 0.6666653397393608f;
-    constexpr float c22 = 1.999991431790211f;
-    std::array<Color3, 9> result{};
-    for (int channel = 0; channel < 3; ++channel) {
-        const float x =
-            color_channel(polynomial[0], channel);
-        const float y =
-            color_channel(polynomial[1], channel);
-        const float z =
-            color_channel(polynomial[2], channel);
-        const float xx =
-            color_channel(polynomial[3], channel);
-        const float yy =
-            color_channel(polynomial[4], channel);
-        const float zz =
-            color_channel(polynomial[5], channel);
-        const float yz =
-            color_channel(polynomial[6], channel);
-        const float zx =
-            color_channel(polynomial[7], channel);
-        const float xy =
-            color_channel(polynomial[8], channel);
-        set_color_channel(
-            result[0],
-            channel,
-            (xx + yy) * c00xy + zz * c00z);
-        set_color_channel(
-            result[1], channel, y * c1);
-        set_color_channel(
-            result[2], channel, z * c1);
-        set_color_channel(
-            result[3], channel, x * c1);
-        set_color_channel(
-            result[4], channel, xy * c2);
-        set_color_channel(
-            result[5], channel, yz * c2);
-        set_color_channel(
-            result[6],
-            channel,
-            zz * c20zz - (xx + yy) * c20xy);
-        set_color_channel(
-            result[7], channel, zx * c2);
-        set_color_channel(
-            result[8],
-            channel,
-            (xx - yy) * c22);
-    }
-    return result;
-}
+${lowered.shPrescale}
 
 bool load_image_based_environment(
     EnvironmentState& environment,
@@ -1078,9 +1061,7 @@ bool load_image_based_environment(
                 "gltf-ibl-brdf-lut.rgba16f"));
     environment.brdf_lut_width = 256;
     environment.brdf_lut_rgba16f = true;
-    environment.exposure = 0.8f;
-    environment.contrast = 1.2f;
-    environment.tone_mapping_enabled = true;
+${lowered.imageProcessingDefaults}
     return true;
 }
 
@@ -1429,7 +1410,7 @@ MaterialHandle load_material(
                 optional(extensions, "KHR_materials_ior")) {
             material.has_ior = true;
             material.index_of_refraction =
-                float_or(ior_value->as_object(), "ior", 1.5f);
+                float_or(ior_value->as_object(), "${defaults.ior.key}", ${defaults.ior.literal});
             const float ratio =
                 (material.index_of_refraction - 1.0f) /
                 (material.index_of_refraction + 1.0f);
@@ -1493,7 +1474,7 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
             material.has_volume = true;
             material.use_thickness_as_depth = true;
             material.thickness =
-                float_or(volume, "thicknessFactor", 0.0f);
+                float_or(volume, "${defaults.thicknessFactor.key}", ${defaults.thicknessFactor.literal});
             const std::vector<float> attenuation =
                 float_array(optional(volume, "attenuationColor"));
             if (attenuation.size() == 3) {
@@ -1504,7 +1485,7 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                 };
             }
             material.attenuation_distance =
-                float_or(volume, "attenuationDistance", 1.0f);
+                float_or(volume, "${defaults.attenuationDistance.key}", ${defaults.attenuationDistance.literal});
             material.thickness_texture = texture_data(
                 buffer,
                 container,
@@ -1522,7 +1503,7 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
             const JsonObject& transmission =
                 transmission_value->as_object();
             material.transmission_factor =
-                float_or(transmission, "transmissionFactor", 0.0f);
+                float_or(transmission, "${defaults.transmissionFactor.key}", ${defaults.transmissionFactor.literal});
             material.transmission_texture = texture_data(
                 buffer,
                 container,
@@ -1541,8 +1522,8 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                     "KHR_materials_dispersion")) {
             const float dispersion = float_or(
                 dispersion_value->as_object(),
-                "dispersion",
-                0.0f);
+                "${defaults.dispersion.key}",
+                ${defaults.dispersion.literal});
             const bool has_refraction =
                 material.has_ior ||
                 material.transmission_factor > 0.0f ||
@@ -1554,7 +1535,7 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                 dispersion > 0.0f &&
                 has_refraction &&
                 has_thickness) {
-                material.dispersion = 20.0f / dispersion;
+                material.dispersion = ${defaults.dispersionScale} / dispersion;
             }
         }
         if (const ts::JsonValue* clearcoat_value =
@@ -1713,18 +1694,18 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                     "iridescenceThicknessTexture");
             material.iridescence_intensity = float_or(
                 iridescence,
-                "iridescenceFactor",
-                0.0f);
+                "${defaults.iridescenceFactor.key}",
+                ${defaults.iridescenceFactor.literal});
             material.iridescence_index_of_refraction =
-                float_or(iridescence, "iridescenceIor", 1.3f);
+                float_or(iridescence, "${defaults.iridescenceIor.key}", ${defaults.iridescenceIor.literal});
             material.iridescence_minimum_thickness = float_or(
                 iridescence,
-                "iridescenceThicknessMinimum",
-                100.0f);
+                "${defaults.iridescenceThicknessMinimum.key}",
+                ${defaults.iridescenceThicknessMinimum.literal});
             material.iridescence_maximum_thickness = float_or(
                 iridescence,
-                "iridescenceThicknessMaximum",
-                400.0f);
+                "${defaults.iridescenceThicknessMaximum.key}",
+                ${defaults.iridescenceThicknessMaximum.literal});
             material.iridescence_texture = texture_data(
                 buffer,
                 container,
@@ -2497,16 +2478,7 @@ ${nonTrianglePrimitives
                         read_component(buffer, container, views, *texcoords1, index, 1),
                     };
                 }
-                if (colors) {
-                    vertex.color = Vec4{
-                        read_component(buffer, container, views, *colors, index, 0),
-                        read_component(buffer, container, views, *colors, index, 1),
-                        read_component(buffer, container, views, *colors, index, 2),
-                        colors->type == "VEC4"
-                            ? read_component(buffer, container, views, *colors, index, 3)
-                            : 1.0f,
-                    };
-                }
+${lowered.vertexColor}
                 if (joints && weights) {
                     for (std::size_t component = 0; component < 4; ++component) {
                         vertex.joints[component] =
