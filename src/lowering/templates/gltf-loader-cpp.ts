@@ -7,9 +7,31 @@
  * path deliberately (`pbr-primitive-topology.ts` is a module of its own so
  * ordinary PBR scenes never carry the topology names), so a scene whose
  * assets are all triangle lists emits this loader without any of it.
+ *
+ * `lowered` carries the segments produced from the pinned ASTs at
+ * generation time (`gltf-lowerer.ts`), replacing what used to be
+ * hand-transcribed C++ in this string: a changed pinned formula now
+ * changes — or refuses — the emitted loader instead of leaving stale
+ * text behind an unrelated assertion.
  */
+export interface GltfLoaderLoweredSegments {
+    /**
+     * `normalize_quaternion`, `interpolate_quaternion`, `cubic_quaternion`
+     * and `cubic_vec3`, lowered from `src/animation/evaluate.ts`
+     * (`normalizeQuat4`, `quatSlerp`, and `evaluateSampler`'s CUBICSPLINE
+     * branch).
+     */
+    animationInterpolation: string;
+    /**
+     * The sampler filter/wrap mapping inside `texture_data`, lowered from
+     * `src/loader-gltf/gltf-sampler-desc.ts#gltfTexSamplerDesc`.
+     */
+    samplerMapping: string;
+}
+
 export function gltfLoaderCpp(
     provenance: string,
+    lowered: GltfLoaderLoweredSegments,
     nonTrianglePrimitives = false,
     nodeVisibility = false,
     animationPointer = false,
@@ -535,139 +557,7 @@ Vec3 normalize(Vec3 value) {
         : Vec3{0.0f, 1.0f, 0.0f};
 }
 
-Vec4 normalize_quaternion(Vec4 value) {
-    // Pinned normalizeQuat4: double length over float32 components,
-    // a multiply by the inverse square root, one rounding at the
-    // Float32Array store, no epsilon, and the input kept verbatim on
-    // zero length.
-    const double x = value.x;
-    const double y = value.y;
-    const double z = value.z;
-    const double w = value.w;
-    const double length_squared =
-        x * x + y * y + z * z + w * w;
-    if (length_squared > 0.0) {
-        const double inverse =
-            1.0 / std::sqrt(length_squared);
-        return Vec4{
-            static_cast<float>(x * inverse),
-            static_cast<float>(y * inverse),
-            static_cast<float>(z * inverse),
-            static_cast<float>(w * inverse),
-        };
-    }
-    return value;
-}
-
-Vec4 interpolate_quaternion(Vec4 left, Vec4 right, double amount) {
-    // Pinned sampler evaluation lifts float32 keyframes to JavaScript
-    // doubles and rounds once at the Float32Array store.
-    const double lx = left.x;
-    const double ly = left.y;
-    const double lz = left.z;
-    const double lw = left.w;
-    double rx = right.x;
-    double ry = right.y;
-    double rz = right.z;
-    double rw = right.w;
-    double dot = lx * rx + ly * ry + lz * rz + lw * rw;
-    if (dot < 0.0) {
-        rx = -rx;
-        ry = -ry;
-        rz = -rz;
-        rw = -rw;
-        dot = -dot;
-    }
-    if (dot > 0.9995) {
-        // The pinned near-parallel path stores the double lerp into a
-        // Float32Array scratch before normalizing it in place, so the
-        // components round to float32 between the two steps.
-        const Vec4 lerped{
-            static_cast<float>(lx + amount * (rx - lx)),
-            static_cast<float>(ly + amount * (ry - ly)),
-            static_cast<float>(lz + amount * (rz - lz)),
-            static_cast<float>(lw + amount * (rw - lw)),
-        };
-        return normalize_quaternion(lerped);
-    }
-    const double theta = std::acos(dot);
-    const double sin_theta = std::sin(theta);
-    const double left_weight =
-        std::sin((1.0 - amount) * theta) / sin_theta;
-    const double right_weight =
-        std::sin(amount * theta) / sin_theta;
-    return Vec4{
-        static_cast<float>(left_weight * lx + right_weight * rx),
-        static_cast<float>(left_weight * ly + right_weight * ry),
-        static_cast<float>(left_weight * lz + right_weight * rz),
-        static_cast<float>(left_weight * lw + right_weight * rw),
-    };
-}
-
-Vec4 cubic_quaternion(
-    Vec4 left,
-    Vec4 left_tangent,
-    Vec4 right,
-    Vec4 right_tangent,
-    double amount,
-    double span) {
-    // Pinned sampler evaluation lifts float32 keyframes to JavaScript
-    // doubles and rounds once at the Float32Array store.
-    const double amount2 = amount * amount;
-    const double amount3 = amount2 * amount;
-    const double h00 = 2.0 * amount3 - 3.0 * amount2 + 1.0;
-    const double h10 = amount3 - 2.0 * amount2 + amount;
-    const double h01 = -2.0 * amount3 + 3.0 * amount2;
-    const double h11 = amount3 - amount2;
-    // The pinned evaluator scales tangents by the key delta before
-    // weighting, stores the Hermite sum into a Float32Array, and then
-    // normalizes the rounded components in place.
-    const Vec4 combined{
-        static_cast<float>(
-            h00 * left.x + h10 * (left_tangent.x * span) +
-            h01 * right.x + h11 * (right_tangent.x * span)),
-        static_cast<float>(
-            h00 * left.y + h10 * (left_tangent.y * span) +
-            h01 * right.y + h11 * (right_tangent.y * span)),
-        static_cast<float>(
-            h00 * left.z + h10 * (left_tangent.z * span) +
-            h01 * right.z + h11 * (right_tangent.z * span)),
-        static_cast<float>(
-            h00 * left.w + h10 * (left_tangent.w * span) +
-            h01 * right.w + h11 * (right_tangent.w * span)),
-    };
-    return normalize_quaternion(combined);
-}
-
-Vec3 cubic_vec3(
-    Vec3 left,
-    Vec3 left_tangent,
-    Vec3 right,
-    Vec3 right_tangent,
-    double amount,
-    double span) {
-    // Pinned sampler evaluation lifts float32 keyframes to JavaScript
-    // doubles and rounds once at the Float32Array store.
-    const double amount2 = amount * amount;
-    const double amount3 = amount2 * amount;
-    const double h00 = 2.0 * amount3 - 3.0 * amount2 + 1.0;
-    const double h10 = amount3 - 2.0 * amount2 + amount;
-    const double h01 = -2.0 * amount3 + 3.0 * amount2;
-    const double h11 = amount3 - amount2;
-    // The pinned evaluator scales tangents by the key delta before
-    // weighting and rounds once at the Float32Array store.
-    return Vec3{
-        static_cast<float>(
-            h00 * left.x + h10 * (left_tangent.x * span) +
-            h01 * right.x + h11 * (right_tangent.x * span)),
-        static_cast<float>(
-            h00 * left.y + h10 * (left_tangent.y * span) +
-            h01 * right.y + h11 * (right_tangent.y * span)),
-        static_cast<float>(
-            h00 * left.z + h10 * (left_tangent.z * span) +
-            h01 * right.z + h11 * (right_tangent.z * span)),
-    };
-}
+${lowered.animationInterpolation}
 
 Matrix identity_matrix() {
     Matrix result{};
@@ -1211,36 +1101,7 @@ TextureData texture_data(
     if (const ts::JsonValue* sampler_value = optional(texture, "sampler")) {
         sampler = &samplers.at(unsigned_value(*sampler_value)).as_object();
     }
-    const std::size_t min_filter =
-        sampler ? unsigned_or(*sampler, "minFilter", 9987) : 9987;
-    const std::size_t mag_filter =
-        sampler ? unsigned_or(*sampler, "magFilter", 9729) : 9729;
-    const bool min_nearest = min_filter % 2 == 0;
-    const bool mip_nearest = min_filter == 9984 || min_filter == 9985;
-    const bool no_mip = min_filter == 9728 || min_filter == 9729;
-    const bool mag_linear = mag_filter != 9728;
-    result.sampler.min_filter =
-        min_nearest ? TextureFilter::nearest : TextureFilter::linear;
-    result.sampler.mipmap_mode =
-        mip_nearest ? TextureMipmapMode::nearest : TextureMipmapMode::linear;
-    result.sampler.mag_filter =
-        mag_linear ? TextureFilter::linear : TextureFilter::nearest;
-    result.sampler.max_lod = no_mip ? 0.0f : 1000.0f;
-    result.sampler.max_anisotropy =
-        mag_linear && !min_nearest && !mip_nearest && !no_mip
-            ? 4.0f
-            : 1.0f;
-    const auto address_mode = [](std::size_t mode) {
-        return mode == 33071
-            ? TextureAddressMode::clamp
-            : mode == 33648
-                ? TextureAddressMode::mirror
-                : TextureAddressMode::repeat;
-    };
-    result.sampler.address_u = address_mode(
-        sampler ? unsigned_or(*sampler, "wrapS", 10497) : 10497);
-    result.sampler.address_v = address_mode(
-        sampler ? unsigned_or(*sampler, "wrapT", 10497) : 10497);
+${lowered.samplerMapping}
     const std::size_t image_index = texture_image_index(texture);
     result.bytes = image_data(
         buffer,
