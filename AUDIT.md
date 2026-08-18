@@ -20,22 +20,6 @@ Rules of this file, mirroring `TODO.md`:
 Most are latent (unreached by the current corpus): exactly how the
 clearcoat-remap class survived before. Each is small; fix with a fixture.
 
-- [ ] **D1 — emissive texture slot gated by the emissive factor.**
-  `src/pinned-material-input.ts:233-235` builds the `emissive` slot only when
-  `gltfEmissiveApplies(material)`; upstream wraps the texture whenever
-  `_emissiveImage` exists (`gltf-pbr-builder-ext.js:54`), and `_hasTx` (:76)
-  and uv2Mask bit 8 (:87) read that wrapper. An emissive texture with factor
-  `[1,1,1]` plus `KHR_texture_transform` or TEXCOORD_1 composes a fragment
-  missing the transform/uv2 arm. Fix: drop the gate in `pinnedTextureSlots`
-  (keep it for `_emissiveColor`); fix the contradicting comment at :145-153
-  (the correct statement is at :689-694); add the fixture.
-- [ ] **D2 — static `KHR_materials_emissive_strength` never forces
-  `_emissiveColor`.** Upstream's extension calls
-  `setPbrEmissive(layer, factor×strength)` whenever declared
-  (`gltf-ext-emissive-strength.js`); here only `gltfEmissiveApplies` or the
-  animated pointer set it (`src/pinned-material-input.ts:723-726`). A strength
-  asset with white factor composes no emissive term at all. Fix: declared
-  extension ⇒ `_emissiveColor = factor×strength`, mirroring ext-runs-first.
 - [ ] **D3 — unhandled asset features drop silently.**
   `KHR_materials_pbrSpecularGlossiness` composes the metallic-roughness
   fragment and renders wrong with no error (upstream: registry row →
@@ -60,38 +44,22 @@ clearcoat-remap class survived before. Each is small; fix with a fixture.
   animations` (the loader parameter is literally named that,
   `gltf-lowerer.ts:120`) and `gpuDeformation :=` upstream's skins/morph
   predicates; fix the skins conjunct and the test; add provenance comments.
-- [ ] **D5 — Dawn has no no-environment fallback cube.** SDL uploads the pinned
-  `{0.15f, 0.16f, 0.2f, 1}` face (`pal_sdl_gpu.cpp:1498-1507`); Dawn's
-  `upload_environment` early-returns (`pal_dawn.cpp:1331`) leaving its
-  zero-initialized cube. `docs/backends.md` lists the fallback as a ported
-  contract. Fix: shared constant + shared has-environment rule in
-  `pal_gpu_shared.hpp`.
-- [ ] **D6 — CPU fallback drift.** `pal_sdl.cpp:222-233` composes euler
-  X→Y→Z where the shared pinned helper is Z→Y→X
-  (`pal_gpu_shared.hpp:129-155`); `pal_sdl.cpp:437-469` re-implements RGBD
-  decode beside the shared one; `pal_sdl.cpp:944-949` carries a scene-1
-  "smoked_glass" heuristic (BoomBox-lid thresholds), against the repository's
-  no-scene-heuristics invariant. Fix minimum: align euler, reuse
-  `decode_rgbd`, delete the heuristic or decide the fallback's contract
-  explicitly (faithful preview vs labeled approximation).
-- [ ] **D7 — packaged SDL_GPU PBR demos throw.** `tools/package-demo.ps1`'s
-  SDL_GPU/BOTH payload patterns (`*.dxil`, `*.spv`[, `*.native.wgsl`]) omit
-  `*.slots`, which the pinned-variant draw path requires
-  (`pal_sdl_gpu.cpp:305-354`). Fix: add the pattern; package scene1 and run it
-  as the check.
+- [ ] **D6 — CPU-fallback contract (narrowed 2026-08-18; euler order is
+  fixed).** Two remainders. (a) `pal_sdl.cpp` still re-implements RGBD
+  decode (~line 455) beside the shared `decode_rgbd` — blocked on a shared
+  header this TU can include: `pal_gpu_shared.hpp` pulls generated renderer
+  headers a sprite-only scene does not emit, and `pal_sdl.cpp` compiles for
+  every scene. Fold into the NA-shared hoisting. (b) The scene-1
+  "smoked_glass" heuristic (`pal_sdl.cpp` ~line 962, BoomBox-lid
+  thresholds) violates the no-scene-heuristics invariant, but removing it
+  moves the scene-1 CPU gate whose thresholds are evidence — needs an
+  explicit maintainer decision on the CPU fallback's contract (faithful
+  preview vs labeled approximation).
 - [ ] **D8 — DDS skybox contrast arm.** One transcribed background fragment
   serves DDS and HDR skyboxes with both contrast arms; the pinned DDS
   fragment has only the high-contrast arm (`mix(a, f, contrast-1.0)`).
   Diverges at contrast < 1 (all gated scenes use 1.2). Falls out for free
   when the fragments are lifted from the pin (RD-8).
-- [ ] **D9 — `scene -- diff` trusts any capture on disk.** The native capture
-  embeds `buildStamp` (`render-diff.ts:116`; written by
-  `pal_render_capture.hpp`) but the reuse path never compares it
-  (`scene-command.ts:771,781`), and a `--seek` change does not invalidate
-  reuse. `verify-status.ts:76-95` prefers `report-differential.json` over
-  fresher single-backend reports regardless of mtime. Fix: compare embedded
-  stamp (and a recorded seek) on reuse, auto-recapture or refuse; prefer the
-  newest report source or flag disagreement.
 - [ ] **D10 — cross-backend artifact overwrites.** The GPU actual defaults to
   `artifacts/parity/<id>-native.png` — outside the report directory,
   unsuffixed, rewritten by SDL and Dawn alike
@@ -100,24 +68,6 @@ clearcoat-remap class survived before. Each is small; fix with a fixture.
   report carry no backend marker (`geometry-output-diagnostics.ts:125-146`).
   Fix: suffix all per-backend outputs; move the actual into the scene's
   output directory.
-- [ ] **D11 — MAX_LIGHTS frozen and silently clamped.** Upstream grows it per
-  asset (`setMaxLights`, `gltf-feature-lights-punctual.js:37-39`); native
-  writers `break` past 16 (`pal_gpu_shared.hpp:644-682`) and excess lights go
-  unlit with no generation-time check and no fidelity record. Fix: count
-  light nodes in the specializer; refuse (or emit the grown constant) at
-  generation.
-- [ ] **D12 — occlusion-carrier split tests `_hasTx` where upstream tests
-  transform declaration.** `src/pinned-material-input.ts:246-250` vs
-  `occlusionNeedsSplit` (`gltf-pbr-builder-ext.js:16-23`:
-  `occ.extensions?.KHR_texture_transform != null`). A declared-but-empty
-  transform splits upstream but not here. Fix: test declaration; fixture.
-- [ ] **D13 — three float-literal formatters, two of them wrong at the edge.**
-  `static-evaluator.ts:812-824` and `data-types.ts:967-972` use
-  `Number.isInteger` and emit `1e+21.0f` (invalid C++) for integer-valued
-  exponent-notation numbers; `lowering/context.ts:547-560` handles it. Fix:
-  one shared literal module with the context.ts semantics (see TS-6/7).
-- [ ] **D14 — two half-float encoders round differently.** `ibl-brdf-lut.ts`
-  uses `Math.round`; `hdr-packager.ts` rounds nearest-even. One authority.
 
 ## Feature activation
 
@@ -284,9 +234,10 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
 - [ ] **TS-5 — four hand-rolled argv parsers**, one closure triple-pasted
   inside `scene-command.ts` (:760, :843, :863). One strict `parseFlags`
   (also closes TL-2).
-- [ ] **TS-6/7 — one `cpp-literals.ts`** for float/double literals (D13) and
-  the ×3 identifier-sanitize regex (`compiler.ts:5423`, `data-types.ts:134`,
-  `native-functions.ts:444`).
+- [ ] **TS-7 — identifier-sanitize regex ×3** (`compiler.ts:5423`,
+  `data-types.ts:134`, `native-functions.ts:444`), each
+  `replace(/[^A-Za-z0-9_]/g, "_")` with different prefixing — fold into
+  `src/cpp-literals.ts`, which now owns the literal half (TS-6 done).
 - [ ] **TS-8/9/10 — small consolidations.** `transpileForBrowser` (×3);
   `captureDirectory()`/`parityDirectory()` helpers (path expression ×5);
   exported `ParityReport`/`DifferentialReport` types consumed by
@@ -521,7 +472,10 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
 
 ## Suggested order
 
-1. **Defects** D1-D14 (a day or two of S-sized fixes; D3/D4 are M).
+1. **Defects** — remaining: D3/D4 (M), D8 (falls out of RD-8), D10 (M), and
+   the D6 contract decision. (D1/D2/D5/D7/D9/D11/D12/D13/D14 and D6's euler
+   half closed 2026-08-18, validated: tests + corpus-neutral generated tree +
+   70-scene neutrality + packaged-run check.)
 2. **FA-1 + DOC-A/B** — make the docs true again (the two migration
    clusters), delete the completed TODO entries.
 3. **RD-4 → RD-6/7 → RD-8/9/10** — the EXECUTE quick wins, then
