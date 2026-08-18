@@ -25,22 +25,23 @@ its absence is legible.
 
 ## Re-derivation (port, do not re-derive)
 
-- [ ] **RD-2 final leaves and two decisions.** Remaining hand-typed:
-  ~6 `float_or` material defaults (metallic/roughness 1.0, alphaCutoff
-  0.5, specular 1.0, texture-transform rotation 0/scale 1) plus the
-  baseColor/emissive array fallbacks (template ~:1100-1360, 1650-1660).
-  Decide: `local_matrix` transcribes the pinned compose in float over
-  pre-rounded inputs where the pin composes doubles (measured last-ulp
-  divergence on an exact 90-degree yaw) — either take the double
-  treatment or record the adaptation; `inverse_affine` is dead in all
-  44 generated loaders and matches no pinned formula — delete it (a
-  regeneration wave).
-- [ ] **RD-3 rounds 2+ — renderer-lowerer.** Round 1 pruned the
-  extension lanes, lifted the image skybox, anchored fog order and the
-  view/perspective/TRS/multiply builders. Remaining: bucketing/sort/
-  pipeline-kind rules, light-slot packing, background geometry,
-  texture-transform compose (the pinned-variant UV path is the
-  survivor).
+- [ ] **RD final formulas and two ordering decisions.** The loader's last
+  transcribed formulas: the factor-bake helpers (255 scale + sRGB
+  0.0031308/12.92/1.055/2.4/0.055, template ~:1020-1045) and the specular
+  surround (0.04 base reflectance, the IOR-to-F0 fold, the != 1.0 triple)
+  — one more lowering round closes them; the remaining hand-typed reads
+  are single spec defaults and strings. The renderer's two measured
+  divergences need a measured call each: opaque draws group by an
+  invented pipeline_order where the pin sorts by renderable.order alone
+  (render-task.ts:416-417; mesh.renderOrder also has no record
+  transport), and the transparent sort center derives from
+  scaled-rotated bounds where both pinned families store the world
+  translation (pbr-renderable.ts:392, standard-renderable.ts:258) —
+  adopt the pin or record fidelity adaptations, judged by parity. Also
+  riding the next upstream-lower touch: delete the 20 never-read option
+  keys the lane prune orphaned (renderer-lowerer options + the
+  upstream-lower call sites :539-591/:594-632).
+
 
 Quantified backlog: ~10,700 lines of hand-written C++ template text encoding
 upstream semantics (gltf-loader 4,567; renderer ~1,900; in-lowerer ~3,460)
