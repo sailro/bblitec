@@ -22,30 +22,14 @@ its absence is legible.
 
 ## Feature activation
 
-- [ ] **FA-8 remainder — mechanism inconsistencies without a stated rule.**
-  (a) clearcoat/sheen = feature OR capability; iridescence/dispersion =
-  capability only — write down the implicit rule (a runtime feature exists
-  only for scene-source-reachable API). (c) two predicates named `multiLight`
-  (`cli.ts` specialization vs scene-arms) — rename one. (d) `setPbrSkybox`
-  flips `linearImageProcessing` for every variant where upstream marks
-  materials linear only when transmission registers — run `scene -- compose
-  scene178` against a fresh capture FIRST: if its fragments match the browser
-  today, the pin's own `setPbrSkybox` reaches the linear path and the audit's
-  concern is moot; only a mismatch justifies the change. ((b) dispersion now
-  keys on the evaluated pinned predicate — done.)
-- [ ] **FA-10 — unrecorded compile-time freezes.** The variant-set freeze
-  (upstream can `rebuildSingle` at run time), the MAX_LIGHTS clamp, and the
-  DDS-SH/Draco/meshopt compile-time decodes have no `fidelity.json` id and no
-  stated exemption policy (HDR's sibling exists at `compiler.ts:4942-4954`).
-  Record them or write the policy beside the adaptation list.
-- [ ] **FA-map — emit `generated/<scene>/upstream/feature-activation.json`.**
-  One row per activation unit: name, mechanism (runtime feature | capability
-  define | codec | emit option | composed arm | mesh bit | run-time gate),
-  phase, activating predicate (file:line), upstream provenance, consumers,
-  and the refusal behavior of the nearest unsupported neighbour. The CLI
-  already holds every input (`cli.ts:479-817` is the only join point). The
-  row that cannot cite upstream is the D4 class — the table doubles as a
-  drift detector.
+- [ ] **FA-map residual — complete the row citations.** The inventory ships
+  (89 rows ×73 scenes, zero unproven provenance), but scene-source rows
+  carry a generic `activatedBy` because `context.reachFeature` keeps no
+  source locations — thread intrinsic call sites through `CompileManifest`
+  to cite file:line. Also record the pinned `MAX_LIGHTS` value itself on
+  the refusal row (today only the checked count), and add the two cli
+  interleave refusals (scene mesh/material created before a later glTF
+  load) that guard the variant key.
 
 ## Re-derivation (port, do not re-derive)
 
@@ -56,25 +40,32 @@ mechanisms (`pinned-ubo-writer-lowerer`, `light-lowerer#lowerMatrix`, the
 sprite template evaluator) that are the templates to reuse. Two legitimate
 shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
 
-- [ ] **RD-1 — Standard material family (the flagship).**
-  `src/shader-builtins-standard.ts` (~500 WGSL lines) hand-rewrites
-  `createStandardTemplate` + `LIGHTING_FN` with semantics re-encoded (light
-  kinds remapped to float thresholds; added attenuation guard); `perturbNormal`
-  re-types the exported `WGSL_PERTURB_NORMAL`; `materialVertexWgsl` hand-writes
-  the shared vertex stage. The pin exports `composeStandardShader` and the UBO
-  writers `writeStdMaterialData`/`writeStandardUvTransformData`
-  (`standard-pipeline.js:241`) — the exact analog of the shipped PBR
-  migration; writers lower via the existing `pinned-ubo-writer-lowerer`.
-- [ ] **RD-2 — gltf-loader-cpp.ts (XL, decompose leaf-first).** 4,567 lines of
-  hand-written C++ transcribing the pinned loader: slerp 0.9995, Hermite
-  cubic, accessor normalization, the sampler table, dielectric/ior/dispersion
-  /iridescence constants, a second hand-typed copy of the SH prescale
-  constants (the .env path already lowers them), exposure/contrast 0.8/1.2.
-  Key defect in the seam: `gltf-lowerer.ts` asserts pinned shapes
-  (e.g. :258-262) but **no asserted value flows into the template** — a pin
-  change fails an assertion while stale C++ is still what would be emitted.
-  Start with pure leaves: `evaluate.ts` slerp/cubic, `gltf-sampler-desc.ts`,
-  color normalize, extension defaults, via the ubo-writer-lowerer pattern.
+- [ ] **RD-1 — Standard material family: wire the PALs and flip.**
+  Generation half SHIPPED (`src/pinned-standard-variants.ts`: pin-composed
+  variants for all eight material exts, morph, fog, vertex colors, geometry
+  MRT; `standard_variants.hpp` UBO mirror keyed off the renderable's own
+  `F32(24)` lanes; behind `UpstreamEmitOptions.pinnedStandardVariants`,
+  default off, PBR writer byte-identical). Remaining: per-renderable
+  selector `(material_index, mesh_features, geometry_task)` in both PALs
+  (group 0 reuses the PBR lights UBO — hoist the shared mesh/light blocks
+  so a standard-only scene gets them without `pbr_variants.hpp`); close the
+  record gaps (`bump_level` stores the inverse, `lightmap_level`,
+  `reflection_coord_mode`, standard `alpha` rides `base_color_factor.a`);
+  compose the named-throw arms (skeleton/VAT, received shadows, thin
+  instances, ESM depth) as scenes need them; then flip the option, delete
+  `shader-builtins-standard.ts` + the renderer-lowerer standard emissions
+  (:2984/:3038, :2183-2293 light slots, :3361-3375 geometry frags), and
+  retire `standardLights`/`standardSpotLights`/`standardLightLists` into
+  UBO data (the pinned fragment loops `min(mesh.lc, MAX_LIGHTS)`).
+- [ ] **RD-2 — gltf-loader-cpp.ts (XL, round 2+).** Round 1 lowered the
+  animation-interpolation leaf (`evaluate.ts` slerp/cubic, emitted at both
+  strides) and the sampler table (`gltf-sampler-desc.ts`, by-name
+  correspondence, defaults proven by a mini-evaluator) — 163 template lines
+  now splice from the pinned AST and the assert-without-flow seam is gone
+  for them (4,428 lines left). Remaining leaves: accessor normalization,
+  color normalize, extension-default constants
+  (dielectric/ior/dispersion/iridescence), the second hand-typed SH-prescale
+  copy (the .env path already lowers them), exposure/contrast 0.8/1.2.
 - [ ] **RD-3 — renderer-lowerer render-plan C++ (XL, piecewise).**
   ~1,900 template lines: bucketing/sort/pipeline-kind rules, camera matrix
   chain, TRS/quaternion composition, light-slot packing, background geometry,
@@ -82,19 +73,22 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
   `PbrUniforms` extension lanes (:444-764) are now referenced only by
   `pal_render_capture.hpp` and one `sizeof` in `pal_dawn.cpp:4696` — prune
   them. ~75 lines of inline image-skybox WGSL (:3189-3260) are liftable
-  strings. Lower the math builders from their pinned modules.
-- [ ] **RD-11 — in-lowerer C++ with weak or no pinning.** animation-lowerer
-  (~292 lines, presence-only assertions, no extraction); camera-lowerer
-  (look-at basis hand-written; unpinned 0.01/0.001 inertia constants;
-  `lowerOrthographic` asserts a 7-arg shape, emits three stores);
+  strings. Lower the math builders from their pinned modules. Fold in the
+  RD-11 residual: the fog vec4 packing order (`fogUniforms` packs
+  {mode, start, end, density} read as `.x/.y/.z/.w` by the lifted WGSL)
+  is guarded only by fog parity scenes; the order assert belongs beside
+  the packing here.
+- [ ] **RD-11 — in-lowerer C++ with weak or no pinning (round 2).** Round 1
+  anchored animation/camera/scene/light: slerp 0.9995 and the ms→s factor,
+  the six camera control constants, the spot half-angle, the point-light
+  local matrix, and the directional/hemispheric zeros now FLOW from the
+  pinned AST (byte-identical output; presence-only checks upgraded; the
+  dead fog-offset asserts replaced by a field-inventory anchor). Remaining:
   factory-lowerer (~1,111: geometry tables asserted against hand-built
   expectations; sphere `z_steps = 2 + segments` unpinned);
   environment-lowerer (SH constants extracted, term structure hand-written;
   scene-sizing pinned by an order-free literal bag); geometry-output-lowerer
-  (Y-flip has no upstream assertion); light-lowerer (hand-writes
-  `std::cos(angle * 0.5f)` at :288 beside its own working AST emitter — the
-  known spot-cone ULP TODO); scene-lowerer (fog UBO offsets asserted but
-  never emitted). LOWER per function.
+  (Y-flip has no upstream assertion). LOWER per function.
 - [ ] **RD-12 — pinned-material-input option builders.** Line-for-line
   transcription of the ext `applyMaterial` builders, plus an unguarded
   re-type of the IOR Fresnel at :489/:563. EXECUTE-able (the ext modules are
@@ -133,15 +127,6 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
   (→ `compose-pipeline.ts`). Also noted in round 1: the trailing
   `isCanvasLookup`/`isPerformanceNow` block in `isBrowserOnlyExpression` is
   dead (every call-expression path returns above it).
-- [ ] **Dead code — remainder.** Decide `composePinnedPbrShader`/
-  `pinnedComposer` (production composes through `createPbrComposer`; only
-  their own test imports them — keep only if that test is meant as an
-  independent pin-contract guard, else delete both plus the test half).
-  ~15 `export` keywords on file-local symbols. Add `knip` or `ts-prune` so
-  unused exports cannot re-accumulate. (The verified-dead items — the probe,
-  the `false ? {…}` block, the empty-template map, `assetDigest`, the
-  sprite-atlas pair, the modular-scene examples, `half-float.ts` after both
-  packagers went GPU — are deleted.)
 
 ## Native
 
@@ -164,10 +149,6 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
   `pack_morph_weights` — call it); CPU benchmark through
   `report_benchmark`. Rule stands: tables and predicates move; pass
   encoding, bind groups, and swapchain stay per backend.
-- [ ] **NA-generated-warnings.** Generated `pbr_variants.hpp` no-op writers
-  carry an unreferenced `material` parameter (`warning C4100`, e.g.
-  scene32:270,353) — the warning-clean rule covers generated C++ too; emit
-  `[[maybe_unused]]` on writer parameters a variant's arms never read.
 - [ ] **NA-dawn — factor Dawn's pinned draw path.** It is distributed across
   four sites that duplicate each other (write 6053-6148, encode 6382-6449,
   geometry write 2386-2507, geometry encode 7181-7265); SDL has
@@ -184,22 +165,20 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
 
 ## Tooling
 
-- [ ] **TL-gaps — build the missing rungs (plumbing mostly exists).**
-  (a) Fold `pinnedMaterialBlocks`/`pinnedMeshBlocks` into `scene -- diff`
-  (the two-listing rule automated; `correspond()` exists; blocks are in the
-  capture; flag refused-variant blocks distinctly). (b) Shader-arm hashing in
-  diff: normalize+hash capture `shaders/` vs `upstream/pbr-variants/`, report
-  matched/one-sided with compose's divergence line. (c) Palette matching vs
-  `tex-uploads.json` (zero readers today) with the documented mirror map
-  applied. (d) `scene -- probe-variants <id>` (the stripped-shader-dir probe;
-  write the recipe into debugging.md regardless). (e) `scene -- measure <png>
-  [--background r,g,b]` (~40 lines over parity.ts). (f) `capture
-  --seek-bracket` (±1-frame motion scale). (g) `parity --without
-  ground|background` (the bisection ordering experiment). (h) `scene --
-  stability <id> [--runs N] [--single-sample]` (the 9/37 wobble check with
-  the never-vs-golden trap built in). (i) generated-tree neutrality mode
-  (compile-and-digest with the stray-directory footgun handled). (j) the
-  `validate` bundle TODO already asks for.
+- [ ] **TL-gaps — remaining rungs.** ((a) pinned blocks in diff with the
+  refused marker, (b) shader-arm hashing with the near-miss divergence
+  line, and (e) `scene -- measure` shipped in wave C.)
+  (c) Palette matching vs `tex-uploads.json` (zero readers today) with the
+  documented mirror map applied. (d) `scene -- probe-variants <id>` (the
+  stripped-shader-dir probe; write the recipe into debugging.md
+  regardless). (f) `capture --seek-bracket` (±1-frame motion scale).
+  (g) `parity --without ground|background` (the bisection ordering
+  experiment). (h) `scene -- stability <id> [--runs N] [--single-sample]`
+  (the 9/37 wobble check with the never-vs-golden trap built in).
+  (i) generated-tree neutrality mode (compile-and-digest with the
+  stray-directory footgun handled; the wave-C sync scripted it by hand
+  again — `digest-sha1.cjs` in the session scratchpad is the shape).
+  (j) the `validate` bundle TODO already asks for.
 
 ## Verified clean — do not re-audit
 
@@ -236,9 +215,8 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
 
 ## Suggested order
 
-1. **Defects** — remaining: D8 (falls out of RD-8), D10 (M, pairs with the
-   tooling wave), and the D6 contract decision. (D1-D5, D7, D9, D11-D14 and
-   D6's euler half closed 2026-08-18, validated: tests + corpus-neutral
+1. ~~Defects~~ — all fourteen closed 2026-08-18. (Validated: tests +
+   corpus-neutral
    generated tree + 70-scene neutrality + packaged-run check. D3's shape as
    landed: pin-implemented extensions, sparse accessors, and the un-lowered
    ORM forms refuse at generation in `specializeGltf`; vertex attributes are
@@ -258,11 +236,14 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
    rewritten across its six pages, the pinned-variant-era boundaries retired,
    the smaller corrections landed; only the DOC-C remainder above and DOC-D/E
    stay open.
-3. ~~RD-4/6/7~~ done 2026-08-18 (the pin executes for the HDR package, DDS
-   harmonics, and BRDF LUT; scenes 8 and 265 both moved TOWARD the golden).
-   Next: **RD-8/9/10** (lift the background/grid/utility WGSL), then
-   **RD-1** (Standard family) as the flagship; RD-2/RD-3 leaf-by-leaf
-   behind it.
+3. ~~RD-4/6/7, RD-8/9/10, RD-1 generation half, RD-2/RD-11 round 1~~ done
+   2026-08-18 (the pin executes for HDR/DDS/BRDF and the lifted
+   background/grid/utility WGSL — scenes 8, 265 and 14 all moved TOWARD
+   the golden; the Standard family composes from the pin behind the off
+   emit option; the loader animation/sampler leaves and the four anchored
+   lowerers flow from the pinned AST). Next: **RD-1 PAL wiring + flip**
+   (the flagship's second half), RD-2/RD-3/RD-11 remaining rounds, RD-5,
+   RD-12.
 4. ~~NA-1, the NA small-table batch, TS-2/3/4, monolith round 1~~ done
    2026-08-18: the texture-slot table is generated (five copies → one, −229
    native lines), the shared native tables landed bit-identically, and
@@ -270,8 +251,10 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
    TS-8/9, the NA remainders, monolith rounds 2+.
 5. ~~TL-1..12, D10~~ done 2026-08-18 (one strict parser, one backend story,
    one artifact token, everything suffixed, provenance-stamped reports).
-   Remaining: the TL-gaps ladder upgrades — (a)-(c) first, they convert the
-   two most expensive manual recipes into `scene -- diff`.
+   The wave-C batch added (a) pinned blocks and (b) shader-arm attribution
+   to `scene -- diff` plus (e) `scene -- measure`, and the
+   feature-activation inventory ships per scene. Remaining: the TL-gaps
+   rungs (c)-(d) and (f)-(j).
 
 Full prose report with verdicts and method:
 <https://claude.ai/code/artifact/eff041d1-9935-40b5-b726-8ccb4f034186>
