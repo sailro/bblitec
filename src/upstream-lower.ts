@@ -97,6 +97,12 @@ export interface UpstreamEmitOptions {
     shaderPrograms: CompiledShaderProgram[];
     geometryOutputTasks: GeometryOutputTaskManifest[];
     gpuDeformation: boolean;
+    /**
+     * Whether the loader records live world boxes and default framing reads
+     * them — asset animations alone, where `gpuDeformation` also covers
+     * scene-source morph targets for the vertex layout and the define.
+     */
+    animatedWorldBounds: boolean;
     morphStorage: boolean;
     nonTrianglePrimitives: boolean;
     nodeVisibility: boolean;
@@ -229,7 +235,7 @@ class GeneratedSourceWriter {
                 "upstream/src/camera_default.cpp",
                 new CameraLowerer(context).lowerDefaultFactory(
                     options.nodeVisibility,
-                    options.gpuDeformation,
+                    options.animatedWorldBounds,
                 ),
                 generated,
             );
@@ -351,7 +357,7 @@ class GeneratedSourceWriter {
                     options.nonTrianglePrimitives,
                     options.nodeVisibility,
                     options.animationPointer,
-                    options.gpuDeformation,
+                    options.animatedWorldBounds,
                     options.animationPointerMaterials,
                     options.assetTransmission,
                     options.materialSpecular,
@@ -786,6 +792,7 @@ export function emitUpstreamGenerated(
         shaderPrograms: [],
         geometryOutputTasks: [],
         gpuDeformation: false,
+        animatedWorldBounds: false,
         morphStorage: false,
         nonTrianglePrimitives: false,
         nodeVisibility: false,

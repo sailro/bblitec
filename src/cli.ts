@@ -479,6 +479,28 @@ async function main(): Promise<void> {
     await Promise.all(result.manifest.assets.map((asset) => materializeAsset(asset, inputPath, outputPath)));
     const specializationFeatures =
         emitAssetSpecializations(outputPath, result.manifest.assets);
+    if (specializationFeatures.eightInfluenceSkinning) {
+        // The pinned loader reads the second influence pair and skins eight
+        // influences (MSH_HAS_SKELETON_8); the generated loader reads four.
+        // The divergence is intentional and bounded — the second pair
+        // carries the small weight tail — so it is recorded here instead of
+        // refused, per the repository's adaptation policy.
+        result.manifest.adaptations.push({
+            id: "four-influence-skinning",
+            category: "rendering",
+            sourceSemantics:
+                "An asset carries JOINTS_1/WEIGHTS_1 and the pinned loader " +
+                "skins eight influences per vertex (MSH_HAS_SKELETON_8).",
+            nativeSemantics:
+                "The generated loader reads the first influence pair and " +
+                "skins four; the second pair's weights are dropped.",
+            risk: "medium",
+            validation: [
+                "scene 7 parity thresholds",
+                "asset-specializer tests",
+            ],
+        });
+    }
     tree.keep("upstream/gltf-specialization.json");
     if (specializationFeatures.imageBasedLighting) {
         const brdfAsset: CompileAsset = {
@@ -760,6 +782,7 @@ async function main(): Promise<void> {
             result.manifest.features.includes(
                 "mesh:morph-targets",
             ),
+        animatedWorldBounds: specializationFeatures.animatedWorldBounds,
         morphStorage: specializationFeatures.morphStorage,
         nonTrianglePrimitives:
             specializationFeatures.nonTrianglePrimitives,

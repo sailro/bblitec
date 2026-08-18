@@ -32,11 +32,11 @@ test("specializes glTF dynamic feature imports without any-typed JSON", () => {
         writeGlb(path, {
             extensionsUsed: ["KHR_texture_transform"],
             animations: [{}],
-            accessors: [{ sparse: {} }, { count: 384 }],
+            accessors: [{ count: 384 }],
             materials: [{ name: "Glass", alphaMode: "BLEND", doubleSided: true }],
             meshes: [
                 { name: "Lines", primitives: [{ mode: 1, targets: [{}], material: 0 }] },
-                { name: "Mesh", primitives: [{ attributes: { POSITION: 1 }, material: 0 }] },
+                { name: "Mesh", primitives: [{ attributes: { POSITION: 0 }, material: 0 }] },
             ],
             nodes: [
                 { name: "LineNode", mesh: 0 },
@@ -49,8 +49,12 @@ test("specializes glTF dynamic feature imports without any-typed JSON", () => {
         assert.ok(specialization.staticModules.includes("./gltf-ext-uv-transform.js"));
         assert.ok(specialization.staticModules.includes("./gltf-feature-animations.js"));
         assert.ok(specialization.staticModules.includes("./gltf-feature-morph.js"));
-        assert.ok(specialization.staticModules.includes("./gltf-feature-skeleton.js"));
-        assert.ok(specialization.staticModules.includes("./gltf-feature-sparse.js"));
+        // The pinned skeleton predicate needs BOTH conjuncts —
+        // `!!j.skins?.length && anyPrimitive(j, p.attributes?.JOINTS_0 !==
+        // void 0)` (gltf-feature-registry.ts) — so a skins array with no
+        // skinned primitive imports nothing upstream and records nothing.
+        assert.ok(!specialization.staticModules.includes("./gltf-feature-skeleton.js"));
+        assert.equal(specialization.features.skins, false);
         assert.ok(specialization.staticModules.includes("./gltf-feature-primitive.js"));
         assert.equal(specialization.features.animations, true);
         // The same predicate gates the generated loader's topology
@@ -146,5 +150,165 @@ test("selects PBR material-extension specializations from glTF metadata", () => 
         assert.equal(plain.dispersion, false);
     } finally {
         rmSync(scratch, { recursive: true, force: true });
+    }
+});
+
+test("the skeleton module needs skins and a JOINTS_0 primitive", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bblitec-gltf-"));
+    try {
+        const path = join(directory, "skinned.glb");
+        writeGlb(path, {
+            accessors: [{ count: 3 }],
+            meshes: [
+                {
+                    primitives: [
+                        { attributes: { POSITION: 0, JOINTS_0: 0, WEIGHTS_0: 0 } },
+                    ],
+                },
+            ],
+            nodes: [{ mesh: 0 }],
+            skins: [{}],
+        });
+        const specialization = specializeGltf(path, "skinned.glb");
+        assert.ok(
+            specialization.staticModules.includes(
+                "./gltf-feature-skeleton.js",
+            ),
+        );
+        assert.equal(specialization.features.skins, true);
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test("refuses asset content the pinned loader implements and this port does not", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bblitec-gltf-"));
+    try {
+        const path = join(directory, "asset.glb");
+        const throwsMatching = (
+            document: Record<string, unknown>,
+            pattern: RegExp,
+        ): void => {
+            writeGlb(path, document);
+            assert.throws(() => specializeGltf(path, "asset.glb"), pattern);
+        };
+
+        // A pin-implemented extension composes a different fragment upstream,
+        // so ignoring it renders silently wrong — the refusal names it.
+        throwsMatching(
+            { extensionsUsed: ["KHR_materials_pbrSpecularGlossiness"] },
+            /pbrSpecularGlossiness/,
+        );
+        throwsMatching(
+            { extensionsUsed: ["KHR_materials_anisotropy"] },
+            /anisotropy/,
+        );
+
+        // Metadata-only extensions have no rendering effect on either side.
+        writeGlb(path, { extensionsUsed: ["KHR_xmp_json_ld", "KHR_xmp"] });
+        assert.deepEqual(
+            specializeGltf(path, "asset.glb").extensionsUsed,
+            ["KHR_xmp_json_ld", "KHR_xmp"],
+        );
+
+        // Eight-influence skinning: the pin reads JOINTS_1/WEIGHTS_1
+        // (MSH_HAS_SKELETON_8); this port reads four influences and records
+        // the truncation as a fidelity adaptation rather than refusing —
+        // Scene 7's ChibiRex carries the second pair and gates it.
+        writeGlb(path, {
+            accessors: [{ count: 3 }],
+            meshes: [
+                {
+                    primitives: [
+                        {
+                            attributes: {
+                                POSITION: 0,
+                                JOINTS_0: 0,
+                                JOINTS_1: 0,
+                            },
+                        },
+                    ],
+                },
+            ],
+        });
+        assert.equal(
+            specializeGltf(path, "asset.glb").features
+                .eightInfluenceSkinning,
+            true,
+        );
+
+        // An attribute the pinned loader also ignores passes: `wrapTexCoord`
+        // stamps only `_texCoord: 1`, so a TEXCOORD_2 nothing samples on
+        // either side renders identically (Scene 176's asset carries one).
+        writeGlb(path, {
+            accessors: [{ count: 3 }],
+            meshes: [
+                {
+                    primitives: [
+                        { attributes: { POSITION: 0, TEXCOORD_2: 0 } },
+                    ],
+                },
+            ],
+        });
+        assert.equal(
+            specializeGltf(path, "asset.glb").features
+                .eightInfluenceSkinning,
+            false,
+        );
+
+        // Sparse accessors used to throw while the native loader parsed the
+        // asset; generation now refuses first, naming the asset.
+        throwsMatching(
+            { accessors: [{ count: 3, sparse: {} }] },
+            /sparse/i,
+        );
+
+        // The two ORM shapes the generated loader refuses at load fail at
+        // generation with the same meaning.
+        throwsMatching(
+            {
+                textures: [{ source: 0 }, { source: 1 }],
+                materials: [
+                    {
+                        occlusionTexture: { index: 0 },
+                        pbrMetallicRoughness: {
+                            metallicRoughnessTexture: { index: 1 },
+                        },
+                    },
+                ],
+            },
+            /distinct glTF occlusion and metallic-roughness images/,
+        );
+        throwsMatching(
+            {
+                textures: [{ source: 0 }, { source: 1 }],
+                materials: [
+                    {
+                        occlusionTexture: { index: 0, texCoord: 1 },
+                        pbrMetallicRoughness: {
+                            metallicRoughnessTexture: { index: 1 },
+                        },
+                    },
+                ],
+            },
+            /TEXCOORD_1 alongside a metallic-roughness texture/,
+        );
+
+        // One shared image through two texture objects stays the supported
+        // orm-unpack shape and passes.
+        writeGlb(path, {
+            textures: [{ source: 0 }, { source: 0 }],
+            materials: [
+                {
+                    occlusionTexture: { index: 0 },
+                    pbrMetallicRoughness: {
+                        metallicRoughnessTexture: { index: 1 },
+                    },
+                },
+            ],
+        });
+        specializeGltf(path, "asset.glb");
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
     }
 });

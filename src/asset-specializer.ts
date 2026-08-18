@@ -22,6 +22,7 @@ interface GltfSpecialization {
         specularReflectance: boolean;
         extras: boolean;
         occlusionUv2: boolean;
+        eightInfluenceSkinning: boolean;
     };
 }
 
@@ -164,6 +165,157 @@ function hasExtras(document: JsonRecord): boolean {
         primitiveRecords(document).some((primitive) => primitive.extras !== undefined);
 }
 
+/**
+ * The glTF extensions this port lowers end to end. The refusal rule below is
+ * anchored on the PIN, not on the glTF spec: an extension the pinned loader
+ * implements that is absent here must fail generation, because the pin would
+ * change the material or geometry it builds and ignoring the extension
+ * renders a plausible wrong image rather than an error —
+ * `KHR_materials_pbrSpecularGlossiness` composes a spec-gloss fragment
+ * upstream and the metallic-roughness one here. An extension NEITHER side
+ * implements passes: both ignore it identically, so rendering agrees.
+ */
+const supportedExtensions = new Set<string>([
+    "KHR_materials_clearcoat",
+    "KHR_materials_sheen",
+    "KHR_materials_iridescence",
+    "KHR_materials_dispersion",
+    "KHR_materials_ior",
+    "KHR_materials_specular",
+    "KHR_materials_volume",
+    "KHR_materials_transmission",
+    "KHR_materials_emissive_strength",
+    "KHR_materials_unlit",
+    "KHR_texture_transform",
+    "KHR_lights_punctual",
+    "EXT_lights_image_based",
+    "KHR_node_visibility",
+    "KHR_animation_pointer",
+    "EXT_mesh_gpu_instancing",
+    "EXT_texture_webp",
+    // Decoded away during materialization (compressed-geometry.ts), so the
+    // specializer normally never sees them; listed for a direct
+    // specializeGltf call over a pre-decompression asset.
+    "KHR_draco_mesh_compression",
+    "EXT_meshopt_compression",
+]);
+
+/** Metadata-only extensions with no rendering effect on either side. */
+const metadataExtensions = new Set<string>(["KHR_xmp", "KHR_xmp_json_ld"]);
+
+/**
+ * Pin-implemented extensions that do not arrive through the dynamic feature
+ * registry (their modules are loader extensions dispatched elsewhere), so the
+ * parsed registry cannot vouch for them; each is named explicitly because
+ * ignoring it renders silently wrong. `gltf-ext-anisotropy.ts` was previously
+ * caught only by the unwritten-UBO-field gate, which names a field rather
+ * than the extension.
+ */
+const pinOnlyExtensions = new Set<string>([
+    "KHR_materials_pbrSpecularGlossiness",
+    "KHR_materials_anisotropy",
+    "KHR_materials_diffuse_transmission",
+    "KHR_texture_basisu",
+    "KHR_materials_variants",
+]);
+
+/**
+ * The effective image behind a texture index, through the `EXT_texture_webp`
+ * source override, mirroring the generated loader's `texture_image_index`.
+ */
+function textureImageIndex(
+    document: JsonRecord,
+    textureIndex: unknown,
+): number | undefined {
+    const index = asNumber(textureIndex);
+    if (index === undefined) return undefined;
+    const texture = asRecords(document.textures)[index];
+    if (!texture) return index;
+    const webp = asRecord(
+        asRecord(texture.extensions)?.["EXT_texture_webp"],
+    );
+    return asNumber(webp?.source) ?? asNumber(texture.source) ?? index;
+}
+
+/**
+ * Fails generation for asset content the pinned loader implements and this
+ * port does not, instead of shipping a binary that renders a plausible wrong
+ * image (unhandled extensions, eight-influence skinning) or throws while
+ * loading (sparse accessors, the un-lowered ORM shapes). The load-time
+ * checks stay in the generated loader as defense for `BBLITE_ASSET_DIR`
+ * overrides; this names the asset before a native build exists.
+ */
+function refuseUnsupportedGltf(
+    assetName: string,
+    document: JsonRecord,
+    accessors: JsonRecord[],
+    extensionsUsed: string[],
+    extensionModules: Map<string, string>,
+): void {
+    for (const extension of extensionsUsed) {
+        if (supportedExtensions.has(extension)) continue;
+        if (metadataExtensions.has(extension)) continue;
+        const pinModule = extensionModules.get(extension);
+        if (pinModule !== undefined || pinOnlyExtensions.has(extension)) {
+            throw new Error(
+                `${assetName}: glTF extension ${extension} is implemented by ` +
+                    `the pinned loader${
+                        pinModule !== undefined ? ` (${pinModule})` : ""
+                    } and not lowered by this port, so the browser and the ` +
+                    `native build would silently render different images. ` +
+                    `Integrate the extension or strip it from the asset.`,
+            );
+        }
+    }
+    // Vertex attributes are deliberately NOT allowlisted here: an attribute
+    // the pinned loader also ignores (TEXCOORD_2 and above — `wrapTexCoord`
+    // stamps only `_texCoord: 1` — or a vendor-custom name) is ignored by
+    // both sides identically, so rendering agrees. Scene 176's asset carries
+    // a TEXCOORD_2 nothing samples on either side. The one attribute pair
+    // the pin reads and this port does not — JOINTS_1/WEIGHTS_1 — is
+    // detected as `eightInfluenceSkinning` below and recorded as a fidelity
+    // adaptation rather than refused: the truncation is bounded (the second
+    // pair carries the small weight tail) and Scene 7 gates it.
+    if (accessors.some((accessor) => accessor.sparse !== undefined)) {
+        throw new Error(
+            `${assetName}: sparse glTF accessors are not supported ` +
+                `(the pinned gltf-feature-sparse module reads them).`,
+        );
+    }
+    for (const material of asRecords(document.materials)) {
+        const occlusion = asRecord(material.occlusionTexture);
+        if (!occlusion) continue;
+        const metallicRoughness = asRecord(
+            asRecord(material.pbrMetallicRoughness)?.metallicRoughnessTexture,
+        );
+        const texCoord = asNumber(occlusion.texCoord) ?? 0;
+        if (texCoord === 1 && metallicRoughness !== undefined) {
+            throw new Error(
+                `${assetName}: a glTF occlusion texture on TEXCOORD_1 ` +
+                    `alongside a metallic-roughness texture is not lowered.`,
+            );
+        }
+        if (texCoord > 1) {
+            throw new Error(
+                `${assetName}: a glTF occlusion texture on TEXCOORD_${texCoord} ` +
+                    `is not lowered.`,
+            );
+        }
+        if (
+            texCoord === 0 &&
+            metallicRoughness !== undefined &&
+            textureImageIndex(document, occlusion.index) !==
+                textureImageIndex(document, metallicRoughness.index)
+        ) {
+            throw new Error(
+                `${assetName}: distinct glTF occlusion and metallic-roughness ` +
+                    `images are not lowered (upstream composites them on a ` +
+                    `canvas — gltf-ext-orm.ts).`,
+            );
+        }
+    }
+}
+
 function extensionModuleMap(store: UpstreamSourceStore): Map<string, string> {
     const source = store.getSource("src/loader-gltf/gltf-feature-registry.ts");
     const result = new Map<string, string>();
@@ -188,6 +340,13 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
 
     const primitives = primitiveRecords(document);
     const accessors = asRecords(document.accessors);
+    refuseUnsupportedGltf(
+        assetName,
+        document,
+        accessors,
+        extensionsUsed,
+        extensionModules,
+    );
     const animations = asRecords(document.animations).length > 0;
     const morphTargets = primitives.some((primitive) => Array.isArray(primitive.targets) && primitive.targets.length > 0);
     const maxMorphTargets = primitives.reduce(
@@ -197,8 +356,28 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
                 : count,
         0,
     );
-    const skins = asRecords(document.skins).length > 0;
+    // The pinned skeleton predicate, both conjuncts:
+    // `!!j.skins?.length && anyPrimitive(j, p.attributes?.JOINTS_0 !== void 0)`
+    // (gltf-feature-registry.ts). A skins array with no skinned primitive
+    // imports nothing upstream, so it must record nothing here either.
+    const skins =
+        asRecords(document.skins).length > 0 &&
+        primitives.some(
+            (primitive) =>
+                asRecord(primitive.attributes)?.JOINTS_0 !== undefined,
+        );
     const sparseAccessors = accessors.some((accessor) => accessor.sparse !== undefined);
+    // The pinned loader reads a second influence pair when a primitive
+    // carries one (`gltf-feature-skeleton.ts`, MSH_HAS_SKELETON_8, eight
+    // influences per vertex); the generated loader reads four. Recorded per
+    // scene as the `four-influence-skinning` fidelity adaptation.
+    const eightInfluenceSkinning = primitives.some((primitive) =>
+        Object.keys(asRecord(primitive.attributes) ?? {}).some(
+            (name) =>
+                /^(?:JOINTS|WEIGHTS)_\d+$/.test(name) &&
+                !name.endsWith("_0"),
+        ),
+    );
     const nonTrianglePrimitives = primitives.some(
         (primitive) => typeof primitive.mode === "number" && primitive.mode !== 4,
     );
@@ -261,7 +440,8 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
     if (animations) modules.add("./gltf-feature-animations.js");
     if (morphTargets) modules.add("./gltf-feature-morph.js");
     if (skins) modules.add("./gltf-feature-skeleton.js");
-    if (sparseAccessors) modules.add("./gltf-feature-sparse.js");
+    // gltf-feature-sparse.js is unreachable: sparse accessors refuse at
+    // generation above.
     if (nonTrianglePrimitives) modules.add("./gltf-feature-primitive.js");
     if (extras) modules.add("./gltf-feature-extras.js");
 
@@ -282,12 +462,22 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
             specularReflectance,
             extras,
             occlusionUv2,
+            eightInfluenceSkinning,
         },
     };
 }
 
 export interface AssetSpecializationFeatures {
     gpuDeformation: boolean;
+    /**
+     * Whether the loader records a live world box beside each primitive's
+     * local one: an animated primitive keeps local vertices and receives its
+     * node matrix per frame, so default framing must size the box where the
+     * geometry actually is. Decided by asset animations alone — a morph
+     * target moves vertices, not the node box the pinned
+     * `expandWorldAabbForMesh` composes.
+     */
+    animatedWorldBounds: boolean;
     morphStorage: boolean;
     nonTrianglePrimitives: boolean;
     nodeVisibility: boolean;
@@ -304,6 +494,8 @@ export interface AssetSpecializationFeatures {
     iridescence: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
+    /** Any asset carries JOINTS_1/WEIGHTS_1 the pin would skin and this port truncates. */
+    eightInfluenceSkinning: boolean;
 }
 
 export function emitAssetSpecializations(
@@ -314,6 +506,7 @@ export function emitAssetSpecializations(
     if (gltfAssets.length === 0) {
         return {
             gpuDeformation: false,
+            animatedWorldBounds: false,
             morphStorage: false,
             nonTrianglePrimitives: false,
             nodeVisibility: false,
@@ -330,6 +523,7 @@ export function emitAssetSpecializations(
             iridescence: false,
             dispersion: false,
             occlusionUv2: false,
+            eightInfluenceSkinning: false,
         };
     }
     let nextDrawId = 1;
@@ -358,7 +552,20 @@ export function emitAssetSpecializations(
             specialization.extensionsUsed.includes(extension),
         );
     return {
+        // Animation presence, and deliberately not upstream's skeleton
+        // predicate: upstream recomputes node world matrices live, so its
+        // skeleton module keys on skins with JOINTS_0
+        // (gltf-feature-registry.ts) — but this port bakes static node
+        // matrices into vertices, and ANY animated mesh needs the
+        // deformation path's palette-as-world transport to receive its
+        // matrix per frame (bone_matrices[0] as the final world, even with
+        // no skin). Skinned-but-unanimated assets stay out on purpose: the
+        // static-skin experiment diverged from the pinned output and was
+        // not retained (docs/fidelity.md).
         gpuDeformation: specializations.some(
+            (specialization) => specialization.features.animations,
+        ),
+        animatedWorldBounds: specializations.some(
             (specialization) => specialization.features.animations,
         ),
         // Babylon Lite has one morph mechanism -- the uncapped storage-buffer
@@ -400,6 +607,10 @@ export function emitAssetSpecializations(
         occlusionUv2: specializations.some(
             (specialization) =>
                 specialization.features.occlusionUv2,
+        ),
+        eightInfluenceSkinning: specializations.some(
+            (specialization) =>
+                specialization.features.eightInfluenceSkinning,
         ),
     };
 }
