@@ -38,13 +38,11 @@ Both backends stay long-term as mutually validating implementations;
 - [ ] Build a typed user-code IR from `ts.Program`/`TypeChecker` symbols.
 - [ ] Move statement, expression, and intrinsic lowering into focused compiler
   modules instead of extending the entry compiler monolith.
-- [ ] Extend shader IR to composed PBR/Grid/background fragments and replace the
-  renderer-lowerer source-text contracts: 16 marker rewrites over the converted
-  fragment text, 8 of them regexes redirecting a `textureSample` at a
-  transform-built UV. Order: parse the fragment and re-emit it byte-identically
-  across every generated tree first, then replace the per-slot UV redirects with
-  typed rewrites, then the structural splices (material extensions, fog) that
-  insert whole statement blocks.
+- [ ] Extend the typed shader IR to the fragment families still emitted as
+  text. The transcribed-PBR rewrite machinery is deleted with the
+  transcription; what remains outside the IR is the string-template WGSL in
+  `src/shader-builtins-*.ts` (Standard, background, grid, utility), tracked
+  with its lift/lower plan in [AUDIT.md](AUDIT.md) (RD-1, RD-8..10).
 - [ ] Lower string-literal switch discriminants.
 - [ ] Add discriminated unions and numeric-literal narrowing beyond the
   checker's null analysis.
@@ -123,8 +121,6 @@ Both backends stay long-term as mutually validating implementations;
 ### Material extensions
 
 - [ ] Anisotropy, including `setPbrAnisotropy`.
-- [ ] Compose clearcoat/sheen layers with punctual multi-light PBR; the
-  combination fails explicitly in the renderer lowerer.
 - [ ] Require typed metadata specialization, focused tests, and an independent
   parity scene for each extension.
 - [ ] Generalize Standard lighting beyond the per-scene unrolled slots. The pin
@@ -300,7 +296,6 @@ that does to the deferred lane by default.
   behind them.
 - [ ] Scenes 18, 25: support Standard ground diffuse textures.
 - [ ] Scene 20: lower an arrow function bound to a name and used as a value.
-- [ ] Scene 21: support the reached non-identifier variable declarations.
 - [ ] Scenes 26, 87: support image-processing `toneMapping`.
 - [ ] Scene 27: support glTF `selectVariant`.
 - [ ] Scene 36: support `loadBasisTexture2D`.

@@ -10,8 +10,9 @@ bblitec ships two peer GPU render backends over one semantic core:
 Both consume the same generated render plans, uniforms, and vertex
 packing (`native/src/pal_gpu_shared.hpp`), differ only at the GPU API
 layer, and are measured against the same goldens. Every scene either
-backend can express passes on both, with Dawn equal to or better than
-SDL_GPU everywhere (see the two MAD columns in [status](status.md)).
+backend can express passes on both, the two within a rounding step of
+each other everywhere and Dawn ahead where its stack is structurally
+closer (see the two MAD columns in [status](status.md)).
 `BBLITE_GPU_BACKEND=dawn` selects Dawn at runtime; SDL_GPU is the
 default. The SDL_Renderer CPU fallback is unrelated to either.
 
@@ -66,22 +67,22 @@ npm run scene -- parity scene1
 The parity harness forwards the environment and labels the report
 with the active backend. `pal::run_engine` dispatches on
 `BBLITE_GPU_BACKEND` and throws explicitly when a build lacks the
-requested backend. One binary carries both backends, so the full
-matrix runs on both with two invocations of the same command — with
-current builds the complete dual sweep takes about three minutes:
+requested backend. One binary carries both backends, and one command
+measures both — `scenes:parity` is `parity all --differential`, which
+runs each backend in its own child process and adds the direct
+backend-versus-backend diff:
 
 ```powershell
 npm run scenes:parity
-$env:BBLITE_GPU_BACKEND = "dawn"; npm run scenes:parity
 ```
 
 `scene -- parity <id> --differential` runs both backends and adds the
 direct backend-versus-backend diff to `report-differential.json` —
 the decisive diagnostic in one command. Scenes where Dawn is
-structurally closer to the golden (per-sample transmission, the
-browser-compiler identity) carry tighter `dawnThresholds` in the
-registry so Dawn regressions cannot hide under SDL_GPU-sized
-ceilings.
+structurally closer to the golden (the browser-compiler identity, the
+multisampled scene-colour grab on transmission scenes) carry tighter
+`dawnThresholds` in the registry so Dawn regressions cannot hide
+under SDL_GPU-sized ceilings.
 
 Parity artifacts are backend-suffixed (`report-gpu.json` /
 `diff-map-gpu.png` for SDL_GPU, `-dawn` for Dawn, `-cpu` for the
@@ -110,16 +111,16 @@ in-process-compile split on HDR accumulation).
 Both backends render every expressible scene within its gate; the
 differences that remain are structural.
 
-**Parity.** Dawn is equal to or better than SDL_GPU on every
-measured scene. Where it wins, the wins are structural: scene 259 is
-bit-exact on Dawn because the browser's own compiler eliminates
-SDL_GPU's DXC-versus-browser rounding; the transmission family drops
-an order of magnitude (scene 33 foreground 1.457 → 0.123, the
-IOR/volume/scene-color gates from 0.130-0.166 to 0.002-0.005)
-because Dawn expresses the pinned per-sample image processing and
-multisampled scene-color grab that SDL_GPU's resolve-then-process
-adaptation cannot; HillValley and the Standard geometry MRTs also
-land measurably closer.
+**Parity.** The two backends sit within a rounding step of each other
+on every measured scene, and the differences that remain are
+structural: scene 259 is bit-exact on Dawn because the browser's own
+compiler eliminates SDL_GPU's DXC-versus-browser rounding; the
+transmission scenes keep a small Dawn edge (scene 33 foreground 0.010
+versus 0.007) from the scene-colour grab — SDL_GPU copies the
+resolved opaque colour where the pin reads the multisampled
+attachment, the per-sample image-processing half having closed when
+the vendored SDL patch let SDL_GPU run the pinned per-sample pass —
+and HillValley and the Standard geometry MRTs land closest on Dawn.
 
 **Performance.** Scene 1 (BoomBox), Release, 1280x720, 2000 frames
 after 30 warmup, immediate present, same session
@@ -271,17 +272,15 @@ Regression guards from the migration; each was measured, not assumed:
   the dominant term). 0.405 → 0.014 foreground MAD on both backends;
   the old float32-versus-float64 world-composition attribution was
   wrong, and the same contracts took scene 255 from 0.101 to 0.000.
-- **Scene 33's backend delta is the image-processing pass, measured
-  rather than argued.** `BBLITE_MSAA=1` now runs on both backends, and
-  at one sample the scene-33 delta collapses from 0.058/1.365 to
-  0.000/0.002 — with nothing to average, the per-sample-versus-resolved
-  distinction disappears and so does the entire difference. That is the
-  whole delta accounted for, and it is the SDL_GPU side that owes the
-  work (the P1 entry below). Scene 1 answers the complementary
-  question: its delta is 0.000/0.001 at *both* sample counts, so what
-  remains there is not multisampling. Each backend's own 4x-versus-1x
-  difference agrees with the other's to 0.0001, which is the check that
-  the two resolve paths behave alike.
+- **Scene 33's backend delta was the image-processing pass, measured
+  rather than argued — and it closed when the vendored SDL patch
+  landed.** At one sample the then-current delta collapsed to
+  0.000/0.002: with nothing to average, the per-sample-versus-resolved
+  distinction disappears, which named the pass. SDL_GPU now runs the
+  pinned per-sample fragment at 4x; the residual foreground step
+  (0.010 versus 0.007) is the scene-colour grab. Scene 1 answers the
+  complementary question: its delta is 0.000/0.001 at *both* sample
+  counts, so what remains there is not multisampling.
 - **The single-sample diagnostic reaches the frame-graph scenes too.**
   SDL_GPU used to refuse `BBLITE_MSAA=1` on every scene carrying an
   explicit resolve task — 116, 145 and 146 — because the resolve step

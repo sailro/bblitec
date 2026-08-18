@@ -120,8 +120,8 @@ cubemap faces with the same half-float quantization as WebGPU.
 
 Transmission uses an opaque scene-color copy, dielectric Fresnel
 `((ior-1)/(ior+1))²`, and Beer-Lambert volume attenuation
-`exp(log(color)/distance*thickness)`. Independent skybox, scene-color, IOR,
-volume, and scene 176 gates keep the dependency chain observable. With 4x
+`exp(log(color)/distance*thickness)`. Scenes 30, 33, 176, and 212 gate the
+dependency chain. With 4x
 MSAA, PAL resolves and stores the opaque color attachment for the copy, then
 reloads the preserved multisample color and depth attachments before
 transmissive draws resume.
@@ -130,7 +130,7 @@ per-RGB indices with Babylon's `spread = 0.04 * (20/dispersion) * (ior-1)`;
 Scene 212 gates it.
 
 Clearcoat, sheen, and iridescence are metadata-driven PBR layers selected by
-`extensionsUsed` and lowered into the shared PBR fragment:
+`extensionsUsed` and composed into each material's own pinned variant:
 
 - clearcoat adds a GGX/Kelemen direct lobe plus a Jones analytical IBL lobe and
   attenuates the base layer by `1 - F(ccF0) * intensity`; the glTF loader
@@ -143,10 +143,9 @@ Clearcoat, sheen, and iridescence are metadata-driven PBR layers selected by
 - iridescence evaluates Babylon's thin-film airy summation in XYZ and blends
   the result into base F0 by the iridescence intensity (Scene 178)
 
-Neutral white intensity/roughness textures and a flat coat-normal flag keep a
-single generated variant numerically identical to Babylon Lite's per-material
-shader variants. Combining a clearcoat or sheen layer with punctual
-multi-light PBR is not lowered and fails explicitly.
+Each layer's per-material forks — the coat's base-F0 remap, the sheen model —
+compose different variants rather than one fragment with a uniform, exactly
+as the sections below record.
 Texture-less PBR factors follow Babylon's factor-texture bake:
 `uploadBaseColorFactorTexture` and `uploadOrmFactorTexture` write the
 factors into 1x1 8-bit texels (base color through `linearToSrgbByte`,
@@ -291,16 +290,18 @@ transmissive draws; exposure, tone mapping, gamma, and contrast run once in a
 final full-screen pass. The scene-color grab is sampled through the pinned
 repeat-addressing trilinear sampler, so refracted UVs outside the screen wrap
 exactly as upstream's `getTrilinearAnisotropicSampler` does.
-This final pass is a recorded adaptation: pinned Babylon Lite keeps the
-transmission target multisampled to the end and applies image processing per
-MSAA sample before averaging (`image-processing-task.ts` samples
-`texture_multisampled_2d` and divides after the `ip()` loop), while SDL_GPU
-cannot bind a multisampled texture for sampling, so the native pass processes
-the hardware-resolved pixel once. Because tone mapping and gamma are concave,
-the native result is brighter than the pinned per-sample average exactly on
-raster edges; this bounds the residual edge bias on transmission scenes 33,
-176, and 212 and cannot close without per-sample access to the resolved
-attachment.
+This final pass runs the pin's own shape on both backends: pinned Babylon
+Lite keeps the transmission target multisampled to the end and applies image
+processing per MSAA sample before averaging (`image-processing-task.ts`
+samples `texture_multisampled_2d` and divides after the `ip()` loop). Dawn
+transcribes that task verbatim, and SDL_GPU binds the multisampled colour
+attachment for sampling through the vendored SDL patch
+(`native/vcpkg-overlay-ports/sdl3`, SDL#15838) and runs the same per-sample
+fragment at 4x; the resolved-pixel single-sample fragment remains only as the
+`BBLITE_MSAA=1` and stock-SDL fallback. The remaining backend split on
+transmission scenes is the scene-colour *grab*: SDL_GPU resolves and copies
+the opaque colour into the refraction texture where the pin reads the
+multisampled attachment directly.
 Punctual glTF point lights use inverse-square falloff for the primary and
 additional generated light paths. Their diffuse and specular sums remain
 separate through transmission and transparent-alpha composition, and
@@ -311,7 +312,7 @@ Requested generated grounds render by default. Their mesh is translated to the
 computed scene root while Babylon Lite's fade calculation deliberately keeps
 `backgroundCenter` at the world origin; Scenes 1, 6, 13, and 14 gate that
 distinction. Requested DDS skyboxes use Babylon's finite root-positioned cube
-and normal scene view-projection. Grounds and DDS/HDR skyboxes can be disabled
+and normal scene view-projection. Grounds and DDS/HDR/solid-colour skyboxes can be disabled
 independently with `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0`.
 
 **The background skybox cube culls back faces; only the image skybox does

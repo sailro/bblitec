@@ -533,9 +533,13 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_GPU_REQUIRED=1` | fail instead of falling back |
 | `BBLITE_GPU_DEBUG=1` | enable the backend GPU validation layer |
 | `BBLITE_MSAA=1` | force single-sample rendering for diagnostics, on both backends: it answers whether a difference is multisampling by removing it |
-| `BBLITE_BACKGROUND=0` | disable a requested DDS/HDR skybox |
+| `BBLITE_BACKGROUND=0` | disable a requested DDS/HDR/solid-colour skybox |
 | `BBLITE_GROUND=0` | disable a requested transparent environment ground |
 | `BBLITE_MAX_FRAMES=<n>` | automated frame limit |
+| `BBLITE_ANIMATION_SEEK_SECONDS=<t>` | seek the deterministic clock before the measured frame (parity sets it from the registry, `capture`/`diff` from `--seek`) |
+| `BBLITE_TEST_PASS=1` | the measured-run contract the harnesses set: capture-driven frame gating |
+| `BBLITE_ID_BUFFER=<path>` / `BBLITE_CLUSTER_BUFFER=<path>` | write the draw-id / triangle-cluster attribution buffers (set by `parity` for registry-attributed scenes) |
+| `BBLITE_COPY_TASK=<name>` | select one frame-graph copy task full-screen (driven by `scene -- geometry`) |
 | `BBLITE_SCREENSHOT=<path>` | capture PNG |
 | `BBLITE_SCREENSHOT_FRAME=<n>` | delay callback-driven capture |
 | `BBLITE_BENCHMARK_FRAMES=<n>` | benchmark after warmup |
@@ -821,7 +825,9 @@ had drifted from measurement before this check existed.
 Do not run generation and native builds concurrently. Do not build multiple
 CMake trees concurrently against the same vcpkg installation.
 
-Current deterministic animation gates:
+The full list of deterministic animation gates is the set of
+`referenceTimeSeconds` entries in `src/scene-registry.ts`; these five anchor
+the distinct mechanisms:
 
 | Scene | Seek | Coverage |
 | ---: | ---: | --- |

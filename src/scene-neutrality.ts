@@ -2,7 +2,7 @@
  * `scene -- neutrality <baseline>`: the cell-by-cell comparison the
  * neutrality proof asks for, as a command.
  *
- * `docs/backends.md` prescribes the procedure — snapshot every
+ * `docs/development.md` prescribes the procedure — snapshot every
  * `report-differential.json`, run the matrix, compare cell by cell — and that
  * is exactly right, because a change to the compiler that is meant to be
  * image-neutral either moves a number or it does not. What it did not have

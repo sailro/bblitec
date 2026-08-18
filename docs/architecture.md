@@ -51,6 +51,8 @@ Primary source ownership:
 | `src/compiler/native-functions.ts` | once-emitted real C++ functions for fully data-typed user functions |
 | `src/compiler/user-functions.ts` | inline lowering for handle-touching local functions, calls, parameters, and returns |
 | `src/compiler/statements.ts` | statement dispatch, conditions, expression statements, and method calls |
+| `src/compiler/classes.ts` | compile-time class instances: fields as locals, inlined methods and getters |
+| `src/compiler/promises.ts` | immediate AOT `Promise<T>` lowering |
 | `src/compiler/assignments.ts` | typed property-assignment validation and lowering |
 | `src/compiler/properties.ts` | the declared property reads: which native expression names a handle's property, and which properties are refused |
 | `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, and material intrinsic lowerers |
@@ -62,6 +64,11 @@ Primary source ownership:
 | `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant; supplies the generated shader's helper text |
 | `src/pinned-material-input.ts` | maps a glTF material to the shape `_computePbrMaterialFeatures` reads — the loader's rules ported, not the format's |
 | `src/pinned-material-arms.ts` | composes every material a scene loads and refuses a fragment missing an arm one of them reaches |
+| `src/pinned-scene-arms.ts` | the scene half of composition: light modes, tone mapping, fog bits |
+| `src/pinned-mesh-features.ts` | the pin's mesh feature bits, imported rather than restated |
+| `src/pinned-pbr-variant-cpp.ts` | the C++ mirrors of each variant's UBO layouts, offsets cross-checked against the composer's own |
+| `src/pinned-pbr-variant-output.ts` | writes the composed variant stages into the generated tree verbatim |
+| `src/lowering/pinned-ubo-writer-lowerer.ts` | lowers the pin's material/extension UBO writers from their own ASTs |
 | `src/lowering/context.ts` | source-located AST declarations, expression contracts, and diagnostics |
 | `src/lowering/*-lowerer.ts` | focused Babylon API and formula lowering |
 | `src/lowering/templates/` | generated C++ and portable shader templates |
@@ -77,6 +84,10 @@ Primary source ownership:
 | `native/src/pal_dawn_sprite.cpp` | the same sprite pass on Dawn |
 | `native/src/pal_dawn.cpp` | Dawn (WebGPU) resources, uploads, pipelines, readback, submission |
 | `native/src/pal_gpu_shared.hpp` | vertex packing, RGBD decode, deformation uniforms, and inverse image processing shared byte-identically by both GPU backends |
+| `native/src/pal_render_capture.hpp` | the `BBLITE_RENDER_CAPTURE` writer both backends share, `pinnedMaterialBlocks`/`pinnedMeshBlocks` included |
+| `native/src/pal_camera_controls.hpp` | SDL pointer/wheel/key translation into the generated camera inertia math |
+| `native/src/pal_sdl_gpu_sprite.hpp` | the SDL_GPU sprite pass mechanics its `.cpp` driver draws through |
+| `native/src/pal_dawn_sprite.hpp` | the Dawn sprite pass mechanics its `.cpp` driver draws through |
 
 `generated\` is disposable and never the source of a fix.
 
@@ -145,7 +156,7 @@ An upstream change is expected to fail at semantic seams:
 - changed entry APIs fail typed intrinsic or assignment lowering
 - changed generated behavior fails compiler-output and parity gates
 
-This keeps a 1.18-to-2.0 migration explicit without spreading version checks
+This keeps a version migration explicit without spreading version checks
 through the compiler. Module paths and symbol contracts stay local to the
 lowerer that owns the behavior. Curated source URLs, documentation, formulas,
 and references remain intentionally reviewable evidence rather than being
@@ -207,7 +218,8 @@ The current generated slice includes:
 - generated frame-graph blit/depth and diagnostic WGSL compiled through Tint
 - generated ground and cubemap-skybox WGSL compiled through Tint
 - shared material vertex and Standard fragment/geometry WGSL through Tint
-- directional/hemispheric two-light Standard shading where reached
+- directional, hemispheric, point, and spot Standard shading, one unrolled
+  slot per declared light
 - PBR color, diagnostic, and geometry-output WGSL through Tint
 - content-addressed DXIL/SPIR-V reuse across identical scene shader variants
 
@@ -266,10 +278,13 @@ general CPU deformation path rather than truncating.
 
 Two lists decide what a scene compiles, and they answer different questions.
 `BBLITE_RUNTIME_FEATURES` in `features.cmake` records what the scene's own
-TypeScript reached, and it is finalized during compilation — before remote
-assets are materialized, so no asset fact can reach it. `render_capabilities.hpp`
-records what the loaded assets reach, and it is written after asset
-specialization. A capability an asset can reach without the scene source naming
+TypeScript reached, finalized during compilation with two deliberate
+exceptions joined after the assets materialize: an asset's own
+`KHR_lights_punctual` kinds and `EXT_lights_image_based` become `light:*` and
+`environment:ibl` features, because light features select `light_*.cpp`
+translation units, which only the feature list can. `render_capabilities.hpp`
+records everything else the loaded assets reach, and it is written after
+asset specialization. A capability an asset can reach without the scene source naming
 it is therefore defined in the capability header rather than derived from the
 feature list; scene transmission is one, because Babylon Lite enables it from
 any transmissive material a loaded asset carries.
@@ -349,9 +364,9 @@ same reached quaternion mesh transforms.
 The project keeps two complete GPU backends on purpose. The Dawn
 backend renders through the browser reference's own compiler and
 rasterization stack (the pinned Dawn commit shared with the Tint
-pin), which makes parity structural instead of adapted: it matches or
-beats SDL_GPU on every scene, and uniquely expresses the pinned
-per-sample image processing and multisampled scene-color reads. The
+pin), which makes parity structural instead of adapted: the two sit
+within a rounding step of each other on every scene, and Dawn
+uniquely expresses the pinned multisampled scene-color read. The
 SDL_GPU backend is the independent implementation: offline-compiled
 shaders through a different toolchain and API. Two stacks that must
 agree pixel-for-pixel form the project's sharpest diagnostic — their

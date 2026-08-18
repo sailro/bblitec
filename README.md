@@ -42,8 +42,9 @@ what is decided at compile time and what lives at run time — and
 
 ## Quick start
 
-Requirements: Node.js 22+, CMake 3.24+, a C++20 compiler, vcpkg, PowerShell,
-and Chrome/Edge with WebGPU for shader and HDR asset compilation.
+Requirements: Node.js 22+, CMake 3.24+, Ninja, a C++20 compiler, vcpkg,
+PowerShell and DXC for shader compilation, and Chrome/Edge with WebGPU for
+shader and HDR asset compilation (see [development](docs/development.md)).
 
 ```powershell
 git clone https://github.com/sailro/bblitec.git

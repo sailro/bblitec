@@ -42,7 +42,7 @@ meaningful, and stopping early is how a wrong branch gets taken.
 | 2 | Is the difference on the CPU or the GPU side? | `scene -- parity <id> --differential` |
 | 3 | Which value differs from Babylon Lite's? | `scene -- diff <id>` |
 | 4 | What exactly did the browser upload into that buffer? | `scene -- capture <id>` then `scene -- uniforms <id> --size N` |
-| 4b | What did *we* put in the pinned variant's blocks? | `scene -- diff <id> --recapture`, then `pinnedMaterialBlocks` / `pinnedMeshBlocks` in `artifacts/capture/<id>/native-sdl_gpu.json` — built by the same writers the draw calls, CPU-side, so refused variants appear too. Diff the two listings field by field; a pinned-path residual is an input, never the shader, once `scene -- compose` matches byte-for-byte |
+| 4b | What did *we* put in the pinned variant's blocks? | `scene -- diff <id> --recapture`, then `pinnedMaterialBlocks` / `pinnedMeshBlocks` in `artifacts/capture/<id>/native-sdl_gpu.json` — built by the same writers the draw path calls, CPU-side, so refused variants appear too. Diff the two listings field by field; a pinned-path residual is an input, never the shader, once `scene -- compose` matches byte-for-byte |
 | 5 | Which draw owns the bad pixels? | attribution buffers in `artifacts/parity/<id>` |
 | 6 | Does removing the feature remove the residual? | copy the scene to `examples/`, strip it, `parity --recapture-reference` |
 | 7 | Did we derive the material's features at all? | `scene -- compose <id>` — composes each material through the pin and checks the whole fragment against the captured one |
@@ -125,15 +125,18 @@ can cause:
    different UV than the pin is invisible in every uniform and obvious
    here — that is exactly what scene 39's `0.581 → 0.002` was.
 
-Blocks are paired by byte length, then by the candidate with the fewest
-differing fields, because a scene uploads one buffer per material and
-comparing against the wrong material reports everything as wrong. A
-native block with no browser buffer of its size is reported as unpaired
-rather than force-matched: that means our material composes a different
-feature set than the pin's, which is a finding in itself.
+Values are matched rather than blocks: every float tuple the browser
+uploaded is indexed, and each native field is looked up in it, so a
+native value with no browser counterpart reads as its own finding
+instead of forcing a block pairing — that usually means our material
+composes a different feature set than the pin's, which is a finding in
+itself.
 
-`diff` reuses captures already on disk. Pass `--recapture` after any
-change to the scene, the compiler, or the native build.
+`diff` reuses captures already on disk only while they are still valid
+evidence: it compares the native capture's embedded build stamp against
+the current generated tree and each capture's recorded seek against the
+requested pose, and recaptures on any mismatch, saying why. Pass
+`--recapture` to force both sides fresh regardless.
 
 **What `diff` does not cover.** The native side rebuilds each uniform
 block from `(scene, engine, camera, item)` — the same tuple both backends
@@ -321,14 +324,15 @@ out the entire class of defect in one command.
 
 | Path | Written by | Holds |
 | --- | --- | --- |
-| `artifacts/parity/<id>/report.json` | `parity` | MAD, region breakdown, hotspots, attribution |
+| `artifacts/parity/<id>/report-{gpu,dawn,cpu}.json` | `parity` | MAD, region breakdown, hotspots, attribution, per backend |
 | `artifacts/parity/<id>/report-differential.json` | `parity --differential` | both backends plus their direct comparison |
-| `artifacts/parity/<id>/*-diff.png`, `*-hotspots.png` | `parity` | where the pixels differ |
+| `artifacts/parity/<id>/diff-map-<backend>.png`, `hotspots-<backend>.png` | `parity` | where the pixels differ |
 | `artifacts/capture/<id>/shaders/*.wgsl` | `capture` | the browser's own composed shader modules |
 | `artifacts/capture/<id>/buffers.json` | `capture` | every browser buffer, with the last eight writes |
 | `artifacts/capture/<id>/draws.json` | `capture` | the browser draw census, bundles included |
 | `artifacts/capture/<id>/tex-uploads.json` | `capture` | texture uploads, with raw bytes for small texels |
 | `artifacts/capture/<id>/native-<backend>.json` | `capture --native` | our scene model, draw list and uniform blocks |
+| `artifacts/capture/<id>/capture-meta.json`, `native-<backend>.meta.json` | `capture` / `capture --native` | the seek each capture was taken at, read by `diff`'s reuse check |
 | `artifacts/capture/<id>/diff-<backend>.json` | `diff` | the paired report |
 
 ## Runtime switches worth knowing

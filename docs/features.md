@@ -134,10 +134,15 @@ different questions:
 | `BBLITE_IMAGE_CODECS` in `features.cmake` | the materialized assets' image types | which image decoders link and ship |
 
 The feature list is finalized during compilation, before remote assets are
-materialized, so no asset fact can reach it. A capability an asset reaches
-without the scene source naming it therefore lives in the capability header
-instead — scene transmission is the standing example, because Babylon Lite
-enables it from any transmissive material a loaded asset carries.
+materialized, with two deliberate exceptions joined afterwards: an asset's
+own `KHR_lights_punctual` kinds and `EXT_lights_image_based` become
+`light:*` and `environment:ibl` features, because light features select
+their own translation units, which only the feature list can (see
+[architecture](architecture.md#animation-and-deformation)). Every other
+capability an asset reaches without the scene source naming it lives in the
+capability header instead — scene transmission is the standing example,
+because Babylon Lite enables it from any transmissive material a loaded
+asset carries.
 
 **Why compile time:** there is no dynamic module loading, so upstream's own
 `import()`-behind-a-predicate boundaries have to be resolved somewhere, and
@@ -502,9 +507,8 @@ different image.
   slerp, group ranges/looping/speed, and deterministic seeking for the reached
   mesh `position`, `position.x`, `scaling`, and `rotationQuaternion` paths
 - glTF animation covers LINEAR/CUBICSPLINE rotation, translation, and scale
-  plus LINEAR morph weights. glTF STEP channels, multiple-clip controls,
-  broader property targets, and Standard scenes beyond two simultaneous lights
-  remain unsupported
+  plus LINEAR morph weights. glTF STEP channels, multiple-clip controls, and
+  broader property targets remain unsupported
 - direct `createMorphTargets` covers one target attached to one mesh
 - a spot light created in scene code carries its colors and intensity; its
   `angle`, `exponent`, and `range` setters and a spot composed with Standard
@@ -513,8 +517,9 @@ different image.
   composed with Grid, custom-shader, environment-ground/DDS-skybox background,
   transmission, or geometry-output surfaces fails explicitly
 - PBR material extensions cover clearcoat, sheen, iridescence, and dispersion
-  with one shared UV transform; specular and anisotropy, and layered
-  composition combined with punctual multi-light, remain unsupported
+  with one shared UV transform; specular textures and anisotropy remain
+  unsupported, and an asset carrying an extension the pinned loader
+  implements that this port does not fails at generation naming it
 - custom shader variants are bounded by the supported WGSL subset and the
   `worldViewProjection` system uniform; arbitrary system-uniform sets and
   matrix-valued custom uniforms remain unsupported
