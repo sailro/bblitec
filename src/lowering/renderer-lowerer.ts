@@ -166,7 +166,7 @@ export class RendererLowerer {
         occlusionUv2?: boolean;
         environmentRotation?: boolean;
         gpuInstancing?: boolean;
-        multiLight?: boolean;
+        punctualLights?: boolean;
         clearcoat?: boolean;
         sheen?: boolean;
         sheenAlbedoScaling?: boolean;
@@ -570,7 +570,7 @@ export class RendererLowerer {
                       .join("")
                 : "";
         const multiLightUniformFields =
-            options.multiLight
+            options.punctualLights
                 ? `    std::array<std::array<float, 4>, 7> extra_light_positions{};
     std::array<std::array<float, 4>, 7> extra_light_colors{};
     std::array<std::array<float, 4>, 7> extra_light_directions{};
@@ -580,7 +580,7 @@ export class RendererLowerer {
         // primary slot, so the second analytic slot stays disabled to
         // avoid double-counting scene.lights[1].
         const secondAnalyticLightFill =
-            options.multiLight
+            options.punctualLights
                 ? ""
                 : `    if (scene.lights.size() > 1) {
         write_pbr_light(
@@ -591,7 +591,7 @@ export class RendererLowerer {
     }
 `;
         const multiLightMaterialUniforms =
-            options.multiLight
+            options.punctualLights
                 ? `        for (
             std::size_t light_index = 1;
             light_index < scene.lights.size() &&
@@ -2611,7 +2611,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         textureTransform?: boolean;
         environmentRotation?: boolean;
         gpuInstancing?: boolean;
-        multiLight?: boolean;
+        punctualLights?: boolean;
         clearcoat?: boolean;
         sheen?: boolean;
         sheenAlbedoScaling?: boolean;
@@ -2640,7 +2640,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         textureTransform: false,
         environmentRotation: false,
         gpuInstancing: false,
-        multiLight: false,
+        punctualLights: false,
         clearcoat: false,
         sheen: false,
         iridescence: false,

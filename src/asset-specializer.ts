@@ -2,10 +2,15 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import ts from "typescript";
 import { CompileAsset } from "./compiler.js";
-import { parseGlbJson } from "./gltf-document.js";
+import {
+    asObject,
+    asRecords,
+    asString,
+    asStrings,
+    parseGlbJson,
+    type JsonRecord,
+} from "./gltf-document.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
-
-type JsonRecord = Record<string, unknown>;
 
 interface GltfSpecialization {
     asset: string;
@@ -53,30 +58,10 @@ export interface RenderItemSpecialization {
     doubleSided: boolean;
 }
 
-function asRecord(value: unknown): JsonRecord | undefined {
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-        ? (value as JsonRecord)
-        : undefined;
-}
-
-function asRecords(value: unknown): JsonRecord[] {
-    return Array.isArray(value)
-        ? value.map(asRecord).filter((entry): entry is JsonRecord => entry !== undefined)
-        : [];
-}
-
-function asStrings(value: unknown): string[] {
-    return Array.isArray(value)
-        ? value.filter((entry): entry is string => typeof entry === "string")
-        : [];
-}
-
+// Deliberately stricter than gltf-document's asNumber: every field read
+// through this is a glTF index, and an index is a non-negative integer.
 function asNumber(value: unknown): number | undefined {
     return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
-}
-
-function asString(value: unknown): string | undefined {
-    return typeof value === "string" ? value : undefined;
 }
 
 function renderItemSpecializations(document: JsonRecord): RenderItemSpecialization[] {
@@ -99,7 +84,7 @@ function renderItemSpecializations(document: JsonRecord): RenderItemSpecializati
                 alphaModeValue === "BLEND" || alphaModeValue === "MASK"
                     ? alphaModeValue
                     : "OPAQUE";
-            const attributes = asRecord(primitive.attributes);
+            const attributes = asObject(primitive.attributes);
             const indexAccessor = asNumber(primitive.indices);
             const positionAccessor = asNumber(attributes?.POSITION);
             const elementAccessor =
@@ -151,7 +136,7 @@ function hasExtras(document: JsonRecord): boolean {
     ];
     return collections
         .flatMap((value) => (Array.isArray(value) ? value : [value]))
-        .some((value) => asRecord(value)?.extras !== undefined) ||
+        .some((value) => asObject(value)?.extras !== undefined) ||
         primitiveRecords(document).some((primitive) => primitive.extras !== undefined);
 }
 
@@ -221,8 +206,8 @@ function textureImageIndex(
     if (index === undefined) return undefined;
     const texture = asRecords(document.textures)[index];
     if (!texture) return index;
-    const webp = asRecord(
-        asRecord(texture.extensions)?.["EXT_texture_webp"],
+    const webp = asObject(
+        asObject(texture.extensions)?.["EXT_texture_webp"],
     );
     return asNumber(webp?.source) ?? asNumber(texture.source) ?? index;
 }
@@ -273,10 +258,10 @@ function refuseUnsupportedGltf(
         );
     }
     for (const material of asRecords(document.materials)) {
-        const occlusion = asRecord(material.occlusionTexture);
+        const occlusion = asObject(material.occlusionTexture);
         if (!occlusion) continue;
-        const metallicRoughness = asRecord(
-            asRecord(material.pbrMetallicRoughness)?.metallicRoughnessTexture,
+        const metallicRoughness = asObject(
+            asObject(material.pbrMetallicRoughness)?.metallicRoughnessTexture,
         );
         const texCoord = asNumber(occlusion.texCoord) ?? 0;
         if (texCoord === 1 && metallicRoughness !== undefined) {
@@ -448,7 +433,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
         asRecords(document.skins).length > 0 &&
         primitives.some(
             (primitive) =>
-                asRecord(primitive.attributes)?.JOINTS_0 !== undefined,
+                asObject(primitive.attributes)?.JOINTS_0 !== undefined,
         );
     const sparseAccessors = accessors.some((accessor) => accessor.sparse !== undefined);
     // The pinned loader reads a second influence pair when a primitive
@@ -456,7 +441,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
     // influences per vertex); the generated loader reads four. Recorded per
     // scene as the `four-influence-skinning` fidelity adaptation.
     const eightInfluenceSkinning = primitives.some((primitive) =>
-        Object.keys(asRecord(primitive.attributes) ?? {}).some(
+        Object.keys(asObject(primitive.attributes) ?? {}).some(
             (name) =>
                 /^(?:JOINTS|WEIGHTS)_\d+$/.test(name) &&
                 !name.endsWith("_0"),
@@ -472,8 +457,8 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
         (animation) =>
             asRecords(animation.channels).some((channel) =>
                 asString(
-                    asRecord(
-                        asRecord(asRecord(channel.target)?.extensions)?.[
+                    asObject(
+                        asObject(asObject(channel.target)?.extensions)?.[
                             "KHR_animation_pointer"
                         ],
                     )?.pointer,
@@ -488,8 +473,8 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
     // the predicate reads the factor rather than the extension.
     const transmissiveMaterial = asRecords(document.materials).some(
         (material) =>
-            (asRecord(
-                asRecord(material.extensions)?.["KHR_materials_transmission"],
+            (asObject(
+                asObject(material.extensions)?.["KHR_materials_transmission"],
             )?.transmissionFactor as number | undefined ?? 0) > 0,
     );
     // The specular half of the pinned `needsReflectance` — which also fires
@@ -498,8 +483,8 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
     // deliberately reads only the specular fields. A material declaring the
     // extension at factor 1 and colour (1,1,1) reaches nothing.
     const specularReflectance = asRecords(document.materials).some((material) => {
-        const specular = asRecord(
-            asRecord(material.extensions)?.["KHR_materials_specular"],
+        const specular = asObject(
+            asObject(material.extensions)?.["KHR_materials_specular"],
         );
         if (!specular) return false;
         const factor = specular.specularFactor as number | undefined;
@@ -521,8 +506,8 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
     // presence instead shipped dispersion arms for assets whose declared
     // extension the pin never imports.
     const dispersionReached = asRecords(document.materials).some((material) => {
-        const extensions = asRecord(material.extensions);
-        const dispersionExtension = asRecord(
+        const extensions = asObject(material.extensions);
+        const dispersionExtension = asObject(
             extensions?.["KHR_materials_dispersion"],
         );
         const dispersion =
@@ -530,8 +515,8 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
                 ? dispersionExtension.dispersion
                 : 0;
         if (!(dispersion > 0)) return false;
-        const ior = asRecord(extensions?.["KHR_materials_ior"]);
-        const transmission = asRecord(
+        const ior = asObject(extensions?.["KHR_materials_ior"]);
+        const transmission = asObject(
             extensions?.["KHR_materials_transmission"],
         );
         const transmissionFactor =
@@ -542,7 +527,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
             transmission !== undefined &&
             (transmissionFactor > 0 ||
                 transmission.transmissionTexture !== undefined);
-        const volume = asRecord(extensions?.["KHR_materials_volume"]);
+        const volume = asObject(extensions?.["KHR_materials_volume"]);
         const thicknessFactor =
             typeof volume?.thicknessFactor === "number"
                 ? volume.thicknessFactor
@@ -559,7 +544,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
     // selects TEXCOORD_1.
     const occlusionUv2 = asRecords(document.materials).some(
         (material) =>
-            asRecord(material.occlusionTexture)?.texCoord === 1,
+            asObject(material.occlusionTexture)?.texCoord === 1,
     );
 
     if (animations) modules.add("./gltf-feature-animations.js");
@@ -614,7 +599,7 @@ export interface AssetSpecializationFeatures {
     imageBasedLighting: boolean;
     textureTransform: boolean;
     gpuInstancing: boolean;
-    multiLight: boolean;
+    punctualLights: boolean;
     clearcoat: boolean;
     sheen: boolean;
     iridescence: boolean;
@@ -643,7 +628,7 @@ export function emitAssetSpecializations(
             imageBasedLighting: false,
             textureTransform: false,
             gpuInstancing: false,
-            multiLight: false,
+            punctualLights: false,
             clearcoat: false,
             sheen: false,
             iridescence: false,
@@ -730,7 +715,7 @@ export function emitAssetSpecializations(
         imageBasedLighting: usesExtension("EXT_lights_image_based"),
         textureTransform: usesExtension("KHR_texture_transform"),
         gpuInstancing: usesExtension("EXT_mesh_gpu_instancing"),
-        multiLight: usesExtension("KHR_lights_punctual"),
+        punctualLights: usesExtension("KHR_lights_punctual"),
         clearcoat: usesExtension("KHR_materials_clearcoat"),
         sheen: usesExtension("KHR_materials_sheen"),
         iridescence: usesExtension("KHR_materials_iridescence"),

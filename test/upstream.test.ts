@@ -116,6 +116,131 @@ test("generates property animation evaluation and seeking", () => {
     );
 });
 
+test("flows the pinned animation constants into the emission", () => {
+    const lowered = new AnimationLowerer(
+        new LoweringContext(),
+    ).lowerPropertyAnimation();
+    // The near-parallel slerp threshold is extracted from the pinned
+    // quatSlerp (src/animation/evaluate.ts), and the ms->s advance
+    // factor is the reciprocal of the pinned tick's divisor
+    // (src/animation/property-animation.ts createPointerAnimationGroup).
+    assert.match(lowered.source, /if \(dot > 0\.9995f\) \{/);
+    assert.match(
+        lowered.source,
+        /delta_ms \* 0\.001f \* group->speed_ratio/,
+    );
+    // The STEP tie-break direction the lowerer shape-asserts: an exact
+    // key-time query takes the LATER key's value.
+    assert.match(
+        lowered.source,
+        /time >= track\.keys\[right\]\.time\s*\? track\.keys\[right\]\.value/,
+    );
+    // The loop wrap and its negative-wrap correction, shape-asserted
+    // against the pinned tick.
+    assert.match(
+        lowered.source,
+        /std::fmod\(\s*group->current_time - group->from_time,\s*duration\)/,
+    );
+    assert.match(
+        lowered.source,
+        /if \(group->current_time < group->from_time\) \{\s*group->current_time \+= duration;/,
+    );
+});
+
+test("flows the pinned camera inertia constants into the controls", () => {
+    const controls = new CameraLowerer(
+        new LoweringContext(),
+    ).lowerControls();
+    // ArcRotate applyInertia: the beta pole margin (`eps`), the radius
+    // floor, and the radius-proportional pan scale all come from
+    // src/camera/arc-rotate-controls.ts.
+    assert.match(
+        controls.source,
+        /constexpr double epsilon = 0\.01;/,
+    );
+    assert.match(
+        controls.source,
+        /camera\.radius = std::max\(0\.01, camera\.radius\);/,
+    );
+    assert.match(
+        controls.source,
+        /const double pan_scale = camera\.radius \* 0\.001;/,
+    );
+    // FreeCamera update: the pitch ceiling terms and the shared
+    // speed-proportional stop threshold come from
+    // src/camera/free-camera-controls.ts.
+    assert.match(
+        controls.source,
+        /constexpr double max_pitch = pi_double \/ 2\.0 - 0\.01;/,
+    );
+    assert.match(
+        controls.source,
+        /const double epsilon = camera\.speed \* 0\.001;/,
+    );
+});
+
+test("flows the pinned light matrices and spot cone into the factories", () => {
+    const lowerer = new LightLowerer(new LoweringContext());
+    // The spot half-angle factor flows from the pinned _cosHalfAngle
+    // initializer (src/light/spot-light.ts); the precision semantics
+    // stay the emission's own (the TODO.md spot-cone ULP entry).
+    const spot = lowerer.lowerSpotFactory();
+    assert.match(
+        spot.source,
+        /light\.cos_half_angle = std::cos\(angle \* 0\.5f\);/,
+    );
+    // The point-light identity diagonal and translation column flow
+    // from the pinned factory's own m[...] stores
+    // (src/light/point-light.ts).
+    const point = lowerer.lowerPointFactory();
+    assert.match(
+        point.source,
+        /light\.local_matrix\[0\] = 1\.0f;/,
+    );
+    assert.match(
+        point.source,
+        /light\.local_matrix\[10\] = 1\.0f;/,
+    );
+    assert.match(
+        point.source,
+        /light\.local_matrix\[12\] = position\.x;/,
+    );
+    assert.match(
+        point.source,
+        /light\.local_matrix\[15\] = 1\.0f;/,
+    );
+    // The directional zeros are the pinned default position; the
+    // hemispheric zeros are the pinned literal origin arguments.
+    for (const lowered of [
+        lowerer.lowerDirectionalFactory(),
+        lowerer.lowerFactory(),
+    ]) {
+        assert.match(
+            lowered.source,
+            /0\.0f,\s*0\.0f,\s*0\.0f,\s*light\.local_matrix\);/,
+        );
+    }
+});
+
+test("generates scene fog storage for the pinned fog UBO field set", () => {
+    const lowered = new SceneLowerer(
+        new LoweringContext(),
+    ).lowerCore({ fog: true });
+    // set_scene_fog stores exactly the fields the pinned writeFogUbo
+    // consumes; the writer's browser-UBO offsets are not asserted
+    // because nothing in the generated tree uses them.
+    assert.match(lowered.source, /void set_scene_fog\(/);
+    for (const store of [
+        /scene\.fog_mode = mode;/,
+        /scene\.fog_density = density;/,
+        /scene\.fog_start = start;/,
+        /scene\.fog_end = end;/,
+        /scene\.fog_color = color;/,
+    ]) {
+        assert.match(lowered.source, store);
+    }
+});
+
 test("generates GLB framing validation from upstream constants", () => {
     const lowerer = new GltfLowerer(new LoweringContext());
     const lowered = lowerer.lowerGlbParser();
@@ -504,7 +629,7 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     const specialized = lowerer.lowerRenderPlan({
         transmission: true,
         gpuInstancing: true,
-        multiLight: true,
+        punctualLights: true,
     });
     const shaders = lowerer.lowerShaders();
     const fidelity = lowerer.fidelityManifest();

@@ -12,8 +12,15 @@ import type { CompiledShaderProgram } from "./compiler.js";
 import type { Feature } from "./compiler/types.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
 import { shaderMaterialPrograms } from "./shader-material-programs.js";
-import { emitUpstreamGenerated } from "./upstream-lower.js";
+import {
+    emitUpstreamGenerated,
+    type UpstreamEmitOptions,
+} from "./upstream-lower.js";
 import { emitAssetSpecializations } from "./asset-specializer.js";
+import {
+    featureActivationPath,
+    featureActivationRows,
+} from "./feature-activation.js";
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
 import { decompressGeometry } from "./compressed-geometry.js";
@@ -582,7 +589,10 @@ async function main(): Promise<void> {
     // consumer keyed on the light features -- the composed arms, the pinned
     // light writers, the generated-source table -- reads the one authority,
     // so the kinds the assets reach join the manifest here.
-    let assetLightsAdded = false;
+    // Which features the join added and the asset that carried each,
+    // recorded for the activation inventory: a feature already reached by
+    // scene source is deliberately not re-attributed to an asset.
+    const assetJoinedFeatures = new Map<string, string>();
     let assetLightNodes: { count: number; asset: string } | undefined;
     for (const asset of result.manifest.assets) {
         if (asset.kind !== "gltf") continue;
@@ -605,11 +615,11 @@ async function main(): Promise<void> {
         for (const feature of assetFeatures) {
             if (!result.manifest.features.includes(feature)) {
                 result.manifest.features.push(feature);
-                assetLightsAdded = true;
+                assetJoinedFeatures.set(feature, asset.output);
             }
         }
     }
-    if (assetLightsAdded) {
+    if (assetJoinedFeatures.size > 0) {
         // The features drive the generated-source table and the CMake
         // projection, both rendered at compile time; re-render them from the
         // same authorities so the joined features stay declared everywhere.
@@ -770,7 +780,9 @@ async function main(): Promise<void> {
             : sceneMeshFeatureValues.size === 1
                 ? [...sceneMeshFeatureValues][0]!
                 : undefined;
-    emitUpstreamGenerated(outputPath, result.manifest.features, {
+    // Named rather than inline so the activation inventory below records
+    // the exact values the emitters consumed, not a restatement of them.
+    const emitOptions: UpstreamEmitOptions = {
         idDiagnostics: options.idDiagnostics,
         ...(assetLightNodes !== undefined ? { assetLightNodes } : {}),
         shaderPrograms,
@@ -815,8 +827,8 @@ async function main(): Promise<void> {
             result.manifest.features.includes(
                 "mesh:thin-instances-dynamic",
             ),
-        multiLight:
-            specializationFeatures.multiLight,
+        punctualLights:
+            specializationFeatures.punctualLights,
         clearcoat: emittedArms.clearcoat,
         sheen: emittedArms.sheen,
         // The two pinned sheen models are composed, not switched at run time,
@@ -845,7 +857,13 @@ async function main(): Promise<void> {
         iridescence: emittedArms.iridescence,
         dispersion: emittedArms.dispersion,
         occlusionUv2: emittedArms.occlusionUv2,
-    }, tree);
+    };
+    emitUpstreamGenerated(
+        outputPath,
+        result.manifest.features,
+        emitOptions,
+        tree,
+    );
     tree.write("main.cpp", result.cpp);
     const imageCodecs = reachedImageCodecs(
         outputPath,
@@ -873,6 +891,32 @@ ${imageCodecLines}
                 source: result.manifest.source,
                 adaptations: result.manifest.adaptations,
             },
+            null,
+            2,
+        )}\n`,
+    );
+    // The activation inventory: one row per unit across every mechanism
+    // generation used — runtime features, capability defines, codecs,
+    // emit options, composition, and the generation-time refusals — with
+    // the concrete reason for this scene and the pinned provenance each
+    // mirrors, built from the same values the emitters above consumed.
+    tree.write(
+        featureActivationPath,
+        `${JSON.stringify(
+            featureActivationRows({
+                features: result.manifest.features,
+                assetJoinedFeatures,
+                specialization: specializationFeatures,
+                emit: emitOptions,
+                transmission: emittedArms.transmission,
+                imageCodecs,
+                gltfAssetNames: gltfAssets.map((asset) => asset.output),
+                composition: {
+                    lightKinds,
+                    toneMappingArms: hasEnvironment,
+                    linearImageProcessing,
+                },
+            }),
             null,
             2,
         )}\n`,

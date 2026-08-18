@@ -133,7 +133,7 @@ test("selects PBR material-extension specializations from glTF metadata", () => 
         // nothing upstream (`needsDispersion` in gltf-ext-dielectric.ts).
         assert.equal(features.dispersion, false);
         assert.equal(features.textureTransform, false);
-        assert.equal(features.multiLight, false);
+        assert.equal(features.punctualLights, false);
 
         writeGlb(join(scratch, "assets", "dispersive.glb"), {
             extensionsUsed: [

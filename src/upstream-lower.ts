@@ -23,8 +23,10 @@ import { reachedGeneratedSources } from "./generated-sources.js";
 import {
     materialTextureSlotsHeader,
     pinnedPbrVariantsHeader,
+    pinnedStandardVariantsHeader,
 } from "./pinned-pbr-variant-cpp.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
+import type { PinnedStandardVariantManifestEntry } from "./pinned-standard-variants.js";
 
 /**
  * The byte count `shader/scene-uniforms-size.ts` publishes for the scene block.
@@ -120,7 +122,7 @@ export interface UpstreamEmitOptions {
     textureTransform: boolean;
     imageBasedLighting: boolean;
     gpuInstancing: boolean;
-    multiLight: boolean;
+    punctualLights: boolean;
     clearcoat: boolean;
     sheen: boolean;
     sheenAlbedoScaling: boolean;
@@ -134,6 +136,14 @@ export interface UpstreamEmitOptions {
      * being replaced with.
      */
     pinnedVariants?: readonly PinnedVariantManifestEntry[];
+    /**
+     * The pin's own composed Standard variants — the Standard mirror of
+     * `pinnedVariants`, emitted as `standard_variants.hpp` plus the composed
+     * stages. Nothing sets this yet: the transcribed standard fragment stays
+     * live until wave D wires the PALs over, so the default-absent option
+     * keeps the generated tree byte-identical.
+     */
+    pinnedStandardVariants?: readonly PinnedStandardVariantManifestEntry[];
     /** The runtime material-handle count the variant gate checks. */
     pinnedMaterialCount?: number;
     /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
@@ -392,6 +402,11 @@ class GeneratedSourceWriter {
                 modulePath: "src/loader-gltf/gltf-sampler-desc.ts",
                 symbolName: "gltfTexSamplerDesc",
             });
+            generated.push(
+                { modulePath: "src/animation/evaluate.ts", symbolName: "normalizeQuat4" },
+                { modulePath: "src/animation/evaluate.ts", symbolName: "quatSlerp" },
+                { modulePath: "src/animation/evaluate.ts", symbolName: "evaluateSampler" },
+            );
         }
         if (features.includes("loader:babylon")) {
             this.writeSource(
@@ -469,8 +484,8 @@ class GeneratedSourceWriter {
                         options.imageBasedLighting,
                     gpuInstancing:
                         options.gpuInstancing,
-                    multiLight:
-                        options.multiLight,
+                    punctualLights:
+                        options.punctualLights,
                     clearcoat: options.clearcoat,
                     sheen: options.sheen,
                     sheenAlbedoScaling:
@@ -549,8 +564,8 @@ class GeneratedSourceWriter {
                     options.imageBasedLighting,
                 gpuInstancing:
                     options.gpuInstancing,
-                multiLight:
-                    options.multiLight,
+                punctualLights:
+                    options.punctualLights,
                 clearcoat: options.clearcoat,
                 sheen: options.sheen,
                 sheenAlbedoScaling: options.sheenAlbedoScaling,
@@ -735,6 +750,35 @@ class GeneratedSourceWriter {
                 data: variant.fragmentWgsl,
             });
         }
+        // The Standard family's pinned variants, mirroring the PBR flow
+        // above. Off until wave D: no caller sets the option, so no scene's
+        // tree changes; when one does, the header and the composed stages
+        // land beside the transcribed fragment they will eventually replace.
+        if ((options.pinnedStandardVariants ?? []).length > 0) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/standard_variants.hpp",
+                pinnedStandardVariantsHeader(
+                    context,
+                    "src/pinned-pbr-variant-cpp.ts " +
+                        "pinnedStandardVariantsHeader",
+                    options.pinnedStandardVariants!,
+                ),
+            );
+            for (const variant of options.pinnedStandardVariants!) {
+                composedShaders.push({
+                    output: `upstream/shaders/std-variant-${
+                        variant.vertex.replace(".wgsl", ".native.wgsl")
+                    }`,
+                    data: variant.vertexWgsl,
+                });
+                composedShaders.push({
+                    output: `upstream/shaders/std-variant-${
+                        variant.fragment.replace(".wgsl", ".native.wgsl")
+                    }`,
+                    data: variant.fragmentWgsl,
+                });
+            }
+        }
         if (composedShaders.length > 0) {
             for (const shader of composedShaders) {
                 this.tree.write(shader.output, shader.data);
@@ -831,7 +875,7 @@ export function emitUpstreamGenerated(
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,
-        multiLight: false,
+        punctualLights: false,
         clearcoat: false,
         sheen: false,
         sheenAlbedoScaling: false,
