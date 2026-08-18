@@ -60,11 +60,10 @@ interface CliOptions {
     width?: number;
     height?: number;
     idDiagnostics: boolean;
-    pbrDiagnostics: boolean;
 }
 
 function usage(): never {
-    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--id-diagnostics] [--pbr-diagnostics]");
+    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--id-diagnostics]");
     process.exit(2);
 }
 
@@ -87,7 +86,6 @@ function parseArguments(arguments_: string[]): CliOptions {
     let width: number | undefined;
     let height: number | undefined;
     let idDiagnostics = false;
-    let pbrDiagnostics = false;
 
     for (let index = 1; index < arguments_.length; index += 1) {
         const flag = arguments_[index];
@@ -114,9 +112,6 @@ function parseArguments(arguments_: string[]): CliOptions {
             case "--id-diagnostics":
                 idDiagnostics = true;
                 break;
-            case "--pbr-diagnostics":
-                pbrDiagnostics = true;
-                break;
             default:
                 throw new Error(`Unknown argument '${flag}'.`);
         }
@@ -130,7 +125,6 @@ function parseArguments(arguments_: string[]): CliOptions {
         input,
         output,
         idDiagnostics,
-        pbrDiagnostics,
         ...(title ? { title } : {}),
         ...(width ? { width } : {}),
         ...(height ? { height } : {}),
@@ -749,7 +743,6 @@ async function main(): Promise<void> {
                 : undefined;
     emitUpstreamGenerated(outputPath, result.manifest.features, {
         idDiagnostics: options.idDiagnostics,
-        pbrDiagnostics: options.pbrDiagnostics,
         shaderPrograms,
         geometryOutputTasks: result.manifest.geometryOutputTasks,
         gpuDeformation:

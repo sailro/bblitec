@@ -771,7 +771,6 @@ test("emits only reached WGSL composition modules", () => {
         standardMaterial: false,
         gridMaterial: true,
         idDiagnostics: false,
-        pbrDiagnostics: false,
         geometryOutputTasks: [],
     });
     const modules = shaders
@@ -794,7 +793,6 @@ test("generates portable GridMaterial shaders from pinned formulas", () => {
         standardMaterial: false,
         gridMaterial: true,
         idDiagnostics: false,
-        pbrDiagnostics: false,
         geometryOutputTasks: [],
     });
     const wgsl = shaders.find((shader) =>
@@ -829,7 +827,6 @@ test("generates typed geometry task records and PBR MRT shaders", () => {
         shaderPrograms: [],
         standardMaterial: false,
         idDiagnostics: false,
-        pbrDiagnostics: false,
         geometryOutputTasks: [
             {
                 shaderIndex: 0,
@@ -890,7 +887,6 @@ test("generates standard-material geometry output shaders", () => {
         shaderPrograms: [],
         standardMaterial: true,
         idDiagnostics: false,
-        pbrDiagnostics: false,
         geometryOutputTasks: [
             {
                 shaderIndex: 0,
@@ -933,7 +929,6 @@ test("emits only reached custom shader variants", () => {
         shaderPrograms: reachedPrograms(["alpha-card"]),
         standardMaterial: false,
         idDiagnostics: false,
-        pbrDiagnostics: false,
         geometryOutputTasks: [],
     });
     assert.ok(
@@ -958,7 +953,6 @@ test("emits only reached custom shader variants", () => {
         shaderPrograms: reachedPrograms(["circular-cutout"]),
         standardMaterial: false,
         idDiagnostics: false,
-        pbrDiagnostics: false,
         geometryOutputTasks: [],
     });
     const fragment = circularCutout.find((shader) =>

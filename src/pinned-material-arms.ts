@@ -32,10 +32,7 @@ import {
 } from "./pinned-pbr-variants.js";
 import type { PinnedSceneArm } from "./pinned-scene-arms.js";
 import type { ScenePbrMaterialManifest } from "./compiler/types.js";
-import {
-    pinnedMeshFeaturesFromPrimitive,
-    skinnedMeshIndices,
-} from "./pinned-mesh-features.js";
+import { pinnedMeshFeaturesFromPrimitive } from "./pinned-mesh-features.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 
 /**
@@ -454,37 +451,15 @@ export async function composeRenderableVariants(
         !documentHasDefaultMaterial(document)) {
         return [];
     }
-    const record = document as unknown as Record<string, unknown>;
-    const skinned = skinnedMeshIndices(record);
     // The first primitive drawn with each material. A material used on two
     // primitives with different attribute sets composes two variants; the
-    // renderable table keys on `(material, meshFeatures)` so both are reached.
+    // renderable table keys on `(material, meshFeatures)` so both are
+    // reached. Grouped from the same walk that keys the runtime's handles.
     const featureSets = new Map<number, Set<number>>();
-    const nodes = Array.isArray(record["nodes"])
-        ? (record["nodes"] as Record<string, unknown>[])
-        : [];
-    const meshes = Array.isArray(record["meshes"])
-        ? (record["meshes"] as Record<string, unknown>[])
-        : [];
-    for (const node of nodes) {
-        const meshIndex = node["mesh"];
-        if (typeof meshIndex !== "number") continue;
-        const primitives = meshes[meshIndex]?.["primitives"];
-        if (!Array.isArray(primitives)) continue;
-        for (const primitive of primitives as Record<string, unknown>[]) {
-            const material = typeof primitive["material"] === "number"
-                ? (primitive["material"] as number)
-                : (document.materials?.length ?? 0);
-            const features = await pinnedMeshFeaturesFromPrimitive(primitive, {
-                skinned: skinned.has(meshIndex),
-                instanced:
-                    (node["extensions"] as Record<string, unknown> | undefined)
-                        ?.["EXT_mesh_gpu_instancing"] !== undefined,
-            });
-            const set = featureSets.get(material) ?? new Set<number>();
-            set.add(features);
-            featureSets.set(material, set);
-        }
+    for (const renderable of await gltfRenderables(document)) {
+        const set = featureSets.get(renderable.material) ?? new Set<number>();
+        set.add(renderable.features);
+        featureSets.set(renderable.material, set);
     }
     const subjects = await materialSubjects(document, scene);
     const variants: PinnedRenderableVariant[] = [];
@@ -703,37 +678,33 @@ export async function composeScenePbrVariants(
 }
 
 /**
- * The mesh bits for every renderable a glTF document creates, keyed by the
- * runtime mesh handle.
- *
- * The pinned loader walks nodes in index order and each meshed node's
- * primitives in order (`load-gltf.ts`), and the lowered loader pushes one
- * MeshRecord per step of that same walk -- so index `i` here is runtime mesh
- * handle `i` for a scene whose meshes all come from this asset. The skeleton
- * bit is the node's: a skin sits on the node, not the mesh.
+ * One entry per renderable, in the pinned loader's own node-order walk:
+ * nodes by index, a meshed node's primitives in order. This is the walk
+ * that keys the runtime's mesh handles, and composition groups the same
+ * entries by material, so both sides read one traversal.
  */
-export async function gltfRenderableFeatures(
-    path: string,
-): Promise<readonly number[]> {
-    const document = glbDocument(path) as
-        | (GltfDocument & Record<string, unknown>)
-        | undefined;
-    if (!document) return [];
-    const nodes = Array.isArray(document["nodes"])
-        ? (document["nodes"] as Record<string, unknown>[])
+export async function gltfRenderables(
+    document: GltfDocument,
+): Promise<ReadonlyArray<{ material: number; features: number }>> {
+    const record = document as unknown as Record<string, unknown>;
+    const nodes = Array.isArray(record["nodes"])
+        ? (record["nodes"] as Record<string, unknown>[])
         : [];
-    const meshes = Array.isArray(document["meshes"])
-        ? (document["meshes"] as Record<string, unknown>[])
+    const meshes = Array.isArray(record["meshes"])
+        ? (record["meshes"] as Record<string, unknown>[])
         : [];
-    const features: number[] = [];
+    const renderables: { material: number; features: number }[] = [];
     for (const node of nodes) {
         const meshIndex = node["mesh"];
         if (typeof meshIndex !== "number") continue;
         const primitives = meshes[meshIndex]?.["primitives"];
         if (!Array.isArray(primitives)) continue;
         for (const primitive of primitives as Record<string, unknown>[]) {
-            features.push(
-                await pinnedMeshFeaturesFromPrimitive(primitive, {
+            renderables.push({
+                material: typeof primitive["material"] === "number"
+                    ? (primitive["material"] as number)
+                    : (document.materials?.length ?? 0),
+                features: await pinnedMeshFeaturesFromPrimitive(primitive, {
                     skinned: node["skin"] !== undefined,
                     instanced:
                         (node["extensions"] as
@@ -741,10 +712,23 @@ export async function gltfRenderableFeatures(
                             | undefined)?.["EXT_mesh_gpu_instancing"] !==
                         undefined,
                 }),
-            );
+            });
         }
     }
-    return features;
+    return renderables;
+}
+
+/**
+ * The mesh attribute bits per renderable, in the runtime's handle order.
+ */
+export async function gltfRenderableFeatures(
+    path: string,
+): Promise<readonly number[]> {
+    const document = glbDocument(path);
+    if (!document) return [];
+    return (await gltfRenderables(document)).map(
+        (renderable) => renderable.features,
+    );
 }
 
 /**

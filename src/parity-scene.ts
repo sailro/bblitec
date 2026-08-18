@@ -210,7 +210,6 @@ export function runNative(
     nativeEnvironment?: Record<string, string>,
     idBufferPath?: string,
     clusterBufferPath?: string,
-    diagnosticDirectory?: string,
     generatedDirectory?: string,
 ): void {
     if (!existsSync(executable)) {
@@ -249,9 +248,6 @@ export function runNative(
                       ...(idBufferPath ? { BBLITE_ID_BUFFER: resolve(idBufferPath) } : {}),
                       ...(clusterBufferPath
                           ? { BBLITE_CLUSTER_BUFFER: resolve(clusterBufferPath) }
-                          : {}),
-                      ...(diagnosticDirectory
-                          ? { BBLITE_DIAGNOSTIC_DIR: resolve(diagnosticDirectory) }
                           : {}),
                   }
                 : {
@@ -426,9 +422,6 @@ export async function runSceneParity(
             config.nativeEnvironment,
             idBufferPath,
             clusterBufferPath,
-            // The PBR diagnostics instrument retired with the transcribed
-            // fragment it rendered through.
-            undefined,
             resolve(scene.output),
         );
     }

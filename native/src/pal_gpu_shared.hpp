@@ -462,6 +462,32 @@ inline std::vector<std::array<float, 16>> pinned_instance_matrices(
     return result;
 }
 
+/** Whether a record draws through the pin's thin-instance arm: stamped by
+ *  the scene setter or filled by the glTF EXT_mesh_gpu_instancing pool. */
+inline bool pinned_record_instanced(const MeshRecord& record) {
+    return record.thin_instanced || !record.instance_matrices.empty();
+}
+
+/**
+ * Whether a task's draw lists contain a PBR draw. A geometry task whose
+ * draws are PBR renders through the pin's reverse-Z contract (reverse
+ * matrix, GREATER pipelines, zero depth clear), and both backends make the
+ * same decision from the same lists.
+ */
+inline bool pinned_lists_have_pbr(const upstream::RenderDrawLists& lists) {
+    for (const upstream::RenderDrawList* list :
+         {&lists.opaque, &lists.transparent}) {
+        for (const upstream::RenderDrawCommand& draw : list->commands) {
+            if (
+                draw.item.material_kind ==
+                upstream::RenderMaterialKind::pbr) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 /** The identity, for a skinned draw whose palette already carries everything. */
 inline std::array<float, 16> pinned_identity_world() {
     return {
@@ -502,6 +528,29 @@ inline std::array<float, 16> pinned_instanced_world(
     world[2] = -world[2];
     world[3] = -world[3];
     return world;
+}
+
+/**
+ * The pin's mesh-block world for one draw, whichever convention arm it rides.
+ *
+ * Skinned draws take the identity (the palette carries everything), an
+ * animated no-skin mesh takes its single palette entry as the pin's
+ * finalWorld, a thin-instanced or LOCAL_POSITION draw takes the real node
+ * world beside unbaked position data, and everything else takes the bare
+ * mirror over baked vertices. Shared because the same chain decides the
+ * block in the SDL draw and both of Dawn's write sites.
+ */
+inline std::array<float, 16> pinned_draw_world(
+    bool skeleton_draw,
+    bool world_from_palette,
+    bool uses_local_position,
+    const MeshRecord& record) {
+    if (skeleton_draw) return pinned_identity_world();
+    if (world_from_palette) return record.bone_matrices[0];
+    if (uses_local_position || pinned_record_instanced(record)) {
+        return pinned_instanced_world(record);
+    }
+    return pinned_mesh_world();
 }
 #endif
 
@@ -692,24 +741,6 @@ inline bool pinned_variant_skeleton(std::size_t variant) {
         std::string_view::npos;
 }
 
-inline bool pinned_variant_supported(std::size_t variant) {
-    const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
-    std::string_view key = entry.key;
-    while (!key.empty()) {
-        const std::size_t bar = key.find('|');
-        const std::string_view arm = key.substr(0, bar);
-        // Every arm passes. Sheen was the last refusal and closed at
-        // 0.000 / 0.009 on both backends once the two-listing comparison
-        // (`scene -- uniforms` against the capture's `pinnedMaterialBlocks`)
-        // found the base UV transforms falling back to the identity.
-        (void)arm;
-
-        if (bar == std::string_view::npos) break;
-        key = key.substr(bar + 1);
-    }
-    return true;
-}
-
 inline std::size_t pinned_variant_for_draw(
     const Scene& scene,
     const Engine& engine,
@@ -815,9 +846,7 @@ inline std::size_t pinned_variant_for_draw(
         single_light_type,
         scene.environment.tone_mapping_enabled,
         geometry_task);
-    if (
-        variant == std::numeric_limits<std::size_t>::max() ||
-        !pinned_variant_supported(variant)) {
+    if (variant == std::numeric_limits<std::size_t>::max()) {
         return std::numeric_limits<std::size_t>::max();
     }
     // A skeleton variant needs the palette to exist or the deformation is
@@ -991,7 +1020,6 @@ struct FrameOptions {
     std::string screenshot_path;
     std::string id_buffer_path;
     std::string cluster_buffer_path;
-    std::string diagnostic_directory;
     std::string shader_directory;
     std::string copy_task_filter;
     std::string deformation_dump;
@@ -1047,8 +1075,6 @@ inline FrameOptions read_frame_options() {
     options.id_buffer_path = environment_variable("BBLITE_ID_BUFFER");
     options.cluster_buffer_path =
         environment_variable("BBLITE_CLUSTER_BUFFER");
-    options.diagnostic_directory =
-        environment_variable("BBLITE_DIAGNOSTIC_DIR");
     options.shader_directory =
         environment_variable("BBLITE_GPU_SHADER_DIR");
     options.copy_task_filter = environment_variable("BBLITE_COPY_TASK");
@@ -1203,7 +1229,6 @@ public:
     bool screenshot_saved = false;
     bool id_buffer_saved = false;
     bool cluster_buffer_saved = false;
-    bool diagnostics_saved = false;
     bool render_capture_saved = false;
 
     [[nodiscard]] bool pending() const {
@@ -1213,8 +1238,6 @@ public:
              !id_buffer_saved) ||
             (!options_->cluster_buffer_path.empty() &&
              !cluster_buffer_saved) ||
-            (!options_->diagnostic_directory.empty() &&
-             !diagnostics_saved) ||
             (!options_->render_capture_path.empty() &&
              !render_capture_saved);
     }
@@ -1278,21 +1301,6 @@ inline void reject_unsupported_frame_options(
             "SDL_GPU.");
     }
 }
-
-// The PBR diagnostic buffers both backends write, in the order
-// `parity` records them against a scene whose registry entry asks for
-// attribution diagnostics.
-inline constexpr std::array<const char*, 9> pbr_diagnostic_names{
-    "normal-gpu.png",
-    "reflectivity-gpu.png",
-    "irradiance-gpu.png",
-    "ibl-gpu.png",
-    "normalized-depth-gpu.png",
-    "albedo-gpu.png",
-    "direct-light-gpu.png",
-    "base-color-gpu.png",
-    "pre-tone-hdr-gpu.png",
-};
 
 // The readback inverse of float_to_half below, shared by both backends'
 // screenshot and diagnostic-buffer paths: a half-float channel decoded

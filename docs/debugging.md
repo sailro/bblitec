@@ -304,7 +304,6 @@ the wrong one wastes the run:
 | `capture` | The browser's ground truth: composed WGSL, texture uploads, per-draw isolation with `--skip-draw`. `diff` consumes a subset of it and reports differences; the capture itself is what you read when `diff` says a value has no counterpart. |
 | `uniforms` | One browser buffer in full, decoded under **every** candidate layout of its size, ambiguity included. `diff` picks a correspondence; `uniforms` refuses to and shows you all of them. |
 | attribution buffers | Which draw owns which pixels, joined to nodes, meshes, materials and alpha state. Nothing else maps a screen region to a draw. |
-| PBR diagnostic buffers | The shader's intermediate terms — normal, reflectivity, irradiance, IBL, albedo, direct light, pre-tonemap HDR. The only view *inside* a fragment; uniforms tell you the inputs were right, these tell you which term went wrong. |
 | `geometry` | Frame-graph copy-task attachments at full resolution. `diff` does not look at render targets at all. |
 | `BBLITE_DEFORMATION_DUMP` | Bone palettes and morph weights per mesh. The render capture records the material and scene uniforms, not the skinning matrices. |
 | `compose` | Whether our *feature derivation* is right, which every tool above assumes. They compare what two renderers did; `compose` compares what Babylon Lite would have built against what we built it from, so it catches a fragment that is missing an arm entirely — the failure that renders as a plausible small bias and never as an error. |

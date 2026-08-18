@@ -789,6 +789,9 @@ export function lightUniformsBlock(
     // Always declared, so a PAL needs no per-kind guard of its own; a scene that
     // compiles no light gets a body that writes nothing, because it has no light
     // to write.
+    const reachedLightWriters = lightWriters.filter(
+        (light) => lightKinds.includes(light.kind.toLowerCase()),
+    );
     const dispatch = [
         "",
         "",
@@ -796,17 +799,26 @@ export function lightUniformsBlock(
         "inline void write_pinned_light(",
         "    const LightRecord& light,",
         "    LightEntry& out) {",
-        "    switch (light.kind) {",
-        ...lightWriters
-            .filter((light) => lightKinds.includes(light.kind.toLowerCase()))
-            .flatMap((light) => [
-                `        case LightKind::${light.kind.toLowerCase()}:`,
-                `            write_${light.kind.toLowerCase()}_light(light, out);`,
+        // A lightless scene emits a body that writes nothing, without the
+        // caseless switch MSVC warns about.
+        ...(reachedLightWriters.length === 0
+            ? [
+                "    (void)light;",
+                "    (void)out;",
+            ]
+            : [
+                "    switch (light.kind) {",
+                ...reachedLightWriters.flatMap((light) => [
+                    `        case LightKind::${light.kind.toLowerCase()}:`,
+                    `            write_${
+                        light.kind.toLowerCase()
+                    }_light(light, out);`,
+                    "            return;",
+                ]),
+                "        default:",
                 "            return;",
+                "    }",
             ]),
-        "        default:",
-        "            return;",
-        "    }",
         "}",
     ].join("\n");
     return `// src/light/types.ts MAX_LIGHTS\n` +
@@ -1058,6 +1070,9 @@ export function pinnedPbrVariantsHeader(
                 `    const MaterialRecord& material,\n` +
                 `    const TextureTransform& transform,\n` +
                 `    ${name}MaterialUniforms& out) {\n` +
+                // A writer whose slots carry no UV transform never reads the
+                // parameter; the cast keeps the shared signature warning-free.
+                `    (void)transform;\n` +
                 `${
                     lowerPinnedUboWriter(context, {
                         modulePath: extension.modulePath,

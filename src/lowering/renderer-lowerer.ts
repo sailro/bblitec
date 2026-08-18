@@ -2603,7 +2603,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         standardSpotLights?: boolean;
         gridMaterial?: boolean;
         idDiagnostics: boolean;
-        pbrDiagnostics: boolean;
         geometryOutputTasks: GeometryOutputTaskManifest[];
         frameGraph?: boolean;
         gpuDeformation?: boolean;
@@ -2634,7 +2633,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         standardVertexColors: false,
         gridMaterial: false,
         idDiagnostics: true,
-        pbrDiagnostics: true,
         geometryOutputTasks: [],
         gpuDeformation: false,
         morphStorage: false,
@@ -3025,7 +3023,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                     options.geometryOutputTasks.length > 0,
                     "geometry outputs",
                 ],
-                [options.pbrDiagnostics, "PBR diagnostics"],
                 [
                     options.shaderPrograms.length > 0,
                     "custom shader materials",

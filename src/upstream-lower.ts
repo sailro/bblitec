@@ -86,7 +86,6 @@ import type {
  */
 export interface UpstreamEmitOptions {
     idDiagnostics: boolean;
-    pbrDiagnostics: boolean;
     shaderPrograms: CompiledShaderProgram[];
     geometryOutputTasks: GeometryOutputTaskManifest[];
     gpuDeformation: boolean;
@@ -501,7 +500,6 @@ class GeneratedSourceWriter {
                 standardSpotLights: features.includes("light:spot"),
                 gridMaterial: features.includes("material:grid"),
                 idDiagnostics: options.idDiagnostics,
-                pbrDiagnostics: options.pbrDiagnostics,
                 geometryOutputTasks: options.geometryOutputTasks,
                 frameGraph: features.includes("renderer:geometry-output"),
                 gpuDeformation: options.gpuDeformation,
@@ -757,7 +755,6 @@ export function emitUpstreamGenerated(
     features: string[],
     options: UpstreamEmitOptions = {
         idDiagnostics: false,
-        pbrDiagnostics: false,
         shaderPrograms: [],
         geometryOutputTasks: [],
         gpuDeformation: false,

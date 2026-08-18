@@ -16,9 +16,7 @@ export interface SceneParityDefinition {
     backgroundColor: [number, number, number];
     backgroundThreshold: number;
     nativeEnvironment?: Record<string, string>;
-    // The draw-id and triangle-cluster attribution buffers; the PBR
-    // diagnostics instrument retired with the transcribed fragment it
-    // rendered through.
+    // The draw-id and triangle-cluster attribution buffers.
     attribution?: {
         specialization: string;
         drawIds: boolean;
