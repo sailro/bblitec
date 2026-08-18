@@ -4,6 +4,7 @@ import { LoweredSource, LoweringContext } from "./context.js";
 import {
     GltfExtensionDefaults,
     GltfLoweredDefault,
+    GltfMaterialDefaults,
     gltfLoaderCpp,
 } from "./templates/gltf-loader-cpp.js";
 
@@ -315,19 +316,43 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 "src/loader-gltf/gltf-ext-iridescence.ts",
             ),
         );
+        const materialDefaults = lowerGltfMaterialDefaults({
+            material: this.context.sourceFile(
+                "src/loader-gltf/gltf-material.ts",
+            ),
+            dielectric,
+            uvTransform: this.context.sourceFile(
+                "src/loader-gltf/gltf-ext-uv-transform.ts",
+            ),
+            uvTransformWriter: this.context.sourceFile(
+                "src/material/pbr/fragments/uv-transform-fragment.ts",
+            ),
+            clearcoat: this.context.sourceFile(
+                "src/loader-gltf/gltf-ext-clearcoat.ts",
+            ),
+            sheen: this.context.sourceFile(
+                "src/loader-gltf/gltf-ext-sheen.ts",
+            ),
+            emissiveStrength: this.context.sourceFile(
+                "src/loader-gltf/gltf-ext-emissive-strength.ts",
+            ),
+        });
         const parserFile = this.context.sourceFile(
             "src/loader-gltf/gltf-parser.ts",
+        );
+        const composeFile = this.context.sourceFile(
+            "src/math/mat4-compose-into.ts",
         );
         const matrixMultiply = lowerMatrixMultiplyCpp(
             this.context.sourceFile(
                 "src/math/mat4-multiply-into.ts",
             ),
         );
-        const matrixCompose = lowerMatrixComposeCpp(
-            this.context.sourceFile(
-                "src/math/mat4-compose-into.ts",
-            ),
+        const matrixLocal = lowerLocalMatrixCpp(
+            parserFile,
+            composeFile,
         );
+        const matrixCompose = lowerMatrixComposeCpp(composeFile);
         const matrixNative = lowerMatrixNativeCpp(parserFile);
         const iblPolynomial = lowerIblPolynomialCpp(imageBasedFile);
         const iblEnvironmentScalars =
@@ -359,7 +384,9 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     shPrescale,
                     imageProcessingDefaults,
                     extensionDefaults,
+                    materialDefaults,
                     matrixMultiply,
+                    matrixLocal,
                     matrixCompose,
                     matrixNative,
                     iblPolynomial,
@@ -4286,25 +4313,27 @@ export function lowerGltfExtensionDefaults(
  * Same contract again: the emitters own the translation, never the
  * formula. Round 3 lowers the matrix family, the EXT_lights_image_based
  * polynomial conversion and environment scalars, and the
- * KHR_lights_punctual record build. Two members of the matrix family are
- * deliberately NOT lowered, because their hand-written text does not
- * match any pin under the documented translations:
+ * KHR_lights_punctual record build. Round 3 left two members of the
+ * matrix family hand-written as open decisions; round 4 resolved both:
  *
- *   - `local_matrix` transcribes the same pinned `mat4ComposeInto` that
- *     `trs_matrix` lowers, but in float arithmetic over `float_array`
- *     inputs. The pin composes raw JSON doubles and rounds once per
- *     entry at the (default-F32) scratch store; the record rounds the
- *     JSON values to float first and then rounds every intermediate.
- *     The two differ in the last ulps (e.g. an exact 90-degree
- *     quaternion yields m[0] = 5.96e-8f in the record against the pin's
- *     -2.2e-16f). Lowering it would bless the divergence as the pin, so
- *     it stays hand-written and reported as a candidate defect.
+ *   - `local_matrix` used to transcribe the pinned `mat4ComposeInto` in
+ *     float arithmetic over `float_array` inputs, where the pin
+ *     composes raw JSON doubles and rounds once per entry at the
+ *     (default-F32) scratch store — a last-ulp divergence (an exact
+ *     90-degree quaternion yielded m[0] = 5.96e-8f against the pin's
+ *     -2.2e-16f). The port rule (match the pin) resolves it: the raw
+ *     doubles ARE reachable at that point (`local_matrix` receives the
+ *     parsed JSON object, and `as_number()` is a double), so
+ *     `lowerLocalMatrixCpp` now emits the function from
+ *     `computeNodeWorldMatrix` + the same compose walk `trs_matrix`
+ *     uses, reading the JSON as doubles and rounding once per lane at
+ *     the store — the pin's own precision chain.
  *
- *   - `inverse_affine` has no call site in any emitted loader, and its
- *     3x3-cofactor formula (epsilon 1e-6, identity fallback) matches
+ *   - `inverse_affine` had no call site in any emitted loader, and its
+ *     3x3-cofactor formula (epsilon 1e-6, identity fallback) matched
  *     neither the pinned `mat4Invert` (full 4x4 cofactors in a different
  *     association, epsilon 1e-10, null fallback) nor any caller's
- *     convention. Dead and unpinnable; reported, not lowered.
+ *     convention. Dead and unpinnable; DELETED from the template.
  *
  * The translations round 3 does own, documented once here:
  *   - `native_matrix` is the record's convention, not a pinned formula:
@@ -4734,17 +4763,28 @@ export function lowerMatrixMultiplyCpp(file: ts.SourceFile): string {
     ].join("\n");
 }
 
+/** The pinned `mat4ComposeInto` body, walked once for both emitters. */
+interface ComposePinWalk {
+    /** The pin's quaternion parameter names, in lane order. */
+    quaternionNames: string[];
+    /** The pin's scale parameter names — the emitted local names. */
+    scaleNames: string[];
+    /** `const double xx = x * x;` … with lane-mapped names. */
+    productLines: string[];
+    /** The rendered double expression per non-identity rotation lane. */
+    rotationStores: { lane: number; text: string }[];
+}
+
 /**
- * `mat4ComposeInto` → `trs_matrix`.
- *
- * The quaternion parameters lift to double lanes named x..w, the
- * product locals and every store expression render from the pin
- * (doubles, one `static_cast<float>` per Float32Array store), the
- * constant lanes 3/7/11/15 are verified 0/1 and folded into the
- * identity seed, and the translation lanes must store the raw
- * parameters (a float-to-float store, exact on both sides).
+ * Walks `mat4ComposeInto`: the quaternion parameters lift to double
+ * lanes named x..w, the product locals and every store expression
+ * render from the pin (doubles, one `static_cast<float>` per
+ * Float32Array store), the constant lanes 3/7/11/15 are verified 0/1
+ * and folded into the identity seed, and the translation lanes must
+ * store the raw parameters. `trs_matrix` and `local_matrix` both emit
+ * from this one walk.
  */
-export function lowerMatrixComposeCpp(file: ts.SourceFile): string {
+function composePinWalk(file: ts.SourceFile): ComposePinWalk {
     const symbol = "mat4ComposeInto";
     const declaration = topLevelFunction(file, symbol);
     const parameters = identifierParameters(symbol, file, declaration);
@@ -4815,7 +4855,7 @@ export function lowerMatrixComposeCpp(file: ts.SourceFile): string {
             names.set(binding.name.text, binding.name.text);
         }
     }
-    const storeLines: string[] = [];
+    const rotationStores: { lane: number; text: string }[] = [];
     let lane = 0;
     for (; index < statements.length; index += 1, lane += 1) {
         const statement = statements[index]!;
@@ -4863,21 +4903,22 @@ export function lowerMatrixComposeCpp(file: ts.SourceFile): string {
                     `no longer stores the raw translation in lane ${lane}`,
                 );
             }
-            storeLines.push(
-                `    result[${lane}] = translation.` +
-                    `${laneMembers[lane - 12]!};`,
-            );
             continue;
         }
-        storeLines.push(
-            `    result[${lane}] = static_cast<float>(${
-                renderCppExpression(scope, assignment.right).text
-            });`,
-        );
+        rotationStores.push({
+            lane,
+            text: renderCppExpression(scope, assignment.right).text,
+        });
     }
     if (lane !== 16) {
         refuseModule(symbol, "no longer stores all sixteen components");
     }
+    return { quaternionNames, scaleNames, productLines, rotationStores };
+}
+
+/** `mat4ComposeInto` → `trs_matrix` (float lanes lifted to double). */
+export function lowerMatrixComposeCpp(file: ts.SourceFile): string {
+    const walk = composePinWalk(file);
     return [
         "Matrix trs_matrix(",
         "    Vec3 translation,",
@@ -4886,19 +4927,255 @@ export function lowerMatrixComposeCpp(file: ts.SourceFile): string {
         "    // Pinned mat4ComposeInto runs in JavaScript double precision and",
         "    // rounds once at the Float32Array store; mirror its products and",
         "    // association exactly.",
-        ...quaternionNames.map(
+        ...walk.quaternionNames.map(
             (_, quaternionLane) =>
                 `    const double ${laneMembers[quaternionLane]!} = ` +
                 `rotation.${laneMembers[quaternionLane]!};`,
         ),
-        ...productLines,
-        ...scaleNames.map(
+        ...walk.productLines,
+        ...walk.scaleNames.map(
             (name, scaleLane) =>
                 `    const double ${name} = ` +
                 `scale.${laneMembers[scaleLane]!};`,
         ),
         "    Matrix result = identity_matrix();",
-        ...storeLines,
+        ...walk.rotationStores.map(
+            (store) =>
+                `    result[${store.lane}] = ` +
+                `static_cast<float>(${store.text});`,
+        ),
+        "    result[12] = translation.x;",
+        "    result[13] = translation.y;",
+        "    result[14] = translation.z;",
+        "    return result;",
+        "}",
+    ].join("\n");
+}
+
+/** `node[index]` with a numeric literal index → the index, else undefined. */
+function numericElementIndex(
+    expression: ts.Expression,
+    baseName: string,
+): number | undefined {
+    const read = unwrapPin(expression);
+    if (
+        !ts.isElementAccessExpression(read) ||
+        identifierText(read.expression) !== baseName
+    ) {
+        return undefined;
+    }
+    const index = unwrapPin(read.argumentExpression);
+    return ts.isNumericLiteral(index) ? Number(index.text) : undefined;
+}
+
+/** One TRS input of the pinned local compose: JSON key and defaults. */
+interface LocalComposeInput {
+    bindingName: string;
+    key: string;
+    defaults: number[];
+}
+
+/**
+ * `computeNodeWorldMatrix` + `mat4ComposeInto` → `local_matrix`.
+ *
+ * The pin hands the compose the RAW JSON doubles
+ * (`node.translation ?? [0, 0, 0]`, `node.rotation ?? [0, 0, 0, 1]`,
+ * `node.scale ?? [1, 1, 1]`) and the F32-backed scratch store rounds
+ * each lane exactly once, so the emitted function reads the JSON as
+ * doubles, composes the same products, and applies one
+ * `static_cast<float>` per lane — the camera-precision rule: round
+ * where the pin's Float32Array stores are, never earlier. The record
+ * used to round the inputs at a `float_array` read and compose in
+ * float, which diverges from the pin in the last ulps (an exact
+ * 90-degree yaw landed m[0] at 5.96e-8f where the pin stores
+ * -2.22e-16f). The authored-matrix arm mirrors the pin's
+ * `new F32(node.matrix)`: one float rounding per element at the copy.
+ *
+ * Everything flows: the three JSON keys and their whole-array defaults
+ * from `computeNodeWorldMatrix`, the argument order from its
+ * `mat4ComposeInto` call, and the product/store expressions from the
+ * same walk `trs_matrix` emits from. The 16-length throw on the
+ * authored-matrix arm is record plumbing (the pin copies whatever the
+ * JSON carries; the record refuses a malformed file instead).
+ */
+export function lowerLocalMatrixCpp(
+    parserFile: ts.SourceFile,
+    composeFile: ts.SourceFile,
+): string {
+    const walk = composePinWalk(composeFile);
+    const symbol = "computeNodeWorldMatrix";
+    const declaration = topLevelFunction(parserFile, symbol);
+    // The authored-matrix arm: `if (node.matrix) { … new F32(node.matrix) … }`.
+    const matrixBranches = collectNodes(
+        declaration,
+        (node): node is ts.IfStatement =>
+            ts.isIfStatement(node) &&
+            ts.isPropertyAccessExpression(unwrapPin(node.expression)) &&
+            (unwrapPin(node.expression) as ts.PropertyAccessExpression)
+                    .name.text === "matrix",
+    );
+    if (matrixBranches.length !== 1) {
+        refuseModule(
+            symbol,
+            "no longer branches on the authored node matrix exactly once",
+        );
+    }
+    const matrixBranch = matrixBranches[0]!;
+    const matrixKey =
+        (unwrapPin(matrixBranch.expression) as ts.PropertyAccessExpression)
+            .name.text;
+    const matrixCopies = collectNodes(
+        matrixBranch.thenStatement,
+        (node): node is ts.NewExpression =>
+            ts.isNewExpression(node) &&
+            identifierText(node.expression) === "F32" &&
+            node.arguments?.length === 1 &&
+            ts.isPropertyAccessExpression(unwrapPin(node.arguments[0]!)) &&
+            (unwrapPin(node.arguments[0]!) as ts.PropertyAccessExpression)
+                    .name.text === matrixKey,
+    );
+    if (matrixCopies.length !== 1) {
+        refuseNode(
+            symbol,
+            parserFile,
+            matrixBranch,
+            "no longer copies the authored matrix into a fresh Float32Array",
+        );
+    }
+    // The TRS arm's whole-array defaults, keyed by binding name.
+    const inputs = new Map<string, LocalComposeInput>();
+    for (const binding of collectNodes(
+        declaration,
+        (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.initializer !== undefined,
+    )) {
+        const coalesced = coalescedPropertyDefault(binding.initializer!);
+        if (!coalesced) continue;
+        const fallback = unwrapPin(coalesced.fallback);
+        if (!ts.isArrayLiteralExpression(fallback)) continue;
+        inputs.set((binding.name as ts.Identifier).text, {
+            bindingName: (binding.name as ts.Identifier).text,
+            key: coalesced.key,
+            defaults: fallback.elements.map((element) =>
+                signedNumericValue(symbol, parserFile, element)
+            ),
+        });
+    }
+    // The compose call fixes which binding feeds which parameter block.
+    const composeCalls = collectNodes(
+        declaration,
+        (node): node is ts.CallExpression =>
+            ts.isCallExpression(node) &&
+            identifierText(node.expression) === "mat4ComposeInto",
+    );
+    if (
+        composeCalls.length !== 1 ||
+        composeCalls[0]!.arguments.length !== 12
+    ) {
+        refuseModule(
+            symbol,
+            "no longer composes the node TRS through one " +
+                "mat4ComposeInto call",
+        );
+    }
+    const composeArguments = composeCalls[0]!.arguments.slice(2);
+    const blockOf = (
+        start: number,
+        count: number,
+    ): LocalComposeInput => {
+        let input: LocalComposeInput | undefined;
+        for (let lane = 0; lane < count; lane += 1) {
+            const argument = unwrapPin(composeArguments[start + lane]!);
+            const read = ts.isElementAccessExpression(argument)
+                ? argument
+                : undefined;
+            const base = read
+                ? identifierText(read.expression)
+                : undefined;
+            const candidate = base !== undefined
+                ? inputs.get(base)
+                : undefined;
+            if (
+                !read ||
+                !candidate ||
+                numericElementIndex(read, candidate.bindingName) !== lane ||
+                (input !== undefined && candidate !== input)
+            ) {
+                refuseNode(
+                    symbol,
+                    parserFile,
+                    composeArguments[start + lane]!,
+                    "no longer reads the raw JSON lanes in parameter order",
+                );
+            }
+            input = candidate;
+        }
+        if (!input || input.defaults.length !== count) {
+            refuseModule(
+                symbol,
+                "no longer defaults a TRS input to the lane count " +
+                    "its parameter block consumes",
+            );
+        }
+        return input;
+    };
+    const translation = blockOf(0, 3);
+    const quaternion = blockOf(3, walk.quaternionNames.length);
+    const scale = blockOf(3 + walk.quaternionNames.length, 3);
+    const translationNames = ["tx", "ty", "tz"];
+    const laneLine = (
+        cppName: string,
+        input: LocalComposeInput,
+        lane: number,
+        vector: string,
+    ): string =>
+        `    const double ${cppName} = ${vector}.size() == ` +
+        `${input.defaults.length} ? ${vector}[${lane}] : ` +
+        `${doubleLiteral(input.defaults[lane]!)};`;
+    return [
+        "Matrix local_matrix(const JsonObject& node) {",
+        `    if (const ts::JsonValue* matrix_value = optional(node, "${matrixKey}")) {`,
+        "        const std::vector<float> values = float_array(matrix_value);",
+        '        if (values.size() != 16) throw std::runtime_error("glTF node matrix must have 16 values.");',
+        "        Matrix result{};",
+        "        std::copy(values.begin(), values.end(), result.begin());",
+        "        return result;",
+        "    }",
+        "    // Pinned computeNodeWorldMatrix hands mat4ComposeInto the raw",
+        "    // JSON doubles and the F32-backed scratch store rounds each lane",
+        "    // exactly once. Camera-precision rule: round where the pin's",
+        "    // Float32Array stores are, never earlier — floats rounded at the",
+        "    // JSON read and composed in float diverge in the last ulps (an",
+        "    // exact 90-degree yaw lands m[0] at 5.96e-8f where the pin",
+        "    // stores -2.22e-16f).",
+        "    const std::vector<double> translation = " +
+        `double_array(optional(node, "${translation.key}"));`,
+        "    const std::vector<double> rotation = " +
+        `double_array(optional(node, "${quaternion.key}"));`,
+        "    const std::vector<double> scale = " +
+        `double_array(optional(node, "${scale.key}"));`,
+        ...translationNames.map((name, lane) =>
+            laneLine(name, translation, lane, "translation")
+        ),
+        ...walk.quaternionNames.map((_, lane) =>
+            laneLine(laneMembers[lane]!, quaternion, lane, "rotation")
+        ),
+        ...walk.scaleNames.map((name, lane) =>
+            laneLine(name, scale, lane, "scale")
+        ),
+        ...walk.productLines,
+        "    Matrix result = identity_matrix();",
+        ...walk.rotationStores.map(
+            (store) =>
+                `    result[${store.lane}] = ` +
+                `static_cast<float>(${store.text});`,
+        ),
+        ...translationNames.map(
+            (name, lane) =>
+                `    result[${12 + lane}] = static_cast<float>(${name});`,
+        ),
         "    return result;",
         "}",
     ].join("\n");
@@ -6411,4 +6688,802 @@ export function lowerPunctualLightsCpp(
         `                        "${rangeKey}",`,
         "                        std::numeric_limits<float>::max());",
     ].join("\n");
+}
+
+/*
+ * ──────────────────── round-4 loader leaves ────────────────────
+ *
+ * The final float defaults of the material build, lowered from the
+ * pinned modules that substitute them. Same contract: keys and
+ * constants flow, shapes the walk cannot carry refuse, and a numeric
+ * default the pin adds that no entry consumes refuses.
+ *
+ * Three absent-arm asymmetries, documented once here:
+ *
+ *   - `baseColorFactor`'s absent arm is the native record default
+ *     (`runtime.hpp` `MaterialRecord.base_color_factor{1,1,1,1}`), which
+ *     this emitter cannot regenerate — so the pinned `?? [1, 1, 1, 1]`
+ *     is verified and a moved default refuses instead of flowing. The
+ *     emissive seed, by contrast, is written by the template itself, so
+ *     the pinned `?? [0, 0, 0]` flows into the emitted `Color3`.
+ *
+ *   - The KHR_texture_transform identity lives twice in the pin: the
+ *     pinned `wrapTexture` patches only the declared fields (a truthy
+ *     guard, so an authored rotation 0 and an absent rotation are the
+ *     same value), and every pinned writer reads `tex?.uAng ?? 0`,
+ *     `?? 1` for the scales. The record compresses both into load-time
+ *     defaults: `float_or(transform, "rotation", 0)` here and the
+ *     native `TextureTransform{1, 1, 0, 0, 0}` construction
+ *     (`runtime.hpp`) for the wholly absent transform. The writer's
+ *     five identity constants are therefore verified against that
+ *     record identity, and any moved one refuses — flowing rotation
+ *     alone would leave the native absent-arm silently wrong.
+ *
+ *   - `doubleSided`'s absent arm is the pin's `!!mat.doubleSided`
+ *     (undefined coerces to false); the record's `bool_or(..., false)`
+ *     is that same coercion, so only the key flows.
+ */
+
+/** `typeof e?.key === "number" ? e.key : fallback` → key and fallback. */
+function typeofNumberDefault(
+    expression: ts.Expression,
+): { key: string; value: number } | undefined {
+    const conditional = unwrapPin(expression);
+    if (!ts.isConditionalExpression(conditional)) return undefined;
+    const condition = unwrapPin(conditional.condition);
+    if (
+        !ts.isBinaryExpression(condition) ||
+        condition.operatorToken.kind !==
+            ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        !ts.isTypeOfExpression(unwrapPin(condition.left)) ||
+        !ts.isStringLiteral(unwrapPin(condition.right)) ||
+        (unwrapPin(condition.right) as ts.StringLiteral).text !== "number"
+    ) {
+        return undefined;
+    }
+    const typeofRead = unwrapPin(
+        (unwrapPin(condition.left) as ts.TypeOfExpression).expression,
+    );
+    if (
+        !ts.isPropertyAccessExpression(typeofRead) &&
+        !ts.isPropertyAccessChain(typeofRead)
+    ) {
+        return undefined;
+    }
+    const whenTrue = unwrapPin(conditional.whenTrue);
+    const readsKey = (ts.isPropertyAccessExpression(whenTrue) ||
+        ts.isPropertyAccessChain(whenTrue)) &&
+        whenTrue.name.text === typeofRead.name.text;
+    const whenFalse = unwrapPin(conditional.whenFalse);
+    if (!readsKey || !ts.isNumericLiteral(whenFalse)) return undefined;
+    return {
+        key: typeofRead.name.text,
+        value: Number(whenFalse.text),
+    };
+}
+
+/** Renders a pinned numeric array as the record's `Color3{…}` literal. */
+function pinnedColor3(
+    symbol: string,
+    file: ts.SourceFile,
+    elements: readonly ts.Expression[],
+): string {
+    if (elements.length !== 3) {
+        refuseModule(symbol, "no longer defaults a three-lane color");
+    }
+    const lanes = elements.map((element) =>
+        floatLiteral(signedNumericValue(symbol, file, element))
+    );
+    return `Color3{${lanes.join(", ")}}`;
+}
+
+/**
+ * The core-material defaults of the pinned `assembleMaterial`
+ * (`gltf-material.ts`): every numeric, array or string default in its
+ * return object must be consumed by a named entry below, so a default
+ * the pin adds refuses generation.
+ */
+function assembleMaterialDefaults(file: ts.SourceFile): {
+    baseColorFactorKey: string;
+    metallicFactor: GltfLoweredDefault;
+    roughnessFactor: GltfLoweredDefault;
+    emissiveFactor: { key: string; identity: string };
+    normalScale: GltfLoweredDefault;
+    occlusionTexCoord: GltfLoweredDefault;
+    alphaMode: { key: string; literal: string };
+    doubleSidedKey: string;
+    alphaCutoff: GltfLoweredDefault;
+} {
+    const symbol = "assembleMaterial";
+    const declaration = topLevelFunction(file, symbol);
+    const returns = collectNodes(
+        declaration,
+        (node): node is ts.ReturnStatement =>
+            ts.isReturnStatement(node) &&
+            node.expression !== undefined &&
+            ts.isObjectLiteralExpression(unwrapPin(node.expression)),
+    );
+    if (returns.length !== 1) {
+        refuseModule(
+            symbol,
+            "no longer returns a single material-data object",
+        );
+    }
+    const properties = new Map<string, ts.Expression>();
+    for (const property of (
+        unwrapPin(returns[0]!.expression!) as ts.ObjectLiteralExpression
+    ).properties) {
+        if (
+            ts.isPropertyAssignment(property) &&
+            ts.isIdentifier(property.name)
+        ) {
+            properties.set(property.name.text, property.initializer);
+        }
+    }
+    const consumed = new Set<string>();
+    const initializerOf = (property: string): ts.Expression => {
+        const initializer = properties.get(property);
+        if (!initializer) {
+            refuseModule(
+                symbol,
+                `no longer assembles '${property}'`,
+            );
+        }
+        consumed.add(property);
+        return initializer;
+    };
+    const numericCoalesce = (property: string): GltfLoweredDefault => {
+        const coalesced = coalescedPropertyDefault(
+            initializerOf(property),
+        );
+        const fallback = coalesced
+            ? unwrapPin(coalesced.fallback)
+            : undefined;
+        if (!coalesced || !fallback || !ts.isNumericLiteral(fallback)) {
+            refuseModule(
+                symbol,
+                `no longer defaults '${property}' to a constant`,
+            );
+        }
+        return {
+            key: coalesced.key,
+            literal: floatLiteral(Number(fallback.text)),
+        };
+    };
+    const arrayCoalesce = (
+        property: string,
+    ): { key: string; elements: readonly ts.Expression[] } => {
+        const coalesced = coalescedPropertyDefault(
+            initializerOf(property),
+        );
+        const fallback = coalesced
+            ? unwrapPin(coalesced.fallback)
+            : undefined;
+        if (
+            !coalesced ||
+            !fallback ||
+            !ts.isArrayLiteralExpression(fallback)
+        ) {
+            refuseModule(
+                symbol,
+                `no longer defaults '${property}' to an array constant`,
+            );
+        }
+        return { key: coalesced.key, elements: fallback.elements };
+    };
+    // baseColor: the absent arm is the record's native Color4{1,1,1,1}.
+    const baseColor = arrayCoalesce("_baseColorFactor");
+    const baseColorValues = baseColor.elements.map((element) =>
+        signedNumericValue(symbol, file, element)
+    );
+    if (baseColorValues.join(",") !== "1,1,1,1") {
+        refuseModule(
+            symbol,
+            "no longer defaults the base color factor to the " +
+                "record's native {1,1,1,1}",
+        );
+    }
+    const emissive = arrayCoalesce("_emissiveFactor");
+    const metallicFactor = numericCoalesce("_metallicFactor");
+    const roughnessFactor = numericCoalesce("_roughnessFactor");
+    const alphaCutoff = numericCoalesce("_alphaCutoff");
+    // normalTexture.scale and occlusionTexture.texCoord use the pin's
+    // typeof-number substitution instead of `??`.
+    const typeofDefault = (
+        property: string,
+    ): { key: string; value: number } => {
+        const parsed = typeofNumberDefault(initializerOf(property));
+        if (!parsed) {
+            refuseModule(
+                symbol,
+                `no longer substitutes '${property}' behind a ` +
+                    "typeof-number test",
+            );
+        }
+        return parsed;
+    };
+    const normalScale = typeofDefault("_normalScale");
+    const occlusionTexCoord = typeofDefault("_occlusionTexCoord");
+    if (
+        !Number.isInteger(occlusionTexCoord.value) ||
+        occlusionTexCoord.value < 0
+    ) {
+        refuseModule(
+            symbol,
+            "no longer defaults the occlusion texCoord to an " +
+                "unsigned integer",
+        );
+    }
+    // alphaMode: a string coalesce; the mode names it is compared to
+    // stay template plumbing.
+    const alphaModeCoalesced = coalescedPropertyDefault(
+        initializerOf("_alphaMode"),
+    );
+    const alphaModeFallback = alphaModeCoalesced
+        ? unwrapPin(alphaModeCoalesced.fallback)
+        : undefined;
+    if (
+        !alphaModeCoalesced ||
+        !alphaModeFallback ||
+        !ts.isStringLiteral(alphaModeFallback)
+    ) {
+        refuseModule(
+            symbol,
+            "no longer defaults '_alphaMode' to a string constant",
+        );
+    }
+    // doubleSided: `!!mat.doubleSided` — the bool_or(false) coercion.
+    const doubleSided = unwrapPin(initializerOf("_doubleSided"));
+    const doubleSidedInner = ts.isPrefixUnaryExpression(doubleSided) &&
+            doubleSided.operator === ts.SyntaxKind.ExclamationToken
+        ? unwrapPin(doubleSided.operand)
+        : undefined;
+    const doubleSidedRead = doubleSidedInner &&
+            ts.isPrefixUnaryExpression(doubleSidedInner) &&
+            doubleSidedInner.operator === ts.SyntaxKind.ExclamationToken
+        ? unwrapPin(doubleSidedInner.operand)
+        : undefined;
+    if (
+        !doubleSidedRead ||
+        !(ts.isPropertyAccessExpression(doubleSidedRead) ||
+            ts.isPropertyAccessChain(doubleSidedRead))
+    ) {
+        refuseModule(
+            symbol,
+            "no longer coerces '_doubleSided' from the JSON flag",
+        );
+    }
+    // Any OTHER default the pin assembles must refuse.
+    for (const [property, initializer] of properties) {
+        if (consumed.has(property)) continue;
+        const coalesced = coalescedPropertyDefault(initializer);
+        const fallback = coalesced
+            ? unwrapPin(coalesced.fallback)
+            : undefined;
+        const carriesDefault = (fallback !== undefined &&
+            (ts.isNumericLiteral(fallback) ||
+                ts.isArrayLiteralExpression(fallback) ||
+                ts.isStringLiteral(fallback))) ||
+            typeofNumberDefault(initializer) !== undefined;
+        if (carriesDefault) {
+            refuseModule(
+                symbol,
+                `defaults '${property}', which no lowering entry consumes`,
+            );
+        }
+    }
+    return {
+        baseColorFactorKey: baseColor.key,
+        metallicFactor,
+        roughnessFactor,
+        emissiveFactor: {
+            key: emissive.key,
+            identity: pinnedColor3(symbol, file, emissive.elements),
+        },
+        normalScale: {
+            key: normalScale.key,
+            literal: floatLiteral(normalScale.value),
+        },
+        occlusionTexCoord: {
+            key: occlusionTexCoord.key,
+            literal: String(occlusionTexCoord.value),
+        },
+        alphaMode: {
+            key: alphaModeCoalesced.key,
+            literal: alphaModeFallback.text,
+        },
+        doubleSidedKey: doubleSidedRead.name.text,
+        alphaCutoff,
+    };
+}
+
+/**
+ * KHR_materials_specular's factor treatment
+ * (`gltf-ext-dielectric.ts`): a declared factor within `epsilon` of
+ * `clear` drops both reflectance options — the record clears the
+ * folded IOR factor back to one on that same test.
+ */
+function dielectricSpecularDefault(file: ts.SourceFile): {
+    key: string;
+    clear: string;
+    epsilon: string;
+} {
+    const symbol = "KHR_materials_dielectric";
+    const applyMaterial = featureMethod(file, symbol, "applyMaterial");
+    const key = "specularFactor";
+    const comparisons: { clear: number; epsilon: number }[] = [];
+    const visit = (node: ts.Node): void => {
+        ts.forEachChild(node, visit);
+        if (
+            !ts.isBinaryExpression(node) ||
+            node.operatorToken.kind !== ts.SyntaxKind.GreaterThanToken
+        ) {
+            return;
+        }
+        const call = unwrapPin(node.left);
+        if (
+            !ts.isCallExpression(call) ||
+            !ts.isPropertyAccessExpression(call.expression) ||
+            identifierText(call.expression.expression) !== "Math" ||
+            call.expression.name.text !== "abs" ||
+            call.arguments.length !== 1
+        ) {
+            return;
+        }
+        const difference = unwrapPin(call.arguments[0]!);
+        if (
+            !ts.isBinaryExpression(difference) ||
+            difference.operatorToken.kind !== ts.SyntaxKind.MinusToken
+        ) {
+            return;
+        }
+        const read = unwrapPin(difference.left);
+        const readKey = (ts.isPropertyAccessExpression(read) ||
+                ts.isPropertyAccessChain(read))
+            ? read.name.text
+            : undefined;
+        if (readKey !== key) return;
+        const clear = unwrapPin(difference.right);
+        const epsilon = unwrapPin(node.right);
+        if (!ts.isNumericLiteral(clear) || !ts.isNumericLiteral(epsilon)) {
+            refuseNode(
+                symbol,
+                file,
+                node,
+                "no longer compares the specular factor against constants",
+            );
+        }
+        comparisons.push({
+            clear: Number(clear.text),
+            epsilon: Number(epsilon.text),
+        });
+    };
+    visit(applyMaterial.body);
+    const first = comparisons[0];
+    if (!first) {
+        refuseModule(
+            symbol,
+            "no longer tests the specular factor against its clearing value",
+        );
+    }
+    for (const comparison of comparisons) {
+        if (
+            comparison.clear !== first.clear ||
+            comparison.epsilon !== first.epsilon
+        ) {
+            refuseModule(
+                symbol,
+                "no longer agrees with itself on the specular clearing test",
+            );
+        }
+    }
+    // The paired arms: within epsilon both options drop (the record's
+    // clear-to-one), beyond it the factor feeds f0Factor AND the weight.
+    const pairedIfs = collectNodes(
+        applyMaterial.body,
+        (node): node is ts.IfStatement =>
+            ts.isIfStatement(node) &&
+            node.elseStatement !== undefined &&
+            ts.isBinaryExpression(unwrapPin(node.expression)) &&
+            unwrapPin(node.expression).getText(file).includes(key),
+    );
+    const paired = pairedIfs.find((candidate) => {
+        const assigns = collectNodes(
+            candidate.thenStatement,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
+        ).map((assignment) =>
+            unwrapPin(assignment.left).getText(file).split(".").pop()
+        );
+        const deletes = collectNodes(
+            candidate.elseStatement!,
+            (node): node is ts.DeleteExpression =>
+                ts.isDeleteExpression(node),
+        ).map((expression) =>
+            unwrapPin(expression.expression).getText(file).split(".").pop()
+        );
+        return assigns.includes("f0Factor") &&
+            assigns.includes("specularWeight") &&
+            deletes.includes("f0Factor") &&
+            deletes.includes("specularWeight");
+    });
+    if (!paired) {
+        refuseModule(
+            symbol,
+            "no longer pairs the factor assignment with the " +
+                "within-epsilon drop",
+        );
+    }
+    return {
+        key,
+        clear: floatLiteral(first.clear),
+        epsilon: floatLiteral(first.epsilon),
+    };
+}
+
+/**
+ * The KHR_texture_transform identity (`gltf-ext-uv-transform.ts` +
+ * the pinned writer's `??` defaults in `uv-transform-fragment.ts`),
+ * verified against the record's native `TextureTransform` identity —
+ * see the round-4 notes above.
+ */
+function textureTransformDefaults(
+    uvTransformFile: ts.SourceFile,
+    writerFile: ts.SourceFile,
+): { rotation: GltfLoweredDefault; scaleKey: string; offsetKey: string } {
+    const symbol = "KHR_texture_transform";
+    const wrapTexture = featureMethod(
+        uvTransformFile,
+        symbol,
+        "wrapTexture",
+    );
+    // The patched fields, by their `patch.<field> = kt.<key>…` writes.
+    const patches = new Map<string, ts.Expression>();
+    for (const assignment of collectNodes(
+        wrapTexture.body,
+        (node): node is ts.BinaryExpression =>
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isPropertyAccessExpression(unwrapPin(node.left)) &&
+            identifierText(
+                (unwrapPin(node.left) as ts.PropertyAccessExpression)
+                    .expression,
+            ) === "patch",
+    )) {
+        patches.set(
+            (unwrapPin(assignment.left) as ts.PropertyAccessExpression)
+                .name.text,
+            assignment.right,
+        );
+    }
+    const patchKey = (field: string): string => {
+        const value = patches.get(field);
+        const read = value ? unwrapPin(value) : undefined;
+        // uAng reads `kt.rotation`; uScale reads `kt.scale[0]`.
+        const property = read && ts.isElementAccessExpression(read)
+            ? unwrapPin(read.expression)
+            : read;
+        if (
+            !property ||
+            !(ts.isPropertyAccessExpression(property) ||
+                ts.isPropertyAccessChain(property))
+        ) {
+            refuseModule(
+                symbol,
+                `no longer patches '${field}' from a transform property`,
+            );
+        }
+        return property.name.text;
+    };
+    const rotationKey = patchKey("uAng");
+    const scaleKey = patchKey("uScale");
+    const offsetKey = patchKey("uOffset");
+    if (
+        patchKey("vScale") !== scaleKey ||
+        patchKey("vOffset") !== offsetKey
+    ) {
+        refuseModule(
+            symbol,
+            "no longer reads both lanes of scale and offset from " +
+                "one transform property each",
+        );
+    }
+    // The writer's identity defaults, against the record's native
+    // TextureTransform{1, 1, 0, 0, 0} (runtime.hpp) — a moved identity
+    // would leave the record's absent-transform arm silently wrong.
+    const writer = topLevelFunction(writerFile, "writeOne");
+    const identities = new Map<string, number>();
+    for (const binding of collectNodes(
+        writer,
+        (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            node.initializer !== undefined,
+    )) {
+        const coalesced = coalescedPropertyDefault(binding.initializer!);
+        const fallback = coalesced
+            ? unwrapPin(coalesced.fallback)
+            : undefined;
+        if (coalesced && fallback && ts.isNumericLiteral(fallback)) {
+            identities.set(coalesced.key, Number(fallback.text));
+        }
+    }
+    const recordIdentity: Readonly<Record<string, number>> = {
+        uScale: 1,
+        vScale: 1,
+        uOffset: 0,
+        vOffset: 0,
+        uAng: 0,
+    };
+    for (const [field, expected] of Object.entries(recordIdentity)) {
+        if (identities.get(field) !== expected) {
+            refuseModule(
+                symbol,
+                `no longer defaults '${field}' to the record's ` +
+                    `TextureTransform identity ${expected} (runtime.hpp)`,
+            );
+        }
+    }
+    return {
+        rotation: {
+            key: rotationKey,
+            literal: floatLiteral(identities.get("uAng")!),
+        },
+        scaleKey,
+        offsetKey,
+    };
+}
+
+function optionInitializer(
+    symbol: string,
+    options: ts.ObjectLiteralExpression,
+    optionName: string,
+): ts.Expression {
+    for (const property of options.properties) {
+        if (
+            ts.isPropertyAssignment(property) &&
+            ts.isIdentifier(property.name) &&
+            property.name.text === optionName
+        ) {
+            return property.initializer;
+        }
+    }
+    refuseModule(symbol, `no longer passes the '${optionName}' option`);
+}
+
+/** One clearcoat texture-conditioned factor default. */
+function clearcoatConditionalDefault(
+    symbol: string,
+    file: ts.SourceFile,
+    options: ts.ObjectLiteralExpression,
+    optionName: string,
+    expectedTextureKey: string,
+): { key: string; present: string; absent: string } {
+    const coalesced = coalescedPropertyDefault(
+        optionInitializer(symbol, options, optionName),
+    );
+    const fallback = coalesced ? unwrapPin(coalesced.fallback) : undefined;
+    if (!coalesced || !fallback || !ts.isConditionalExpression(fallback)) {
+        refuseModule(
+            symbol,
+            `no longer conditions the '${optionName}' fallback on a texture`,
+        );
+    }
+    const condition = unwrapPin(fallback.condition);
+    const textureKey = (ts.isPropertyAccessExpression(condition) ||
+            ts.isPropertyAccessChain(condition))
+        ? condition.name.text
+        : undefined;
+    if (textureKey !== expectedTextureKey) {
+        refuseNode(
+            symbol,
+            file,
+            fallback,
+            `no longer conditions the '${optionName}' fallback on ` +
+                `'${expectedTextureKey}'`,
+        );
+    }
+    return {
+        key: coalesced.key,
+        present: floatLiteral(
+            signedNumericValue(symbol, file, fallback.whenTrue),
+        ),
+        absent: floatLiteral(
+            signedNumericValue(symbol, file, fallback.whenFalse),
+        ),
+    };
+}
+
+/** The single-options-object call `calleeName(out, {…})` under `root`. */
+function setterOptionsObject(
+    symbol: string,
+    root: ts.Node,
+    calleeName: string,
+): ts.ObjectLiteralExpression {
+    const calls = collectNodes(
+        root,
+        (node): node is ts.CallExpression =>
+            ts.isCallExpression(node) &&
+            identifierText(node.expression) === calleeName,
+    );
+    const options = calls.length === 1 && calls[0]!.arguments.length === 2
+        ? unwrapPin(calls[0]!.arguments[1]!)
+        : undefined;
+    if (!options || !ts.isObjectLiteralExpression(options)) {
+        refuseModule(
+            symbol,
+            `no longer passes ${calleeName} one options object`,
+        );
+    }
+    return options;
+}
+
+/**
+ * The remaining material float defaults, lowered from their pinned
+ * modules — see the round-4 notes above for the absent-arm
+ * asymmetries and the provenance of every entry.
+ */
+export function lowerGltfMaterialDefaults(files: {
+    material: ts.SourceFile;
+    dielectric: ts.SourceFile;
+    uvTransform: ts.SourceFile;
+    uvTransformWriter: ts.SourceFile;
+    clearcoat: ts.SourceFile;
+    sheen: ts.SourceFile;
+    emissiveStrength: ts.SourceFile;
+}): GltfMaterialDefaults {
+    const core = assembleMaterialDefaults(files.material);
+    const specularFactor = dielectricSpecularDefault(files.dielectric);
+    const textureTransform = textureTransformDefaults(
+        files.uvTransform,
+        files.uvTransformWriter,
+    );
+    // Clearcoat: both factors default on their own texture's presence.
+    const clearcoatSymbol = "KHR_materials_clearcoat";
+    const clearcoatOptions = setterOptionsObject(
+        clearcoatSymbol,
+        featureMethod(
+            files.clearcoat,
+            clearcoatSymbol,
+            "applyMaterial",
+        ).body,
+        "setPbrClearCoat",
+    );
+    const clearcoatIntensity = clearcoatConditionalDefault(
+        clearcoatSymbol,
+        files.clearcoat,
+        clearcoatOptions,
+        "intensity",
+        "clearcoatTexture",
+    );
+    const clearcoatRoughness = clearcoatConditionalDefault(
+        clearcoatSymbol,
+        files.clearcoat,
+        clearcoatOptions,
+        "roughness",
+        "clearcoatRoughnessTexture",
+    );
+    const bumpScale = coalescedPropertyDefault(
+        optionInitializer(
+            clearcoatSymbol,
+            clearcoatOptions,
+            "bumpTextureScale",
+        ),
+    );
+    const bumpFallback = bumpScale
+        ? unwrapPin(bumpScale.fallback)
+        : undefined;
+    if (!bumpScale || !bumpFallback || !ts.isNumericLiteral(bumpFallback)) {
+        refuseModule(
+            clearcoatSymbol,
+            "no longer defaults the clearcoat normal scale to a constant",
+        );
+    }
+    // Sheen: color and roughness defaults plus the fixed intensity.
+    const sheenSymbol = "KHR_materials_sheen";
+    const sheenOptions = setterOptionsObject(
+        sheenSymbol,
+        featureMethod(files.sheen, sheenSymbol, "applyMaterial").body,
+        "setPbrSheen",
+    );
+    const sheenColor = coalescedPropertyDefault(
+        optionInitializer(sheenSymbol, sheenOptions, "color"),
+    );
+    const sheenColorFallback = sheenColor
+        ? unwrapPin(sheenColor.fallback)
+        : undefined;
+    if (
+        !sheenColor ||
+        !sheenColorFallback ||
+        !ts.isArrayLiteralExpression(sheenColorFallback)
+    ) {
+        refuseModule(
+            sheenSymbol,
+            "no longer defaults the sheen color to an array constant",
+        );
+    }
+    const sheenRoughness = coalescedPropertyDefault(
+        optionInitializer(sheenSymbol, sheenOptions, "roughness"),
+    );
+    const sheenRoughnessFallback = sheenRoughness
+        ? unwrapPin(sheenRoughness.fallback)
+        : undefined;
+    if (
+        !sheenRoughness ||
+        !sheenRoughnessFallback ||
+        !ts.isNumericLiteral(sheenRoughnessFallback)
+    ) {
+        refuseModule(
+            sheenSymbol,
+            "no longer defaults the sheen roughness to a constant",
+        );
+    }
+    const sheenIntensity = unwrapPin(
+        optionInitializer(sheenSymbol, sheenOptions, "intensity"),
+    );
+    if (!ts.isNumericLiteral(sheenIntensity)) {
+        refuseModule(
+            sheenSymbol,
+            "no longer fixes the sheen intensity to a constant",
+        );
+    }
+    // Emissive strength: `e.emissiveStrength ?? 1.0`.
+    const strengthSymbol = "KHR_materials_emissive_strength";
+    const strengthBody = featureMethod(
+        files.emissiveStrength,
+        strengthSymbol,
+        "applyMaterial",
+    ).body;
+    const strengthDefaults: GltfLoweredDefault[] = [];
+    for (const binding of collectNodes(
+        strengthBody,
+        (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            node.initializer !== undefined,
+    )) {
+        const coalesced = coalescedPropertyDefault(binding.initializer!);
+        const fallback = coalesced
+            ? unwrapPin(coalesced.fallback)
+            : undefined;
+        if (coalesced && fallback && ts.isNumericLiteral(fallback)) {
+            strengthDefaults.push({
+                key: coalesced.key,
+                literal: floatLiteral(Number(fallback.text)),
+            });
+        }
+    }
+    if (
+        strengthDefaults.length !== 1 ||
+        strengthDefaults[0]!.key !== "emissiveStrength"
+    ) {
+        refuseModule(
+            strengthSymbol,
+            "no longer defaults 'emissiveStrength' exactly once",
+        );
+    }
+    return {
+        ...core,
+        specularFactor,
+        textureTransform,
+        clearcoatIntensity,
+        clearcoatRoughness,
+        clearcoatNormalScale: {
+            key: bumpScale.key,
+            literal: floatLiteral(Number(bumpFallback.text)),
+        },
+        sheenColor: {
+            key: sheenColor.key,
+            identity: pinnedColor3(
+                sheenSymbol,
+                files.sheen,
+                sheenColorFallback.elements,
+            ),
+        },
+        sheenRoughness: {
+            key: sheenRoughness.key,
+            literal: floatLiteral(Number(sheenRoughnessFallback.text)),
+        },
+        sheenIntensity: floatLiteral(Number(sheenIntensity.text)),
+        emissiveStrength: strengthDefaults[0]!,
+    };
 }

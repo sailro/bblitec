@@ -21,9 +21,11 @@ import {
     lowerAccessorNormalizationCpp,
     lowerAnimationInterpolationCpp,
     lowerGltfExtensionDefaults,
+    lowerGltfMaterialDefaults,
     lowerIblEnvironmentScalarsCpp,
     lowerIblPolynomialCpp,
     lowerImageProcessingDefaultsCpp,
+    lowerLocalMatrixCpp,
     lowerMatrixComposeCpp,
     lowerMatrixMultiplyCpp,
     lowerMatrixNativeCpp,
@@ -1355,4 +1357,427 @@ test("a light type with no record kind refuses", () => {
             ),
         /'ambient', which has no record kind/,
     );
+});
+
+/* ───────────────────────────── round 4 ───────────────────────────── */
+
+const materialModule = "src/loader-gltf/gltf-material.ts";
+const uvTransformModule = "src/loader-gltf/gltf-ext-uv-transform.ts";
+const uvWriterModule =
+    "src/material/pbr/fragments/uv-transform-fragment.ts";
+const clearcoatModule = "src/loader-gltf/gltf-ext-clearcoat.ts";
+const sheenModule = "src/loader-gltf/gltf-ext-sheen.ts";
+const strengthModule =
+    "src/loader-gltf/gltf-ext-emissive-strength.ts";
+
+/**
+ * The resolved local_matrix decision: the same pinned compose the
+ * `trs_matrix` leaf lowers, but over the RAW JSON doubles with one
+ * float rounding per lane at the store — the pin's own precision
+ * chain (`computeNodeWorldMatrix` composes `node.translation ?? …`
+ * straight into an F32 scratch). This replaces the old float-over-
+ * `float_array` transcription, whose last-ulp divergence round 3
+ * measured and reported.
+ */
+const expectedMatrixLocal = `Matrix local_matrix(const JsonObject& node) {
+    if (const ts::JsonValue* matrix_value = optional(node, "matrix")) {
+        const std::vector<float> values = float_array(matrix_value);
+        if (values.size() != 16) throw std::runtime_error("glTF node matrix must have 16 values.");
+        Matrix result{};
+        std::copy(values.begin(), values.end(), result.begin());
+        return result;
+    }
+    // Pinned computeNodeWorldMatrix hands mat4ComposeInto the raw
+    // JSON doubles and the F32-backed scratch store rounds each lane
+    // exactly once. Camera-precision rule: round where the pin's
+    // Float32Array stores are, never earlier — floats rounded at the
+    // JSON read and composed in float diverge in the last ulps (an
+    // exact 90-degree yaw lands m[0] at 5.96e-8f where the pin
+    // stores -2.22e-16f).
+    const std::vector<double> translation = double_array(optional(node, "translation"));
+    const std::vector<double> rotation = double_array(optional(node, "rotation"));
+    const std::vector<double> scale = double_array(optional(node, "scale"));
+    const double tx = translation.size() == 3 ? translation[0] : 0.0;
+    const double ty = translation.size() == 3 ? translation[1] : 0.0;
+    const double tz = translation.size() == 3 ? translation[2] : 0.0;
+    const double x = rotation.size() == 4 ? rotation[0] : 0.0;
+    const double y = rotation.size() == 4 ? rotation[1] : 0.0;
+    const double z = rotation.size() == 4 ? rotation[2] : 0.0;
+    const double w = rotation.size() == 4 ? rotation[3] : 1.0;
+    const double sx = scale.size() == 3 ? scale[0] : 1.0;
+    const double sy = scale.size() == 3 ? scale[1] : 1.0;
+    const double sz = scale.size() == 3 ? scale[2] : 1.0;
+    const double xx = x * x;
+    const double yy = y * y;
+    const double zz = z * z;
+    const double xy = x * y;
+    const double xz = x * z;
+    const double yz = y * z;
+    const double wx = w * x;
+    const double wy = w * y;
+    const double wz = w * z;
+    Matrix result = identity_matrix();
+    result[0] = static_cast<float>((1.0 - 2.0 * (yy + zz)) * sx);
+    result[1] = static_cast<float>(2.0 * (xy + wz) * sx);
+    result[2] = static_cast<float>(2.0 * (xz - wy) * sx);
+    result[4] = static_cast<float>(2.0 * (xy - wz) * sy);
+    result[5] = static_cast<float>((1.0 - 2.0 * (xx + zz)) * sy);
+    result[6] = static_cast<float>(2.0 * (yz + wx) * sy);
+    result[8] = static_cast<float>(2.0 * (xz + wy) * sz);
+    result[9] = static_cast<float>(2.0 * (yz - wx) * sz);
+    result[10] = static_cast<float>((1.0 - 2.0 * (xx + yy)) * sz);
+    result[12] = static_cast<float>(tx);
+    result[13] = static_cast<float>(ty);
+    result[14] = static_cast<float>(tz);
+    return result;
+}`;
+
+function materialDefaultFiles(
+    overrides: Partial<Record<
+        | "material"
+        | "dielectric"
+        | "uvTransform"
+        | "uvTransformWriter"
+        | "clearcoat"
+        | "sheen"
+        | "emissiveStrength",
+        ts.SourceFile
+    >> = {},
+): Parameters<typeof lowerGltfMaterialDefaults>[0] {
+    return {
+        material: overrides.material ?? pinnedFile(materialModule),
+        dielectric: overrides.dielectric ?? pinnedFile(dielectricModule),
+        uvTransform: overrides.uvTransform ??
+            pinnedFile(uvTransformModule),
+        uvTransformWriter: overrides.uvTransformWriter ??
+            pinnedFile(uvWriterModule),
+        clearcoat: overrides.clearcoat ?? pinnedFile(clearcoatModule),
+        sheen: overrides.sheen ?? pinnedFile(sheenModule),
+        emissiveStrength: overrides.emissiveStrength ??
+            pinnedFile(strengthModule),
+    };
+}
+
+test("lowers local_matrix through the pin's own precision chain byte-for-byte", () => {
+    assert.equal(
+        lowerLocalMatrixCpp(
+            pinnedFile(parserModule),
+            pinnedFile(composeModule),
+        ),
+        expectedMatrixLocal,
+    );
+});
+
+test("the emitted loader carries the lowered local matrix and no inverse_affine", () => {
+    const adapter = new GltfLowerer(new LoweringContext(store))
+        .lowerLoaderAdapter();
+    assert.ok(adapter.source.includes(expectedMatrixLocal));
+    assert.ok(adapter.source.includes("std::vector<double> double_array"));
+    // Dead in all 44 generated loaders and matching no pinned formula;
+    // deleted by the round-4 decision.
+    assert.ok(!adapter.source.includes("inverse_affine"));
+});
+
+test("a changed compose product flows into trs_matrix and local_matrix alike", () => {
+    const doctored = mutatedFile(
+        composeModule,
+        "dst[off + 1] = 2 * (xy + wz) * sx;",
+        "dst[off + 1] = 2 * (xy - wz) * sx;",
+    );
+    const local = lowerLocalMatrixCpp(pinnedFile(parserModule), doctored);
+    assert.notEqual(local, expectedMatrixLocal);
+    assert.match(
+        local,
+        /result\[1\] = static_cast<float>\(2\.0 \* \(xy - wz\) \* sx\);/,
+    );
+    assert.match(
+        lowerMatrixComposeCpp(doctored),
+        /result\[1\] = static_cast<float>\(2\.0 \* \(xy - wz\) \* sx\);/,
+    );
+});
+
+test("a changed pinned TRS default flows into the emitted lanes", () => {
+    const local = lowerLocalMatrixCpp(
+        mutatedFile(
+            parserModule,
+            "node.rotation ?? [0, 0, 0, 1]",
+            "node.rotation ?? [0, 0, 0, 2]",
+        ),
+        pinnedFile(composeModule),
+    );
+    assert.match(local, /rotation\[3\] : 2\.0;/);
+});
+
+test("a compose call that reorders the raw JSON lanes refuses", () => {
+    assert.throws(
+        () =>
+            lowerLocalMatrixCpp(
+                mutatedFile(
+                    parserModule,
+                    "t[0], t[1], t[2], r[0], r[1], r[2], r[3], s[0], s[1], s[2]",
+                    "t[0], t[1], t[2], r[1], r[0], r[2], r[3], s[0], s[1], s[2]",
+                ),
+                pinnedFile(composeModule),
+            ),
+        /no longer reads the raw JSON lanes in parameter order/,
+    );
+});
+
+test("an authored-matrix arm that stops copying into a Float32Array refuses", () => {
+    assert.throws(
+        () =>
+            lowerLocalMatrixCpp(
+                mutatedFile(
+                    parserModule,
+                    "new F32(node.matrix)",
+                    "new F64(node.matrix)",
+                ),
+                pinnedFile(composeModule),
+            ),
+        /no longer copies the authored matrix into a fresh Float32Array/,
+    );
+});
+
+test("lowers the pinned material defaults to the shipped keys and constants", () => {
+    assert.deepEqual(lowerGltfMaterialDefaults(materialDefaultFiles()), {
+        baseColorFactorKey: "baseColorFactor",
+        metallicFactor: { key: "metallicFactor", literal: "1.0f" },
+        roughnessFactor: { key: "roughnessFactor", literal: "1.0f" },
+        emissiveFactor: {
+            key: "emissiveFactor",
+            identity: "Color3{0.0f, 0.0f, 0.0f}",
+        },
+        normalScale: { key: "scale", literal: "1.0f" },
+        occlusionTexCoord: { key: "texCoord", literal: "0" },
+        alphaMode: { key: "alphaMode", literal: "OPAQUE" },
+        doubleSidedKey: "doubleSided",
+        alphaCutoff: { key: "alphaCutoff", literal: "0.5f" },
+        specularFactor: {
+            key: "specularFactor",
+            clear: "1.0f",
+            epsilon: "0.000001f",
+        },
+        textureTransform: {
+            rotation: { key: "rotation", literal: "0.0f" },
+            scaleKey: "scale",
+            offsetKey: "offset",
+        },
+        clearcoatIntensity: {
+            key: "clearcoatFactor",
+            present: "1.0f",
+            absent: "0.0f",
+        },
+        clearcoatRoughness: {
+            key: "clearcoatRoughnessFactor",
+            present: "1.0f",
+            absent: "0.0f",
+        },
+        clearcoatNormalScale: { key: "scale", literal: "1.0f" },
+        sheenColor: {
+            key: "sheenColorFactor",
+            identity: "Color3{0.0f, 0.0f, 0.0f}",
+        },
+        sheenRoughness: { key: "sheenRoughnessFactor", literal: "0.0f" },
+        sheenIntensity: "1.0f",
+        emissiveStrength: { key: "emissiveStrength", literal: "1.0f" },
+    });
+});
+
+test("the emitted loader carries every round-4 lowered default", () => {
+    const adapter = new GltfLowerer(new LoweringContext(store))
+        .lowerLoaderAdapter();
+    for (const line of [
+        'material.metallic_factor = float_or(pbr, "metallicFactor", 1.0f);',
+        'material.roughness_factor = float_or(pbr, "roughnessFactor", 1.0f);',
+        'material.alpha_cutoff = float_or(material_json, "alphaCutoff", 0.5f);',
+        'slot.rotation = float_or(transform, "rotation", 0.0f);',
+        'float_or(normal_texture->as_object(), "scale", 1.0f);',
+        "material.emissive_factor = Color3{0.0f, 0.0f, 0.0f};",
+        'float_array(optional(pbr, "baseColorFactor"));',
+        'float_array(optional(material_json, "emissiveFactor"));',
+        '"clearcoatFactor",\n                clearcoat_texture ? 1.0f : 0.0f);',
+        '"sheenRoughnessFactor",\n                0.0f);',
+        "material.sheen_intensity = 1.0f;",
+        '"emissiveStrength",\n                1.0f);',
+        '"texCoord",\n            0);',
+        'string_or(material_json, "alphaMode", "OPAQUE");',
+        'bool_or(material_json, "doubleSided", false);',
+    ]) {
+        assert.ok(
+            adapter.source.includes(line),
+            `the emitted loader no longer carries '${line}'`,
+        );
+    }
+    const specular = new GltfLowerer(new LoweringContext(store))
+        .lowerLoaderAdapter(
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+        );
+    for (const line of [
+        'float_or(specular, "specularFactor", 1.0f);',
+        "std::abs(factor - 1.0f) > 0.000001f ? factor : 1.0f;",
+    ]) {
+        assert.ok(
+            specular.source.includes(line),
+            `the specular loader no longer carries '${line}'`,
+        );
+    }
+});
+
+test("a changed metallic default flows into the emitted keys", () => {
+    const defaults = lowerGltfMaterialDefaults(materialDefaultFiles({
+        material: mutatedFile(
+            materialModule,
+            "pbr.metallicFactor ?? 1",
+            "pbr.metallicFactor ?? 0.5",
+        ),
+    }));
+    assert.deepEqual(defaults.metallicFactor, {
+        key: "metallicFactor",
+        literal: "0.5f",
+    });
+});
+
+test("a changed emissive default flows into the emitted identity seed", () => {
+    const defaults = lowerGltfMaterialDefaults(materialDefaultFiles({
+        material: mutatedFile(
+            materialModule,
+            "mat.emissiveFactor ?? [0, 0, 0]",
+            "mat.emissiveFactor ?? [1, 0, 0]",
+        ),
+    }));
+    assert.equal(
+        defaults.emissiveFactor.identity,
+        "Color3{1.0f, 0.0f, 0.0f}",
+    );
+});
+
+test("a moved base color default refuses instead of flowing", () => {
+    // The absent arm is the record's native Color4{1,1,1,1}
+    // (runtime.hpp), which this emitter cannot regenerate.
+    assert.throws(
+        () =>
+            lowerGltfMaterialDefaults(materialDefaultFiles({
+                material: mutatedFile(
+                    materialModule,
+                    "pbr.baseColorFactor ?? [1, 1, 1, 1]",
+                    "pbr.baseColorFactor ?? [1, 1, 1, 0.5]",
+                ),
+            })),
+        /native \{1,1,1,1\}/,
+    );
+});
+
+test("a new material default no entry consumes refuses", () => {
+    assert.throws(
+        () =>
+            lowerGltfMaterialDefaults(materialDefaultFiles({
+                material: mutatedFile(
+                    materialModule,
+                    "_alphaCutoff: mat.alphaCutoff ?? 0.5,",
+                    "_alphaCutoff: mat.alphaCutoff ?? 0.5,\n        _halo: mat.halo ?? 7,",
+                ),
+            })),
+        /defaults '_halo', which no lowering entry consumes/,
+    );
+});
+
+test("a changed specular epsilon flows through both pinned sites", () => {
+    const defaults = lowerGltfMaterialDefaults(materialDefaultFiles({
+        dielectric: mutatedFileAll(
+            dielectricModule,
+            "Math.abs(eSp.specularFactor - 1) > 1e-6",
+            "Math.abs(eSp.specularFactor - 1) > 1e-5",
+        ),
+    }));
+    assert.equal(defaults.specularFactor.epsilon, "0.00001f");
+});
+
+test("specular sites that disagree on the clearing test refuse", () => {
+    assert.throws(
+        () =>
+            lowerGltfMaterialDefaults(materialDefaultFiles({
+                dielectric: mutatedFile(
+                    dielectricModule,
+                    "Math.abs(eSp.specularFactor - 1) > 1e-6",
+                    "Math.abs(eSp.specularFactor - 1) > 1e-5",
+                ),
+            })),
+        /no longer agrees with itself on the specular clearing test/,
+    );
+});
+
+test("a moved texture-transform identity refuses against the record", () => {
+    // The wholly-absent transform keeps the native
+    // TextureTransform{1, 1, 0, 0, 0} (runtime.hpp); a moved writer
+    // default would leave that arm silently wrong.
+    assert.throws(
+        () =>
+            lowerGltfMaterialDefaults(materialDefaultFiles({
+                uvTransformWriter: mutatedFile(
+                    uvWriterModule,
+                    "const ang = tex?.uAng ?? 0;",
+                    "const ang = tex?.uAng ?? 0.5;",
+                ),
+            })),
+        /TextureTransform identity 0 \(runtime\.hpp\)/,
+    );
+});
+
+test("a clearcoat fallback conditioned on the wrong texture refuses", () => {
+    assert.throws(
+        () =>
+            lowerGltfMaterialDefaults(materialDefaultFiles({
+                clearcoat: mutatedFile(
+                    clearcoatModule,
+                    "c.clearcoatFactor ?? (c.clearcoatTexture ? 1 : 0)",
+                    "c.clearcoatFactor ?? (c.clearcoatRoughnessTexture ? 1 : 0)",
+                ),
+            })),
+        /no longer conditions the 'intensity' fallback on 'clearcoatTexture'/,
+    );
+});
+
+test("a changed clearcoat absent arm flows into the emitted keys", () => {
+    const defaults = lowerGltfMaterialDefaults(materialDefaultFiles({
+        clearcoat: mutatedFile(
+            clearcoatModule,
+            "c.clearcoatRoughnessFactor ?? (c.clearcoatRoughnessTexture ? 1 : 0)",
+            "c.clearcoatRoughnessFactor ?? (c.clearcoatRoughnessTexture ? 1 : 0.25)",
+        ),
+    }));
+    assert.equal(defaults.clearcoatRoughness.absent, "0.25f");
+});
+
+test("a changed sheen roughness default flows into the emitted keys", () => {
+    const defaults = lowerGltfMaterialDefaults(materialDefaultFiles({
+        sheen: mutatedFile(
+            sheenModule,
+            "s.sheenRoughnessFactor ?? 0",
+            "s.sheenRoughnessFactor ?? 0.3",
+        ),
+    }));
+    assert.deepEqual(defaults.sheenRoughness, {
+        key: "sheenRoughnessFactor",
+        literal: "0.3f",
+    });
+});
+
+test("a changed emissive strength default flows into the emitted keys", () => {
+    const defaults = lowerGltfMaterialDefaults(materialDefaultFiles({
+        emissiveStrength: mutatedFile(
+            strengthModule,
+            "e.emissiveStrength ?? 1.0",
+            "e.emissiveStrength ?? 3",
+        ),
+    }));
+    assert.deepEqual(defaults.emissiveStrength, {
+        key: "emissiveStrength",
+        literal: "3.0f",
+    });
 });

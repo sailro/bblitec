@@ -60,6 +60,14 @@ export interface GltfLoaderLoweredSegments {
      */
     extensionDefaults: GltfExtensionDefaults;
     /**
+     * The remaining material JSON keys and default constants, lowered
+     * from `gltf-material.ts#assembleMaterial`, the dielectric
+     * specular-factor treatment, the KHR_texture_transform identity
+     * (`gltf-ext-uv-transform.ts` + the pinned writer's defaults), and
+     * the clearcoat/sheen/emissive-strength option objects.
+     */
+    materialDefaults: GltfMaterialDefaults;
+    /**
      * `multiply_matrix`, lowered from
      * `src/math/mat4-multiply-into.ts#mat4MultiplyInto` — the pin's fully
      * unrolled product sums verified term by term, emitted as the loop
@@ -67,16 +75,20 @@ export interface GltfLoaderLoweredSegments {
      */
     matrixMultiply: string;
     /**
+     * `local_matrix`, lowered from
+     * `src/loader-gltf/gltf-parser.ts#computeNodeWorldMatrix` (the
+     * authored-matrix arm, the three JSON keys and their whole-array
+     * defaults, the compose argument order) through the same
+     * `mat4ComposeInto` walk `trs_matrix` uses — but reading the raw
+     * JSON doubles and rounding once per lane at the store, which is
+     * the pin's own precision chain. See the round-3/4 notes in
+     * `gltf-lowerer.ts`.
+     */
+    matrixLocal: string;
+    /**
      * `trs_matrix`, lowered from
      * `src/math/mat4-compose-into.ts#mat4ComposeInto` — every product
      * local and store expression comes from the pin.
-     *
-     * `local_matrix` (below it) remains hand-written on purpose: it
-     * transcribes the same pinned compose, but in float arithmetic over
-     * `float_array` inputs where the pin computes JavaScript doubles over
-     * raw JSON numbers and rounds once at the Float32Array store — a
-     * transcription the lowering must not bless as the pin. See the
-     * round-3 notes in `gltf-lowerer.ts`.
      */
     matrixCompose: string;
     /**
@@ -85,11 +97,6 @@ export interface GltfLoaderLoweredSegments {
      * is the record's convention (the diagonal change of basis applied at
      * consumption instead of the pin's root-level left multiply), so only
      * the flip axis and sign flow from the pin.
-     *
-     * `inverse_affine` (above it) remains hand-written: it has no call
-     * site in any emitted loader and matches neither the pinned
-     * `mat4Invert` nor a caller's convention. See the round-3 notes in
-     * `gltf-lowerer.ts`.
      */
     matrixNative: string;
     /**
@@ -138,6 +145,45 @@ export interface GltfExtensionDefaults {
     iridescenceThicknessMaximum: GltfLoweredDefault;
 }
 
+/**
+ * The round-4 material defaults — see the round-4 notes in
+ * `gltf-lowerer.ts` for the absent-arm asymmetries (the base color's
+ * native default, the texture-transform identity, the doubleSided
+ * coercion).
+ */
+export interface GltfMaterialDefaults {
+    /** Key only: the absent arm is the record's native Color4{1,1,1,1}. */
+    baseColorFactorKey: string;
+    metallicFactor: GltfLoweredDefault;
+    roughnessFactor: GltfLoweredDefault;
+    /** The key plus the identity seed the loader writes before the read. */
+    emissiveFactor: { key: string; identity: string };
+    /** glTF `normalTexture.scale`. */
+    normalScale: GltfLoweredDefault;
+    /** glTF `occlusionTexture.texCoord`; the literal is an integer. */
+    occlusionTexCoord: GltfLoweredDefault;
+    alphaMode: { key: string; literal: string };
+    /** Key only: `bool_or(..., false)` is the pin's `!!` coercion. */
+    doubleSidedKey: string;
+    alphaCutoff: GltfLoweredDefault;
+    /** A factor within `epsilon` of `clear` drops both pinned options. */
+    specularFactor: { key: string; clear: string; epsilon: string };
+    /** KHR_texture_transform: the three field keys; rotation's identity. */
+    textureTransform: {
+        rotation: GltfLoweredDefault;
+        scaleKey: string;
+        offsetKey: string;
+    };
+    /** `clearcoatFactor ?? (clearcoatTexture ? present : absent)`. */
+    clearcoatIntensity: { key: string; present: string; absent: string };
+    clearcoatRoughness: { key: string; present: string; absent: string };
+    clearcoatNormalScale: GltfLoweredDefault;
+    sheenColor: { key: string; identity: string };
+    sheenRoughness: GltfLoweredDefault;
+    sheenIntensity: string;
+    emissiveStrength: GltfLoweredDefault;
+}
+
 export function gltfLoaderCpp(
     provenance: string,
     lowered: GltfLoaderLoweredSegments,
@@ -150,6 +196,7 @@ export function gltfLoaderCpp(
     materialSpecular = false,
 ): string {
     const defaults = lowered.extensionDefaults;
+    const materialDefaults = lowered.materialDefaults;
     return `// ${provenance}
 #include <bblite/pal_gltf.hpp>
 #include <bblite/runtime.hpp>
@@ -225,6 +272,17 @@ std::vector<float> float_array(const ts::JsonValue* value) {
     std::vector<float> result;
     for (const ts::JsonValue& element : value->as_array()) {
         result.push_back(static_cast<float>(element.as_number()));
+    }
+    return result;
+}
+
+// The raw JSON doubles, for the one consumer whose pin composes them in
+// double precision before its Float32Array store (local_matrix).
+std::vector<double> double_array(const ts::JsonValue* value) {
+    if (!value) return {};
+    std::vector<double> result;
+    for (const ts::JsonValue& element : value->as_array()) {
+        result.push_back(element.as_number());
     }
     return result;
 }
@@ -662,78 +720,9 @@ Matrix identity_matrix() {
 
 ${lowered.matrixMultiply}
 
-Matrix local_matrix(const JsonObject& node) {
-    if (const ts::JsonValue* matrix_value = optional(node, "matrix")) {
-        const std::vector<float> values = float_array(matrix_value);
-        if (values.size() != 16) throw std::runtime_error("glTF node matrix must have 16 values.");
-        Matrix result{};
-        std::copy(values.begin(), values.end(), result.begin());
-        return result;
-    }
-    const std::vector<float> translation = float_array(optional(node, "translation"));
-    const std::vector<float> rotation = float_array(optional(node, "rotation"));
-    const std::vector<float> scale = float_array(optional(node, "scale"));
-    const float tx = translation.size() == 3 ? translation[0] : 0.0f;
-    const float ty = translation.size() == 3 ? translation[1] : 0.0f;
-    const float tz = translation.size() == 3 ? translation[2] : 0.0f;
-    const float x = rotation.size() == 4 ? rotation[0] : 0.0f;
-    const float y = rotation.size() == 4 ? rotation[1] : 0.0f;
-    const float z = rotation.size() == 4 ? rotation[2] : 0.0f;
-    const float w = rotation.size() == 4 ? rotation[3] : 1.0f;
-    const float sx = scale.size() == 3 ? scale[0] : 1.0f;
-    const float sy = scale.size() == 3 ? scale[1] : 1.0f;
-    const float sz = scale.size() == 3 ? scale[2] : 1.0f;
-    Matrix result = identity_matrix();
-    result[0] = (1.0f - 2.0f * (y * y + z * z)) * sx;
-    result[1] = (2.0f * (x * y + z * w)) * sx;
-    result[2] = (2.0f * (x * z - y * w)) * sx;
-    result[4] = (2.0f * (x * y - z * w)) * sy;
-    result[5] = (1.0f - 2.0f * (x * x + z * z)) * sy;
-    result[6] = (2.0f * (y * z + x * w)) * sy;
-    result[8] = (2.0f * (x * z + y * w)) * sz;
-    result[9] = (2.0f * (y * z - x * w)) * sz;
-    result[10] = (1.0f - 2.0f * (x * x + y * y)) * sz;
-    result[12] = tx;
-    result[13] = ty;
-    result[14] = tz;
-    return result;
-}
+${lowered.matrixLocal}
 
 ${lowered.matrixCompose}
-
-Matrix inverse_affine(const Matrix& matrix) {
-    const float determinant =
-        matrix[0] * (matrix[5] * matrix[10] - matrix[9] * matrix[6]) -
-        matrix[4] * (matrix[1] * matrix[10] - matrix[9] * matrix[2]) +
-        matrix[8] * (matrix[1] * matrix[6] - matrix[5] * matrix[2]);
-    if (std::abs(determinant) < 0.000001f) {
-        return identity_matrix();
-    }
-    const float inverse_determinant = 1.0f / determinant;
-    Matrix result = identity_matrix();
-    result[0] = (matrix[5] * matrix[10] - matrix[9] * matrix[6]) * inverse_determinant;
-    result[1] = (matrix[9] * matrix[2] - matrix[1] * matrix[10]) * inverse_determinant;
-    result[2] = (matrix[1] * matrix[6] - matrix[5] * matrix[2]) * inverse_determinant;
-    result[4] = (matrix[8] * matrix[6] - matrix[4] * matrix[10]) * inverse_determinant;
-    result[5] = (matrix[0] * matrix[10] - matrix[8] * matrix[2]) * inverse_determinant;
-    result[6] = (matrix[4] * matrix[2] - matrix[0] * matrix[6]) * inverse_determinant;
-    result[8] = (matrix[4] * matrix[9] - matrix[8] * matrix[5]) * inverse_determinant;
-    result[9] = (matrix[8] * matrix[1] - matrix[0] * matrix[9]) * inverse_determinant;
-    result[10] = (matrix[0] * matrix[5] - matrix[4] * matrix[1]) * inverse_determinant;
-    result[12] = -(
-        result[0] * matrix[12] +
-        result[4] * matrix[13] +
-        result[8] * matrix[14]);
-    result[13] = -(
-        result[1] * matrix[12] +
-        result[5] * matrix[13] +
-        result[9] * matrix[14]);
-    result[14] = -(
-        result[2] * matrix[12] +
-        result[6] * matrix[13] +
-        result[10] * matrix[14]);
-    return result;
-}
 
 ${lowered.matrixNative}
 
@@ -1008,9 +997,9 @@ void apply_texture_transform(
     const JsonObject& transform =
         transform_value->as_object();
     const std::vector<float> scale =
-        float_array(optional(transform, "scale"));
+        float_array(optional(transform, "${materialDefaults.textureTransform.scaleKey}"));
     const std::vector<float> offset =
-        float_array(optional(transform, "offset"));
+        float_array(optional(transform, "${materialDefaults.textureTransform.offsetKey}"));
     if (scale.size() == 2) {
         slot.u_scale = scale[0];
         slot.v_scale = scale[1];
@@ -1019,7 +1008,7 @@ void apply_texture_transform(
         slot.u_offset = offset[0];
         slot.v_offset = offset[1];
     }
-    slot.rotation = float_or(transform, "rotation", 0.0f);
+    slot.rotation = float_or(transform, "${materialDefaults.textureTransform.rotation.key}", ${materialDefaults.textureTransform.rotation.literal});
 }
 
 // Babylon Lite bakes texture-less PBR factors into 1x1 factor
@@ -1116,14 +1105,14 @@ MaterialHandle load_material(
     const JsonArray& samplers,
     bool animated_base_color) {
     MaterialRecord material;
-    material.emissive_factor = Color3{0.0f, 0.0f, 0.0f};
+    material.emissive_factor = ${materialDefaults.emissiveFactor.identity};
     material.specular_aa = true;
     if (const ts::JsonValue* pbr_value = optional(material_json, "pbrMetallicRoughness")) {
         const JsonObject& pbr = pbr_value->as_object();
-        const std::vector<float> base = float_array(optional(pbr, "baseColorFactor"));
+        const std::vector<float> base = float_array(optional(pbr, "${materialDefaults.baseColorFactorKey}"));
         if (base.size() == 4) material.base_color_factor = Color4{base[0], base[1], base[2], base[3]};
-        material.metallic_factor = float_or(pbr, "metallicFactor", 1.0f);
-        material.roughness_factor = float_or(pbr, "roughnessFactor", 1.0f);
+        material.metallic_factor = float_or(pbr, "${materialDefaults.metallicFactor.key}", ${materialDefaults.metallicFactor.literal});
+        material.roughness_factor = float_or(pbr, "${materialDefaults.roughnessFactor.key}", ${materialDefaults.roughnessFactor.literal});
         const ts::JsonValue* base_color_texture =
             optional(pbr, "baseColorTexture");
         material.base_color_texture = texture_data(
@@ -1203,7 +1192,7 @@ MaterialHandle load_material(
         normal_texture);
     if (normal_texture) {
         material.normal_texture_scale =
-            float_or(normal_texture->as_object(), "scale", 1.0f);
+            float_or(normal_texture->as_object(), "${materialDefaults.normalScale.key}", ${materialDefaults.normalScale.literal});
     }
     const ts::JsonValue* occlusion_texture_info =
         optional(material_json, "occlusionTexture");
@@ -1241,8 +1230,8 @@ MaterialHandle load_material(
             };
         const std::size_t occlusion_uv = unsigned_or(
             occlusion_texture_info->as_object(),
-            "texCoord",
-            0);
+            "${materialDefaults.occlusionTexCoord.key}",
+            ${materialDefaults.occlusionTexCoord.literal});
         if (occlusion_uv == 1) {
             if (metallic_roughness_info) {
                 throw std::runtime_error(
@@ -1323,14 +1312,14 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                     ? material.reflectance / base_reflectance
                     : 1.0f;
             material.reflectance = base_reflectance;
-            if (optional(specular, "specularFactor")) {
+            if (optional(specular, "${materialDefaults.specularFactor.key}")) {
                 const float factor =
-                    float_or(specular, "specularFactor", 1.0f);
+                    float_or(specular, "${materialDefaults.specularFactor.key}", ${materialDefaults.specularFactor.clear});
                 // A specular factor of one is the default: the pin drops both
                 // options rather than writing them, so an IOR-seeded factor
                 // does not survive it either.
                 material.metallic_f0_factor =
-                    std::abs(factor - 1.0f) > 0.000001f ? factor : 1.0f;
+                    std::abs(factor - ${materialDefaults.specularFactor.clear}) > ${materialDefaults.specularFactor.epsilon} ? factor : ${materialDefaults.specularFactor.clear};
                 material.specular_weight =
                     material.metallic_f0_factor;
             }
@@ -1437,12 +1426,12 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                     "clearcoatNormalTexture");
             material.clearcoat_intensity = float_or(
                 clearcoat,
-                "clearcoatFactor",
-                clearcoat_texture ? 1.0f : 0.0f);
+                "${materialDefaults.clearcoatIntensity.key}",
+                clearcoat_texture ? ${materialDefaults.clearcoatIntensity.present} : ${materialDefaults.clearcoatIntensity.absent});
             material.clearcoat_roughness = float_or(
                 clearcoat,
-                "clearcoatRoughnessFactor",
-                clearcoat_roughness_texture ? 1.0f : 0.0f);
+                "${materialDefaults.clearcoatRoughness.key}",
+                clearcoat_roughness_texture ? ${materialDefaults.clearcoatRoughness.present} : ${materialDefaults.clearcoatRoughness.absent});
             material.clearcoat_texture = texture_data(
                 buffer,
                 container,
@@ -1473,9 +1462,9 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                     ? float_or(
                           clearcoat_normal_texture
                               ->as_object(),
-                          "scale",
-                          1.0f)
-                    : 1.0f;
+                          "${materialDefaults.clearcoatNormalScale.key}",
+                          ${materialDefaults.clearcoatNormalScale.literal})
+                    : ${materialDefaults.clearcoatNormalScale.literal};
             apply_texture_transform(
                 material.clearcoat_transform,
                 clearcoat_texture);
@@ -1496,19 +1485,19 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                 optional(sheen, "sheenRoughnessTexture");
             const std::vector<float> sheen_color =
                 float_array(
-                    optional(sheen, "sheenColorFactor"));
+                    optional(sheen, "${materialDefaults.sheenColor.key}"));
             material.sheen_color = sheen_color.size() == 3
                 ? Color3{
                       sheen_color[0],
                       sheen_color[1],
                       sheen_color[2],
                   }
-                : Color3{0.0f, 0.0f, 0.0f};
+                : ${materialDefaults.sheenColor.identity};
             material.sheen_roughness = float_or(
                 sheen,
-                "sheenRoughnessFactor",
-                0.0f);
-            material.sheen_intensity = 1.0f;
+                "${materialDefaults.sheenRoughness.key}",
+                ${materialDefaults.sheenRoughness.literal});
+            material.sheen_intensity = ${materialDefaults.sheenIntensity};
             material.sheen_color_texture = texture_data(
                 buffer,
                 container,
@@ -1626,7 +1615,7 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
             material.orm_transform,
             optional(material_json, "occlusionTexture"));
     }
-    const std::vector<float> emissive = float_array(optional(material_json, "emissiveFactor"));
+    const std::vector<float> emissive = float_array(optional(material_json, "${materialDefaults.emissiveFactor.key}"));
     if (emissive.size() == 3) material.emissive_factor = Color3{emissive[0], emissive[1], emissive[2]};${animationPointerMaterials ? `
     material.emissive_base_factor = material.emissive_factor;` : ""}
     if (const ts::JsonValue* extensions_value =
@@ -1639,23 +1628,23 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                     "KHR_materials_emissive_strength")) {
             const float strength = float_or(
                 strength_value->as_object(),
-                "emissiveStrength",
-                1.0f);${animationPointerMaterials ? `
+                "${materialDefaults.emissiveStrength.key}",
+                ${materialDefaults.emissiveStrength.literal});${animationPointerMaterials ? `
             material.emissive_strength = strength;` : ""}
             material.emissive_factor.r *= strength;
             material.emissive_factor.g *= strength;
             material.emissive_factor.b *= strength;
         }
     }
-    material.double_sided = bool_or(material_json, "doubleSided", false);
-    const std::string alpha_mode = string_or(material_json, "alphaMode", "OPAQUE");
+    material.double_sided = bool_or(material_json, "${materialDefaults.doubleSidedKey}", false);
+    const std::string alpha_mode = string_or(material_json, "${materialDefaults.alphaMode.key}", "${materialDefaults.alphaMode.literal}");
     material.alpha_mode =
         alpha_mode == "BLEND"
             ? MaterialAlphaMode::blend
             : alpha_mode == "MASK"
                 ? MaterialAlphaMode::mask
                 : MaterialAlphaMode::opaque;
-    material.alpha_cutoff = float_or(material_json, "alphaCutoff", 0.5f);
+    material.alpha_cutoff = float_or(material_json, "${materialDefaults.alphaCutoff.key}", ${materialDefaults.alphaCutoff.literal});
     engine.materials.push_back(std::move(material));
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }

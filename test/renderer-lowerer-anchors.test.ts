@@ -7,13 +7,17 @@ import {
     extractPackagedTemplateLiteral,
     readPinnedLibraryModule,
 } from "../src/pinned-shader-composer.js";
+import { UpstreamSourceStore } from "../src/upstream-source.js";
 
 /**
  * RD-3 anchors: the renderer lowerer's math emissions are paired with their
  * pinned writers (view transpose, perspective stores, TRS composition), the
  * fogInfos packing order is the pinned WGSL_FOG contract, the monolithic
  * PbrUniforms extension lanes are pruned to the fixed capture-only base
- * block, and the cubemap-skybox stages are lifted from the packaged pin.
+ * block, the cubemap-skybox stages are lifted from the packaged pin, the
+ * draw-list bucket/sort/pipeline-kind rules and the light-slot packing are
+ * anchored to their pinned modules, and the background geometry tables flow
+ * from the pinned builders.
  */
 
 const prunedLaneNames = [
@@ -258,6 +262,119 @@ test("lifts the cubemap-skybox stages from the packaged pin", () => {
     assert.match(
         plan.source,
         /result\.view = build_view_matrix\(camera_world_matrix\(camera\)\);/,
+    );
+});
+
+test("anchors the draw-list rules to the pinned bucket fork", () => {
+    // The pinned fork the anchors inside lowerRenderPlan pair with: a
+    // failed pairing throws there, so this test both re-states the pin's
+    // side and checks the emitted rules still carry the transcription.
+    const store = new UpstreamSourceStore();
+    const renderTask = store.getSource("src/frame-graph/render-task.ts");
+    assert.ok(
+        renderTask.includes("if (r.isTransparent || r._transmissive) {"),
+    );
+    assert.ok(renderTask.includes("} else if (r._direct) {"));
+    assert.ok(
+        renderTask.includes(
+            "opaque.sort((a, b) => a.renderable.order - b.renderable.order);",
+        ),
+    );
+    const plan = new RendererLowerer(
+        new LoweringContext(),
+    ).lowerRenderPlan({});
+    // append_draw transcribes the pinned transparent predicate.
+    assert.match(
+        plan.source,
+        /item\.bucket == RenderBucket::alpha_blend \|\|\s*\r?\n\s*item\.transmissive\s*\r?\n\s*\? result\.transparent\s*\r?\n\s*: result\.opaque;/,
+    );
+    // The record rule behind item.transmissive is the pinned
+    // needsTransmission predicate (factor > 0 or a declared texture).
+    assert.match(
+        plan.source,
+        /item\.transmissive = material\.transmission_factor > 0\.0f \|\|\s*\r?\n\s*!material\.transmission_texture\.bytes\.empty\(\);/,
+    );
+    // The transparent comparator keeps the pinned direction and tie-break.
+    assert.match(
+        plan.source,
+        /return left\.sort_distance > right\.sort_distance \|\|\s*\r?\n\s*\(left\.sort_distance == right\.sort_distance &&\s*\r?\n\s*left\.item\.order < right\.item\.order\);/,
+    );
+    // The clockwise pipeline arms exist only under cull-none: the loader
+    // stamps clockwise_front_face only for double-sided mirrored
+    // materials and rewinds single-sided mirrored indices instead.
+    assert.ok(
+        !plan.header.includes("pbr_opaque_back_clockwise") &&
+            !plan.header.includes("pbr_transparent_back_clockwise"),
+    );
+    assert.match(plan.header, /pbr_opaque_none_clockwise/);
+});
+
+test("anchors the light-slot packing to the pinned lights-ubo module", () => {
+    const store = new UpstreamSourceStore();
+    const lightsUbo = store.getSource("src/render/lights-ubo.ts");
+    // The pinned loops the PALs walk against the emitted
+    // light_affects_mesh: both advance their slot cursor only for
+    // _writeLightUbo lights, which keeps a mesh's packed indices aligned
+    // with the UBO slots.
+    assert.ok(
+        lightsUbo.includes(
+            "u32[MSH_LIGHT_INDEX_WORD_OFFSET + count] = pi;",
+        ),
+    );
+    assert.ok(lightsUbo.includes("u32[16] = count;"));
+    assert.ok(
+        lightsUbo.includes(
+            "light._writeLightUbo(data, headerFloats + count * LIGHT_ENTRY_FLOATS);",
+        ),
+    );
+    const plan = new RendererLowerer(
+        new LoweringContext(),
+    ).lowerRenderPlan({});
+    // The emitted affectsMesh transcription: included list wins when
+    // non-empty, exclusion filters otherwise.
+    assert.match(
+        plan.source,
+        /if \(light\.included_meshes\.empty\(\)\) \{\s*\r?\n\s*return std::find\(\s*\r?\n\s*light\.excluded_meshes\.begin\(\),\s*\r?\n\s*light\.excluded_meshes\.end\(\),\s*\r?\n\s*mesh_index\) == light\.excluded_meshes\.end\(\);/,
+    );
+    assert.match(
+        plan.source,
+        /return std::find\(\s*\r?\n\s*light\.included_meshes\.begin\(\),\s*\r?\n\s*light\.included_meshes\.end\(\),\s*\r?\n\s*mesh_index\) != light\.included_meshes\.end\(\);/,
+    );
+});
+
+test("derives the background geometry from the pinned builders", () => {
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan(
+        { imageSkybox: true, solidSkybox: true },
+    );
+    // The ground quad: pinned XY corners composed with the pinned
+    // XY-to-XZ world, BACKSIDE winding and UVs flowing unchanged.
+    assert.ok(
+        plan.source.includes(
+            "ModelVertex{Vec3{center.x - half, center.y, center.z + half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{0.0f, 0.0f}},",
+        ),
+    );
+    assert.ok(
+        plan.source.includes(
+            "ModelVertex{Vec3{center.x + half, center.y, center.z - half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{1.0f, 1.0f}},",
+        ),
+    );
+    assert.ok(plan.source.includes("result.indices = {0, 2, 1, 0, 3, 2};"));
+    // The pinned ground alpha rides the uniforms block.
+    assert.match(plan.source, /0\.9f,/);
+    // The skybox cube: the shared pinned corner order and winding, in the
+    // DDS/HDR plan, the solid plan and the borrowed image-skybox table.
+    const cornerRow = "        {-half, -half, -half},";
+    const windingRow = "        6, 4, 5, 7, 6, 5,";
+    assert.ok(plan.source.includes("vertex(-half, -half, -half),"));
+    assert.equal(
+        plan.source.split(cornerRow).length,
+        3,
+        "solid and image skybox plans share the pinned corner table",
+    );
+    assert.equal(
+        plan.source.split(windingRow).length,
+        4,
+        "all three cube plans share the pinned winding",
     );
 });
 

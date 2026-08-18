@@ -475,6 +475,13 @@ class GeneratedSourceWriter {
                 { modulePath: "src/loader-gltf/ibl-env-assembly.ts", symbolName: "generateBrdfLut" },
                 { modulePath: "src/loader-gltf/gltf-feature-lights-punctual.ts", symbolName: "applyAsset" },
                 { modulePath: "src/light/spot-light.ts", symbolName: "createSpotLight" },
+                { modulePath: "src/loader-gltf/gltf-parser.ts", symbolName: "computeNodeWorldMatrix" },
+                { modulePath: "src/loader-gltf/gltf-material.ts", symbolName: "assembleMaterial" },
+                { modulePath: "src/loader-gltf/gltf-ext-uv-transform.ts", symbolName: "wrapTexture" },
+                { modulePath: "src/material/pbr/fragments/uv-transform-fragment.ts", symbolName: "writeOne" },
+                { modulePath: "src/loader-gltf/gltf-ext-clearcoat.ts", symbolName: "applyMaterial" },
+                { modulePath: "src/loader-gltf/gltf-ext-sheen.ts", symbolName: "applyMaterial" },
+                { modulePath: "src/loader-gltf/gltf-ext-emissive-strength.ts", symbolName: "applyMaterial" },
             );
         }
         if (features.includes("loader:babylon")) {

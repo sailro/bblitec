@@ -609,6 +609,9 @@ export class RendererLowerer {
         // map rather than asserted against it).
         this.assertPinnedPerspectiveWriter();
         this.assertPinnedMultiplyWriter();
+        this.assertPinnedDrawListRules();
+        this.assertPinnedLightSlotPacking();
+        const backgroundGeometry = this.pinnedBackgroundGeometry();
         const viewMatrixBody = this.pinnedViewMatrixBody();
         if (options.fog) {
             // PBR and Standard fog ride the PAL's pinned scene block; its
@@ -1868,12 +1871,9 @@ BackgroundPlan build_background_plan(const EnvironmentState& environment) {
     const Vec3 center = environment.ground_position;
     BackgroundPlan result;
     result.vertices = {
-        ModelVertex{Vec3{center.x - half, center.y, center.z + half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{0.0f, 0.0f}},
-        ModelVertex{Vec3{center.x + half, center.y, center.z + half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{1.0f, 0.0f}},
-        ModelVertex{Vec3{center.x + half, center.y, center.z - half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{1.0f, 1.0f}},
-        ModelVertex{Vec3{center.x - half, center.y, center.z - half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{0.0f, 1.0f}},
+${backgroundGeometry.groundVertexRows}
     };
-    result.indices = {0, 2, 1, 0, 3, 2};
+    result.indices = {${backgroundGeometry.groundIndexRow}};
     return result;
 }
 
@@ -1886,7 +1886,7 @@ BackgroundUniforms build_background_uniforms(
         environment.primary_color.r,
         environment.primary_color.g,
         environment.primary_color.b,
-        0.9f,
+        ${backgroundGeometry.groundAlpha},
     };
     result.background_center = {
         0.0f,
@@ -1923,22 +1923,10 @@ SkyboxPlan build_skybox_plan(const EnvironmentState& environment) {
     };
     SkyboxPlan result;
     result.vertices = {
-        vertex(-half, -half, -half),
-        vertex(half, -half, -half),
-        vertex(-half, half, -half),
-        vertex(half, half, -half),
-        vertex(-half, -half, half),
-        vertex(half, -half, half),
-        vertex(-half, half, half),
-        vertex(half, half, half),
+${backgroundGeometry.skyboxVertexRows}
     };
     result.indices = {
-        6, 4, 5, 7, 6, 5,
-        0, 2, 3, 1, 0, 3,
-        5, 1, 3, 7, 5, 3,
-        0, 4, 6, 2, 0, 6,
-        3, 2, 6, 7, 3, 6,
-        0, 1, 5, 4, 0, 5,
+${backgroundGeometry.skyboxIndexRows}
     };
     return result;
 }
@@ -1981,22 +1969,10 @@ SolidSkyboxPlan build_solid_skybox_plan(
     const float half = environment.skybox_size * 0.5f;
     SolidSkyboxPlan result;
     result.positions = {{
-        {-half, -half, -half},
-        {half, -half, -half},
-        {-half, half, -half},
-        {half, half, -half},
-        {-half, -half, half},
-        {half, -half, half},
-        {-half, half, half},
-        {half, half, half},
+${backgroundGeometry.skyboxCornerRows}
     }};
     result.indices = {
-        6, 4, 5, 7, 6, 5,
-        0, 2, 3, 1, 0, 3,
-        5, 1, 3, 7, 5, 3,
-        0, 4, 6, 2, 0, 6,
-        3, 2, 6, 7, 3, 6,
-        0, 1, 5, 4, 0, 5,
+${backgroundGeometry.skyboxIndexRows}
     };
     return result;
 }
@@ -2056,23 +2032,11 @@ ImageSkyboxPlan build_image_skybox_plan(
     const float half = environment.image_skybox_size * 0.5f;
     ImageSkyboxPlan result;
     const std::array<std::array<float, 3>, 8> corners{{
-        {-half, -half, -half},
-        {half, -half, -half},
-        {-half, half, -half},
-        {half, half, -half},
-        {-half, -half, half},
-        {half, -half, half},
-        {-half, half, half},
-        {half, half, half},
+${backgroundGeometry.skyboxCornerRows}
     }};
     result.positions = corners;
     result.indices = {
-        6, 4, 5, 7, 6, 5,
-        0, 2, 3, 1, 0, 3,
-        5, 1, 3, 7, 5, 3,
-        0, 4, 6, 2, 0, 6,
-        3, 2, 6, 7, 3, 6,
-        0, 1, 5, 4, 0, 5,
+${backgroundGeometry.skyboxIndexRows}
     };
     return result;
 }
@@ -3414,6 +3378,799 @@ ${lifted.fragmentBody}
             "a0 * b0 + a4 * b1 + a8 * b2 + a12 * b3",
             "Pinned matrix-multiply accumulation order",
         );
+    }
+
+    /**
+     * Anchors for the emitted draw-list rules: `append_draw`'s transparent
+     * predicate is the pinned buildBindings fork, the bucket order sorts are
+     * the pinned comparators, and the per-family transparency, order and
+     * transmissive stamps plus the cull/winding forks behind
+     * `render_pipeline_kind` are each paired with the pinned line they
+     * transcribe, so a pin retune fails generation at the rule that moved.
+     *
+     * The pinned direct bucket (`r._direct`) folds into the native opaque
+     * list: no reached renderable sets it (sprites and thin-instance culling
+     * draw through their own native subsystems), and the fork asserted here
+     * is what makes that fold visible the moment the pin grows a reached
+     * direct renderable. The clockwise arms exist only under cull-none
+     * because the generated glTF loader stamps `clockwise_front_face` only
+     * for double-sided mirrored materials and rewinds single-sided mirrored
+     * indices instead, mirroring the pin's frontFace="cw" through data.
+     *
+     * Two emitted rules deliberately have no anchor because they do not
+     * transcribe a pinned expression — they are open RD-3 divergences, not
+     * ports: `order_draw_lists` stable-groups opaque draws by pipeline kind
+     * where the pinned buildBindings orders them by `renderable.order`
+     * alone, and `sort_transparent_draws` builds its sort center from the
+     * scaled rotated bounds center where both pinned mesh families store
+     * the world-matrix translation (`pbr-renderable.ts` /
+     * `standard-renderable.ts` `sortCenter`).
+     */
+    private assertPinnedDrawListRules(): void {
+        const { declaration: buildBindings } =
+            this.context.functionDeclaration(
+                renderTaskModule,
+                "buildBindings",
+            );
+        const bucketFork = this.context.findNodes(
+            buildBindings,
+            (node): node is ts.IfStatement =>
+                ts.isIfStatement(node) &&
+                node.elseStatement !== undefined,
+        )[0];
+        if (!bucketFork) {
+            this.context.contractError(
+                buildBindings,
+                "Expected the pinned bucket fork.",
+            );
+        }
+        this.context.assertExpressionShape(
+            bucketFork.expression,
+            "r.isTransparent || r._transmissive",
+            "Pinned transparent bucket predicate",
+        );
+        const bucketStore = (
+            statement: ts.Statement | undefined,
+            expected: string,
+        ): void => {
+            const push = statement
+                ? this.context.findNodes(
+                      statement,
+                      (node): node is ts.ExpressionStatement =>
+                          ts.isExpressionStatement(node),
+                  )[0]
+                : undefined;
+            if (!push) {
+                this.context.contractError(
+                    bucketFork,
+                    `Expected the pinned bucket store '${expected}'.`,
+                );
+            }
+            this.context.assertExpressionShape(
+                push.expression,
+                expected,
+                "Pinned bucket store",
+            );
+        };
+        bucketStore(
+            bucketFork.thenStatement,
+            "transparent.push(binding)",
+        );
+        const directFork = bucketFork.elseStatement;
+        if (!directFork || !ts.isIfStatement(directFork)) {
+            this.context.contractError(
+                bucketFork,
+                "Expected the pinned direct bucket fork.",
+            );
+        }
+        this.context.assertExpressionShape(
+            directFork.expression,
+            "r._direct",
+            "Pinned direct bucket predicate",
+        );
+        bucketStore(directFork.thenStatement, "direct.push(binding)");
+        bucketStore(directFork.elseStatement, "opaque.push(binding)");
+        const orderSorts = this.context.findNodes(
+            buildBindings,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                ts.isPropertyAccessExpression(node.expression) &&
+                node.expression.name.text === "sort",
+        );
+        const sortedBuckets = ["opaque", "direct"] as const;
+        if (orderSorts.length !== sortedBuckets.length) {
+            this.context.contractError(
+                buildBindings,
+                `Pinned buildBindings sorts ${orderSorts.length} lists ` +
+                    `(${sortedBuckets.length} expected).`,
+            );
+        }
+        orderSorts.forEach((sort, index) => {
+            const receiver =
+                ts.isPropertyAccessExpression(sort.expression)
+                    ? this.context
+                          .propertyPath(sort.expression.expression)
+                          ?.join(".")
+                    : undefined;
+            if (receiver !== sortedBuckets[index]) {
+                this.context.contractError(
+                    sort,
+                    `Expected the pinned ${sortedBuckets[index]} order sort.`,
+                );
+            }
+            const comparator = sort.arguments[0];
+            if (
+                !comparator ||
+                (!ts.isArrowFunction(comparator) &&
+                    !ts.isFunctionExpression(comparator)) ||
+                ts.isBlock(comparator.body)
+            ) {
+                this.context.contractError(
+                    sort,
+                    "Expected a pinned order comparator.",
+                );
+            }
+            this.context.assertExpressionShape(
+                comparator.body,
+                "a.renderable.order - b.renderable.order",
+                "Pinned bucket order comparator",
+            );
+        });
+        // The pinned stamps the emitted record rules transcribe: which
+        // renderables are transparent or transmissive, the order constants
+        // behind the fixed skybox/opaque/transparent/ground stage sequence
+        // (0 and 200 are asserted with the background renderables above in
+        // `lowerShaders`; 100/150/200 live in these rows), and the
+        // cull/winding forks `render_pipeline_kind` enumerates.
+        for (const [modulePath, marker, label] of [
+            [
+                "src/material/pbr/pbr-renderable.ts",
+                "const isTransparent = (features2 & (PBR2_NO_COLOR_OUTPUT | PBR2_ESM_SHADOW_OUTPUT)) === 0 && (features & PBR_HAS_ALPHA_BLEND) !== 0;",
+                "PBR transparency stamp",
+            ],
+            [
+                "src/material/pbr/pbr-renderable.ts",
+                "const order = mesh.renderOrder ?? (isTransparent || needsTaskRefraction ? 150 : 100);",
+                "PBR order stamp",
+            ],
+            [
+                "src/material/pbr/pbr-renderable.ts",
+                "const needsTaskRefraction = !!mat._transmissive && (features2 & PBR2_HAS_REFRACTION) !== 0;",
+                "PBR transmissive-draw predicate",
+            ],
+            [
+                "src/material/pbr/pbr-renderable.ts",
+                "_transmissive: needsTaskRefraction,",
+                "PBR transmissive stamp",
+            ],
+            [
+                "src/material/pbr/set-transmission.ts",
+                "mat._transmissive = true;",
+                "transmission material stamp",
+            ],
+            [
+                dielectricLoaderModule,
+                "const needsTransmission = !!eTx && (intensity > 0 || !!eTx.transmissionTexture);",
+                "glTF transmission activation",
+            ],
+            [
+                "src/material/standard/standard-renderable.ts",
+                "const isTransparent = !shadowOutput && ((features & HAS_OPACITY_TEXTURE) !== 0 || mat.alpha < 1 || vertexAlphaBlend);",
+                "Standard transparency stamp",
+            ],
+            [
+                "src/material/standard/standard-renderable.ts",
+                "order: mesh.renderOrder ?? (isTransparent ? 200 : 100),",
+                "Standard order stamp",
+            ],
+            [
+                "src/material/shader/shader-renderable.ts",
+                "const isTransparent = material.needAlphaBlending;",
+                "shader-material transparency stamp",
+            ],
+            [
+                "src/material/pbr/pbr-pipeline.ts",
+                'cullMode: hasDoubleSided ? ("none" as GPUCullMode) : "back", ...composed._prim }',
+                "PBR cull fork",
+            ],
+            [
+                "src/material/standard/standard-pipeline.ts",
+                'cullMode: features & DOUBLE_SIDED ? "none" : "back", frontFace: "ccw" }',
+                "Standard cull fork",
+            ],
+            [
+                shaderPipelineModule,
+                'cullMode: material.backFaceCulling ? "back" : "none" }',
+                "shader-material cull fork",
+            ],
+            [
+                "src/loader-gltf/gltf-feature-primitive.ts",
+                "const mirrored = mat4Determinant3(meshData._worldMatrix as unknown as ArrayLike<number>) > 0;",
+                "mirrored-winding predicate",
+            ],
+            [
+                "src/loader-gltf/gltf-feature-primitive.ts",
+                'prim.frontFace = "cw";',
+                "clockwise front face",
+            ],
+        ] as const) {
+            if (
+                !this.context.store.getSource(modulePath).includes(marker)
+            ) {
+                throw new Error(
+                    `Pinned Babylon Lite ${label} changed: ${marker}`,
+                );
+            }
+        }
+    }
+
+    /**
+     * Anchors for the light-slot packing contract behind the emitted
+     * `light_affects_mesh`: the pinned `affectsMesh` fork it transcribes,
+     * and the two pinned packing loops whose slot arithmetic the PALs walk
+     * against it — `writeMeshLightSelection` (per-mesh indices from
+     * `MSH_LIGHT_INDEX_WORD_OFFSET`, count at word 16) and `fillLightsData`
+     * (entries at `headerFloats + count * LIGHT_ENTRY_FLOATS`). Both loops
+     * advance their slot cursor only for `_writeLightUbo` lights and stop at
+     * `MAX_LIGHTS`; that shared walk is the invariant that keeps a mesh's
+     * packed indices aligned with the UBO slots, so any retune of either
+     * loop fails generation here before a PAL can walk them differently.
+     */
+    private assertPinnedLightSlotPacking(): void {
+        const lightsUboModule = "src/render/lights-ubo.ts";
+        const { declaration: affects } =
+            this.context.functionDeclaration(
+                lightsUboModule,
+                "affectsMesh",
+            );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(affects, "meshId"),
+            "mesh.id",
+            "Pinned light-inclusion mesh id",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(affects, "included"),
+            "light.includedOnlyMeshIds",
+            "Pinned light inclusion list",
+        );
+        const affectsFork = this.context.findNodes(
+            affects,
+            (node): node is ts.IfStatement => ts.isIfStatement(node),
+        )[0];
+        if (!affectsFork) {
+            this.context.contractError(
+                affects,
+                "Expected the pinned inclusion fork.",
+            );
+        }
+        this.context.assertExpressionShape(
+            affectsFork.expression,
+            "included?.size",
+            "Pinned inclusion-list predicate",
+        );
+        const affectsReturns = this.context.findNodes(
+            affects,
+            (node): node is ts.ReturnStatement =>
+                ts.isReturnStatement(node),
+        );
+        if (
+            affectsReturns.length !== 2 ||
+            !affectsReturns[0]?.expression ||
+            !affectsReturns[1]?.expression
+        ) {
+            this.context.contractError(
+                affects,
+                "Expected the pinned two-arm affectsMesh.",
+            );
+        }
+        this.context.assertExpressionShape(
+            affectsReturns[0].expression,
+            "!!meshId && included.has(meshId)",
+            "Pinned included-mesh arm",
+        );
+        this.context.assertExpressionShape(
+            affectsReturns[1].expression,
+            "!meshId || !light.excludedMeshIds?.has(meshId)",
+            "Pinned excluded-mesh arm",
+        );
+
+        const { declaration: selection } =
+            this.context.functionDeclaration(
+                lightsUboModule,
+                "writeMeshLightSelection",
+            );
+        const selectionGuards: ReadonlyArray<readonly [string, string]> = [
+            ["pi >= MAX_LIGHTS", "Pinned light-slot cursor break"],
+            ["!light._writeLightUbo", "Pinned light-slot eligibility skip"],
+            ["affectsMesh(light, mesh)", "Pinned per-mesh light test"],
+            ["u32", "Pinned light-index write guard"],
+            ["u32", "Pinned light-count write guard"],
+        ];
+        const selectionIfs = this.context.findNodes(
+            selection,
+            (node): node is ts.IfStatement => ts.isIfStatement(node),
+        );
+        if (selectionIfs.length !== selectionGuards.length) {
+            this.context.contractError(
+                selection,
+                `Pinned writeMeshLightSelection has ${selectionIfs.length} ` +
+                    `guards (${selectionGuards.length} expected).`,
+            );
+        }
+        selectionIfs.forEach((guard, index) => {
+            this.context.assertExpressionShape(
+                guard.expression,
+                selectionGuards[index]![0],
+                selectionGuards[index]![1],
+            );
+        });
+        const selectionStores = this.pinnedElementStores(
+            selection,
+            "u32",
+        );
+        const expectedSelectionStores: ReadonlyArray<
+            readonly [offset: string, value: string, label: string]
+        > = [
+            [
+                "MSH_LIGHT_INDEX_WORD_OFFSET + count",
+                "pi",
+                "Pinned per-mesh light index store",
+            ],
+            ["16", "count", "Pinned per-mesh light count store"],
+            [
+                "MSH_LIGHT_INDEX_WORD_OFFSET + i",
+                "0",
+                "Pinned light index zero fill",
+            ],
+        ];
+        if (selectionStores.length !== expectedSelectionStores.length) {
+            this.context.contractError(
+                selection,
+                `Pinned writeMeshLightSelection stores ${selectionStores.length} ` +
+                    `words (${expectedSelectionStores.length} expected).`,
+            );
+        }
+        selectionStores.forEach((store, index) => {
+            const [offset, value, label] = expectedSelectionStores[index]!;
+            this.context.assertExpressionShape(
+                store.left.argumentExpression,
+                offset,
+                `${label} offset`,
+            );
+            this.context.assertExpressionShape(
+                store.right,
+                value,
+                label,
+            );
+        });
+        const selectionReturn = this.context.findNodes(
+            selection,
+            (node): node is ts.ReturnStatement =>
+                ts.isReturnStatement(node),
+        )[0];
+        if (!selectionReturn?.expression) {
+            this.context.contractError(
+                selection,
+                "Expected the pinned selection encoding.",
+            );
+        }
+        this.context.assertExpressionShape(
+            selectionReturn.expression,
+            "count === 1 ? single + 1 : -count",
+            "Pinned single-light encoding",
+        );
+
+        const { declaration: fill } = this.context.functionDeclaration(
+            lightsUboModule,
+            "fillLightsData",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(fill, "headerFloats"),
+            "4",
+            "Pinned lights-UBO header size",
+        );
+        const fillGuards: ReadonlyArray<readonly [string, string]> = [
+            ["count >= MAX_LIGHTS", "Pinned lights-UBO slot break"],
+            ["!light._writeLightUbo", "Pinned lights-UBO eligibility skip"],
+        ];
+        const fillIfs = this.context.findNodes(
+            fill,
+            (node): node is ts.IfStatement => ts.isIfStatement(node),
+        );
+        if (fillIfs.length !== fillGuards.length) {
+            this.context.contractError(
+                fill,
+                `Pinned fillLightsData has ${fillIfs.length} guards ` +
+                    `(${fillGuards.length} expected).`,
+            );
+        }
+        fillIfs.forEach((guard, index) => {
+            this.context.assertExpressionShape(
+                guard.expression,
+                fillGuards[index]![0],
+                fillGuards[index]![1],
+            );
+        });
+        const slotWrite = this.context.findNodes(
+            fill,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                ts.isPropertyAccessExpression(node.expression) &&
+                node.expression.name.text === "_writeLightUbo",
+        )[0];
+        if (!slotWrite) {
+            this.context.contractError(
+                fill,
+                "Expected the pinned light-entry write.",
+            );
+        }
+        this.context.assertExpressionShape(
+            slotWrite,
+            "light._writeLightUbo(data, headerFloats + count * LIGHT_ENTRY_FLOATS)",
+            "Pinned light-entry slot arithmetic",
+        );
+        const countStores = this.pinnedElementStores(fill, "_countU32");
+        const headerStores = this.pinnedElementStores(fill, "data");
+        if (countStores.length !== 1 || headerStores.length !== 1) {
+            this.context.contractError(
+                fill,
+                "Expected the pinned count bit-pattern stores.",
+            );
+        }
+        this.context.assertExpressionShape(
+            countStores[0]!.left.argumentExpression,
+            "0",
+            "Pinned count word offset",
+        );
+        this.context.assertExpressionShape(
+            countStores[0]!.right,
+            "count",
+            "Pinned count word value",
+        );
+        this.context.assertExpressionShape(
+            headerStores[0]!.left.argumentExpression,
+            "0",
+            "Pinned count float slot",
+        );
+        this.context.assertExpressionShape(
+            headerStores[0]!.right,
+            "_countF32[0]",
+            "Pinned count bit pattern",
+        );
+    }
+
+    /**
+     * The ±half / zero / numeric elements of one pinned typed-array buffer
+     * literal (`new F32([...])` or `new U16([...])`): ±`halfName` tokens map
+     * to ±1 and every other element must be a numeric constant. This is how
+     * the background geometry tables flow from the pinned builders instead
+     * of being restated by hand.
+     */
+    private pinnedBufferValues(
+        declaration: ts.Node,
+        file: ts.SourceFile,
+        name: string,
+        halfName: string,
+    ): number[] {
+        const initializer = this.context.unwrapExpression(
+            this.context.variableInitializer(declaration, name),
+        );
+        if (
+            !ts.isNewExpression(initializer) ||
+            initializer.arguments?.length !== 1
+        ) {
+            this.context.contractError(
+                initializer,
+                `Expected a pinned typed-array literal for '${name}'.`,
+            );
+        }
+        const array = this.context.unwrapExpression(
+            initializer.arguments[0]!,
+        );
+        if (!ts.isArrayLiteralExpression(array)) {
+            this.context.contractError(
+                array,
+                `Expected a pinned array literal for '${name}'.`,
+            );
+        }
+        return array.elements.map((element) => {
+            const unwrapped = this.context.unwrapExpression(element);
+            if (
+                ts.isIdentifier(unwrapped) &&
+                unwrapped.text === halfName
+            ) {
+                return 1;
+            }
+            if (
+                ts.isPrefixUnaryExpression(unwrapped) &&
+                unwrapped.operator === ts.SyntaxKind.MinusToken
+            ) {
+                const operand = this.context.unwrapExpression(
+                    unwrapped.operand,
+                );
+                if (
+                    ts.isIdentifier(operand) &&
+                    operand.text === halfName
+                ) {
+                    return -1;
+                }
+            }
+            return this.context.numericValue(element, file);
+        });
+    }
+
+    /**
+     * The background geometry tables, derived from the pinned builders the
+     * way the factory lowerer derives box and plane: corner signs, UVs and
+     * index winding flow from the pinned buffer literals into the emitted
+     * C++, so a retuned table changes the emission and anything else fails
+     * generation.
+     *
+     * - The ground quad flows from `createGroundBuffers` (XY plane at z=0,
+     *   BACKSIDE winding) composed with the `createBgMeshUBO` world matrix
+     *   (rotate XY to XZ, translate to the scene root), which the emission
+     *   bakes into the vertices: world = (x + tx, ty + y*eps, tz - y). The
+     *   two epsilon lanes (2.220446049250313e-16, asserted below) are
+     *   dropped as 0 — for the reached ground sizes they perturb y by under
+     *   1e-13 of a unit, orders of magnitude below f32 vertex precision —
+     *   and the same drop turns the rotated normal (0, 1, eps) into the
+     *   emitted (0, 1, 0). The ModelVertex tangent lane is the record
+     *   filler; no background stage declares a tangent input.
+     * - The skybox cube flows from `createSkyboxBuffers`, which the pin
+     *   carries in three identical copies (DDS, HDR, solid); the flow
+     *   requires them equal and serves build_skybox_plan and
+     *   build_solid_skybox_plan from the shared table.
+     * - The image skybox borrows the same pinned corner/index table: its
+     *   pinned mesh is `createBoxData(size)` — 24 vertices spanning
+     *   ±size/2 (span asserted below) drawn cull-none — and the borrowed
+     *   8-corner triangulation covers the identical cube surface, over
+     *   which the sampled direction interpolates identically per face.
+     */
+    private pinnedBackgroundGeometry(): {
+        groundVertexRows: string;
+        groundIndexRow: string;
+        groundAlpha: string;
+        skyboxVertexRows: string;
+        skyboxCornerRows: string;
+        skyboxIndexRows: string;
+    } {
+        const ground = this.context.functionDeclaration(
+            backgroundGroundModule,
+            "createGroundBuffers",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(ground.declaration, "h"),
+            "groundSize / 2",
+            "Pinned ground half extent",
+        );
+        const groundPositions = this.pinnedBufferValues(
+            ground.declaration,
+            ground.file,
+            "positions",
+            "h",
+        );
+        const groundNormals = this.pinnedBufferValues(
+            ground.declaration,
+            ground.file,
+            "normals",
+            "h",
+        );
+        const groundUvs = this.pinnedBufferValues(
+            ground.declaration,
+            ground.file,
+            "uvs",
+            "h",
+        );
+        const groundIndices = this.pinnedBufferValues(
+            ground.declaration,
+            ground.file,
+            "indices",
+            "h",
+        );
+        if (
+            groundPositions.length !== 12 ||
+            groundNormals.length !== 12 ||
+            groundUvs.length !== 8 ||
+            groundIndices.length !== 6
+        ) {
+            this.context.contractError(
+                ground.declaration,
+                "Pinned ground quad changed shape; the emitted BackgroundPlan no longer covers it.",
+            );
+        }
+        const groundSource = this.context.store.getSource(
+            backgroundGroundModule,
+        );
+        for (const [marker, what] of [
+            [
+                "const eps = 2.220446049250313e-16;",
+                "ground world epsilon",
+            ],
+            ["data[0] = data[15] = 1;", "ground world unit lanes"],
+            ["data[5] = data[10] = eps;", "ground world epsilon lanes"],
+            ["data[6] = -1;", "ground world -y-to-z lane"],
+            ["data[9] = 1;", "ground world y-to-z lane"],
+            ["data[12] = rootPosition[0];", "ground world translation x"],
+            ["data[13] = rootPosition[1];", "ground world translation y"],
+            ["data[14] = rootPosition[2];", "ground world translation z"],
+            ["data[20] = 0;", "ground background-center x"],
+            ["data[21] = 0;", "ground background-center y"],
+            ["data[22] = 0;", "ground background-center z"],
+        ] as const) {
+            if (!groundSource.includes(marker)) {
+                throw new Error(
+                    `Pinned Babylon Lite ${what} changed ('${marker}' is gone).`,
+                );
+            }
+        }
+        const groundUbo = this.context.functionDeclaration(
+            backgroundGroundModule,
+            "createBgMeshUBO",
+        );
+        const alphaStore = this.pinnedElementStores(
+            groundUbo.declaration,
+            "data",
+        ).find(
+            (store) =>
+                ts.isNumericLiteral(store.left.argumentExpression) &&
+                Number(store.left.argumentExpression.text) === 19,
+        );
+        if (!alphaStore) {
+            this.context.contractError(
+                groundUbo.declaration,
+                "Pinned ground alpha store moved.",
+            );
+        }
+        const groundAlpha = this.context.floatLiteral(
+            this.context.numericValue(alphaStore.right, groundUbo.file),
+        );
+        const groundVertexRows: string[] = [];
+        for (let corner = 0; corner < 4; corner++) {
+            const x = groundPositions[corner * 3]!;
+            const y = groundPositions[corner * 3 + 1]!;
+            if (
+                (x !== 1 && x !== -1) ||
+                (y !== 1 && y !== -1) ||
+                groundPositions[corner * 3 + 2] !== 0 ||
+                groundNormals[corner * 3] !== 0 ||
+                groundNormals[corner * 3 + 1] !== 0 ||
+                groundNormals[corner * 3 + 2] !== 1
+            ) {
+                this.context.contractError(
+                    ground.declaration,
+                    `Pinned ground corner ${corner} left the authored XY plane.`,
+                );
+            }
+            const u = groundUvs[corner * 2]!;
+            const v = groundUvs[corner * 2 + 1]!;
+            if ((u !== 0 && u !== 1) || (v !== 0 && v !== 1)) {
+                this.context.contractError(
+                    ground.declaration,
+                    `Pinned ground corner ${corner} UV left the unit square.`,
+                );
+            }
+            groundVertexRows.push(
+                `        ModelVertex{Vec3{center.x ${
+                    x < 0 ? "-" : "+"
+                } half, center.y, center.z ${
+                    y < 0 ? "+" : "-"
+                } half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{${this.context.floatLiteral(
+                    u,
+                )}, ${this.context.floatLiteral(v)}}},`,
+            );
+        }
+
+        const skyboxModules = [
+            backgroundDdsModule,
+            backgroundHdrModule,
+            backgroundSolidModule,
+        ] as const;
+        let corners: number[] | undefined;
+        let cubeIndices: number[] | undefined;
+        for (const modulePath of skyboxModules) {
+            const cube = this.context.functionDeclaration(
+                modulePath,
+                "createSkyboxBuffers",
+            );
+            const positions = this.pinnedBufferValues(
+                cube.declaration,
+                cube.file,
+                "positions",
+                "S",
+            );
+            const indices = this.pinnedBufferValues(
+                cube.declaration,
+                cube.file,
+                "indices",
+                "S",
+            );
+            if (
+                positions.length !== 24 ||
+                positions.some((value) => value !== 1 && value !== -1) ||
+                indices.length !== 36 ||
+                indices.some(
+                    (value) =>
+                        !Number.isInteger(value) ||
+                        value < 0 ||
+                        value >= 8,
+                )
+            ) {
+                this.context.contractError(
+                    cube.declaration,
+                    `Pinned skybox cube in ${modulePath} changed shape.`,
+                );
+            }
+            if (!corners || !cubeIndices) {
+                corners = positions;
+                cubeIndices = indices;
+                continue;
+            }
+            if (
+                positions.some(
+                    (value, index) => value !== corners![index],
+                ) ||
+                indices.some(
+                    (value, index) => value !== cubeIndices![index],
+                )
+            ) {
+                this.context.contractError(
+                    cube.declaration,
+                    `Pinned skybox cube in ${modulePath} disagrees with ${skyboxModules[0]}.`,
+                );
+            }
+        }
+        const cornerRow = (corner: number): string =>
+            [0, 1, 2]
+                .map((axis) =>
+                    corners![corner * 3 + axis]! < 0 ? "-half" : "half",
+                )
+                .join(", ");
+        const skyboxVertexRows: string[] = [];
+        const skyboxCornerRows: string[] = [];
+        for (let corner = 0; corner < 8; corner++) {
+            skyboxVertexRows.push(`        vertex(${cornerRow(corner)}),`);
+            skyboxCornerRows.push(`        {${cornerRow(corner)}},`);
+        }
+        const skyboxIndexRows: string[] = [];
+        for (let triangle = 0; triangle < 36; triangle += 6) {
+            skyboxIndexRows.push(
+                `        ${cubeIndices!
+                    .slice(triangle, triangle + 6)
+                    .join(", ")},`,
+            );
+        }
+
+        // The image skybox's pinned mesh is createBoxData(size); assert its
+        // ±size/2 span so the borrowed corner table above keeps covering the
+        // pinned cube surface.
+        const box = this.context.functionDeclaration(
+            "src/mesh/create-box.ts",
+            "createBoxData",
+        );
+        const boxStore = this.pinnedElementStores(
+            box.declaration,
+            "positions",
+        )[0];
+        if (!boxStore) {
+            this.context.contractError(
+                box.declaration,
+                "Expected the pinned box position store.",
+            );
+        }
+        this.context.assertExpressionShape(
+            boxStore.right,
+            "(sign - 0.5) * dimensions[index % 3]",
+            "Pinned box half-extent span",
+        );
+
+        return {
+            groundVertexRows: groundVertexRows.join("\n"),
+            groundIndexRow: groundIndices.join(", "),
+            groundAlpha,
+            skyboxVertexRows: skyboxVertexRows.join("\n"),
+            skyboxCornerRows: skyboxCornerRows.join("\n"),
+            skyboxIndexRows: skyboxIndexRows.join("\n"),
+        };
     }
 
     /**
