@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { doubleLiteral } from "../cpp-literals.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -964,9 +965,4 @@ export class DataTypeRegistry {
     }
 }
 
-export function doubleLiteral(value: number): string {
-    if (Number.isInteger(value)) {
-        return `${value}.0`;
-    }
-    return `${value}`;
-}
+export { doubleLiteral };

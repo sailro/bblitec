@@ -1,4 +1,5 @@
 import { prefilterCubemapGgx } from "./hdr-prefilter-gpu.js";
+import { floatToHalf } from "./half-float.js";
 
 const hdrMagic = new Uint8Array([0x42, 0x42, 0x4c, 0x48, 0x44, 0x52, 0x31, 0x00]);
 
@@ -302,28 +303,6 @@ function computeSphericalHarmonics(image: HdrImage): Float32Array {
         }
     }
     return preScalePolynomial(shToPolynomial(sh));
-}
-
-function floatToHalf(value: number): number {
-    if (Number.isNaN(value)) return 0x7e00;
-    const sign = value < 0 || Object.is(value, -0) ? 0x8000 : 0;
-    const absolute = Math.abs(value);
-    if (absolute === Number.POSITIVE_INFINITY) return sign | 0x7c00;
-    if (absolute === 0) return sign;
-    if (absolute >= 65504) return sign | 0x7bff;
-    if (absolute < 2 ** -24) return sign;
-    if (absolute < 2 ** -14) {
-        return sign | Math.round(absolute / 2 ** -24);
-    }
-    const exponent = Math.floor(Math.log2(absolute));
-    const mantissa = absolute / 2 ** exponent - 1;
-    let halfExponent = exponent + 15;
-    let halfMantissa = Math.round(mantissa * 1024);
-    if (halfMantissa === 1024) {
-        halfMantissa = 0;
-        halfExponent += 1;
-    }
-    return sign | (halfExponent << 10) | halfMantissa;
 }
 
 function cubemapMipZero(image: HdrImage, faceSize: number): Uint16Array[] {

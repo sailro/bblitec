@@ -1,3 +1,5 @@
+import { floatToHalf } from "./half-float.js";
+
 const lutSize = 256;
 const sampleCount = 1024;
 
@@ -10,38 +12,6 @@ function radicalInverse(index: number): number {
     bits = (((bits & 0x0f0f0f0f) << 4) | ((bits & 0xf0f0f0f0) >>> 4)) >>> 0;
     bits = (((bits & 0x00ff00ff) << 8) | ((bits & 0xff00ff00) >>> 8)) >>> 0;
     return bits * 2.3283064365386963e-10;
-}
-
-function floatToHalf(value: number): number {
-    const source = new Float32Array([value]);
-    const bits = new Uint32Array(source.buffer)[0]!;
-    const sign = (bits >>> 16) & 0x8000;
-    const exponent = (bits >>> 23) & 0xff;
-    const mantissa = bits & 0x7fffff;
-    if (exponent === 0xff) {
-        return sign | (mantissa === 0 ? 0x7c00 : 0x7e00);
-    }
-    const halfExponent = exponent - 127 + 15;
-    if (halfExponent >= 0x1f) return sign | 0x7c00;
-    if (halfExponent <= 0) {
-        if (halfExponent < -10) return sign;
-        const normalized = mantissa | 0x800000;
-        const shift = 14 - halfExponent;
-        const rounded =
-            (normalized + (1 << (shift - 1)) - 1 +
-                ((normalized >> shift) & 1)) >>
-            shift;
-        return sign | rounded;
-    }
-    const rounded =
-        mantissa + 0xfff + ((mantissa >>> 13) & 1);
-    if ((rounded & 0x800000) !== 0) {
-        const nextExponent = halfExponent + 1;
-        return nextExponent >= 0x1f
-            ? sign | 0x7c00
-            : sign | (nextExponent << 10);
-    }
-    return sign | (halfExponent << 10) | (rounded >>> 13);
 }
 
 export function generateIblBrdfLutRgba16f(): Uint8Array {
