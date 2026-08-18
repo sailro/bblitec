@@ -19,6 +19,95 @@ export interface CompileManifest {
     customShaderPrograms: CompiledShaderProgram[];
     geometryOutputTasks: GeometryOutputTaskManifest[];
     adaptations: CompileAdaptation[];
+    scenePbrMaterials: ScenePbrMaterialManifest[];
+    /** Every scene-code material creation, any family, for the handle count. */
+    sceneMaterialCount: number;
+    sceneMeshes: SceneMeshManifest[];
+}
+
+/**
+ * One scene-code mesh creation, in creation order, so generation can key the
+ * per-renderable variant table the way the runtime keys mesh handles. The
+ * builders share one fixed attribute set; `kind` names the intrinsic so a
+ * builder with a different set fails by name instead of composing against the
+ * wrong bits.
+ */
+export interface SceneMeshManifest {
+    kind: string;
+    gltfAssetsBefore: number;
+    /** For `from-data` meshes: which optional streams the call passes, in
+     *  the pin's own argument order (uvs, uv2s, tangents, colors). */
+    hasUv2?: boolean;
+    hasTangents?: boolean;
+    hasColors?: boolean;
+}
+
+/**
+ * One scene-code `createPbrMaterial(...)` call's resolved options, in creation
+ * order. The pin's own `createPbrMaterial` is `{...props}` — the props ARE the
+ * material record its feature derivation and extension detects read — so this
+ * carries the reached option values verbatim for the composer, textures as
+ * presence. Recorded by `compilePbrMaterialOptions`, which already resolves
+ * every option to a static value.
+ */
+/** The `setPbrSheen` options a scene stamps on a material, verbatim. */
+export interface ScenePbrSheenManifest {
+    isEnabled: boolean;
+    color: readonly number[];
+    roughness: number;
+    intensity: number;
+    hasTexture: boolean;
+    albedoScaling: boolean;
+}
+
+/** The `setPbrClearCoat` options a scene stamps on a material, verbatim. */
+export interface ScenePbrClearCoatManifest {
+    isEnabled: boolean;
+    intensity: number;
+    roughness: number;
+    indexOfRefraction: number;
+}
+
+export interface ScenePbrMaterialManifest {
+    /**
+     * How many scene-code materials of any family the program had created
+     * when this one was, so the runtime handle is
+     * glTF-materials + this. Standard, grid and shader materials share the
+     * same handle sequence.
+     */
+    materialsBefore: number;
+    /** Stamped by the pin's `setPbrUnlit`: `mat._unlit = true`. */
+    unlit?: boolean;
+    /** Stamped by the pin's `setPbrSkybox`: `mat._skyboxMode = true`. */
+    skyboxMode?: boolean;
+    /** A `createPbrNoColorMaterialView` of the scene material before it:
+     *  the same record with the pin's `PBR2_NO_COLOR_OUTPUT` bit, drawn by
+     *  the depth-only render tasks. */
+    noColorView?: boolean;
+    /** Stamped by the pin's own setter shape: `mat._sheen = sheen`. */
+    sheen?: ScenePbrSheenManifest;
+    /** Stamped by the pin's own setter shape: `mat._clearCoat = clearCoat`. */
+    clearCoat?: ScenePbrClearCoatManifest;
+    /**
+     * How many glTF assets the program had loaded when this material was
+     * created. The runtime keys the variant table by material handle, which
+     * is creation order, so a scene material created after every load simply
+     * appends to the assets' materials; one created before a load would
+     * interleave, which no reached scene does.
+     */
+    gltfAssetsBefore: number;
+    hasBaseColorTexture: boolean;
+    hasOrmTexture: boolean;
+    metallicFactor: number;
+    roughnessFactor: number;
+    directIntensity: number;
+    environmentIntensity: number;
+    alpha: number;
+    reflectance: number;
+    doubleSided: boolean;
+    transmission: number;
+    ior: number;
+    thickness: number;
 }
 
 /**

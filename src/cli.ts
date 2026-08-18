@@ -2,8 +2,15 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { CompileAsset, CompileError, compileSource } from "./compiler.js";
+import {
+    CompileAsset,
+    CompileError,
+    compileSource,
+    renderFeaturesCmake,
+} from "./compiler.js";
 import type { CompiledShaderProgram } from "./compiler.js";
+import type { Feature } from "./compiler/types.js";
+import { reachedGeneratedSources } from "./generated-sources.js";
 import { shaderMaterialPrograms } from "./shader-material-programs.js";
 import { emitUpstreamGenerated } from "./upstream-lower.js";
 import { emitAssetSpecializations } from "./asset-specializer.js";
@@ -26,10 +33,25 @@ import {
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { pinnedShaderHelpers } from "./pinned-pbr-variants.js";
+import { writePinnedPbrVariants } from "./pinned-pbr-variant-output.js";
+import { downloadCached } from "./asset-download-cache.js";
 import {
     assertArmsCovered,
     composeGltfMaterials,
+    composeRenderableVariants,
+    composeScenePbrVariants,
+    gltfHasImageBasedLight,
+    gltfLightKinds,
+    gltfMaterialCount,
+    gltfRenderableFeatures,
+    proceduralRenderableFeatures,
+    type PinnedRenderableVariant,
 } from "./pinned-material-arms.js";
+import {
+    pinnedSceneArms,
+    pinnedSingleLightTypes,
+} from "./pinned-scene-arms.js";
+import { pinnedMeshFeaturesFromPrimitive } from "./pinned-mesh-features.js";
 
 interface CliOptions {
     input: string;
@@ -38,11 +60,10 @@ interface CliOptions {
     width?: number;
     height?: number;
     idDiagnostics: boolean;
-    pbrDiagnostics: boolean;
 }
 
 function usage(): never {
-    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--id-diagnostics] [--pbr-diagnostics]");
+    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--id-diagnostics]");
     process.exit(2);
 }
 
@@ -65,7 +86,6 @@ function parseArguments(arguments_: string[]): CliOptions {
     let width: number | undefined;
     let height: number | undefined;
     let idDiagnostics = false;
-    let pbrDiagnostics = false;
 
     for (let index = 1; index < arguments_.length; index += 1) {
         const flag = arguments_[index];
@@ -92,9 +112,6 @@ function parseArguments(arguments_: string[]): CliOptions {
             case "--id-diagnostics":
                 idDiagnostics = true;
                 break;
-            case "--pbr-diagnostics":
-                pbrDiagnostics = true;
-                break;
             default:
                 throw new Error(`Unknown argument '${flag}'.`);
         }
@@ -108,7 +125,6 @@ function parseArguments(arguments_: string[]): CliOptions {
         input,
         output,
         idDiagnostics,
-        pbrDiagnostics,
         ...(title ? { title } : {}),
         ...(width ? { width } : {}),
         ...(height ? { height } : {}),
@@ -124,13 +140,7 @@ async function assetBytes(
             readFileSync(resolve(dirname(inputPath), source)),
         );
     }
-    const response = await fetch(source);
-    if (!response.ok) {
-        throw new Error(
-            `Failed to download ${source}: HTTP ${response.status}.`,
-        );
-    }
-    return new Uint8Array(await response.arrayBuffer());
+    return downloadCached(source);
 }
 
 async function materializeAsset(asset: CompileAsset, inputPath: string, outputPath: string): Promise<void> {
@@ -195,14 +205,10 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
     }
 
     if (/^https?:\/\//i.test(source)) {
-        const response = await fetch(source);
-        if (!response.ok) {
-            throw new Error(`Failed to download ${source}: HTTP ${response.status}.`);
-        }
         writeFileSync(
             destination,
             await decompressGeometry(
-                new Uint8Array(await response.arrayBuffer()),
+                await downloadCached(source),
                 source,
             ),
         );
@@ -545,19 +551,198 @@ async function main(): Promise<void> {
     // pipeline. An arm it reaches that the emitted fragment does not carry is
     // refused here, where it names the material, rather than shipping as a
     // shading bias nothing points at.
+    // The scene arms a renderable can reach: the light modes the scene compiles
+    // support for, and — with an environment loaded, which is what turns tone
+    // mapping on upstream — both tone-mapping states. Generation cannot know how
+    // many lights will end up affecting a given mesh, so it composes the arms
+    // and the runtime selects the one its own light walk produces.
+    // An asset's own KHR_lights_punctual lights are the scene's lights: the
+    // pin's loader creates them exactly like scene code does, and every
+    // consumer keyed on the light features -- the composed arms, the pinned
+    // light writers, the generated-source table -- reads the one authority,
+    // so the kinds the assets reach join the manifest here.
+    let assetLightsAdded = false;
     for (const asset of result.manifest.assets) {
         if (asset.kind !== "gltf") continue;
-        assertArmsCovered(
-            await composeGltfMaterials(
-                resolve(outputPath, "assets", asset.output),
-            ),
-            emittedArms,
-            asset.output,
+        const assetPath = resolve(outputPath, "assets", asset.output);
+        const assetFeatures = gltfLightKinds(assetPath).map(
+            (kind) => `light:${kind}` as Feature,
+        );
+        // EXT_lights_image_based installs the asset's own environment, which
+        // composes the same arms `environment:ibl` does.
+        if (gltfHasImageBasedLight(assetPath)) {
+            assetFeatures.push("environment:ibl" as Feature);
+        }
+        for (const feature of assetFeatures) {
+            if (!result.manifest.features.includes(feature)) {
+                result.manifest.features.push(feature);
+                assetLightsAdded = true;
+            }
+        }
+    }
+    if (assetLightsAdded) {
+        // The features drive the generated-source table and the CMake
+        // projection, both rendered at compile time; re-render them from the
+        // same authorities so the joined features stay declared everywhere.
+        result.manifest.generatedSources = reachedGeneratedSources(
+            result.manifest.features as Feature[],
+        );
+        result.cmake = renderFeaturesCmake(
+            result.manifest.features as Feature[],
+            result.manifest.runtimeSources,
+            result.manifest.generatedSources,
         );
     }
+    const hasEnvironment = result.manifest.features.includes(
+        "environment:ibl",
+    );
+    const lightKinds = pinnedSingleLightTypes.filter((kind) =>
+        result.manifest.features.includes(`light:${kind}`)
+    );
+    const sceneArms = await pinnedSceneArms({
+        lightKinds,
+        multiLight: lightKinds.length > 0,
+        noLight: true,
+        toneMapping: hasEnvironment ? [false, true] : [false],
+        environment: hasEnvironment,
+        fog: result.manifest.features.includes("renderer:fog"),
+    });
+    // The pin's enableSceneTransmission marks every material in the scene
+    // `_linearImageProcessing` (markPbrMaterialsLinear), so each composed
+    // fragment wraps its processing tail in `if(scene.vImageInfos.w>=0.0)`
+    // and the retargeted linear pass runs with w = -1.
+    const linearImageProcessing =
+        result.manifest.features.includes("renderer:transmission") ||
+        // Asset-carried KHR_materials_transmission enables the runtime's
+        // transmission exactly like the feature does (scene_core stamps
+        // `transmission_enabled` from the same disjunction), and the pin
+        // marks every material linear either way.
+        specializationFeatures.assetTransmission;
+    // The runtime keys the variant table by material handle, which is
+    // creation order: each glTF load appends its materials, and a scene
+    // material appends where its `createPbrMaterial` runs. Every reached
+    // scene creates its materials after every load, so the sequence is the
+    // assets' materials in load order followed by the scene's; a material
+    // created before a later load would interleave, and stays a named error.
+    const composedVariants: PinnedRenderableVariant[] = [];
+    const gltfAssets = result.manifest.assets.filter(
+        (asset) => asset.kind === "gltf",
+    );
+    // The mesh half of the variant key, per runtime mesh handle: each glTF
+    // load appends its renderables in the pinned loader's node-order walk,
+    // and each scene-code builder appends one mesh of the fixed procedural
+    // attribute set, in the same creation order the runtime hands out
+    // handles. Computed before composition because a scene-code material can
+    // be assigned to any of these renderables, so its variants compose over
+    // every distinct set here.
+    const renderableMeshFeatures: number[] = [];
+    for (const asset of gltfAssets) {
+        renderableMeshFeatures.push(
+            ...(await gltfRenderableFeatures(
+                resolve(outputPath, "assets", asset.output),
+            )),
+        );
+    }
+    for (const mesh of result.manifest.sceneMeshes) {
+        if (mesh.gltfAssetsBefore !== gltfAssets.length) {
+            throw new Error(
+                "A scene-code mesh created before a later glTF load " +
+                    "would interleave the renderable key; no scene " +
+                    "reaches this yet.",
+            );
+        }
+        if (mesh.kind === "from-data") {
+            // The recorded streams, walked exactly the way a glTF primitive
+            // is: normals are a required argument, so the flat-normal arm is
+            // unreachable from this builder.
+            renderableMeshFeatures.push(
+                await pinnedMeshFeaturesFromPrimitive({
+                    attributes: {
+                        POSITION: 0,
+                        NORMAL: 0,
+                        TEXCOORD_0: 0,
+                        ...(mesh.hasUv2 ? { TEXCOORD_1: 0 } : {}),
+                        ...(mesh.hasTangents ? { TANGENT: 0 } : {}),
+                        ...(mesh.hasColors ? { COLOR_0: 0 } : {}),
+                    },
+                }),
+            );
+            continue;
+        }
+        renderableMeshFeatures.push(await proceduralRenderableFeatures());
+    }
+    let materialIndexBase = 0;
+    for (const asset of gltfAssets) {
+        const path = resolve(outputPath, "assets", asset.output);
+        const composed = await composeGltfMaterials(path, {
+            linearImageProcessing,
+        });
+        assertArmsCovered(composed, emittedArms, asset.output);
+        const variants = await composeRenderableVariants(
+            path,
+            sceneArms,
+            materialIndexBase,
+            { linearImageProcessing },
+            // A PBR mesh drawn in a geometry-output task resolves the pin's
+            // own MRT arm for that task's attachment list.
+            result.manifest.geometryOutputTasks.map((task, index) => ({
+                index,
+                attachments: task.attachments,
+                emitColor: task.emitColor,
+            })),
+        );
+        composedVariants.push(...variants);
+        materialIndexBase += gltfMaterialCount(path);
+    }
+    if (result.manifest.scenePbrMaterials.length > 0) {
+        for (const material of result.manifest.scenePbrMaterials) {
+            if (material.gltfAssetsBefore !== gltfAssets.length) {
+                throw new Error(
+                    "A scene-code PBR material created before a later glTF " +
+                        "load would interleave the variant table's " +
+                        "creation-order key; no scene reaches this yet.",
+                );
+            }
+        }
+        composedVariants.push(
+            ...(await composeScenePbrVariants(
+                result.manifest.scenePbrMaterials,
+                sceneArms,
+                materialIndexBase,
+                [
+                    ...new Set([
+                        ...renderableMeshFeatures,
+                        await proceduralRenderableFeatures(),
+                    ]),
+                ],
+                { linearImageProcessing },
+            )),
+        );
+    }
+    // The pin's own composed stages, one file per distinct variant. These are
+    // the artifacts that replace `templates/renderer/pbr.frag.wgsl`: the
+    // renderer selects per-material behaviour from uniform lanes inside one
+    // fragment where Babylon composes a fragment per feature set, and this is
+    // that set, written by the pin rather than transcribed here.
+    const pinnedVariants = writePinnedPbrVariants(tree, composedVariants);
+    // Scene code can keep creating meshes after registration -- the runtime
+    // sweep spawns per-frame boxes from one compiled call site -- so handles
+    // past the static table take this fallback when every scene-code mesh
+    // shares one attribute set, and refuse otherwise.
+    const sceneMeshFeatureValues = new Set(
+        renderableMeshFeatures.slice(
+            renderableMeshFeatures.length -
+                result.manifest.sceneMeshes.length,
+        ),
+    );
+    const runtimeMeshFeatures =
+        result.manifest.sceneMeshes.length === 0
+            ? await proceduralRenderableFeatures()
+            : sceneMeshFeatureValues.size === 1
+                ? [...sceneMeshFeatureValues][0]!
+                : undefined;
     emitUpstreamGenerated(outputPath, result.manifest.features, {
         idDiagnostics: options.idDiagnostics,
-        pbrDiagnostics: options.pbrDiagnostics,
         shaderPrograms,
         geometryOutputTasks: result.manifest.geometryOutputTasks,
         gpuDeformation:
@@ -616,6 +801,16 @@ async function main(): Promise<void> {
         // Taken from a real composition rather than transcribed, so the coat's
         // formulas are the pin's own text under the pin's own names.
         pinnedHelpers: await pinnedShaderHelpers(),
+        pinnedVariants,
+        // The runtime's material-handle count: the assets' materials plus
+        // every scene-code creation of any family, since handles are
+        // creation-ordered across families.
+        pinnedMaterialCount:
+            materialIndexBase + result.manifest.sceneMaterialCount,
+        renderableMeshFeatures,
+        ...(runtimeMeshFeatures !== undefined
+            ? { runtimeMeshFeatures }
+            : {}),
         iridescence: emittedArms.iridescence,
         dispersion: emittedArms.dispersion,
         occlusionUv2: emittedArms.occlusionUv2,

@@ -14,6 +14,27 @@
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #endif
+// Babylon Lite's own composed PBR variants: one entry per material feature
+// set the scene's assets reach, each naming its compiled stages and the byte
+// size of the per-variant material UBO the pin declares for it. Included here
+// because both backends will bind them; a scene with no glTF materials
+// reaches none and emits no header.
+#if BBLITE_PBR_VARIANTS > 0
+#include <bblite/upstream/pbr_variants.hpp>
+#endif
+
+/**
+ * The pin's `gpUniforms` block, declared by a geometry-output variant whose
+ * attachments include NORMALIZED_VIEW_DEPTH or LINEAR_VELOCITY
+ * (`pbr-geometry-output-shader.ts` createPbrGeometryParamsFragment):
+ * the task's previous-frame view-projection and the camera's near/far.
+ * Unguarded because the geometry encode names it in both backends whatever
+ * the variant count.
+ */
+struct PinnedGeometryParams {
+    std::array<float, 16> previousViewProjection{};
+    std::array<float, 4> cameraNearFar{};
+};
 
 #include <algorithm>
 #include <array>
@@ -47,9 +68,18 @@ struct GpuVertex {
     float morph_normal_1[3];
     float morph_tangent_0[3];
     float morph_tangent_1[3];
+#if BBLITE_PBR_VARIANTS > 0
+    // The pin's own skinned vertex stage takes joint indices as integers where
+    // the transcribed one takes them as floats. Both are carried while the two
+    // paths coexist, and this sits last so no existing attribute offset moves;
+    // the float pair goes away with the transcription.
+    std::uint32_t joint_indices[4];
+#endif
 #endif
 };
-#if BBLITE_GPU_DEFORMATION
+#if BBLITE_GPU_DEFORMATION && BBLITE_PBR_VARIANTS > 0
+static_assert(sizeof(GpuVertex) == 216);
+#elif BBLITE_GPU_DEFORMATION
 static_assert(sizeof(GpuVertex) == 200);
 #else
 static_assert(sizeof(GpuVertex) == 96);
@@ -347,11 +377,490 @@ inline std::vector<GpuVertex> transformed_vertices(
                     ? geometry.morph_tangents[1][vertex_index].z
                     : 0.0f,
             },
+#if BBLITE_PBR_VARIANTS > 0
+            {
+                static_cast<std::uint32_t>(vertex.joints[0]),
+                static_cast<std::uint32_t>(vertex.joints[1]),
+                static_cast<std::uint32_t>(vertex.joints[2]),
+                static_cast<std::uint32_t>(vertex.joints[3]),
+            },
+#endif
 #endif
         });
     }
     return result;
 }
+
+#if BBLITE_PBR_VARIANTS > 0
+/**
+ * The same vertices in Babylon's own convention.
+ *
+ * Two facts make this necessary rather than cosmetic. The loader stores a glTF
+ * mesh through the native X mirror and reconciles `tangent.w` against it, where
+ * Babylon keeps position, normal and tangent unmirrored and carries the mirror
+ * in the mesh block's world matrix -- the browser's own block for Scene 7 is
+ * `diag(-1, 1, 1, 1)`, not the identity. And a mirror flips handedness, so a
+ * bitangent built with `cross()` inside the pin's own vertex stage comes out
+ * negated when it is fed pre-mirrored data. Undoing the mirror here, and pairing
+ * it with the mirroring world matrix, is what lets the pin's stage run unedited.
+ *
+ * The morph deltas carry the same mirror and are undone with it.
+ */
+inline std::vector<GpuVertex> pinned_convention_vertices(
+    const std::vector<GpuVertex>& source,
+    bool mirrored_x) {
+    std::vector<GpuVertex> result = source;
+    for (GpuVertex& vertex : result) {
+        vertex.position[0] = -vertex.position[0];
+        vertex.normal[0] = -vertex.normal[0];
+        vertex.tangent[0] = -vertex.tangent[0];
+        // The local lanes stay untouched: the loader stores them RAW from
+        // the glTF (no native mirror), which is exactly the pin's own
+        // convention -- the LOCAL_POSITION geometry arm reads them as the
+        // browser reads its unmirrored attribute.
+        // `gltf-loader` multiplies the authored sign by -1 for a right-handed
+        // node and by +1 for a mirrored one; the pin's stage wants the authored
+        // value, so the same factor undoes it.
+        vertex.tangent[3] *= mirrored_x ? 1.0f : -1.0f;
+#if BBLITE_GPU_DEFORMATION
+        vertex.morph_position_0[0] = -vertex.morph_position_0[0];
+        vertex.morph_position_1[0] = -vertex.morph_position_1[0];
+        vertex.morph_normal_0[0] = -vertex.morph_normal_0[0];
+        vertex.morph_normal_1[0] = -vertex.morph_normal_1[0];
+        vertex.morph_tangent_0[0] = -vertex.morph_tangent_0[0];
+        vertex.morph_tangent_1[0] = -vertex.morph_tangent_1[0];
+#endif
+    }
+    return result;
+}
+
+/**
+ * The record's instance matrices in Babylon's own convention. The glTF
+ * loader stores EXT_mesh_gpu_instancing matrices through `native_matrix`
+ * -- the X-mirror conjugation M*A*M -- where the pin uploads the authored
+ * values and carries the mirror in the mesh block's world; the conjugation
+ * is involutive, so applying it again recovers them. Scene-code thin
+ * instances adopt the caller's floats verbatim -- the same floats the
+ * pin's own setThinInstances receives -- so they pass through untouched.
+ * `thin_instanced` is stamped by both, so the discriminator is
+ * `instance_source`, which only the scene-code setter fills.
+ */
+inline std::vector<std::array<float, 16>> pinned_instance_matrices(
+    const MeshRecord& record) {
+    std::vector<std::array<float, 16>> result = record.instance_matrices;
+    if (record.instance_source != nullptr) return result;
+    for (std::array<float, 16>& matrix : result) {
+        for (std::size_t column = 0; column < 4; ++column) {
+            for (std::size_t row = 0; row < 4; ++row) {
+                if ((row == 0) != (column == 0)) {
+                    matrix[column * 4 + row] =
+                        -matrix[column * 4 + row];
+                }
+            }
+        }
+    }
+    return result;
+}
+
+/** Whether a record draws through the pin's thin-instance arm: stamped by
+ *  the scene setter or filled by the glTF EXT_mesh_gpu_instancing pool. */
+inline bool pinned_record_instanced(const MeshRecord& record) {
+    return record.thin_instanced || !record.instance_matrices.empty();
+}
+
+/**
+ * Whether a task's draw lists contain a PBR draw. A geometry task whose
+ * draws are PBR renders through the pin's reverse-Z contract (reverse
+ * matrix, GREATER pipelines, zero depth clear), and both backends make the
+ * same decision from the same lists.
+ */
+inline bool pinned_lists_have_pbr(const upstream::RenderDrawLists& lists) {
+    for (const upstream::RenderDrawList* list :
+         {&lists.opaque, &lists.transparent}) {
+        for (const upstream::RenderDrawCommand& draw : list->commands) {
+            if (
+                draw.item.material_kind ==
+                upstream::RenderMaterialKind::pbr) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/** The identity, for a skinned draw whose palette already carries everything. */
+inline std::array<float, 16> pinned_identity_world() {
+    return {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
+}
+
+/** The pin's own per-mesh world matrix: the mirror its vertices do not carry. */
+inline std::array<float, 16> pinned_mesh_world() {
+    return {
+        -1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
+}
+
+/**
+ * The pin's mesh world for a thin-instanced draw: the instanced node's own
+ * world in Babylon's convention.
+ *
+ * The pin composes `finalWorld = mesh.world * instanceWorld`, and its
+ * `mesh.world` is the root mirror times the node matrix -- Scene 247's
+ * instanced node carries a y-scale of 1.3 that way. The record stores the
+ * node world through `native_matrix` (the mirror conjugation), so the
+ * mirror-times-node product is the stored matrix times the mirror: with
+ * column vectors that is the parent matrix with its first column negated.
+ * An identity node collapses this to `pinned_mesh_world()`.
+ */
+inline std::array<float, 16> pinned_instanced_world(
+    const MeshRecord& record) {
+    std::array<float, 16> world = record.instance_parent_matrix;
+    world[0] = -world[0];
+    world[1] = -world[1];
+    world[2] = -world[2];
+    world[3] = -world[3];
+    return world;
+}
+
+/**
+ * The pin's mesh-block world for one draw, whichever convention arm it rides.
+ *
+ * Skinned draws take the identity (the palette carries everything), an
+ * animated no-skin mesh takes its single palette entry as the pin's
+ * finalWorld, a thin-instanced or LOCAL_POSITION draw takes the real node
+ * world beside unbaked position data, and everything else takes the bare
+ * mirror over baked vertices. Shared because the same chain decides the
+ * block in the SDL draw and both of Dawn's write sites.
+ */
+inline std::array<float, 16> pinned_draw_world(
+    bool skeleton_draw,
+    bool world_from_palette,
+    bool uses_local_position,
+    const MeshRecord& record) {
+    if (skeleton_draw) return pinned_identity_world();
+    if (world_from_palette) return record.bone_matrices[0];
+    if (uses_local_position || pinned_record_instanced(record)) {
+        return pinned_instanced_world(record);
+    }
+    return pinned_mesh_world();
+}
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0
+/**
+ * The pin's per-pass scene block.
+ *
+ * Every member is the one the pin's own declaration names; the fragment reads
+ * its view direction from `vEyePosition` and its reflection path from `view`,
+ * both from the camera the pass renders with. Shared, because the block is the
+ * pin's rather than either backend's: Dawn uploads it to a buffer and SDL_GPU
+ * pushes it at a uniform slot, and neither should decide what is in it.
+ */
+inline upstream::SceneUniforms pinned_scene_block(
+    const Scene& scene,
+    const CameraRecord& camera,
+    const std::array<float, 16>& view_projection) {
+    upstream::SceneUniforms scene_block{};
+    scene_block.viewProjection = view_projection;
+    // The pin's fragment reads the view direction from `vEyePosition`, and its
+    // reflection path from `view`. Both come from the camera the pass renders
+    // with, the same one `build_pbr_uniforms` reads.
+    const std::array<float, 16> camera_world =
+        upstream::camera_world_matrix(camera);
+    scene_block.vEyePosition = {
+        camera_world[12],
+        camera_world[13],
+        camera_world[14],
+        1.0f,
+    };
+    scene_block.view = upstream::build_view_matrix(camera_world);
+    scene_block.envRotationY = scene.environment.rotation_y;
+    // `vImageInfos` is documented in the pin's own declaration as
+    // exposureLinear, contrast, lodGenerationScale, toneMappingEnabled.
+    scene_block.vImageInfos = {
+        scene.environment.exposure,
+        scene.environment.contrast,
+        scene.environment.lod_generation_scale,
+        // The pin's executeRenderTaskLinear stamps toneMappingEnabled = -1
+        // while a transmission scene's retargeted linear passes run; every
+        // composed fragment then skips its processing tail
+        // (`if(scene.vImageInfos.w>=0.0)`) and the trailing
+        // image-processing pass applies it once. The captured browser block
+        // carries the same -1 (scene30 buffer#1).
+        scene.transmission_enabled
+            ? -1.0f
+            : scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
+    };
+    scene_block.vFogInfos = {
+        scene.fog_mode,
+        scene.fog_start,
+        scene.fog_end,
+        scene.fog_density,
+    };
+    scene_block.vFogColor = {
+        scene.fog_color.r,
+        scene.fog_color.g,
+        scene.fog_color.b,
+        1.0f,
+    };
+    const std::array<std::array<float, 4>*, 9> harmonics{
+        &scene_block.vSphericalL00,
+        &scene_block.vSphericalL1_1,
+        &scene_block.vSphericalL10,
+        &scene_block.vSphericalL11,
+        &scene_block.vSphericalL2_2,
+        &scene_block.vSphericalL2_1,
+        &scene_block.vSphericalL20,
+        &scene_block.vSphericalL21,
+        &scene_block.vSphericalL22,
+    };
+    for (std::size_t index = 0; index < harmonics.size(); ++index) {
+        const Color3& band = scene.environment.spherical_harmonics[index];
+        *harmonics[index] = {band.r, band.g, band.b, 0.0f};
+    }
+    return scene_block;
+}
+
+/**
+ * The pin's per-pass lights block: a u32 count, three words of padding, then
+ * MAX_LIGHTS entries.
+ *
+ * `fillLightsData` writes that count through a Float32Array view of the same
+ * buffer, so it lands in the first four bytes. Returned as bytes because that is
+ * what both a buffer upload and a uniform push take.
+ */
+inline std::vector<std::uint8_t> pinned_lights_block(
+    const Scene& scene,
+    const Engine& engine) {
+    std::array<std::uint32_t, 4> header{};
+    std::vector<upstream::LightEntry> entries(upstream::pinned_max_lights);
+    std::uint32_t count = 0;
+    for (const LightHandle handle : scene.lights) {
+        if (count >= upstream::pinned_max_lights) break;
+        if (handle.value >= engine.lights.size()) continue;
+        const LightRecord& light = engine.lights[handle.value];
+        // Which writer each kind takes is generated: the scene compiles arms
+        // only for the kinds it reaches, so the mapping cannot be restated here.
+        upstream::write_pinned_light(light, entries[count]);
+        ++count;
+    }
+    header[0] = count;
+    std::vector<std::uint8_t> bytes(
+        sizeof(header) + entries.size() * sizeof(upstream::LightEntry));
+    std::memcpy(bytes.data(), header.data(), sizeof(header));
+    std::memcpy(
+        bytes.data() + sizeof(header),
+        entries.data(),
+        entries.size() * sizeof(upstream::LightEntry));
+    return bytes;
+}
+
+// The pin's per-draw mesh block.
+//
+// `writeMeshLightSelection` decides its shape: the world matrix, the count of
+// lights affecting this mesh, then their indices. Which lights those are comes
+// from the generated `light_affects_mesh`, lowered from the pin's own
+// `affectsMesh`, so this walks exactly the set the Standard slot writer walks.
+inline upstream::MeshUniforms pinned_mesh_block(
+    const Scene& scene,
+    const Engine& engine,
+    const std::array<float, 16>& world,
+    std::uint32_t mesh_index) {
+    upstream::MeshUniforms block{};
+    block.world = world;
+    std::uint32_t count = 0;
+    std::uint32_t light_index = 0;
+    for (const LightHandle handle : scene.lights) {
+        if (light_index >= upstream::pinned_max_lights) break;
+        if (handle.value >= engine.lights.size()) continue;
+        if (
+            upstream::light_affects_mesh(
+                engine.lights[handle.value],
+                mesh_index)) {
+            block.li[count / 4][count % 4] = light_index;
+            ++count;
+        }
+        ++light_index;
+    }
+    block.lc = count;
+    return block;
+}
+
+/**
+ * The variant a draw composes, or `npos` when this scene cannot resolve one.
+ *
+ * The key is the pin's own: the material, the mesh's attributes, the light mode
+ * with its single-light kind, and whether tone mapping is on. Two halves come
+ * from generation because a PAL cannot recover them — the glTF material index,
+ * which is a MaterialHandle only while every material comes from the composed
+ * asset, and the attribute set, because our geometry record does not carry uv2
+ * or vertex-colour presence. Both are checked rather than assumed: an
+ * unresolved draw returns `npos` and takes the transcribed path.
+ */
+/**
+ * Whether a composed variant has been measured to match, by property.
+ *
+ * The whole point of executing Babylon's own stages is that a difference is a
+ * difference in inputs, not in a formula -- so a variant runs here only once the
+ * inputs it needs have been measured against the browser's own buffers. Every
+ * disqualifier below names an open measurement rather than a scene:
+ *
+ *  - an extension arm: each contributes its own material-UBO fields through a
+ *    lowered writer that no capture has been diffed against.
+ *  - `skeleton`: measured, not resolved. The browser's own palette for Scene 7 is
+ *    `diag(100, 100, 100, 1)` (its bone texture upload in
+ *    `artifacts/capture/scene7/tex-uploads.json`, rgba32float 48x1), so it
+ *    carries no mirror and the loader's `native_matrix` conjugation is a no-op on
+ *    it; the mesh block carries the mirror instead. Both vertex conventions were
+ *    tried against that -- unmirrored 2.522 MAD, mirrored 1.954, against 0.056
+ *    transcribed -- so neither the palette nor the mirror is the remaining
+ *    difference. The next measurement is our own palette and mesh block dumped
+ *    and diffed against those two captured buffers, not more algebra.
+ *  - refraction: needs the scene-colour grab bound through the pin's own
+ *    mid-pass break rather than our slot order.
+ *  - skeleton or morph: the palette and the morph deltas both carry the mirror.
+ *
+ * Everything else takes the transcribed path, so widening this list is a
+ * measurement rather than a rewrite.
+ *
+ * Shared by both backends: which draws Babylon's own stages can run is a
+ * property of the scene and the variant, not of the API binding them, so a
+ * second copy could only drift.
+ */
+/** Whether a variant's vertex stage samples the bone palette. */
+inline bool pinned_variant_skeleton(std::size_t variant) {
+    return upstream::pbr_variants[variant].key.find("skeleton") !=
+        std::string_view::npos;
+}
+
+inline std::size_t pinned_variant_for_draw(
+    const Scene& scene,
+    const Engine& engine,
+    const upstream::RenderDrawCommand& draw,
+    // The geometry-output task the draw belongs to, npos for the colour
+    // passes: the selector table keys on it, so a geometry draw resolves
+    // its own MRT arm and never a colour variant.
+    std::size_t geometry_task = std::numeric_limits<std::size_t>::max()) {
+    if (upstream::pbr_variants.empty()) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    if (draw.item.material_kind != upstream::RenderMaterialKind::pbr) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    // Scene code that creates its own material shifts every handle away from
+    // the glTF index the table is keyed by, so the correspondence is only used
+    // when the engine holds exactly the asset's materials.
+    if (engine.materials.size() != upstream::pbr_variant_material_count) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    // A mesh whose node transform is not baked into its vertices needs the
+    // matrix the transcribed stage takes from elsewhere; until the pinned path
+    // carries it, those draws stay on the transcribed one.
+    bool has_bones = false;
+    if (draw.item.mesh.value < engine.meshes.size()) {
+        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        // An animated node needs no guard: the PAL re-transforms its vertices
+        // on the CPU when `transform_version` moves, so the GPU always sees
+        // world space and the pin's `finalWorld` stays the identity. An
+        // instanced mesh resolves the pin's own thin-instance arm -- its
+        // renderable features carry MSH_HAS_THIN_INSTANCES -- and the draw
+        // binds the per-instance matrix buffer as the arm's second stream.
+        // `bone_matrices` is not only a skin: the glTF loader pushes the mesh's
+        // own world matrix into it for an *animated* mesh with no skin at all,
+        // and the transcribed vertex stage takes the transform from there. A
+        // non-skeleton variant reads no palette, so such a draw would lose its
+        // animation — Scenes 39, 242 and 254 measured 4.2 to 11.9 MAD that way
+        // against 0.000 transcribed. A skeleton variant reads the palette the
+        // pin's own stage samples, so the check keys on the resolved variant
+        // below rather than refusing every mesh that carries bones. Skins need
+        // no `transform_version` guard either, animated node or not: the
+        // pin's updater conjugates `invMeshWorld` into the palette at bind
+        // time and excludes skinned-mesh nodes from scene-graph animation, so
+        // every node motion a skin can see arrives through the joint worlds
+        // our palette already carries. The 2.5 and 4.5 MAD once filed against
+        // node-animated skins were the missing flat-normal fragment arm --
+        // Scenes 255 and 245 measure 0.000 on both backends through this path
+        // with the arm composed, and Scene 7 measures its pinned 0.047
+        // against 0.056 transcribed.
+        if (!record.bone_matrices.empty()) {
+            has_bones = true;
+        }
+    }
+    const std::uint32_t material_index = draw.item.material.value;
+    // The mesh half of the key comes per renderable: generation writes one
+    // entry per runtime mesh handle in the loader's own creation order, so a
+    // material drawn under two attribute sets resolves each mesh's own
+    // variant instead of collapsing to the per-material ambiguity.
+    const std::size_t mesh_features =
+        draw.item.mesh.value <
+            upstream::pbr_renderable_mesh_features.size()
+            ? upstream::pbr_renderable_mesh_features[draw.item.mesh.value]
+            // Scene code can keep creating meshes after registration, all
+            // from the fixed-set builders; a scene whose builders disagree
+            // publishes npos here and such a draw refuses.
+            : upstream::pbr_runtime_mesh_features;
+    if (mesh_features == std::numeric_limits<std::size_t>::max()) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    // The light mode, walked the way `writeMeshLightSelection` walks it: how
+    // many of the scene's lights affect this mesh decides which arm the pin
+    // composed. Shadow receivers always take the loop, which the corpus does
+    // not reach on this path yet.
+    std::uint32_t light_count = 0;
+    std::string_view single_light_type;
+    for (const LightHandle handle : scene.lights) {
+        if (handle.value >= engine.lights.size()) continue;
+        const LightRecord& light = engine.lights[handle.value];
+        if (!upstream::light_affects_mesh(light, draw.item.mesh.value)) {
+            continue;
+        }
+        ++light_count;
+        single_light_type = upstream::pinned_single_light_type(light);
+    }
+    const std::uint32_t light_mode =
+        light_count == 0 ? 0u : light_count == 1 ? 1u : 2u;
+    if (light_mode != 1) single_light_type = "";
+    // Every light mode. All three read the same lights block, whose writers index
+    // the pin's own light world matrix; the block itself was diffed against the
+    // browser's (`artifacts/capture/scene7/buffers.json`, 1040 bytes beside the
+    // 368-byte scene block).
+    // A transmission scene resolves the same table: its materials compose
+    // with `_linearImageProcessing` (the pin's markPbrMaterialsLinear), so
+    // every fragment guards its processing tail on `vImageInfos.w >= 0` and
+    // the linear main pass runs with the lane at -1; the refraction arms
+    // bind the existing 1024x1024 scene-colour grab through the variant's
+    // own `refractionTexture` slot. The earlier 17.8-MAD refusal here was
+    // the guard missing from the composed fragments, not pass structure.
+    const std::size_t variant = upstream::pbr_variant_for(
+        material_index,
+        static_cast<std::uint32_t>(mesh_features),
+        light_mode,
+        single_light_type,
+        scene.environment.tone_mapping_enabled,
+        geometry_task);
+    if (variant == std::numeric_limits<std::size_t>::max()) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    // A skeleton variant needs the palette to exist or the deformation is
+    // lost. The reverse -- a palette on a non-skeleton variant -- is the
+    // animated no-skin mesh, whose single palette entry is the mesh's own
+    // world; the draw passes it as the pin's finalWorld against the mirrored
+    // buffer, the same convention the skinned draw measured.
+    const bool skeleton_variant = pinned_variant_skeleton(variant);
+    if (skeleton_variant && !has_bones) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    return variant;
+}
+#endif
 
 // Inverse image processing for the linear-frame clear color shared by
 // both render backends (moved verbatim from pal_sdl_gpu.cpp).
@@ -511,7 +1020,6 @@ struct FrameOptions {
     std::string screenshot_path;
     std::string id_buffer_path;
     std::string cluster_buffer_path;
-    std::string diagnostic_directory;
     std::string shader_directory;
     std::string copy_task_filter;
     std::string deformation_dump;
@@ -567,8 +1075,6 @@ inline FrameOptions read_frame_options() {
     options.id_buffer_path = environment_variable("BBLITE_ID_BUFFER");
     options.cluster_buffer_path =
         environment_variable("BBLITE_CLUSTER_BUFFER");
-    options.diagnostic_directory =
-        environment_variable("BBLITE_DIAGNOSTIC_DIR");
     options.shader_directory =
         environment_variable("BBLITE_GPU_SHADER_DIR");
     options.copy_task_filter = environment_variable("BBLITE_COPY_TASK");
@@ -723,7 +1229,6 @@ public:
     bool screenshot_saved = false;
     bool id_buffer_saved = false;
     bool cluster_buffer_saved = false;
-    bool diagnostics_saved = false;
     bool render_capture_saved = false;
 
     [[nodiscard]] bool pending() const {
@@ -733,8 +1238,6 @@ public:
              !id_buffer_saved) ||
             (!options_->cluster_buffer_path.empty() &&
              !cluster_buffer_saved) ||
-            (!options_->diagnostic_directory.empty() &&
-             !diagnostics_saved) ||
             (!options_->render_capture_path.empty() &&
              !render_capture_saved);
     }
@@ -798,21 +1301,6 @@ inline void reject_unsupported_frame_options(
             "SDL_GPU.");
     }
 }
-
-// The PBR diagnostic buffers both backends write, in the order
-// `parity` records them against a scene whose registry entry asks for
-// attribution diagnostics.
-inline constexpr std::array<const char*, 9> pbr_diagnostic_names{
-    "normal-gpu.png",
-    "reflectivity-gpu.png",
-    "irradiance-gpu.png",
-    "ibl-gpu.png",
-    "normalized-depth-gpu.png",
-    "albedo-gpu.png",
-    "direct-light-gpu.png",
-    "base-color-gpu.png",
-    "pre-tone-hdr-gpu.png",
-};
 
 // The readback inverse of float_to_half below, shared by both backends'
 // screenshot and diagnostic-buffer paths: a half-float channel decoded

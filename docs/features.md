@@ -80,7 +80,7 @@ deliberately left live.
 | [Frame graph](#frame-graph) | Run | render targets, tasks, geometry MRTs, blits, MSAA resolve |
 | [Render backends](#render-backends) | Run | SDL_GPU, Dawn, CPU fallback, transmission, image processing |
 | [Runtime scene mutation](#runtime-scene-mutation) | Run | removal with plan rematching, material-family append, instance counts |
-| [Diagnostics and capture](#diagnostics-and-capture) | Run | screenshots, benchmarks, attribution and diagnostic buffers |
+| [Diagnostics and capture](#diagnostics-and-capture) | Run | screenshots, benchmarks, attribution buffers |
 
 Eight families have work on both sides of the line — the shader pipeline most
 sharply, since its second stage changes phase with the backend. Where the cut
@@ -227,7 +227,7 @@ decided at generation.**
 **Compile time, both backends.** All native GPU shaders originate as WGSL,
 composed per scene from the pinned sources: material vertex and fragment
 stages, Standard and PBR variants, Grid, background ground and skybox,
-geometry MRT outputs, frame-graph blit and depth, diagnostics, and the sprite
+geometry MRT outputs, frame-graph blit and depth, and the sprite
 pair. Generation specializes them for SDL bindings,
 locations, and depth into `*.native.wgsl`, checks Tint's binding reflection
 against the result, and resolves custom uniform writes to reflected byte
@@ -430,8 +430,8 @@ wait for submitted work before rebuilding the mesh set.
 
 ### Diagnostics and capture
 
-Screenshot and benchmark modes, draw-ID and triangle-cluster buffers, the PBR
-diagnostic MRT set, deformation dumps, the render capture that writes the
+Screenshot and benchmark modes, draw-ID and triangle-cluster buffers,
+deformation dumps, the render capture that writes the
 frame's whole CPU-side description for diffing against the browser
 ([debugging](debugging.md)), and the build stamp the parity harness checks
 before it trusts a measurement.
@@ -511,7 +511,7 @@ different image.
   geometry outputs all fail explicitly
 - scene fog is ported for PBR, Standard, and image-skybox surfaces; fog
   composed with Grid, custom-shader, environment-ground/DDS-skybox background,
-  transmission, geometry-output, or diagnostic surfaces fails explicitly
+  transmission, or geometry-output surfaces fails explicitly
 - PBR material extensions cover clearcoat, sheen, iridescence, and dispersion
   with one shared UV transform; specular and anisotropy, and layered
   composition combined with punctual multi-light, remain unsupported

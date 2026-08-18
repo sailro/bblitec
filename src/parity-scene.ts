@@ -210,7 +210,6 @@ export function runNative(
     nativeEnvironment?: Record<string, string>,
     idBufferPath?: string,
     clusterBufferPath?: string,
-    diagnosticDirectory?: string,
     generatedDirectory?: string,
 ): void {
     if (!existsSync(executable)) {
@@ -249,9 +248,6 @@ export function runNative(
                       ...(idBufferPath ? { BBLITE_ID_BUFFER: resolve(idBufferPath) } : {}),
                       ...(clusterBufferPath
                           ? { BBLITE_CLUSTER_BUFFER: resolve(clusterBufferPath) }
-                          : {}),
-                      ...(diagnosticDirectory
-                          ? { BBLITE_DIAGNOSTIC_DIR: resolve(diagnosticDirectory) }
                           : {}),
                   }
                 : {
@@ -426,9 +422,6 @@ export async function runSceneParity(
             config.nativeEnvironment,
             idBufferPath,
             clusterBufferPath,
-            arguments_.gpu && config.attribution?.diagnostics
-                ? outputDirectory
-                : undefined,
             resolve(scene.output),
         );
     }
@@ -536,7 +529,7 @@ export async function runSceneParity(
             })),
         };
     });
-    const diagnosticFiles = arguments_.gpu && config.attribution?.diagnostics
+    const diagnosticFiles = false
         ? Object.fromEntries(
               [
                   ["normal", "normal-gpu.png"],

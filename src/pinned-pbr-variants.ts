@@ -81,6 +81,19 @@ const materialExtensionModules = [
 const environmentExtensionModule =
     "material/pbr/fragments/ibl-fragment.js";
 
+/**
+ * `pbr-renderable.ts` drains these last, after the environment extension and
+ * after the scene hooks, from its own single scan over the scene's meshes:
+ * `_drainPbrExts([[hasSomeSkeletons, skeleton], [hasSomeMorphs, morph]])`.
+ * They are mesh properties rather than material ones, so they carry no
+ * `setPbr*` entry point, and their position decides the bind-group order for
+ * every slot after them.
+ */
+const meshExtensionModules = [
+    "material/pbr/fragments/skeleton-fragment.js",
+    "material/pbr/fragments/morph-fragment.js",
+] as const;
+
 interface PbrExtDescriptor {
     id: string;
 }
@@ -117,15 +130,53 @@ async function registerPbrExtensions(): Promise<void> {
         // the extension matters for composition, and its own `detect` returns
         // nothing for a material that is not transmissive, so it is built here
         // directly rather than by standing up a scene.
-        const refraction = await importPinnedModule<{
-            makeRefractionRttExt: (
-                dispersionSampleWgsl?: string,
-            ) => PbrExtDescriptor;
-        }>("material/pbr/fragments/refraction-rtt-fragment.js");
-        flags._registerPbrExt(refraction.makeRefractionRttExt());
+        const [refraction, dispersion] = await Promise.all([
+            importPinnedModule<{
+                makeRefractionRttExt: (
+                    dispersionSampleWgsl?: string,
+                ) => PbrExtDescriptor;
+            }>("material/pbr/fragments/refraction-rtt-fragment.js"),
+            // `set-dispersion.ts` feeds the ext this sample the moment a
+            // dispersion material loads; the ext only composes it when the
+            // material's own bit demands it, so passing it unconditionally
+            // is the loaded-pin state, not an extra arm.
+            importPinnedModule<{ DISPERSION_SAMPLE_WGSL: string }>(
+                "material/pbr/fragments/refraction-dispersion-wgsl.js",
+            ),
+        ]);
+        flags._registerPbrExt(
+            refraction.makeRefractionRttExt(
+                dispersion.DISPERSION_SAMPLE_WGSL,
+            ),
+        );
+        for (const path of meshExtensionModules) {
+            const module = await importPinnedModule<{
+                pbrExt?: PbrExtDescriptor;
+            }>(path);
+            if (module.pbrExt) flags._registerPbrExt(module.pbrExt);
+        }
+        // The geometry-output ext registers when the first geometry view is
+        // built -- after everything else -- with a getter over the active
+        // attachments; `pbr-geometry-view.ts` sets them around each compose
+        // and so does `composePinnedPbrVariant`. Its frag hook returns null
+        // without `PBR2_GEOMETRY_OUTPUT`, so every non-geometry variant
+        // composes exactly as before.
+        const geometry = await importPinnedModule<{
+            _ensurePbrGeometryExt: (
+                getAttachments: () => readonly number[] | undefined,
+            ) => void;
+        }>("material/pbr/pbr-geometry-output-shader.js");
+        geometry._ensurePbrGeometryExt(() => activeGeometryAttachments);
     })();
     return registered;
 }
+
+/**
+ * The attachments the geometry-output ext's frag hook reads while a geometry
+ * variant composes -- the pin's `_activeAttachments`, set and restored around
+ * each `composePbrGeometryShader` call.
+ */
+let activeGeometryAttachments: readonly number[] | undefined;
 
 /**
  * Which glTF extension makes the pin compose each helper the renderer needs,
@@ -257,6 +308,9 @@ export interface PinnedComposeOptions {
      * OR-ed in here instead of being read off the material.
      */
     passFeatures?: number;
+    /** Bits ORed into `features2` the same way; `PBR2_NO_COLOR_OUTPUT` for a
+     *  depth-only material view is the reached one. */
+    passFeatures2?: number;
     /** Mesh bits (`MSH_HAS_TANGENTS`, morph targets, vertex colour, …). */
     meshFeatures?: number;
     /** Scene bits; the environment is read from here, not from the material. */
@@ -272,6 +326,18 @@ export interface PinnedComposeOptions {
     toneMappingHelpers?: string;
     toneMappingCall?: string;
     uv2Mask?: number;
+    /**
+     * Compose the pin's geometry-output MRT arm instead of the colour
+     * fragment: `composePbrGeometryShader` rewrites the composed return into
+     * a FragmentOutput struct with one location per attachment (plus the
+     * optional trailing colour), each written by the pin's own
+     * `attachmentExpr`. Attachment names are the manifest's
+     * `GeometryTextureTypeName`s, mapped onto the pin's enum here.
+     */
+    geometry?: {
+        attachments: readonly string[];
+        emitColor: boolean;
+    };
 }
 
 interface PinnedComposeFn {
@@ -306,13 +372,34 @@ export async function composePinnedPbrVariant(
     options: PinnedComposeOptions = {},
 ): Promise<PinnedPbrVariant> {
     const { features, features2 } = await pinnedMaterialFeatures(material);
-    const [compose, templateExt] = await Promise.all([
+    const [compose, templateExt, flatNormal, fog, thinInstance] =
+        await Promise.all([
         importPinnedModule<{
             createPbrComposer: (deps: Record<string, unknown>) => PinnedComposeFn;
         }>("material/pbr/pbr-compose.js"),
         importPinnedModule<{ createPbrTemplateExt: unknown }>(
             "material/pbr/pbr-template-ext.js",
         ),
+        // The pin imports these only when a primitive lacks normals or the
+        // scene enables fog; passing them unconditionally is identical because
+        // insertion is governed by the `MSH_FLAT_NORMAL` mesh bit and the
+        // `PBR_HAS_FOG` scene bit. An empty string here is the transcribed
+        // fallback in another shape: Scene 255's captured fragment carried the
+        // flat-normal lines while "" composed the smooth-normal arm against
+        // them, and the byte-for-byte gate only logs a fragment nothing
+        // matches.
+        importPinnedModule<{ FLAT_NORMAL_WGSL: string }>(
+            "material/pbr/fragments/flat-normal-wgsl.js",
+        ),
+        importPinnedModule<{
+            PBR_FOG_HELPER: string;
+            PBR_FOG_BLOCK: string;
+        }>("material/pbr/pbr-fog-wgsl.js"),
+        // Gated by `MSH_HAS_THIN_INSTANCES` exactly like the flat-normal and
+        // fog snippets by their bits.
+        importPinnedModule<{
+            createThinInstanceFragment: (hasInstanceColor: boolean) => unknown;
+        }>("shader/fragments/thin-instance-fragment.js"),
     ]);
     const composer = compose.createPbrComposer({
         _singleLightWGSL: options.singleLightWgsl ?? "",
@@ -323,17 +410,90 @@ export async function composePinnedPbrVariant(
         _multiLightLoop: options.multiLightLoop ?? "",
         _toneMappingHelpers: options.toneMappingHelpers ?? "",
         _toneMappingCall: options.toneMappingCall ?? "",
-        _fogHelper: "",
-        _fogBlock: "",
+        _fogHelper: fog.PBR_FOG_HELPER,
+        _fogBlock: fog.PBR_FOG_BLOCK,
         _createPbrTemplateExt: templateExt.createPbrTemplateExt,
-        _flatNormalWgsl: "",
+        _flatNormalWgsl: flatNormal.FLAT_NORMAL_WGSL,
         _createPbrShadowFragment: null,
         _shadowLights: [],
-        _createThinInstanceFragment: null,
+        _createThinInstanceFragment:
+            thinInstance.createThinInstanceFragment,
     });
+    if (options.geometry) {
+        // The pin's own MRT arm: `pbr-geometry-view.ts` composes through
+        // `composePbrGeometryShader`, which calls the same composer with
+        // `PBR2_GEOMETRY_OUTPUT` set and rewrites the fragment's return into
+        // per-attachment writes. The active attachments are set around the
+        // call exactly as `_setActivePbrGeometryAttachments` does.
+        const [geometry, types] = await Promise.all([
+            importPinnedModule<{
+                composePbrGeometryShader: (
+                    composePbr: PinnedComposeFn,
+                    features: number,
+                    features2: number,
+                    meshFeatures: number,
+                    sceneFeatures: number,
+                    lightMode: 0 | 1 | 2,
+                    singleLightType: string,
+                    esmShadowDepthCode: string,
+                    vbStrides: unknown,
+                    vbKey: string,
+                    attachments: readonly number[],
+                    emitColor: boolean,
+                    uv2Mask?: number,
+                ) => {
+                    _vertexWGSL: string;
+                    _fragmentWGSL: string;
+                    _fragmentKey: string;
+                    _materialUboSpec: unknown;
+                };
+            }>("material/pbr/pbr-geometry-output-shader.js"),
+            importPinnedModule<{
+                GeometryTextureType: Record<string, number>;
+            }>("frame-graph/geometry-types.js"),
+        ]);
+        const attachments = options.geometry.attachments.map((name) => {
+            const value = types.GeometryTextureType[name];
+            if (value === undefined) {
+                throw new Error(
+                    `Unknown geometry texture type '${name}'.`,
+                );
+            }
+            return value;
+        });
+        const previous = activeGeometryAttachments;
+        activeGeometryAttachments = attachments;
+        try {
+            const composed = geometry.composePbrGeometryShader(
+                composer,
+                features | (options.passFeatures ?? 0),
+                features2 | (options.passFeatures2 ?? 0),
+                options.meshFeatures ?? 0,
+                options.sceneFeatures ?? 0,
+                options.lightMode ?? 0,
+                options.singleLightType ?? "",
+                "",
+                undefined,
+                "",
+                attachments,
+                options.geometry.emitColor,
+                options.uv2Mask ?? 0,
+            );
+            return {
+                fragmentKey: composed._fragmentKey,
+                features,
+                features2,
+                vertexWgsl: composed._vertexWGSL,
+                fragmentWgsl: composed._fragmentWGSL,
+                materialUboSpec: composed._materialUboSpec,
+            };
+        } finally {
+            activeGeometryAttachments = previous;
+        }
+    }
     const composed = composer(
         features | (options.passFeatures ?? 0),
-        features2,
+        features2 | (options.passFeatures2 ?? 0),
         options.meshFeatures ?? 0,
         options.sceneFeatures ?? 0,
         options.lightMode ?? 0,

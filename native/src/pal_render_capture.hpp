@@ -1061,6 +1061,98 @@ inline void write_render_capture(
     }
     json.end_array();
 
+#if BBLITE_PBR_VARIANTS > 0
+    // The material block our writers produce for every (material, variant) the
+    // selector table names, straight from the same `write_pbr_variant_material`
+    // the draw path calls. `scene -- uniforms <id> --size N` prints the
+    // browser's own block field-labelled; this is the native half of that
+    // comparison, so a disagreeing field is read off two listings instead of
+    // reasoned about. Built on the CPU, so it captures variants the draw gate
+    // currently refuses too.
+    json.key("pinnedMaterialBlocks");
+    json.begin_array();
+    {
+        std::vector<std::uint64_t> seen;
+        for (const upstream::PbrVariantSelector& selector :
+             upstream::pbr_variant_selectors) {
+            if (selector.material_index >= engine.materials.size()) continue;
+            const std::uint64_t pair =
+                (static_cast<std::uint64_t>(selector.material_index) << 32) |
+                selector.variant;
+            if (std::find(seen.begin(), seen.end(), pair) != seen.end()) {
+                continue;
+            }
+            seen.push_back(pair);
+            const upstream::PbrVariantEntry& entry =
+                upstream::pbr_variants[selector.variant];
+            std::vector<float> block(entry.material_ubo_bytes / 4, 0.0f);
+            upstream::write_pbr_variant_material(
+                selector.variant,
+                engine.materials[selector.material_index],
+                block.data(),
+                entry.material_ubo_bytes);
+            json.begin_object();
+            json.field("materialIndex", selector.material_index);
+            json.field("variant", selector.variant);
+            json.field("key", std::string(entry.key));
+            json.field("bytes", entry.material_ubo_bytes);
+            json.field("values", block.data(), block.size());
+            json.end_object();
+        }
+    }
+    json.end_array();
+
+    // The pin's per-draw mesh block for every PBR draw, and each mesh's bone
+    // palette, from the same builders the draw path calls. The browser half is
+    // the capture's 144-byte buffers and its rgba32float texture upload; this
+    // is ours, so the skinning comparison is two listings like the material
+    // block's.
+    json.key("pinnedMeshBlocks");
+    json.begin_array();
+    {
+        const auto dump_list = [&](const upstream::RenderDrawList& list) {
+            for (const upstream::RenderDrawCommand& draw : list.commands) {
+                if (
+                    draw.item.material_kind !=
+                    upstream::RenderMaterialKind::pbr) {
+                    continue;
+                }
+                const upstream::MeshUniforms block = pinned_mesh_block(
+                    scene,
+                    engine,
+                    pinned_mesh_world(),
+                    draw.item.mesh.value);
+                json.begin_object();
+                json.field("meshIndex", draw.item.mesh.value);
+                json.field("world", block.world.data(), block.world.size());
+                json.field("lightCount", block.lc);
+                if (draw.item.mesh.value < engine.meshes.size()) {
+                    const MeshRecord& record =
+                        engine.meshes[draw.item.mesh.value];
+                    json.field("boneCount", record.bone_matrices.size());
+                    if (!record.bone_matrices.empty()) {
+                        json.field(
+                            "bone0",
+                            record.bone_matrices[0].data(),
+                            record.bone_matrices[0].size());
+                    }
+                    if (record.bone_matrices.size() > 1) {
+                        json.field(
+                            "bone1",
+                            record.bone_matrices[1].data(),
+                            record.bone_matrices[1].size());
+                    }
+                }
+                json.end_object();
+            }
+        };
+        dump_list(render_plan.draw_lists.opaque);
+        dump_list(render_plan.draw_lists.transparent);
+    }
+    json.end_array();
+#endif
+
+
     json.end_object();
     stream << '\n';
 }

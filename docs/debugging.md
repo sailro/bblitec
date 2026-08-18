@@ -42,6 +42,7 @@ meaningful, and stopping early is how a wrong branch gets taken.
 | 2 | Is the difference on the CPU or the GPU side? | `scene -- parity <id> --differential` |
 | 3 | Which value differs from Babylon Lite's? | `scene -- diff <id>` |
 | 4 | What exactly did the browser upload into that buffer? | `scene -- capture <id>` then `scene -- uniforms <id> --size N` |
+| 4b | What did *we* put in the pinned variant's blocks? | `scene -- diff <id> --recapture`, then `pinnedMaterialBlocks` / `pinnedMeshBlocks` in `artifacts/capture/<id>/native-sdl_gpu.json` — built by the same writers the draw calls, CPU-side, so refused variants appear too. Diff the two listings field by field; a pinned-path residual is an input, never the shader, once `scene -- compose` matches byte-for-byte |
 | 5 | Which draw owns the bad pixels? | attribution buffers in `artifacts/parity/<id>` |
 | 6 | Does removing the feature remove the residual? | copy the scene to `examples/`, strip it, `parity --recapture-reference` |
 | 7 | Did we derive the material's features at all? | `scene -- compose <id>` — composes each material through the pin and checks the whole fragment against the captured one |
@@ -303,7 +304,6 @@ the wrong one wastes the run:
 | `capture` | The browser's ground truth: composed WGSL, texture uploads, per-draw isolation with `--skip-draw`. `diff` consumes a subset of it and reports differences; the capture itself is what you read when `diff` says a value has no counterpart. |
 | `uniforms` | One browser buffer in full, decoded under **every** candidate layout of its size, ambiguity included. `diff` picks a correspondence; `uniforms` refuses to and shows you all of them. |
 | attribution buffers | Which draw owns which pixels, joined to nodes, meshes, materials and alpha state. Nothing else maps a screen region to a draw. |
-| PBR diagnostic buffers | The shader's intermediate terms — normal, reflectivity, irradiance, IBL, albedo, direct light, pre-tonemap HDR. The only view *inside* a fragment; uniforms tell you the inputs were right, these tell you which term went wrong. |
 | `geometry` | Frame-graph copy-task attachments at full resolution. `diff` does not look at render targets at all. |
 | `BBLITE_DEFORMATION_DUMP` | Bone palettes and morph weights per mesh. The render capture records the material and scene uniforms, not the skinning matrices. |
 | `compose` | Whether our *feature derivation* is right, which every tool above assumes. They compare what two renderers did; `compose` compares what Babylon Lite would have built against what we built it from, so it catches a fragment that is missing an arm entirely — the failure that renders as a plausible small bias and never as an error. |

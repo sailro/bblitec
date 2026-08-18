@@ -22,6 +22,7 @@ interface MeshFeatureBits {
     MSH_HAS_VERTEX_COLOR: number;
     MSH_HAS_UV2: number;
     MSH_FLAT_NORMAL: number;
+    MSH_HAS_THIN_INSTANCES: number;
 }
 
 let bits: Promise<MeshFeatureBits> | undefined;
@@ -40,7 +41,7 @@ async function meshFeatureBits(): Promise<MeshFeatureBits> {
  */
 export async function pinnedMeshFeaturesFromPrimitive(
     primitive: JsonObject,
-    options: { skinned?: boolean } = {},
+    options: { skinned?: boolean; instanced?: boolean } = {},
 ): Promise<number> {
     const bit = await meshFeatureBits();
     const attributes =
@@ -56,6 +57,9 @@ export async function pinnedMeshFeaturesFromPrimitive(
         features |= bit.MSH_HAS_MORPH_TARGETS;
     }
     if (options.skinned) features |= bit.MSH_HAS_SKELETON;
+    // The node's EXT_mesh_gpu_instancing, which composes the pin's
+    // thin-instance arm: the per-instance matrix as four vec4 attributes.
+    if (options.instanced) features |= bit.MSH_HAS_THIN_INSTANCES;
     return features;
 }
 

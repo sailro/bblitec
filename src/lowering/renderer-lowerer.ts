@@ -35,10 +35,10 @@ import {
     solidSkyboxVertexWgsl,
 } from "../shader-builtins-background.js";
 import type { PinnedSolidSkyboxSource } from "../shader-builtins-background.js";
-import { materialVertexWgsl } from "../shader-builtins-material.js";
-import { applyMaterialExtensionWgsl } from "../shader-builtins-material-extensions.js";
-import { standardFragmentWgsl } from "../shader-builtins-standard.js";
-import { pbrFragmentWgsl } from "../shader-builtins-pbr.js";
+import {
+    materialVertexWgsl,
+    standardFragmentWgsl,
+} from "../shader-builtins-standard.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 /**
@@ -86,219 +86,6 @@ const pbrUvTransformSlots: ReadonlyArray<{
     { wgsl: "thickness", cpp: "thickness", extension: "transmission" },
 ];
 
-function uvTransformName(slot: string): string {
-    return `bblUv${slot.charAt(0).toUpperCase()}${slot.slice(1)}`;
-}
-
-function replaceUvTransformMarker(
-    source: string,
-    marker: RegExp,
-    replacement: string,
-    label: string,
-): string {
-    if (!marker.test(source)) {
-        throw new Error(`PBR UV transform marker changed: ${label}.`);
-    }
-    return source.replace(marker, () => replacement);
-}
-
-/**
- * Give every texture sample its own UV. Babylon Lite computes each slot's UV
- * from that slot's own matrix and offset (`txfUV` in the composed fragment), so
- * one material can rotate its normal map while its thickness map rotates the
- * other way. Applied after the material-extension fragments are composed, since
- * their samples are slots too.
- */
-function applyPbrUvTransformWgsl(
-    source: string,
-    slots: ReadonlyArray<{ wgsl: string; cpp: string }>,
-): string {
-    const reached = new Set(slots.map((slot) => slot.wgsl));
-    let result = replaceUvTransformMarker(
-        source,
-        /  imageProcessingOptions : vec4<f32>,/,
-        "  imageProcessingOptions : vec4<f32>,\n" +
-            slots
-                .map(
-                    (slot) =>
-                        `  ${slot.wgsl}UVm : vec4<f32>,\n` +
-                        `  ${slot.wgsl}UVt : vec4<f32>,`,
-                )
-                .join("\n"),
-        "uniform block",
-    );
-    const declarations = slots
-        .map(
-            (slot) =>
-                `  let ${uvTransformName(slot.wgsl)} = bblTxfUv(v_4, ` +
-                `FragmentUniforms.${slot.wgsl}UVm, ` +
-                `FragmentUniforms.${slot.wgsl}UVt.xy);`,
-        )
-        .join("\n");
-    const signature = /fn main_inner\(([^)]*)\) \{/;
-    const signatureMatch = signature.exec(result);
-    if (!signatureMatch) {
-        throw new Error("PBR UV transform marker changed: main_inner signature.");
-    }
-    result = result.replace(
-        signature,
-        () =>
-            "fn bblTxfUv(uv : vec2<f32>, m : vec4<f32>, t : vec2<f32>) -> vec2<f32> {\n" +
-            "  return vec2<f32>(dot(m.xy, uv), dot(m.zw, uv)) + t;\n" +
-            "}\n\n" +
-            `${signatureMatch[0]}\n${declarations}`,
-    );
-    // Each site names the slot whose transform it must sample at. The
-    // derivative pairs belong to the normal-map slots: the cotangent frame is
-    // built from the UV the normal map is sampled at.
-    const sites: Array<{ slot: string; marker: RegExp; replacement: string }> = [
-        {
-            slot: "normal",
-            marker: /textureSample\(normalTexture, normalSampler, v_4\)/,
-            replacement: "textureSample(normalTexture, normalSampler, bblUvNormal)",
-        },
-        {
-            slot: "normal",
-            marker: /      let v_13 = dpdx\(v_4\);\r?\n      let v_14 = dpdy\(v_4\);/,
-            replacement:
-                "      let v_13 = dpdx(bblUvNormal);\n" +
-                "      let v_14 = dpdy(bblUvNormal);",
-        },
-        {
-            slot: "baseColor",
-            marker: /textureSample\(baseColorTexture, baseColorSampler, v_4\)/,
-            replacement:
-                "textureSample(baseColorTexture, baseColorSampler, bblUvBaseColor)",
-        },
-        {
-            slot: "orm",
-            marker: /textureSample\(metallicRoughnessTexture, metallicRoughnessSampler, v_4\)/,
-            replacement:
-                "textureSample(metallicRoughnessTexture, metallicRoughnessSampler, bblUvOrm)",
-        },
-        // The emissive slot is deliberately absent. Its transform is parsed,
-        // animated and uploaded like every other slot, but the pinned
-        // fragment never samples through it: createEmissiveColorFragment
-        // hardcodes `textureSample(emissiveTexture,emissiveSampler,input.uv)`,
-        // and the composed shader an instrumented capture recovers computes
-        // `emissiveUV` on the line above and then ignores it. Rewriting the
-        // sample to the transformed UV made Scene 39's water scroll its
-        // emissive texture where the browser holds it still.
-        {
-            slot: "refractionMap",
-            marker: /      transmissionSampler,\r?\n      v_4,/,
-            replacement: "      transmissionSampler,\n      bblUvRefractionMap,",
-        },
-        {
-            slot: "thickness",
-            marker: /      thicknessSampler,\r?\n      v_4,/,
-            replacement: "      thicknessSampler,\n      bblUvThickness,",
-        },
-        {
-            slot: "clearcoat",
-            marker: /textureSample\(clearcoatTexture, clearcoatSampler, v_4\)/,
-            replacement:
-                "textureSample(clearcoatTexture, clearcoatSampler, bblUvClearcoat)",
-        },
-        {
-            slot: "clearcoatRoughness",
-            marker: /        clearcoatRoughnessSampler,\r?\n        v_4\)/,
-            replacement:
-                "        clearcoatRoughnessSampler,\n        bblUvClearcoatRoughness)",
-        },
-        {
-            slot: "clearcoatNormal",
-            marker: /  let cc_duv1 = dpdx\(v_4\);\r?\n  let cc_duv2 = dpdy\(v_4\);/,
-            replacement:
-                "  let cc_duv1 = dpdx(bblUvClearcoatNormal);\n" +
-                "  let cc_duv2 = dpdy(bblUvClearcoatNormal);",
-        },
-        {
-            slot: "clearcoatNormal",
-            marker: /textureSample\(clearcoatNormalTexture, clearcoatNormalSampler, v_4\)/,
-            replacement:
-                "textureSample(clearcoatNormalTexture, clearcoatNormalSampler, bblUvClearcoatNormal)",
-        },
-        {
-            slot: "sheen",
-            marker: /textureSample\(sheenColorTexture, sheenColorSampler, v_4\)/,
-            replacement:
-                "textureSample(sheenColorTexture, sheenColorSampler, bblUvSheen)",
-        },
-        {
-            slot: "sheenRoughness",
-            marker: /textureSample\(sheenRoughnessTexture, sheenRoughnessSampler, v_4\)/,
-            replacement:
-                "textureSample(sheenRoughnessTexture, sheenRoughnessSampler, bblUvSheenRoughness)",
-        },
-        {
-            slot: "iridescence",
-            marker: /textureSample\(iridescenceTexture, iridescenceSampler, v_4\)/,
-            replacement:
-                "textureSample(iridescenceTexture, iridescenceSampler, bblUvIridescence)",
-        },
-        {
-            slot: "iridescenceThickness",
-            marker: /          iridescenceThicknessSampler,\r?\n          v_4\)/,
-            replacement:
-                "          iridescenceThicknessSampler,\n          bblUvIridescenceThickness)",
-        },
-    ];
-    for (const site of sites) {
-        if (!reached.has(site.slot)) continue;
-        result = replaceUvTransformMarker(
-            result,
-            site.marker,
-            site.replacement,
-            `${site.slot} sample`,
-        );
-    }
-    return result;
-}
-
-/**
- * Scale and tint the dielectric reflectance the way the pinned reflectance
- * fragment does. Its F0 block reads
- *
- *   dielectricF0 = reflectance * metallicF0Factor
- *   colorF0      = mix(vec3(dielectricF0) * metallicReflectanceColor,
- *                      baseColor, metallic)
- *   colorF90     = vec3(mix(specularWeight, 1.0, metallic))
- *   surfaceAlbedo = baseColor
- *                 * (1 - dielectricF0 * metallicReflectanceColor)
- *                 * (1 - metallic)
- *
- * which is the base template's own composition once the factor is one, the
- * weight is one and the tint is white — so the emitted branch is a
- * generalization of what it replaces rather than a second path.
- */
-function applyPbrReflectanceWgsl(source: string): string {
-    let result = replaceUvTransformMarker(
-        source,
-        /  imageProcessingOptions : vec4<f32>,/,
-        "  imageProcessingOptions : vec4<f32>,\n" +
-            "  reflectanceFactors : vec4<f32>,\n" +
-            "  metallicReflectanceColor : vec4<f32>,",
-        "reflectance uniform block",
-    );
-    result = replaceUvTransformMarker(
-        result,
-        /  let v_51 = FragmentUniforms\.normalOptions\.z;\r?\n  let v_52 = \(\(v_31 \* \(1\.0f - v_51\)\) \* \(1\.0f - v_36\)\);/,
-        "  let bblSurfaceReflectivityColor = FragmentUniforms.metallicReflectanceColor.xyz;\n" +
-            "  let v_51 = FragmentUniforms.normalOptions.z * FragmentUniforms.reflectanceFactors.x;\n" +
-            "  let v_52 = ((v_31 * (vec3<f32>(1.0f) - (vec3<f32>(v_51) * bblSurfaceReflectivityColor))) * (1.0f - v_36));",
-        "dielectric F0 and surface albedo",
-    );
-    result = replaceUvTransformMarker(
-        result,
-        /  let v_75 = mix\(vec3<f32>\(v_51, v_51, v_51\), v_31, vec3<f32>\(v_36, v_36, v_36\)\);\r?\n  let v_76 = \(vec3<f32>\(1\.0f\) - v_75\);/,
-        "  let v_75 = mix((vec3<f32>(v_51, v_51, v_51) * bblSurfaceReflectivityColor), v_31, vec3<f32>(v_36, v_36, v_36));\n" +
-            "  let v_76 = (vec3<f32>(mix(FragmentUniforms.reflectanceFactors.y, 1.0f, v_36)) - v_75);",
-        "colorF0 and colorF90",
-    );
-    return result;
-}
-
 function reachedUvTransformSlots(options: {
     clearcoat?: boolean;
     sheen?: boolean;
@@ -342,7 +129,6 @@ const dielectricLoaderModule = "src/loader-gltf/gltf-ext-dielectric.ts";
 const transmissionFrameGraphModule = "src/frame-graph/transmission.ts";
 const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
 const fogWgslModule = "src/shader/wgsl-fog.ts";
-const pbrFogWgslModule = "src/material/pbr/pbr-fog-wgsl.ts";
 const skyboxCubemapModule =
     "src/material/standard/skybox-cubemap.ts";
 const orthoMatrixModule = "src/math/mat4-ortho-lh-to-ref.ts";
@@ -1285,6 +1071,11 @@ std::array<float, 16> build_view_projection(
     const CameraRecord& camera,
     double aspect,
     bool reverse_depth = false);
+// The pin's scene.view, from the camera's own world matrix. Declared because
+// the pinned PBR variants read it out of the scene block a PAL fills, where the
+// transcribed fragment never needed it.
+std::array<float, 16> build_view_matrix(
+    const std::array<float, 16>& camera_world);
 std::array<float, 16> build_skybox_view_projection(
     const CameraRecord& camera,
     double aspect);
@@ -1293,6 +1084,13 @@ ${options.gpuInstancing
     const MeshRecord& mesh);
 `
     : ""}\
+// src/render/lights-ubo.ts affectsMesh: a light applies to the meshes its
+// includedOnlyMeshesIds names, or to every mesh its excludedMeshesIds does
+// not. One definition, because both the Standard slot writer and the pinned
+// per-draw mesh block need the same per-mesh light set.
+bool light_affects_mesh(
+    const LightRecord& light,
+    std::uint32_t mesh_index);
 PbrUniforms build_pbr_uniforms(
     const Scene& scene,
     const Engine& engine,
@@ -1395,10 +1193,15 @@ Vec3 rotate_euler(Vec3 value, const Vec3& rotation) {
     };
 }
 
+} // namespace
+
 // src/camera/camera.ts getViewMatrix: the rotation is the transpose of
 // the world matrix's basis and the translation is that basis applied to
 // the negated eye, computed from the float32 world matrix in JavaScript
 // doubles and stored once into the float32 view cache.
+//
+// Outside the anonymous namespace because a PAL binding the pinned PBR
+// variants fills the pin's own scene block, which carries scene.view.
 std::array<float, 16> build_view_matrix(
     const std::array<float, 16>& world) {
     const double cx = static_cast<double>(world[12]);
@@ -1432,6 +1235,8 @@ std::array<float, 16> build_view_matrix(
     view[15] = 1.0f;
     return view;
 }
+
+namespace {
 
 // src/math/mat4-multiply-into.ts mat4MultiplyInto: the pinned writer
 // accumulates each term in double from two float32 matrices and stores
@@ -2034,6 +1839,22 @@ std::array<float, 16> build_instance_parent_world(
 
 `
     : ""}\
+// src/render/lights-ubo.ts affectsMesh.
+bool light_affects_mesh(
+    const LightRecord& light,
+    std::uint32_t mesh_index) {
+    if (light.included_meshes.empty()) {
+        return std::find(
+                   light.excluded_meshes.begin(),
+                   light.excluded_meshes.end(),
+                   mesh_index) == light.excluded_meshes.end();
+    }
+    return std::find(
+               light.included_meshes.begin(),
+               light.included_meshes.end(),
+               mesh_index) != light.included_meshes.end();
+}
+
 PbrUniforms build_pbr_uniforms(
     const Scene& scene,
     const Engine& engine,
@@ -2341,16 +2162,7 @@ ${options.standardLightLists ? `    // A light can name the meshes it applies to
     for (const LightHandle handle : scene.lights) {
         if (handle.value >= engine.lights.size()) continue;
         const LightRecord& light = engine.lights[handle.value];
-        const bool applies = light.included_meshes.empty()
-            ? std::find(
-                  light.excluded_meshes.begin(),
-                  light.excluded_meshes.end(),
-                  item.mesh.value) == light.excluded_meshes.end()
-            : std::find(
-                  light.included_meshes.begin(),
-                  light.included_meshes.end(),
-                  item.mesh.value) != light.included_meshes.end();
-        if (!applies) continue;
+        if (!light_affects_mesh(light, item.mesh.value)) continue;
         switch (light_slot) {
             case 0:
                 write_light(
@@ -2791,7 +2603,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         standardSpotLights?: boolean;
         gridMaterial?: boolean;
         idDiagnostics: boolean;
-        pbrDiagnostics: boolean;
         geometryOutputTasks: GeometryOutputTaskManifest[];
         frameGraph?: boolean;
         gpuDeformation?: boolean;
@@ -2822,7 +2633,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
         standardVertexColors: false,
         gridMaterial: false,
         idDiagnostics: true,
-        pbrDiagnostics: true,
         geometryOutputTasks: [],
         gpuDeformation: false,
         morphStorage: false,
@@ -3200,48 +3010,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                 options.morphStorage,
             ),
         });
-        // The template's directional branch and second analytic light
-        // derive from the pinned single-light PBR block; assert the
-        // upstream module still carries it.
-        this.context.functionDeclaration(
-            "src/material/pbr/fragments/singlelight-directional-wgsl.ts",
-            "getSingleLightBlock",
-        );
-        let convertedPbr = readFileSync(
-            resolve(templateRoot, "pbr.frag.wgsl"),
-            "utf8",
-        );
-        if (!options.normalTextureScale) {
-            convertedPbr = convertedPbr.replace(
-                /  let v_8_raw = \(\(textureSample\(normalTexture, normalSampler, v_4\)\.xyz \* 2\.0f\) - vec3<f32>\(1\.0f\)\);\r?\n  let v_8 = vec3<f32>\(\r?\n    v_8_raw\.xy \* FragmentUniforms\.normalOptions\.w,\r?\n    v_8_raw\.z,\r?\n  \);/,
-                "  let v_8 = ((textureSample(normalTexture, normalSampler, v_4).xyz * 2.0f) - vec3<f32>(1.0f));",
-            );
-        }
-        if (!options.transmission) {
-            convertedPbr = convertedPbr.replace(
-                /@group\(2u\) @binding\(12u\)[\s\S]*?@group\(2u\) @binding\(17u\) var thicknessSampler : sampler;\r?\n\r?\n/,
-                "",
-            );
-            convertedPbr = convertedPbr.replace(
-                /  refractionParams : vec4<f32>,\r?\n  volumeParams : vec4<f32>,\r?\n  transmissionOptions : vec4<f32>,\r?\n  viewProjection : mat4x4<f32>,\r?\n/,
-                "",
-            );
-            const transmissionStart = convertedPbr.indexOf(
-                "  var shadedColor = ",
-            );
-            const transmissionEnd = convertedPbr.indexOf(
-                "  var v_105 : vec3<f32>;",
-                transmissionStart,
-            );
-            if (transmissionStart < 0 || transmissionEnd < 0) {
-                throw new Error("PBR transmission shader markers changed.");
-            }
-            convertedPbr =
-                convertedPbr.slice(0, transmissionStart) +
-                "  let linearColor = select((((((((v_89 * v_52) * v_34) + v_101) + v_102) + ((((v_70 * v_52) * v_71) * v_81) * v_69)) + (bblExtraDiffuse + bblExtraSpecular)) + v_40), v_31, vec3<bool>(v_103, v_103, v_103));\n" +
-                "  let v_104 = linearColor * FragmentUniforms.environmentFactors.x;\n" +
-                convertedPbr.slice(transmissionEnd);
-        }
         if (options.fog) {
             const unportedFogSurfaces: readonly (readonly [
                 boolean | undefined,
@@ -3255,7 +3023,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                     options.geometryOutputTasks.length > 0,
                     "geometry outputs",
                 ],
-                [options.pbrDiagnostics, "PBR diagnostics"],
                 [
                     options.shaderPrograms.length > 0,
                     "custom shader materials",
@@ -3298,326 +3065,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                     );
                 }
             }
-            const pbrFogSource =
-                this.context.store.getSource(pbrFogWgslModule);
-            for (const marker of [
-                "calcFogFactor((scene.view*vec4<f32>(input.worldPos,1.0)).xyz)",
-                "fogFactor=pow(fogFactor,2.2)",
-                "color=mix(pow(scene.vFogColor.rgb,vec3<f32>(2.2)),color,fogFactor)",
-                "scene.vFogInfos.x>0.0",
-            ]) {
-                if (!pbrFogSource.includes(marker)) {
-                    throw new Error(
-                        `Pinned Babylon Lite PBR fog blend changed: ${marker}`,
-                    );
-                }
-            }
-            for (const marker of [
-                "  imageProcessingOptions : vec4<f32>,",
-                "@group(3u) @binding(0u) var<uniform> FragmentUniforms : S;",
-                "  let v_104 = linearColor * FragmentUniforms.environmentFactors.x;",
-                "    linearColor,\n    FragmentUniforms.imageProcessingOptions.x > 0.5f,",
-            ]) {
-                if (
-                    !convertedPbr
-                        .replaceAll("\r\n", "\n")
-                        .includes(marker)
-                ) {
-                    throw new Error(
-                        `PBR fog shader marker changed: ${marker}`,
-                    );
-                }
-            }
-            convertedPbr = convertedPbr.replace(
-                /  imageProcessingOptions : vec4<f32>,/,
-                "  imageProcessingOptions : vec4<f32>,\n" +
-                    "  fogInfos : vec4<f32>,\n" +
-                    "  fogColor : vec4<f32>,",
-            );
-            convertedPbr = convertedPbr.replace(
-                "@group(3u) @binding(0u) var<uniform> FragmentUniforms : S;",
-                `@group(3u) @binding(0u) var<uniform> FragmentUniforms : S;
-
-// ${this.context.provenance(fogWgslModule, "WGSL_FOG", `${pbrFogWgslModule}#PBR_FOG_BLOCK`)}
-const bblFogE : f32 = 2.71828f;
-
-fn bblCalcFogFactor(fogDistance : vec3<f32>) -> f32 {
-  var fogCoeff = 1.0f;
-  let fogMode = FragmentUniforms.fogInfos.x;
-  let fogStart = FragmentUniforms.fogInfos.y;
-  let fogEnd = FragmentUniforms.fogInfos.z;
-  let fogDensity = FragmentUniforms.fogInfos.w;
-  let dist = length(fogDistance);
-  if (fogMode == 3.0f) {
-    fogCoeff = ((fogEnd - dist) / (fogEnd - fogStart));
-  } else if (fogMode == 1.0f) {
-    fogCoeff = (1.0f / pow(bblFogE, (dist * fogDensity)));
-  } else if (fogMode == 2.0f) {
-    fogCoeff = (1.0f / pow(bblFogE, (((dist * dist) * fogDensity) * fogDensity)));
-  }
-  return clamp(fogCoeff, 0.0f, 1.0f);
-}`,
-            );
-            convertedPbr = convertedPbr.replace(
-                /  let v_104 = linearColor \* FragmentUniforms\.environmentFactors\.x;/,
-                `  var bblFoggedColor = linearColor;
-  if ((FragmentUniforms.fogInfos.x > 0.0f)) {
-    let bblFogView = (v_1 - FragmentUniforms.cameraPosition.xyz);
-    var bblFogFactor = bblCalcFogFactor(vec3<f32>(
-      dot(FragmentUniforms.viewRight.xyz, bblFogView),
-      dot(FragmentUniforms.viewUp.xyz, bblFogView),
-      dot(FragmentUniforms.viewForward.xyz, bblFogView),
-    ));
-    bblFogFactor = pow(bblFogFactor, 2.20000004768371582031f);
-    bblFoggedColor = mix(
-      pow(FragmentUniforms.fogColor.xyz, vec3<f32>(2.20000004768371582031f)),
-      bblFoggedColor,
-      vec3<f32>(bblFogFactor, bblFogFactor, bblFogFactor),
-    );
-  }
-  let v_104 = bblFoggedColor * FragmentUniforms.environmentFactors.x;`,
-            );
-            convertedPbr = convertedPbr.replace(
-                /    linearColor,\r?\n    FragmentUniforms\.imageProcessingOptions\.x > 0\.5f,/,
-                "    bblFoggedColor,\n    FragmentUniforms.imageProcessingOptions.x > 0.5f,",
-            );
         }
-        if (options.multiLight) {
-            const primaryPointAttenuation =
-                /    let v_62 = max\(0\.0f, \(1\.0f - \(sqrt\(v_59\) \/ max\(FragmentUniforms\.groundColor\.w, 0\.00009999999747378752f\)\)\)\);/;
-            if (!primaryPointAttenuation.test(convertedPbr)) {
-                throw new Error(
-                    "PBR primary point-light attenuation marker changed.",
-                );
-            }
-            convertedPbr = convertedPbr.replace(
-                primaryPointAttenuation,
-                "    let v_62 = 1.0f / max(v_59, 0.0000001f);",
-            );
-            convertedPbr = convertedPbr.replace(
-                    /  groundColor : vec4<f32>,/,
-                    "  groundColor : vec4<f32>,\n" +
-                        "  extraLightPositions : array<vec4<f32>, 7>,\n" +
-                        "  extraLightColors : array<vec4<f32>, 7>,\n" +
-                        "  extraLightDirections : array<vec4<f32>, 7>,",
-            );
-            const extraLights = Array.from(
-                    { length: 7 },
-                    (_, index) => `  {
-    let extraColorIntensity = FragmentUniforms.extraLightColors[${index}u];
-    if (extraColorIntensity.w > 0.0f) {
-      let extraDelta = FragmentUniforms.extraLightPositions[${index}u].xyz - v_1;
-      let extraDistanceSquared = dot(extraDelta, extraDelta);
-      let extraDirection = normalize(extraDelta);
-      let extraNdotL = max(dot(v_28, extraDirection), 0.0f);
-      // Pinned spot falloff under physical light falloff, which is the mode
-      // this inverse-square attenuation already is:
-      // exp2(kappa * (spotCosine - 1)) with
-      // kappa = 6.64385618977 / (1 - cos(angle / 2)). The exponent the pinned
-      // standard-falloff branch applies is unreachable on this path, and a
-      // glTF spot carries exponent 1 in any case.
-      let extraCone = FragmentUniforms.extraLightDirections[${index}u];
-      let extraSpotCosine = dot(extraCone.xyz, -extraDirection);
-      let extraConeFalloff = select(
-        1.0f,
-        exp2(
-          (6.64385618977f / max(1.0f - extraCone.w, 0.0001f)) *
-            (extraSpotCosine - 1.0f),
-        ),
-        extraCone.w > -1.5f,
-      );
-      let extraAttenuation =
-        extraConeFalloff / max(extraDistanceSquared, 0.0000001f);
-      let extraHalf = normalize(v_41 + extraDirection);
-      let extraNdotH = clamp(dot(v_28, extraHalf), 0.0000001f, 1.0f);
-      let extraVdotH = clamp(dot(v_41, extraHalf), 0.0f, 1.0f);
-      let extraFresnel = v_75 + v_76 * pow(1.0f - extraVdotH, 5.0f);
-      let extraDistributionDenominator =
-        extraNdotH * extraNdotH * (v_78 - 1.0f) + 1.0f;
-      let extraDistribution =
-        v_78 /
-        (3.14159274101257324219f *
-          extraDistributionDenominator *
-          extraDistributionDenominator);
-      let extraVisibility = 0.5f / (
-        extraNdotL * sqrt(
-          v_43 * (v_43 - v_78 * v_43) + v_78,
-        ) +
-        v_43 * sqrt(
-          extraNdotL *
-            (extraNdotL - v_78 * extraNdotL) +
-            v_78,
-        )
-      );
-      let extraScale =
-        extraColorIntensity.w *
-        extraAttenuation;
-      let extraSpecular =
-        extraFresnel *
-        extraDistribution *
-        extraVisibility *
-        extraNdotL *
-        extraColorIntensity.rgb *
-        extraScale *
-        mix(vec3<f32>(1.0f), v_100, vec3<f32>(v_88));
-      let extraDiffuse =
-        extraColorIntensity.rgb *
-        v_52 *
-        (extraNdotL * 0.31830987334251403809f) *
-        extraScale;
-      bblExtraSpecular += extraSpecular;
-      bblExtraDiffuse += extraDiffuse;
-    }
-  }`,
-            ).join("\n");
-            const directMarker =
-                    "  let v_103 = (FragmentUniforms.materialOptions.z > 0.5f);";
-            if (!convertedPbr.includes(directMarker)) {
-                    throw new Error(
-                        "PBR direct-light output marker changed.",
-                    );
-            }
-            convertedPbr = convertedPbr.replace(
-                    directMarker,
-                    `${extraLights}
-${directMarker}`,
-            );
-            const alphaLuminance =
-                "    let v_113 = dot((v_101 + v_102), " +
-                "vec3<f32>(0.21259999275207519531f, " +
-                "0.71520000696182250977f, " +
-                "0.07220000028610229492f));";
-            if (!convertedPbr.includes(alphaLuminance)) {
-                throw new Error(
-                    "PBR transparent alpha luminance marker changed.",
-                );
-            }
-            convertedPbr = convertedPbr.replace(
-                alphaLuminance,
-                "    let v_113 = dot((v_101 + v_102 + " +
-                    "bblExtraSpecular), " +
-                    "vec3<f32>(0.21259999275207519531f, " +
-                    "0.71520000696182250977f, " +
-                    "0.07220000028610229492f));",
-            );
-        }
-        if (options.environmentRotation) {
-            const irradianceDirection =
-                /      let v_85 = v_28\.y;\r?\n      let v_86 = v_28\.z;\r?\n      let v_87 = v_28\.x;/;
-            if (!irradianceDirection.test(convertedPbr)) {
-                throw new Error(
-                    "PBR environment normal markers changed.",
-                );
-            }
-            convertedPbr = convertedPbr.replace(
-                irradianceDirection,
-                "      let env_rotation = FragmentUniforms.imageProcessingOptions.y;\n" +
-                    "      let env_cos = cos(env_rotation);\n" +
-                    "      let env_sin = sin(env_rotation);\n" +
-                    "      let env_normal = vec3<f32>(v_28.x * env_cos + v_28.z * env_sin, v_28.y, -v_28.x * env_sin + v_28.z * env_cos);\n" +
-                    "      let v_85 = env_normal.y;\n" +
-                    "      let v_86 = env_normal.z;\n" +
-                    "      let v_87 = env_normal.x;",
-            );
-            const reflectionDirection =
-                /  let v_90 = reflect\(-\(v_41\), v_28\);/;
-            if (!reflectionDirection.test(convertedPbr)) {
-                throw new Error(
-                    "PBR environment reflection marker changed.",
-                );
-            }
-            convertedPbr = convertedPbr.replace(
-                reflectionDirection,
-                "  let environment_reflection_raw = reflect(-(v_41), v_28);\n" +
-                    "  let environment_rotation = FragmentUniforms.imageProcessingOptions.y;\n" +
-                    "  let environment_cos = cos(environment_rotation);\n" +
-                    "  let environment_sin = sin(environment_rotation);\n" +
-                    "  let v_90 = vec3<f32>(environment_reflection_raw.x * environment_cos + environment_reflection_raw.z * environment_sin, environment_reflection_raw.y, -environment_reflection_raw.x * environment_sin + environment_reflection_raw.z * environment_cos);",
-            );
-            const horizonOcclusion =
-                "  let v_99_horizon = clamp((1.0f + " +
-                "(1.10000002384185791016f * dot(v_90, v_29))), " +
-                "0.0f, 1.0f);";
-            if (!convertedPbr.includes(horizonOcclusion)) {
-                throw new Error(
-                    "PBR environment horizon-occlusion marker changed.",
-                );
-            }
-            convertedPbr = convertedPbr.replace(
-                horizonOcclusion,
-                "  let v_99_horizon = clamp((1.0f + " +
-                    "(1.10000002384185791016f * " +
-                    "dot(environment_reflection_raw, v_29))), " +
-                    "0.0f, 1.0f);",
-            );
-        }
-        if (
-            options.sheen &&
-            options.sheenAlbedoScaling !== true &&
-            options.materialSpecular === true
-        ) {
-            // The legacy sheen arm attenuates its lobe by the dielectric
-            // Fresnel term, which `KHR_materials_specular` moves. No reached
-            // scene composes the two.
-            throw new Error(
-                "Legacy sheen composed with KHR_materials_specular is not lowered.",
-            );
-        }
-        if (
-            (options.clearcoat || options.sheen) &&
-            options.multiLight
-        ) {
-            throw new Error(
-                "Combined punctual multi-light and clearcoat/sheen PBR layer composition is not lowered.",
-            );
-        }
-        convertedPbr = applyMaterialExtensionWgsl(convertedPbr, {
-            transmission: options.transmission === true,
-            environmentRotation: options.environmentRotation === true,
-            clearcoat: options.clearcoat === true,
-            sheen: options.sheen === true,
-            sheenAlbedoScaling:
-                options.sheenAlbedoScaling === true,
-            clearcoatF0Remap:
-                options.clearcoatF0Remap === true,
-            ...(options.pinnedHelpers === undefined
-                ? {}
-                : {
-                    pinnedHelpers:
-                        options.pinnedHelpers,
-                }),
-            iridescence: options.iridescence === true,
-            dispersion: options.dispersion === true,
-            occlusionUv2: options.occlusionUv2 === true,
-        });
-        // Both blocks insert after the same uniform-block marker, so the LAST
-        // one written ends up FIRST in the emitted struct. The C++ mirror
-        // declares the reflectance slice ahead of the UV pairs, so the UV pass
-        // has to run before the reflectance pass for the two layouts to agree.
-        if (options.textureTransform) {
-            convertedPbr = applyPbrUvTransformWgsl(
-                convertedPbr,
-                reachedUvTransformSlots(options),
-            );
-        }
-        if (options.materialSpecular) {
-            convertedPbr = applyPbrReflectanceWgsl(convertedPbr);
-        }
-        const pbrProvenance = this.context.provenance(
-            pbrTemplateModule,
-            "createPbrTemplate",
-            `${iblFragmentModule}#getEnergyConservationFactor`,
-        );
-        result.push({
-            output: "upstream/shaders/pbr.frag.native.wgsl",
-            data:
-                `// ${pbrProvenance}\n` +
-                pbrFragmentWgsl(
-                    convertedPbr,
-                    { kind: "color" },
-                    options.occlusionUv2 === true,
-                ),
-        });
         if (options.standardMaterial) {
             result.push({
                 output: "upstream/shaders/standard.frag.native.wgsl",
@@ -3921,42 +3369,7 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
                 },
             );
         }
-        if (options.pbrDiagnostics) {
-            for (const variant of ["a", "b", "c"] as const) {
-                result.push({
-                    output:
-                        `upstream/shaders/pbr-diagnostics-${variant}.frag.native.wgsl`,
-                    data:
-                        `// ${pbrProvenance}\n` +
-                        pbrFragmentWgsl(
-                            convertedPbr,
-                            {
-                                kind: "diagnostic",
-                                group: variant,
-                            },
-                            options.occlusionUv2 === true,
-                        ),
-                });
-            }
-        }
         for (const task of options.geometryOutputTasks) {
-            result.push({
-                output:
-                    `upstream/shaders/pbr-geometry-${task.shaderIndex}.frag.native.wgsl`,
-                data:
-                    `// ${this.context.provenance(
-                        pbrGeometryModule,
-                        "attachmentExpr",
-                    )}\n` +
-                    pbrFragmentWgsl(
-                        convertedPbr,
-                        {
-                            kind: "geometry",
-                            task,
-                        },
-                        options.occlusionUv2 === true,
-                    ),
-            });
             if (options.standardMaterial) {
                 result.push({
                     output:
@@ -3974,7 +3387,7 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
         return result;
     }
 
-    private compiledSceneUniformsWgsl(): string {
+    public compiledSceneUniformsWgsl(): string {
         const path = resolve(
             this.context.store.packageRoot,
             "lib/shader/scene-uniforms.js",

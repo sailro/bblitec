@@ -171,6 +171,158 @@ function Move-IfDifferent {
     Move-Item -LiteralPath $Temporary -Destination $Destination -Force
 }
 
+function Remap-PinnedVariantRegisters {
+    <#
+    .SYNOPSIS
+    Moves a pinned composed variant's registers into SDL_GPU's spaces.
+
+    .DESCRIPTION
+    Tint maps `@group(N)` to `spaceN`, and the shaders this repository
+    specializes are authored in the groups that make that land where SDL_GPU's
+    D3D12 backend looks: vertex uniforms in space1 with its textures in space0,
+    fragment textures in space2 with its uniforms in space3.
+
+    Babylon Lite's own variants are not authored for us. They use group 0 for the
+    per-pass scene and lights blocks and group 1 for the per-draw mesh block, the
+    material block and every texture, which Tint puts in space0 and space1. This
+    moves them, and renumbers each class densely in the pin's own group-then-
+    binding order, so the shader text stays the pin's and only its addressing
+    changes -- the transformation that made emitting the pin's stages viable for
+    this backend at all.
+
+    The resulting slot order is what a PAL pushes against: vertex uniforms are
+    scene then mesh; fragment uniforms are scene, lights, then material.
+    #>
+    param([string]$Path, [bool]$IsVertex)
+
+    $source = Get-Content $Path -Raw
+    $uniformSpace = if ($IsVertex) { 1 } else { 3 }
+    $resourceSpace = if ($IsVertex) { 0 } else { 2 }
+    $pattern = "register\(([tsbu])(\d+)(?:, space(\d+))?\)"
+    $matches = [regex]::Matches($source, $pattern)
+    # SDL_GPU's D3D12 convention orders the shared SRV space by class:
+    # sampled textures first, then storage buffers (Tint's ByteAddressBuffer
+    # rows for the morph arms). Tint numbers them by declaration order
+    # instead, so the t-class renumbering has to know which registers are
+    # storage before it can put the palette at t0 where the sampler pair
+    # binds.
+    $storageRegisters = @{}
+    foreach (
+        $declaration in [regex]::Matches(
+            $source,
+            "(?:RW)?(?:ByteAddress|Structured)Buffer(?:<[^>]+>)?\s+\w+\s*:\s*register\(t(\d+)(?:, space(\d+))?\)"
+        )
+    ) {
+        $space = if ($declaration.Groups[2].Success) {
+            [int]$declaration.Groups[2].Value
+        } else {
+            0
+        }
+        $storageRegisters["$space`:$($declaration.Groups[1].Value)"] = $true
+    }
+    $mapping = @{}
+    foreach ($registerClass in @("b", "t", "s", "u")) {
+        $ordered = @(
+            $matches |
+                Where-Object { $_.Groups[1].Value -eq $registerClass } |
+                ForEach-Object {
+                    [PSCustomObject]@{
+                        Space = if ($_.Groups[3].Success) {
+                            [int]$_.Groups[3].Value
+                        } else {
+                            0
+                        }
+                        Index = [int]$_.Groups[2].Value
+                    }
+                } |
+                Sort-Object Space, Index -Unique
+        )
+        if ($registerClass -eq "t") {
+            $ordered = @(
+                @($ordered | Where-Object {
+                    -not $storageRegisters.ContainsKey(
+                        "$($_.Space)`:$($_.Index)")
+                }) +
+                @($ordered | Where-Object {
+                    $storageRegisters.ContainsKey(
+                        "$($_.Space)`:$($_.Index)")
+                })
+            )
+        }
+        for ($index = 0; $index -lt $ordered.Count; $index += 1) {
+            $key = "$registerClass`:$($ordered[$index].Space)`:" +
+                "$($ordered[$index].Index)"
+            $mapping[$key] = $index
+        }
+    }
+    $normalized = [regex]::Replace(
+        $source,
+        $pattern,
+        {
+            param($match)
+            $registerClass = $match.Groups[1].Value
+            $original = [int]$match.Groups[2].Value
+            $space = if ($match.Groups[3].Success) {
+                [int]$match.Groups[3].Value
+            } else {
+                0
+            }
+            $mapped = $mapping["$registerClass`:$space`:$original"]
+            $target = if ($registerClass -eq "b") {
+                $uniformSpace
+            } else {
+                $resourceSpace
+            }
+            return "register($registerClass$mapped, space$target)"
+        }
+    )
+    Set-Content $Path $normalized
+    # What the remap produced, by the pin's own names, for a backend that binds
+    # by slot. Nothing else can publish this: the WGSL over-counts, because a
+    # stage can declare a block it never reads and Tint strips it, and Tint's
+    # own inspector dump lists sampled textures and samplers but no uniform
+    # buffers. The pass that assigns the slots is the only authority on them.
+    # Storage buffers share the t registers after the sampled textures under
+    # SDL_GPU's convention; the sidecar names them as their own `r` class,
+    # rebased to storage slot 0, which is the index
+    # SDL_BindGPUVertexStorageBuffers takes.
+    $sampledCount = [regex]::Matches(
+        $normalized,
+        "Texture\w*<[^>]+>\s+\w+\s*:\s*register\(t\d+"
+    ).Count
+    $slots = @(
+        [regex]::Matches(
+            $normalized,
+            "(?:cbuffer\s+cbuffer_(\w+)|(?:Texture\w*<[^>]+>|SamplerState)\s+(\w+)|(?:RW)?(?:ByteAddress|Structured)Buffer(?:<[^>]+>)?\s+(\w+))\s*:\s*register\(([tsb])(\d+)"
+        ) |
+            ForEach-Object {
+                $storage = $_.Groups[3].Success
+                $name = if ($_.Groups[1].Success) {
+                    $_.Groups[1].Value
+                } elseif ($storage) {
+                    $_.Groups[3].Value
+                } else {
+                    $_.Groups[2].Value
+                }
+                $class = if ($storage) { "r" } else { $_.Groups[4].Value }
+                $index = if ($storage) {
+                    [int]$_.Groups[5].Value - $sampledCount
+                } else {
+                    [int]$_.Groups[5].Value
+                }
+                [PSCustomObject]@{
+                    Class = $class
+                    Index = $index
+                    Name = $name
+                }
+            } |
+            Sort-Object Class, Index |
+            ForEach-Object { "$($_.Class)$($_.Index) $($_.Name)" }
+    )
+    $slotPath = [System.IO.Path]::ChangeExtension($Path, ".slots")
+    Set-Content $slotPath ($slots -join [Environment]::NewLine)
+}
+
 function Normalize-TintHlslBindings {
     param([string]$Path)
 
@@ -304,7 +456,13 @@ foreach ($shaderDirectory in $shaderDirectories) {
                 0,
                 $source.FullName.Length - ".native.wgsl".Length
             )
-            $entryPoint = if ($outputBase.EndsWith(".vert")) {
+            # Babylon Lite's own composed stages name both entry points
+            # `main`; only the shaders this repository specializes carry the
+            # mainVertex/mainFragment convention.
+            $isPinnedVariant = $source.Name.StartsWith("variant-")
+            $entryPoint = if ($isPinnedVariant) {
+                "main"
+            } elseif ($outputBase.EndsWith(".vert")) {
                 "mainVertex"
             } else {
                 "mainFragment"
@@ -343,12 +501,25 @@ foreach ($shaderDirectory in $shaderDirectories) {
                     } |
                     Sort-Object -Unique
             )
+            # The cross-check validates *this repository's* binding
+            # specialization survived Tint. A pinned composed variant is not
+            # specialized here — its groups and bindings are the pin's own, and
+            # Tint validates them by compiling the module — and the inspector
+            # dump lists only sampled textures and samplers, so comparing it
+            # against every declared binding would compare unlike sets.
             if (
-                Compare-Object $expectedBindings $actualBindings
+                (-not $isPinnedVariant) -and
+                (Compare-Object $expectedBindings $actualBindings)
             ) {
                 throw "Tint binding reflection differs from native WGSL for $($source.FullName)."
             }
-            Normalize-TintHlslBindings $pendingHlsl
+            if ($isPinnedVariant) {
+                Remap-PinnedVariantRegisters `
+                    $pendingHlsl `
+                    $outputBase.EndsWith(".vert")
+            } else {
+                Normalize-TintHlslBindings $pendingHlsl
+            }
             Move-IfDifferent $pendingHlsl "$outputBase.hlsl"
             $pendingMsl = "$outputBase.pending-msl"
             & $Tint $source.FullName --entry-point $entryPoint --format msl --output-name $pendingMsl
@@ -362,7 +533,14 @@ foreach ($shaderDirectory in $shaderDirectories) {
         $profile = if ($source.Name.EndsWith(".vert.hlsl")) { "vs_6_0" } else { "ps_6_0" }
         $outputBase = $source.FullName.Substring(0, $source.FullName.Length - ".hlsl".Length)
         $nativeWgsl = "$outputBase.native.wgsl"
-        $entryPoint = if (Test-Path $nativeWgsl) {
+        # A pinned composed variant keeps Babylon Lite's own `main` entry point
+        # in the HLSL Tint emits, like a hand-authored .hlsl without a native
+        # WGSL beside it; only shaders this repository specializes carry the
+        # mainVertex/mainFragment convention.
+        $entryPoint = if (
+            (Test-Path $nativeWgsl) -and
+            (-not $source.Name.StartsWith("variant-"))
+        ) {
             if ($profile -eq "vs_6_0") { "mainVertex" } else { "mainFragment" }
         } else {
             "main"

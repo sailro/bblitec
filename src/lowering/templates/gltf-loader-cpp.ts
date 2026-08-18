@@ -1447,6 +1447,7 @@ MaterialHandle load_material(
                 // sphere carried 0.502 in the texel and 0.648 in the
                 // uniform against the browser's 0.648 alone.
                 material.base_color_fallback = {255, 255, 255, 255};
+                material.animated_base_color = true;
             } else {
                 // Pinned uploadBaseColorFactorTexture: the factor bakes
                 // into the sRGB fallback texel (alpha as a linear byte)
@@ -1484,12 +1485,13 @@ MaterialHandle load_material(
     const ts::JsonValue* occlusion_texture_info =
         optional(material_json, "occlusionTexture");
     material.has_occlusion_texture = occlusion_texture_info != nullptr;
-    if (occlusion_texture_info) {
-        material.occlusion_strength = float_or(
-            occlusion_texture_info->as_object(),
-            "strength",
-            1.0f);
-    }
+    // assemblePbrPropsExt seeds occlusionStrength as image presence -- the
+    // glTF strength is not what the field carries -- and the animation
+    // pointer overwrites the live value from there. A no-image material
+    // carries 0 so the fragment's occlusion mix stays at the composed 1.0
+    // instead of sampling the metallic-roughness red channel.
+    material.occlusion_strength =
+        occlusion_texture_info ? 1.0f : 0.0f;
     if (occlusion_texture_info) {
         // Babylon Lite's buildDefaultPbrTexturesExt: an occlusion
         // texture on TEXCOORD_1 without a metallic-roughness image
@@ -2421,8 +2423,11 @@ ${nonTrianglePrimitives
                                   *optional(target, "TANGENT")))
                         : nullptr);
             }
+            // The node's own world in the native convention, for every mesh:
+            // the thin-instance arm composes through it, and a geometry
+            // LOCAL_POSITION variant pairs it with the vertex's local lanes.
             Matrix instance_parent_matrix =
-                identity_matrix();
+                native_matrix(compute_world(node_index));
             std::vector<Matrix> instance_matrices;
             if (const ts::JsonValue* extensions_value =
                     optional(node, "extensions")) {
@@ -2548,7 +2553,19 @@ ${nonTrianglePrimitives
                 : compute_world(node_index);
             const float determinant = linear_determinant(matrix);
             const std::size_t material_index =
-                unsigned_or(primitive, "material", 0);
+                unsigned_or(primitive, "material", material_json.size());
+            // A primitive with no material index takes the pin's default
+            // material -- getMat(undefined) assembles one from an empty
+            // object -- created once and appended after the document's,
+            // which is where the composed variant table keys it.
+            if (
+                material_index == material_json.size() &&
+                materials.size() == material_json.size()) {
+                materials.push_back(load_material(
+                    engine, JsonObject{}, buffer, container, views,
+                    image_json, texture_json, sampler_json,
+                    false));
+            }
             const bool clockwise_front_face =
                 determinant < 0.0f &&
                 material_index < materials.size() &&
@@ -2986,7 +3003,14 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
             });
             if (material_index < materials.size()) record.material = materials[material_index];
             record.clockwise_front_face =
-                clockwise_front_face;${nodeVisibility ? `
+                clockwise_front_face;
+            // The node matrix's handedness. Our vertices are stored in the
+            // native mirrored convention and the tangent sign is reconciled
+            // against it at load, where the pin keeps both unmirrored and puts
+            // the mirror in the mesh block's own world matrix. A PAL feeding
+            // the pin's composed stages has to undo one to supply the other,
+            // and the sign is only known here.
+            record.mirrored_x = determinant < 0.0f;${nodeVisibility ? `
             record.visible = node_visible[node_index];` : ""}
             record.instance_parent_matrix =
                 instance_parent_matrix;

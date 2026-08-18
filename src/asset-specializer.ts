@@ -361,11 +361,13 @@ export function emitAssetSpecializations(
         gpuDeformation: specializations.some(
             (specialization) => specialization.features.animations,
         ),
-        // Meshes above the two-slot vertex-attribute morph slice use
-        // Babylon Lite's uncapped storage-buffer morph path.
+        // Babylon Lite has one morph mechanism -- the uncapped storage-buffer
+        // path -- and the composed morph variants read it, so any morph
+        // target at all compiles it in. The two-slot vertex-attribute slice
+        // remains for the Standard family's transcribed stage.
         morphStorage: specializations.some(
             (specialization) =>
-                specialization.features.maxMorphTargets > 2,
+                specialization.features.maxMorphTargets > 0,
         ),
         // The same predicate that pulls Babylon Lite's dynamically
         // imported `gltf-feature-primitive.js`: a primitive whose mode is

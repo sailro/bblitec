@@ -28,4 +28,15 @@ export interface IntrinsicCallContext {
         node: ts.Node,
     ): void;
     reachFeature(feature: Feature): void;
+    /** Records a scene-code mesh creation for the per-renderable variant key. */
+    /** Counts one scene-code material creation of any family. */
+    recordSceneMaterialSlot(): number;
+    recordSceneMesh(
+        kind: string,
+        streams?: {
+            hasUv2: boolean;
+            hasTangents: boolean;
+            hasColors: boolean;
+        },
+    ): void;
 }

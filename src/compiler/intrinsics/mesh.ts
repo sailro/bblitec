@@ -101,6 +101,13 @@ export function compileMeshIntrinsic(
                       )
                     : "{}",
             );
+            // The streams decide the mesh half of the variant key, in the
+            // pin's own argument order: uvs, uv2s, tangents, colors.
+            context.recordSceneMesh("from-data", {
+                hasUv2: optional[1] !== "{}",
+                hasTangents: optional[2] !== "{}",
+                hasColors: optional[3] !== "{}",
+            });
             context.reachFeature("mesh:from-data");
             return {
                 kind: "mesh",
@@ -200,6 +207,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createBox": {
+            context.recordSceneMesh("box");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -224,6 +232,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createGround": {
+            context.recordSceneMesh("ground");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -256,6 +265,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createPlane": {
+            context.recordSceneMesh("plane");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -280,6 +290,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createSphere": {
+            context.recordSceneMesh("sphere");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -516,6 +527,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createTorus": {
+            context.recordSceneMesh("torus");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);

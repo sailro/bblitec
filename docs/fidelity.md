@@ -75,10 +75,19 @@ dynamic native specialization.
 Ground and skybox fragments also use generated WGSL, gated by Scenes 1 and 8.
 The shared material vertex stage and Standard fragment variants use generated
 WGSL as well, gated by scenes 145 and 273.
-PBR color, diagnostic, and geometry-output variants now use WGSL through Tint.
-The PBR *body* is still a pinned DXC-SPIR-V/Tint transcription of the
-previously validated native shader, and replacing it with per-material
-variants from Babylon's own composer remains the next provenance improvement.
+The PBR body itself is Babylon's own, on every draw. Generation composes one
+fragment per renderable feature set through the pinned composer — the stages
+under `upstream/pbr-variants/` are its output byte for byte, gated by a test
+that matches them against the browser's captured fragments — and both
+backends execute them for the whole corpus: every extension arm, all three
+light modes, tone mapping, fog, tangent frames, skins and morphs, thin
+instances, transmission with the pin's own linear passes and refraction grab,
+the geometry-output MRT arms, and the no-color depth views. Each variant
+carries the pin's own per-variant material UBO, mirrored field for field with
+a static_assert per offset, and filled by writers lowered from the pin's
+`_writeMaterialData` and each extension's `writeUbo`. The transcribed PBR
+fragment is deleted; a PBR draw that resolves no variant is an error naming
+its mesh and material, never a fallback.
 
 The layer *formulas* no longer are. Every helper the clearcoat, sheen and
 iridescence arms call — `visibility_Kelemen`, `getR0RemappedForClearCoat`,
@@ -399,6 +408,17 @@ one: sampling through the transform scrolled an emissive texture the browser
 holds still, and cost 0.581 of region MAD until the sample was put back on the
 raw UV.
 
+**The bitangent is a varying.** `pbr-template.ts`'s `tangentBlock` builds
+`B_local = cross(N_local, T_local) * tangent.w` before the world and skin
+transform and carries it as `worldBitangent`; the fragment composes
+`mat3x3(worldTangent, worldBitangent, worldNormal)` from the raw varyings and
+normalizes the sampled normal before the frame. `cross` is preserved only by a
+similarity and a weight-blended skin matrix is not one, so the frame cannot be
+rebuilt from the transformed pair. The mesh world is baked into the vertices
+here and conjugated into the palette (`native_matrix`) rather than uploaded as
+`MeshUniforms.world`, so the vertex stage reaches the same value by
+`M·I·M⁻¹ · M·B = M·I·B`. Scenes 1, 5, 7, 14, 29, 33, 146, and 176 measure it.
+
 **A coat rewrites the base F0 unless the coat came from glTF.** A layer over a
 base changes the interface the base reflects off, so `createClearcoatFragment`
 composes a `makeF0Remap` slot that runs before the base shades: it takes
@@ -425,11 +445,11 @@ and multiplies the environment term by specular and horizon occlusion. The
 `false` arm, which is what `setPbrSheen` defaults to, reads the tint through
 `pow(rgb, 2.2)`, takes roughness from the tint texture's alpha because it
 declares no separate roughness map, attenuates the lobe by `1 - dielectricF0`,
-and leaves the base layer alone. The generated fragment carries whichever arm
-the scene reaches — the legacy one also drops the sheen roughness texture's
-binding pair and UV transform, since nothing samples them. Scene 29 gates the
-glTF arm and Scene 21 the legacy one; a scene composing both would need two
-fragments and fails at generation instead.
+and leaves the base layer alone. Each composed variant carries whichever arm
+its material reaches — the legacy one also drops the sheen roughness
+texture's binding pair and UV transform, since nothing samples them. Scene 29
+gates the glTF arm and Scene 21 the legacy one; a scene reaching both
+composes two variants, one per material, like any other fork.
 
 **A sprite atlas that is drawn rather than fetched is executed, not
 reimplemented.** `lab/lite/src/_shared/sprite-atlas-image.ts` builds its

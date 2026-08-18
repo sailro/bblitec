@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { downloadCachedResource } from "./asset-download-cache.js";
 import { extname, resolve } from "node:path";
 
 type JsonRecord = Record<string, unknown>;
@@ -41,15 +42,12 @@ async function readResource(
     const inline = dataUri(uri);
     if (inline) return inline;
     if (/^https?:\/\//i.test(source)) {
-        const response = await fetch(new URL(uri, source));
-        if (!response.ok) {
-            throw new Error(`Failed to download ${response.url}: HTTP ${response.status}.`);
-        }
-        const contentType = response.headers.get("content-type")?.split(";", 1)[0];
-        return {
-            bytes: new Uint8Array(await response.arrayBuffer()),
-            ...(contentType ? { contentType } : {}),
-        };
+        // A remote glTF's siblings -- its .bin buffers and its images -- are
+        // pinned by the same commit as the document, so they cache with it. The
+        // response's content type caches with them: an image can name a type its
+        // URL's extension does not, and this packager refuses one it cannot
+        // determine.
+        return downloadCachedResource(new URL(uri, source).href);
     }
     return { bytes: new Uint8Array(await readFile(resolve(baseDirectory, uri))) };
 }

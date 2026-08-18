@@ -1684,11 +1684,32 @@ MaterialHandle create_pbr_material(
     Engine& engine,
     PbrMaterialOptions options) {
     MaterialRecord material;
-    material.base_color_factor = options.base_color.color;
-    material.roughness_factor =
-        options.orm.color.g * options.roughness_factor;
-    material.metallic_factor =
-        options.orm.color.b * options.metallic_factor;
+    // The pin's createPbrMaterial is {...props}: a solid texture IS the
+    // texture -- createSolidTexture2D writes the rounded texel into a 1x1
+    // rgba8unorm sampled without decode -- and the factors stay the options'
+    // values. The texels ride the slots' fallback bytes; folding them into
+    // the factors would double-apply against the composed fragment, which
+    // samples the slot and declares no factor field for them.
+    const auto solid_byte = [](float value) {
+        return static_cast<std::uint8_t>(
+            std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
+    };
+    material.base_color_fallback = {
+        solid_byte(options.base_color.color.r),
+        solid_byte(options.base_color.color.g),
+        solid_byte(options.base_color.color.b),
+        solid_byte(options.base_color.color.a),
+    };
+    material.base_color_fallback_srgb = false;
+    material.orm_fallback = {
+        solid_byte(options.orm.color.r),
+        solid_byte(options.orm.color.g),
+        solid_byte(options.orm.color.b),
+        solid_byte(options.orm.color.a),
+    };
+    material.base_color_factor = {1.0f, 1.0f, 1.0f, 1.0f};
+    material.roughness_factor = options.roughness_factor;
+    material.metallic_factor = options.metallic_factor;
     material.direct_intensity = options.direct_intensity;
     material.environment_intensity = options.environment_intensity;
     material.base_color_factor.a = options.alpha;

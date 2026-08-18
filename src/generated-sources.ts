@@ -78,6 +78,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "light:hemispheric",
             "light:directional",
             "light:spot",
+            "light:point",
         ],
     },
     {

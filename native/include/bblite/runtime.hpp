@@ -393,6 +393,11 @@ struct MeshRecord {
     bool has_rotation_quaternion = false;
     bool gpu_deformation = false;
     bool clockwise_front_face = false;
+    // Whether the loader stored this mesh's vertices through the native X
+    // mirror. Babylon composes its own vertex stage against unmirrored data and
+    // carries the mirror in the mesh block's world matrix, so a PAL binding
+    // those stages needs the sign to convert between the two.
+    bool mirrored_x = false;
     // glTF KHR_node_visibility, materialized per mesh the way the pinned
     // `setSubtreeVisible` materializes it per node: the extension cascades
     // through the subtree at set time so the render path and the camera
@@ -709,6 +714,17 @@ struct MaterialRecord {
     // bytes is the browser's effective base color.
     std::array<std::uint8_t, 4> base_color_fallback{
         255, 255, 255, 255};
+    // False for a scene-code solid texture: the pin's createSolidTexture2D
+    // writes its rounded texel into a 1x1 rgba8unorm sampled without decode,
+    // where the glTF factor bake above targets the sRGB view. The slot's
+    // upload honours this when no image bytes exist.
+    bool base_color_fallback_srgb = true;
+    // Set by the loader's whiteFallback path: an animated base colour factor
+    // on an image-less material bakes a white texel and keeps the live factor
+    // in the record for the pointer writer. The pin seeds `mat.alpha` from
+    // the factor it ASSEMBLES with -- the white one -- so the pinned
+    // materialAlpha lane holds 1 whatever the animated alpha does.
+    bool animated_base_color = false;
     // Texture-less metallic/roughness baked to the pinned 8-bit texel
     // (uploadOrmFactorTexture writes [255, roughness, metallic, 255]) with the
     // uniform factors left at one. Keeping the factor in the texel rather than

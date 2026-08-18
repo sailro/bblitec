@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import ts from "typescript";
 import { CameraLowerer } from "./lowering/camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
@@ -19,6 +20,60 @@ import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
+import { pinnedPbrVariantsHeader } from "./pinned-pbr-variant-cpp.js";
+import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
+
+/**
+ * The byte count `shader/scene-uniforms-size.ts` publishes for the scene block.
+ * Read rather than assumed, so the mirrored layout is checked against the pin's
+ * own allocation.
+ */
+/**
+ * The word offset `lights-ubo.ts` writes a mesh's light indices from, read so
+ * the mirrored mesh block is checked against the pin's own constant.
+ */
+/** The pin's own MAX_LIGHTS, so the lights buffer is sized by it. */
+function pinnedMaxLights(context: LoweringContext): number {
+    const file = context.sourceFile("src/light/types.ts");
+    const initializer = context.unwrapExpression(
+        context.variableInitializer(file, "MAX_LIGHTS"),
+    );
+    if (!ts.isNumericLiteral(initializer)) {
+        context.contractError(
+            initializer,
+            "Expected MAX_LIGHTS to be a numeric constant.",
+        );
+    }
+    return Number.parseInt(initializer.text, 10);
+}
+
+function meshLightIndexWordOffset(context: LoweringContext): number {
+    const file = context.sourceFile("src/render/lights-ubo.ts");
+    const initializer = context.unwrapExpression(
+        context.variableInitializer(file, "MSH_LIGHT_INDEX_WORD_OFFSET"),
+    );
+    if (!ts.isNumericLiteral(initializer)) {
+        context.contractError(
+            initializer,
+            "Expected MSH_LIGHT_INDEX_WORD_OFFSET to be a numeric constant.",
+        );
+    }
+    return Number.parseInt(initializer.text, 10);
+}
+
+function sceneUboBytes(context: LoweringContext): number {
+    const file = context.sourceFile("src/shader/scene-uniforms-size.ts");
+    const initializer = context.unwrapExpression(
+        context.variableInitializer(file, "SCENE_UBO_BYTES"),
+    );
+    if (!ts.isNumericLiteral(initializer)) {
+        context.contractError(
+            initializer,
+            "Expected SCENE_UBO_BYTES to be a numeric constant.",
+        );
+    }
+    return Number.parseInt(initializer.text, 10);
+}
 import type {
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
@@ -31,7 +86,6 @@ import type {
  */
 export interface UpstreamEmitOptions {
     idDiagnostics: boolean;
-    pbrDiagnostics: boolean;
     shaderPrograms: CompiledShaderProgram[];
     geometryOutputTasks: GeometryOutputTaskManifest[];
     gpuDeformation: boolean;
@@ -56,6 +110,20 @@ export interface UpstreamEmitOptions {
     clearcoatF0Remap: boolean;
     /** The pin's own helper declarations; see `pinnedShaderHelpers()`. */
     pinnedHelpers?: Readonly<Record<string, string>>;
+    /**
+     * The pin's own composed PBR variants. Emitted into the deployed shader
+     * directory so the offline path compiles them for SDL_GPU and Dawn reads
+     * them at startup, which is what the transcribed per-scene fragment is
+     * being replaced with.
+     */
+    pinnedVariants?: readonly PinnedVariantManifestEntry[];
+    /** The runtime material-handle count the variant gate checks. */
+    pinnedMaterialCount?: number;
+    /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
+    renderableMeshFeatures?: readonly number[];
+    /** The bits for meshes created past the static table, when one value
+     *  covers every scene-code builder; undefined refuses them. */
+    runtimeMeshFeatures?: number;
     iridescence: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
@@ -102,6 +170,10 @@ class GeneratedSourceWriter {
 #define BBLITE_MATERIAL_STANDARD_BUMP ${options.standardBump ? 1 : 0}
 #define BBLITE_IMAGE_SKYBOX ${features.includes("background:image-skybox") ? 1 : 0}
 #define BBLITE_SOLID_SKYBOX ${features.includes("background:solid-skybox") ? 1 : 0}
+
+// How many of Babylon Lite's own composed PBR variants this scene reaches.
+// Zero for a scene with no glTF materials, which emits no variant header.
+#define BBLITE_PBR_VARIANTS ${(options.pinnedVariants ?? []).length}
 `,
         );
 
@@ -207,7 +279,12 @@ class GeneratedSourceWriter {
         if (
             features.includes("light:hemispheric") ||
             features.includes("light:directional") ||
-            features.includes("light:spot")
+            features.includes("light:spot") ||
+            // The pinned point-light block writer also indexes the light's
+            // world matrix (`write_point_light` calls
+            // `local_matrix_from_direction`), so a point-only scene that
+            // composes variants needs the builder too.
+            features.includes("light:point")
         ) {
             const light = new LightLowerer(context);
             this.writeSource(
@@ -423,7 +500,6 @@ class GeneratedSourceWriter {
                 standardSpotLights: features.includes("light:spot"),
                 gridMaterial: features.includes("material:grid"),
                 idDiagnostics: options.idDiagnostics,
-                pbrDiagnostics: options.pbrDiagnostics,
                 geometryOutputTasks: options.geometryOutputTasks,
                 frameGraph: features.includes("renderer:geometry-output"),
                 gpuDeformation: options.gpuDeformation,
@@ -566,6 +642,41 @@ class GeneratedSourceWriter {
             );
         }
 
+        // The pin's composed variants join the deployed shader set. They need
+        // no specialization: the pinned Tint consumes their own
+        // `@group`/`@binding` scheme unchanged for HLSL, MSL and SPIR-V, and
+        // the HLSL register normalization already re-addresses them for
+        // SDL_GPU's dense convention.
+        if ((options.pinnedVariants ?? []).length > 0) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/pbr_variants.hpp",
+                pinnedPbrVariantsHeader(
+                    context,
+                    new RendererLowerer(context).compiledSceneUniformsWgsl(),
+                    sceneUboBytes(context),
+                    meshLightIndexWordOffset(context),
+                    pinnedMaxLights(context),
+                    "src/pinned-pbr-variant-cpp.ts pinnedPbrVariantsHeader",
+                    options.pinnedVariants!,
+                    ["hemispheric", "directional", "point", "spot"].filter(
+                        (kind) => features.includes(`light:${kind}`),
+                    ),
+                    options.renderableMeshFeatures ?? [],
+                    options.runtimeMeshFeatures,
+                    options.pinnedMaterialCount,
+                ),
+            );
+        }
+        for (const variant of options.pinnedVariants ?? []) {
+            composedShaders.push({
+                output: `upstream/shaders/variant-${variant.vertex.replace(".wgsl", ".native.wgsl")}`,
+                data: variant.vertexWgsl,
+            });
+            composedShaders.push({
+                output: `upstream/shaders/variant-${variant.fragment.replace(".wgsl", ".native.wgsl")}`,
+                data: variant.fragmentWgsl,
+            });
+        }
         if (composedShaders.length > 0) {
             for (const shader of composedShaders) {
                 this.tree.write(shader.output, shader.data);
@@ -644,7 +755,6 @@ export function emitUpstreamGenerated(
     features: string[],
     options: UpstreamEmitOptions = {
         idDiagnostics: false,
-        pbrDiagnostics: false,
         shaderPrograms: [],
         geometryOutputTasks: [],
         gpuDeformation: false,
