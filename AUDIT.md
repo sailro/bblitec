@@ -20,30 +20,6 @@ Rules of this file, mirroring `TODO.md`:
 Most are latent (unreached by the current corpus): exactly how the
 clearcoat-remap class survived before. Each is small; fix with a fixture.
 
-- [ ] **D3 — unhandled asset features drop silently.**
-  `KHR_materials_pbrSpecularGlossiness` composes the metallic-roughness
-  fragment and renders wrong with no error (upstream: registry row →
-  `gltf-ext-spec-gloss.js` → `PBR_HAS_SPEC_GLOSS`; no mapping in src/).
-  `JOINTS_1`/`WEIGHTS_1` 8-influence skinning ignored
-  (`gltf-loader-cpp.ts:2377-2398` reads a fixed attribute set; upstream sets
-  `MSH_HAS_SKELETON_8`). Same class: `KHR_materials_diffuse_transmission`,
-  `KHR_texture_basisu`, thin-instance colors. Meanwhile sparse accessors and
-  split-ORM refuse at *run time* (`gltf-loader-cpp.ts:1983-1986, 1551-1556`)
-  though the specializer knows at generation. Fix: an
-  `extensionsUsed`/attribute allowlist in `specializeGltf` that fails
-  generation for anything unhandled; move the run-time refusals to generation.
-- [ ] **D4 — `gpuDeformation` keyed on animation presence.** The only
-  specializer predicate with no upstream citation
-  (`src/asset-specializer.ts:361-363`; `src/cli.ts:748-752` adds
-  morph-targets). Upstream keys skeleton on `skins + JOINTS_0`
-  (`gltf-feature-registry.js:31-32`). A skinned-but-unanimated asset composes
-  skeleton variants while `BBLITE_GPU_DEFORMATION=0` compiles the PAL arm out.
-  The `staticModules` record also drops the `JOINTS_0` conjunct
-  (`asset-specializer.ts:200`), and `test/asset-specializer.test.ts:45-52`
-  pins the divergent boundary. Fix: split into `animatedWorldBounds :=
-  animations` (the loader parameter is literally named that,
-  `gltf-lowerer.ts:120`) and `gpuDeformation :=` upstream's skins/morph
-  predicates; fix the skins conjunct and the test; add provenance comments.
 - [ ] **D6 — CPU-fallback contract (narrowed 2026-08-18; euler order is
   fixed).** Two remainders. (a) `pal_sdl.cpp` still re-implements RGBD
   decode (~line 455) beside the shared `decode_rgbd` — blocked on a shared
@@ -472,10 +448,24 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
 
 ## Suggested order
 
-1. **Defects** — remaining: D3/D4 (M), D8 (falls out of RD-8), D10 (M), and
-   the D6 contract decision. (D1/D2/D5/D7/D9/D11/D12/D13/D14 and D6's euler
-   half closed 2026-08-18, validated: tests + corpus-neutral generated tree +
-   70-scene neutrality + packaged-run check.)
+1. **Defects** — remaining: D8 (falls out of RD-8), D10 (M, pairs with the
+   tooling wave), and the D6 contract decision. (D1-D5, D7, D9, D11-D14 and
+   D6's euler half closed 2026-08-18, validated: tests + corpus-neutral
+   generated tree + 70-scene neutrality + packaged-run check. D3's shape as
+   landed: pin-implemented extensions, sparse accessors, and the un-lowered
+   ORM forms refuse at generation in `specializeGltf`; vertex attributes are
+   deliberately not allowlisted — an attribute the pin also ignores renders
+   identically on both sides — and the one pair the pin reads that this port
+   truncates, `JOINTS_1`/`WEIGHTS_1`, records the `four-influence-skinning`
+   fidelity adaptation instead of refusing, because Scene 7's ChibiRex
+   carries it inside its gates; that truncation is now also the leading
+   suspect for Scene 7's open TODO residual. D4's shape as landed: the
+   `staticModules` skeleton record carries upstream's JOINTS_0 conjunct,
+   `animatedWorldBounds` is its own emit option keyed on asset animations,
+   and `gpuDeformation` deliberately keeps animation presence with the
+   palette-as-world rationale written beside it — upstream recomputes node
+   worlds live; this port bakes them, so any animated mesh needs the
+   deformation transport.)
 2. **FA-1 + DOC-A/B** — make the docs true again (the two migration
    clusters), delete the completed TODO entries.
 3. **RD-4 → RD-6/7 → RD-8/9/10** — the EXECUTE quick wins, then

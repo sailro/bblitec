@@ -186,8 +186,13 @@ Both backends stay long-term as mutually validating implementations;
   explains 4.8% of it, so it is shading, not silhouette. The bone palettes are
   excluded — the two skins that differ from the browser's bone textures differ
   by exactly the mesh node translation, which the pin cancels against
-  `MeshUniforms.world`. A separate arc on the left arm is a displacement of
-  (-0.385, -0.503) px.
+  `MeshUniforms.world`. New suspect (2026-08-18 audit): the asset carries
+  JOINTS_1/WEIGHTS_1, so the browser skins eight influences per vertex
+  (`MSH_HAS_SKELETON_8`) where the generated loader truncates to four — now
+  recorded per scene as the `four-influence-skinning` adaptation. The dropped
+  tail weights matter exactly at blend regions like ridge creases, which is
+  where the residual sits. Test by summing the second pair's weights over the
+  residual tiles' vertices before implementing anything.
 - [ ] Add generation-checked handles and resource lifetime/leak checks.
 - [ ] Add dirty flags and incremental GPU updates.
 - [ ] Add device-loss and resize-safe resource recreation.
