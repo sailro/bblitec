@@ -3,19 +3,24 @@
 import { spawn, spawnSync } from "node:child_process";
 import { availableParallelism, totalmem } from "node:os";
 import {
+    cpSync,
     existsSync,
     readFileSync,
     readdirSync,
+    renameSync,
+    rmSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
     backendFileToken,
+    canonicalBackend,
     captureBuffersPath,
     captureMetaPath,
     captureNativePaths,
     captureSeekBracketDirectory,
     defaultCaptureDirectory,
+    defaultExecutable,
     enableGpuDebug,
     flagNumber,
     formatPngMeasurement,
@@ -34,7 +39,10 @@ import {
 import { computeBuildStamp } from "./build-stamp.js";
 import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
 import { runInstrumentedCapture } from "./capture-instrumented.js";
-import { runNativeCapture } from "./capture-native.js";
+import {
+    runNativeCapture,
+    type NativeCaptureResult,
+} from "./capture-native.js";
 import {
     buildRenderDiff,
     formatRenderDiff,
@@ -1021,6 +1029,274 @@ async function runSeekBracketCapture(
 }
 
 /**
+ * `scene -- probe-variants <id>`: rung 6's single-shader-arm probe as a
+ * command.
+ *
+ * The build deploys every generated shader beside the executable in
+ * `<build>/shaders/`, and the Dawn backend compiles the deployed
+ * `.native.wgsl` at startup — so one term of one arm can be neutralized
+ * there and measured with no rebuild. The command renders the native
+ * frame twice through the existing capture entry point: once against the
+ * deployed payload as built, once with the named term substituted (or
+ * the whole file replaced), and prints both `scene -- measure`
+ * measurements plus the MAD between the two frames — the neutralized
+ * term's exact contribution at this pose. The deployed directory is
+ * copied aside before the edit and restored afterward, unconditionally:
+ * the probe is an ephemeral measurement, and what it finds flows back
+ * into generation, never into a hand-edited shader.
+ *
+ * Dawn-only by construction: SDL_GPU consumes the offline `.dxil`/`.spv`
+ * beside the WGSL, which only `tools/compile-shaders.ps1` refreshes, so
+ * an SDL_GPU run would measure the unedited compiled artifacts.
+ */
+async function runProbeVariants(
+    idOrSource: string,
+    rest: string[],
+): Promise<void> {
+    const parsed = parseFlags(
+        rest,
+        {
+            value: [
+                "--shader",
+                "--term",
+                "--with",
+                "--replace-file",
+                "--seek",
+                "--backend",
+            ],
+            boolean: ["--gpu-debug"],
+        },
+        "probe-variants",
+    );
+    const scene = resolveScene(idOrSource);
+    if (parsed.flags.has("--gpu-debug")) enableGpuDebug();
+    const backendFlag = parsed.values.get("--backend");
+    if (
+        backendFlag !== undefined &&
+        canonicalBackend(backendFlag, ["sdl_gpu", "dawn"], "probe-variants") !==
+            "dawn"
+    ) {
+        throw new Error(
+            "probe-variants: the probe is Dawn-only — Dawn compiles the deployed " +
+                ".native.wgsl at startup, while SDL_GPU consumes the offline .dxil/.spv " +
+                "beside it, which only tools/compile-shaders.ps1 refreshes " +
+                "(docs/debugging.md rung 6).",
+        );
+    }
+    const shader = parsed.values.get("--shader");
+    if (shader === undefined) {
+        throw new Error(
+            "probe-variants: --shader names the deployed shader to probe " +
+                "(a *.native.wgsl file in the scene's build shaders directory, " +
+                "with or without the suffix).",
+        );
+    }
+    const term = parsed.values.get("--term");
+    const replacement = parsed.values.get("--with");
+    const replaceFile = parsed.values.get("--replace-file");
+    if ((term === undefined) === (replaceFile === undefined)) {
+        throw new Error(
+            "probe-variants: pass exactly one of --term <text> --with <replacement> " +
+                "(literal substitution inside the shader) or --replace-file <path> " +
+                "(the whole file's content).",
+        );
+    }
+    if (term !== undefined && replacement === undefined) {
+        throw new Error(
+            "probe-variants: --term requires --with <replacement>; there is no " +
+                "safe default neutralization, and a guessed one measures a " +
+                "different experiment than the one named.",
+        );
+    }
+    if (term === undefined && replacement !== undefined) {
+        throw new Error("probe-variants: --with rides --term.");
+    }
+    const seek = flagNumber(parsed, "--seek", "probe-variants");
+
+    const executable = defaultExecutable(scene.buildDirectory);
+    const deployedDirectory = join(dirname(executable), "shaders");
+    if (!existsSync(deployedDirectory)) {
+        throw new Error(
+            `No deployed shaders at ${deployedDirectory}. Run 'scene -- process ${scene.id}' first.`,
+        );
+    }
+    // Resolve the shader, accepting the base name or the file name; a miss
+    // names the deployed set, because the probe's first failure mode is a
+    // guessed spelling.
+    const deployedShaders = readdirSync(deployedDirectory).filter((name) =>
+        name.endsWith(".native.wgsl"),
+    );
+    const fileName = deployedShaders.includes(shader)
+        ? shader
+        : deployedShaders.includes(`${shader}.native.wgsl`)
+            ? `${shader}.native.wgsl`
+            : undefined;
+    if (fileName === undefined) {
+        throw new Error(
+            `probe-variants: no deployed shader '${shader}' in ${deployedDirectory}. ` +
+                `Deployed: ${deployedShaders
+                    .map((name) => name.replace(/\.native\.wgsl$/, ""))
+                    .join(", ")}.`,
+        );
+    }
+    const shaderPath = join(deployedDirectory, fileName);
+    // The edit, computed before any capture is spent on it: a term that
+    // appears nowhere is a mistyped experiment, not a measurement.
+    const original = readFileSync(shaderPath, "utf8");
+    let edited: string;
+    let occurrences: number | undefined;
+    if (term !== undefined) {
+        occurrences = original.split(term).length - 1;
+        if (occurrences === 0) {
+            throw new Error(
+                `probe-variants: '${term}' appears nowhere in ${fileName}.`,
+            );
+        }
+        edited = original.split(term).join(replacement!);
+    } else {
+        const source = resolve(replaceFile!);
+        if (!existsSync(source)) {
+            throw new Error(
+                `probe-variants: no replacement file at ${source}.`,
+            );
+        }
+        edited = readFileSync(source, "utf8");
+    }
+    const backupDirectory = `${deployedDirectory}.probe-backup`;
+    if (existsSync(backupDirectory)) {
+        throw new Error(
+            `probe-variants: ${backupDirectory} already exists — a previous probe ` +
+                `did not restore. Inspect it, move it back over ${deployedDirectory} ` +
+                "(or delete it if the deployed directory is intact), then retry.",
+        );
+    }
+    const probeDirectory = resolve(
+        defaultCaptureDirectory(scene.id),
+        "probe-variants",
+    );
+    const experiment =
+        term !== undefined
+            ? `'${term}' -> '${replacement}' (${occurrences} occurrence(s))`
+            : `whole file from ${resolve(replaceFile!)}`;
+    console.log(
+        `Probe: ${scene.id} / ${fileName} — ${experiment}, backend dawn`,
+    );
+    // The before run measures the deployed payload as built — and, running
+    // without the shader-dir override, still refuses a payload that is
+    // stale against the generated tree, which anchors that the probe
+    // starts from a clean deployment.
+    const before = runNativeCapture(idOrSource, {
+        backend: "dawn",
+        ...(seek !== undefined ? { seekSeconds: seek } : {}),
+        outputDirectory: join(probeDirectory, "before"),
+    });
+    // Copy the deployed directory aside, neutralize in place, and restore
+    // unconditionally — the manual recipe's exact shape.
+    cpSync(deployedDirectory, backupDirectory, { recursive: true });
+    const previousOverride = process.env.BBLITE_GPU_SHADER_DIR;
+    let after: NativeCaptureResult;
+    try {
+        writeFileSync(shaderPath, edited);
+        // The deliberate edit would (rightly) fail the deployed-payload
+        // staleness check. Naming the deployed directory as the explicit
+        // shader dir routes the runtime to the same files while telling
+        // that check this run's shader payload is chosen on purpose; the
+        // executable's build-stamp identity check still runs.
+        process.env.BBLITE_GPU_SHADER_DIR = resolve(deployedDirectory);
+        after = runNativeCapture(idOrSource, {
+            backend: "dawn",
+            ...(seek !== undefined ? { seekSeconds: seek } : {}),
+            outputDirectory: join(probeDirectory, "after"),
+        });
+    } finally {
+        if (previousOverride === undefined) {
+            delete process.env.BBLITE_GPU_SHADER_DIR;
+        } else {
+            process.env.BBLITE_GPU_SHADER_DIR = previousOverride;
+        }
+        rmSync(deployedDirectory, { recursive: true, force: true });
+        renameSync(backupDirectory, deployedDirectory);
+        console.log(`Deployed shaders restored: ${deployedDirectory}`);
+    }
+    const beforeMeasurement = measurePng(before.screenshotPath);
+    const afterMeasurement = measurePng(after.screenshotPath);
+    const delta = compareImages(after.screenshotPath, before.screenshotPath);
+    const goldenPath = scene.parity
+        ? resolve(scene.parity.reference.path)
+        : undefined;
+    const golden =
+        goldenPath !== undefined && existsSync(goldenPath)
+            ? {
+                  path: goldenPath,
+                  before: compareImages(before.screenshotPath, goldenPath),
+                  after: compareImages(after.screenshotPath, goldenPath),
+              }
+            : undefined;
+    console.log("");
+    console.log("Before (deployed payload as built):");
+    console.log(formatPngMeasurement(before.screenshotPath, beforeMeasurement));
+    console.log("");
+    console.log("After (term neutralized):");
+    console.log(formatPngMeasurement(after.screenshotPath, afterMeasurement));
+    console.log("");
+    console.log(
+        `After vs before: MAD ${delta.mad.toFixed(3)}, max ${delta.maxDiff} — ` +
+            "the neutralized term's exact contribution at this pose.",
+    );
+    if (golden) {
+        console.log(
+            `Against the golden (${scene.parity!.reference.path}): ` +
+                `before MAD ${golden.before.mad.toFixed(3)}, ` +
+                `after MAD ${golden.after.mad.toFixed(3)} — ` +
+                "a residual the neutralization removes belongs to this arm.",
+        );
+    }
+    const reportPath = join(probeDirectory, "probe-variants.json");
+    writeReport(
+        reportPath,
+        {
+            tool: "probe-variants",
+            backend: "dawn",
+            generatedDirectory: resolve(scene.output),
+        },
+        {
+            scene: scene.id,
+            shader: fileName,
+            mode: term !== undefined ? "term" : "replace-file",
+            ...(term !== undefined
+                ? { term, replacement, occurrences }
+                : { replaceFile: resolve(replaceFile!) }),
+            seekSeconds: seek ?? scene.parity?.referenceTimeSeconds ?? null,
+            before: {
+                screenshot: before.screenshotPath,
+                measurement: beforeMeasurement,
+            },
+            after: {
+                screenshot: after.screenshotPath,
+                measurement: afterMeasurement,
+            },
+            afterVsBefore: { mad: delta.mad, maxDiff: delta.maxDiff },
+            ...(golden
+                ? {
+                      golden: {
+                          path: golden.path,
+                          before: {
+                              mad: golden.before.mad,
+                              maxDiff: golden.before.maxDiff,
+                          },
+                          after: {
+                              mad: golden.after.mad,
+                              maxDiff: golden.after.maxDiff,
+                          },
+                      },
+                  }
+                : {}),
+        },
+    );
+    console.log(`Report: ${reportPath}`);
+}
+
+/**
  * `scene -- neutrality-generated <baseline.txt> [--write]`: the
  * compile-and-digest half of the neutrality proof. Digests every
  * registry-owned file under `generated/` (sha1, `generated/<path>\t<hash>`
@@ -1362,6 +1638,10 @@ async function main(): Promise<void> {
         await runRenderDiff(id, rest);
         return;
     }
+    if (command === "probe-variants" && id) {
+        await runProbeVariants(id, rest);
+        return;
+    }
     if (command === "measure" && id) {
         // The measure-the-PNG rule as a command: the non-background
         // bounding box, pixel count and per-channel means of any PNG,
@@ -1427,6 +1707,7 @@ async function main(): Promise<void> {
         "Usage: scene-command <list | show <id|source.ts> | " +
             "compile|build|process|parity|compose|validate <id|source.ts|all> [options] | " +
             "geometry|capture|uniforms|diff|stability <id|source.ts> [options] | " +
+            "probe-variants <id|source.ts> --shader <name> (--term <text> --with <replacement> | --replace-file <path>) | " +
             "measure <image.png> [--background r,g,b] | " +
             "neutrality <baseline-parity-directory> | " +
             "neutrality-generated <baseline.txt> [--write] (digests generated/ as it stands; compile first)>",

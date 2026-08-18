@@ -131,8 +131,11 @@ can cause:
    did not load, a bucket that sorted differently, or a background quad
    one side draws and the other does not.
 2. **Uniform blocks, field by field.** Native blocks are decoded through
-   the struct declarations in the scene's own generated
-   `renderer_plan.hpp`; browser buffers through the struct declarations
+   the struct declarations in the scene's own generated headers —
+   `renderer_plan.hpp`, plus the pinned uniform mirrors in
+   `standard_variants.hpp`/`pbr_variants.hpp`, which is where the
+   Standard material block and the shared scene/light/mesh blocks live;
+   browser buffers through the struct declarations
    in the browser's own composed shaders. So a difference reads
    `emissive_factor native 1, 1, 1 / browser 0, 0, 0` rather than as an
    offset into base64. The capture's `pinnedMaterialBlocks` and
@@ -260,17 +263,29 @@ check against the golden; the brackets are one frame away from its pose
 by design.
 
 The same experiment works one level lower, on a single shader arm,
-without touching the scene: the build deploys every generated shader
-next to the executable in `native\build-<id>-release\shaders\`, and the
-Dawn backend compiles the deployed `.native.wgsl` at startup. Neutralize
-the term under test in that file, re-run `npm run scene -- capture <id>
---native` (it runs the existing executable — no rebuild), and measure
-the delta: that is the arm's exact contribution to the residual. Two
-limits: the probe is Dawn-only — SDL_GPU consumes the offline `.dxil`/
-`.spv` beside it, which only `tools/compile-shaders.ps1` refreshes —
-and any CMake build redeploys the directory and erases the edit. Both
-are the point: the probe is an ephemeral measurement, and what it finds
-flows back into generation, never into a hand-edited shader.
+without touching the scene — and it is a command:
+
+```powershell
+npm run scene -- probe-variants scene9 --shader 03-module-3 --term "aggShadow" --with "1.0"
+```
+
+The build deploys every generated shader next to the executable in
+`native\build-<id>-release\shaders\`, and the Dawn backend compiles the
+deployed `.native.wgsl` at startup. `probe-variants` copies that
+directory aside, substitutes the named term in the chosen shader
+(`--replace-file <path>` swaps in a whole file's content instead),
+renders the native frame through the existing capture entry point
+before and after the edit — the same executable, no rebuild — and
+restores the directory unconditionally, success or failure. It prints
+both `scene -- measure` measurements, the MAD between the two frames —
+that is the arm's exact contribution to the residual — and both frames
+against the golden when the scene has one; artifacts land in
+`artifacts/capture/<id>/probe-variants/`. One limit: the probe is
+Dawn-only — SDL_GPU consumes the offline `.dxil`/`.spv` beside the
+WGSL, which only `tools/compile-shaders.ps1` refreshes, so an SDL_GPU
+run would measure the unedited compiled artifacts. That is the point:
+the probe is an ephemeral measurement, and what it finds flows back
+into generation, never into a hand-edited shader.
 
 ### 7. Did we derive the material's features at all?
 
@@ -415,6 +430,7 @@ out the entire class of defect in one command.
 | `artifacts/capture/<id>/native-{gpu,dawn}.json` | `capture --native` | our scene model, draw list and uniform blocks (`diff` still reads a pre-rename `native-sdl_gpu.json` when only that exists) |
 | `artifacts/capture/<id>/capture-meta.json`, `native-{gpu,dawn}.meta.json` | `capture` / `capture --native` | the seek each capture was taken at, read by `diff`'s reuse check |
 | `artifacts/capture/<id>/diff-{gpu,dawn}.json` | `diff` | the paired report |
+| `artifacts/capture/<id>/probe-variants/{before,after}/native-dawn.*`, `probe-variants/probe-variants.json` | `probe-variants` | the two native renders around one neutralized shader term, and the before/after measurement |
 | `artifacts/parity/<id>/report-<token>-without-{ground,background}.json`, `native-...png` | `parity --without` | the suppression run, suffixed so the standard run's artifacts stay |
 | `artifacts/parity/<id>/stability/run<N>-<token>[-single-sample].png`, `stability-<token>[-single-sample].json` | `stability` | per-run renders and the run-to-run/golden comparison |
 

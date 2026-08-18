@@ -24,7 +24,7 @@
  *   `standardDiffuseUv2`) → `DIFFUSE_USES_UV2` (+`NEEDS_UV2`).
  * - `emissiveTexture` → `HAS_EMISSIVE_TEXTURE`; a render-texture source
  *   (`_sampleType === "depth"`) → `HAS_DEPTH_EMISSIVE_TEXTURE`.
- * - `bumpTexture` (cli `reachedStandardBump` → `standardBump`) →
+ * - `bumpTexture` (`reachedStandardBump` (babylon-asset-features.ts) → `standardBump`) →
  *   `HAS_BUMP_TEXTURE`.
  * - `specularTexture` → `HAS_SPECULAR_TEXTURE`; `coordinatesIndex === 1` →
  *   `SPECULAR_USES_UV2`.

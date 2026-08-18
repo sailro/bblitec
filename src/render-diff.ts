@@ -281,11 +281,16 @@ export function readNativeCapture(path: string): NativeCapture {
  * authority on them is the header that was compiled, not a table here
  * that would drift from it.
  *
- * Every member of these structs is `std::array<float, 4>` or an array of
- * them, which is why a flat float view lines up with the upload at all.
- * A member this does not recognize abandons the struct rather than being
- * skipped, because a skipped member shifts every field after it and
- * would rename values silently.
+ * Every member of these structs is four-byte lanes all the way down —
+ * `std::array<float, N>`, arrays of those, and in the pinned uniform
+ * mirrors (`standard_variants.hpp`, `pbr_variants.hpp`) brace-initialized
+ * `float`/`std::uint32_t` scalars, `std::uint32_t` row vectors and
+ * explicit byte padding — which is why a flat float view lines up with
+ * the upload at all. A u32 lane holds its bits, and the flat float view
+ * carries them bit-identically on both sides, so a matched u32 still
+ * pairs. A member this does not recognize abandons the struct rather
+ * than being skipped, because a skipped member shifts every field after
+ * it and would rename values silently.
  */
 export function parseCppUniformStructs(
     source: string,
@@ -299,13 +304,15 @@ export function parseCppUniformStructs(
             const text = line.trim();
             if (text === "" || text.startsWith("//")) continue;
             const nested =
-                /^std::array<std::array<float,\s*(\d+)>,\s*(\d+)>\s+(\w+)/.exec(
+                /^std::array<std::array<(?:float|std::uint32_t),\s*(\d+)>,\s*(\d+)>\s+(\w+)/.exec(
                     text,
                 );
             if (nested) {
                 // Reported as one field per row: an array of vec4 slots is
                 // nine separate harmonics, and comparing them as one
-                // thirty-six-float tuple would never match anything.
+                // thirty-six-float tuple would never match anything. The
+                // pinned mesh block's `array<vec4<u32>>` light indexes ride
+                // the same per-row reading.
                 for (
                     let element = 0;
                     element < Number(nested[2]);
@@ -323,7 +330,25 @@ export function parseCppUniformStructs(
                 fields.push({ name: array[2]!, floats: Number(array[1]) });
                 continue;
             }
-            const scalar = /^float\s+(\w+)\s*(=|;)/.exec(text);
+            // The pinned mirrors spell WGSL alignment padding as explicit
+            // byte arrays; four bytes make one lane, and a width that is
+            // not whole lanes would shift every later field, so it
+            // abandons the struct instead.
+            const padding =
+                /^std::array<std::uint8_t,\s*(\d+)>\s+(\w+)/.exec(text);
+            if (padding) {
+                const bytes = Number(padding[1]);
+                if (bytes % 4 !== 0) {
+                    usable = false;
+                    break;
+                }
+                fields.push({ name: padding[2]!, floats: bytes / 4 });
+                continue;
+            }
+            // Scalars: `float x = 0;`, `float x;`, and the pinned mirrors'
+            // brace-initialized `float x{};` / `std::uint32_t x{};`.
+            const scalar =
+                /^(?:float|std::uint32_t)\s+(\w+)\s*[={;]/.exec(text);
             if (scalar) {
                 fields.push({ name: scalar[1]!, floats: 1 });
                 continue;
@@ -1118,17 +1143,35 @@ export function buildRenderDiff(
 ): RenderDiffReport {
     const capture = readNativeCapture(nativeCapturePath);
     const browser = browserUniformFields(captureDirectory);
-    const headerPath = join(
-        generatedDirectory,
-        "upstream",
-        "include",
-        "bblite",
-        "upstream",
+    // The struct authorities, in precedence order: the renderer plan's own
+    // header, then the generated pinned-variant headers whose uniform
+    // mirrors the capture's standard and PBR blocks are written through
+    // (StandardMaterialUniforms, SceneUniforms, LightEntry, MeshUniforms).
+    // Without those two, a standard scene's material block decoded as bare
+    // `StandardMaterialUniforms[n]` rows — the scene9 hunt's 38-field
+    // native side. First parse wins a name, so the plan header's reading
+    // cannot move.
+    const layouts = new Map<string, Array<{ name: string; floats: number }>>();
+    for (const header of [
         "renderer_plan.hpp",
-    );
-    const layouts = existsSync(headerPath)
-        ? parseCppUniformStructs(readFileSync(headerPath, "utf8"))
-        : new Map<string, Array<{ name: string; floats: number }>>();
+        "standard_variants.hpp",
+        "pbr_variants.hpp",
+    ]) {
+        const headerPath = join(
+            generatedDirectory,
+            "upstream",
+            "include",
+            "bblite",
+            "upstream",
+            header,
+        );
+        if (!existsSync(headerPath)) continue;
+        for (const [name, fields] of parseCppUniformStructs(
+            readFileSync(headerPath, "utf8"),
+        )) {
+            if (!layouts.has(name)) layouts.set(name, fields);
+        }
+    }
 
     const blocks: NativeUniformBlock[] = [
         ...(capture.draws ?? []).flatMap((draw) => draw.uniforms ?? []),

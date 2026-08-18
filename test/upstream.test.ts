@@ -19,6 +19,8 @@ import {
 } from "../src/upstream-source.js";
 import type { CompiledShaderProgram } from "../src/compiler.js";
 import { shaderMaterialPrograms } from "../src/shader-material-programs.js";
+import { dawnUtilityShaders } from "../src/upstream-lower.js";
+import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
 
 /** The provenance banner every generated source carries, derived from the
  *  pin so a version bump does not churn these assertions. */
@@ -647,7 +649,9 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.header, /struct RenderDrawCommand/);
     assert.match(lowered.header, /struct RenderDrawLists/);
     assert.match(lowered.header, /struct RenderFeatures/);
-    assert.match(
+    // The punctual-light extras lanes left PbrUniforms with the RD-3
+    // prune; the pinned variant blocks carry the analytic lights now.
+    assert.doesNotMatch(
         specialized.header,
         /extra_light_positions/,
     );
@@ -690,10 +694,6 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /std::stable_sort/);
     assert.match(lowered.source, /bind_render_item/);
     assert.match(lowered.source, /sort_transparent_draws/);
-    assert.match(
-        lowered.source,
-        /material\.use_thickness_as_depth && material\.thickness > 0\.0f/,
-    );
     assert.match(
         lowered.source,
         /left\.sort_distance > right\.sort_distance/,
@@ -839,52 +839,6 @@ test("composes the thin-instance parent world from the pinned TRS formulas", () 
         withoutInstancing.header,
         /build_instance_parent_world/,
     );
-});
-
-test("lowers glTF material extensions into typed uniforms and shader layers", () => {
-    const lowerer = new RendererLowerer(new LoweringContext());
-    const plan = lowerer.lowerRenderPlan({
-        transmission: true,
-        clearcoat: true,
-        sheen: true,
-        iridescence: true,
-        dispersion: true,
-    });
-    assert.match(plan.header, /std::array<float, 4> clearcoat_params\{\};/);
-    assert.match(
-        plan.header,
-        /std::array<float, 4> clearcoat_refraction_params\{\};/,
-    );
-    assert.match(plan.header, /std::array<float, 4> sheen_params2\{\};/);
-    assert.match(plan.header, /std::array<float, 4> iridescence_params\{\};/);
-    // The iridescence options carry the texture-presence flags the shader
-    // mixes against, so they sit between the parameters and the harmonics.
-    assert.match(
-        plan.header,
-        /iridescence_params\{\};\s*\r?\n\s*std::array<float, 4> iridescence_options\{\};\s*\r?\n\s*std::array<std::array<float, 4>, 9> spherical_harmonics/,
-    );
-    assert.match(
-        plan.source,
-        /material\.clearcoat_normal_texture\.bytes\.empty\(\)/,
-    );
-    assert.match(
-        plan.source,
-        /const float clearcoat_a =\s*\r?\n?\s*1\.0f - material\.clearcoat_index_of_refraction;/,
-    );
-    assert.match(plan.source, /material\.sheen_color\.r/);
-    assert.match(
-        plan.source,
-        /material\.iridescence_minimum_thickness/,
-    );
-    assert.match(plan.source, /material\.dispersion,/);
-
-    const baseline = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({ transmission: true });
-    assert.doesNotMatch(baseline.header, /clearcoat_params/);
-    assert.doesNotMatch(baseline.header, /sheen_params/);
-    assert.doesNotMatch(baseline.header, /iridescence_params/);
-    assert.doesNotMatch(baseline.source, /material\.dispersion/);
 });
 
 test("emits only reached WGSL composition modules", () => {
@@ -1097,4 +1051,65 @@ test("builds a conservative reachable module graph", () => {
     assert.ok(graph.summary.diagnostics.closures > 0);
     assert.equal(graph.capabilities.explicitAnyAllowed, false);
     assert.equal(graph.capabilities.asyncAwait, "synchronous-aot");
+});
+
+test("lifts the Dawn utility WGSL from the pinned literals", () => {
+    const shaders = dawnUtilityShaders(true);
+    // The mip generator's blit (generate-mipmaps.ts BLIT_SHADER), split
+    // per stage: the vertex file carries no bindings — the compile
+    // script cross-checks declared bindings against Tint's reflection —
+    // and both stages take the native entry-point names.
+    assert.match(shaders.mipBlitVertex, /@vertex fn mainVertex\(/);
+    assert.match(shaders.mipBlitVertex, /p\*vec2f\(\.5,-\.5\)\+\.5/);
+    assert.doesNotMatch(shaders.mipBlitVertex, /@group/);
+    assert.match(
+        shaders.mipBlitFragment,
+        /@fragment fn mainFragment\(v:V\)->@location\(0\)vec4f\{return textureSample\(t,s,v\.u\);\}/,
+    );
+    // The transmission grab: the MSAA arm is the pin's BLIT_MSAA_SHADER
+    // text, the single-sample arm substitutes the plain binding and load
+    // around the same manual-bilinear body.
+    assert.match(shaders.grabFragment, /var t:texture_multisampled_2d<f32>;/);
+    assert.match(shaders.grabFragment, /textureNumSamples\(t\)/);
+    assert.match(shaders.grabFragmentSingle, /var t:texture_2d<f32>;/);
+    assert.match(
+        shaders.grabFragmentSingle,
+        /fn l\(p:vec2i\)->vec4f\{return textureLoad\(t,p,0\);\}/,
+    );
+    for (const arm of [shaders.grabFragment, shaders.grabFragmentSingle]) {
+        assert.match(arm, /mix\(mix\(l\(p\),l\(vec2i\(p1\.x,p\.y\)\),f\.x\)/);
+    }
+    // Per-sample image processing: the pin's ip() with its tone-mapping
+    // calibration, and the pin's own two fragment arms.
+    assert.match(shaders.imageProcessingFragment, /1\.590579/);
+    assert.match(shaders.imageProcessingFragment, /textureNumSamples\(s\)/);
+    assert.match(shaders.imageProcessingFragmentSingle, /1\.590579/);
+    assert.match(
+        shaders.imageProcessingFragmentSingle,
+        /return ip\(textureLoad\(s,clamp\(vec2i\(q\.xy\),vec2i\(0\),vec2i\(d\)-1\),0\)\);/,
+    );
+    assert.match(shaders.imageProcessingVertex, /@vertex fn mainVertex\(/);
+    assert.doesNotMatch(shaders.imageProcessingVertex, /@group/);
+    // A scene without transmission ships only the mip blit.
+    const mipOnly = dawnUtilityShaders(false);
+    assert.notEqual(mipOnly.mipBlitFragment, "");
+    assert.equal(mipOnly.grabFragment, "");
+    assert.equal(mipOnly.imageProcessingFragment, "");
+});
+
+test("generates the sprite instance layout table from the pinned pipeline", () => {
+    const core = new SpriteLowerer(new LoweringContext()).lowerCore();
+    const header = String(core.header);
+    // The pure-2D rows at the pin's own byte offsets
+    // (sprite-pipeline.ts SPRITE_*_OFFSET_BYTES), and the stride
+    // sprite-2d.ts derives from PURE_2D_INSTANCE_FLOATS_PER_SPRITE.
+    assert.match(header, /struct SpriteInstanceAttribute/);
+    assert.match(
+        header,
+        /\{0u, 0u, 2u\},\n\s*\{1u, 8u, 2u\},\n\s*\{2u, 16u, 2u\},\n\s*\{3u, 24u, 2u\},\n\s*\{4u, 32u, 1u\},\n\s*\{5u, 36u, 4u\},/,
+    );
+    assert.match(
+        header,
+        /sprite_instance_stride_bytes =\n\s*52u;/,
+    );
 });

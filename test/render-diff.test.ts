@@ -61,6 +61,118 @@ struct Mixed {
     assert.equal(structs.has("Mixed"), false);
 });
 
+// The member grammar the generated pinned-variant headers write
+// (`standard_variants.hpp` / `pbr_variants.hpp`): brace-initialized
+// scalars, u32 lanes, explicit byte padding and u32 row vectors — the
+// text below mirrors the generated headers' own spelling, comments
+// included.
+const variantHeader = `
+// src/material/standard/standard-template.ts stdUniforms
+struct StandardMaterialUniforms {
+    // offset 0, vec4<f32>
+    std::array<float, 4> dc{};
+    // offset 16, vec4<f32>
+    std::array<float, 4> sc{};
+    // offset 32, vec3<f32>
+    std::array<float, 3> ec{};
+    // offset 44, f32
+    float bs{};
+};
+static_assert(
+    sizeof(StandardMaterialUniforms) == 48,
+    "The pinned Standard material UBO is 48 bytes.");
+
+// src/render/lights-ubo.ts fillLightsData
+struct LightEntry {
+    // offset 0, vec4<f32>
+    std::array<float, 4> vLightData{};
+    // offset 16, vec4<f32>
+    std::array<float, 4> vLightDiffuse{};
+};
+
+// src/render/lights-ubo.ts appendMeshLightUboFields
+struct MeshUniforms {
+    // offset 0, mat4x4<f32>
+    std::array<float, 16> world{};
+    // offset 64, u32
+    std::uint32_t lc{};
+    // 12 bytes of WGSL alignment padding.
+    std::array<std::uint8_t, 12> _padArray{};
+    // offset 80, array<vec4<u32>, 4>
+    std::array<std::array<std::uint32_t, 4>, 4> li{};
+};
+
+struct StandardVariantEntry {
+    std::string_view key;
+    std::uint32_t features;
+};
+`;
+
+test("reads the pinned-variant header mirrors: brace-init scalars, u32 lanes, byte padding", () => {
+    const structs = parseCppUniformStructs(variantHeader);
+    assert.deepEqual(structs.get("StandardMaterialUniforms"), [
+        { name: "dc", floats: 4 },
+        { name: "sc", floats: 4 },
+        { name: "ec", floats: 3 },
+        { name: "bs", floats: 1 },
+    ]);
+    assert.deepEqual(structs.get("LightEntry"), [
+        { name: "vLightData", floats: 4 },
+        { name: "vLightDiffuse", floats: 4 },
+    ]);
+    // The u32 light count, the explicit 12-byte pad (three lanes) and the
+    // u32 rows all read through the same flat float view the capture
+    // dumps, so the 144-byte block maps to 36 named lanes.
+    assert.deepEqual(structs.get("MeshUniforms"), [
+        { name: "world", floats: 16 },
+        { name: "lc", floats: 1 },
+        { name: "_padArray", floats: 3 },
+        { name: "li[0]", floats: 4 },
+        { name: "li[1]", floats: 4 },
+        { name: "li[2]", floats: 4 },
+        { name: "li[3]", floats: 4 },
+    ]);
+    // Table rows carry string_views: still abandoned, not misread.
+    assert.equal(structs.has("StandardVariantEntry"), false);
+});
+
+test("byte padding that is not whole lanes abandons the struct", () => {
+    // Three bytes cannot be expressed in the flat float view; naming the
+    // fields after them anyway would shift every one of them.
+    const structs = parseCppUniformStructs(`
+struct Odd {
+    std::array<float, 4> first{};
+    std::array<std::uint8_t, 3> _pad{};
+    std::array<float, 4> second{};
+};
+`);
+    assert.equal(structs.has("Odd"), false);
+});
+
+test("splits a pinned MeshUniforms block into named lanes, padding included", () => {
+    const structs = parseCppUniformStructs(variantHeader);
+    const floats = Array.from({ length: 36 }, (_, index) => index + 1);
+    const fields = nativeFields(
+        { stage: "vertex", slot: 0, type: "MeshUniforms", floats },
+        structs,
+    );
+    assert.deepEqual(
+        fields.map((field) => [field.name, field.values.length]),
+        [
+            ["MeshUniforms.world", 16],
+            ["MeshUniforms.lc", 1],
+            ["MeshUniforms._padArray", 3],
+            ["MeshUniforms.li[0]", 4],
+            ["MeshUniforms.li[1]", 4],
+            ["MeshUniforms.li[2]", 4],
+            ["MeshUniforms.li[3]", 4],
+        ],
+    );
+    // The rows after the pad sit where the header's offsets put them: a
+    // wrong pad width would shift all of them.
+    assert.deepEqual(fields[3]!.values, [21, 22, 23, 24]);
+});
+
 test("splits a captured block into named fields and reports an uncovered tail", () => {
     const structs = parseCppUniformStructs(header);
     const fields = nativeFields(
@@ -740,6 +852,117 @@ test("pairs a native capture against a browser capture end to end", () => {
         assert.deepEqual(report.shaders.browserSampleCalls, [
             "textureSample(baseColorTexture,baseColorSampler,input.uv)",
         ]);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("decodes standard-family blocks through the generated variant headers", () => {
+    // The scene9 hunt's gap: a StandardMaterialUniforms block whose struct
+    // lives in the generated standard_variants.hpp, not renderer_plan.hpp,
+    // used to decode as unnamed vec4 rows. The headers are found from the
+    // capture's scene directory, and renderer_plan.hpp keeps precedence
+    // over a name both declare.
+    const root = mkdtempSync(join(tmpdir(), "render-diff-std-"));
+    try {
+        const capture = join(root, "capture");
+        const generated = join(root, "generated");
+        const include = join(
+            generated,
+            "upstream",
+            "include",
+            "bblite",
+            "upstream",
+        );
+        mkdirSync(capture, { recursive: true });
+        mkdirSync(include, { recursive: true });
+        writeFileSync(join(include, "renderer_plan.hpp"), header);
+        writeFileSync(
+            join(include, "standard_variants.hpp"),
+            variantHeader +
+                // A conflicting redeclaration: the plan header's reading
+                // must win, or a shared name would silently rename lanes.
+                "\nstruct GridUniforms {\n    std::array<float, 4> impostor{};\n};\n",
+        );
+        const bytes = Buffer.alloc(16);
+        [0.9, 0.8, 0.7, 0.6].forEach((value, index) =>
+            bytes.writeFloatLE(value, index * 4),
+        );
+        writeFileSync(
+            join(capture, "buffers.json"),
+            JSON.stringify([
+                {
+                    id: 1,
+                    size: 16,
+                    usage: 0x40,
+                    writes: [{ offset: 0, data: bytes.toString("base64") }],
+                },
+            ]),
+        );
+        const nativeCapture = join(capture, "native-dawn.json");
+        writeFileSync(
+            nativeCapture,
+            JSON.stringify({
+                backend: "dawn",
+                buildStamp: "t",
+                viewport: { width: 4, height: 4 },
+                draws: [
+                    {
+                        stage: "opaque",
+                        pipeline: "standard_opaque",
+                        materialKind: "standard",
+                        bucket: "opaque",
+                        mesh: 0,
+                        material: 0,
+                        geometry: 0,
+                        indexCount: 36,
+                        instanceCount: 1,
+                        uniforms: [
+                            {
+                                stage: "fragment",
+                                slot: 0,
+                                type: "StandardMaterialUniforms",
+                                // dc, sc (trivial), ec, bs — the pinned
+                                // 48-byte mirror as the capture dumps it.
+                                floats: [
+                                    0.5, 0.25, 0.125, 2,
+                                    1, 1, 1, 1,
+                                    0.75, 0.5, 0.25,
+                                    24,
+                                ],
+                            },
+                        ],
+                    },
+                ],
+                backgroundUniforms: [
+                    {
+                        stage: "fragment",
+                        slot: 0,
+                        type: "GridUniforms",
+                        floats: [9, 8, 7, 6],
+                    },
+                ],
+            }),
+        );
+        const report = buildRenderDiff(
+            "std",
+            capture,
+            nativeCapture,
+            generated,
+        );
+        const names = report.divergent.map((entry) => entry.native);
+        // Named lanes from the variant header, not the unnamed fallback.
+        assert.ok(names.includes("StandardMaterialUniforms.dc"));
+        assert.ok(names.includes("StandardMaterialUniforms.ec"));
+        assert.ok(names.includes("StandardMaterialUniforms.bs"));
+        assert.ok(
+            !names.some((name) =>
+                name.startsWith("StandardMaterialUniforms["),
+            ),
+        );
+        // The name both headers declare reads through renderer_plan.hpp.
+        assert.ok(names.includes("GridUniforms.grid_control"));
+        assert.ok(!names.includes("GridUniforms.impostor"));
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

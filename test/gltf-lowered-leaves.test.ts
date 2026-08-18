@@ -21,7 +21,13 @@ import {
     lowerAccessorNormalizationCpp,
     lowerAnimationInterpolationCpp,
     lowerGltfExtensionDefaults,
+    lowerIblEnvironmentScalarsCpp,
+    lowerIblPolynomialCpp,
     lowerImageProcessingDefaultsCpp,
+    lowerMatrixComposeCpp,
+    lowerMatrixMultiplyCpp,
+    lowerMatrixNativeCpp,
+    lowerPunctualLightsCpp,
     lowerSamplerMappingCpp,
     lowerShPrescaleCpp,
     lowerVertexColorCpp,
@@ -75,6 +81,12 @@ function mutatedFileAll(
 }
 
 const evaluateModule = "src/animation/evaluate.ts";
+const punctualModule =
+    "src/loader-gltf/gltf-feature-lights-punctual.ts";
+const spotLightModule = "src/light/spot-light.ts";
+const parserModule = "src/loader-gltf/gltf-parser.ts";
+const multiplyModule = "src/math/mat4-multiply-into.ts";
+const composeModule = "src/math/mat4-compose-into.ts";
 const samplerModule = "src/loader-gltf/gltf-sampler-desc.ts";
 const quantizationModule = "src/loader-gltf/gltf-ext-quantization.ts";
 const colorModule = "src/loader-gltf/gltf-color-normalize.ts";
@@ -761,4 +773,586 @@ test("a changed iridescence default flows into the emitted keys", () => {
         key: "iridescenceIor",
         literal: "1.7f",
     });
+});
+
+/* ───────────────────────────── round 3 ───────────────────────────── */
+
+const expectedMatrixMultiply = `Matrix multiply_matrix(const Matrix& left, const Matrix& right) {
+    // Pinned matrix multiplication runs in JavaScript double
+    // precision over float32 entries and rounds once per component
+    // at the Float32Array store; mirror that exactly.
+    Matrix result{};
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            double sum = 0.0;
+            for (int index = 0; index < 4; ++index) {
+                sum +=
+                    static_cast<double>(left[index * 4 + row]) *
+                    static_cast<double>(right[column * 4 + index]);
+            }
+            result[column * 4 + row] = static_cast<float>(sum);
+        }
+    }
+    return result;
+}`;
+
+const expectedMatrixCompose = `Matrix trs_matrix(
+    Vec3 translation,
+    Vec4 rotation,
+    Vec3 scale) {
+    // Pinned mat4ComposeInto runs in JavaScript double precision and
+    // rounds once at the Float32Array store; mirror its products and
+    // association exactly.
+    const double x = rotation.x;
+    const double y = rotation.y;
+    const double z = rotation.z;
+    const double w = rotation.w;
+    const double xx = x * x;
+    const double yy = y * y;
+    const double zz = z * z;
+    const double xy = x * y;
+    const double xz = x * z;
+    const double yz = y * z;
+    const double wx = w * x;
+    const double wy = w * y;
+    const double wz = w * z;
+    const double sx = scale.x;
+    const double sy = scale.y;
+    const double sz = scale.z;
+    Matrix result = identity_matrix();
+    result[0] = static_cast<float>((1.0 - 2.0 * (yy + zz)) * sx);
+    result[1] = static_cast<float>(2.0 * (xy + wz) * sx);
+    result[2] = static_cast<float>(2.0 * (xz - wy) * sx);
+    result[4] = static_cast<float>(2.0 * (xy - wz) * sy);
+    result[5] = static_cast<float>((1.0 - 2.0 * (xx + zz)) * sy);
+    result[6] = static_cast<float>(2.0 * (yz + wx) * sy);
+    result[8] = static_cast<float>(2.0 * (xz + wy) * sz);
+    result[9] = static_cast<float>(2.0 * (yz - wx) * sz);
+    result[10] = static_cast<float>((1.0 - 2.0 * (xx + yy)) * sz);
+    result[12] = translation.x;
+    result[13] = translation.y;
+    result[14] = translation.z;
+    return result;
+}`;
+
+const expectedMatrixNative = `Matrix native_matrix(const Matrix& matrix) {
+    Matrix result{};
+    for (std::size_t column = 0; column < 4; ++column) {
+        for (std::size_t row = 0; row < 4; ++row) {
+            const float row_sign = row == 0 ? -1.0f : 1.0f;
+            const float column_sign =
+                column == 0 ? -1.0f : 1.0f;
+            result[column * 4 + row] =
+                matrix[column * 4 + row] *
+                row_sign *
+                column_sign;
+        }
+    }
+    return result;
+}`;
+
+const expectedIblPolynomial = `    const float intensity =
+        float_or(light, "intensity", 1.0f);
+    const float scale = intensity / pi;
+    const float inverse_pi = 1.0f / pi;
+    std::array<Color3, 9> source{};
+    for (
+        std::size_t coefficient = 0;
+        coefficient < source.size();
+        ++coefficient) {
+        const std::vector<float> values =
+            float_array(&coefficients[coefficient]);
+        if (values.size() != 3) {
+            throw std::runtime_error(
+                "Image-based light irradiance coefficient must be vec3.");
+        }
+        source[coefficient] = Color3{
+            values[0] * scale,
+            values[1] * scale,
+            values[2] * scale,
+        };
+    }
+    std::array<Color3, 9> polynomial{};
+    for (int channel = 0; channel < 3; ++channel) {
+        const float l00 =
+            color_channel(source[0], channel);
+        const float l1_1 =
+            color_channel(source[1], channel);
+        const float l10 =
+            color_channel(source[2], channel);
+        const float l11 =
+            color_channel(source[3], channel);
+        const float l2_2 =
+            color_channel(source[4], channel);
+        const float l2_1 =
+            color_channel(source[5], channel);
+        const float l20 =
+            color_channel(source[6], channel);
+        const float l21 =
+            color_channel(source[7], channel);
+        const float l22 =
+            color_channel(source[8], channel);
+        set_color_channel(
+            polynomial[0],
+            channel,
+            -1.02333f * l11 * inverse_pi);
+        set_color_channel(
+            polynomial[1],
+            channel,
+            -1.02333f * l1_1 * inverse_pi);
+        set_color_channel(
+            polynomial[2],
+            channel,
+            1.02333f * l10 * inverse_pi);
+        set_color_channel(
+            polynomial[3],
+            channel,
+            (
+                0.886277f * l00 -
+                0.247708f * l20 +
+                0.429043f * l22) *
+                inverse_pi);
+        set_color_channel(
+            polynomial[4],
+            channel,
+            (
+                0.886277f * l00 -
+                0.247708f * l20 -
+                0.429043f * l22) *
+                inverse_pi);
+        set_color_channel(
+            polynomial[5],
+            channel,
+            (
+                0.886277f * l00 +
+                0.495417f * l20) *
+                inverse_pi);
+        set_color_channel(
+            polynomial[6],
+            channel,
+            -0.858086f * l2_1 * inverse_pi);
+        set_color_channel(
+            polynomial[7],
+            channel,
+            -0.858086f * l21 * inverse_pi);
+        set_color_channel(
+            polynomial[8],
+            channel,
+            0.858086f * l2_2 * inverse_pi);
+    }`;
+
+const expectedIblEnvironmentScalars = `    environment.lod_generation_scale =
+        specular_images.size() > 1
+            ? static_cast<float>(
+                  specular_images.size() - 1) /
+                  std::log2(
+                      static_cast<float>(
+                          environment.specular_width))
+            : 0.0f;
+    const std::vector<float> rotation =
+        float_array(optional(light, "rotation"));
+    if (rotation.size() == 4) {
+        environment.rotation_y =
+            -2.0f *
+            std::atan2(rotation[1], rotation[3]);
+    }
+    environment.brdf_lut.bytes =
+        pal::read_binary_file(
+            asset_path(
+                "gltf-ibl-brdf-lut.rgba16f"));
+    environment.brdf_lut_width = 256;
+    environment.brdf_lut_rgba16f = true;`;
+
+const expectedPunctualLightLoading = `                const std::string type =
+                    string_or(definition, "type");
+                if (
+                    type != "point" &&
+                    type != "directional" &&
+                    type != "spot") {
+                    continue;
+                }
+                const Matrix& light_world =
+                    compute_world(node_index);
+                LightRecord light;
+                light.kind = type == "point"
+                    ? LightKind::point
+                    : type == "spot"
+                        ? LightKind::spot
+                        : LightKind::directional;
+                if (type == "spot") {
+                    // createSpotLight(position, direction, outer * 2, 1,
+                    // intensity): the pinned loader passes twice the outer
+                    // cone angle as the full cone, and the light stores
+                    // cos(angle / 2). innerConeAngle is read by neither the
+                    // pinned light nor its pointer handlers.
+                    const ts::JsonValue* spot_value =
+                        optional(definition, "spot");
+                    const float outer_cone_angle = spot_value
+                        ? float_or(
+                              spot_value->as_object(),
+                              "outerConeAngle",
+                              0.7853981633974483f)
+                        : 0.7853981633974483f;
+                    light.cos_half_angle =
+                        std::cos(outer_cone_angle);
+                }
+                light.position = Vec3{
+                    -light_world[12],
+                    light_world[13],
+                    light_world[14],
+                };
+                const Vec3 forward{
+                    light_world[8],
+                    -light_world[9],
+                    -light_world[10],
+                };
+                light.direction =
+                    normalize(forward);
+                const std::vector<float> color =
+                    float_array(
+                        optional(
+                            definition,
+                            "color"));
+                light.diffuse_color = color.size() == 3
+                    ? Color3{
+                          color[0],
+                          color[1],
+                          color[2],
+                      }
+                    : Color3{1.0f, 1.0f, 1.0f};
+                light.specular_color =
+                    light.diffuse_color;
+                light.intensity =
+                    float_or(
+                        definition,
+                        "intensity",
+                        1.0f);
+                light.range =
+                    float_or(
+                        definition,
+                        "range",
+                        std::numeric_limits<float>::max());`;
+
+test("lowers the pinned matrix multiply byte-identically to the shipped loader text", () => {
+    assert.equal(
+        lowerMatrixMultiplyCpp(pinnedFile(multiplyModule)),
+        expectedMatrixMultiply,
+    );
+});
+
+test("lowers the pinned TRS compose byte-identically to the shipped loader text", () => {
+    assert.equal(
+        lowerMatrixComposeCpp(pinnedFile(composeModule)),
+        expectedMatrixCompose,
+    );
+});
+
+test("lowers the native change of basis byte-identically to the shipped loader text", () => {
+    assert.equal(
+        lowerMatrixNativeCpp(pinnedFile(parserModule)),
+        expectedMatrixNative,
+    );
+});
+
+test("lowers the pinned IBL polynomial byte-identically to the shipped loader text", () => {
+    assert.equal(
+        lowerIblPolynomialCpp(pinnedFile(imageBasedModule)),
+        expectedIblPolynomial,
+    );
+});
+
+test("lowers the pinned IBL environment scalars byte-identically to the shipped loader text", () => {
+    assert.equal(
+        lowerIblEnvironmentScalarsCpp(
+            pinnedFile(imageBasedModule),
+            pinnedFile(assemblyModule),
+        ),
+        expectedIblEnvironmentScalars,
+    );
+});
+
+test("lowers the pinned punctual light build byte-identically to the shipped loader text", () => {
+    assert.equal(
+        lowerPunctualLightsCpp(
+            pinnedFile(punctualModule),
+            pinnedFile(spotLightModule),
+            pinnedFile(parserModule),
+        ),
+        expectedPunctualLightLoading,
+    );
+});
+
+test("the emitted loader carries every round-3 lowered segment", () => {
+    const adapter = new GltfLowerer(new LoweringContext(store))
+        .lowerLoaderAdapter();
+    for (const segment of [
+        expectedMatrixMultiply,
+        expectedMatrixCompose,
+        expectedMatrixNative,
+        expectedIblPolynomial,
+        expectedIblEnvironmentScalars,
+        expectedPunctualLightLoading,
+    ]) {
+        assert.ok(
+            adapter.source.includes(segment),
+            "the emitted loader no longer carries a round-3 segment",
+        );
+    }
+});
+
+test("a re-associated pinned matrix product refuses generation", () => {
+    assert.throws(
+        () =>
+            lowerMatrixMultiplyCpp(
+                mutatedFile(
+                    multiplyModule,
+                    "dst[d] = a0 * b0 + a4 * b1 + a8 * b2 + a12 * b3;",
+                    "dst[d] = a4 * b1 + a0 * b0 + a8 * b2 + a12 * b3;",
+                ),
+            ),
+        /canonical column-major product/,
+    );
+});
+
+test("a changed compose product flows into the emitted bytes", () => {
+    const lowered = lowerMatrixComposeCpp(
+        mutatedFile(
+            composeModule,
+            "dst[off + 1] = 2 * (xy + wz) * sx;",
+            "dst[off + 1] = 2 * (xy - wz) * sx;",
+        ),
+    );
+    assert.notEqual(lowered, expectedMatrixCompose);
+    assert.match(
+        lowered,
+        /result\[1\] = static_cast<float>\(2\.0 \* \(xy - wz\) \* sx\);/,
+    );
+});
+
+test("a compose lane that stops being identity refuses", () => {
+    assert.throws(
+        () =>
+            lowerMatrixComposeCpp(
+                mutatedFile(
+                    composeModule,
+                    "dst[off + 3] = 0;",
+                    "dst[off + 3] = 5;",
+                ),
+            ),
+        /no longer keeps the identity value in lane 3/,
+    );
+});
+
+test("a moved RH-to-LH flip axis flows into the ladder and the light signs", () => {
+    const doctored = mutatedFile(
+        parserModule,
+        "new F32([-1, 0, 0, 0,  0, 1, 0, 0,",
+        "new F32([1, 0, 0, 0,  0, -1, 0, 0,",
+    );
+    const native = lowerMatrixNativeCpp(doctored);
+    assert.match(native, /row == 1 \? -1\.0f : 1\.0f;/);
+    const lights = lowerPunctualLightsCpp(
+        pinnedFile(punctualModule),
+        pinnedFile(spotLightModule),
+        doctored,
+    );
+    // The pin's +column-3 / -column-2 reads, folded through the moved
+    // diagonal: the x lanes stop flipping and the y lanes start.
+    assert.ok(lights.includes("                    light_world[12],"));
+    assert.ok(lights.includes("                    -light_world[13],"));
+    assert.ok(lights.includes("                    -light_world[8],"));
+    assert.ok(lights.includes("                    light_world[9],"));
+});
+
+test("a root that stops flipping exactly one axis refuses", () => {
+    assert.throws(
+        () =>
+            lowerMatrixNativeCpp(
+                mutatedFile(
+                    parserModule,
+                    "F32([-1, 0, 0, 0,  0, 1,",
+                    "F32([1, 0, 0, 0,  0, 1,",
+                ),
+            ),
+        /no longer flips exactly one axis/,
+    );
+});
+
+test("a changed IBL band constant flows into the emitted bytes", () => {
+    const lowered = lowerIblPolynomialCpp(
+        mutatedFile(
+            imageBasedModule,
+            "-1.02333 * l11 * k",
+            "-1.04333 * l11 * k",
+        ),
+    );
+    assert.notEqual(lowered, expectedIblPolynomial);
+    assert.match(lowered, /-1\.04333f \* l11 \* inverse_pi\);/);
+});
+
+test("a changed IBL intensity default flows into the emitted bytes", () => {
+    const lowered = lowerIblPolynomialCpp(
+        mutatedFile(
+            imageBasedModule,
+            "light.intensity ?? 1",
+            "light.intensity ?? 2",
+        ),
+    );
+    assert.match(lowered, /float_or\(light, "intensity", 2\.0f\);/);
+});
+
+test("an IBL coefficient read without the prescale refuses", () => {
+    assert.throws(
+        () =>
+            lowerIblPolynomialCpp(
+                mutatedFile(
+                    imageBasedModule,
+                    "const l2_2 = coeffs[4]![c]! * s;",
+                    "const l2_2 = coeffs[4]![c]!;",
+                ),
+            ),
+        /no longer scales coefficient 4 by the prescale/,
+    );
+});
+
+test("a permuted IBL polynomial slot refuses", () => {
+    assert.throws(
+        () =>
+            lowerIblPolynomialCpp(
+                mutatedFile(
+                    imageBasedModule,
+                    "poly[18 + c]",
+                    "poly[19 + c]",
+                ),
+            ),
+        /no longer stores polynomial slot 6/,
+    );
+});
+
+test("a changed yaw factor and lane flow into the emitted bytes", () => {
+    const lowered = lowerIblEnvironmentScalarsCpp(
+        mutatedFile(
+            imageBasedModule,
+            "return -2 * Math.atan2(q[1], q[3]);",
+            "return -3 * Math.atan2(q[0], q[3]);",
+        ),
+        pinnedFile(assemblyModule),
+    );
+    assert.notEqual(lowered, expectedIblEnvironmentScalars);
+    assert.match(
+        lowered,
+        /-3\.0f \*\n {12}std::atan2\(rotation\[0\], rotation\[3\]\);/,
+    );
+});
+
+test("a changed BRDF LUT size flows into the emitted bytes", () => {
+    const lowered = lowerIblEnvironmentScalarsCpp(
+        pinnedFile(imageBasedModule),
+        mutatedFile(assemblyModule, "const size = 256;", "const size = 512;"),
+    );
+    assert.match(lowered, /environment\.brdf_lut_width = 512;/);
+});
+
+test("a changed LOD mip drop flows into the guard and the numerator", () => {
+    const lowered = lowerIblEnvironmentScalarsCpp(
+        mutatedFile(
+            imageBasedModule,
+            "(mipCount - 1) / Math.log2(specularImageSize)",
+            "(mipCount - 2) / Math.log2(specularImageSize)",
+        ),
+        pinnedFile(assemblyModule),
+    );
+    assert.match(lowered, /specular_images\.size\(\) > 2/);
+    assert.match(lowered, /specular_images\.size\(\) - 2\)/);
+});
+
+test("a yaw gate whose absent case stops being zero refuses", () => {
+    assert.throws(
+        () =>
+            lowerIblEnvironmentScalarsCpp(
+                mutatedFile(
+                    imageBasedModule,
+                    "light.rotation ? envYawFromQuaternion(light.rotation) : 0",
+                    "light.rotation ? envYawFromQuaternion(light.rotation) : 1",
+                ),
+                pinnedFile(assemblyModule),
+            ),
+        /zero fallback/,
+    );
+});
+
+test("a changed spot cone default flows into both emitted arms", () => {
+    const lowered = lowerPunctualLightsCpp(
+        mutatedFile(
+            punctualModule,
+            "def.spot?.outerConeAngle ?? Math.PI / 4",
+            "def.spot?.outerConeAngle ?? Math.PI / 6",
+        ),
+        pinnedFile(spotLightModule),
+        pinnedFile(parserModule),
+    );
+    const occurrences = lowered.split("0.5235987755982988f").length - 1;
+    assert.equal(occurrences, 2);
+});
+
+test("a changed punctual intensity default flows into the emitted bytes", () => {
+    const lowered = lowerPunctualLightsCpp(
+        mutatedFile(punctualModule, "def.intensity ?? 1", "def.intensity ?? 3"),
+        pinnedFile(spotLightModule),
+        pinnedFile(parserModule),
+    );
+    assert.match(lowered, /"intensity",\n {24}3\.0f\);/);
+});
+
+test("a changed punctual color fallback flows into the emitted bytes", () => {
+    const lowered = lowerPunctualLightsCpp(
+        mutatedFile(punctualModule, ": [1, 1, 1];", ": [1, 0.5, 1];"),
+        pinnedFile(spotLightModule),
+        pinnedFile(parserModule),
+    );
+    assert.match(lowered, /Color3\{1\.0f, 0\.5f, 1\.0f\};/);
+});
+
+test("a punctual range default that stops being MAX_VALUE refuses", () => {
+    assert.throws(
+        () =>
+            lowerPunctualLightsCpp(
+                mutatedFile(
+                    punctualModule,
+                    "def.range !== undefined ? def.range : Number.MAX_VALUE",
+                    "def.range !== undefined ? def.range : 1000",
+                ),
+                pinnedFile(spotLightModule),
+                pinnedFile(parserModule),
+            ),
+        /MAX_VALUE default/,
+    );
+});
+
+test("a spot doubling the light cosine no longer cancels refuses", () => {
+    assert.throws(
+        () =>
+            lowerPunctualLightsCpp(
+                mutatedFile(
+                    punctualModule,
+                    "createSpotLight([px, py, pz], dir, outer * 2, 1, intensity)",
+                    "createSpotLight([px, py, pz], dir, outer * 3, 1, intensity)",
+                ),
+                pinnedFile(spotLightModule),
+                pinnedFile(parserModule),
+            ),
+        /no longer cancels the full-cone doubling/,
+    );
+});
+
+test("a light type with no record kind refuses", () => {
+    assert.throws(
+        () =>
+            lowerPunctualLightsCpp(
+                mutatedFileAll(punctualModule, '"directional"', '"ambient"'),
+                pinnedFile(spotLightModule),
+                pinnedFile(parserModule),
+            ),
+        /'ambient', which has no record kind/,
+    );
 });
