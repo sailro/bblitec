@@ -689,6 +689,13 @@ async function main(): Promise<void> {
             sceneArms,
             materialIndexBase,
             { linearImageProcessing },
+            // A PBR mesh drawn in a geometry-output task resolves the pin's
+            // own MRT arm for that task's attachment list.
+            result.manifest.geometryOutputTasks.map((task, index) => ({
+                index,
+                attachments: task.attachments,
+                emitColor: task.emitColor,
+            })),
         );
         composedVariants.push(...variants);
         materialIndexBase += gltfMaterialCount(path);

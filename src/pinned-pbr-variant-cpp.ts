@@ -1123,6 +1123,10 @@ export function pinnedPbrVariantsHeader(
                     `${selector.lightMode}, ` +
                     `"${selector.singleLightType}", ` +
                     `${selector.toneMapping ? "true" : "false"}, ` +
+                    `${
+                        selector.geometryTask ??
+                            "std::numeric_limits<std::size_t>::max()"
+                    }, ` +
                     `${table.length}},`,
             );
         }
@@ -1176,6 +1180,18 @@ export function pinnedPbrVariantsHeader(
             variant.vertexWgsl,
             variant.fragmentWgsl,
         );
+        // The MRT arm's target count: the geometry rewrite declares one
+        // FragmentOutput location per attachment (plus the optional trailing
+        // colour); a colour fragment has one and a depth-only view none.
+        const fragmentOutputStruct = variant.fragmentWgsl.match(
+            /struct FragmentOutput \{[^}]*\}/,
+        );
+        const colorTargetCount = fragmentOutputStruct
+            ? (fragmentOutputStruct[0].match(/@location\(\d+\)/g) ?? [])
+                .length
+            : variant.fragmentWgsl.includes("@location(0)")
+                ? 1
+                : 0;
         table.push(
             `    {"${variant.fragmentKey}", "${variant.vertex}", ` +
                 `"${variant.fragment}", ${totalBytes}, ` +
@@ -1195,7 +1211,8 @@ export function pinnedPbrVariantsHeader(
                     variant.fragmentWgsl.includes("@location(0)")
                         ? "false"
                         : "true"
-                }},`,
+                }, ` +
+                `${colorTargetCount}},`,
         );
         for (const attribute of attributes) {
             attributeRows.push(
@@ -1332,6 +1349,10 @@ struct PbrVariantEntry {
     std::size_t fragment_sampler_count;
     /** A depth-only view's fragment writes no colour target. */
     bool no_color_output;
+    /** How many colour targets the fragment writes: one for a colour pass,
+     *  zero for a depth-only view, and the attachment count (plus the
+     *  optional trailing colour) for a geometry-output MRT arm. */
+    std::size_t color_target_count;
 };
 
 inline constexpr std::array<PbrVariantEntry, ${variants.length}>
@@ -1352,6 +1373,10 @@ struct PbrVariantSelector {
     std::uint32_t light_mode;
     std::string_view single_light_type;
     bool tone_mapping;
+    /** The geometry-output task an MRT variant draws in, npos for the
+     *  colour passes -- part of the key so a geometry draw never resolves
+     *  a colour variant or the reverse. */
+    std::size_t geometry_task;
     std::size_t variant;
 };
 
@@ -1462,14 +1487,16 @@ inline std::size_t pbr_variant_for(
     std::uint32_t mesh_features,
     std::uint32_t light_mode,
     std::string_view single_light_type,
-    bool tone_mapping) {
+    bool tone_mapping,
+    std::size_t geometry_task = std::numeric_limits<std::size_t>::max()) {
     for (const PbrVariantSelector& selector : pbr_variant_selectors) {
         if (
             selector.material_index == material_index &&
             selector.mesh_features == mesh_features &&
             selector.light_mode == light_mode &&
             selector.single_light_type == single_light_type &&
-            selector.tone_mapping == tone_mapping) {
+            selector.tone_mapping == tone_mapping &&
+            selector.geometry_task == geometry_task) {
             return selector.variant;
         }
     }

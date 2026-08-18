@@ -155,9 +155,28 @@ async function registerPbrExtensions(): Promise<void> {
             }>(path);
             if (module.pbrExt) flags._registerPbrExt(module.pbrExt);
         }
+        // The geometry-output ext registers when the first geometry view is
+        // built -- after everything else -- with a getter over the active
+        // attachments; `pbr-geometry-view.ts` sets them around each compose
+        // and so does `composePinnedPbrVariant`. Its frag hook returns null
+        // without `PBR2_GEOMETRY_OUTPUT`, so every non-geometry variant
+        // composes exactly as before.
+        const geometry = await importPinnedModule<{
+            _ensurePbrGeometryExt: (
+                getAttachments: () => readonly number[] | undefined,
+            ) => void;
+        }>("material/pbr/pbr-geometry-output-shader.js");
+        geometry._ensurePbrGeometryExt(() => activeGeometryAttachments);
     })();
     return registered;
 }
+
+/**
+ * The attachments the geometry-output ext's frag hook reads while a geometry
+ * variant composes -- the pin's `_activeAttachments`, set and restored around
+ * each `composePbrGeometryShader` call.
+ */
+let activeGeometryAttachments: readonly number[] | undefined;
 
 /**
  * Which glTF extension makes the pin compose each helper the renderer needs,
@@ -307,6 +326,18 @@ export interface PinnedComposeOptions {
     toneMappingHelpers?: string;
     toneMappingCall?: string;
     uv2Mask?: number;
+    /**
+     * Compose the pin's geometry-output MRT arm instead of the colour
+     * fragment: `composePbrGeometryShader` rewrites the composed return into
+     * a FragmentOutput struct with one location per attachment (plus the
+     * optional trailing colour), each written by the pin's own
+     * `attachmentExpr`. Attachment names are the manifest's
+     * `GeometryTextureTypeName`s, mapped onto the pin's enum here.
+     */
+    geometry?: {
+        attachments: readonly string[];
+        emitColor: boolean;
+    };
 }
 
 interface PinnedComposeFn {
@@ -388,6 +419,78 @@ export async function composePinnedPbrVariant(
         _createThinInstanceFragment:
             thinInstance.createThinInstanceFragment,
     });
+    if (options.geometry) {
+        // The pin's own MRT arm: `pbr-geometry-view.ts` composes through
+        // `composePbrGeometryShader`, which calls the same composer with
+        // `PBR2_GEOMETRY_OUTPUT` set and rewrites the fragment's return into
+        // per-attachment writes. The active attachments are set around the
+        // call exactly as `_setActivePbrGeometryAttachments` does.
+        const [geometry, types] = await Promise.all([
+            importPinnedModule<{
+                composePbrGeometryShader: (
+                    composePbr: PinnedComposeFn,
+                    features: number,
+                    features2: number,
+                    meshFeatures: number,
+                    sceneFeatures: number,
+                    lightMode: 0 | 1 | 2,
+                    singleLightType: string,
+                    esmShadowDepthCode: string,
+                    vbStrides: unknown,
+                    vbKey: string,
+                    attachments: readonly number[],
+                    emitColor: boolean,
+                    uv2Mask?: number,
+                ) => {
+                    _vertexWGSL: string;
+                    _fragmentWGSL: string;
+                    _fragmentKey: string;
+                    _materialUboSpec: unknown;
+                };
+            }>("material/pbr/pbr-geometry-output-shader.js"),
+            importPinnedModule<{
+                GeometryTextureType: Record<string, number>;
+            }>("frame-graph/geometry-types.js"),
+        ]);
+        const attachments = options.geometry.attachments.map((name) => {
+            const value = types.GeometryTextureType[name];
+            if (value === undefined) {
+                throw new Error(
+                    `Unknown geometry texture type '${name}'.`,
+                );
+            }
+            return value;
+        });
+        const previous = activeGeometryAttachments;
+        activeGeometryAttachments = attachments;
+        try {
+            const composed = geometry.composePbrGeometryShader(
+                composer,
+                features | (options.passFeatures ?? 0),
+                features2 | (options.passFeatures2 ?? 0),
+                options.meshFeatures ?? 0,
+                options.sceneFeatures ?? 0,
+                options.lightMode ?? 0,
+                options.singleLightType ?? "",
+                "",
+                undefined,
+                "",
+                attachments,
+                options.geometry.emitColor,
+                options.uv2Mask ?? 0,
+            );
+            return {
+                fragmentKey: composed._fragmentKey,
+                features,
+                features2,
+                vertexWgsl: composed._vertexWGSL,
+                fragmentWgsl: composed._fragmentWGSL,
+                materialUboSpec: composed._materialUboSpec,
+            };
+        } finally {
+            activeGeometryAttachments = previous;
+        }
+    }
     const composed = composer(
         features | (options.passFeatures ?? 0),
         features2 | (options.passFeatures2 ?? 0),

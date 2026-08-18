@@ -410,6 +410,10 @@ export interface PinnedRenderableVariant {
     lightMode: 0 | 1 | 2;
     singleLightType: string;
     toneMapping: boolean;
+    /** The geometry-output task this MRT variant draws in, absent for the
+     *  colour passes. The selector table keys on it so a geometry draw never
+     *  resolves a colour variant or the reverse. */
+    geometryTask?: number;
     /** The arm's label, for provenance and to disambiguate file names. */
     armLabel: string;
     fragmentKey: string;
@@ -428,11 +432,20 @@ export interface PinnedRenderableVariant {
  * every arm the scene compiles support for is composed and the runtime selects
  * the one its own light walk produces, exactly as `rebuildSingle` does.
  */
+export interface PinnedGeometryTaskRequest {
+    /** The task's index in the manifest's `geometryOutputTasks` order, which
+     *  is also the runtime's registration order for geometry tasks. */
+    index: number;
+    attachments: readonly string[];
+    emitColor: boolean;
+}
+
 export async function composeRenderableVariants(
     path: string,
     arms: readonly PinnedSceneArm[],
     materialIndexBase = 0,
     scene: { linearImageProcessing?: boolean } = {},
+    geometryTasks: readonly PinnedGeometryTaskRequest[] = [],
 ): Promise<readonly PinnedRenderableVariant[]> {
     const document = glbDocument(path);
     if (!document || arms.length === 0) return [];
@@ -501,6 +514,39 @@ export async function composeRenderableVariants(
                         variant.materialUboSpec,
                     ),
                 });
+                // The pin composes each geometry task's MRT arm from the
+                // same inputs through `composePbrGeometryShader`; only the
+                // fragment's return differs, one write per attachment.
+                for (const task of geometryTasks) {
+                    const geometry = await composePinnedPbrVariant(
+                        subject.input,
+                        {
+                            ...arm.options,
+                            meshFeatures,
+                            uv2Mask: subject.uv2Mask,
+                            geometry: {
+                                attachments: task.attachments,
+                                emitColor: task.emitColor,
+                            },
+                        },
+                    );
+                    variants.push({
+                        materialIndex: materialIndexBase + subject.index,
+                        materialName: subject.name,
+                        meshFeatures,
+                        lightMode: arm.lightMode,
+                        singleLightType: arm.singleLightType,
+                        toneMapping: arm.toneMapping,
+                        geometryTask: task.index,
+                        armLabel: `${arm.label} geometry ${task.index}`,
+                        fragmentKey: geometry.fragmentKey,
+                        vertexWgsl: geometry.vertexWgsl,
+                        fragmentWgsl: geometry.fragmentWgsl,
+                        materialUboSpec: plainMaterialUboSpec(
+                            geometry.materialUboSpec,
+                        ),
+                    });
+                }
             }
         }
     }
