@@ -719,6 +719,12 @@ struct MaterialRecord {
     // where the glTF factor bake above targets the sRGB view. The slot's
     // upload honours this when no image bytes exist.
     bool base_color_fallback_srgb = true;
+    // Set by the loader's whiteFallback path: an animated base colour factor
+    // on an image-less material bakes a white texel and keeps the live factor
+    // in the record for the pointer writer. The pin seeds `mat.alpha` from
+    // the factor it ASSEMBLES with -- the white one -- so the pinned
+    // materialAlpha lane holds 1 whatever the animated alpha does.
+    bool animated_base_color = false;
     // Texture-less metallic/roughness baked to the pinned 8-bit texel
     // (uploadOrmFactorTexture writes [255, roughness, metallic, 255]) with the
     // uniform factors left at one. Keeping the factor in the texel rather than

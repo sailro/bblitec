@@ -1447,6 +1447,7 @@ MaterialHandle load_material(
                 // sphere carried 0.502 in the texel and 0.648 in the
                 // uniform against the browser's 0.648 alone.
                 material.base_color_fallback = {255, 255, 255, 255};
+                material.animated_base_color = true;
             } else {
                 // Pinned uploadBaseColorFactorTexture: the factor bakes
                 // into the sRGB fallback texel (alpha as a linear byte)
@@ -1484,12 +1485,13 @@ MaterialHandle load_material(
     const ts::JsonValue* occlusion_texture_info =
         optional(material_json, "occlusionTexture");
     material.has_occlusion_texture = occlusion_texture_info != nullptr;
-    if (occlusion_texture_info) {
-        material.occlusion_strength = float_or(
-            occlusion_texture_info->as_object(),
-            "strength",
-            1.0f);
-    }
+    // assemblePbrPropsExt seeds occlusionStrength as image presence -- the
+    // glTF strength is not what the field carries -- and the animation
+    // pointer overwrites the live value from there. A no-image material
+    // carries 0 so the fragment's occlusion mix stays at the composed 1.0
+    // instead of sampling the metallic-roughness red channel.
+    material.occlusion_strength =
+        occlusion_texture_info ? 1.0f : 0.0f;
     if (occlusion_texture_info) {
         // Babylon Lite's buildDefaultPbrTexturesExt: an occlusion
         // texture on TEXCOORD_1 without a metallic-roughness image

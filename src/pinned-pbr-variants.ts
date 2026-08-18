@@ -130,12 +130,25 @@ async function registerPbrExtensions(): Promise<void> {
         // the extension matters for composition, and its own `detect` returns
         // nothing for a material that is not transmissive, so it is built here
         // directly rather than by standing up a scene.
-        const refraction = await importPinnedModule<{
-            makeRefractionRttExt: (
-                dispersionSampleWgsl?: string,
-            ) => PbrExtDescriptor;
-        }>("material/pbr/fragments/refraction-rtt-fragment.js");
-        flags._registerPbrExt(refraction.makeRefractionRttExt());
+        const [refraction, dispersion] = await Promise.all([
+            importPinnedModule<{
+                makeRefractionRttExt: (
+                    dispersionSampleWgsl?: string,
+                ) => PbrExtDescriptor;
+            }>("material/pbr/fragments/refraction-rtt-fragment.js"),
+            // `set-dispersion.ts` feeds the ext this sample the moment a
+            // dispersion material loads; the ext only composes it when the
+            // material's own bit demands it, so passing it unconditionally
+            // is the loaded-pin state, not an extra arm.
+            importPinnedModule<{ DISPERSION_SAMPLE_WGSL: string }>(
+                "material/pbr/fragments/refraction-dispersion-wgsl.js",
+            ),
+        ]);
+        flags._registerPbrExt(
+            refraction.makeRefractionRttExt(
+                dispersion.DISPERSION_SAMPLE_WGSL,
+            ),
+        );
         for (const path of meshExtensionModules) {
             const module = await importPinnedModule<{
                 pbrExt?: PbrExtDescriptor;

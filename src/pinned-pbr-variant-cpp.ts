@@ -38,9 +38,15 @@ const baseWriter = {
         environmentIntensity: "material.environment_intensity",
         directIntensity: "material.direct_intensity",
         reflectance: "material.reflectance",
-        // The pin's `material.alpha`, which the glTF loader seeds from the base
-        // colour factor's alpha.
-        alpha: "material.base_color_factor.a",
+        // The pin's `material.alpha`: `gltf-pbr-builder.ts` seeds it from the
+        // base colour factor's alpha for BLEND and MASK materials only -- an
+        // OPAQUE material keeps the default 1 -- and the whiteFallback case
+        // assembles with the white factor, so an animated base colour seeds
+        // 1 too while its live alpha rides the baseColorFactor lanes
+        // (Scene 253's PBRProperties-Transparent, browser buffer#230).
+        alpha: "(material.alpha_mode == MaterialAlphaMode::opaque ||" +
+            " material.animated_base_color" +
+            " ? 1.0f : material.base_color_factor.a)",
         baseColorFactor: "material.base_color_factor",
         metallicFactor: "material.metallic_factor",
         roughnessFactor: "material.roughness_factor",
@@ -125,6 +131,11 @@ const extensionWriters: ReadonlyArray<{
         sourceLocal: "",
         baseField: "occlusionStrength",
         propertySources: {
+            // The pin's live `material.occlusionStrength`: seeded by
+            // `assemblePbrPropsExt` as `_occlusionImage ? 1.0 : 0` (presence,
+            // not the glTF strength -- the loader mirrors that seed) and then
+            // overwritten by the animation pointer, so the writer reads the
+            // record verbatim.
             occlusionStrength: "material.occlusion_strength",
             _metallicF0Factor: "material.metallic_f0_factor",
             _specularWeight: "material.specular_weight",
