@@ -1144,6 +1144,15 @@ inline void write_render_capture(
                     upstream::RenderMaterialKind::pbr) {
                     continue;
                 }
+                // Deliberately the identity world, not the draw's own
+                // `pinned_draw_world` chain: the capture rebuilds blocks
+                // from (scene, engine, item) without the per-draw
+                // instance context the encoders carry, so an instanced
+                // or local-position world here would be a re-derivation
+                // the diff could disagree with for the wrong reason. A
+                // wrong world in the real draw surfaces in the
+                // SDL-versus-Dawn differential and the mesh-matrix rows
+                // of `scene -- diff`, which read the browser's uploads.
                 const upstream::MeshUniforms block = pinned_mesh_block(
                     scene,
                     engine,

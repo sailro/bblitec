@@ -62,9 +62,9 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
   unifying is a frame-loop redesign). The CPU benchmark:
   `pal_sdl.cpp:1075` `print_benchmark` disagrees with shared
   `report_benchmark` in stats, line shape and warmup policy — unify
-  deliberately, deciding which contract wins. The capture's
-  `pinned_mesh_block` uses `pinned_mesh_world()` where the draw uses
-  the fuller `pinned_draw_world` chain — reuse or document.
+  deliberately, deciding which contract wins. (The
+  capture's `pinned_mesh_block` world choice is now documented at the
+  dump site — done.)
 
 
 ## Documentation
