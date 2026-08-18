@@ -36,19 +36,6 @@
 #include <bblite/upstream/standard_variants.hpp>
 #endif
 
-/**
- * The pin's `gpUniforms` block, declared by a geometry-output variant whose
- * attachments include NORMALIZED_VIEW_DEPTH or LINEAR_VELOCITY
- * (`pbr-geometry-output-shader.ts` createPbrGeometryParamsFragment):
- * the task's previous-frame view-projection and the camera's near/far.
- * Unguarded because the geometry encode names it in both backends whatever
- * the variant count.
- */
-struct PinnedGeometryParams {
-    std::array<float, 16> previousViewProjection{};
-    std::array<float, 4> cameraNearFar{};
-};
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -63,6 +50,19 @@ struct PinnedGeometryParams {
 #include <vector>
 
 namespace bbl::pal {
+
+/**
+ * The pin's `gpUniforms` block, declared by a geometry-output variant whose
+ * attachments include NORMALIZED_VIEW_DEPTH or LINEAR_VELOCITY
+ * (`pbr-geometry-output-shader.ts` createPbrGeometryParamsFragment):
+ * the task's previous-frame view-projection and the camera's near/far.
+ * Unguarded because the geometry encode names it in both backends whatever
+ * the variant count.
+ */
+struct PinnedGeometryParams {
+    std::array<float, 16> previousViewProjection{};
+    std::array<float, 4> cameraNearFar{};
+};
 
 struct GpuVertex {
     float position[3];
@@ -1417,6 +1417,29 @@ inline std::vector<float> pack_morph_deltas(
     return deltas;
 }
 
+/**
+ * The float array behind the weights blob's 16-byte header: one weight
+ * per target, zero past the record's stored values. Split out because a
+ * version-gated re-upload may rewrite just this span (the header is
+ * constant after creation), and both backends must fill it identically.
+ */
+inline std::vector<float> morph_weight_values(
+    const ModelGeometry& geometry,
+    const MeshRecord& mesh_record) {
+    const std::size_t target_count = geometry.morph_positions.size();
+    std::vector<float> weights(target_count, 0.0f);
+    for (
+        std::size_t target = 0;
+        target < target_count;
+        ++target) {
+        weights[target] =
+            target < mesh_record.morph_storage_weights.size()
+                ? mesh_record.morph_storage_weights[target]
+                : 0.0f;
+    }
+    return weights;
+}
+
 inline std::vector<std::uint8_t> pack_morph_weights(
     const ModelGeometry& geometry,
     const MeshRecord& mesh_record) {
@@ -1433,19 +1456,13 @@ inline std::vector<std::uint8_t> pack_morph_weights(
         weights_blob.data(),
         header,
         sizeof(header));
-    for (
-        std::size_t target = 0;
-        target < target_count;
-        ++target) {
-        const float weight =
-            target < mesh_record.morph_storage_weights.size()
-                ? mesh_record.morph_storage_weights[target]
-                : 0.0f;
+    const std::vector<float> weights =
+        morph_weight_values(geometry, mesh_record);
+    if (target_count > 0) {
         std::memcpy(
-            weights_blob.data() + 16 +
-                target * sizeof(float),
-            &weight,
-            sizeof(float));
+            weights_blob.data() + 16,
+            weights.data(),
+            target_count * sizeof(float));
     }
     return weights_blob;
 }
@@ -1632,6 +1649,57 @@ inline void reject_uncomposed_sprites(const Engine& engine) {
 }
 
 /**
+ * A sprite renderer's layers in draw order: `spriteRendererUpdate` sorts
+ * the renderer's layers by `order` every frame, so registration order is
+ * not the draw order -- `layer.order` is. The sort is stable, which is
+ * what decides equal orders. Returned as indices into `renderer.layers`
+ * because each backend keeps its per-layer GPU state in registration
+ * order; both used to carry this walk verbatim.
+ */
+inline std::vector<std::size_t> sprite_layer_draw_order(
+    const Engine& engine,
+    const SpriteRendererRecord& renderer) {
+    std::vector<std::size_t> draw_order(renderer.layers.size());
+    for (std::size_t index = 0; index < draw_order.size(); ++index) {
+        draw_order[index] = index;
+    }
+    std::stable_sort(
+        draw_order.begin(),
+        draw_order.end(),
+        [&](std::size_t left, std::size_t right) {
+            return engine.sprite_layers[renderer.layers[left].value].order <
+                engine.sprite_layers[renderer.layers[right].value].order;
+        });
+    return draw_order;
+}
+
+/**
+ * The one blend descriptor a renderer's single pipeline serves. Layers
+ * with differing blend modes would need a pipeline each, which neither
+ * backend builds, so both refuse them with the same words rather than
+ * blending some layers wrongly.
+ */
+inline SpriteBlendDescriptor sprite_renderer_blend(
+    const Engine& engine,
+    const SpriteRendererRecord& renderer) {
+    const SpriteBlendDescriptor blend =
+        engine.sprite_layers[renderer.layers.front().value].blend;
+    for (const Sprite2DLayerHandle& handle : renderer.layers) {
+        const SpriteBlendDescriptor& other =
+            engine.sprite_layers[handle.value].blend;
+        if (other.color.src != blend.color.src ||
+            other.color.dst != blend.color.dst ||
+            other.alpha.src != blend.alpha.src ||
+            other.alpha.dst != blend.alpha.dst) {
+            throw std::runtime_error(
+                "Sprite layers with different blend modes need a "
+                "pipeline each.");
+        }
+    }
+    return blend;
+}
+
+/**
  * The delta a scene's before-render callbacks advance by.
  *
  * A scene that sets `fixedDeltaMs` pins it, which is how the measured
@@ -1700,8 +1768,8 @@ inline DecodedImage decode_uploadable_image(
  * Mip levels for a full chain over a base level:
  * 1 + floor(log2(max(width, height))), computed through double exactly as
  * both backends always have, so the same image sizes the same chain
- * everywhere. (The transmission grab's shortened chain is not this: its
- * two derivations differ per backend on purpose.)
+ * everywhere. (The transmission grab's shortened chain is derived from
+ * this by `transmission_grab_mip_count` below.)
  */
 inline std::uint32_t full_mip_chain(
     std::uint32_t width,
@@ -1710,6 +1778,46 @@ inline std::uint32_t full_mip_chain(
         std::floor(
             std::log2(
                 static_cast<double>(std::max(width, height)))));
+}
+
+// ---------------------------------------------------------------------------
+// The pin's transmission scene-colour grab, stated once for both backends
+// (frame-graph/transmission.ts): a fixed 1024x1024 rgba16float texture
+// whatever the surface size, its full mip chain shortened by the fixed
+// 4-mip LOD bias, sampled through getTrilinearAnisotropicSampler (repeat
+// addressing, trilinear filtering, anisotropy 4). Pass mechanics — how the
+// grab is blitted and when the chain regenerates — stay per backend.
+
+/** The grab's fixed extent; both its width and its height. */
+inline constexpr std::uint32_t transmission_grab_size = 1024;
+
+/**
+ * The shortened chain: the full chain over the fixed extent minus the
+ * pin's 4-mip bias, never below one level. (Dawn used to hardcode 11-4
+ * while SDL_GPU derived the same 7 from the extent — one derivation now.)
+ */
+inline std::uint32_t transmission_grab_mip_count() {
+    const std::uint32_t full = full_mip_chain(
+        transmission_grab_size,
+        transmission_grab_size);
+    return std::max(1u, full > 4u ? full - 4u : 1u);
+}
+
+/** getTrilinearAnisotropicSampler's anisotropy; the filters are trilinear
+ *  and the addressing repeat, translated to each API where the sampler is
+ *  created. */
+inline constexpr std::uint32_t transmission_sampler_max_anisotropy = 4;
+
+/**
+ * Whether one draw's material is transmissive — the predicate behind the
+ * pinned mid-pass break: `executePassWithTransmission` grabs the scene
+ * colour before the FIRST draw this returns true for. The once-per-frame
+ * latch and the pass surgery around it stay per backend.
+ */
+inline bool transmissive_draw_material(const MaterialRecord* material) {
+    return material != nullptr &&
+        (material->transmission_factor > 0.0f ||
+         !material->transmission_texture.bytes.empty());
 }
 
 /**
@@ -2014,24 +2122,28 @@ inline void report_benchmark(
 /**
  * Refuse a flag this backend does not implement rather than rendering
  * something else: a silent no-op would be measured as a backend delta.
+ * `supported_backend` names the backend the refusal redirects to, so the
+ * error text cannot claim SDL_GPU support from a backend that has none.
  */
 inline void reject_unsupported_frame_options(
     const FrameOptions& options,
     const char* backend,
     bool supports_single_sample,
-    bool supports_copy_task) {
+    bool supports_copy_task,
+    const char* supported_backend = "SDL_GPU") {
     if (options.single_sample && !supports_single_sample) {
         throw std::runtime_error(
             std::string("BBLITE_MSAA is not supported by the ") +
             backend +
-            " backend; run the single-sample diagnostic through SDL_GPU.");
+            " backend; run the single-sample diagnostic through " +
+            supported_backend + ".");
     }
     if (!options.copy_task_filter.empty() && !supports_copy_task) {
         throw std::runtime_error(
             std::string("BBLITE_COPY_TASK is not supported by the ") +
             backend +
-            " backend; the geometry copy-task diagnostic runs through "
-            "SDL_GPU.");
+            " backend; the geometry copy-task diagnostic runs through " +
+            supported_backend + ".");
     }
 }
 
@@ -2103,6 +2215,86 @@ inline std::uint16_t float_to_half(float value) {
         sign |
         static_cast<std::uint16_t>(half_exponent << 10) |
         static_cast<std::uint16_t>(rounded >> 13));
+}
+
+// ---------------------------------------------------------------------------
+// Readback row conversion, shared by both backends' screenshot and
+// diagnostic-buffer paths. The copy/map mechanics stay per backend; what a
+// row of readback bytes MEANS as PNG pixels is decided once: rgba16float
+// decodes through the manual half conversion (clamped to bytes), r16float
+// lands in the red channel, 8-bit rows copy through with an optional
+// BGRA swap. Rows arrive 256-byte aligned, the way both APIs return them.
+
+enum class ReadbackFormatClass {
+    rgba16_float,
+    r16_float,
+    rgba8,
+    bgra8,
+};
+
+inline std::vector<std::uint8_t> convert_readback_rows(
+    const std::uint8_t* mapped,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t aligned_row_bytes,
+    ReadbackFormatClass format) {
+    const std::uint32_t output_row_bytes = width * 4;
+    std::vector<std::uint8_t> rgba(
+        static_cast<std::size_t>(output_row_bytes) * height);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        const std::uint8_t* source_row =
+            mapped + static_cast<std::size_t>(y) * aligned_row_bytes;
+        std::uint8_t* destination_row =
+            rgba.data() + static_cast<std::size_t>(y) * output_row_bytes;
+        if (format == ReadbackFormatClass::rgba16_float) {
+            const auto* source_pixels =
+                reinterpret_cast<const std::uint16_t*>(source_row);
+            for (std::uint32_t x = 0; x < width; ++x) {
+                for (std::uint32_t channel = 0; channel < 4; ++channel) {
+                    destination_row[x * 4 + channel] =
+                        half_to_byte(source_pixels[x * 4 + channel]);
+                }
+            }
+        } else if (format == ReadbackFormatClass::r16_float) {
+            const auto* source_pixels =
+                reinterpret_cast<const std::uint16_t*>(source_row);
+            for (std::uint32_t x = 0; x < width; ++x) {
+                destination_row[x * 4] = half_to_byte(source_pixels[x]);
+                destination_row[x * 4 + 1] = 0;
+                destination_row[x * 4 + 2] = 0;
+                destination_row[x * 4 + 3] = 255;
+            }
+        } else {
+            std::memcpy(destination_row, source_row, output_row_bytes);
+            if (format == ReadbackFormatClass::bgra8) {
+                for (std::uint32_t x = 0; x < width; ++x) {
+                    std::swap(
+                        destination_row[x * 4],
+                        destination_row[x * 4 + 2]);
+                }
+            }
+        }
+    }
+    return rgba;
+}
+
+/**
+ * The HDR diagnostic sidecar: the unpadded rgba16float rows, written to a
+ * stream the caller opened (opening — and cleaning up its own GPU
+ * resources when the open fails — stays per backend).
+ */
+inline void write_readback_raw_rows(
+    std::ostream& raw,
+    const std::uint8_t* mapped,
+    std::uint32_t height,
+    std::uint32_t aligned_row_bytes,
+    std::uint32_t source_row_bytes) {
+    for (std::uint32_t y = 0; y < height; ++y) {
+        raw.write(
+            reinterpret_cast<const char*>(
+                mapped + static_cast<std::size_t>(y) * aligned_row_bytes),
+            source_row_bytes);
+    }
 }
 
 } // namespace bbl::pal

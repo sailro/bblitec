@@ -309,9 +309,11 @@ struct DawnState : DawnDevice {
     WGPUTexture transmission_color = nullptr;
     WGPUTextureView transmission_color_view = nullptr;
     std::uint32_t transmission_mip_count = 1;
-    WGPUShaderModule transmission_grab_module = nullptr;
+    WGPUShaderModule transmission_grab_vertex_module = nullptr;
+    WGPUShaderModule transmission_grab_fragment_module = nullptr;
     WGPURenderPipeline transmission_grab_pipeline = nullptr;
-    WGPUShaderModule image_processing_module = nullptr;
+    WGPUShaderModule image_processing_vertex_module = nullptr;
+    WGPUShaderModule image_processing_fragment_module = nullptr;
     WGPURenderPipeline image_processing_pipeline = nullptr;
     WGPUBuffer image_processing_params = nullptr;
     WGPUBindGroup image_processing_group = nullptr;
@@ -500,7 +502,8 @@ struct DawnState : DawnDevice {
     WGPUBindGroup skybox_texture_group = nullptr;
     WGPUBindGroup skybox_material_group = nullptr;
     bool skybox_enabled = false;
-    WGPUShaderModule mip_module = nullptr;
+    WGPUShaderModule mip_vertex_module = nullptr;
+    WGPUShaderModule mip_fragment_module = nullptr;
     WGPUSampler mip_sampler = nullptr;
 #if BBLITE_GPU_MORPH_STORAGE
     WGPUBuffer empty_morph_deltas = nullptr;
@@ -735,7 +738,10 @@ struct DawnState : DawnDevice {
             if (pipeline) wgpuRenderPipelineRelease(pipeline);
         }
         if (mip_sampler) wgpuSamplerRelease(mip_sampler);
-        if (mip_module) wgpuShaderModuleRelease(mip_module);
+        if (mip_fragment_module) {
+            wgpuShaderModuleRelease(mip_fragment_module);
+        }
+        if (mip_vertex_module) wgpuShaderModuleRelease(mip_vertex_module);
         release_render_tasks();
         release_frame_graph_textures();
         for (DawnGeometryTask& task : geometry_tasks) {
@@ -787,14 +793,20 @@ struct DawnState : DawnDevice {
         if (image_processing_pipeline) {
             wgpuRenderPipelineRelease(image_processing_pipeline);
         }
-        if (image_processing_module) {
-            wgpuShaderModuleRelease(image_processing_module);
+        if (image_processing_fragment_module) {
+            wgpuShaderModuleRelease(image_processing_fragment_module);
+        }
+        if (image_processing_vertex_module) {
+            wgpuShaderModuleRelease(image_processing_vertex_module);
         }
         if (transmission_grab_pipeline) {
             wgpuRenderPipelineRelease(transmission_grab_pipeline);
         }
-        if (transmission_grab_module) {
-            wgpuShaderModuleRelease(transmission_grab_module);
+        if (transmission_grab_fragment_module) {
+            wgpuShaderModuleRelease(transmission_grab_fragment_module);
+        }
+        if (transmission_grab_vertex_module) {
+            wgpuShaderModuleRelease(transmission_grab_vertex_module);
         }
         if (transmission_color_view) {
             wgpuTextureViewRelease(transmission_color_view);
@@ -1078,32 +1090,20 @@ WGPUTexture create_solid_texture(
     return texture;
 }
 
-// Verbatim transcription of the pinned mip generator
-// (src/texture/generate-mipmaps.ts BLIT_SHADER): a fullscreen-triangle
-// bilinear blit from mip N-1 into mip N.
-constexpr const char* mip_blit_wgsl =
-    "@group(0)@binding(0)var t:texture_2d<f32>;@group(0)@binding(1)var "
-    "s:sampler;\n"
-    "struct V{@builtin(position)p:vec4f,@location(0)u:vec2f};\n"
-    "@vertex fn vs(@builtin(vertex_index)i:u32)->V{let "
-    "p=array<vec2f,3>(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3))[i];return "
-    "V(vec4f(p,0,1),p*vec2f(.5,-.5)+.5);}\n"
-    "@fragment fn fs(v:V)->@location(0)vec4f{return "
-    "textureSample(t,s,v.u);}";
-
+// The pinned mip generator's fullscreen-triangle bilinear blit
+// (src/texture/generate-mipmaps.ts BLIT_SHADER) is deployed from
+// generation like every other pinned shader — mip-blit.vert/.frag —
+// instead of living here as a C++ string invisible to shader provenance.
 WGPURenderPipeline mip_pipeline_for(
     DawnState& state,
     WGPUTextureFormat format) {
     const auto existing = state.mip_pipelines.find(format);
     if (existing != state.mip_pipelines.end()) return existing->second;
-    if (!state.mip_module) {
-        WGPUShaderSourceWGSL wgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
-        wgsl.code = string_view(mip_blit_wgsl);
-        WGPUShaderModuleDescriptor descriptor{};
-        descriptor.nextInChain = &wgsl.chain;
-        descriptor.label = string_view("mip-blit");
-        state.mip_module =
-            wgpuDeviceCreateShaderModule(state.device, &descriptor);
+    if (!state.mip_vertex_module) {
+        state.mip_vertex_module =
+            load_wgsl_module(state, "mip-blit.vert");
+        state.mip_fragment_module =
+            load_wgsl_module(state, "mip-blit.frag");
         // The pinned generator samples with the bilinear sampler:
         // linear filters and WebGPU-default clamp addressing.
         WGPUSamplerDescriptor sampler_descriptor =
@@ -1115,14 +1115,14 @@ WGPURenderPipeline mip_pipeline_for(
     }
     WGPURenderPipelineDescriptor descriptor =
         WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.vertex.module = state.mip_module;
-    descriptor.vertex.entryPoint = string_view("vs");
+    descriptor.vertex.module = state.mip_vertex_module;
+    descriptor.vertex.entryPoint = string_view("mainVertex");
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = format;
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = state.mip_module;
-    fragment.entryPoint = string_view("fs");
+    fragment.module = state.mip_fragment_module;
+    fragment.entryPoint = string_view("mainFragment");
     fragment.targetCount = 1;
     fragment.targets = &color_target;
     descriptor.fragment = &fragment;
@@ -1355,44 +1355,9 @@ WGPUTexture upload_reflection_cube(
     return texture;
 }
 
-WGPUSampler create_texture_sampler(
-    DawnState& state,
-    const TextureSamplerState& sampler) {
-    const auto filter = [](TextureFilter value) {
-        return value == TextureFilter::nearest
-            ? WGPUFilterMode_Nearest
-            : WGPUFilterMode_Linear;
-    };
-    const auto address = [](TextureAddressMode value) {
-        return value == TextureAddressMode::clamp
-            ? WGPUAddressMode_ClampToEdge
-            : value == TextureAddressMode::mirror
-                ? WGPUAddressMode_MirrorRepeat
-                : WGPUAddressMode_Repeat;
-    };
-    WGPUSamplerDescriptor descriptor = WGPU_SAMPLER_DESCRIPTOR_INIT;
-    descriptor.minFilter = filter(sampler.min_filter);
-    descriptor.magFilter = filter(sampler.mag_filter);
-    descriptor.mipmapFilter =
-        sampler.mipmap_mode == TextureMipmapMode::nearest
-            ? WGPUMipmapFilterMode_Nearest
-            : WGPUMipmapFilterMode_Linear;
-    descriptor.addressModeU = address(sampler.address_u);
-    descriptor.addressModeV = address(sampler.address_v);
-    // Mirror the pinned descriptor exactly: W stays at the WebGPU
-    // clamp default, and only the noMip path overrides the LOD clamp
-    // (gltf-sampler-desc.ts leaves lodMaxClamp at the default 32
-    // otherwise).
-    if (sampler.max_lod < 32.0f) {
-        descriptor.lodMaxClamp = sampler.max_lod;
-    }
-    descriptor.maxAnisotropy = static_cast<std::uint16_t>(
-        std::max(1.0f, sampler.max_anisotropy));
-    WGPUSampler result =
-        wgpuDeviceCreateSampler(state.device, &descriptor);
-    if (!result) dawn_error("wgpuDeviceCreateSampler material");
-    return result;
-}
+// create_texture_sampler moved to pal_dawn_shared.hpp so the sprite pass
+// derives its atlas sampler from the record the same way (it used to
+// hardcode a descriptor beside this translation).
 
 // Upload the environment cubemap exactly as the browser does: rgba16f
 // faces with pre-baked mips, uploaded unflipped (the SDL_GPU vertical
@@ -2120,6 +2085,62 @@ WGPUBindGroup pinned_geometry_frame_group(DawnState& state) {
     return state.pinned_geometry_frame_group;
 }
 
+/**
+ * A geometry task's frame prologue, run once by whichever family writer
+ * owns it (the PBR writer when that family is compiled, the Standard
+ * writer otherwise): the reverse-Z scene block, the task's gpUniforms
+ * buffer — previous-frame view-projection beside the camera near/far —
+ * and the previous view-projection tracking. Both writers used to carry
+ * this sequence verbatim.
+ */
+void write_pinned_geometry_prologue(
+    DawnState& state,
+    const Scene& scene,
+    const CameraRecord& camera,
+    DawnGeometryTask& geometry,
+    const std::array<float, 16>& geometry_matrix) {
+    pinned_geometry_frame_group(state);
+    const upstream::SceneUniforms scene_block =
+        pinned_scene_block(scene, camera, geometry_matrix);
+    wgpuQueueWriteBuffer(
+        state.queue,
+        state.pinned_geometry_scene_uniforms,
+        0,
+        &scene_block,
+        sizeof(scene_block));
+    if (!geometry.pinned_geometry_params) {
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.size = sizeof(PinnedGeometryParams);
+        descriptor.usage =
+            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        geometry.pinned_geometry_params =
+            wgpuDeviceCreateBuffer(state.device, &descriptor);
+        if (!geometry.pinned_geometry_params) {
+            dawn_error("pinned geometry params buffer creation failed.");
+        }
+    }
+    if (!geometry.has_previous_view_projection) {
+        geometry.previous_view_projection = geometry_matrix;
+        geometry.has_previous_view_projection = true;
+    }
+    const PinnedGeometryParams params{
+        geometry.previous_view_projection,
+        {
+            static_cast<float>(camera.near_plane),
+            static_cast<float>(camera.far_plane),
+            0.0f,
+            0.0f,
+        },
+    };
+    wgpuQueueWriteBuffer(
+        state.queue,
+        geometry.pinned_geometry_params,
+        0,
+        &params,
+        sizeof(params));
+    geometry.previous_view_projection = geometry_matrix;
+}
+
 #if BBLITE_PBR_VARIANTS > 0
 /**
  * Which of our resources the pin's own name for a binding refers to.
@@ -2401,6 +2422,62 @@ DawnMesh::PinnedGeometryDrawState& ensure_pinned_geometry_bindings(
 }
 
 /**
+ * The pin's two per-draw blocks for one resolved variant — the mesh block
+ * (draw world + light selection) and the variant's own material UBO —
+ * written to the caller's buffers. Shared by the main pass and the
+ * geometry task, which differ only in the receiving buffers and in which
+ * convention booleans the draw rides; both used to carry this sequence
+ * verbatim.
+ */
+void write_pinned_draw_blocks(
+    DawnState& state,
+    const Scene& scene,
+    const Engine& engine,
+    const upstream::RenderDrawCommand& draw,
+    std::size_t variant,
+    bool skeleton_draw,
+    bool world_from_palette,
+    WGPUBuffer mesh_uniforms,
+    WGPUBuffer material_uniforms) {
+    const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+    const upstream::PbrVariantEntry& entry =
+        upstream::pbr_variants[variant];
+    const upstream::MeshUniforms mesh_block =
+        pinned_mesh_block(
+            scene,
+            engine,
+            pinned_draw_world(
+                skeleton_draw,
+                world_from_palette,
+                entry.uses_local_position,
+                record),
+            draw.item.mesh.value);
+    wgpuQueueWriteBuffer(
+        state.queue,
+        mesh_uniforms,
+        0,
+        &mesh_block,
+        sizeof(mesh_block));
+    std::vector<std::uint8_t> material_block(
+        entry.material_ubo_bytes,
+        0);
+    upstream::write_pbr_variant_material(
+        variant,
+        engine.materials[draw.item.material.value],
+        material_block.data(),
+        entry.material_ubo_bytes,
+        // The refraction thickness scale the pin's fragment reads off its
+        // mesh world, whose scale this backend bakes into vertices.
+        record.baked_world_scale);
+    wgpuQueueWriteBuffer(
+        state.queue,
+        material_uniforms,
+        0,
+        material_block.data(),
+        entry.material_ubo_bytes);
+}
+
+/**
  * Writes one geometry task's pinned blocks for the frame.
  *
  * The pin's geometry contract is reverse-Z, so the shared geometry scene
@@ -2421,46 +2498,12 @@ void write_pinned_geometry_task(
     if (!pinned_lists_have_pinned_draws(draw_lists)) return;
     const std::array<float, 16> geometry_matrix =
         upstream::build_view_projection(camera, aspect, true);
-    pinned_geometry_frame_group(state);
-    const upstream::SceneUniforms scene_block =
-        pinned_scene_block(scene, camera, geometry_matrix);
-    wgpuQueueWriteBuffer(
-        state.queue,
-        state.pinned_geometry_scene_uniforms,
-        0,
-        &scene_block,
-        sizeof(scene_block));
-    if (!geometry.pinned_geometry_params) {
-        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
-        descriptor.size = sizeof(PinnedGeometryParams);
-        descriptor.usage =
-            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-        geometry.pinned_geometry_params =
-            wgpuDeviceCreateBuffer(state.device, &descriptor);
-        if (!geometry.pinned_geometry_params) {
-            dawn_error("pinned geometry params buffer creation failed.");
-        }
-    }
-    if (!geometry.has_previous_view_projection) {
-        geometry.previous_view_projection = geometry_matrix;
-        geometry.has_previous_view_projection = true;
-    }
-    const PinnedGeometryParams params{
-        geometry.previous_view_projection,
-        {
-            static_cast<float>(camera.near_plane),
-            static_cast<float>(camera.far_plane),
-            0.0f,
-            0.0f,
-        },
-    };
-    wgpuQueueWriteBuffer(
-        state.queue,
-        geometry.pinned_geometry_params,
-        0,
-        &params,
-        sizeof(params));
-    geometry.previous_view_projection = geometry_matrix;
+    write_pinned_geometry_prologue(
+        state,
+        scene,
+        camera,
+        geometry,
+        geometry_matrix);
     for (const auto* list : {&draw_lists.opaque, &draw_lists.transparent}) {
         for (const upstream::RenderDrawCommand& draw : list->commands) {
             if (
@@ -2484,50 +2527,25 @@ void write_pinned_geometry_task(
                         .c_str());
             }
             DawnMesh& mesh = state.meshes[draw.item_index];
-            const MeshRecord& record =
-                engine.meshes[draw.item.mesh.value];
             DawnMesh::PinnedGeometryDrawState& draw_state =
                 ensure_pinned_geometry_bindings(
                     state,
                     mesh,
                     variant,
                     geometry.pinned_geometry_params);
-            const upstream::PbrVariantEntry& entry =
-                upstream::pbr_variants[variant];
-            const upstream::MeshUniforms mesh_block =
-                pinned_mesh_block(
-                    scene,
-                    engine,
-                    // Geometry draws are never skinned or palette-driven
-                    // in the corpus; the chain still decides local-lane
-                    // and instanced worlds the same way the main pass does.
-                    pinned_draw_world(
-                        false,
-                        false,
-                        entry.uses_local_position,
-                        record),
-                    draw.item.mesh.value);
-            wgpuQueueWriteBuffer(
-                state.queue,
-                draw_state.mesh_uniforms,
-                0,
-                &mesh_block,
-                sizeof(mesh_block));
-            std::vector<std::uint8_t> material_block(
-                entry.material_ubo_bytes,
-                0);
-            upstream::write_pbr_variant_material(
+            // Geometry draws are never skinned or palette-driven in the
+            // corpus; the chain still decides local-lane and instanced
+            // worlds the same way the main pass does.
+            write_pinned_draw_blocks(
+                state,
+                scene,
+                engine,
+                draw,
                 variant,
-                engine.materials[draw.item.material.value],
-                material_block.data(),
-                entry.material_ubo_bytes,
-                record.baked_world_scale);
-            wgpuQueueWriteBuffer(
-                state.queue,
-                draw_state.material_uniforms,
-                0,
-                material_block.data(),
-                entry.material_ubo_bytes);
+                /*skeleton_draw=*/false,
+                /*world_from_palette=*/false,
+                draw_state.mesh_uniforms,
+                draw_state.material_uniforms);
         }
     }
 }
@@ -2564,6 +2582,61 @@ void write_pinned_frame_blocks(
         0,
         lights.data(),
         lights.size());
+}
+
+/**
+ * One composed-variant draw, encoded the same way at all four sites (PBR
+ * and Standard, main pass and geometry task): bind the pipeline unless
+ * already bound, the frame group at 0 and the draw group at 1, the
+ * vertex stream (plus the optional thin-instance stream at slot 1), then
+ * the indexed draw. Which pipeline, groups, buffers and counts go in
+ * stays with each site; WebGPU forces the write/encode split, but the
+ * duplication between the four encode arms did not.
+ */
+void encode_variant_draw(
+    WGPURenderPassEncoder pass,
+    WGPURenderPipeline pipeline,
+    WGPURenderPipeline& bound_pipeline,
+    WGPUBindGroup frame_group,
+    WGPUBindGroup draw_group,
+    WGPUBuffer vertex_buffer,
+    WGPUBuffer instance_buffer,
+    std::uint32_t instance_count,
+    WGPUBuffer index_buffer,
+    std::uint32_t index_count) {
+    if (pipeline != bound_pipeline) {
+        wgpuRenderPassEncoderSetPipeline(pass, pipeline);
+        bound_pipeline = pipeline;
+    }
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, frame_group, 0, nullptr);
+    wgpuRenderPassEncoderSetBindGroup(pass, 1, draw_group, 0, nullptr);
+    wgpuRenderPassEncoderSetVertexBuffer(
+        pass,
+        0,
+        vertex_buffer,
+        0,
+        WGPU_WHOLE_SIZE);
+    if (instance_buffer) {
+        wgpuRenderPassEncoderSetVertexBuffer(
+            pass,
+            1,
+            instance_buffer,
+            0,
+            WGPU_WHOLE_SIZE);
+    }
+    wgpuRenderPassEncoderSetIndexBuffer(
+        pass,
+        index_buffer,
+        WGPUIndexFormat_Uint32,
+        0,
+        WGPU_WHOLE_SIZE);
+    wgpuRenderPassEncoderDrawIndexed(
+        pass,
+        index_count,
+        instance_count,
+        0,
+        0,
+        0);
 }
 #endif
 
@@ -2982,49 +3055,13 @@ void write_standard_geometry_task(
         upstream::build_view_projection(camera, aspect, true);
 #if BBLITE_PBR_VARIANTS == 0
     // With no PBR family compiled, `write_pinned_geometry_task` does not
-    // exist, so this side owns the frame prologue it would have run: the
-    // reverse-Z scene block, the params buffer, and the previous
-    // view-projection tracking.
-    pinned_geometry_frame_group(state);
-    const upstream::SceneUniforms scene_block =
-        pinned_scene_block(scene, camera, geometry_matrix);
-    wgpuQueueWriteBuffer(
-        state.queue,
-        state.pinned_geometry_scene_uniforms,
-        0,
-        &scene_block,
-        sizeof(scene_block));
-    if (!geometry.pinned_geometry_params) {
-        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
-        descriptor.size = sizeof(PinnedGeometryParams);
-        descriptor.usage =
-            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-        geometry.pinned_geometry_params =
-            wgpuDeviceCreateBuffer(state.device, &descriptor);
-        if (!geometry.pinned_geometry_params) {
-            dawn_error("pinned geometry params buffer creation failed.");
-        }
-    }
-    if (!geometry.has_previous_view_projection) {
-        geometry.previous_view_projection = geometry_matrix;
-        geometry.has_previous_view_projection = true;
-    }
-    const PinnedGeometryParams params{
-        geometry.previous_view_projection,
-        {
-            static_cast<float>(camera.near_plane),
-            static_cast<float>(camera.far_plane),
-            0.0f,
-            0.0f,
-        },
-    };
-    wgpuQueueWriteBuffer(
-        state.queue,
-        geometry.pinned_geometry_params,
-        0,
-        &params,
-        sizeof(params));
-    geometry.previous_view_projection = geometry_matrix;
+    // exist, so this side owns the frame prologue it would have run.
+    write_pinned_geometry_prologue(
+        state,
+        scene,
+        camera,
+        geometry,
+        geometry_matrix);
 #else
     // The PBR write ran first at the shared call site and owns the
     // prologue; only the Standard draws are resolved here.
@@ -3910,99 +3947,17 @@ WGPURenderPipeline geometry_pipeline_for(
     return pipeline;
 }
 
-// Verbatim transcriptions of the pinned transmission scene-color grab
+// The pinned transmission scene-color grab
 // (frame-graph/transmission.ts BLIT_MSAA_SHADER: per-texel sample
 // average with manual bilinear filtering, read straight from the
 // multisampled attachment) and the pinned per-sample image processing
 // (frame-graph/image-processing-task.ts: exposure, optional tonemap,
-// gamma, contrast applied per MSAA sample, then averaged).
-// The frame texture the two fullscreen passes read back, and how one
-// texel is fetched from it. Under `BBLITE_MSAA=1` there is one sample
-// and nothing to average, so the binding is an ordinary texture and the
-// fetch is a plain load. Everything downstream -- the manual bilinear
-// filtering, the pinned image-processing math -- is the same text either
-// way, because it is the same contract.
-std::string frame_texture_binding(
-    const DawnState& state,
-    const char* binding,
-    const char* name) {
-    return std::string("@group(0)@binding(") + binding + ")var " +
-        name + ":" +
-        (state.multisampled() ? "texture_multisampled_2d<f32>"
-                              : "texture_2d<f32>") +
-        ";";
-}
-
-std::string frame_texel_average(
-    const DawnState& state,
-    const std::string& name) {
-    return state.multisampled()
-        ? "fn l(p:vec2i)->vec4f{let n=textureNumSamples(" + name +
-            ");var c=vec4f(0);for(var i=0u;i<n;i++){c+=textureLoad(" +
-            name + ",p,i);}return c/f32(n);}"
-        : "fn l(p:vec2i)->vec4f{return textureLoad(" + name + ",p,0);}";
-}
-
-std::string transmission_grab_wgsl(const DawnState& state) {
-    return frame_texture_binding(state, "0", "t") +
-        "struct "
-        "V{@builtin(position)p:vec4f,@location(0)u:vec2f};@vertex fn "
-        "vs(@builtin(vertex_index)i:u32)->V{var "
-        "p=array<vec2f,3>(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3));var "
-        "u=array<vec2f,3>(vec2f(0,1),vec2f(2,1),vec2f(0,-1));return "
-        "V(vec4f(p[i],0,1),u[i]);}" +
-        frame_texel_average(state, "t") +
-        "@fragment "
-        "fn fs(v:V)->@location(0)vec4f{let "
-        "d=vec2i(textureDimensions(t));let "
-        "q=clamp(v.u*vec2f(d)-.5,vec2f(0),vec2f(d-vec2i(1)));let "
-        "p=vec2i(floor(q));let f=fract(q);let "
-        "p1=min(p+vec2i(1),d-vec2i(1));return "
-        "mix(mix(l(p),l(vec2i(p1.x,p.y)),f.x),mix(l(vec2i(p.x,p1.y)),"
-        "l(p1),f.x),f.y);}";
-}
-
-std::string image_processing_wgsl(const DawnState& state) {
-    return std::string(
-               "struct P{e:f32,c:f32,t:f32,p:f32}\n"
-               "@group(0)@binding(0)var<uniform> p:P;\n"
-               "@vertex fn vs(@builtin(vertex_index)i:u32)->"
-               "@builtin(position) vec4f{var "
-               "a=array<vec2f,3>(vec2f(-1,-3),vec2f(3,1),vec2f(-1,1));"
-               "return vec4f(a[i],0,1);}\n"
-               "fn ip(r:vec4f)->vec4f{var c=r.rgb*p.e;\n"
-               "if(p.t>0.5){c=1.0-exp2(-1.590579*c);}\n"
-               "c=clamp(pow(max(c,vec3f(0)),vec3f(1/2.2)),vec3f(0),"
-               "vec3f(1));\n"
-               "let h=c*c*(3.0-2.0*c);\n"
-               "if(p.c<1.0){c=mix(vec3f(0.5),c,p.c);}else{c=mix(c,h,"
-               "p.c-1.0);}\n"
-               "return vec4f(max(c,vec3f(0)),r.a);}\n") +
-        frame_texture_binding(state, "1", "s") + "\n" +
-        "@fragment fn fs(@builtin(position) q:vec4f)->@location(0) "
-        "vec4f{let d=textureDimensions(s);let "
-        "px=clamp(vec2i(q.xy),vec2i(0),vec2i(d)-1);" +
-        (state.multisampled()
-             ? "let n=textureNumSamples(s);var c=vec4f(0);for(var "
-               "i=0u;i<n;i++){c+=ip(textureLoad(s,px,i));}return "
-               "c/f32(n);}"
-             : "return ip(textureLoad(s,px,0));}");
-}
-
-WGPUShaderModule create_inline_module(
-    DawnState& state,
-    const std::string& source,
-    const char* label) {
-    WGPUShaderSourceWGSL wgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
-    wgsl.code = string_view(source.c_str());
-    WGPUShaderModuleDescriptor descriptor{};
-    descriptor.nextInChain = &wgsl.chain;
-    descriptor.label = string_view(label);
-    WGPUShaderModule module =
-        wgpuDeviceCreateShaderModule(state.device, &descriptor);
-    if (!module) dawn_error(std::string("shader module ") + label);
-    return module;
-}
+// gamma, contrast applied per MSAA sample, then averaged) are deployed
+// from generation like every other pinned shader instead of living here
+// as C++ strings invisible to shader provenance. Under `BBLITE_MSAA=1`
+// there is one sample and nothing to average, so each pass loads its
+// `-single` sibling: an ordinary texture binding and a plain load around
+// the same pinned text.
 
 // Encodes the pinned mid-pass scene-color grab: the fullscreen
 // sample-averaging blit into transmission mip 0 followed by the
@@ -4011,22 +3966,26 @@ void encode_transmission_grab(
     DawnState& state,
     WGPUCommandEncoder encoder) {
     if (!state.transmission_grab_pipeline) {
-        state.transmission_grab_module = create_inline_module(
+        state.transmission_grab_vertex_module =
+            load_wgsl_module(state, "transmission-grab.vert");
+        state.transmission_grab_fragment_module = load_wgsl_module(
             state,
-            transmission_grab_wgsl(state),
-            "transmission-grab");
+            state.multisampled()
+                ? "transmission-grab.frag"
+                : "transmission-grab-single.frag");
         WGPURenderPipelineDescriptor descriptor =
             WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-        descriptor.vertex.module = state.transmission_grab_module;
-        descriptor.vertex.entryPoint = string_view("vs");
+        descriptor.vertex.module =
+            state.transmission_grab_vertex_module;
+        descriptor.vertex.entryPoint = string_view("mainVertex");
         descriptor.primitive.topology =
             WGPUPrimitiveTopology_TriangleList;
         WGPUColorTargetState color_target =
             WGPU_COLOR_TARGET_STATE_INIT;
         color_target.format = WGPUTextureFormat_RGBA16Float;
         WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-        fragment.module = state.transmission_grab_module;
-        fragment.entryPoint = string_view("fs");
+        fragment.module = state.transmission_grab_fragment_module;
+        fragment.entryPoint = string_view("mainFragment");
         fragment.targetCount = 1;
         fragment.targets = &color_target;
         descriptor.fragment = &fragment;
@@ -4094,22 +4053,25 @@ void encode_image_processing(
     WGPUTextureView surface_view,
     const Scene& scene) {
     if (!state.image_processing_pipeline) {
-        state.image_processing_module = create_inline_module(
+        state.image_processing_vertex_module =
+            load_wgsl_module(state, "image-processing-samples.vert");
+        state.image_processing_fragment_module = load_wgsl_module(
             state,
-            image_processing_wgsl(state),
-            "image-processing");
+            state.multisampled()
+                ? "image-processing-samples.frag"
+                : "image-processing-samples-single.frag");
         WGPURenderPipelineDescriptor descriptor =
             WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-        descriptor.vertex.module = state.image_processing_module;
-        descriptor.vertex.entryPoint = string_view("vs");
+        descriptor.vertex.module = state.image_processing_vertex_module;
+        descriptor.vertex.entryPoint = string_view("mainVertex");
         descriptor.primitive.topology =
             WGPUPrimitiveTopology_TriangleList;
         WGPUColorTargetState color_target =
             WGPU_COLOR_TARGET_STATE_INIT;
         color_target.format = state.surface_format;
         WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-        fragment.module = state.image_processing_module;
-        fragment.entryPoint = string_view("fs");
+        fragment.module = state.image_processing_fragment_module;
+        fragment.entryPoint = string_view("mainFragment");
         fragment.targetCount = 1;
         fragment.targets = &color_target;
         descriptor.fragment = &fragment;
@@ -4671,47 +4633,28 @@ void save_dawn_texture_file(
                 "Unable to open HDR diagnostic output '" + raw_path +
                 "'.");
         }
-        for (std::uint32_t y = 0; y < height; ++y) {
-            raw.write(
-                reinterpret_cast<const char*>(
-                    mapped +
-                    static_cast<std::size_t>(y) * aligned_row_bytes),
-                source_row_bytes);
-        }
+        write_readback_raw_rows(
+            raw,
+            mapped,
+            height,
+            aligned_row_bytes,
+            source_row_bytes);
     }
     const std::uint32_t output_row_bytes = width * 4;
-    std::vector<std::uint8_t> rgba(
-        static_cast<std::size_t>(output_row_bytes) * height);
-    for (std::uint32_t y = 0; y < height; ++y) {
-        const std::uint8_t* source_row =
-            mapped + static_cast<std::size_t>(y) * aligned_row_bytes;
-        std::uint8_t* destination_row =
-            rgba.data() + static_cast<std::size_t>(y) * output_row_bytes;
-        if (format == WGPUTextureFormat_RGBA16Float) {
-            const auto* source_pixels =
-                reinterpret_cast<const std::uint16_t*>(source_row);
-            for (std::uint32_t x = 0; x < width; ++x) {
-                for (
-                    std::uint32_t channel = 0;
-                    channel < 4;
-                    ++channel) {
-                    destination_row[x * 4 + channel] =
-                        half_to_byte(source_pixels[x * 4 + channel]);
-                }
-            }
-        } else if (format == WGPUTextureFormat_R16Float) {
-            const auto* source_pixels =
-                reinterpret_cast<const std::uint16_t*>(source_row);
-            for (std::uint32_t x = 0; x < width; ++x) {
-                destination_row[x * 4] = half_to_byte(source_pixels[x]);
-                destination_row[x * 4 + 1] = 0;
-                destination_row[x * 4 + 2] = 0;
-                destination_row[x * 4 + 3] = 255;
-            }
-        } else {
-            std::memcpy(destination_row, source_row, output_row_bytes);
-        }
-    }
+    // The shared row conversion (pal_gpu_shared.hpp); only the WebGPU
+    // format enum is translated here.
+    const ReadbackFormatClass format_class =
+        format == WGPUTextureFormat_RGBA16Float
+            ? ReadbackFormatClass::rgba16_float
+            : format == WGPUTextureFormat_R16Float
+                ? ReadbackFormatClass::r16_float
+                : ReadbackFormatClass::rgba8;
+    std::vector<std::uint8_t> rgba = convert_readback_rows(
+        mapped,
+        width,
+        height,
+        aligned_row_bytes,
+        format_class);
     wgpuBufferUnmap(readback);
     wgpuBufferRelease(readback);
     save_capture_png(rgba, width, height, output_row_bytes, false, path);
@@ -5053,19 +4996,17 @@ bool run_dawn_engine(Engine& engine) {
         state.msaa_color_view =
             wgpuTextureCreateView(state.msaa_color, nullptr);
         if (scene.transmission_enabled) {
-            // The pinned refraction target: 1024x1024 rgba16float
-            // with the full chain minus the fixed 4-mip LOD bias.
-            constexpr std::uint32_t transmission_size = 1024;
-            constexpr std::uint32_t transmission_full_mips = 11;
-            state.transmission_mip_count = transmission_full_mips - 4;
+            // The pinned refraction target: the shared fixed-extent,
+            // shortened-chain contract (pal_gpu_shared.hpp), rgba16float.
+            state.transmission_mip_count = transmission_grab_mip_count();
             WGPUTextureDescriptor transmission_descriptor =
                 WGPU_TEXTURE_DESCRIPTOR_INIT;
             transmission_descriptor.usage =
                 WGPUTextureUsage_RenderAttachment |
                 WGPUTextureUsage_TextureBinding;
             transmission_descriptor.size = {
-                transmission_size,
-                transmission_size,
+                transmission_grab_size,
+                transmission_grab_size,
                 1,
             };
             transmission_descriptor.format =
@@ -5187,8 +5128,8 @@ bool run_dawn_engine(Engine& engine) {
             WGPU_SAMPLER_DESCRIPTOR_INIT;
         state.nearest_sampler =
             wgpuDeviceCreateSampler(state.device, &nearest_descriptor);
-        // The pinned scene-color sampler: repeat trilinear with
-        // anisotropy 4 (getTrilinearAnisotropicSampler).
+        // The pinned scene-color sampler: repeat trilinear with the
+        // shared anisotropy (getTrilinearAnisotropicSampler).
         WGPUSamplerDescriptor transmission_descriptor =
             WGPU_SAMPLER_DESCRIPTOR_INIT;
         transmission_descriptor.addressModeU = WGPUAddressMode_Repeat;
@@ -5198,7 +5139,9 @@ bool run_dawn_engine(Engine& engine) {
         transmission_descriptor.minFilter = WGPUFilterMode_Linear;
         transmission_descriptor.mipmapFilter =
             WGPUMipmapFilterMode_Linear;
-        transmission_descriptor.maxAnisotropy = 4;
+        transmission_descriptor.maxAnisotropy =
+            static_cast<std::uint16_t>(
+                transmission_sampler_max_anisotropy);
         state.transmission_sampler =
             wgpuDeviceCreateSampler(state.device, &transmission_descriptor);
     }
@@ -5391,7 +5334,10 @@ bool run_dawn_engine(Engine& engine) {
                                         .float_size *
                                     4ull,
                                 16ull)
-                          : sizeof(upstream::PbrUniforms)) +
+                          // The pinned material blocks own every PBR
+                          // draw; like the Standard arm this buffer is
+                          // never written for them, so it stays a stub.
+                          : 16ull) +
              15) &
             ~15ull;
         mesh.material_uniforms = create_buffer(
@@ -5463,7 +5409,7 @@ bool run_dawn_engine(Engine& engine) {
                 nullptr);
             mesh.views[slot_row.slot] = mesh.owned_views[slot_row.slot];
             mesh.samplers[slot_row.slot] = create_texture_sampler(
-                state,
+                state.device,
                 slot_data
                     ? slot_data->sampler
                     : TextureSamplerState{});
@@ -6480,21 +6426,13 @@ bool run_dawn_engine(Engine& engine) {
                         draw_mesh.owns_morph_buffers &&
                         draw_mesh.morph_weights_version !=
                             draw_record.morph_weights_version) {
-                        const std::size_t target_count =
-                            engine.geometries[draw.item.geometry]
-                                .morph_positions.size();
-                        std::vector<float> weights(target_count, 0.0f);
-                        for (
-                            std::size_t target = 0;
-                            target < target_count;
-                            ++target) {
-                            weights[target] =
-                                target <
-                                draw_record.morph_storage_weights.size()
-                                    ? draw_record
-                                          .morph_storage_weights[target]
-                                    : 0.0f;
-                        }
+                        // The shared value packer behind the blob's
+                        // constant header; this backend rewrites just the
+                        // weight span.
+                        const std::vector<float> weights =
+                            morph_weight_values(
+                                engine.geometries[draw.item.geometry],
+                                draw_record);
                         wgpuQueueWriteBuffer(
                             state.queue,
                             draw_mesh.morph_weights,
@@ -6669,46 +6607,16 @@ bool run_dawn_engine(Engine& engine) {
                                 variant);
                             variant_mesh.pinned_mirrored_vertices =
                                 conventions.mirrored_vertices;
-                            const upstream::MeshUniforms mesh_block =
-                                pinned_mesh_block(
-                                    scene,
-                                    engine,
-                                    pinned_draw_world(
-                                        conventions.skeleton_draw,
-                                        conventions
-                                            .world_from_palette,
-                                        upstream::pbr_variants[variant]
-                                            .uses_local_position,
-                                        variant_record),
-                                    draw.item.mesh.value);
-                            wgpuQueueWriteBuffer(
-                                state.queue,
-                                variant_mesh.pinned_mesh_uniforms,
-                                0,
-                                &mesh_block,
-                                sizeof(mesh_block));
-                            const std::size_t material_bytes =
-                                upstream::pbr_variants[variant]
-                                    .material_ubo_bytes;
-                            std::vector<std::uint8_t> material_block(
-                                material_bytes,
-                                0);
-                            upstream::write_pbr_variant_material(
+                            write_pinned_draw_blocks(
+                                state,
+                                scene,
+                                engine,
+                                draw,
                                 variant,
-                                engine.materials[draw.item.material.value],
-                                material_block.data(),
-                                material_bytes,
-                                // The refraction thickness scale the pin's
-                                // fragment reads off its mesh world, whose
-                                // scale this backend bakes into vertices.
-                                engine.meshes[draw.item.mesh.value]
-                                    .baked_world_scale);
-                            wgpuQueueWriteBuffer(
-                                state.queue,
-                                variant_mesh.pinned_material_uniforms,
-                                0,
-                                material_block.data(),
-                                material_bytes);
+                                conventions.skeleton_draw,
+                                conventions.world_from_palette,
+                                variant_mesh.pinned_mesh_uniforms,
+                                variant_mesh.pinned_material_uniforms);
                         }
 #else
                         dawn_error(
@@ -6963,25 +6871,30 @@ bool run_dawn_engine(Engine& engine) {
                 // pipeline below.
                 if (mesh.pinned_group) {
                     const std::size_t variant = mesh.pinned_variant;
-                    WGPURenderPipeline variant_pipeline =
+                    // The thin-instance arm's second stream and the instance
+                    // count; a non-instanced variant binds neither and draws
+                    // once.
+                    WGPUBuffer pinned_instance_buffer = nullptr;
+                    std::uint32_t pinned_instances = 1;
+#if BBLITE_GPU_INSTANCING
+                    if (pinned_record_instanced(
+                            engine.meshes[draw.item.mesh.value]) &&
+                        mesh.pinned_instances) {
+                        pinned_instance_buffer = mesh.pinned_instances;
+                        pinned_instances = mesh.instance_count;
+                    }
+#endif
+                    encode_variant_draw(
+                        list_pass,
                         pinned_variant_pipeline(
                             state,
                             variant,
                             draw.pipeline,
                             samples,
-                            pass_has_depth);
-                    if (variant_pipeline != bound_pipeline) {
-                        wgpuRenderPassEncoderSetPipeline(
-                            list_pass, variant_pipeline);
-                        bound_pipeline = variant_pipeline;
-                    }
-                    wgpuRenderPassEncoderSetBindGroup(
-                        list_pass, 0, pinned_frame_group(state), 0, nullptr);
-                    wgpuRenderPassEncoderSetBindGroup(
-                        list_pass, 1, mesh.pinned_group, 0, nullptr);
-                    wgpuRenderPassEncoderSetVertexBuffer(
-                        list_pass,
-                        0,
+                            pass_has_depth),
+                        bound_pipeline,
+                        pinned_frame_group(state),
+                        mesh.pinned_group,
                         // Skinned and palette-world draws read the mirrored
                         // buffer; the palette carries the mirror on both
                         // sides, so unmirrored vertices would apply it three
@@ -6989,38 +6902,10 @@ bool run_dawn_engine(Engine& engine) {
                         mesh.pinned_mirrored_vertices
                             ? mesh.vertices
                             : mesh.pinned_vertices,
-                        0,
-                        WGPU_WHOLE_SIZE);
-                    // The thin-instance arm's second stream and the instance
-                    // count; a non-instanced variant binds neither and draws
-                    // once.
-                    std::uint32_t pinned_instances = 1;
-#if BBLITE_GPU_INSTANCING
-                    if (pinned_record_instanced(
-                            engine.meshes[draw.item.mesh.value]) &&
-                        mesh.pinned_instances) {
-                        wgpuRenderPassEncoderSetVertexBuffer(
-                            list_pass,
-                            1,
-                            mesh.pinned_instances,
-                            0,
-                            WGPU_WHOLE_SIZE);
-                        pinned_instances = mesh.instance_count;
-                    }
-#endif
-                    wgpuRenderPassEncoderSetIndexBuffer(
-                        list_pass,
-                        mesh.indices,
-                        WGPUIndexFormat_Uint32,
-                        0,
-                        WGPU_WHOLE_SIZE);
-                    wgpuRenderPassEncoderDrawIndexed(
-                        list_pass,
-                        mesh.index_count,
+                        pinned_instance_buffer,
                         pinned_instances,
-                        0,
-                        0,
-                        0);
+                        mesh.indices,
+                        mesh.index_count);
                     continue;
                 }
 #endif
@@ -7051,54 +6936,35 @@ bool run_dawn_engine(Engine& engine) {
                                 ? mesh.emissive_render_view
                                 : nullptr);
                     }
-                    WGPURenderPipeline variant_pipeline =
+                    WGPUBuffer standard_instance_buffer = nullptr;
+                    std::uint32_t standard_instances = 1;
+#if BBLITE_GPU_INSTANCING
+                    if (pinned_record_instanced(
+                            engine.meshes[draw.item.mesh.value]) &&
+                        mesh.instances) {
+                        standard_instance_buffer = mesh.instances;
+                        standard_instances = mesh.instance_count;
+                    }
+#endif
+                    encode_variant_draw(
+                        list_pass,
                         standard_variant_pipeline(
                             state,
                             variant,
                             draw.pipeline,
                             samples,
                             pass_has_depth,
-                            (mesh.standard_group_key & 1) != 0);
-                    if (variant_pipeline != bound_pipeline) {
-                        wgpuRenderPassEncoderSetPipeline(
-                            list_pass, variant_pipeline);
-                        bound_pipeline = variant_pipeline;
-                    }
-                    wgpuRenderPassEncoderSetBindGroup(
-                        list_pass, 0, pinned_frame_group(state), 0, nullptr);
-                    wgpuRenderPassEncoderSetBindGroup(
-                        list_pass, 1, mesh.standard_group, 0, nullptr);
-                    // The Standard families carry no glTF X-mirror: the
-                    // baked buffer is the pin's own convention already.
-                    wgpuRenderPassEncoderSetVertexBuffer(
-                        list_pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
-                    std::uint32_t standard_instances = 1;
-#if BBLITE_GPU_INSTANCING
-                    if (pinned_record_instanced(
-                            engine.meshes[draw.item.mesh.value]) &&
-                        mesh.instances) {
-                        wgpuRenderPassEncoderSetVertexBuffer(
-                            list_pass,
-                            1,
-                            mesh.instances,
-                            0,
-                            WGPU_WHOLE_SIZE);
-                        standard_instances = mesh.instance_count;
-                    }
-#endif
-                    wgpuRenderPassEncoderSetIndexBuffer(
-                        list_pass,
-                        mesh.indices,
-                        WGPUIndexFormat_Uint32,
-                        0,
-                        WGPU_WHOLE_SIZE);
-                    wgpuRenderPassEncoderDrawIndexed(
-                        list_pass,
-                        mesh.index_count,
+                            (mesh.standard_group_key & 1) != 0),
+                        bound_pipeline,
+                        pinned_frame_group(state),
+                        mesh.standard_group,
+                        // The Standard families carry no glTF X-mirror: the
+                        // baked buffer is the pin's own convention already.
+                        mesh.vertices,
+                        standard_instance_buffer,
                         standard_instances,
-                        0,
-                        0,
-                        0);
+                        mesh.indices,
+                        mesh.index_count);
                     continue;
                 }
                 if (
@@ -7274,10 +7140,7 @@ bool run_dawn_engine(Engine& engine) {
                             : nullptr;
                     if (
                         !transmission_copied &&
-                        material &&
-                        (material->transmission_factor > 0.0f ||
-                         !material->transmission_texture.bytes
-                              .empty())) {
+                        transmissive_draw_material(material)) {
                         // The pinned mid-pass break: grab the scene
                         // color from the preserved multisampled
                         // attachment, then resume loading color and
@@ -7890,53 +7753,25 @@ bool run_dawn_engine(Engine& engine) {
                                         "pinned geometry draw reached the "
                                         "encoder with no bindings.");
                                 }
-                                WGPURenderPipeline variant_pipeline =
+                                encode_variant_draw(
+                                    task_pass,
                                     pinned_variant_pipeline(
                                         state,
                                         variant,
                                         draw.pipeline,
                                         samples,
                                         true,
-                                        &task);
-                                if (variant_pipeline != bound_pipeline) {
-                                    wgpuRenderPassEncoderSetPipeline(
-                                        task_pass,
-                                        variant_pipeline);
-                                    bound_pipeline = variant_pipeline;
-                                }
-                                wgpuRenderPassEncoderSetBindGroup(
-                                    task_pass,
-                                    0,
+                                        &task),
+                                    bound_pipeline,
                                     pinned_geometry_frame_group(state),
-                                    0,
-                                    nullptr);
-                                wgpuRenderPassEncoderSetBindGroup(
-                                    task_pass,
-                                    1,
                                     draw_state_it->second.group,
-                                    0,
-                                    nullptr);
-                                wgpuRenderPassEncoderSetVertexBuffer(
-                                    task_pass,
-                                    0,
                                     mesh.pinned_mirrored_vertices
                                         ? mesh.vertices
                                         : mesh.pinned_vertices,
-                                    0,
-                                    WGPU_WHOLE_SIZE);
-                                wgpuRenderPassEncoderSetIndexBuffer(
-                                    task_pass,
-                                    mesh.indices,
-                                    WGPUIndexFormat_Uint32,
-                                    0,
-                                    WGPU_WHOLE_SIZE);
-                                wgpuRenderPassEncoderDrawIndexed(
-                                    task_pass,
-                                    mesh.index_count,
+                                    nullptr,
                                     1,
-                                    0,
-                                    0,
-                                    0);
+                                    mesh.indices,
+                                    mesh.index_count);
                                 continue;
                             }
 #endif
@@ -7978,7 +7813,22 @@ bool run_dawn_engine(Engine& engine) {
                                         "standard geometry draw reached "
                                         "the encoder with no bindings.");
                                 }
-                                WGPURenderPipeline variant_pipeline =
+                                WGPUBuffer standard_instance_buffer =
+                                    nullptr;
+                                std::uint32_t standard_instances = 1;
+#if BBLITE_GPU_INSTANCING
+                                if (pinned_record_instanced(
+                                        engine.meshes[
+                                            draw.item.mesh.value]) &&
+                                    mesh.instances) {
+                                    standard_instance_buffer =
+                                        mesh.instances;
+                                    standard_instances =
+                                        mesh.instance_count;
+                                }
+#endif
+                                encode_variant_draw(
+                                    task_pass,
                                     standard_variant_pipeline(
                                         state,
                                         variant,
@@ -7986,60 +7836,15 @@ bool run_dawn_engine(Engine& engine) {
                                         samples,
                                         true,
                                         false,
-                                        &task);
-                                if (variant_pipeline != bound_pipeline) {
-                                    wgpuRenderPassEncoderSetPipeline(
-                                        task_pass,
-                                        variant_pipeline);
-                                    bound_pipeline = variant_pipeline;
-                                }
-                                wgpuRenderPassEncoderSetBindGroup(
-                                    task_pass,
-                                    0,
+                                        &task),
+                                    bound_pipeline,
                                     pinned_geometry_frame_group(state),
-                                    0,
-                                    nullptr);
-                                wgpuRenderPassEncoderSetBindGroup(
-                                    task_pass,
-                                    1,
                                     draw_state_it->second.group,
-                                    0,
-                                    nullptr);
-                                wgpuRenderPassEncoderSetVertexBuffer(
-                                    task_pass,
-                                    0,
                                     mesh.vertices,
-                                    0,
-                                    WGPU_WHOLE_SIZE);
-                                std::uint32_t standard_instances = 1;
-#if BBLITE_GPU_INSTANCING
-                                if (pinned_record_instanced(
-                                        engine.meshes[
-                                            draw.item.mesh.value]) &&
-                                    mesh.instances) {
-                                    wgpuRenderPassEncoderSetVertexBuffer(
-                                        task_pass,
-                                        1,
-                                        mesh.instances,
-                                        0,
-                                        WGPU_WHOLE_SIZE);
-                                    standard_instances =
-                                        mesh.instance_count;
-                                }
-#endif
-                                wgpuRenderPassEncoderSetIndexBuffer(
-                                    task_pass,
-                                    mesh.indices,
-                                    WGPUIndexFormat_Uint32,
-                                    0,
-                                    WGPU_WHOLE_SIZE);
-                                wgpuRenderPassEncoderDrawIndexed(
-                                    task_pass,
-                                    mesh.index_count,
+                                    standard_instance_buffer,
                                     standard_instances,
-                                    0,
-                                    0,
-                                    0);
+                                    mesh.indices,
+                                    mesh.index_count);
                                 continue;
                             }
 #endif

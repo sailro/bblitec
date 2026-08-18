@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "pal_dawn_shared.hpp"
+#include "pal_gpu_shared.hpp"
 
 namespace bbl::pal {
 
@@ -78,12 +79,6 @@ inline WGPUBlendFactor dawn_sprite_blend_factor(SpriteBlendFactor factor) {
             return WGPUBlendFactor_DstAlpha;
     }
     return WGPUBlendFactor_One;
-}
-
-inline WGPUFilterMode dawn_sprite_filter(TextureFilter filter) {
-    return filter == TextureFilter::nearest
-        ? WGPUFilterMode_Nearest
-        : WGPUFilterMode_Linear;
 }
 
 inline WGPUBuffer dawn_sprite_uniform_buffer(WGPUDevice device) {
@@ -132,19 +127,7 @@ inline DawnSpritePass create_dawn_sprite_pass(
     pass.fragment_module = load_wgsl_module(device, "sprite.frag");
 
     const SpriteBlendDescriptor blend =
-        engine.sprite_layers[renderer.layers.front().value].blend;
-    for (const Sprite2DLayerHandle& handle : renderer.layers) {
-        const SpriteBlendDescriptor& other =
-            engine.sprite_layers[handle.value].blend;
-        if (other.color.src != blend.color.src ||
-            other.color.dst != blend.color.dst ||
-            other.alpha.src != blend.alpha.src ||
-            other.alpha.dst != blend.alpha.dst) {
-            throw std::runtime_error(
-                "Sprite layers with different blend modes need a "
-                "pipeline each.");
-        }
-    }
+        sprite_renderer_blend(engine, renderer);
 
     // Group 0 is unused by the specialized WGSL and is declared empty so
     // the pipeline layout's group indexes line up with it.
@@ -200,19 +183,48 @@ inline DawnSpritePass create_dawn_sprite_pass(
             wgpuDeviceCreateBindGroupLayout(device, &fragment_layout);
     }
 
-    // sprite-pipeline.ts: the pure-2D instance layout at its pinned byte
-    // offsets, stepped per instance.
-    const std::array<WGPUVertexAttribute, 6> attributes{
-        WGPUVertexAttribute{nullptr, WGPUVertexFormat_Float32x2, 0, 0},
-        WGPUVertexAttribute{nullptr, WGPUVertexFormat_Float32x2, 8, 1},
-        WGPUVertexAttribute{nullptr, WGPUVertexFormat_Float32x2, 16, 2},
-        WGPUVertexAttribute{nullptr, WGPUVertexFormat_Float32x2, 24, 3},
-        WGPUVertexAttribute{nullptr, WGPUVertexFormat_Float32, 32, 4},
-        WGPUVertexAttribute{nullptr, WGPUVertexFormat_Float32x4, 36, 5},
-    };
+    // The generated instance layout (sprite_layer.hpp, from
+    // sprite-pipeline.ts): the pure-2D attributes at their pinned byte
+    // offsets, stepped per instance. Only the float count is translated
+    // to this API's vertex formats.
+    std::array<
+        WGPUVertexAttribute,
+        upstream::sprite_instance_attributes.size()>
+        attributes{};
+    for (
+        std::size_t index = 0;
+        index < upstream::sprite_instance_attributes.size();
+        ++index) {
+        const upstream::SpriteInstanceAttribute& row =
+            upstream::sprite_instance_attributes[index];
+        WGPUVertexFormat format = WGPUVertexFormat_Float32;
+        switch (row.float_count) {
+            case 1u:
+                format = WGPUVertexFormat_Float32;
+                break;
+            case 2u:
+                format = WGPUVertexFormat_Float32x2;
+                break;
+            case 3u:
+                format = WGPUVertexFormat_Float32x3;
+                break;
+            case 4u:
+                format = WGPUVertexFormat_Float32x4;
+                break;
+            default:
+                throw std::runtime_error(
+                    "Sprite instance attribute has an unsupported float "
+                    "count.");
+        }
+        attributes[index] = WGPUVertexAttribute{
+            nullptr,
+            format,
+            row.byte_offset,
+            row.shader_location};
+    }
     WGPUVertexBufferLayout instance_layout = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
     instance_layout.stepMode = WGPUVertexStepMode_Instance;
-    instance_layout.arrayStride = 52;
+    instance_layout.arrayStride = upstream::sprite_instance_stride_bytes;
     instance_layout.attributeCount =
         static_cast<std::uint32_t>(attributes.size());
     instance_layout.attributes = attributes.data();
@@ -313,20 +325,10 @@ inline DawnSpritePass create_dawn_sprite_pass(
             &upload_size);
         gpu.atlas_view = wgpuTextureCreateView(gpu.atlas, nullptr);
 
-        // The pinned sampler: clamp both axes, no mip chain, and the
-        // filter `sampling` chose.
-        WGPUSamplerDescriptor sampler_descriptor =
-            WGPU_SAMPLER_DESCRIPTOR_INIT;
-        sampler_descriptor.addressModeU = WGPUAddressMode_ClampToEdge;
-        sampler_descriptor.addressModeV = WGPUAddressMode_ClampToEdge;
-        sampler_descriptor.addressModeW = WGPUAddressMode_ClampToEdge;
-        sampler_descriptor.minFilter =
-            dawn_sprite_filter(atlas.sampler.min_filter);
-        sampler_descriptor.magFilter =
-            dawn_sprite_filter(atlas.sampler.mag_filter);
-        sampler_descriptor.mipmapFilter = WGPUMipmapFilterMode_Nearest;
-        sampler_descriptor.maxAnisotropy = 1;
-        gpu.sampler = wgpuDeviceCreateSampler(device, &sampler_descriptor);
+        // The pinned sampler, derived from the record like the SDL_GPU
+        // pass: the atlas loader stamps clamp both axes, no mip chain,
+        // and the filter `sampling` chose.
+        gpu.sampler = create_texture_sampler(device, atlas.sampler);
 
         WGPUBindGroupEntry vertex_binding = WGPU_BIND_GROUP_ENTRY_INIT;
         vertex_binding.binding = 0;
@@ -424,20 +426,10 @@ inline void record_dawn_sprite_pass(
     wgpuRenderPassEncoderSetIndexBuffer(
         encoder, pass.index_buffer, WGPUIndexFormat_Uint16, 0, 12);
 
-    // `spriteRendererUpdate` sorts the renderer's layers by `order` every
-    // frame, so registration order is not the draw order -- `layer.order`
-    // is. The sort is stable, which is what decides equal orders.
-    std::vector<std::size_t> draw_order(renderer.layers.size());
-    for (std::size_t index = 0; index < draw_order.size(); ++index) {
-        draw_order[index] = index;
-    }
-    std::stable_sort(
-        draw_order.begin(),
-        draw_order.end(),
-        [&](std::size_t left, std::size_t right) {
-            return engine.sprite_layers[renderer.layers[left].value].order <
-                engine.sprite_layers[renderer.layers[right].value].order;
-        });
+    // The per-frame layer order (pal_gpu_shared.hpp): the pinned
+    // by-`order` stable sort both backends draw with.
+    const std::vector<std::size_t> draw_order =
+        sprite_layer_draw_order(engine, renderer);
     for (const std::size_t index : draw_order) {
         const Sprite2DLayerRecord& layer =
             engine.sprite_layers[renderer.layers[index].value];

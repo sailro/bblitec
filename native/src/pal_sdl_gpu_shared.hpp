@@ -94,52 +94,31 @@ inline void save_texture_png(
             throw std::runtime_error(
                 "Unable to open HDR diagnostic output '" + raw_path + "'.");
         }
-        for (std::uint32_t y = 0; y < height; ++y) {
-            raw.write(
-                reinterpret_cast<const char*>(
-                    mapped + static_cast<std::size_t>(y) * aligned_row_bytes),
-                source_row_bytes);
-        }
+        write_readback_raw_rows(
+            raw,
+            mapped,
+            height,
+            aligned_row_bytes,
+            source_row_bytes);
     }
     const std::uint32_t output_row_bytes = width * 4;
-    std::vector<std::uint8_t> rgba(
-        static_cast<std::size_t>(output_row_bytes) * height);
-    const bool bgra =
-        format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM ||
-        format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB;
-    for (std::uint32_t y = 0; y < height; ++y) {
-        const std::uint8_t* source_row = mapped + static_cast<std::size_t>(y) * aligned_row_bytes;
-        std::uint8_t* destination_row =
-            rgba.data() + static_cast<std::size_t>(y) * output_row_bytes;
-        if (format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT) {
-            const auto* source_pixels =
-                reinterpret_cast<const std::uint16_t*>(source_row);
-            for (std::uint32_t x = 0; x < width; ++x) {
-                for (std::uint32_t channel = 0; channel < 4; ++channel) {
-                    destination_row[x * 4 + channel] =
-                        half_to_byte(source_pixels[x * 4 + channel]);
-                }
-            }
-        } else if (format == SDL_GPU_TEXTUREFORMAT_R16_FLOAT) {
-            const auto* source_pixels =
-                reinterpret_cast<const std::uint16_t*>(source_row);
-            for (std::uint32_t x = 0; x < width; ++x) {
-                destination_row[x * 4] = half_to_byte(source_pixels[x]);
-                destination_row[x * 4 + 1] = 0;
-                destination_row[x * 4 + 2] = 0;
-                destination_row[x * 4 + 3] = 255;
-            }
-        } else {
-            std::memcpy(destination_row, source_row, output_row_bytes);
-            if (bgra) {
-                for (std::uint32_t x = 0; x < width; ++x) {
-                    std::swap(
-                        destination_row[x * 4],
-                        destination_row[x * 4 + 2]);
-                }
-            }
-        }
-    }
+    // The shared row conversion (pal_gpu_shared.hpp); only the SDL_GPU
+    // format enum is translated here.
+    const ReadbackFormatClass format_class =
+        format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
+            ? ReadbackFormatClass::rgba16_float
+            : format == SDL_GPU_TEXTUREFORMAT_R16_FLOAT
+                ? ReadbackFormatClass::r16_float
+                : format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM ||
+                        format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB
+                    ? ReadbackFormatClass::bgra8
+                    : ReadbackFormatClass::rgba8;
+    std::vector<std::uint8_t> rgba = convert_readback_rows(
+        mapped,
+        width,
+        height,
+        aligned_row_bytes,
+        format_class);
     SDL_UnmapGPUTransferBuffer(device, transfer);
     SDL_Surface* surface = SDL_CreateSurfaceFrom(
         static_cast<int>(width),

@@ -17,6 +17,7 @@
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -340,6 +341,50 @@ inline WGPUShaderModule load_wgsl_module(
         dawn_error("wgpuDeviceCreateShaderModule " + base_name);
     }
     return module;
+}
+
+/**
+ * A sampler from a record's `TextureSamplerState`, the Dawn mirror of the
+ * SDL_GPU header's `create_texture_sampler`: every renderer that binds a
+ * record-described texture (material slots, sprite atlases) derives the
+ * descriptor here instead of hardcoding one.
+ */
+inline WGPUSampler create_texture_sampler(
+    WGPUDevice device,
+    const TextureSamplerState& sampler) {
+    const auto filter = [](TextureFilter value) {
+        return value == TextureFilter::nearest
+            ? WGPUFilterMode_Nearest
+            : WGPUFilterMode_Linear;
+    };
+    const auto address = [](TextureAddressMode value) {
+        return value == TextureAddressMode::clamp
+            ? WGPUAddressMode_ClampToEdge
+            : value == TextureAddressMode::mirror
+                ? WGPUAddressMode_MirrorRepeat
+                : WGPUAddressMode_Repeat;
+    };
+    WGPUSamplerDescriptor descriptor = WGPU_SAMPLER_DESCRIPTOR_INIT;
+    descriptor.minFilter = filter(sampler.min_filter);
+    descriptor.magFilter = filter(sampler.mag_filter);
+    descriptor.mipmapFilter =
+        sampler.mipmap_mode == TextureMipmapMode::nearest
+            ? WGPUMipmapFilterMode_Nearest
+            : WGPUMipmapFilterMode_Linear;
+    descriptor.addressModeU = address(sampler.address_u);
+    descriptor.addressModeV = address(sampler.address_v);
+    // Mirror the pinned descriptor exactly: W stays at the WebGPU
+    // clamp default, and only the noMip path overrides the LOD clamp
+    // (gltf-sampler-desc.ts leaves lodMaxClamp at the default 32
+    // otherwise).
+    if (sampler.max_lod < 32.0f) {
+        descriptor.lodMaxClamp = sampler.max_lod;
+    }
+    descriptor.maxAnisotropy = static_cast<std::uint16_t>(
+        std::max(1.0f, sampler.max_anisotropy));
+    WGPUSampler result = wgpuDeviceCreateSampler(device, &descriptor);
+    if (!result) dawn_error("wgpuDeviceCreateSampler material");
+    return result;
 }
 
 inline void save_capture_png(

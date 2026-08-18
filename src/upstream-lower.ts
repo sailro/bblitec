@@ -35,6 +35,11 @@ import {
     type PinnedStandardSelector,
     type PinnedStandardVariantManifestEntry,
 } from "./pinned-standard-variants.js";
+import {
+    extractPackagedTemplateLiteral,
+    extractWgslFunction,
+    readPinnedLibraryModule,
+} from "./pinned-shader-composer.js";
 
 /**
  * The byte count `shader/scene-uniforms-size.ts` publishes for the scene block.
@@ -462,6 +467,14 @@ class GeneratedSourceWriter {
                 { modulePath: "src/loader-gltf/gltf-ext-lights-image-based.ts", symbolName: "applyAsset" },
                 { modulePath: "src/loader-gltf/gltf-ext-dielectric.ts", symbolName: "applyMaterial" },
                 { modulePath: "src/loader-gltf/gltf-ext-iridescence.ts", symbolName: "applyMaterial" },
+                { modulePath: "src/math/mat4-multiply-into.ts", symbolName: "mat4MultiplyInto" },
+                { modulePath: "src/math/mat4-compose-into.ts", symbolName: "mat4ComposeInto" },
+                { modulePath: "src/loader-gltf/gltf-parser.ts", symbolName: "RH_TO_LH_ROOT" },
+                { modulePath: "src/loader-gltf/gltf-ext-lights-image-based.ts", symbolName: "irradianceCoefficientsToPolynomial" },
+                { modulePath: "src/loader-gltf/gltf-ext-lights-image-based.ts", symbolName: "envYawFromQuaternion" },
+                { modulePath: "src/loader-gltf/ibl-env-assembly.ts", symbolName: "generateBrdfLut" },
+                { modulePath: "src/loader-gltf/gltf-feature-lights-punctual.ts", symbolName: "applyAsset" },
+                { modulePath: "src/light/spot-light.ts", symbolName: "createSpotLight" },
             );
         }
         if (features.includes("loader:babylon")) {
@@ -621,6 +634,76 @@ class GeneratedSourceWriter {
                 occlusionUv2: options.occlusionUv2,
             });
             composedShaders.push(...shaders);
+            // The Dawn backend's utility passes, deployed like every other
+            // pinned shader instead of living as C++ strings invisible to
+            // shader provenance: the mip-generator blit for every renderer
+            // scene, and the transmission grab + per-sample image
+            // processing wherever transmission compiles. SDL_GPU never
+            // loads these (its API owns mip generation and the blit, and
+            // its image processing rides the resolved-pixel pair above);
+            // the offline pipeline still compiles them like any deployed
+            // WGSL, which is what keeps them under the same provenance
+            // and drift checks.
+            const dawnUtility = dawnUtilityShaders(transmission);
+            composedShaders.push(
+                {
+                    output: "upstream/shaders/mip-blit.vert.native.wgsl",
+                    data: dawnUtility.mipBlitVertex,
+                },
+                {
+                    output: "upstream/shaders/mip-blit.frag.native.wgsl",
+                    data: dawnUtility.mipBlitFragment,
+                },
+            );
+            generated.push({
+                modulePath: "src/texture/generate-mipmaps.ts",
+                symbolName: "BLIT_SHADER",
+            });
+            if (transmission) {
+                composedShaders.push(
+                    {
+                        output:
+                            "upstream/shaders/transmission-grab.vert.native.wgsl",
+                        data: dawnUtility.grabVertex,
+                    },
+                    {
+                        output:
+                            "upstream/shaders/transmission-grab.frag.native.wgsl",
+                        data: dawnUtility.grabFragment,
+                    },
+                    {
+                        output:
+                            "upstream/shaders/transmission-grab-single.frag.native.wgsl",
+                        data: dawnUtility.grabFragmentSingle,
+                    },
+                    {
+                        output:
+                            "upstream/shaders/image-processing-samples.vert.native.wgsl",
+                        data: dawnUtility.imageProcessingVertex,
+                    },
+                    {
+                        output:
+                            "upstream/shaders/image-processing-samples.frag.native.wgsl",
+                        data: dawnUtility.imageProcessingFragment,
+                    },
+                    {
+                        output:
+                            "upstream/shaders/image-processing-samples-single.frag.native.wgsl",
+                        data: dawnUtility.imageProcessingFragmentSingle,
+                    },
+                );
+                generated.push(
+                    {
+                        modulePath: "src/frame-graph/transmission.ts",
+                        symbolName: "BLIT_MSAA_SHADER",
+                    },
+                    {
+                        modulePath:
+                            "src/frame-graph/image-processing-task.ts",
+                        symbolName: "ip",
+                    },
+                );
+            }
             if (options.shaderPrograms.length > 0) {
                 this.tree.write(
                     "upstream/shaders/shader-material-reflection.json",
@@ -977,6 +1060,296 @@ ${
         }
         generated.push({ modulePath: lowered.modulePath, symbolName: lowered.symbolName });
     }
+}
+
+/**
+ * The Dawn backend's utility WGSL, lifted from the pinned package's own
+ * string literals instead of living as C++ strings invisible to shader
+ * provenance: the mip generator's fullscreen blit
+ * (`texture/generate-mipmaps.ts` BLIT_SHADER), the transmission
+ * scene-colour grab (`frame-graph/transmission.ts` BLIT_MSAA_SHADER),
+ * and the per-sample image processing
+ * (`frame-graph/image-processing-task.ts` `common` + its two fragments).
+ *
+ * Two mechanical re-homings, each asserted so a pinned change fails
+ * generation: the entry points take this repository's
+ * mainVertex/mainFragment names (tools/compile-shaders.ps1 keys the Tint
+ * entry point on them), and each pinned module splits into one file per
+ * stage so a stage never declares bindings it does not read (the compile
+ * script cross-checks declared bindings against Tint's reflection). The
+ * single-sample variants — reached under BBLITE_MSAA=1, where there is
+ * one sample and nothing to average — substitute the plain-texture
+ * binding and a plain load exactly as the pin's own non-MSAA arms do.
+ */
+function pinnedTextSlice(
+    text: string,
+    what: string,
+    from: string,
+    to?: string,
+): string {
+    const start = text.indexOf(from);
+    if (start < 0) {
+        throw new Error(`Pinned ${what} no longer contains '${from}'.`);
+    }
+    if (to === undefined) return text.slice(start);
+    const end = text.indexOf(to, start);
+    if (end < 0) {
+        throw new Error(`Pinned ${what} no longer contains '${to}'.`);
+    }
+    return text.slice(start, end);
+}
+
+function renameEntryPoint(
+    stage: string,
+    what: string,
+    pinnedName: string,
+    nativeName: string,
+): string {
+    const marker = `fn ${pinnedName}(`;
+    if (!stage.includes(marker)) {
+        throw new Error(
+            `Pinned ${what} no longer declares '${marker}'.`,
+        );
+    }
+    return stage.split(marker).join(`fn ${nativeName}(`);
+}
+
+export interface DawnUtilityShaders {
+    mipBlitVertex: string;
+    mipBlitFragment: string;
+    grabVertex: string;
+    grabFragment: string;
+    grabFragmentSingle: string;
+    imageProcessingVertex: string;
+    imageProcessingFragment: string;
+    imageProcessingFragmentSingle: string;
+}
+
+export function dawnUtilityShaders(
+    transmission: boolean,
+): DawnUtilityShaders {
+    // The mip generator's blit: bindings, varying struct, one stage each.
+    const mipBlit = extractPackagedTemplateLiteral(
+        readPinnedLibraryModule("texture/generate-mipmaps.js"),
+        "BLIT_SHADER",
+    );
+    const mipProvenance =
+        "// src/texture/generate-mipmaps.ts BLIT_SHADER, split per stage" +
+        " with native entry-point names.\n";
+    const mipStruct = pinnedTextSlice(
+        mipBlit,
+        "mip blit",
+        "struct V{",
+        "@vertex",
+    );
+    const mipBindings = pinnedTextSlice(
+        mipBlit,
+        "mip blit",
+        "@group(0)@binding(0)",
+        "struct V{",
+    );
+    const mipVertexStage = pinnedTextSlice(
+        mipBlit,
+        "mip blit",
+        "@vertex fn vs(",
+        "@fragment",
+    );
+    const mipFragmentStage = pinnedTextSlice(
+        mipBlit,
+        "mip blit",
+        "@fragment fn fs(",
+    );
+    const shaders: DawnUtilityShaders = {
+        mipBlitVertex:
+            mipProvenance +
+            mipStruct +
+            renameEntryPoint(
+                mipVertexStage,
+                "mip blit vertex",
+                "vs",
+                "mainVertex",
+            ),
+        mipBlitFragment:
+            mipProvenance +
+            mipBindings +
+            mipStruct +
+            renameEntryPoint(
+                mipFragmentStage,
+                "mip blit fragment",
+                "fs",
+                "mainFragment",
+            ),
+        grabVertex: "",
+        grabFragment: "",
+        grabFragmentSingle: "",
+        imageProcessingVertex: "",
+        imageProcessingFragment: "",
+        imageProcessingFragmentSingle: "",
+    };
+    if (!transmission) return shaders;
+
+    // The scene-colour grab: the pin's per-texel sample average with
+    // manual bilinear filtering, read straight from the multisampled
+    // attachment.
+    const grab = extractPackagedTemplateLiteral(
+        readPinnedLibraryModule("frame-graph/transmission.js"),
+        "BLIT_MSAA_SHADER",
+    );
+    const grabProvenance =
+        "// src/frame-graph/transmission.ts BLIT_MSAA_SHADER, split per" +
+        " stage with native entry-point names.\n";
+    const grabBinding = pinnedTextSlice(
+        grab,
+        "transmission grab",
+        "@group(0)@binding(0)var t:texture_multisampled_2d<f32>;",
+        "struct V{",
+    );
+    const grabStruct = pinnedTextSlice(
+        grab,
+        "transmission grab",
+        "struct V{",
+        "@vertex",
+    );
+    const grabVertexStage = pinnedTextSlice(
+        grab,
+        "transmission grab",
+        "@vertex fn vs(",
+        "fn l(",
+    );
+    const grabAverage = pinnedTextSlice(
+        grab,
+        "transmission grab",
+        "fn l(",
+        "@fragment",
+    );
+    const grabFragmentStage = pinnedTextSlice(
+        grab,
+        "transmission grab",
+        "@fragment fn fs(",
+    );
+    shaders.grabVertex =
+        grabProvenance +
+        grabStruct +
+        renameEntryPoint(
+            grabVertexStage,
+            "transmission grab vertex",
+            "vs",
+            "mainVertex",
+        );
+    const grabFragment = renameEntryPoint(
+        grabFragmentStage,
+        "transmission grab fragment",
+        "fs",
+        "mainFragment",
+    );
+    shaders.grabFragment =
+        grabProvenance + grabBinding + grabStruct + grabAverage +
+        grabFragment;
+    // The single-sample arm (BBLITE_MSAA=1): one sample, nothing to
+    // average, so the binding is an ordinary texture and the fetch a
+    // plain load; the manual bilinear body is the same pinned text.
+    shaders.grabFragmentSingle =
+        grabProvenance +
+        "// Single-sample arm: the multisampled binding and the sample\n" +
+        "// average reduce to a plain texture and a plain load.\n" +
+        grabBinding.replace(
+            "texture_multisampled_2d<f32>",
+            "texture_2d<f32>",
+        ) +
+        grabStruct +
+        "fn l(p:vec2i)->vec4f{return textureLoad(t,p,0);}" +
+        grabFragment;
+
+    // Per-sample image processing: exposure, optional tonemap, gamma,
+    // contrast applied per MSAA sample, then averaged.
+    const imageProcessing = readPinnedLibraryModule(
+        "frame-graph/image-processing-task.js",
+    );
+    const ipProvenance =
+        "// src/frame-graph/image-processing-task.ts shader text, split" +
+        " per stage with native entry-point names.\n";
+    const common = extractPackagedTemplateLiteral(
+        imageProcessing,
+        "common",
+    );
+    const ipStruct = "struct P{e:f32,c:f32,t:f32,p:f32}";
+    const ipBinding = "@group(0)@binding(0)var<uniform> p:P;";
+    if (
+        !common.includes(ipStruct) ||
+        !common.includes(ipBinding)
+    ) {
+        throw new Error(
+            "Pinned image-processing parameter block changed.",
+        );
+    }
+    const ip = extractWgslFunction(common, "ip");
+    const ipVertexStage = pinnedTextSlice(
+        common,
+        "image processing",
+        "@vertex fn vs(",
+        "fn ip(",
+    );
+    const declarations = {
+        multisampled:
+            "@group(0)@binding(1)var s:texture_multisampled_2d<f32>;",
+        single: "@group(0)@binding(1)var s:texture_2d<f32>;",
+    };
+    for (const declaration of Object.values(declarations)) {
+        if (!imageProcessing.includes(declaration)) {
+            throw new Error(
+                "Pinned image-processing texture declaration changed.",
+            );
+        }
+    }
+    const fragments = [
+        ...imageProcessing.matchAll(/`(@fragment fn fs[^`]*)`/g),
+    ].map((match) => match[1]!);
+    if (fragments.length !== 2) {
+        throw new Error(
+            "Pinned image-processing no longer carries exactly two " +
+                "fragment arms.",
+        );
+    }
+    const multisampledFragment = fragments.find((fragment) =>
+        fragment.includes("textureNumSamples"),
+    );
+    const singleFragment = fragments.find(
+        (fragment) => !fragment.includes("textureNumSamples"),
+    );
+    if (!multisampledFragment || !singleFragment) {
+        throw new Error(
+            "Pinned image-processing fragment arms changed shape.",
+        );
+    }
+    shaders.imageProcessingVertex =
+        ipProvenance +
+        renameEntryPoint(
+            ipVertexStage.trim() + "\n",
+            "image processing vertex",
+            "vs",
+            "mainVertex",
+        );
+    shaders.imageProcessingFragment =
+        ipProvenance +
+        `${ipStruct}\n${ipBinding}\n${ip}\n` +
+        `${declarations.multisampled}\n` +
+        renameEntryPoint(
+            multisampledFragment,
+            "image processing fragment",
+            "fs",
+            "mainFragment",
+        );
+    shaders.imageProcessingFragmentSingle =
+        ipProvenance +
+        `${ipStruct}\n${ipBinding}\n${ip}\n` +
+        `${declarations.single}\n` +
+        renameEntryPoint(
+            singleFragment,
+            "image processing single-sample fragment",
+            "fs",
+            "mainFragment",
+        );
+    return shaders;
 }
 
 export function emitUpstreamGenerated(

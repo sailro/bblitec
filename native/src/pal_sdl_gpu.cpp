@@ -2253,11 +2253,11 @@ void create_processed_color(
 // pal_gpu_shared.hpp so both backends share the linear clear color.
 
 void create_transmission_color(GpuState& state) {
-    // The pin's refraction grab is a fixed 1024x1024 mip-chained texture
-    // whatever the surface size (frame-graph/transmission.ts).
-    constexpr std::uint32_t transmission_size = 1024;
-    const std::uint32_t width = transmission_size;
-    const std::uint32_t height = transmission_size;
+    // The pin's refraction grab: the shared fixed-extent, shortened-chain
+    // contract (pal_gpu_shared.hpp), whatever the surface size
+    // (frame-graph/transmission.ts).
+    const std::uint32_t width = transmission_grab_size;
+    const std::uint32_t height = transmission_grab_size;
     if (
         state.transmission_color &&
         state.transmission_width == width &&
@@ -2278,17 +2278,7 @@ void create_transmission_color(GpuState& state) {
     info.width = width;
     info.height = height;
     info.layer_count_or_depth = 1;
-    const std::uint32_t full_mip_count =
-        static_cast<std::uint32_t>(
-            std::floor(std::log2(
-                static_cast<float>(std::max(width, height))))) +
-        1u;
-    info.num_levels =
-        std::max(
-            1u,
-            full_mip_count > 4u
-                ? full_mip_count - 4u
-                : 1u);
+    info.num_levels = transmission_grab_mip_count();
     info.sample_count = SDL_GPU_SAMPLECOUNT_1;
     state.transmission_color =
         SDL_CreateGPUTexture(state.device, &info);
@@ -3798,10 +3788,11 @@ bool run_gpu_engine(Engine& engine) {
         if (!state.sampler) gpu_error("SDL_CreateGPUSampler");
         // Scene-color grab sampler mirrors Babylon Lite's
         // trilinear-anisotropic sampler: linear filters, repeat
-        // addressing, maxAnisotropy 4 (inert under explicit-LOD
-        // sampling but kept for descriptor parity).
+        // addressing, and the shared anisotropy (inert under
+        // explicit-LOD sampling but kept for descriptor parity).
         sampler_info.enable_anisotropy = true;
-        sampler_info.max_anisotropy = 4.0f;
+        sampler_info.max_anisotropy =
+            static_cast<float>(transmission_sampler_max_anisotropy);
         state.transmission_sampler =
             SDL_CreateGPUSampler(state.device, &sampler_info);
         if (!state.transmission_sampler) {
@@ -4282,38 +4273,12 @@ bool run_gpu_engine(Engine& engine) {
                         gpu_mesh.owns_morph_buffers &&
                         gpu_mesh.morph_weights_version !=
                             mesh.morph_weights_version) {
-                        const ModelGeometry& morph_geometry =
-                            engine.geometries[item.geometry];
-                        const std::size_t target_count =
-                            morph_geometry.morph_positions.size();
-                        std::vector<std::uint8_t> weights_blob(
-                            16 + target_count * sizeof(float),
-                            0);
-                        const std::uint32_t header[2] = {
-                            static_cast<std::uint32_t>(target_count),
-                            static_cast<std::uint32_t>(
-                                morph_geometry.vertices.size()),
-                        };
-                        std::memcpy(
-                            weights_blob.data(),
-                            header,
-                            sizeof(header));
-                        for (
-                            std::size_t target = 0;
-                            target < target_count;
-                            ++target) {
-                            const float weight =
-                                target <
-                                mesh.morph_storage_weights.size()
-                                    ? mesh.morph_storage_weights
-                                          [target]
-                                    : 0.0f;
-                            std::memcpy(
-                                weights_blob.data() + 16 +
-                                    target * sizeof(float),
-                                &weight,
-                                sizeof(float));
-                        }
+                        // The shared packer both upload paths use; this
+                        // re-upload used to rebuild the same blob inline.
+                        const std::vector<std::uint8_t> weights_blob =
+                            pack_morph_weights(
+                                engine.geometries[item.geometry],
+                                mesh);
                         update_buffer(
                             state.device,
                             gpu_mesh.morph_weights,
@@ -5886,9 +5851,7 @@ bool run_gpu_engine(Engine& engine) {
                     if (
                         transmission_enabled &&
                         !transmission_copied &&
-                        material &&
-                        (material->transmission_factor > 0.0f ||
-                         !material->transmission_texture.bytes.empty())) {
+                        transmissive_draw_material(material)) {
                         // executePassWithTransmission: end the pass (which
                         // resolves the multisampled colour), copy it into
                         // the refraction texture with its mip chain, and
