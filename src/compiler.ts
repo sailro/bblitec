@@ -5,6 +5,10 @@ import {
     type AssignmentContext,
 } from "./compiler/assignments.js";
 import {
+    BrowserErasure,
+    type BrowserErasureContext,
+} from "./compiler/browser-erasure.js";
+import {
     compileRegisteredIntrinsic,
     type IntrinsicContext,
 } from "./compiler/intrinsics/registry.js";
@@ -17,6 +21,10 @@ import {
     type DataType,
 } from "./compiler/data-types.js";
 import {
+    ExpressionLowerer,
+    type ExpressionContext,
+} from "./compiler/expressions.js";
+import {
     NativeFunctionLowerer,
     type NativeFunctionContext,
 } from "./compiler/native-functions.js";
@@ -27,9 +35,8 @@ import {
     readProperty,
     type PropertyContext,
 } from "./compiler/properties.js";
-import {
-    compileImmediatePromise,
-    type PromiseLoweringContext,
+import type {
+    PromiseLoweringContext,
 } from "./compiler/promises.js";
 import {
     CompilerSymbols,
@@ -214,20 +221,24 @@ class Compiler
     implements
         IntrinsicContext,
         AssignmentContext,
+        BrowserErasureContext,
         DataLoweringContext,
+        ExpressionContext,
         NativeFunctionContext,
         PromiseLoweringContext,
         PropertyContext,
         StatementLoweringContext,
         UserFunctionContext {
-    private readonly symbols: CompilerSymbols;
-    private readonly evaluator: StaticEvaluator;
+    public readonly symbols: CompilerSymbols;
+    public readonly evaluator: StaticEvaluator;
     private readonly statements = new StatementLowerer();
-    private readonly userFunctions: UserFunctionLowerer;
+    public readonly userFunctions: UserFunctionLowerer;
     public readonly dataTypes: DataTypeRegistry;
     public readonly dataLowerer: DataLowerer;
-    private readonly classLowerer: ClassLowerer;
-    private readonly nativeFunctions: NativeFunctionLowerer;
+    public readonly classLowerer: ClassLowerer;
+    public readonly nativeFunctions: NativeFunctionLowerer;
+    private readonly browserErasure: BrowserErasure;
+    private readonly expressions: ExpressionLowerer;
     private readonly nativeFunctionPrototypes: string[] =
         [];
     private readonly nativeFunctionDefinitions: string[] =
@@ -243,7 +254,7 @@ class Compiler
         ts.Expression
     >();
     private readonly sourceCppNames = new Set<string>();
-    private readonly variableScopes: Array<
+    public readonly variableScopes: Array<
         Map<
             ts.Symbol,
             { name: string; value: Value }
@@ -286,6 +297,8 @@ class Compiler
         this.classLowerer = new ClassLowerer(this);
         this.nativeFunctions =
             new NativeFunctionLowerer(this);
+        this.browserErasure = new BrowserErasure(this);
+        this.expressions = new ExpressionLowerer(this);
         this.evaluator = new StaticEvaluator(
             this.staticConstants,
             (identifier) =>
@@ -964,420 +977,9 @@ class Compiler
     }
 
     public compileValue(expression: ts.Expression): Value {
-        const unwrapped = this.unwrap(expression);
-
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.QuestionQuestionToken
-        ) {
-            return this.compileValue(
-                this.evaluator.resolveNullish(unwrapped),
-            );
-        }
-        if (
-            unwrapped.kind === ts.SyntaxKind.ThisKeyword
-        ) {
-            const instance = this.activeThis();
-            if (!instance) {
-                this.fail(
-                    unwrapped,
-                    "'this' is only reached inside a class constructor or method.",
-                );
-            }
-            return instance;
-        }
-        if (ts.isIdentifier(unwrapped)) {
-            const value = this.lookupOptional(unwrapped);
-            if (value) {
-                return value;
-            }
-            const resolved =
-                this.resolveStaticExpression(unwrapped);
-            if (resolved !== unwrapped) {
-                return this.compileValue(resolved);
-            }
-            return this.lookup(unwrapped);
-        }
-        if (ts.isPropertyAccessExpression(unwrapped)) {
-            const canvasSize =
-                this.canvasSizeValue(unwrapped);
-            if (canvasSize) {
-                return canvasSize;
-            }
-            const data = this.dataLowerer.compileDataPath(
-                unwrapped,
-                "read",
-            );
-            if (data) {
-                return data;
-            }
-            return this.compilePropertyAccess(unwrapped);
-        }
-        if (ts.isNewExpression(unwrapped)) {
-            const constructed =
-                this.dataLowerer.compileNewExpression(
-                    unwrapped,
-                );
-            if (constructed) {
-                return constructed;
-            }
-            const classDeclaration =
-                this.classLowerer.resolveClass(unwrapped);
-            if (classDeclaration) {
-                const instance =
-                    this.classLowerer.construct(
-                        unwrapped,
-                        classDeclaration,
-                    );
-                this.registerClassInstance(
-                    instance,
-                    classDeclaration,
-                );
-                return instance;
-            }
-            this.fail(
-                unwrapped,
-                "Unsupported constructor expression.",
-            );
-        }
-        if (ts.isElementAccessExpression(unwrapped)) {
-            const data = this.dataLowerer.compileDataPath(
-                unwrapped,
-                "read",
-            );
-            if (data) {
-                return data;
-            }
-            const owner = this.compileValue(
-                unwrapped.expression,
-            );
-            if (owner.kind === "camera-world-matrix") {
-                const index = this.compileValue(
-                    unwrapped.argumentExpression,
-                );
-                if (
-                    index.kind !== "number" ||
-                    index.staticNumber === undefined ||
-                    ![12, 13, 14].includes(
-                        index.staticNumber,
-                    )
-                ) {
-                    this.fail(
-                        unwrapped.argumentExpression,
-                        "Reached camera world-matrix access supports translation indices 12-14.",
-                    );
-                }
-                // The pinned `getCameraPosition` reads these three back out
-                // of the camera's float32 world matrix, so the rounded
-                // stored value is what a scene observes -- not the double
-                // the eye was composed at.
-                const element = index.staticNumber as
-                    | 12
-                    | 13
-                    | 14;
-                return {
-                    kind: "number",
-                    cpp: `bbl::upstream::camera_world_matrix(${this.requireEngine(owner, unwrapped)}.cameras[${owner.cpp}.value])[${element}]`,
-                    ...(owner.engineCpp
-                        ? { engineCpp: owner.engineCpp }
-                        : {}),
-                };
-            }
-            if (owner.kind !== "tuple") {
-                this.fail(
-                    unwrapped.expression,
-                    `Element access is not supported for ${owner.kind}.`,
-                );
-            }
-            const index = this.compileValue(
-                unwrapped.argumentExpression,
-            );
-            if (
-                index.kind !== "number" ||
-                index.staticNumber === undefined ||
-                !Number.isInteger(index.staticNumber)
-            ) {
-                this.fail(
-                    unwrapped.argumentExpression,
-                    "Static tuple access requires an integer index.",
-                );
-            }
-            const value =
-                owner.tupleElements?.[index.staticNumber];
-            if (!value) {
-                this.fail(
-                    unwrapped,
-                    `Tuple index ${index.staticNumber} is out of range.`,
-                );
-            }
-            return value;
-        }
-        if (ts.isCallExpression(unwrapped)) {
-            return this.compileCall(unwrapped);
-        }
-        if (ts.isConditionalExpression(unwrapped)) {
-            const whenTrue = this.compileValue(
-                unwrapped.whenTrue,
-            );
-            const whenFalse = this.compileValue(
-                unwrapped.whenFalse,
-            );
-            // A tuple value is a compile-time list of element values with
-            // no native expression of its own, so selecting between two
-            // tuples is selecting element by element. Same arity is the
-            // condition for that to be the same thing.
-            if (
-                whenTrue.kind === "tuple" &&
-                whenFalse.kind === "tuple"
-            ) {
-                const trueElements =
-                    whenTrue.tupleElements ?? [];
-                const falseElements =
-                    whenFalse.tupleElements ?? [];
-                if (
-                    trueElements.length !==
-                    falseElements.length
-                ) {
-                    this.fail(
-                        unwrapped,
-                        "Conditional tuple branches must have the same length.",
-                    );
-                }
-                const condition = this.compileCondition(
-                    unwrapped.condition,
-                );
-                return {
-                    kind: "tuple",
-                    cpp: "",
-                    tupleElements: trueElements.map(
-                        (element, index) =>
-                            this.selectValue(
-                                condition,
-                                element,
-                                falseElements[index]!,
-                                unwrapped,
-                            ),
-                    ),
-                };
-            }
-            return this.selectValue(
-                this.compileCondition(unwrapped.condition),
-                whenTrue,
-                whenFalse,
-                unwrapped,
-            );
-        }
-        if (ts.isArrayLiteralExpression(unwrapped)) {
-            return {
-                kind: "tuple",
-                cpp: "",
-                tupleElements: unwrapped.elements.map(
-                    (element) =>
-                        this.compileValue(element),
-                ),
-            };
-        }
-        if (ts.isObjectLiteralExpression(unwrapped)) {
-            const properties: Record<string, Value> = {};
-            const methods: Record<
-                string,
-                | ts.Identifier
-                | ts.ArrowFunction
-                | ts.FunctionExpression
-            > = {};
-            const getters: Record<
-                string,
-                ts.GetAccessorDeclaration
-            > = {};
-            for (const property of unwrapped.properties) {
-                if (
-                    ts.isGetAccessorDeclaration(property)
-                ) {
-                    const name = this.propertyName(
-                        property.name,
-                    );
-                    if (!name) {
-                        this.fail(
-                            property.name,
-                            "Static record properties require literal names.",
-                        );
-                    }
-                    getters[name] = property;
-                    continue;
-                }
-                if (ts.isPropertyAssignment(property)) {
-                    const name = this.propertyName(
-                        property.name,
-                    );
-                    if (!name) {
-                        this.fail(
-                            property.name,
-                            "Static record properties require literal names.",
-                        );
-                    }
-                    const initializer = this.unwrap(
-                        property.initializer,
-                    );
-                    if (
-                        ts.isIdentifier(initializer) &&
-                        this.namesLocalFunction(initializer)
-                    ) {
-                        methods[name] = initializer;
-                        continue;
-                    }
-                    if (
-                        ts.isArrowFunction(initializer) ||
-                        ts.isFunctionExpression(initializer)
-                    ) {
-                        methods[name] = initializer;
-                        continue;
-                    }
-                    properties[name] = this.compileValue(
-                        property.initializer,
-                    );
-                } else if (
-                    ts.isShorthandPropertyAssignment(
-                        property,
-                    )
-                ) {
-                    if (
-                        this.namesLocalFunction(
-                            property.name,
-                        )
-                    ) {
-                        methods[property.name.text] =
-                            property.name;
-                        continue;
-                    }
-                    properties[property.name.text] =
-                        this.compileValue(property.name);
-                } else {
-                    this.fail(
-                        property,
-                        "Static records support property assignments, getters, and properties naming a local function.",
-                    );
-                }
-            }
-            const closes =
-                Object.keys(methods).length > 0 ||
-                Object.keys(getters).length > 0;
-            return {
-                kind: "record",
-                cpp: "",
-                recordProperties: properties,
-                recordMethods: methods,
-                recordGetters: getters,
-                // Only a record with code in it needs its scope: a
-                // plain property already holds a resolved value.
-                ...(closes
-                    ? {
-                          recordScopes: [
-                              ...this.variableScopes,
-                          ],
-                      }
-                    : {}),
-            };
-        }
-        if (
-            ts.isStringLiteral(unwrapped) ||
-            ts.isNoSubstitutionTemplateLiteral(unwrapped) ||
-            ts.isTemplateExpression(unwrapped)
-        ) {
-            const value =
-                this.compileStringLiteral(unwrapped);
-            return {
-                kind: "string",
-                cpp: this.cppString(value),
-                staticString: value,
-            };
-        }
-        if (this.isNumberExpression(unwrapped)) {
-            const staticNumber =
-                ts.isNumericLiteral(unwrapped)
-                    ? Number(unwrapped.text)
-                    : undefined;
-            return {
-                kind: "number",
-                cpp: this.compileNumber(unwrapped),
-                ...(staticNumber === undefined
-                    ? {}
-                    : { staticNumber }),
-            };
-        }
-        if (this.evaluator.isBooleanExpression(unwrapped)) {
-            return {
-                kind: "boolean",
-                cpp: this.compileBoolean(unwrapped),
-            };
-        }
-        // A comparison in value position is the same expression a
-        // condition position already lowers; only where it lands differs.
-        if (
-            this.evaluator.isComparisonExpression(unwrapped)
-        ) {
-            return {
-                kind: "boolean",
-                cpp: this.compileCondition(unwrapped),
-            };
-        }
-        if (this.isBrowserOnlyExpression(unwrapped)) {
-            const browserValue =
-                this.evaluateBrowserValue(unwrapped);
-            return {
-                kind: "browser",
-                cpp: "",
-                ...(browserValue
-                    ? { browserValue }
-                    : {}),
-            };
-        }
-
-        this.fail(unwrapped, `Unsupported value expression: ${ts.SyntaxKind[unwrapped.kind]}.`);
+        return this.expressions.compileValue(expression);
     }
-
-    /**
-     * `condition ? whenTrue : whenFalse` for two already-compiled values.
-     * Both branches must name the same kind of native expression, since
-     * the result has to be one expression the caller can use.
-     */
-    private selectValue(
-        condition: string,
-        whenTrue: Value,
-        whenFalse: Value,
-        node: ts.Node,
-    ): Value {
-        if (
-            whenTrue.kind !== whenFalse.kind ||
-            whenTrue.cpp.length === 0 ||
-            whenFalse.cpp.length === 0 ||
-            (whenTrue.engineCpp &&
-                whenFalse.engineCpp &&
-                whenTrue.engineCpp !== whenFalse.engineCpp)
-        ) {
-            this.fail(
-                node,
-                "Conditional expressions require matching native value branches.",
-            );
-        }
-        const conditional: Value = {
-            ...whenTrue,
-            cpp: `(${condition} ? ${whenTrue.cpp} : ${whenFalse.cpp})`,
-        };
-        if (
-            whenTrue.staticNumber !== whenFalse.staticNumber
-        ) {
-            delete conditional.staticNumber;
-        }
-        if (
-            whenTrue.staticString !== whenFalse.staticString
-        ) {
-            delete conditional.staticString;
-        }
-        return conditional;
-    }
-
-    private compilePropertyAccess(expression: ts.PropertyAccessExpression): Value {
+    public compilePropertyAccess(expression: ts.PropertyAccessExpression): Value {
         const ownerExpression = this.unwrap(
             expression.expression,
         );
@@ -1452,150 +1054,14 @@ class Compiler
         );
     }
 
-    private compileCall(call: ts.CallExpression): Value {
-        const promise = compileImmediatePromise(
+    public compileRegisteredIntrinsic(
+        importedName: string,
+        call: ts.CallExpression,
+    ): Value | undefined {
+        return compileRegisteredIntrinsic(
             this,
+            importedName,
             call,
-        );
-        if (promise) {
-            return promise;
-        }
-        const callee = this.unwrap(call.expression);
-        if (ts.isPropertyAccessExpression(callee)) {
-            const math =
-                this.dataLowerer.compileMathCall(call);
-            if (math) {
-                return math;
-            }
-            const method =
-                this.dataLowerer.compileDataMethodCall(
-                    call,
-                );
-            if (method) {
-                return method;
-            }
-            // A method on a constructed instance inlines with `this`
-            // bound to that instance's field record.
-            const receiver = this.unwrap(callee.expression);
-            if (
-                ts.isIdentifier(receiver) ||
-                receiver.kind === ts.SyntaxKind.ThisKeyword
-            ) {
-                const instance = ts.isIdentifier(receiver)
-                    ? this.lookupOptional(receiver)
-                    : this.activeThis();
-                const declaration = instance
-                    ? this.classOf(instance)
-                    : undefined;
-                // A record property naming a local function inlines at
-                // the call site exactly as a direct call to that
-                // function does, by handing the identifier the literal
-                // wrote to the same resolver.
-                const recordMethod =
-                    instance?.kind === "record"
-                        ? instance.recordMethods?.[
-                              callee.name.text
-                          ]
-                        : undefined;
-                if (instance && recordMethod) {
-                    // A literal written in the record has no identifier
-                    // to resolve, so it takes the callback path a
-                    // function-literal argument already takes. Both
-                    // arrive at the same inliner.
-                    if (!ts.isIdentifier(recordMethod)) {
-                        return this.userFunctions.compileCallbackCall(
-                            this,
-                            call,
-                            recordMethod,
-                            (work) =>
-                                this.withRecordScopes(
-                                    instance,
-                                    work,
-                                ),
-                        );
-                    }
-                    const method =
-                        this.userFunctions.compile(
-                            this,
-                            call,
-                            recordMethod,
-                            // Only the body runs in the record's
-                            // scope; the arguments were written at
-                            // the call site and resolve there.
-                            (work) =>
-                                this.withRecordScopes(
-                                    instance,
-                                    work,
-                                ),
-                        );
-                    if (method) {
-                        return method;
-                    }
-                }
-                if (instance && declaration) {
-                    return this.classLowerer.compileMethodCall(
-                        instance,
-                        callee.name.text,
-                        call,
-                        declaration,
-                    );
-                }
-            }
-        }
-        if (!ts.isIdentifier(callee)) {
-            this.fail(callee, `Unsupported call target '${callee.getText()}'.`);
-        }
-
-        const bound = this.lookupOptional(callee);
-        if (bound?.kind === "callback") {
-            if (!bound.callbackDeclaration) {
-                this.fail(
-                    callee,
-                    "Callback value is missing its declaration.",
-                );
-            }
-            return this.userFunctions.compileCallbackCall(
-                this,
-                call,
-                bound.callbackDeclaration,
-            );
-        }
-
-        const importedName =
-            this.symbols.importedName(callee);
-        if (importedName) {
-            const registered = compileRegisteredIntrinsic(
-                this,
-                importedName,
-                call,
-            );
-            if (registered) {
-                return registered;
-            }
-            this.fail(
-                callee,
-                `Babylon Lite intrinsic '${importedName}' is not supported by this prototype. Supported scene APIs are documented in README.md.`,
-            );
-        }
-        const nativeFunction =
-            this.nativeFunctions.tryCompileCall(
-                call,
-                callee,
-            );
-        if (nativeFunction) {
-            return nativeFunction;
-        }
-        const userFunction = this.userFunctions.compile(
-            this,
-            call,
-            callee,
-        );
-        if (userFunction) {
-            return userFunction;
-        }
-        this.fail(
-            callee,
-            `Call '${callee.text}' does not resolve to a supported Babylon intrinsic or local function declaration.`,
         );
     }
 
@@ -3510,7 +2976,7 @@ class Compiler
         );
     }
 
-    private isNumberExpression(expression: ts.Expression): boolean {
+    public isNumberExpression(expression: ts.Expression): boolean {
         return this.evaluator.isNumberExpression(expression);
     }
 
@@ -3546,7 +3012,7 @@ class Compiler
         return this.compileNumber(value, precision);
     }
 
-    private propertyName(name: ts.PropertyName): string | undefined {
+    public propertyName(name: ts.PropertyName): string | undefined {
         if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
             return name.text;
         }
@@ -3780,7 +3246,7 @@ class Compiler
      * method or getter of that record sees the state it closed over
      * even when the scope that built it has since been left.
      */
-    private withRecordScopes<T>(
+    public withRecordScopes<T>(
         owner: Value,
         work: () => T,
     ): T {
@@ -4207,7 +3673,7 @@ class Compiler
      * pixels (the pinned sprite grid centres itself in it), so the read
      * has to produce a number rather than being erased with its owner.
      */
-    private canvasSizeProperty(
+    public canvasSizeProperty(
         expression: ts.Expression,
     ): "width" | "height" | undefined {
         const unwrapped = this.unwrap(expression);
@@ -4243,351 +3709,39 @@ class Compiler
             : undefined;
     }
 
-    public isBrowserOnlyExpression(expression: ts.Expression): boolean {
-        const unwrapped = this.unwrap(expression);
-        if (this.canvasSizeProperty(unwrapped)) {
-            return false;
-        }
-        if (ts.isIdentifier(unwrapped)) {
-            if (
-                [
-                    "console",
-                    "document",
-                    "performance",
-                    "window",
-                ].includes(unwrapped.text)
-            ) {
-                return true;
-            }
-            return (
-                this.lookupOptional(unwrapped)?.kind ===
-                "browser"
-            );
-        }
-        if (
-            ts.isNewExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "URLSearchParams"
-        ) {
-            return true;
-        }
-        if (ts.isPropertyAccessExpression(unwrapped)) {
-            return this.isBrowserOnlyExpression(
-                unwrapped.expression,
-            );
-        }
-        if (ts.isBinaryExpression(unwrapped)) {
-            return (
-                this.isBrowserOnlyExpression(
-                    unwrapped.left,
-                ) ||
-                this.isBrowserOnlyExpression(
-                    unwrapped.right,
-                )
-            );
-        }
-        if (ts.isPrefixUnaryExpression(unwrapped)) {
-            return this.isBrowserOnlyExpression(
-                unwrapped.operand,
-            );
-        }
-        if (ts.isCallExpression(unwrapped)) {
-            if (
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                ) &&
-                this.isBrowserOnlyExpression(
-                    unwrapped.expression.expression,
-                )
-            ) {
-                return true;
-            }
-            const browserArgument =
-                unwrapped.arguments.some((argument) =>
-                    this.isBrowserOnlyExpression(argument),
-                );
-            if (
-                ts.isIdentifier(unwrapped.expression) &&
-                ["isNaN", "parseFloat"].includes(
-                    unwrapped.expression.text,
-                )
-            ) {
-                return browserArgument;
-            }
-            if (
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                ) &&
-                ts.isIdentifier(
-                    unwrapped.expression.expression,
-                ) &&
-                unwrapped.expression.expression.text ===
-                    "Number" &&
-                unwrapped.expression.name.text === "isFinite"
-            ) {
-                return browserArgument;
-            }
-            return false;
-        }
-        const isCanvasLookup =
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            ts.isIdentifier(unwrapped.expression.expression) &&
-            unwrapped.expression.expression.text === "document" &&
-            (unwrapped.expression.name.text === "getElementById" || unwrapped.expression.name.text === "querySelector");
-        const isPerformanceNow =
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            ts.isIdentifier(unwrapped.expression.expression) &&
-            unwrapped.expression.expression.text === "performance" &&
-            unwrapped.expression.name.text === "now";
-        return isCanvasLookup || isPerformanceNow;
+    public isBrowserOnlyExpression(
+        expression: ts.Expression,
+    ): boolean {
+        return this.browserErasure.isBrowserOnlyExpression(
+            expression,
+        );
     }
 
     public evaluateBrowserCondition(
         expression: ts.Expression,
     ): boolean | undefined {
-        const value =
-            this.evaluateBrowserValue(expression);
-        return value?.kind === "boolean"
-            ? value.value
-            : undefined;
+        return this.browserErasure.evaluateBrowserCondition(
+            expression,
+        );
     }
 
-    private evaluateBrowserValue(
+    public evaluateBrowserValue(
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
-        const unwrapped = this.unwrap(expression);
-        if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) {
-            return { kind: "boolean", value: true };
-        }
-        if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) {
-            return { kind: "boolean", value: false };
-        }
-        if (unwrapped.kind === ts.SyntaxKind.NullKeyword) {
-            return { kind: "null" };
-        }
-        if (ts.isStringLiteral(unwrapped)) {
-            return {
-                kind: "string",
-                value: unwrapped.text,
-            };
-        }
-        if (ts.isNumericLiteral(unwrapped)) {
-            return {
-                kind: "number",
-                value: Number(unwrapped.text),
-            };
-        }
-        if (ts.isIdentifier(unwrapped)) {
-            return this.lookupOptional(unwrapped)
-                ?.browserValue;
-        }
-        if (
-            ts.isNewExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "URLSearchParams"
-        ) {
-            return { kind: "search-params" };
-        }
-        if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            unwrapped.name.text === "search" &&
-            ts.isPropertyAccessExpression(
-                unwrapped.expression,
-            ) &&
-            unwrapped.expression.name.text === "location" &&
-            ts.isIdentifier(
-                unwrapped.expression.expression,
-            ) &&
-            unwrapped.expression.expression.text === "window"
-        ) {
-            return { kind: "string", value: "" };
-        }
-        if (
-            ts.isPrefixUnaryExpression(unwrapped) &&
-            unwrapped.operator ===
-                ts.SyntaxKind.ExclamationToken
-        ) {
-            const operand = this.evaluateBrowserValue(
-                unwrapped.operand,
-            );
-            const truthy = this.browserTruthy(operand);
-            return truthy === undefined
-                ? undefined
-                : { kind: "boolean", value: !truthy };
-        }
-        if (ts.isBinaryExpression(unwrapped)) {
-            const left = this.evaluateBrowserValue(
-                unwrapped.left,
-            );
-            if (
-                unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.AmpersandAmpersandToken
-            ) {
-                const truthy = this.browserTruthy(left);
-                if (truthy === false) {
-                    return {
-                        kind: "boolean",
-                        value: false,
-                    };
-                }
-                return truthy
-                    ? this.evaluateBrowserValue(
-                          unwrapped.right,
-                      )
-                    : undefined;
-            }
-            if (
-                unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.BarBarToken
-            ) {
-                const truthy = this.browserTruthy(left);
-                if (truthy === true) {
-                    return left;
-                }
-                return truthy === false
-                    ? this.evaluateBrowserValue(
-                          unwrapped.right,
-                      )
-                    : undefined;
-            }
-            return undefined;
-        }
-        if (ts.isCallExpression(unwrapped)) {
-            if (
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                ) &&
-                ts.isIdentifier(
-                    unwrapped.expression.expression,
-                )
-            ) {
-                const owner = this.lookupOptional(
-                    unwrapped.expression.expression,
-                )?.browserValue;
-                if (owner?.kind === "search-params") {
-                    if (
-                        unwrapped.expression.name.text ===
-                        "has"
-                    ) {
-                        return {
-                            kind: "boolean",
-                            value: false,
-                        };
-                    }
-                    if (
-                        unwrapped.expression.name.text ===
-                        "get"
-                    ) {
-                        return { kind: "null" };
-                    }
-                }
-            }
-            if (
-                ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "parseFloat"
-            ) {
-                const argument =
-                    this.evaluateBrowserValue(
-                        unwrapped.arguments[0]!,
-                    );
-                const text =
-                    argument?.kind === "string"
-                        ? argument.value
-                        : "";
-                return {
-                    kind: "number",
-                    value: Number.parseFloat(text),
-                };
-            }
-            if (
-                ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "isNaN"
-            ) {
-                const argument =
-                    this.evaluateBrowserValue(
-                        unwrapped.arguments[0]!,
-                    );
-                return argument?.kind === "number"
-                    ? {
-                          kind: "boolean",
-                          value: Number.isNaN(
-                              argument.value,
-                          ),
-                      }
-                    : undefined;
-            }
-            if (
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                ) &&
-                ts.isIdentifier(
-                    unwrapped.expression.expression,
-                ) &&
-                unwrapped.expression.expression.text ===
-                    "Number" &&
-                unwrapped.expression.name.text === "isFinite"
-            ) {
-                const argument =
-                    this.evaluateBrowserValue(
-                        unwrapped.arguments[0]!,
-                    );
-                return argument?.kind === "number"
-                    ? {
-                          kind: "boolean",
-                          value: Number.isFinite(
-                              argument.value,
-                          ),
-                      }
-                    : undefined;
-            }
-        }
-        return undefined;
+        return this.browserErasure.evaluateBrowserValue(
+            expression,
+        );
     }
 
-    private browserTruthy(
-        value: Value["browserValue"] | undefined,
-    ): boolean | undefined {
-        if (!value) {
-            return undefined;
-        }
-        switch (value.kind) {
-            case "boolean":
-                return value.value;
-            case "null":
-                return false;
-            case "number":
-                return (
-                    value.value !== 0 &&
-                    !Number.isNaN(value.value)
-                );
-            case "search-params":
-                return true;
-            case "string":
-                return value.value.length > 0;
-        }
+    public isBrowserInstrumentationCall(
+        call: ts.CallExpression,
+    ): boolean {
+        return this.browserErasure.isBrowserInstrumentationCall(
+            call,
+        );
     }
 
-    public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
-        const objectAssign =
-            ts.isPropertyAccessExpression(call.expression) &&
-            ts.isIdentifier(call.expression.expression) &&
-            call.expression.expression.text === "Object" &&
-            call.expression.name.text === "assign";
-        const deviceEvent =
-            ts.isPropertyAccessExpression(call.expression) &&
-            call.expression.name.text ===
-                "addEventListener" &&
-            ts.isPropertyAccessExpression(
-                call.expression.expression,
-            ) &&
-            call.expression.expression.name.text ===
-                "_device";
-        return objectAssign || deviceEvent;
-    }
-
-    private lookupOptional(
+    public lookupOptional(
         identifier: ts.Identifier,
     ): Value | undefined {
         const symbol =
