@@ -958,7 +958,10 @@ void draw_pinned_variant(
                 ? pinned_identity_world()
                 : world_from_palette
                     ? pinned_record.bone_matrices[0]
-                    : pinned_mesh_world(),
+                    : pinned_record.thin_instanced ||
+                            !pinned_record.instance_matrices.empty()
+                        ? pinned_instanced_world(pinned_record)
+                        : pinned_mesh_world(),
             item.mesh.value);
     std::vector<std::uint8_t> pinned_material(
         variant_entry.material_ubo_bytes,

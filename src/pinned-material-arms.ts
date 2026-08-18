@@ -179,6 +179,24 @@ export function gltfLightKinds(path: string): readonly string[] {
 }
 
 /**
+ * Whether the asset installs its own image-based light.
+ *
+ * `EXT_lights_image_based` carries the irradiance SH9 and the prefiltered
+ * specular cubemap inside the glTF, so the scene never calls
+ * `loadEnvironment` and no `environment:*` feature exists -- yet the pin
+ * composes every fragment with `PBR_HAS_ENV` and the tone-mapping arms the
+ * environment turns on.
+ */
+export function gltfHasImageBasedLight(path: string): boolean {
+    const document = glbDocument(path);
+    if (!document) return false;
+    const record = document as unknown as Record<string, unknown>;
+    const used = record["extensionsUsed"];
+    return Array.isArray(used) &&
+        used.includes("EXT_lights_image_based");
+}
+
+/**
  * The composer's material-shaped input for every material in a document.
  *
  * Shared by the arms scan and the variant space so both compose the same

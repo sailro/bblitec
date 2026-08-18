@@ -466,6 +466,28 @@ inline std::array<float, 16> pinned_mesh_world() {
         0.0f, 0.0f, 0.0f, 1.0f,
     };
 }
+
+/**
+ * The pin's mesh world for a thin-instanced draw: the instanced node's own
+ * world in Babylon's convention.
+ *
+ * The pin composes `finalWorld = mesh.world * instanceWorld`, and its
+ * `mesh.world` is the root mirror times the node matrix -- Scene 247's
+ * instanced node carries a y-scale of 1.3 that way. The record stores the
+ * node world through `native_matrix` (the mirror conjugation), so the
+ * mirror-times-node product is the stored matrix times the mirror: with
+ * column vectors that is the parent matrix with its first column negated.
+ * An identity node collapses this to `pinned_mesh_world()`.
+ */
+inline std::array<float, 16> pinned_instanced_world(
+    const MeshRecord& record) {
+    std::array<float, 16> world = record.instance_parent_matrix;
+    world[0] = -world[0];
+    world[1] = -world[1];
+    world[2] = -world[2];
+    world[3] = -world[3];
+    return world;
+}
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0

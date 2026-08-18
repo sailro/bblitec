@@ -40,6 +40,7 @@ import {
     composeGltfMaterials,
     composeRenderableVariants,
     composeScenePbrVariants,
+    gltfHasImageBasedLight,
     gltfLightKinds,
     gltfMaterialCount,
     gltfRenderableFeatures,
@@ -561,9 +562,6 @@ async function main(): Promise<void> {
     // mapping on upstream — both tone-mapping states. Generation cannot know how
     // many lights will end up affecting a given mesh, so it composes the arms
     // and the runtime selects the one its own light walk produces.
-    const hasEnvironment = result.manifest.features.includes(
-        "environment:ibl",
-    );
     // An asset's own KHR_lights_punctual lights are the scene's lights: the
     // pin's loader creates them exactly like scene code does, and every
     // consumer keyed on the light features -- the composed arms, the pinned
@@ -572,10 +570,16 @@ async function main(): Promise<void> {
     let assetLightsAdded = false;
     for (const asset of result.manifest.assets) {
         if (asset.kind !== "gltf") continue;
-        for (const kind of gltfLightKinds(
-            resolve(outputPath, "assets", asset.output),
-        )) {
-            const feature = `light:${kind}` as Feature;
+        const assetPath = resolve(outputPath, "assets", asset.output);
+        const assetFeatures = gltfLightKinds(assetPath).map(
+            (kind) => `light:${kind}` as Feature,
+        );
+        // EXT_lights_image_based installs the asset's own environment, which
+        // composes the same arms `environment:ibl` does.
+        if (gltfHasImageBasedLight(assetPath)) {
+            assetFeatures.push("environment:ibl" as Feature);
+        }
+        for (const feature of assetFeatures) {
             if (!result.manifest.features.includes(feature)) {
                 result.manifest.features.push(feature);
                 assetLightsAdded = true;
@@ -595,6 +599,9 @@ async function main(): Promise<void> {
             result.manifest.generatedSources,
         );
     }
+    const hasEnvironment = result.manifest.features.includes(
+        "environment:ibl",
+    );
     const lightKinds = pinnedSingleLightTypes.filter((kind) =>
         result.manifest.features.includes(`light:${kind}`)
     );
@@ -610,9 +617,13 @@ async function main(): Promise<void> {
     // `_linearImageProcessing` (markPbrMaterialsLinear), so each composed
     // fragment wraps its processing tail in `if(scene.vImageInfos.w>=0.0)`
     // and the retargeted linear pass runs with w = -1.
-    const linearImageProcessing = result.manifest.features.includes(
-        "renderer:transmission",
-    );
+    const linearImageProcessing =
+        result.manifest.features.includes("renderer:transmission") ||
+        // Asset-carried KHR_materials_transmission enables the runtime's
+        // transmission exactly like the feature does (scene_core stamps
+        // `transmission_enabled` from the same disjunction), and the pin
+        // marks every material linear either way.
+        specializationFeatures.assetTransmission;
     // The runtime keys the variant table by material handle, which is
     // creation order: each glTF load appends its materials, and a scene
     // material appends where its `createPbrMaterial` runs. Every reached

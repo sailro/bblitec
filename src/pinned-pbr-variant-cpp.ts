@@ -157,7 +157,15 @@ const extensionWriters: ReadonlyArray<{
             min: "1.0e-4f",
         },
         vectorProperties: { color: 3 },
-        nestedWriters: { writeRefractionUvTransform: uvTransformSources() },
+        // Each call takes its own texture's transform: Scene 244 animates the
+        // dome's thicknessTexture rotation through KHR_animation_pointer, and
+        // an identity here freezes the shimmer the browser rotates.
+        nestedWriters: {
+            writeRefractionUvTransform: uvTransformSources({
+                refractionMapUV: "material.transmission_transform",
+                thicknessUV: "material.thickness_transform",
+            }),
+        },
     },
     {
         // The per-texture UV transforms. The pin exposes this writer as a method

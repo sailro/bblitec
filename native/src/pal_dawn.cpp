@@ -6057,7 +6057,13 @@ bool run_dawn_engine(Engine& engine) {
                                         ? pinned_identity_world()
                                         : world_from_palette
                                             ? variant_record.bone_matrices[0]
-                                            : pinned_mesh_world(),
+                                            : variant_record.thin_instanced ||
+                                                    !variant_record
+                                                         .instance_matrices
+                                                         .empty()
+                                                ? pinned_instanced_world(
+                                                      variant_record)
+                                                : pinned_mesh_world(),
                                     draw.item.mesh.value);
                             wgpuQueueWriteBuffer(
                                 state.queue,
