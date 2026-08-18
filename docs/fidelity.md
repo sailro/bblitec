@@ -75,20 +75,19 @@ dynamic native specialization.
 Ground and skybox fragments also use generated WGSL, gated by Scenes 1 and 8.
 The shared material vertex stage and Standard fragment variants use generated
 WGSL as well, gated by scenes 145 and 273.
-PBR color, diagnostic, and geometry-output variants now use WGSL through Tint.
-
-The PBR body itself is now Babylon's own. Generation composes one fragment
-per renderable feature set through the pinned composer — the stages under
-`upstream/pbr-variants/` are its output byte for byte, gated by a test that
-matches them against the browser's captured fragments — and both backends
-execute them: every extension arm the corpus reaches, all three light modes,
-tangent frames, and bone-only-animated skins. Each variant carries the pin's
-own per-variant material UBO, mirrored field for field with a static_assert
-per offset, and filled by writers lowered from the pin's `_writeMaterialData`
-and each extension's `writeUbo`. The transcribed fragment remains only for
-the draw classes `pinned_variant_for_draw` refuses — transmission scenes,
-node-animated skins, instanced meshes, and skeleton variants on SDL_GPU —
-each recorded there with its measurement.
+The PBR body itself is Babylon's own, on every draw. Generation composes one
+fragment per renderable feature set through the pinned composer — the stages
+under `upstream/pbr-variants/` are its output byte for byte, gated by a test
+that matches them against the browser's captured fragments — and both
+backends execute them for the whole corpus: every extension arm, all three
+light modes, tone mapping, fog, tangent frames, skins and morphs, thin
+instances, transmission with the pin's own linear passes and refraction grab,
+the geometry-output MRT arms, and the no-color depth views. Each variant
+carries the pin's own per-variant material UBO, mirrored field for field with
+a static_assert per offset, and filled by writers lowered from the pin's
+`_writeMaterialData` and each extension's `writeUbo`. The transcribed PBR
+fragment is deleted; a PBR draw that resolves no variant is an error naming
+its mesh and material, never a fallback.
 
 The layer *formulas* no longer are. Every helper the clearcoat, sheen and
 iridescence arms call — `visibility_Kelemen`, `getR0RemappedForClearCoat`,

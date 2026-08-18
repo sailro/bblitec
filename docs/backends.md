@@ -335,12 +335,13 @@ afterwards). Only the GPU API layer differs:
   binds the flat 6-float delta buffer and 16-byte-header weights
   buffer at group 0 bindings 0/1 with 4-byte/16-byte zero fallbacks;
   weights rewrite in place when `morph_weights_version` changes.
-- **Pinned PBR variants**: both backends also execute Babylon's own
-  composed stages (`variant-*.native.wgsl`, entered at `main` in both
-  stages, the pin's text unchanged). Selection is the shared
-  `pinned_variant_for_draw` in `pal_gpu_shared.hpp`; a refused draw
-  falls to the transcribed pipeline, and each refusal carries its
-  measurement in the comment. The pin's scheme is group 0 = scene +
+- **Pinned PBR variants**: both backends execute Babylon's own
+  composed stages for every PBR draw (`variant-*.native.wgsl`, entered
+  at `main` in both stages, the pin's text unchanged). Selection is the
+  shared `pinned_variant_for_draw` in `pal_gpu_shared.hpp`, keyed per
+  renderable, light mode, tone flag and geometry task; a draw that
+  resolves no variant is an error naming its mesh and material — the
+  transcribed PBR pipeline is deleted. The pin's scheme is group 0 = scene +
   lights, group 1 = mesh block, material block, then that variant's own
   densely numbered textures — the same index names a different texture
   in two variants, so Dawn builds a bind-group layout per variant from
@@ -354,7 +355,11 @@ afterwards). Only the GPU API layer differs:
   draw reads the unmirrored buffer with `diag(-1,1,1,1)` in the mesh
   block; a skinned draw reads the mirrored buffer with the identity,
   because the palette is the mirror-conjugated `jointWorld * IBM` and
-  either other pairing applies the mirror twice.
+  either other pairing applies the mirror twice. A thin-instanced or
+  LOCAL_POSITION draw instead takes the real node world
+  (`pinned_draw_world` carries the whole chain), the instance stream
+  holds Babylon's own matrix bytes, and the LOCAL_POSITION arm binds
+  the vertex's raw local lanes.
 - **Frame graph**: tasks replace the main pass exactly like the SDL
   task loop. Color render tasks draw their
   `build_render_task_draw_lists` lists into render targets with
@@ -362,9 +367,11 @@ afterwards). Only the GPU API layer differs:
   tasks draw the explicit no-color meshes through GREATER-compare
   pipelines with the reverse-depth matrix and depth cleared to zero;
   geometry tasks bind one MRT per attachment (`geometry_clear_color`
-  clears, optional output target last, resolve on multisample) with
-  the per-task `pbr-geometry-N.frag`/`standard-geometry-N.frag`
-  modules; copy tasks either resolve in an empty pass or run the
+  clears, optional output target last, resolve on multisample) —
+  Standard draws through the per-task `standard-geometry-N.frag`
+  module, PBR draws through the pinned MRT variants under the pin's
+  reverse-Z contract (reverse matrix, GREATER, zero depth clear, the
+  gpUniforms block per task); copy tasks either resolve in an empty pass or run the
   generated fullscreen blit with the integer `resolve_copy_viewport`
   viewport+scissor, and a swapchain copy records its source as the
   capture texture. Sampled depth attachments copy into an r32float
