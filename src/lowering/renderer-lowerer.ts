@@ -30,6 +30,9 @@ import {
 import {
     backgroundGroundFragmentWgsl,
     backgroundSkyboxFragmentWgsl,
+    readPinnedBackgroundGroundSource,
+    readPinnedBackgroundSkyboxSource,
+    readPinnedDitherWgsl,
     solidSkyboxFragmentWgsl,
     solidSkyboxVertexWgsl,
 } from "../shader-builtins-background.js";
@@ -2703,7 +2706,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             );
         }
         const gridModule = "src/material/grid/grid-material.ts";
-        const gridMaterial = this.context.store.getSource(gridModule);
         const clearcoatFragment = this.context.store.getSource(
             clearcoatFragmentModule,
         );
@@ -2754,7 +2756,9 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             [dielectric, "((ior - 1) / (ior + 1)) ** 2 / 0.04", "glTF IOR Fresnel"],
             [transmissionFrameGraph, "updateTransmissionTexture(state, engine)", "scene-color copy ordering"],
             [sceneUniforms, "lodGenerationScale ?? 0.8", "environment LOD scale"],
-            [backgroundGround, "tonemappingCalibration: f32 = 1.590579", "background image processing"],
+            // The ground/skybox fragment *formulas* are no longer asserted
+            // here: they are lifted from the modules' own literals, and the
+            // lift throws naming the missing literal itself.
             [backgroundGround, "ground renders last", "background ordering"],
             [backgroundDds, "GPUTextureFormat = \"rgba16float\"", "DDS cubemap format"],
             [backgroundDds, "pass.drawIndexed(36)", "DDS skybox draw"],
@@ -2860,30 +2864,9 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                 ],
             );
         }
-        if (options.gridMaterial) {
-            requiredUpstreamFormulas.push(
-                [
-                    gridMaterial,
-                    "fr=clamp(fr,-1.0,1.0);return 0.5+0.5*cos(fr*PI);",
-                    "GridMaterial cosine antialiasing",
-                ],
-                [
-                    gridMaterial,
-                    "if(abs(fr)<SQRT2/4.0){return 1.0;}",
-                    "GridMaterial hard line cutoff",
-                ],
-                [
-                    gridMaterial,
-                    "let grid=clamp(max(max(x,y),z),0.0,1.0);",
-                    "GridMaterial max-line composition",
-                ],
-                [
-                    gridMaterial,
-                    "opacity=clamp(grid,0.08,shaderUniforms.gridControl.w*grid);",
-                    "GridMaterial transparent opacity",
-                ],
-            );
-        }
+        // The GridMaterial WGSL needs no marker rows: both stages are built
+        // by evaluating the pinned template functions, which throws on any
+        // shape the evaluator cannot fold.
         if (options.clearcoat) {
             requiredUpstreamFormulas.push(
                 [
@@ -3045,20 +3028,9 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                     }
                 }
             }
-            const fogSource =
-                this.context.store.getSource(fogWgslModule);
-            for (const marker of [
-                "const E_FOG: f32 = 2.71828;",
-                "if (fogMode == 3.0) { fogCoeff = (fogEnd - dist) / (fogEnd - fogStart); }",
-                "else if (fogMode == 1.0) { fogCoeff = 1.0 / pow(E_FOG, dist * fogDensity); }",
-                "else if (fogMode == 2.0) { fogCoeff = 1.0 / pow(E_FOG, dist * dist * fogDensity * fogDensity); }",
-            ]) {
-                if (!fogSource.includes(marker)) {
-                    throw new Error(
-                        `Pinned Babylon Lite fog factor formula changed: ${marker}`,
-                    );
-                }
-            }
+            // The falloff formula itself is not asserted here: every
+            // consumer emits it through `fogFactorWgsl()`, which lifts the
+            // pinned `WGSL_FOG` literal and throws if it changes shape.
         }
         if (options.standardMaterial) {
             result.push({
@@ -3079,44 +3051,66 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             });
         }
         if (options.ground) {
+            const pinnedGround = readPinnedBackgroundGroundSource(
+                this.context.store.packageRoot,
+            );
             const groundProvenance = this.context.provenance(
                 backgroundGroundModule,
                 "buildBackgroundGroundRenderable",
+                "the module's own groundFragSrc + WGSL_IMAGE_PROCESSING with shader/wgsl-helpers.ts WGSL_DITHER/WGSL_NO_DITHER",
             );
+            // Both variants carry the pin's fragment; the pin itself selects
+            // noise by composing WGSL_DITHER or WGSL_NO_DITHER in front of
+            // the same body, so the undithered file is the pin's zero-noise
+            // arm rather than an edited body. The PALs load the dithered
+            // file for the ground, as upstream's enableNoise default does.
             result.push({
                 output:
                     "upstream/shaders/background-ground.frag.native.wgsl",
-                data: backgroundGroundFragmentWgsl(groundProvenance),
+                data: backgroundGroundFragmentWgsl(
+                    groundProvenance,
+                    pinnedGround,
+                ),
             });
-            // The pinned position-seeded dither variant: the Dawn
-            // backend compiles it bit-reproducibly (same compiler as
-            // the reference); SDL_GPU keeps the undithered fragment
-            // because its offline compilation decorrelates the noise.
             result.push({
                 output:
                     "upstream/shaders/background-ground-dither.frag.native.wgsl",
                 data: backgroundGroundFragmentWgsl(
                     groundProvenance,
+                    pinnedGround,
                     true,
                 ),
             });
         }
         if (options.skybox) {
+            const pinnedSkybox = readPinnedBackgroundSkyboxSource(
+                this.context.store.packageRoot,
+            );
             const skyboxProvenance = this.context.provenance(
                 backgroundDdsModule,
                 "buildDdsSkyboxRenderable",
-                `${backgroundHdrModule}#buildHdrSkyboxRenderable`,
+                `${backgroundHdrModule}#buildHdrSkyboxRenderable, the modules' own ddsSkyboxFragSrc/skyboxHdrFragSrc with shader/wgsl-helpers.ts WGSL_DITHER`,
             );
+            // One file per pinned arm, under the names the PALs select
+            // between on `skybox_uses_environment`: the undithered file is
+            // the environment-cubemap (HDR) fragment — the pin composes no
+            // dither for it — and the dithered file is the DDS fragment,
+            // whose image-processing block is the pin's own single
+            // high-contrast arm.
             result.push({
                 output:
                     "upstream/shaders/background-skybox.frag.native.wgsl",
-                data: backgroundSkyboxFragmentWgsl(skyboxProvenance),
+                data: backgroundSkyboxFragmentWgsl(
+                    skyboxProvenance,
+                    pinnedSkybox,
+                ),
             });
             result.push({
                 output:
                     "upstream/shaders/background-skybox-dither.frag.native.wgsl",
                 data: backgroundSkyboxFragmentWgsl(
                     skyboxProvenance,
+                    pinnedSkybox,
                     true,
                 ),
             });
@@ -3281,14 +3275,15 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
                 gridModule,
                 "createGridMaterial",
             );
+            const gridSource = this.context.sourceFile(gridModule);
             result.push(
                 {
                     output: "upstream/shaders/grid.vert.native.wgsl",
-                    data: gridVertexWgsl(provenance),
+                    data: gridVertexWgsl(provenance, gridSource),
                 },
                 {
                     output: "upstream/shaders/grid.frag.native.wgsl",
-                    data: gridFragmentWgsl(provenance),
+                    data: gridFragmentWgsl(provenance, gridSource),
                 },
             );
         }
@@ -3745,6 +3740,7 @@ fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
             vertex: rawWgslLiteral(vertexModule, "skyboxVertSrc"),
             fragment: rawWgslLiteral(module, "skyboxFragSrc"),
             sceneUniforms: this.compiledSceneUniformsWgsl(),
+            dither: readPinnedDitherWgsl(packageRoot).dither,
         };
     }
 }

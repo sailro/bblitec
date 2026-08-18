@@ -803,11 +803,12 @@ test("generates portable GridMaterial shaders from pinned formulas", () => {
         String(wgsl?.data),
         pinnedProvenance(),
     );
-    assert.match(String(wgsl?.data), /cos\(fraction \* PI\)/);
-    assert.match(String(wgsl?.data), /SQRT2 \/ 4\.0/);
-    assert.match(String(wgsl?.data), /max\(max\(x, y\), z\)/);
+    // The pin's own built statements, spelled as the template emits them.
+    assert.match(String(wgsl?.data), /cos\(fr\*PI\)/);
+    assert.match(String(wgsl?.data), /SQRT2\/4\.0/);
+    assert.match(String(wgsl?.data), /max\(max\(x,y\),z\)/);
     assert.match(String(wgsl?.data), /dpdx\(position\)/);
-    assert.match(String(wgsl?.data), /uniforms\.gridControl\.w \* grid/);
+    assert.match(String(wgsl?.data), /shaderUniforms\.gridControl\.w\*grid/);
     assert.ok(
         !shaders.some(
             (shader) =>

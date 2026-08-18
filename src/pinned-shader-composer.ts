@@ -67,6 +67,124 @@ function pinnedLibraryRoot(): string {
     return library;
 }
 
+/**
+ * Reads a packaged module's text from the pinned library, synchronously.
+ *
+ * The WGSL the background and utility builtins lift ships as string literals
+ * inside compiled modules (raw imports carry no source-map entry), so the
+ * literal has to be read out of the packaged text the way the solid skybox
+ * already does. Synchronous because `lowerShaders` is.
+ */
+export function readPinnedLibraryModule(relativePath: string): string {
+    return readFileSync(join(pinnedLibraryRoot(), relativePath), "utf8");
+}
+
+/**
+ * Extracts one `const <name> = "...";` literal out of packaged module text.
+ * The bundler emits these as single-line double-quoted JavaScript strings, so
+ * the value is recovered by scanning to the closing quote and parsing it as
+ * JSON rather than by a regex that would have to model every escape.
+ */
+export function extractPackagedStringLiteral(
+    source: string,
+    name: string,
+): string {
+    const marker = `const ${name} = "`;
+    const start = source.indexOf(marker);
+    if (start < 0) {
+        throw new Error(
+            `Pinned packaged literal '${name}' was not found.`,
+        );
+    }
+    let index = start + marker.length;
+    let escaped = "";
+    while (index < source.length && source[index] !== '"') {
+        if (source[index] === "\\") {
+            escaped += source[index]! + (source[index + 1] ?? "");
+            index += 2;
+            continue;
+        }
+        escaped += source[index];
+        index += 1;
+    }
+    if (index >= source.length) {
+        throw new Error(
+            `Pinned packaged literal '${name}' is unterminated.`,
+        );
+    }
+    return JSON.parse(`"${escaped}"`) as string;
+}
+
+/**
+ * Extracts one `const <name> = \`...\`;` template literal out of packaged
+ * module text. Only substitution-free templates qualify — a `${` inside means
+ * the pin turned the constant into a builder, which is a contract change the
+ * caller must see rather than a string to guess at.
+ */
+export function extractPackagedTemplateLiteral(
+    source: string,
+    name: string,
+): string {
+    const marker = `const ${name} = \``;
+    const start = source.indexOf(marker);
+    if (start < 0) {
+        throw new Error(
+            `Pinned packaged template literal '${name}' was not found.`,
+        );
+    }
+    const end = source.indexOf("`", start + marker.length);
+    if (end < 0) {
+        throw new Error(
+            `Pinned packaged template literal '${name}' is unterminated.`,
+        );
+    }
+    const value = source.slice(start + marker.length, end);
+    if (value.includes("${") || value.includes("\\")) {
+        throw new Error(
+            `Pinned packaged template literal '${name}' is no longer a plain string.`,
+        );
+    }
+    return value;
+}
+
+/**
+ * Splits a lifted WGSL statement list into one statement per entry, keeping
+ * every byte of each statement. Statements end at `;` outside any brace or
+ * parenthesis nesting, or at a top-level `}` (an `if` or `for` block) that no
+ * `else` continues — so a pinned `if (...) { ... } else { ... }` chain stays
+ * one statement, and the `;`s inside a `for` header stay inside it.
+ */
+export function splitWgslStatements(body: string): string[] {
+    const pieces: string[] = [];
+    let braces = 0;
+    let parens = 0;
+    let start = 0;
+    for (let index = 0; index < body.length; index++) {
+        const character = body[index];
+        if (character === "(") parens++;
+        else if (character === ")") parens--;
+        else if (character === "{") braces++;
+        else if (character === "}") {
+            braces--;
+            if (
+                braces === 0 &&
+                parens === 0 &&
+                !/^\s*else\b/.test(body.slice(index + 1))
+            ) {
+                pieces.push(body.slice(start, index + 1));
+                start = index + 1;
+            }
+        } else if (character === ";" && braces === 0 && parens === 0) {
+            pieces.push(body.slice(start, index + 1));
+            start = index + 1;
+        }
+    }
+    pieces.push(body.slice(start));
+    return pieces
+        .map((piece) => piece.trim())
+        .filter((piece) => piece.length > 0);
+}
+
 /** Import a module from the pinned package by its `lib`-relative path. */
 export async function importPinnedModule<T>(
     relativePath: string,
