@@ -42,10 +42,16 @@ Primary source ownership:
 
 | Source | Responsibility |
 | --- | --- |
+| `src/cli.ts` | the `bblitec` entry: one scene compile end to end — frontend, asset materialization, composition, emitters, generated tree |
+| `src/compose-pipeline.ts` | the pinned variant-composition orchestration between settled assets and emitter options: scene arms, PBR/Standard variant tables, mesh-feature tables |
+| `src/babylon-asset-features.ts` | the `.babylon` asset scans generation keys on: light slots, texture selections, per-light mesh lists |
+| `src/feature-activation.ts` | the per-scene `upstream/feature-activation.json` activation inventory |
 | `src/compiler.ts` | entry-scene AST lowering, features, assets, generated main/CMake |
 | `src/compiler/program.ts` | in-memory TypeScript `Program`/`TypeChecker` frontend |
 | `src/compiler/symbols.ts` | resolved Babylon import symbols and aliases |
 | `src/compiler/static-evaluator.ts` | typed static scalar/vector/color expression evaluation |
+| `src/compiler/expressions.ts` | the value switch and call dispatch every expression position goes through |
+| `src/compiler/browser-erasure.ts` | browser-only expression identification, compile-time values, erased instrumentation |
 | `src/compiler/data-types.ts` | plain-data type mapping (structs, enums, optionals, arrays, tables) and generated definition emission |
 | `src/compiler/data-lowering.ts` | data paths, typed literals/sinks, container methods, runtime `Math`, aliasing contracts, destructuring |
 | `src/compiler/native-functions.ts` | once-emitted real C++ functions for fully data-typed user functions |
@@ -55,23 +61,29 @@ Primary source ownership:
 | `src/compiler/promises.ts` | immediate AOT `Promise<T>` lowering |
 | `src/compiler/assignments.ts` | typed property-assignment validation and lowering |
 | `src/compiler/properties.ts` | the declared property reads: which native expression names a handle's property, and which properties are refused |
-| `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, and material intrinsic lowerers |
+| `src/compiler/property-animation.ts` | compile-time clip/track/key lowering and group options |
+| `src/compiler/shader-material.ts` | shader-material variant matching by IR identity and scene-local variant registration |
+| `src/compiler/assets.ts` | asset registration from scene URLs to packaged local files |
+| `src/compiler/adaptations.ts` | the reached-adaptation manifest entries generation records |
+| `src/compiler/option-helpers.ts` | the shared option-object validation contracts |
+| `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, material, and sprite intrinsic lowerers |
 | `src/compiler/types.ts` | compiler public result types and internal typed values/features |
 | `src/upstream-source.ts` | pinned source-map reconstruction |
 | `src/upstream-graph.ts` | conservative reachable-module analysis |
 | `src/upstream-lower.ts` | lowerer orchestration, provenance, generated capabilities |
 | `src/pinned-shader-composer.ts` | executes the pin's own `composeShader`, and lifts named declarations out of a composition verbatim |
-| `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant; supplies the generated shader's helper text |
+| `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant |
+| `src/pinned-standard-variants.ts` | the Standard sibling: derives the pin's own feature words and composes the Standard colour and geometry variants |
 | `src/pinned-material-input.ts` | maps a glTF material to the shape `_computePbrMaterialFeatures` reads — the loader's own extension builders executed against a recording stub, not re-derived |
 | `src/pinned-material-arms.ts` | composes every material a scene loads and refuses a fragment missing an arm one of them reaches |
 | `src/pinned-scene-arms.ts` | the scene half of composition: light modes, tone mapping, fog bits |
 | `src/pinned-mesh-features.ts` | the pin's mesh feature bits, imported rather than restated |
-| `src/pinned-pbr-variant-cpp.ts` | the C++ mirrors of each variant's UBO layouts, offsets cross-checked against the composer's own |
+| `src/pinned-pbr-variant-cpp.ts` | the C++ mirrors of each variant's UBO layouts, offsets cross-checked against the composer's own, plus the generated variant-selector and material texture-slot tables |
 | `src/pinned-pbr-variant-output.ts` | writes the composed variant stages into the generated tree verbatim |
 | `src/lowering/pinned-ubo-writer-lowerer.ts` | lowers the pin's material/extension UBO writers from their own ASTs |
 | `src/lowering/context.ts` | source-located AST declarations, expression contracts, and diagnostics |
 | `src/lowering/*-lowerer.ts` | focused Babylon API and formula lowering |
-| `src/lowering/templates/` | generated C++ and portable shader templates |
+| `src/lowering/templates/` | the generated `.babylon`/glTF loader C++ templates |
 | `corpus/babylon-lite/` | byte-identical registered scene inputs from the pinned source commit |
 | `upstream/babylon-lite-scenes.json` | immutable corpus paths and SHA-256 evidence |
 | `native/include/bblite/` | typed runtime records, handles, PAL contracts |
@@ -80,7 +92,7 @@ Primary source ownership:
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
 | `native/src/pal_sdl_gpu_shared.hpp` | SDL_GPU-only mechanics: shader load, buffer/texture upload, sampler, PNG readback |
 | `native/src/pal_sdl_gpu_sprite.cpp` | the pure-2D sprite pass on SDL_GPU, a separate translation unit because a sprite-only scene generates no camera or render-plan headers |
-| `native/src/pal_dawn_shared.hpp` | Dawn-only device, surface and swapchain bring-up |
+| `native/src/pal_dawn_shared.hpp` | Dawn-only device, surface and swapchain bring-up, and WGSL module loading |
 | `native/src/pal_dawn_sprite.cpp` | the same sprite pass on Dawn |
 | `native/src/pal_dawn.cpp` | Dawn (WebGPU) resources, uploads, pipelines, readback, submission |
 | `native/src/pal_gpu_shared.hpp` | vertex packing, RGBD decode, deformation uniforms, and inverse image processing shared byte-identically by both GPU backends |
@@ -137,10 +149,12 @@ source-text matching. Mechanical refactors preserve compiler-owned generated
 artifacts byte-for-byte; unfinished compiler and shader-IR coverage belongs in
 `TODO.md`.
 
-Static custom WGSL is tokenized and lowered to `ShaderIrProgram` before a
-supported native variant is selected. Formatting and comments are not shader
-identity; generating arbitrary scene-local variants from the supported IR
-remains separate compiler coverage.
+Static custom WGSL is tokenized and lowered to `ShaderIrProgram`; a reached
+program either matches a predeclared variant by IR identity or registers the
+scene's own WGSL as a scene-local variant. Formatting and comments are not
+shader identity; reach order is the generated variant table's index order,
+and uniform setters resolve their offsets from the reached program's
+reflected layout.
 
 ## Upstream upgrades
 
@@ -168,7 +182,10 @@ silently rewritten from the pin.
 thresholds, environment overrides, and optional attribution. The same workflow
 also accepts unregistered repository-local TypeScript and derives defaults.
 
-`src/scene-command.ts` provides compile, build, process, and parity operations.
+`src/scene-command.ts` provides compile, build, process, parity, compose, and
+validate operations, plus the diagnostic commands (geometry, capture,
+uniforms, diff, stability, probe-variants, measure, neutrality,
+neutrality-generated) the debugging ladder is built from.
 `src/parity-scene.ts` is the common comparison runner. Generated output is
 scene-local under `generated\<scene>`.
 
@@ -187,7 +204,7 @@ The current generated slice includes:
 - tree-shaken vertex-shader morphing and four-weight skinning with per-mesh
   palettes and weights
 - a narrow CPU fallback for post-deformation flat normals and deformation
-  outside the reached 64-matrix/two-morph-target GPU slice
+  outside the reached 64-matrix GPU slice
 - the HillValley-required `.babylon` loader slice
 - Standard/PBR/Grid material records, no-color views, and typed custom shaders
 - metadata-driven `KHR_materials_clearcoat`, `KHR_materials_sheen`,
@@ -217,10 +234,11 @@ The current generated slice includes:
 - generated GridMaterial WGSL compiled exclusively through Tint
 - generated frame-graph blit/depth and diagnostic WGSL compiled through Tint
 - generated ground and cubemap-skybox WGSL compiled through Tint
-- shared material vertex and Standard fragment/geometry WGSL through Tint
-- directional, hemispheric, point, and spot Standard shading, one unrolled
-  slot per declared light
-- PBR color, diagnostic, and geometry-output WGSL through Tint
+- the shared material vertex WGSL through Tint
+- Babylon's own composed PBR and Standard variant stages — colour and
+  geometry MRT — executed verbatim on both backends, selected per renderable
+- directional, hemispheric, point, and spot Standard shading through the
+  pin's own lights block and per-mesh light selection
 - content-addressed DXIL/SPIR-V reuse across identical scene shader variants
 
 Each scene records:
@@ -229,10 +247,16 @@ Each scene records:
 - `fidelity.json`: intentional semantic adaptations
 - `upstream/provenance.json`: upstream modules and symbols
 - `upstream/renderer-fidelity.json`: shader contracts and invariants
+- `upstream/feature-activation.json`: every activation unit — runtime
+  features, capability defines, codecs, emit options, composed variants,
+  refusals — with its concrete reason and pinned mirror
 - `upstream/shaders/shader-material-reflection.json`: reached custom shader
   entry points, attributes, varyings, uniform layouts, bindings, and sizes
 - `upstream/shaders/*.wgsl`: reached custom material source before IR lowering
 - `upstream/shaders/*.native.wgsl`: SDL binding/location/depth specialization
+- `upstream/shaders/variant-*.native.wgsl`: the pin's own composed PBR
+  (`variant-`) and Standard (`variant-std-`) stages, verbatim; processing
+  adds a `.slots` register sidecar per stage for SDL_GPU addressing
 - `upstream/shaders/*.tint-reflection.txt`: Tint binding reflection check
 - `upstream/shaders/shader-compiler.json`: selected offline compiler backend
 - `upstream/shaders/composition.json`: reached WGSL modules and content hashes
@@ -269,12 +293,16 @@ materialized glTF contains animation; direct `createMorphTargets` reachability
 enables the same variant for generated meshes. Other static scenes retain the
 compact 96-byte/8-attribute vertex layout and one vertex uniform block. Reached
 deformation scenes use the 200-byte/16-attribute layout and a second vertex
-uniform block containing up to 64 matrices and two morph targets. Assets
-with more than two morph targets additionally enable Babylon Lite's
-uncapped storage-buffer morph path: a flat 6-float delta buffer and a
+uniform block containing up to 64 matrices and two morph targets; when the
+scene also composes pinned PBR variants the layout appends an integer
+joint-index lane for the pin's own skinned stage (216 bytes) beside the
+transcribed float pair. Assets with morph targets enable Babylon Lite's
+uncapped storage-buffer morph path — the pin's one morph mechanism, which
+the composed variants read: a flat 6-float delta buffer and a
 16-byte-header weights buffer bound as vertex storage, evaluated with the
-pinned accumulation loop before skinning. Skins beyond 64 joints keep the
-general CPU deformation path rather than truncating.
+pinned accumulation loop before skinning; the two-slot vertex-attribute
+morph lanes remain for direct generated-mesh morph attachment. Skins beyond
+64 joints keep the general CPU deformation path rather than truncating.
 
 Two generated lists decide what a scene compiles: `BBLITE_RUNTIME_FEATURES`
 in `features.cmake` from the scene's own TypeScript, and
@@ -316,9 +344,11 @@ Important contracts:
 - alpha mode, cutoff, blending, culling, and coverage are material-driven
 - requested environment grounds render by default and keep Babylon Lite's
   world-origin fade center ([fidelity](fidelity.md#shader-contract))
-- PBR material-extension textures and uniforms are appended after the base
-  and transmission bindings, selected only by the generated
-  `render_capabilities.hpp` defines for the reached glTF extensions
+- PBR material-extension texture pairs append after the base and
+  transmission bindings per the generated `material_texture_slots.hpp`
+  table, selected only by the `render_capabilities.hpp` defines for the
+  reached glTF extensions; extension uniform data lives in each composed
+  variant's own material block, written by the pin's lowered UBO writers
 - PAL executes generated draw-command indices and pipeline keys rather than
   rescanning every mesh once per pipeline
 - frame-graph viewport copies keep the pinned double-precision

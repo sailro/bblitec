@@ -988,9 +988,10 @@ function emitOptionRows(
             "native-architecture: the pinned Standard template sizes its " +
                 "light array from MAX_LIGHTS at generation " +
                 "(src/material/standard/standard-template.ts, " +
-                "src/light/types.ts); native unrolls one slot per reached " +
-                "light, and the count is knowable because the loader " +
-                "accepts only point lights",
+                "src/light/types.ts); the composed fragment loops " +
+                "min(mesh.lc, MAX_LIGHTS) over the shared lights block, " +
+                "and the count is knowable because the loader accepts " +
+                "only point lights",
             ["renderer plan"],
         ),
         row(

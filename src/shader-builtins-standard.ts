@@ -1,8 +1,7 @@
-// The material families' shared vertex stage. The PBR fragment text it
-// once paired with is retired -- PBR draws run the pin's own composed
-// stages -- so its remaining consumers are the Standard family and the
-// diagnostic pipelines, which is why it lives beside the Standard fragment
-// transcription it now belongs to.
+// The material families' shared vertex stage. Both fragment transcriptions
+// it once paired with are retired -- PBR and Standard draws run the pin's
+// own composed stages -- so its remaining consumers are the diagnostic,
+// depth-only and background pipelines.
 export function materialVertexWgsl(
     gpuDeformation = false,
     gpuInstancing = false,

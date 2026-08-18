@@ -92,18 +92,14 @@ SDL_GPU reads offline DXIL, so a snapshot that mixes generations
 skews only the Dawn side (this masqueraded as scene 248/249
 "residuals" until reprocessing removed them).
 
-The scene 1 attribution captures (draw-id buffer, triangle-cluster
-buffer, and the nine PBR diagnostic MRT buffers) render on either
-backend under the same environment switch; the diagnostic filenames
-keep their fixed `-gpu` suffix and reflect whichever backend produced
-the run. Dawn draws them through the shared superset mesh bind-group
-layout with dedicated diagnostic pipelines and requests the
-primitive-index device feature for the cluster shader's
-`enable primitive_index`. Measured cross-backend agreement: id and
-cluster buffers byte-identical, seven of nine PBR buffers
-byte-identical, ibl and pre-tone HDR within one LSB on <0.05% of
-pixels (≤10 ulp in the raw rgba16f halves — the offline-DXC-versus-
-in-process-compile split on HDR accumulation).
+The scene 1 attribution captures (draw-id buffer and triangle-cluster
+buffer) render on either backend under the same environment switch;
+the diagnostic filenames keep their fixed `-gpu` suffix and reflect
+whichever backend produced the run. Dawn draws them through the shared
+superset mesh bind-group layout with dedicated diagnostic pipelines
+and requests the primitive-index device feature for the cluster
+shader's `enable primitive_index`. Measured cross-backend agreement:
+both buffers byte-identical.
 
 ## Honest comparison
 
@@ -194,7 +190,8 @@ backends beyond that file. Each backend owns its own device mechanics in a
 header only its own translation units include —
 `pal_sdl_gpu_shared.hpp` (shader loading, buffer and texture upload, sampler
 construction, PNG readback) and `pal_dawn_shared.hpp` (instance, surface,
-adapter, device, swapchain bring-up). Each exists because its backend now has
+adapter, device, swapchain bring-up, WGSL module loading). Each exists
+because its backend now has
 two renderers, not because the backends have anything in common: a scene that
 registers a `SpriteRenderer` and no `SceneContext` generates no camera math and
 no render plan, so it cannot compile the scene renderer's translation unit at
@@ -261,7 +258,7 @@ Regression guards from the migration; each was measured, not assumed:
 
 The backend reuses every semantic layer the SDL_GPU backend uses:
 `upstream::build_render_plan`, `build_view_projection`,
-`build_standard_uniforms`, `build_pbr_uniforms`,
+`build_pbr_uniforms`,
 `build_background_plan/uniforms`, `build_skybox_plan/uniforms`,
 `sort_transparent_draws`, and the shared vertex packing and decode
 helpers in `native/src/pal_gpu_shared.hpp` (`GpuVertex`,
@@ -279,18 +276,27 @@ afterwards). Only the GPU API layer differs:
   group 3 = fragment uniform, group 0 = vertex storage buffers (morph).
 - **Pipelines**: created lazily per `upstream::RenderPipelineKind`,
   additionally keyed by sample count and depth presence for
-  render-task targets. Every mesh pipeline (main, task, geometry)
-  shares one explicit superset pipeline layout — WebGPU permits
-  layout bindings a shader ignores — so mesh bind groups stay
-  interchangeable across shader variants. Blend for transparent:
+  render-task targets. Every mesh pipeline outside the composed
+  material variants — grid, custom shader variants, the diagnostics,
+  depth-only — shares one explicit superset pipeline layout — WebGPU
+  permits layout bindings a shader ignores — so mesh bind groups stay
+  interchangeable across those pipelines; the composed variants build
+  a layout per variant (below). Blend for transparent:
   color SrcAlpha/OneMinusSrcAlpha, alpha One/OneMinusSrcAlpha, depth
   LESS_EQUAL with writes off (opaque: LESS with writes on). Anything
   unimplemented throws — explicit failure, never approximation.
-- **Uniforms**: WebGPU has no push constants; each draw owns a uniform
-  buffer sized to its family's uniform struct, written per frame with
-  `wgpuQueueWriteBuffer` before submission.
-- **Deformation/instancing/storage morph**: the shared 200-byte
-  16-attribute `GpuVertex` layout feeds locations 8-15; the shared
+- **Uniforms**: WebGPU has no push constants; every block SDL_GPU
+  pushes arrives through `wgpuQueueWriteBuffer` instead. The two
+  per-mesh vertex-stage blocks (deformation, instance parent world)
+  are rewritten once per frame by the single mesh-sync pass over the
+  plan's items — the same walk and skip logic as the SDL_GPU loop —
+  and the per-draw mesh and material blocks are written with their
+  draws before submission, each draw owning buffers sized to its
+  blocks.
+- **Deformation/instancing/storage morph**: the shared `GpuVertex`
+  deformation layout (16 attributes/200 bytes; the composed variants
+  append an integer joint-index lane — 216 bytes) feeds locations
+  8-15; the shared
   `build_deformation_uniforms` writes a per-mesh uniform at group 1
   binding 1 each frame. Instancing adds the per-instance
   matrix-column vertex buffer (slot 1, locations 16-19, which needs
@@ -300,13 +306,19 @@ afterwards). Only the GPU API layer differs:
   binds the flat 6-float delta buffer and 16-byte-header weights
   buffer at group 0 bindings 0/1 with 4-byte/16-byte zero fallbacks;
   weights rewrite in place when `morph_weights_version` changes.
-- **Pinned PBR variants**: both backends execute Babylon's own
-  composed stages for every PBR draw (`variant-*.native.wgsl`, entered
-  at `main` in both stages, the pin's text unchanged). Selection is the
-  shared `pinned_variant_for_draw` in `pal_gpu_shared.hpp`, keyed per
-  renderable, light mode, tone flag and geometry task; a draw that
+- **Pinned material variants**: both backends execute Babylon's own
+  composed stages for every PBR and Standard draw
+  (`variant-*.native.wgsl` and `variant-std-*.native.wgsl`, entered at
+  `main` in both stages, the pin's text unchanged). Selection is shared
+  in `pal_gpu_shared.hpp`: `pinned_variant_for_draw` keys a PBR draw
+  per renderable, light mode, tone flag and geometry task;
+  `standard_variant_for_draw` keys a Standard draw on the pin's own
+  feature word (the generated `standard_material_features`), the
+  per-renderable mesh bits and the geometry task — light count and
+  per-mesh light lists are UBO data the Standard fragments loop over,
+  not composition keys. A draw that
   resolves no variant is an error naming its mesh and material — the
-  transcribed PBR pipeline is deleted. The pin's scheme is group 0 = scene +
+  transcribed material pipelines are deleted. The pin's scheme is group 0 = scene +
   lights, group 1 = mesh block, material block, then that variant's own
   densely numbered textures — the same index names a different texture
   in two variants, so Dawn builds a bind-group layout per variant from
@@ -323,7 +335,8 @@ afterwards). Only the GPU API layer differs:
   file, never by
   the WGSL: a stage can declare a block it never reads — the unlit
   fragment declares its mesh block for `mli()` — and Tint strips it,
-  so the source over-counts. Vertex convention: an unskinned pinned
+  so the source over-counts. Vertex convention (the glTF family's
+  X-mirror): an unskinned pinned
   draw reads the unmirrored buffer with `diag(-1,1,1,1)` in the mesh
   block; a skinned draw reads the mirrored buffer with the identity,
   because the palette is the mirror-conjugated `jointWorld * IBM` and
@@ -331,7 +344,11 @@ afterwards). Only the GPU API layer differs:
   LOCAL_POSITION draw instead takes the real node world
   (`pinned_draw_world` carries the whole chain), the instance stream
   holds Babylon's own matrix bytes, and the LOCAL_POSITION arm binds
-  the vertex's raw local lanes.
+  the vertex's raw local lanes. The Standard family carries no glTF
+  mirror: its draws ride the identity world, the thin-instance arm the
+  pin's own `mesh.world * instanceWorld` with the recorded parent TRS,
+  and a LOCAL_POSITION geometry arm the recorded node world over the
+  raw local lanes.
 - **Frame graph**: tasks replace the main pass exactly like the SDL
   task loop. Color render tasks draw their
   `build_render_task_draw_lists` lists into render targets with
@@ -365,8 +382,9 @@ afterwards). Only the GPU API layer differs:
   then the pass resumes loading color and depth. The scene-color slot
   binds that texture through the pinned repeat trilinear anisotropic-4
   sampler. The final pass applies exposure, optional tonemap, gamma,
-  and contrast per MSAA sample and averages — the pinned
-  image-processing task transcribed verbatim.
+  and contrast per MSAA sample and averages — the pin's own
+  image-processing stages, deployed as
+  `image-processing-samples.*.native.wgsl`.
 - **Frame**: 4x MSAA color (surface format) resolving into the surface
   texture, `depth24plus-stencil8` (the browser's format — not the SDL
   backend's D32), stage-driven draw order (skybox → opaque →
@@ -391,8 +409,12 @@ the authority if a regression appears:
 
 - **Mip generation** (`src/texture/generate-mipmaps.ts`): WebGPU has no
   built-in mipmaps; the browser blits mip N-1 → N with a fullscreen
-  triangle and a bilinear clamp sampler. `pal_dawn.cpp` embeds that
-  WGSL verbatim. Every material texture gets the full chain
+  triangle and a bilinear clamp sampler. The blit stages are lifted
+  from the pin's own `BLIT_SHADER` literal at generation and deploy as
+  `mip-blit.*.native.wgsl` beside every other module — the transmission
+  grab and per-sample image-processing stages ship the same way, lifted
+  from the pin's literals rather than living as C++ strings. Every
+  material texture gets the full chain
   `1 + floor(log2(max(w,h)))`; sRGB correctness comes from the texture
   format (`rgba8unorm-srgb` for base color/emissive on PBR).
 - **glTF samplers** (`gltf-sampler-desc.ts`): wrap 33071→clamp,
@@ -412,13 +434,15 @@ the authority if a regression appears:
   When `BBLITE_RENDERER_TRANSMISSION` is compiled, the scene-color/
   transmission/thickness trio follows (the scene-color pair binds the
   grab texture when transmission runs and the base color as an inert
-  stand-in otherwise); reached material-extension pairs append last in
-  `append_material_extension_bindings` order with SDL's sRGB flags and
-  fallbacks (clearcoat/roughness white, coat normal 128/128/255, sheen
-  color sRGB white, sheen roughness white, iridescence pairs sRGB
-  white, dedicated uv2 occlusion linear white). Standard pipelines
-  keep six pairs — their fragment never declares the appended
-  bindings.
+  stand-in otherwise); reached material-extension pairs append next in
+  the generated `material_texture_slots.hpp` row order — the one copy
+  of each slot's record field, sRGB rule, fallback texel and pinned
+  binding names, translated by both backends (clearcoat/roughness
+  white, coat normal 128/128/255, sheen color sRGB white, sheen
+  roughness white, iridescence pairs sRGB white, dedicated uv2
+  occlusion linear white). The Standard bump and 2D reflection pairs
+  append last, reached only through the composed Standard variants'
+  generated slot indices.
 - **`.babylon` reflection cubes** (pinned `loadCubeTexture`): rgba8unorm
   faces with the full blit-generated mip chain rendered one face at a
   time; standard materials resolve `material.reflection_cube` into

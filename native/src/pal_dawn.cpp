@@ -271,9 +271,6 @@ struct DawnGeometryTask {
     std::vector<WGPUTextureView> sampled_views;
     WGPUTexture depth = nullptr;
     WGPUTextureView depth_view = nullptr;
-    WGPUShaderModule standard_fragment = nullptr;
-    std::map<upstream::RenderPipelineKind, WGPURenderPipeline>
-        pipelines;
     // The pin's gpUniforms for the task's MRT arms: previous-frame
     // view-projection and the camera near/far.
     WGPUBuffer pinned_geometry_params = nullptr;
@@ -320,7 +317,6 @@ struct DawnState : DawnDevice {
     WGPUTexture depth = nullptr;
     WGPUTextureView depth_view = nullptr;
     WGPUShaderModule vertex_module = nullptr;
-    WGPUShaderModule standard_module = nullptr;
     WGPUShaderModule pbr_module = nullptr;
     WGPUShaderModule grid_vertex_module = nullptr;
     WGPUShaderModule grid_fragment_module = nullptr;
@@ -744,14 +740,6 @@ struct DawnState : DawnDevice {
         if (mip_vertex_module) wgpuShaderModuleRelease(mip_vertex_module);
         release_render_tasks();
         release_frame_graph_textures();
-        for (DawnGeometryTask& task : geometry_tasks) {
-            for (auto& [kind, pipeline] : task.pipelines) {
-                if (pipeline) wgpuRenderPipelineRelease(pipeline);
-            }
-            if (task.standard_fragment) {
-                wgpuShaderModuleRelease(task.standard_fragment);
-            }
-        }
         for (auto& sided : depth_only_pipelines) {
             for (WGPURenderPipeline pipeline : sided) {
                 if (pipeline) wgpuRenderPipelineRelease(pipeline);
@@ -981,7 +969,6 @@ struct DawnState : DawnDevice {
             wgpuShaderModuleRelease(grid_vertex_module);
         }
         if (pbr_module) wgpuShaderModuleRelease(pbr_module);
-        if (standard_module) wgpuShaderModuleRelease(standard_module);
         if (vertex_module) wgpuShaderModuleRelease(vertex_module);
         if (depth_view) wgpuTextureViewRelease(depth_view);
         if (depth) wgpuTextureRelease(depth);
@@ -1519,23 +1506,19 @@ void upload_brdf(DawnState& state, const EnvironmentState& environment) {
     state.brdf_view = wgpuTextureCreateView(texture, nullptr);
 }
 
-WGPUShaderModule& fragment_module_for(
+[[noreturn]] void fragment_module_for(
     DawnState& state,
     bool standard) {
-    // The transcribed PBR fragment is retired: PBR draws run the pin's own
-    // composed stages, and the remaining requesters -- the diagnostic passes
-    // -- have no pinned arm yet, so asking for it is an error rather than a
-    // missing-file crash.
-    if (!standard) {
-        dawn_error(
-            "transcribed PBR fragment requested; the pinned path owns "
-            "every PBR draw.");
-    }
-    WGPUShaderModule& module = state.standard_module;
-    if (!module) {
-        module = load_wgsl_module(state, "standard.frag");
-    }
-    return module;
+    (void)state;
+    // Both mesh families draw through their composed variants; the
+    // legacy mesh pipeline serves only the grid and custom-shader
+    // kinds, which never reach this fork.
+    dawn_error(
+        standard
+            ? "transcribed Standard fragment requested; the composed "
+              "variants own every Standard draw."
+            : "transcribed PBR fragment requested; the pinned path owns "
+              "every PBR draw.");
 }
 
 std::uint32_t task_sample_count(
@@ -3393,11 +3376,13 @@ DawnPipeline& pipeline_for(
         color_target.blend = &blend;
     }
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = traits.grid
-        ? state.grid_fragment_module
-        : shader_info
-            ? state.shader_fragment_modules[shader_variant]
-            : fragment_module_for(state, traits.standard);
+    if (traits.grid) {
+        fragment.module = state.grid_fragment_module;
+    } else if (shader_info) {
+        fragment.module = state.shader_fragment_modules[shader_variant];
+    } else {
+        fragment_module_for(state, traits.standard);
+    }
     fragment.entryPoint = string_view("mainFragment");
     fragment.targetCount = 1;
     fragment.targets = &color_target;
@@ -3849,103 +3834,6 @@ WGPURenderPipeline depth_only_pipeline_for(
 // modules over the shared vertex module, one color target per
 // attachment plus the optional output target, LESS depth (writes off
 // for the transparent variants, which also blend on every target).
-WGPURenderPipeline geometry_pipeline_for(
-    DawnState& state,
-    std::size_t task_index,
-    const FrameTaskRecord& task,
-    upstream::RenderPipelineKind kind) {
-    DawnGeometryTask& geometry = state.geometry_tasks[task_index];
-    const auto existing = geometry.pipelines.find(kind);
-    if (existing != geometry.pipelines.end()) return existing->second;
-    const PipelineKindTraits traits = pipeline_traits(kind);
-    if (traits.grid || traits.shader) {
-        dawn_error("geometry tasks reached a non-mesh pipeline kind.");
-    }
-    // PBR draws in a geometry task resolve the pin's own MRT variants
-    // before reaching this dispatch, so only Standard pipelines build here.
-    if (!traits.standard) {
-        dawn_error(
-            "geometry task dispatch reached a PBR pipeline kind; the "
-            "pinned branch owns every PBR draw.");
-    }
-    if (!geometry.standard_fragment) {
-        geometry.standard_fragment = load_wgsl_module(
-            state,
-            "standard-geometry-" +
-                std::to_string(task.geometry.shader_index) + ".frag");
-    }
-    std::array<WGPUVertexAttribute, base_vertex_attribute_count>
-        attributes{};
-    fill_base_vertex_attributes(attributes.data());
-    std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
-    vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
-    vertex_layouts[0].arrayStride = sizeof(GpuVertex);
-    vertex_layouts[0].attributeCount = attributes.size();
-    vertex_layouts[0].attributes = attributes.data();
-#if BBLITE_GPU_INSTANCING
-    std::array<WGPUVertexAttribute, 4> instance_attributes{};
-    for (std::uint32_t column = 0; column < 4; ++column) {
-        instance_attributes[column].format = WGPUVertexFormat_Float32x4;
-        instance_attributes[column].offset = column * 16;
-        instance_attributes[column].shaderLocation = 16 + column;
-    }
-    vertex_layouts[1].stepMode = WGPUVertexStepMode_Instance;
-    vertex_layouts[1].arrayStride = sizeof(std::array<float, 16>);
-    vertex_layouts[1].attributeCount = instance_attributes.size();
-    vertex_layouts[1].attributes = instance_attributes.data();
-    constexpr std::uint32_t vertex_buffer_count = 2;
-#else
-    constexpr std::uint32_t vertex_buffer_count = 1;
-#endif
-    const std::uint32_t samples =
-        task_sample_count(state, task.geometry.samples);
-    std::vector<WGPUColorTargetState> color_targets;
-    color_targets.reserve(task.geometry.attachments.size() + 1);
-    const WGPUBlendState blend = blend_state_from(transparent_blend);
-    for (const GeometryTextureDescription& description :
-         task.geometry.attachments) {
-        WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
-        target.format = geometry_texture_format(description);
-        if (traits.transparent) target.blend = &blend;
-        color_targets.push_back(target);
-    }
-    if (task.geometry.target.value != invalid_handle) {
-        WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
-        target.format = state.surface_format;
-        if (traits.transparent) target.blend = &blend;
-        color_targets.push_back(target);
-    }
-    WGPURenderPipelineDescriptor descriptor =
-        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.layout = mesh_pipeline_layout_for(state);
-    descriptor.vertex.module = state.vertex_module;
-    descriptor.vertex.entryPoint = string_view("mainVertex");
-    descriptor.vertex.bufferCount = vertex_buffer_count;
-    descriptor.vertex.buffers = vertex_layouts.data();
-    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-    descriptor.primitive.frontFace = traits.front;
-    descriptor.primitive.cullMode = traits.cull;
-    WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
-    depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
-    depth_stencil.depthWriteEnabled = traits.transparent
-        ? WGPUOptionalBool_False
-        : WGPUOptionalBool_True;
-    depth_stencil.depthCompare = WGPUCompareFunction_Less;
-    descriptor.depthStencil = &depth_stencil;
-    descriptor.multisample.count = samples;
-    descriptor.multisample.mask = ~0u;
-    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = geometry.standard_fragment;
-    fragment.entryPoint = string_view("mainFragment");
-    fragment.targetCount = color_targets.size();
-    fragment.targets = color_targets.data();
-    descriptor.fragment = &fragment;
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
-    if (!pipeline) dawn_error("geometry pipeline creation failed.");
-    geometry.pipelines[kind] = pipeline;
-    return pipeline;
-}
 
 // The pinned transmission scene-color grab
 // (frame-graph/transmission.ts BLIT_MSAA_SHADER: per-texel sample
@@ -7876,61 +7764,12 @@ bool run_dawn_engine(Engine& engine) {
                                 continue;
                             }
 #endif
-                            WGPURenderPipeline pipeline =
-                                geometry_pipeline_for(
-                                    state,
-                                    handle.value,
-                                    task,
-                                    draw.pipeline);
-                            DawnMeshBindings& bindings = bindings_for(
-                                state,
-                                mesh,
-                                draw.pipeline);
-                            if (pipeline != bound_pipeline) {
-                                wgpuRenderPassEncoderSetPipeline(
-                                    task_pass,
-                                    pipeline);
-                                bound_pipeline = pipeline;
-                            }
-                            wgpuRenderPassEncoderSetBindGroup(
-                                task_pass, 1, bindings.scene, 0,
-                                nullptr);
-                            wgpuRenderPassEncoderSetBindGroup(
-                                task_pass, 2, bindings.textures, 0,
-                                nullptr);
-                            wgpuRenderPassEncoderSetBindGroup(
-                                task_pass, 3, bindings.material, 0,
-                                nullptr);
-#if BBLITE_GPU_MORPH_STORAGE
-                            wgpuRenderPassEncoderSetBindGroup(
-                                task_pass, 0, bindings.morph, 0,
-                                nullptr);
-#endif
-                            wgpuRenderPassEncoderSetVertexBuffer(
-                                task_pass, 0, mesh.vertices, 0,
-                                WGPU_WHOLE_SIZE);
-#if BBLITE_GPU_INSTANCING
-                            wgpuRenderPassEncoderSetVertexBuffer(
-                                task_pass, 1, mesh.instances, 0,
-                                WGPU_WHOLE_SIZE);
-#endif
-                            wgpuRenderPassEncoderSetIndexBuffer(
-                                task_pass,
-                                mesh.indices,
-                                WGPUIndexFormat_Uint32,
-                                0,
-                                WGPU_WHOLE_SIZE);
-                            wgpuRenderPassEncoderDrawIndexed(
-                                task_pass,
-                                mesh.index_count,
-#if BBLITE_GPU_INSTANCING
-                                mesh.instance_count,
-#else
-                                1,
-#endif
-                                0,
-                                0,
-                                0);
+                            // Every mesh-family draw resolved a
+                            // composed variant above; nothing else is
+                            // eligible for a geometry task.
+                            dawn_error(
+                                "geometry task draw resolved no composed "
+                                "variant.");
                         }
                     };
                 draw_geometry_list(render_task.draw_lists.opaque);

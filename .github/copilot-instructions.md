@@ -189,12 +189,13 @@ binaries are the same, which means no measurement can have moved. See
 - Keep shader formulas tied to upstream markers in
   `renderer-fidelity.json`; do not tune backend shaders against a golden.
 - **Do not type a shader formula out.** The pinned `composeShader` runs
-  under Node, so a helper the generated fragment needs can be *taken* from
-  a real composition instead of transcribed — `pinnedShaderHelpers()` in
-  `src/pinned-pbr-variants.ts` does exactly that, and the fragment calls
-  the pin's own names. A re-typed formula agrees only until upstream
-  changes it. Give it no transcribed fallback either: the fallback is the
-  copy that drifts.
+  under Node, so whole shaders are *composed* rather than transcribed —
+  `createPbrComposer` and `composeSceneStandardVariants` ship the pin's
+  own per-variant stages for both material families, and packaged
+  literals lift through the extraction helpers in
+  `src/pinned-shader-composer.ts`. A re-typed formula agrees only until
+  upstream changes it. Give it no transcribed fallback either: the
+  fallback is the copy that drifts.
 - Avoid unrelated cleanup.
 - There is no hosted CI. Complete the documented local validation matrix
   before committing or pushing.

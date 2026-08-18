@@ -26,10 +26,11 @@ on both GPU backends — click any frame for the measured numbers.*
 - External glTF/GLB support.
 - Support for Typescript structs, nullable objects, dynamic arrays,
   enums, switch/break/continue, destructuring, spread, runtime Math.
-- Standard/PBR/Grid rendering — PBR through Babylon Lite's own composed
-  per-variant stages on every draw — ordered draw lists, custom alpha
-  variants, frame-graph MRT/depth passes, negative transforms, runtime scene
-  mutation, property animation, and tree-shaken GPU deformation.
+- Standard/PBR/Grid rendering — Standard and PBR both through Babylon
+  Lite's own composed per-variant stages on every draw — ordered draw
+  lists, custom alpha variants, frame-graph MRT/depth passes, negative
+  transforms, runtime scene mutation, property animation, and tree-shaken
+  GPU deformation.
 - Exact HDR GGX preprocessing and transmission/IOR/volume scene-color rendering.
 - WGSL shaders compiled by pinned Tint for D3D12, Vulkan, and Metal.
 - Two complete, mutually validating GPU backends: SDL_GPU over offline-compiled

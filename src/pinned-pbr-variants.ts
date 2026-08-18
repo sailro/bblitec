@@ -1,13 +1,11 @@
 /**
  * Composes a scene's PBR shader variants through Babylon Lite's own pipeline.
  *
- * The renderer currently carries one transcribed fragment per scene and selects
- * per-material behaviour from uniform lanes inside it. Babylon composes one
- * fragment per material feature set — the instrumented capture of Scene 253
- * holds 17 distinct fragment bodies for that scene's 14 materials. A single
- * fragment cannot express a per-material fork, so every fork upstream makes has
- * to be re-expressed here by hand, which is where the re-derived formulas come
- * from and why a missed arm reads as a shading bias rather than a failure.
+ * Babylon composes one fragment per material feature set — the instrumented
+ * capture of Scene 253 holds 17 distinct fragment bodies for that scene's 14
+ * materials — and both backends draw every PBR material through the variants
+ * composed here, so a fork upstream makes arrives by composition instead of
+ * being re-expressed by hand.
  *
  * Nothing in this module decides what a variant contains. The feature bits come
  * from the pin's own `_computePbrMaterialFeatures`, which walks the registered

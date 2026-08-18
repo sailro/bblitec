@@ -86,7 +86,7 @@ export class GeneratedTree {
 
     /**
      * A downstream shader artifact whose source WGSL this run emitted.
-     * `pbr.frag.native.wgsl` compiles to `pbr.frag.dxil` and friends, and
+     * `pbr.vert.native.wgsl` compiles to `pbr.vert.dxil` and friends, and
      * `shader-compiler.json` records the toolchain for the directory.
      */
     private isLiveShaderArtifact(key: string): boolean {

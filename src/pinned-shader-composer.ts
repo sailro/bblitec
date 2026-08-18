@@ -9,14 +9,13 @@
  * legitimate answers in the project's own rule: lower the pinned AST, or
  * execute the pinned code.
  *
- * This matters because the alternative is what the renderer currently carries:
- * a transcription of the composed fragment plus a hand-written composer that
- * splices extension arms in by text marker. Every arm that transcription misses
- * reads as a small systematic shading bias — the clearcoat base-F0 remap is one
- * that reached a published gate.
- *
- * Nothing here is wired into generation yet. It exists so the swap can be
- * staged against measurements rather than against a rewrite.
+ * This matters because the alternative was a transcription of the composed
+ * fragment spliced by text marker, and every arm a transcription misses reads
+ * as a small systematic shading bias — the clearcoat base-F0 remap reached a
+ * published gate that way before the swap. Production composition goes through
+ * `createPbrComposer` and `composeSceneStandardVariants`; this module owns
+ * the pinned imports and extraction helpers they and the lifted builtins
+ * share.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";

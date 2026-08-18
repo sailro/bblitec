@@ -3036,7 +3036,7 @@ ${lifted.fragmentBody}
                     upstreamModule: iblFragmentModule,
                     upstreamMarker: "vec2<f32>(NdotV, roughness)",
                     nativeBehavior: "The BRDF LUT is sampled with NdotV on X and perceptual roughness on Y.",
-                    validation: ["source marker assertions", "Scene 1 reflectivity diagnostics"],
+                    validation: ["source marker assertions", "CPU/GPU visual parity"],
                 },
                 {
                     id: "environment-cubemap-orientation",

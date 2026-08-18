@@ -311,7 +311,10 @@ Generation:
   builds the whole corpus offline. A clone of the pinned upstream commit can
   seed it directly, since asset paths under the commit are paths in the clone
 - emits typed C++, headers, scene-local shaders, and CMake features
-- writes `manifest.json`, `fidelity.json`, and upstream provenance
+- writes `manifest.json`, `fidelity.json`, upstream provenance, and the
+  per-scene activation inventory `upstream/feature-activation.json` —
+  every activation unit with whether this scene reaches it, the reaching
+  call site, and the pinned module or predicate it mirrors
 
 `generated\` is disposable. Never fix generated files directly.
 
@@ -321,9 +324,10 @@ those phases concurrently.
 Every `npm run scene -- ...` invocation first re-runs a clean `npm run build`,
 so editing TypeScript while one is running risks a mixed `dist`. For a chain of
 several operations, build once and call `node dist/src/scene-command.js <op>
-<scene>` directly, which leaves `dist` frozen while sources change. Text and
-WGSL templates are the exception: generation reads them from `src/` rather than
-from `dist`, so a template edit reaches a generation that is already running.
+<scene>` directly, which leaves `dist` frozen while sources change. That
+freezes generation entirely: its only inputs are the compiled `dist` and the
+pinned package under `node_modules` — C++ text and WGSL are embedded in the
+compiled modules or lifted from the pin at run time, not read from `src/`.
 
 ## Shader compilation
 
@@ -565,7 +569,7 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_BACKGROUND=0` | disable a requested DDS/HDR/solid-colour skybox (`scene -- parity <id> --without background` drives it) |
 | `BBLITE_GROUND=0` | disable a requested transparent environment ground (`scene -- parity <id> --without ground` drives it) |
 | `BBLITE_MAX_FRAMES=<n>` | automated frame limit |
-| `BBLITE_ANIMATION_SEEK_SECONDS=<t>` | seek the deterministic clock before the measured frame (registry entries pin per-scene poses; `--seek` on `parity`/`geometry`/`capture`/`diff` overrides) |
+| `BBLITE_ANIMATION_SEEK_SECONDS=<t>` | seek the deterministic clock before the measured frame (registry entries pin per-scene poses; `--seek` on `parity`/`geometry`/`capture`/`diff`/`probe-variants` overrides) |
 | `BBLITE_TEST_PASS=1` | the measured-run contract the harnesses set: capture-driven frame gating |
 | `BBLITE_ID_BUFFER=<path>` / `BBLITE_CLUSTER_BUFFER=<path>` | write the draw-id / triangle-cluster attribution buffers (set by `parity` for registry-attributed scenes) |
 | `BBLITE_COPY_TASK=<name>` | select one frame-graph copy task full-screen (driven by `scene -- geometry`) |
@@ -579,7 +583,8 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_BUILD_STAMP_OUT=<path>` | write the digest of the sources this executable was built from |
 
 Controls: left-drag orbit, right/middle-drag pan, wheel zoom; arrows and
-`W`/`S` are keyboard fallbacks.
+`W`/`S` are the orbit camera's keyboard fallbacks, and free cameras take
+`WASD`/arrows plus `Space`/`Shift`.
 
 ## Parity
 
@@ -772,11 +777,14 @@ npm run scene -- diff scene33 --backend dawn --recapture
 where they part: draw shapes, then uniform values field by field — the
 capture's pinned material and mesh blocks included, with per-block
 tallies and any block no PBR draw carries flagged refused — then the
-browser's composed shaders hashed against the generated arms (matched
-groups, both one-sided sets, and the closest near miss's first divergent
-line), then the texture sample expressions in each side's shaders. Native
-fields are named through the struct declarations in the scene's own
-generated `renderer_plan.hpp`; browser buffers through the structs in the
+native bone palettes looked up among the browser's float-texture uploads
+(mirror map applied), then the browser's composed shaders hashed against
+the generated arms (matched groups, both one-sided sets, and the closest
+near miss's first divergent line), then the texture sample expressions
+in each side's shaders. Native fields are named through the struct
+declarations in the scene's own generated headers — `renderer_plan.hpp`
+plus the pinned uniform mirrors in `standard_variants.hpp` /
+`pbr_variants.hpp`; browser buffers through the structs in the
 browser's own composed shaders. See [debugging](debugging.md) for how to
 read the report, including why a byte-exact scene still lists entries.
 
@@ -889,8 +897,8 @@ all` bundles the same three stages plus parity and `status:verify` behind one
 summary line per stage — its parity stage runs `--differential` when the
 pinned Dawn library is installed, mirroring `scenes:parity` — and stops at the
 first failing stage while preserving every artifact the completed stages
-wrote (`validate <id>` scopes the parity and status stages to one scene);
-`npm test` stays separate.
+wrote (`validate <id>` runs every stage for that scene alone and filters
+the status check to its row); `npm test` stays separate.
 
 `scenes:parity` runs both backends (`parity all --differential`) because
 [status](status.md) publishes an SDL_GPU and a Dawn number for every scene; a
@@ -932,7 +940,8 @@ npm run package:demo -- -Scene scene243
 
 The payload follows the `BBLITE_BACKEND` the build directory was configured
 with (read from its CMake cache): `SDL_GPU` ships offline DXIL/SPIR-V
-shaders and no Dawn DLLs, `DAWN` ships WGSL text plus
+shaders with their `.slots` binding sidecars and no Dawn DLLs, `DAWN`
+ships WGSL text plus
 `webgpu_dawn.dll`/`dxcompiler.dll`/`dxil.dll` and the Dawn license
 (no FXC — see [backends](backends.md#building-and-running)), and
 `BOTH` ships the dual-backend binary with both shader sets plus a

@@ -1029,9 +1029,9 @@ inline std::size_t pinned_variant_for_draw(
     if (engine.materials.size() != upstream::pbr_variant_material_count) {
         return std::numeric_limits<std::size_t>::max();
     }
-    // A mesh whose node transform is not baked into its vertices needs the
-    // matrix the transcribed stage takes from elsewhere; until the pinned path
-    // carries it, those draws stay on the transcribed one.
+    // A mesh whose node transform is not baked into its vertices carries it
+    // in the record's parent matrix, which the composed stages consume; a
+    // record without it cannot resolve a variant and errors at the draw.
     bool has_bones = false;
     if (draw.item.mesh.value < engine.meshes.size()) {
         const MeshRecord& record = engine.meshes[draw.item.mesh.value];

@@ -155,9 +155,8 @@ export interface UpstreamEmitOptions {
     /**
      * The pin's own composed Standard variants — the Standard mirror of
      * `pinnedVariants`, emitted as `standard_variants.hpp` plus the composed
-     * stages. Nothing sets this yet: the transcribed standard fragment stays
-     * live until wave D wires the PALs over, so the default-absent option
-     * keeps the generated tree byte-identical.
+     * stages. Absent only when the scene reaches no Standard material,
+     * which also skips the header.
      */
     pinnedStandardVariants?: readonly PinnedStandardVariantManifestEntry[];
     /**

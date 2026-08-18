@@ -1,13 +1,12 @@
 /**
  * The PBR arms a scene's glTF materials actually compose, from the pin.
  *
- * The renderer emits one PBR fragment per scene and selects per-material
- * behaviour from uniform lanes inside it, where Babylon composes one fragment
- * per material feature set. That difference is why a missed arm reads as a
- * small systematic shading bias instead of a failure: the fragment still
- * compiles, still binds, still draws, and is simply missing a term.
+ * Babylon composes one fragment per material feature set, and a missed arm
+ * reads as a small systematic shading bias instead of a failure: the
+ * fragment still compiles, still binds, still draws, and is simply missing a
+ * term.
  *
- * This closes that. Every material is run through the pin's own composer and
+ * This guards that. Every material is run through the pin's own composer and
  * the arms it produces are compared against the ones the emitted fragment was
  * built with. A material that reaches an arm the fragment does not have is a
  * generation error, named after the material, rather than a number moving in

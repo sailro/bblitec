@@ -17,19 +17,27 @@ Generated scenes contain:
 | `manifest.json` | reached features, sources, assets, adaptations |
 | `fidelity.json` | intentional source-to-native semantic differences |
 | `upstream/provenance.json` | pinned upstream modules and symbols |
+| `upstream/feature-activation.json` | every activation unit across all mechanisms, its reaching call site or asset, and the pinned module it mirrors |
+| `upstream/shaders/composition.json` | the composed pinned shader modules deployed with the scene |
 | `upstream/renderer-fidelity.json` | shader bindings, formats, formulas, invariants |
 | `upstream/shaders/shader-material-reflection.json` | reached custom WGSL entry points, interfaces, and uniform layouts |
 | `upstream/shaders/*.wgsl` | reached custom material source before typed IR lowering |
-| `upstream/shaders/*.native.wgsl` | SDL binding, location, and depth specialization passed to Tint |
+| `upstream/shaders/*.native.wgsl` | the deployed stages passed to Tint: custom and generated WGSL specialized for SDL bindings, locations, and depth; pinned composed variants unchanged in the pin's own scheme |
 | `upstream/shaders/*.tint-reflection.txt` | Tint entry-point resource bindings checked against native WGSL |
 | `upstream/shaders/shader-compiler.json` | pinned compiler backend and executable hashes |
 
 Current intentional adaptations include browser-wrapper erasure, immediate AOT
-`await`, compile-time asset materialization, SDL input translation, native
-shader backends, and opt-in ground composition. Scenes reaching the plain-data language slice add
-the value-copy object model (`plain-data-value-model`: path-bound locals are
-read-only copies, object parameters alias by native reference, sparse arrays
-zero-initialize) and the pinned seeded `Math.random`
+`await`, compile-time asset materialization (drawn sprite atlases and HDR
+cubemaps included), the SDL platform boundary, the native shader backends,
+and four-influence skinning for an asset carrying `JOINTS_1`/`WEIGHTS_1`
+(`four-influence-skinning`: the pinned loader skins eight influences, the
+generated loader keeps the first pair and drops the tail weights). Scenes
+reaching the plain-data language slice add
+the value-copy object model (`plain-data-value-model`: a const local bound to
+a container element or member binds a native reference and is poisoned by a
+later structural mutation of that container; mutable path-bound locals stay
+copies that reject writes; object parameters pass by native reference; sparse
+arrays zero-initialize) and the pinned seeded `Math.random`
 (`deterministic-seeded-random`: mulberry32 over seed 1 on both the native
 runtime and the browser reference capture).
 
@@ -81,11 +89,13 @@ The project-owned `audit-shader-frame-graph` differential gate is pixel-exact
 against pinned Babylon Lite and verifies that alpha-card and circular-cutout
 materials retain their pipelines and uniforms when a frame-graph render task
 mirrors the scene. It is regression coverage, not upstream corpus coverage.
-GridMaterial now uses generated WGSL and Tint, with scene 213 gating its
-dynamic native specialization.
-Ground and skybox fragments also use generated WGSL, gated by Scenes 1 and 8.
-The shared material vertex stage and Standard fragment variants use generated
-WGSL as well, gated by scenes 145 and 273.
+GridMaterial WGSL is built by evaluating the pinned template functions at the
+reached option sets, with scene 213 gating its dynamic native specialization.
+Ground and skybox fragments are lifted from the pinned modules' own string
+literals, gated by Scenes 1 and 8.
+The shared material vertex stage is generated WGSL, and Standard draws run
+both stages of the pin's own composed variants — `standard_variants.hpp`
+plus the deployed `variant-std-*` files — gated by scenes 145 and 273.
 The PBR body itself is Babylon's own, on every draw. Generation composes one
 fragment per renderable feature set through the pinned composer — the stages
 under `upstream/pbr-variants/` are its output byte for byte, gated by a test
@@ -100,27 +110,25 @@ a static_assert per offset, and filled by writers lowered from the pin's
 fragment is deleted; a PBR draw that resolves no variant is an error naming
 its mesh and material, never a fallback.
 
-The layer *formulas* no longer are. Every helper the clearcoat, sheen and
-iridescence arms call — `visibility_Kelemen`, `getR0RemappedForClearCoat`,
-`ccSchlick`, `normalDistributionFunction_CharlieSheen`, `visibility_Ashikhmin`,
-the whole `iri_*` thin-film stack and its `IRI_XYZ_TO_REC709` matrix — is
-lifted verbatim out of a real composition through the pinned
-`composeShader`, under the pin's own names, by `pinnedShaderHelpers()` in
-`src/pinned-pbr-variants.ts`. There is deliberately no transcribed fallback:
-a fallback is the copy that drifts, so a helper the pin renames or drops is a
-generation failure instead of a shading bias. `rotateY` keeps a one-line
-wrapper because upstream takes the rotation angle as a parameter and the
-layers here reach it from a uniform — that plumbing is ours, the rotation is
-the pin's.
+The layer helpers arrive the same way. `visibility_Kelemen`,
+`getR0RemappedForClearCoat`, `ccSchlick`,
+`normalDistributionFunction_CharlieSheen`, `visibility_Ashikhmin`, and the
+whole `iri_*` thin-film stack with its `IRI_XYZ_TO_REC709` matrix are not
+transcribed anywhere: they reach the deployed stages inside the pin's own
+composed fragments, under the pin's own names. There is deliberately no
+transcribed fallback — a fallback is the copy that drifts — so a helper the
+pin renames or drops fails generation, through the composition itself or a
+marker assertion naming it, instead of becoming a shading bias.
 
-The same composer is used as a check on the fragment as a whole. Generation
+The same composer is used as a cross-check on the emitted set. Generation
 runs every glTF material the scene loads through the pin's own
-`_computePbrMaterialFeatures` and refuses to emit a fragment missing an arm
-one of them composes, naming the material and the variant
-(`src/pinned-material-arms.ts`). It does not make the fragment
-per-material — that is the variant-model work above — but it stops a missed
-arm from shipping silently while it is not, which is the failure mode every
-entry in the layer section below shares.
+`_computePbrMaterialFeatures` and refuses to emit a variant set missing an
+arm one of them composes, naming the material and the arm
+(`src/pinned-material-arms.ts` `assertArmsCovered`). The variants are
+per renderable already; the check is what keeps a missed arm a generation
+error instead of the small systematic shading bias it would otherwise
+render as, which is the failure mode every entry in the layer section below
+shares.
 
 HDR environments preserve mip zero and use the pinned WebGPU 1024-sample GGX
 prefilter for higher mips. The generated package records the pinned module,
@@ -184,8 +192,9 @@ animations are read, the answer has to be gathered in a pre-pass, which is
 what upstream does and what the generated loader now does.
 Environment horizon occlusion applies only to normal-mapped materials:
 the pinned `ibl-fragment` composes `eho = 1.0` without a normal map,
-and the native fragment gates the same factor on the has-normal-map
-uniform. Scene 247's metallic teapots gate this — applying the
+and each material's composed variant carries whichever arm its features
+produce, so the factor follows the material by construction. Scene 247's
+metallic teapots gate this — applying the
 polynomial unconditionally darkened silhouette speculars by one MSAA
 sample step across the instance field.
 Node TRS and world-matrix composition run in double precision and
@@ -298,8 +307,10 @@ exactly as upstream's `getTrilinearAnisotropicSampler` does.
 This final pass runs the pin's own shape on both backends: pinned Babylon
 Lite keeps the transmission target multisampled to the end and applies image
 processing per MSAA sample before averaging (`image-processing-task.ts`
-samples `texture_multisampled_2d` and divides after the `ip()` loop). Dawn
-transcribes that task verbatim, and SDL_GPU binds the multisampled colour
+samples `texture_multisampled_2d` and divides after the `ip()` loop). The
+fragment is lifted at generation from that task's own literals and both
+backends execute it: Dawn compiles it at startup like every other stage, and
+SDL_GPU binds the multisampled colour
 attachment for sampling through the vendored SDL patch
 (`native/vcpkg-overlay-ports/sdl3`, SDL#15838) and runs the same per-sample
 fragment at 4x; the resolved-pixel single-sample fragment remains only as the
@@ -312,6 +323,13 @@ additional generated light paths. Their diffuse and specular sums remain
 separate through transmission and transparent-alpha composition, and
 transmissive materials retain their authored alpha/depth state while moving
 after the scene-color grab.
+
+Draw order is the pin's own. Opaque draws keep the pinned append order:
+every renderable module stamps one shared `renderOrder`, so the pinned
+stable sort is the identity on the emitted list, and generation refuses the
+moment the stamps disagree. Transparent draws sort by the pinned view-space
+depth of each mesh's world translation, lowered from
+`sortTransparentBindings`' own distance assignment and comparator.
 
 Requested generated grounds render by default. Their mesh is translated to the
 computed scene root while Babylon Lite's fade calculation deliberately keeps
@@ -348,10 +366,10 @@ intentionally uses the unrotated reflection vector.
 glTF animation uses pinned LINEAR quaternion interpolation and deterministic
 time seeking, plus CUBICSPLINE quaternion/translation interpolation where
 reached. Morph position/normal deltas are applied before recursive skinning;
-generated joint palettes and morph weights drive vertex-shader
-positions/normals/tangents. Meshes above the two-slot vertex-attribute
-morph slice use Babylon's pinned uncapped storage-buffer path
-(`morph-fragment-core.ts`): a flat 6-float delta buffer and a weights
+generated joint palettes and morph weights drive the deformation stage.
+Every morphed mesh uses Babylon's pinned uncapped storage-buffer path
+(`morph-fragment-core.ts`) — the pin's one morph mechanism, compiled in for
+any morph target at all: a flat 6-float delta buffer and a weights
 buffer with the 16-byte `{count, vertexCount}` header, accumulated in
 ascending target order before skinning, with source-marker assertions
 pinning the loop, indexing, and header ABI. Scene 243 gates it.
@@ -377,8 +395,8 @@ frame/time ranges, looping, speed ratios, and deterministic group seeking are
 generated from the reached Babylon Lite APIs.
 
 Direct `createMorphTargets` accepts one position target, nullable normal
-deltas, one initial weight, and one mesh attachment. It uses the same
-deformation vertex layout as glTF. `createSphereData` returns arrays derived
+deltas, one initial weight, and one mesh attachment. It rides the same
+pinned storage-buffer morph path as glTF. `createSphereData` returns arrays derived
 from the generated sphere geometry, so procedural delta functions consume the
 same base positions the renderer draws. Scene 252 is the StandardMaterial
 parity gate for this contract.
@@ -387,21 +405,17 @@ Scene 151 gates directional-plus-hemispheric Standard lighting and is
 pixel-exact. The supported light-count boundary is recorded in
 [Features](features.md#lights).
 
-**An unrolled Standard light slot says whether it holds a light; the pinned
-loop says how many there are.** Babylon Lite declares
-`array<LightEntry, MAX_LIGHTS>` and walks `min(mesh.lc, MAX_LIGHTS)` of it, so
-a slot past the count is never read and needs no marking. The generated
-fragment unrolls one slot per reached light instead, which means an unwritten
-slot is evaluated and has to identify itself. It does so through a component
-the pinned lighting function does not read for the light kinds in that slot:
-normally `vLightDirection.w`, which every written light sets to one. A spot
-light takes that component for its cone cosine, so a scene reaching one tags
-empty slots in the kind component instead — the pinned kinds are 0 point,
-1 directional, 2 spot and 3 hemispheric, and the generated writer leaves -1
-there. Both forms evaluate the same lights to the same values; only the
-component carrying "this slot is empty" moves, and it moves only for the
-scenes that need the cone. Scene 15 is the parity gate, byte-identical across
-both backends.
+**Standard lighting is the pin's own loop over the pin's own entries.** The
+composed Standard fragment declares `array<LightEntry, MAX_LIGHTS>` and walks
+`min(mesh.lc, MAX_LIGHTS)` of it through the per-mesh selection `mli()`, so a
+slot past the count is never read and needs no marking — light count, kind
+dispatch (the tag in `vLightData.w`) and per-mesh light lists are all UBO
+data. The entries are filled by writers lowered from each pinned light's own
+`_writeLightUbo`, reading direction and position out of the pin's own light
+world matrix (`local_matrix_from_direction`): the spot exponent lands in
+`vLightSpecular.w`, its cone cosine in `vLightDirection.w`, and a hemispheric
+light's ground colour reuses `vLightDirection`, exactly where the pin puts
+them. Scene 15 is the spot parity gate, byte-identical across both backends.
 
 **The emissive texture is sampled at the raw UV, never through its own
 transform.** Every other slot samples through the UV its
@@ -441,8 +455,7 @@ different fragments rather than one fragment with a uniform. It is worth a
 material amount of light: Scene 19's white dielectric sphere has a base F0 of
 0.04, and its ior-2.0 coat remaps that to 0.0204, so omitting the slot left
 every sphere pixel one channel step bright. Scene 19 gates the remap and Scene
-28 gates its absence; composing the remap with iridescence, which rewrites the
-same base Fresnel lines through its own slot, fails at generation.
+28 gates its absence.
 
 **Sheen is composed as one of two pinned models, chosen at generation.**
 `createSheenFragment` takes a `hasAlbedoScaling` flag and builds materially
@@ -515,21 +528,15 @@ own and are carried through: a DDS environment uses LOD generation scale 0.8
 rather than 1.0, and it writes no image-processing state at all, where the HDR
 loader sets exposure, contrast, and tone mapping.
 
-Two glTF material contracts are expressed in a shape that differs from the
-pinned one while producing the same values, and each holds for a stated reason.
+Per-texture UV transforms follow the pin's own per-material rule: generation
+executes the pinned `wrapTexture` and `needsGltfUvTransform`, so a material
+with no transform never gains the fields, and each carrying slot's fields are
+filled by writers lowered from the pin's own `writeUvTransform` family.
+Rotation is composed in double before the float store, matching a `Math.cos`
+result reaching a `Float32Array`.
 
-**Per-texture UV transforms are emitted per scene, not per material.** Babylon
-Lite attaches `uScale`/`vScale`/`uOffset`/`vOffset`/`uAng` to each texture
-wrapper and compiles the per-texture UV matrices into the materials that carry
-one, so a material with no transform never gains the fields. The generated
-fragment is per scene here, so it declares one matrix and offset pair for every
-slot it samples and every material fills them, identity where the asset
-declares no transform. Identity reduces the transform to the raw varying
-exactly — the matrix is `(1, 0, 0, 1)` and the offset is zero, so each
-coordinate is one product plus a zero term — which is why scenes that reach the
-extension on some materials and not others are unaffected. Rotation is composed
-in double before the float store, matching a `Math.cos` result reaching a
-`Float32Array`.
+One glTF material contract is expressed in a shape that differs from the
+pinned one while producing the same values, and it holds for a stated reason.
 
 **A glTF index of refraction folds into the material's reflectance.** The pin
 keeps reflectance at its default and scales it with `metallicF0Factor`, so
@@ -576,22 +583,11 @@ Interpretation:
 
 ## Attribution
 
-Registry-enabled scenes can emit draw IDs and triangle-cluster IDs. Reports
+Registry-enabled scenes can emit draw IDs and triangle-cluster IDs — the
+`--id-diagnostics` generation option adds the ID outputs to the composed
+shaders. Reports
 join those IDs to glTF nodes, meshes, materials, alpha mode, and double-sided
 state.
-
-Scene 1 also emits focused PBR buffers from the production shader:
-
-- world normal
-- reflectivity
-- irradiance and IBL
-- normalized view depth
-- albedo and direct light
-- raw base color
-- final pre-tone-map HDR, including a tightly packed RGBA16F sidecar
-
-These diagnostics use two 4x-MSAA passes because SDL_GPU exposes four color
-targets. Normalized depth is bit-exact against the Babylon Lite WebGPU oracle.
 
 Scenes 145 and 146 gate the separate production geometry-renderer path: all
 eleven geometry texture types, split 7+4 MRT passes, optional real color,
@@ -642,20 +638,22 @@ specialization flag, which is the predicate behind Babylon Lite's own
 dynamically imported `gltf-feature-primitive.js`: a scene whose assets are all
 triangle lists emits a loader that carries no topology handling at all, which
 is where upstream keeps it too.
-Standard bump maps build the pinned cotangent frame from screen-space
-derivatives (`shader/wgsl-helpers.ts` `WGSL_PERTURB_NORMAL`), so a mesh needs
-no tangent attribute, and the interpolated normal is scaled by 1 over the
-texture's `level` before the frame is built. The pair binds after every PBR
-texture pair, which fixes its index while none of those exist; generation
-fails explicitly on a scene composing bump mapping with transmission or a PBR
-material extension, because the fragment would then need its binding computed
-rather than fixed. A material with no bump map samples a flat
-(128, 128, 255) texel and keeps its interpolated normal.
+Standard bump maps compose the pin's own `normal-map-fragment`
+(`HAS_BUMP_TEXTURE`), whose `WGSL_PERTURB_NORMAL` helper builds the cotangent
+frame from screen-space derivatives, so a mesh needs no tangent attribute,
+and the interpolated normal is scaled by 1 over the texture's `level` before
+the frame is built. The pair binds through the generated texture-slot table
+(`material_texture_slots.hpp`), whose rows append in a fixed order — the base
+slots, then the transmission, extension, uv2-occlusion, Standard bump and 2D
+reflection pairs — so no existing slot index moves when one appears, and each
+variant's bindings are reflected from its own composed WGSL. A material with
+no bump map composes a variant that never declares the pair and keeps its
+interpolated normal.
 A `.babylon` light applies to the meshes its `includedOnlyMeshesIds` names, or
 to every mesh its `excludedMeshesIds` does not, resolved at load against the
-records the loader creates. The Standard uniform slots therefore hold the
-light set of the mesh being drawn, which is the set the pinned template's
-`min(mesh.lc, MAX_LIGHTS)` loop walks.
+records the loader creates. The per-mesh count and index selection uploaded
+with each draw therefore hold the light set of the mesh being drawn, which is
+the set the pinned template's `min(mesh.lc, MAX_LIGHTS)` loop walks.
 `KHR_node_visibility` is materialized per mesh rather than tested per draw.
 The pinned `setSubtreeVisible` writes the flag on a node and every descendant
 at set time, so the loader bakes the ancestor cascade into each mesh record
@@ -688,13 +686,13 @@ aspect ratio. The pinned writer runs in JavaScript doubles into a
 which reproduces Scene 268 exactly on both backends. Only the scene projection
 takes that branch: environment skyboxes and grounds build their own perspective
 view-projection, and generation fails on the combination.
-Standard vertex colors follow the pinned `enableStandardVertexColors` opt-in:
-the generated Standard fragment declares the `color` attribute and multiplies
-the base color by its RGB only for a scene that reaches the call, so every
-other Standard scene keeps a byte-identical fragment. Upstream composes that
-fragment per mesh, for meshes carrying a color buffer; native geometry defaults
-every vertex color to white, which multiplies as the identity, so the
-scene-level gate renders the same image. Scene 267 gates it and is byte-exact
+Standard vertex colors follow the pinned `enableStandardVertexColors` opt-in
+and compose per mesh, exactly as upstream does: under the opt-in, a mesh
+carrying a colour buffer sets the vertex-colour bit in the generated
+mesh-feature table, and only its variants compose the pin's own
+`_stdVertexColorFragment` — the RGB multiply against the diffuse. The
+fragment's `vertexAlpha` half stays off, because the `mesh.hasVertexAlpha`
+setter is not lowered. Scene 267 gates it and is byte-exact
 on both backends.
 
 Scenes 145 and 146 resolve each geometry attachment at full resolution, then

@@ -2,12 +2,11 @@
  * Composes Standard-material shader variants through Babylon Lite's own
  * pipeline — the Standard sibling of `pinned-pbr-variants.ts`.
  *
- * The renderer currently ships `shader-builtins-standard.ts`, a hand-rewritten
- * fragment that re-encodes `createStandardTemplate` + `LIGHTING_FN` behind
- * uniform lanes (`textureOptions`, `uvOptions`, unrolled light slots). Babylon
- * composes one fragment per material feature set instead, through
- * `composeStandardShader` (`standard-pipeline.ts`), and every fork the
- * transcription re-expresses is a place it can drift. Nothing in this module
+ * Babylon composes one fragment per material feature set through
+ * `composeStandardShader` (`standard-pipeline.ts`), and both backends draw
+ * every Standard material through the variants composed here — the
+ * hand-rewritten fragment this replaced re-expressed every upstream fork
+ * behind uniform lanes, and each was a place it could drift. Nothing in this module
  * decides what a variant contains: the feature bits come from the pin's own
  * `_computeStandardMaterialFeatures`, the fragments from the pin's own std-*
  * fragment modules, and the assembly from `composeShader` via

@@ -266,7 +266,7 @@ The same experiment works one level lower, on a single shader arm,
 without touching the scene — and it is a command:
 
 ```powershell
-npm run scene -- probe-variants scene9 --shader 03-module-3 --term "aggShadow" --with "1.0"
+npm run scene -- probe-variants scene9 --shader variant-std-base-f0.frag --term "shadowFactors[lightIndex]" --with "1.0"
 ```
 
 The build deploys every generated shader next to the executable in
@@ -436,10 +436,15 @@ out the entire class of defect in one command.
 
 One filename token per backend everywhere: `gpu` is SDL_GPU and `dawn` is
 Dawn, in parity, capture, diff and geometry artifacts alike — `--backend`
-values stay `sdl_gpu|dawn`. Every JSON report above also carries `tool`,
-`backend`, `generatedStamp` and `writtenAt` provenance fields; they are
-strings, which is what keeps them invisible to `scene -- neutrality`'s
-numeric cell comparison.
+values stay `sdl_gpu|dawn`. Every tool-written report above carries
+`tool` and `writtenAt` provenance, plus `backend` and `generatedStamp`
+wherever a backend and a generated tree were in play — the browser-side
+`seek-bracket.json` has neither, and the raw capture records (buffers,
+draws, tex-uploads, the native captures and the meta sidecars) are
+data, not reports: their provenance is the embedded build stamp and the
+seek sidecar the reuse check reads. The
+provenance fields are strings, which is what keeps them invisible to
+`scene -- neutrality`'s numeric cell comparison.
 
 ## Runtime switches worth knowing
 
@@ -451,7 +456,7 @@ These are the diagnostic ones:
 | `BBLITE_RENDER_CAPTURE=<path>` | write the frame's full CPU-side description as JSON |
 | `BBLITE_DEFORMATION_DUMP=<path>` | append first-frame bone palettes and morph weights as hexfloats |
 | `BBLITE_GPU_BACKEND=dawn` | select Dawn in a dual-backend build |
-| `BBLITE_GPU_DEBUG=1` | enable the backend debug layer (prefer `--gpu-debug`, which `parity`, `diff` and `capture --native` all take and which also defuses SDL's assertion handler) |
+| `BBLITE_GPU_DEBUG=1` | enable the backend debug layer (prefer `--gpu-debug`, which `parity`, `diff`, `capture --native` and `probe-variants` all take and which also defuses SDL's assertion handler) |
 | `BBLITE_MSAA=1` | render single-sampled |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | drive a headless measured run |
 
