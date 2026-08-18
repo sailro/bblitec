@@ -3,57 +3,32 @@
  * runtime reads.
  *
  * Babylon Lite's `loadDdsEnvironment` uploads the DDS mip chain as the
- * specular cube and projects spherical harmonics out of mip 0 at load time
- * (`src/loader-env/load-dds-env.ts#computeSH`). Both halves are decided
- * entirely by the asset, so both are done here at compile time — the same
- * split the HDR path already uses — and the runtime reads a package rather
- * than a container format. What this file must reproduce exactly is the
- * harmonic projection, because those 27 floats are shading input.
+ * specular cube and projects spherical harmonics out of mip 0 at load time.
+ * Both halves are decided entirely by the asset, so both are done here at
+ * compile time — the same split the HDR path already uses — and the runtime
+ * reads a package rather than a container format.
+ *
+ * The harmonic projection is the pin executed, not transcribed:
+ * `src/loader-env/load-dds-env.ts#computeSH` is module-local, so it is
+ * reached by re-exporting it out of the pinned module's own text
+ * (`importPinnedModuleWithExports`), and its result — the pin ends the
+ * projection in its own `shToPolynomial` — goes through the same pre-scale
+ * `assembleEnvironmentTextures` applies before the shader reads the
+ * polynomial. A pin bump that changes the projection changes the package and
+ * the test goldens go red — the drift-detection direction, where the former
+ * transcription kept agreeing with itself.
  */
 
-import { preScalePolynomial, shToPolynomial } from "./hdr-packager.js";
+import { preScalePolynomial } from "./hdr-packager.js";
+import { importPinnedModuleWithExports } from "./pinned-shader-composer.js";
 
-const MAX_HDRI = 4096;
-
-// src/loader-env/load-dds-env.ts SH_BASIS.
-const SH_BASIS = [
-    Math.sqrt(1 / (4 * Math.PI)),
-    Math.sqrt(3 / (4 * Math.PI)),
-    Math.sqrt(3 / (4 * Math.PI)),
-    Math.sqrt(3 / (4 * Math.PI)),
-    Math.sqrt(15 / (4 * Math.PI)),
-    Math.sqrt(15 / (4 * Math.PI)),
-    Math.sqrt(5 / (16 * Math.PI)),
-    Math.sqrt(15 / (4 * Math.PI)),
-    Math.sqrt(15 / (16 * Math.PI)),
-];
-
-// The cosine-kernel convolution that turns incident radiance into irradiance.
-const SH_COS_KERNEL = [
-    Math.PI,
-    (2 * Math.PI) / 3,
-    (2 * Math.PI) / 3,
-    (2 * Math.PI) / 3,
-    Math.PI / 4,
-    Math.PI / 4,
-    Math.PI / 4,
-    Math.PI / 4,
-    Math.PI / 4,
-];
-
-/**
- * Face orientations matching the pinned `_FileFaces` order +X, -X, +Y, -Y,
- * +Z, -Z: the face normal followed by the two in-plane axes the file's u and
- * v run along.
- */
-const FACES: readonly (readonly number[])[] = [
-    [1, 0, 0, 0, 0, -1, 0, -1, 0],
-    [-1, 0, 0, 0, 0, 1, 0, -1, 0],
-    [0, 1, 0, 1, 0, 0, 0, 0, 1],
-    [0, -1, 0, 1, 0, 0, 0, 0, -1],
-    [0, 0, 1, 1, 0, 0, 0, -1, 0],
-    [0, 0, -1, -1, 0, 0, 0, -1, 0],
-];
+const pinnedDdsLoader = await importPinnedModuleWithExports<{
+    computeSH: (
+        raw: Uint8Array,
+        width: number,
+        mipCount: number,
+    ) => Float32Array;
+}>("loader-env/load-dds-env.js", ["computeSH"]);
 
 const ddsMagic = 0x20534444;
 const dx10FourCc = 0x30315844;
@@ -61,31 +36,17 @@ const packageMagic = new Uint8Array([
     0x42, 0x42, 0x4c, 0x48, 0x44, 0x52, 0x31, 0x00,
 ]);
 
-function float16ToFloat32(h: number): number {
-    const sign = (h >> 15) & 0x1;
-    const exponent = (h >> 10) & 0x1f;
-    const mantissa = h & 0x3ff;
-    if (exponent === 0) {
-        return (sign ? -1 : 1) * Math.pow(2, -14) * (mantissa / 1024);
-    }
-    if (exponent === 31) {
-        return mantissa ? NaN : sign ? -Infinity : Infinity;
-    }
-    return (
-        (sign ? -1 : 1) * Math.pow(2, exponent - 15) * (1 + mantissa / 1024)
-    );
-}
-
-/** The solid angle subtended by a texel corner on the unit cube. */
-function areaElement(x: number, y: number): number {
-    return Math.atan2(x * y, Math.sqrt(x * x + y * y + 1));
-}
-
 export interface DdsCubemap {
     width: number;
     mipCount: number;
     /** Face-major as the file stores it: `faces[face][mip]` rgba16f texels. */
     faces: Uint16Array[][];
+    /**
+     * The pixel payload as the pinned loader views it: every face's full mip
+     * chain, contiguous, in a fresh buffer so the face starts stay aligned
+     * the way they are over a fetched `ArrayBuffer`.
+     */
+    payload: Uint8Array;
 }
 
 export function parseDdsCubemap(bytes: Uint8Array): DdsCubemap {
@@ -131,112 +92,32 @@ export function parseDdsCubemap(bytes: Uint8Array): DdsCubemap {
         }
         faces.push(mips);
     }
-    return { width, mipCount, faces };
+    const payload = new Uint8Array(
+        bytes.buffer.slice(
+            bytes.byteOffset + dataOffset,
+            bytes.byteOffset + bytes.byteLength,
+        ),
+    );
+    return { width, mipCount, faces, payload };
 }
 
 /**
- * `src/loader-env/load-dds-env.ts#computeSH`: project mip 0 of the cubemap
- * onto the first nine spherical harmonics, weighting each texel by the solid
- * angle it subtends, then convolve with the cosine kernel and divide by pi to
- * reach Lambertian radiance.
+ * The chain `loadDdsEnvironment` runs before upload: the pinned `computeSH`
+ * projects mip 0 onto the first nine spherical harmonics and returns the
+ * polynomial, and `assembleEnvironmentTextures` pre-scales that polynomial
+ * before the shader reads it, so the package carries the pre-scaled form the
+ * native environment record expects.
  */
 export function computeDdsSphericalHarmonics(
     cubemap: DdsCubemap,
 ): Float32Array {
-    const width = cubemap.width;
-    const du = 2.0 / width;
-    const halfTexel = 0.5 * du;
-    const minUV = halfTexel - 1.0;
-
-    const sh = new Float64Array(27);
-    let totalSolidAngle = 0;
-
-    for (let face = 0; face < 6; face += 1) {
-        const pixels = cubemap.faces[face]![0]!;
-        const f = FACES[face]!;
-        const nx = f[0]!;
-        const ny = f[1]!;
-        const nz = f[2]!;
-        const fxx = f[3]!;
-        const fxy = f[4]!;
-        const fxz = f[5]!;
-        const fyx = f[6]!;
-        const fyy = f[7]!;
-        const fyz = f[8]!;
-
-        let v = minUV;
-        for (let row = 0; row < width; row += 1) {
-            let u = minUV;
-            for (let col = 0; col < width; col += 1) {
-                const index = (row * width + col) * 4;
-                let red = float16ToFloat32(pixels[index]!);
-                let green = float16ToFloat32(pixels[index + 1]!);
-                let blue = float16ToFloat32(pixels[index + 2]!);
-                if (Number.isNaN(red)) red = 0;
-                if (Number.isNaN(green)) green = 0;
-                if (Number.isNaN(blue)) blue = 0;
-                red = Math.min(Math.max(red, 0), MAX_HDRI);
-                green = Math.min(Math.max(green, 0), MAX_HDRI);
-                blue = Math.min(Math.max(blue, 0), MAX_HDRI);
-
-                const dx = fxx * u + fyx * v + nx;
-                const dy = fxy * u + fyy * v + ny;
-                const dz = fxz * u + fyz * v + nz;
-                const inverseLength =
-                    1 / Math.sqrt(dx * dx + dy * dy + dz * dz);
-                const wx = dx * inverseLength;
-                const wy = dy * inverseLength;
-                const wz = dz * inverseLength;
-
-                const dsa =
-                    areaElement(u - halfTexel, v - halfTexel) -
-                    areaElement(u - halfTexel, v + halfTexel) -
-                    areaElement(u + halfTexel, v - halfTexel) +
-                    areaElement(u + halfTexel, v + halfTexel);
-
-                const trig = [
-                    1,
-                    wy,
-                    wz,
-                    wx,
-                    wx * wy,
-                    wy * wz,
-                    3 * wz * wz - 1,
-                    wx * wz,
-                    wx * wx - wy * wy,
-                ];
-                for (let index9 = 0; index9 < 9; index9 += 1) {
-                    const weight = dsa * SH_BASIS[index9]! * trig[index9]!;
-                    sh[index9] = sh[index9]! + red * weight;
-                    sh[9 + index9] = sh[9 + index9]! + green * weight;
-                    sh[18 + index9] = sh[18 + index9]! + blue * weight;
-                }
-
-                totalSolidAngle += dsa;
-                u += du;
-            }
-            v += du;
-        }
-    }
-
-    const correction = (4 * Math.PI) / totalSolidAngle;
-    for (let index = 0; index < 27; index += 1) {
-        sh[index] = sh[index]! * correction;
-    }
-    for (let channel = 0; channel < 3; channel += 1) {
-        for (let index = 0; index < 9; index += 1) {
-            sh[channel * 9 + index] =
-                sh[channel * 9 + index]! * SH_COS_KERNEL[index]!;
-        }
-    }
-    const inversePi = 1 / Math.PI;
-    for (let index = 0; index < 27; index += 1) {
-        sh[index] = sh[index]! * inversePi;
-    }
-    // `assembleEnvironmentTextures` pre-scales the polynomial before the
-    // shader reads it, so the package carries the pre-scaled form the
-    // native environment record expects.
-    return preScalePolynomial(shToPolynomial(sh));
+    return preScalePolynomial(
+        pinnedDdsLoader.computeSH(
+            cubemap.payload,
+            cubemap.width,
+            cubemap.mipCount,
+        ),
+    );
 }
 
 /**

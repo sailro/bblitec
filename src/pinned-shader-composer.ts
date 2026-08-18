@@ -18,9 +18,9 @@
  * Nothing here is wired into generation yet. It exists so the swap can be
  * staged against measurements rather than against a rewrite.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 
 /** The composer's output; field names are the pinned module's own. */
@@ -74,6 +74,37 @@ export async function importPinnedModule<T>(
     const url = pathToFileURL(
         join(pinnedLibraryRoot(), relativePath),
     ).href;
+    return (await import(url)) as T;
+}
+
+/**
+ * Imports a pinned module with named module-local symbols also exported.
+ *
+ * Not everything the pin runs sits on its export surface — the DDS loader's
+ * `computeSH` is module-local — and transcribing an internal function is the
+ * drift the project rule exists to prevent. So the pinned module's own text
+ * is imported through a `data:` URL with an export appended for the internal
+ * symbols. Relative specifiers do not resolve from a `data:` URL, so they
+ * are rewritten to absolute URLs against the module's own directory first;
+ * everything that executes is still the pin's text.
+ */
+export async function importPinnedModuleWithExports<T>(
+    relativePath: string,
+    extraExports: readonly string[],
+): Promise<T> {
+    const modulePath = join(pinnedLibraryRoot(), relativePath);
+    const anchored = readFileSync(modulePath, "utf8").replace(
+        /(from\s*|import\()(["'])(\.\.?\/[^"']+)\2/g,
+        (_match, keyword: string, quote: string, specifier: string) =>
+            `${keyword}${quote}${
+                pathToFileURL(resolve(dirname(modulePath), specifier)).href
+            }${quote}`,
+    );
+    const augmented = `${anchored}\nexport { ${extraExports.join(", ")} };\n`;
+    const url = `data:text/javascript;base64,${Buffer.from(
+        augmented,
+        "utf8",
+    ).toString("base64")}`;
     return (await import(url)) as T;
 }
 
