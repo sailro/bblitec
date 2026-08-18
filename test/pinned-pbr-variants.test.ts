@@ -27,6 +27,9 @@ test("registers every PBR extension the pin owns", async () => {
         // Mesh extensions: `pbr-renderable.ts` drains these from its own scan
         // over the scene's meshes, after the environment and the scene hooks.
         "morph",
+        // Registered last, where the first geometry view arms it; inert
+        // without PBR2_GEOMETRY_OUTPUT.
+        "pbr-geometry-params",
         "reflectance",
         "refraction",
         "sheen",

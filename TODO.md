@@ -149,30 +149,6 @@ Both backends stay long-term as mutually validating implementations;
   the fragment for the geometry outputs. Generation fails explicitly on the
   geometry-output combination.
 
-### Shader provenance
-
-- [ ] Bring the last scene back through the pinned-only PBR path. The
-  hand-written PBR shader text is DELETED; 71 of 72 scenes draw Babylon
-  Lite's own composed variants on both backends, keyed per renderable and
-  per creation-ordered material handle across every family, with scene-code
-  materials, setters, no-color views, the default material, fog, morph
-  storage, thin instances (glTF EXT pools with their node's own world,
-  scene-code setters through `pinned_instance_matrices`' convention split),
-  transmission (the linear-pass guard with the scene block's -1 lane, the
-  mid-pass grab, the dispersion arm, asset-carried lights and image-based
-  lights joining the features, the pin's alpha/occlusion seeds), the
-  animated world transport and the runtime-spawn fallback all composing
-  from the pin. What remains:
-
-  - scene 146 at 19.7: PBR meshes in a geometry task need the pin's
-    geometry-view MRT arm (`geometry-view.js`)
-
-  Diagnosis is two listings, never inspection -- `scene -- uniforms <id>
-  --size N` against the capture's `pinnedMaterialBlocks` /
-  `pinnedMeshBlocks`, hash the capture's `shaders/` against the composed
-  variants -- and the branch history first (`git log -S`): repeated stalls
-  were facts already recorded in commit messages.
-
 ### Packed native assets
 
 - [ ] Define a versioned native scene format with deterministic hashes.

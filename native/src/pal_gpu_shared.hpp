@@ -23,6 +23,19 @@
 #include <bblite/upstream/pbr_variants.hpp>
 #endif
 
+/**
+ * The pin's `gpUniforms` block, declared by a geometry-output variant whose
+ * attachments include NORMALIZED_VIEW_DEPTH or LINEAR_VELOCITY
+ * (`pbr-geometry-output-shader.ts` createPbrGeometryParamsFragment):
+ * the task's previous-frame view-projection and the camera's near/far.
+ * Unguarded because the geometry encode names it in both backends whatever
+ * the variant count.
+ */
+struct PinnedGeometryParams {
+    std::array<float, 16> previousViewProjection{};
+    std::array<float, 4> cameraNearFar{};
+};
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -448,17 +461,6 @@ inline std::vector<std::array<float, 16>> pinned_instance_matrices(
     }
     return result;
 }
-
-/**
- * The pin's `gpUniforms` block, declared by a geometry-output variant whose
- * attachments include NORMALIZED_VIEW_DEPTH or LINEAR_VELOCITY
- * (`pbr-geometry-output-shader.ts` createPbrGeometryParamsFragment):
- * the task's previous-frame view-projection and the camera's near/far.
- */
-struct PinnedGeometryParams {
-    std::array<float, 16> previousViewProjection{};
-    std::array<float, 4> cameraNearFar{};
-};
 
 /** The identity, for a skinned draw whose palette already carries everything. */
 inline std::array<float, 16> pinned_identity_world() {
