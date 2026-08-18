@@ -151,30 +151,27 @@ Both backends stay long-term as mutually validating implementations;
 
 ### Shader provenance
 
-- [ ] Bring the last 13 scenes back through the pinned-only PBR path. The
-  hand-written PBR shader text is DELETED; 59 of 72 scenes draw Babylon
+- [ ] Bring the last 9 scenes back through the pinned-only PBR path. The
+  hand-written PBR shader text is DELETED; 63 of 72 scenes draw Babylon
   Lite's own composed variants on both backends, keyed per renderable and
   per creation-ordered material handle across every family, with scene-code
   materials, setters, no-color views, the default material, fog, morph
-  storage, the animated world transport and the runtime-spawn fallback all
-  composing from the pin. What remains:
+  storage, thin instances (both the glTF EXT pools and the scene-code
+  setters, through `pinned_instance_matrices`' convention split on
+  `instance_source`), the animated world transport and the runtime-spawn
+  fallback all composing from the pin. What remains:
 
   - transmission scenes (30, 33, 176, 212, 244, 247, 253, 265): the pin
-    renders refraction through its own 1024x1024 rgba16float RTT with image
-    processing toggled off (`refraction-rtt-fragment.js` registers
+    renders refraction through `frame-graph/transmission.js` -- each render
+    task gets an opaque prepass grabbed into `_transmissionTexture`
+    (mip-chained, `REFRACTION_LOD_BIAS 4`), materials marked
+    `_linearImageProcessing` (`refraction-rtt-fragment.js` registers
     `LINEAR_IMAGE_PROCESSING_SLOTS`, wrapping every fragment's processing
-    tail in `if(scene.vImageInfos.w>=0.0)`); this backend has no pinned pass
+    tail in `if(scene.vImageInfos.w>=0.0)`), and a final
+    `transmission-image-processing` task; this backend has no pinned pass
     for it
-  - instanced meshes (35, regression-instanced-ground): the pin's
-    thin-instance arm (`_createThinInstanceFragment`, the remaining null
-    composer dep) plus the per-instance vertex buffer in both PALs' pinned
-    pipelines; both scenes stop at the instancing gate itself
-  - scene 116 at 12.996: the depth task's pinned scene block disagrees with
-    the browser's buffer#19 -- the task camera's reverse-Z matrix; two-list
-    the task blocks next
   - scene 146 at 19.7: PBR meshes in a geometry task need the pin's
     geometry-view MRT arm (`geometry-view.js`)
-  - scene 178 at 46.3: undiagnosed; capture first
 
   Diagnosis is two listings, never inspection -- `scene -- uniforms <id>
   --size N` against the capture's `pinnedMaterialBlocks` /
