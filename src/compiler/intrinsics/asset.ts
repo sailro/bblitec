@@ -48,6 +48,11 @@ export interface AssetIntrinsicContext
         kind: CompileAsset["kind"],
         faceSize?: number,
     ): CompileAsset;
+    selectGltfVariant(
+        asset: CompileAsset,
+        variantName: string,
+        node: ts.Node,
+    ): void;
     resolveBundledAsset(source: string): string;
     cppString(value: string): string;
     objectProperty(
@@ -91,7 +96,39 @@ export function compileAssetIntrinsic(
                     `${context.cppString(asset.output)}))`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+                asset,
             };
+        }
+
+        case "selectVariant": {
+            // src/loader-gltf/material-variants.ts: `selectVariant` restores
+            // every original material and then applies the chosen variant's
+            // mapped entries. The reached shape is one static selection made
+            // before the container is added to the scene, so generation
+            // resolves the material each mapped primitive draws with and the
+            // call itself emits nothing — the pin's run-time variant table
+            // has no reached mutation to serve.
+            context.expectArgumentCount(call, 2, 2);
+            const container =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                container,
+                "asset",
+                call.arguments[0]!,
+            );
+            if (!container.asset) {
+                context.fail(
+                    call.arguments[0]!,
+                    "selectVariant requires the container a glTF load returned.",
+                );
+            }
+            context.selectGltfVariant(
+                container.asset,
+                context.compileStringLiteral(call.arguments[1]!),
+                call,
+            );
+            context.reachFeature("loader:gltf-variants", call);
+            return { kind: "void", cpp: "" };
         }
 
         case "loadBabylon": {

@@ -587,6 +587,13 @@ async function main(): Promise<void> {
             specializationFeatures.animationPointerMaterials,
         assetTransmission: specializationFeatures.assetTransmission,
         materialSpecular: specializationFeatures.materialSpecular,
+        // The one static `selectVariant` a scene reaches: the loader reads
+        // the variant order and the per-primitive mappings out of the
+        // document, so only the chosen name is compiled in.
+        selectedMaterialVariant:
+            result.manifest.assets.find(
+                (asset) => asset.selectedVariant !== undefined,
+            )?.selectedVariant ?? "",
         textureTransform:
             specializationFeatures.textureTransform,
         imageBasedLighting:

@@ -263,6 +263,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/loader-gltf/gltf-glb-parser.ts",
         consumers: CMAKE,
     },
+    "loader:gltf-variants": {
+        provenance:
+            "src/loader-gltf/material-variants.ts#selectVariant + " +
+            "src/loader-gltf/gltf-feature-variants.ts",
+        consumers: ["features.cmake", "variant table", "loader flag"],
+    },
     "material:pbr": {
         provenance: "src/material/pbr/pbr-material.ts",
         consumers: CMAKE,

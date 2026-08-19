@@ -303,6 +303,21 @@ A scene-code material has no occlusion image and still samples occlusion:
 `(mat.occlusionStrength ?? 1) > 0`, so the composed fragment takes `orm.r`.
 The glTF `_occlusionImage ? 1 : 0` rule belongs to the loader's own input
 builder and does not reach the scene-code path.
+`KHR_materials_variants` is folded to the one selection a scene makes.
+`selectVariant` restores every original material and then applies the chosen
+variant's mapped entries, so with one static selection the end state is a
+per-primitive material index — which generation resolves and the loader
+applies, reading the variant order and the per-primitive mappings out of the
+document and taking only the chosen name from the scene. The pin's run-time
+variant table has no reached mutation to serve, so every shape the fold cannot
+represent refuses at generation rather than compiling to a state the pin never
+reaches: `getVariantNames` and `resetVariant` are unlowered, a second
+differing selection on one asset is refused, a selection on a second asset is
+refused because one name is compiled in for the whole scene, and a selection
+made from a frame callback is refused because it would fold a per-frame
+reassignment into frame zero. An asset carrying the extension that no scene
+selects on renders identically on both sides, because the pin reassigns
+nothing until `selectVariant` runs. Scene 27 gates it.
 A scene's `setPbr*` options reach composition through the pin's own setters,
 the way the loader half already runs `setPbrEmissive`: each stamps its props
 under the field name its extension's `detect` reads, so the composed arm set

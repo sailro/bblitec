@@ -1205,6 +1205,18 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene27",
+        name: "Scene 27 - Material Variants",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene27.ts",
+        title: "Babylon Lite Native - Material Variants",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.005,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**
