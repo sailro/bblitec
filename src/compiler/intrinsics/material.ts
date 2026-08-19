@@ -3,38 +3,36 @@ import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import type {
     ScenePbrClearCoatManifest,
+    ScenePbrIridescenceManifest,
     ScenePbrSheenManifest,
 } from "../types.js";
-
-type CompiledPbrMaterialOptions = [
-    Value,
-    Value,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-];
+import type {
+    CompiledLayerOptions,
+    CompiledPbrMaterialOptions,
+} from "./material-options.js";
 
 export interface MaterialIntrinsicContext
     extends IntrinsicCallContext {
-    recordScenePbrSheen(sheen: ScenePbrSheenManifest): void;
-    recordScenePbrNoColorView(): void;
-    recordScenePbrUnlit(): void;
-    recordScenePbrSkybox(): void;
+    recordScenePbrSheen(
+        sheen: ScenePbrSheenManifest,
+        index: number | undefined,
+    ): void;
+    recordScenePbrNoColorView(sourceIndex: number | undefined): number;
+    recordScenePbrUnlit(index: number | undefined): void;
+    recordScenePbrSkybox(index: number | undefined): void;
     recordSceneMaterialSlot(): number;
-    recordScenePbrClearCoat(clearCoat: ScenePbrClearCoatManifest): void;
+    recordScenePbrClearCoat(
+        clearCoat: ScenePbrClearCoatManifest,
+        index: number | undefined,
+    ): void;
+    recordScenePbrIridescence(
+        iridescence: ScenePbrIridescenceManifest,
+        index: number | undefined,
+    ): void;
+    recordScenePbrEmissive(
+        color: readonly number[],
+        index: number | undefined,
+    ): void;
     expectSameEngine(
         left: Value,
         right: Value,
@@ -62,7 +60,10 @@ export interface MaterialIntrinsicContext
     ): string[];
     compileClearCoatOptions(
         expression: ts.Expression,
-    ): [string, string, string, string, string];
+    ): CompiledLayerOptions;
+    compileIridescenceOptions(
+        expression: ts.Expression,
+    ): CompiledLayerOptions;
     compileSheenOptions(expression: ts.Expression): {
         enabled: string;
         color: string;
@@ -180,6 +181,7 @@ export function compileMaterialIntrinsic(
                 hasVolume,
                 attenuationColor,
                 attenuationDistance,
+                scenePbrMaterialIndex,
             ] = context.compilePbrMaterialOptions(
                 call.arguments[0]!,
             );
@@ -243,12 +245,14 @@ export function compileMaterialIntrinsic(
                     kind: "material",
                     cpp: temporary,
                     engineCpp: engine,
+                    scenePbrMaterialIndex,
                 };
             }
             return {
                 kind: "material",
                 cpp: creation,
                 engineCpp: engine,
+                scenePbrMaterialIndex,
             };
         }
 
@@ -322,24 +326,27 @@ export function compileMaterialIntrinsic(
                 "material",
                 call.arguments[0]!,
             );
-            if (importedName !== "createStandardNoColorMaterialView") {
-                context.recordScenePbrNoColorView();
-            } else {
-                context.recordSceneMaterialSlot();
-            }
+            const engineCpp = context.requireEngine(source, call);
             context.reachFeature("material:no-color-view", call);
             context.reachFeature("renderer:pbr", call);
+            if (
+                importedName === "createStandardNoColorMaterialView"
+            ) {
+                context.recordSceneMaterialSlot();
+                return {
+                    kind: "material",
+                    cpp: `bbl::create_standard_no_color_material_view(${engineCpp}, ${source.cpp})`,
+                    engineCpp,
+                };
+            }
             return {
                 kind: "material",
-                cpp:
-                    importedName ===
-                    "createStandardNoColorMaterialView"
-                        ? `bbl::create_standard_no_color_material_view(${context.requireEngine(source, call)}, ${source.cpp})`
-                        : `bbl::create_pbr_no_color_material_view(${context.requireEngine(source, call)}, ${source.cpp})`,
-                engineCpp: context.requireEngine(
-                    source,
-                    call,
-                ),
+                cpp: `bbl::create_pbr_no_color_material_view(${engineCpp}, ${source.cpp})`,
+                engineCpp,
+                scenePbrMaterialIndex:
+                    context.recordScenePbrNoColorView(
+                        source.scenePbrMaterialIndex,
+                    ),
             };
         }
 
@@ -438,7 +445,9 @@ export function compileMaterialIntrinsic(
         case "setPbrEmissive": {
             // src/material/pbr/set-emissive.ts: the linear-RGB emissive
             // color became an opt-in setter over the same material field
-            // the glTF emissiveFactor writes.
+            // the glTF emissiveFactor writes. The colour is recorded as
+            // well as emitted, because its presence is what the pinned
+            // emissive extension's `detect` reads to compose the arm.
             context.expectArgumentCount(call, 2, 2);
             const material =
                 context.compileValue(call.arguments[0]!);
@@ -447,13 +456,25 @@ export function compileMaterialIntrinsic(
                 "material",
                 call.arguments[0]!,
             );
+            const color = context.compileColor3(call.arguments[1]!);
+            const channels = color.match(/[0-9.eE+-]+(?=f)/g);
+            if (!channels || channels.length !== 3) {
+                context.fail(
+                    call.arguments[1]!,
+                    "setPbrEmissive requires a static linear RGB colour.",
+                );
+            }
+            context.recordScenePbrEmissive(
+                channels.map(Number.parseFloat),
+                material.scenePbrMaterialIndex,
+            );
+            context.reachFeature("material:emissive", call);
             return {
                 kind: "void",
                 cpp:
                     `bbl::set_pbr_emissive(` +
                     `${context.requireEngine(material, call)}, ` +
-                    `${material.cpp}, ` +
-                    `${context.compileColor3(call.arguments[1]!)})`,
+                    `${material.cpp}, ${color})`,
             };
         }
 
@@ -473,10 +494,14 @@ export function compileMaterialIntrinsic(
                 call.arguments[0]!,
             );
             if (importedName === "setPbrUnlit") {
-                context.recordScenePbrUnlit();
+                context.recordScenePbrUnlit(
+                    material.scenePbrMaterialIndex,
+                );
             }
             if (importedName === "setPbrSkybox") {
-                context.recordScenePbrSkybox();
+                context.recordScenePbrSkybox(
+                    material.scenePbrMaterialIndex,
+                );
                 // Skybox mode is composed by the transmission-capable
                 // renderer (its uniform block carries the skybox
                 // option), which the createPbrMaterial `skyboxMode`
@@ -516,12 +541,17 @@ export function compileMaterialIntrinsic(
             const clearCoat = context.compileClearCoatOptions(
                 call.arguments[1]!,
             );
-            context.recordScenePbrClearCoat({
-                isEnabled: clearCoat[0] === "true",
-                intensity: Number.parseFloat(clearCoat[1]!),
-                roughness: Number.parseFloat(clearCoat[2]!),
-                indexOfRefraction: Number.parseFloat(clearCoat[3]!),
-            });
+            context.recordScenePbrClearCoat(
+                {
+                    isEnabled: clearCoat[0] === "true",
+                    intensity: Number.parseFloat(clearCoat[1]!),
+                    roughness: Number.parseFloat(clearCoat[2]!),
+                    indexOfRefraction: Number.parseFloat(
+                        clearCoat[3]!,
+                    ),
+                },
+                material.scenePbrMaterialIndex,
+            );
             context.reachFeature("material:clearcoat", call);
             // `useF0Remap` is not a reached option, so a scene-code coat
             // always takes the pin's default: the remap is composed. Only
@@ -533,6 +563,50 @@ export function compileMaterialIntrinsic(
                     `bbl::set_pbr_clearcoat(` +
                     `${context.requireEngine(material, call)}, ` +
                     `${material.cpp}, ${clearCoat.join(", ")})`,
+            };
+        }
+
+        case "setPbrIridescence": {
+            // src/material/pbr/set-iridescence.ts, the same opt-in shape as
+            // set-clearcoat.ts and set-sheen.ts beside it: the props land on
+            // the material and the fragment extension registers
+            // unconditionally, so the call reaches the feature and the
+            // `isEnabled` guard stays where the pin keeps it, in the UBO
+            // writer.
+            context.expectArgumentCount(call, 2, 2);
+            const material =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                material,
+                "material",
+                call.arguments[0]!,
+            );
+            const iridescence = context.compileIridescenceOptions(
+                call.arguments[1]!,
+            );
+            context.recordScenePbrIridescence(
+                {
+                    isEnabled: iridescence[0] === "true",
+                    intensity: Number.parseFloat(iridescence[1]!),
+                    indexOfRefraction: Number.parseFloat(
+                        iridescence[2]!,
+                    ),
+                    minimumThickness: Number.parseFloat(
+                        iridescence[3]!,
+                    ),
+                    maximumThickness: Number.parseFloat(
+                        iridescence[4]!,
+                    ),
+                },
+                material.scenePbrMaterialIndex,
+            );
+            context.reachFeature("material:iridescence", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_pbr_iridescence(` +
+                    `${context.requireEngine(material, call)}, ` +
+                    `${material.cpp}, ${iridescence.join(", ")})`,
             };
         }
 
@@ -556,20 +630,23 @@ export function compileMaterialIntrinsic(
             const sheenColor = sheen.color.match(
                 /([0-9.eE+-]+)f, ([0-9.eE+-]+)f, ([0-9.eE+-]+)f/,
             );
-            context.recordScenePbrSheen({
-                isEnabled: sheen.enabled === "true",
-                color: sheenColor
-                    ? [
-                          Number.parseFloat(sheenColor[1]!),
-                          Number.parseFloat(sheenColor[2]!),
-                          Number.parseFloat(sheenColor[3]!),
-                      ]
-                    : [1, 1, 1],
-                roughness: Number.parseFloat(sheen.roughness),
-                intensity: Number.parseFloat(sheen.intensity),
-                hasTexture: sheen.texture !== undefined,
-                albedoScaling: sheen.albedoScaling,
-            });
+            context.recordScenePbrSheen(
+                {
+                    isEnabled: sheen.enabled === "true",
+                    color: sheenColor
+                        ? [
+                              Number.parseFloat(sheenColor[1]!),
+                              Number.parseFloat(sheenColor[2]!),
+                              Number.parseFloat(sheenColor[3]!),
+                          ]
+                        : [1, 1, 1],
+                    roughness: Number.parseFloat(sheen.roughness),
+                    intensity: Number.parseFloat(sheen.intensity),
+                    hasTexture: sheen.texture !== undefined,
+                    albedoScaling: sheen.albedoScaling,
+                },
+                material.scenePbrMaterialIndex,
+            );
             const engine = context.requireEngine(material, call);
             context.reachFeature("material:sheen", call);
             if (sheen.albedoScaling) {

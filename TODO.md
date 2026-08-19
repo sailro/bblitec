@@ -17,36 +17,12 @@ record future audits build on.
 - do not add scene, geometry, or golden-image heuristics
 - validate generation, native builds, and relevant parity gates locally
 
-## P0 — Dual render backends
-
-Both backends stay long-term as mutually validating implementations;
-[backends](docs/backends.md) carries the comparison and the guards.
-
-- [ ] Extend the Dawn integration beyond Windows. The platform surface is one
-  HWND branch, the adapter backend selection, and the per-OS Dawn library
-  build; the WGSL feeds Dawn directly, so no per-platform shader work exists on
-  this path.
-- [ ] Reduce the release payload further: trim the Dawn DLL set through Dawn
-  build options (a DXC-less build changes rendering, so the compiler stays),
-  ship only the CRT DLLs the exe imports, drop SPIR-V from D3D12-only packages
-  once packaging can declare a target driver, and evaluate packed native assets.
-
 ## P1 — TypeScript compiler coverage
 
 ### Modules and functions
 
 - [ ] Add namespace/default imports and non-static module initialization.
 - [ ] Build a typed user-code IR from `ts.Program`/`TypeChecker` symbols.
-- [ ] Move statement, expression, and intrinsic lowering into focused compiler
-  modules instead of extending the entry compiler monolith.
-- [ ] Extend the typed shader IR to the WGSL still emitted as text outside
-  it: the shared material vertex stage (`src/shader-builtins-standard.ts`),
-  the sprite pair's binding re-homing shell (`src/shader-builtins-sprite.ts`),
-  the grid fragment's option-gate shell (`src/shader-builtins-grid.ts`), and
-  the project-owned blit/depth/diagnostic stages in
-  `src/shader-builtins-utility.ts`. The pinned bodies inside them are already
-  lifted or evaluated from the pin; the shells and the project-owned stages
-  are what the IR does not carry.
 - [ ] Lower string-literal switch discriminants.
 - [ ] Add discriminated unions and numeric-literal narrowing beyond the
   checker's null analysis.
@@ -66,8 +42,6 @@ Both backends stay long-term as mutually validating implementations;
   at the highlight, independent of `directIntensity`). No gated scene reaches
   it. Diff the primary directional block against the pinned
   `singlelight-directional-wgsl.ts` term by term.
-- [ ] Port fdlibm/V8 transcendentals (`pow`, `exp`, `cos`, `sin`) for bit-exact
-  parity. No registered scene reaches the `cos`/`sin` case.
 - [ ] Route inline return expressions through double precision: inlined value
   returns compile through the default float path in compound numeric contexts.
   Strip static metadata from parameter bindings that are reassigned inside an
@@ -180,18 +154,6 @@ Both backends stay long-term as mutually validating implementations;
   rotation. This closes once the loader records each primitive's local box
   beside its node matrix. The port must keep every sized scene bit-identical at
   its gated pose.
-- [ ] Name Scene 7's remaining foreground residual: 543 pixels beyond 5 on the
-  belly scute ridges, tiles (608,384)/(608,400)/(608,368). A sub-pixel shift
-  explains 4.8% of it, so it is shading, not silhouette. The bone palettes are
-  excluded — the two skins that differ from the browser's bone textures differ
-  by exactly the mesh node translation, which the pin cancels against
-  `MeshUniforms.world`. New suspect (2026-08-18 audit): the asset carries
-  JOINTS_1/WEIGHTS_1, so the browser skins eight influences per vertex
-  (`MSH_HAS_SKELETON_8`) where the generated loader truncates to four — now
-  recorded per scene as the `four-influence-skinning` adaptation. The dropped
-  tail weights matter exactly at blend regions like ridge creases, which is
-  where the residual sits. Test by summing the second pair's weights over the
-  residual tiles' vertices before implementing anything.
 - [ ] Add generation-checked handles and resource lifetime/leak checks.
 - [ ] Add dirty flags and incremental GPU updates.
 - [ ] Add device-loss and resize-safe resource recreation.
@@ -199,18 +161,6 @@ Both backends stay long-term as mutually validating implementations;
 - [ ] Add headless renderer tests.
 - [ ] Add differential tests for camera, environment, material, and transform
   functions.
-- [ ] Find why Scenes 9 and 37 do not render bit-identically on Dawn across
-  runs. Scoped to Dawn's multisampled geometry pass: SDL_GPU and Dawn under
-  `BBLITE_MSAA=1` are bit-identical across runs, only 4x Dawn moves, by 11-70
-  pixels of 921600, every one of them exactly ±1, on high-gradient pixels in a
-  band around x∈[460,785] y∈[280,355]. The asset carries no animations or skins
-  and the registry pins no clock; the Dawn image-processing pass sums samples in
-  a fixed order, so the samples differ rather than the average; every geometry
-  attachment uses `LoadOp_Clear`. What is left is per-sample coverage or
-  per-sample depth. Next step: an instrumented capture of the multisampled
-  attachment rather than the resolved frame. Scene 37 reproduces every run.
-  `scene -- neutrality` excludes these two scenes' Dawn cells; delete that
-  exclusion with this entry.
 - [ ] Add malformed asset and backend-layout tests.
 
 ## P1 — Developer experience
@@ -225,7 +175,7 @@ Both backends stay long-term as mutually validating implementations;
 
 ## P1 — Full Babylon Lite corpus audit
 
-167 corpus scenes remain unregistered; measured scenes are in
+166 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -269,9 +219,9 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (133 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25-27, 36, 38,
+**Integrate first (132 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25-27, 36, 38,
 43, 51-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152, 155-158, 160, 162,
-165, 177, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229, 231, 241, 251,
+165, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229, 231, 241, 251,
 261-264, 269-271, 275-280. Includes static CSG/CSG2, compressed assets and
 splats, deterministic picking (113-115, 117, 118, 129), and display-only gizmos
 (223).
@@ -369,7 +319,6 @@ that does to the deferred lane by default.
   stream), and an explicit image-neutral lowering decision for
   `enableThinInstanceGpuCulling`.
 - [ ] Scenes 160, 162: extend reached shader-material options.
-- [ ] Scene 177: support `setPbrIridescence` on a scene-code material.
 - [ ] Scenes 17, 217: extend reached PBR material options.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
 - [ ] Scenes 202-207: extend reached engine options.
@@ -489,6 +438,20 @@ CLI exposes no combined-sampler emission.
 - [ ] Track executable, shader, and asset sizes consistently.
 - [ ] Deduplicate resources and batch uploads before investigating meshlets,
   indirect draws, or GPU-driven culling.
+
+## P2 — Dual render backends
+
+Both backends stay long-term as mutually validating implementations;
+[backends](docs/backends.md) carries the comparison and the guards.
+
+- [ ] Extend the Dawn integration beyond Windows. The platform surface is one
+  HWND branch, the adapter backend selection, and the per-OS Dawn library
+  build; the WGSL feeds Dawn directly, so no per-platform shader work exists on
+  this path.
+- [ ] Reduce the release payload further: trim the Dawn DLL set through Dawn
+  build options (a DXC-less build changes rendering, so the compiler stays),
+  ship only the CRT DLLs the exe imports, drop SPIR-V from D3D12-only packages
+  once packaging can declare a target driver, and evaluate packed native assets.
 
 ## Documentation maintenance
 

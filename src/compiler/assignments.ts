@@ -614,6 +614,14 @@ export function emitPropertyAssignment(
             context.emit(
                 `${context.requireEngine(target, expression)}.meshes[${target.cpp}.value].material = ${material.cpp};`,
             );
+            // The pin's opt-in setters take the material back off the mesh
+            // (`setPbrSkybox(box.material)`) and mutate the same object, so
+            // the mesh carries which scene material it was given and a
+            // later read of `mesh.material` resolves that record.
+            if (material.scenePbrMaterialIndex !== undefined) {
+                target.scenePbrMaterialIndex =
+                    material.scenePbrMaterialIndex;
+            }
             return;
         }
 

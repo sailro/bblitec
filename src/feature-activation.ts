@@ -288,6 +288,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "caller passing false)",
         consumers: ["features.cmake", "renderer plan", "variant table"],
     },
+    "material:iridescence": {
+        provenance: "src/material/pbr/set-iridescence.ts",
+        consumers: ["features.cmake", "render_capabilities.hpp", "variant table"],
+    },
+    "material:emissive": {
+        provenance: "src/material/pbr/set-emissive.ts",
+        consumers: ["features.cmake", "variant table"],
+    },
     "material:no-color-view": {
         provenance: "src/material/pbr/no-color-view.ts",
         consumers: CMAKE,
@@ -669,14 +677,16 @@ function capabilityRows(
                     spec.iridescence,
                     "an asset uses KHR_materials_iridescence",
                 ],
+                [
+                    has("material:iridescence"),
+                    "scene source reached material:iridescence",
+                ],
             ],
-            "no asset uses KHR_materials_iridescence (capability only: " +
-                "the compiled scene subset reaches no iridescence setter)",
+            "no iridescence from assets or scene source",
             "src/loader-gltf/gltf-ext-iridescence.ts (registry row " +
-                "KHR_materials_iridescence); fragment " +
-                "src/material/pbr/fragments/iridescence-fragment.ts; the " +
-                "pinned scene setter (set-iridescence.ts) is outside the " +
-                "compiled subset, so only the asset extension activates",
+                "KHR_materials_iridescence); scene half " +
+                "src/material/pbr/set-iridescence.ts; fragment " +
+                "src/material/pbr/fragments/iridescence-fragment.ts",
             [
                 "render_capabilities.hpp",
                 "material_texture_slots.hpp",

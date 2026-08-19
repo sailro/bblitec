@@ -637,6 +637,54 @@ export function gltfMaterialCount(path: string): number {
     );
 }
 
+type PinnedLayerSetter<TProps> = (
+    material: PinnedMaterialInput,
+    props: TProps,
+) => void;
+
+/**
+ * The pin's own opt-in setters. Each stamps a material's props under the
+ * field name its extension's `detect` reads, so composition and the
+ * compiler's intrinsics agree by construction instead of through a field
+ * name restated here — the failure that leaves a composed fragment
+ * missing an arm rather than failing. Resolved once and shared, since
+ * every material in the sweep wants the same four.
+ */
+interface ScenePbrSetters {
+    setPbrSheen: PinnedLayerSetter<Record<string, unknown>>;
+    setPbrClearCoat: PinnedLayerSetter<Record<string, unknown>>;
+    setPbrIridescence: PinnedLayerSetter<Record<string, unknown>>;
+    setPbrEmissive: PinnedLayerSetter<readonly number[]>;
+}
+
+let scenePbrSettersPromise: Promise<ScenePbrSetters> | undefined;
+
+function scenePbrSetters(): Promise<ScenePbrSetters> {
+    scenePbrSettersPromise ??= (async () => {
+        const [sheen, clearCoat, iridescence, emissive] = await Promise.all([
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrSheen">>(
+                "material/pbr/set-sheen.js",
+            ),
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrClearCoat">>(
+                "material/pbr/set-clearcoat.js",
+            ),
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrIridescence">>(
+                "material/pbr/set-iridescence.js",
+            ),
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrEmissive">>(
+                "material/pbr/set-emissive.js",
+            ),
+        ]);
+        return {
+            setPbrSheen: sheen.setPbrSheen,
+            setPbrClearCoat: clearCoat.setPbrClearCoat,
+            setPbrIridescence: iridescence.setPbrIridescence,
+            setPbrEmissive: emissive.setPbrEmissive,
+        };
+    })();
+    return scenePbrSettersPromise;
+}
+
 export async function composeScenePbrVariants(
     materials: readonly ScenePbrMaterialManifest[],
     arms: readonly PinnedSceneArm[],
@@ -654,13 +702,14 @@ export async function composeScenePbrVariants(
         : [await proceduralRenderableFeatures()];
     const variants: PinnedRenderableVariant[] = [];
     for (const material of materials) {
-        const input: PinnedMaterialInput = {
-            // No createPbrMaterial option carries an occlusion image, and a
-            // material without one composes the constant 1.0 rather than
-            // sampling orm.r -- the same `_occlusionImage ? 1 : 0` rule the
-            // glTF input builder documents.
-            occlusionStrength: 0,
-        };
+        // `createPbrMaterial` is `{...props}` and no reached option names
+        // occlusionStrength, so the field is absent and
+        // `_computePbrMaterialFeatures`'s own `(mat.occlusionStrength ?? 1) > 0`
+        // sets PBR_HAS_OCCLUSION -- a scene-code material samples `orm.r`. The
+        // glTF input builder's `_occlusionImage ? 1 : 0` is the loader's rule
+        // and does not reach here, so nothing is stamped: the pin's default is
+        // the answer.
+        const input: PinnedMaterialInput = {};
         // The pin's setPbrUnlit stamps `mat._unlit = true`, and setPbrSkybox
         // stamps `mat._skyboxMode = true`.
         if (scene.linearImageProcessing) {
@@ -671,17 +720,22 @@ export async function composeScenePbrVariants(
         if (material.hasBaseColorTexture) input["baseColorTexture"] = {};
         if (material.hasOrmTexture) input["ormTexture"] = {};
         if (material.doubleSided) input.doubleSided = true;
-        // The pin reads `mat.alpha < 1` for the blend bit; a material that
-        // never passed alpha carries no field, and one that passed 1 composes
-        // identically, so only a blending alpha is carried.
-        if (material.alpha < 1) input.alpha = material.alpha;
-        // The pin's setters stamp the props object verbatim; the extension
-        // detects read `_sheen` and `_clearCoat` off the material, so the
-        // recorded options land under those names, textures as presence.
-        // `useF0Remap` stays absent: only the glTF loader turns the pin's
-        // remap default off.
+        // The resolved alpha, whatever it is: `_computePbrMaterialFeatures`
+        // owns the `mat.alpha < 1` blend test, so restating the threshold
+        // here would be a second copy of the pin's predicate.
+        input.alpha = material.alpha;
+        // The layer options reach the composer through the pin's own
+        // setters, exactly as the loader half runs them
+        // (`pinned-material-input.ts` calls `pin.setPbrEmissive`): each
+        // stamps its props under the field name its extension's `detect`
+        // reads, so a field this port never names cannot be forgotten and
+        // a renamed one fails instead of composing a fragment missing the
+        // arm. `useF0Remap` stays absent from the coat's props: only the
+        // glTF loader turns the pin's remap default off. Textures ride as
+        // presence, which is all `detect` asks of them.
+        const setters = await scenePbrSetters();
         if (material.sheen) {
-            input["_sheen"] = {
+            setters.setPbrSheen(input, {
                 isEnabled: material.sheen.isEnabled,
                 color: material.sheen.color,
                 roughness: material.sheen.roughness,
@@ -690,15 +744,30 @@ export async function composeScenePbrVariants(
                 ...(material.sheen.albedoScaling
                     ? { albedoScaling: true }
                     : {}),
-            };
+            });
         }
         if (material.clearCoat) {
-            input["_clearCoat"] = {
+            setters.setPbrClearCoat(input, {
                 isEnabled: material.clearCoat.isEnabled,
                 intensity: material.clearCoat.intensity,
                 roughness: material.clearCoat.roughness,
                 indexOfRefraction: material.clearCoat.indexOfRefraction,
-            };
+            });
+        }
+        if (material.iridescence) {
+            setters.setPbrIridescence(input, {
+                isEnabled: material.iridescence.isEnabled,
+                intensity: material.iridescence.intensity,
+                indexOfRefraction:
+                    material.iridescence.indexOfRefraction,
+                minimumThickness:
+                    material.iridescence.minimumThickness,
+                maximumThickness:
+                    material.iridescence.maximumThickness,
+            });
+        }
+        if (material.emissiveColor) {
+            setters.setPbrEmissive(input, material.emissiveColor);
         }
         if (material.transmission > 0) {
             throw new Error(

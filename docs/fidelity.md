@@ -160,7 +160,9 @@ Clearcoat, sheen, and iridescence are metadata-driven PBR layers selected by
   BRDF LUT blue channel at sheen roughness, and scales the base layer by
   `1 - maxSheenColor * brdf.b` (Scene 29)
 - iridescence evaluates Babylon's thin-film airy summation in XYZ and blends
-  the result into base F0 by the iridescence intensity (Scene 178)
+  the result into base F0 by the iridescence intensity (Scene 178 from the
+  asset, Scene 177 from `setPbrIridescence`, where an omitted intensity is the
+  writer's own default 1 rather than the glTF loader's `iridescenceFactor ?? 0`)
 
 Each layer's per-material forks — the coat's base-F0 remap, the sheen model —
 compose different variants rather than one fragment with a uniform, exactly
@@ -295,6 +297,19 @@ metallic-roughness image. Distinct occlusion and metallic-roughness images
 (upstream's canvas composite) and occlusion on TEXCOORD_1 alongside a
 metallic-roughness texture stay unreached and fail explicitly. Scene 243
 gates the uv2 pair through MorphStressTest's baked-AO platform.
+A scene-code material has no occlusion image and still samples occlusion:
+`createPbrMaterial` is `{...props}`, no reached option names
+`occlusionStrength`, and `_computePbrMaterialFeatures` reads
+`(mat.occlusionStrength ?? 1) > 0`, so the composed fragment takes `orm.r`.
+The glTF `_occlusionImage ? 1 : 0` rule belongs to the loader's own input
+builder and does not reach the scene-code path.
+A scene's `setPbr*` options reach composition through the pin's own setters,
+the way the loader half already runs `setPbrEmissive`: each stamps its props
+under the field name its extension's `detect` reads, so the composed arm set
+follows from the pinned setter rather than from a field name restated here.
+That is what an extension arm depends on — the emissive layer composes on the
+presence of `_emissiveColor` alone, carrying no texture and no capability
+define.
 The generated material records preserve Babylon's distinction between volume
 attenuation, thickness-based refraction depth, and glTF-only IOR-to-F0
 mapping; direct `createPbrMaterial` refraction options do not implicitly enable

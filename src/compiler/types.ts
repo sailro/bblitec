@@ -79,6 +79,15 @@ export interface ScenePbrClearCoatManifest {
     indexOfRefraction: number;
 }
 
+/** The `setPbrIridescence` options a scene stamps on a material, verbatim. */
+export interface ScenePbrIridescenceManifest {
+    isEnabled: boolean;
+    intensity: number;
+    indexOfRefraction: number;
+    minimumThickness: number;
+    maximumThickness: number;
+}
+
 export interface ScenePbrMaterialManifest {
     /**
      * How many scene-code materials of any family the program had created
@@ -99,6 +108,14 @@ export interface ScenePbrMaterialManifest {
     sheen?: ScenePbrSheenManifest;
     /** Stamped by the pin's own setter shape: `mat._clearCoat = clearCoat`. */
     clearCoat?: ScenePbrClearCoatManifest;
+    /** Stamped by the pin's own setter shape: `mat._iridescence = iridescence`. */
+    iridescence?: ScenePbrIridescenceManifest;
+    /**
+     * The linear RGB `setPbrEmissive` passes. Its presence is what the
+     * emissive extension's `detect` reads, so a material that never
+     * reached the setter composes no emissive arm at all.
+     */
+    emissiveColor?: readonly number[];
     /**
      * How many glTF assets the program had loaded when this material was
      * created. The runtime keys the variant table by material handle, which
@@ -248,6 +265,16 @@ export interface Value {
         | ts.ArrowFunction
         | ts.FunctionExpression;
     textureFile?: { srgb: boolean };
+    /**
+     * Which `scenePbrMaterials` entry this value names. The pin's opt-in
+     * setters mutate the material object they are handed, so a setter has
+     * to reach the same record the creation did; the index is that object
+     * identity at compile time. It rides the material a
+     * `createPbrMaterial` returned, and a mesh a material was assigned
+     * to, which is how `setPbrSkybox(box.material)` resolves the record
+     * the assignment stored.
+     */
+    scenePbrMaterialIndex?: number;
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     lightKind?: LightKind;
@@ -334,6 +361,8 @@ export type Feature =
     | "material:sheen"
     | "material:sheen-albedo-scaling"
     | "material:clearcoat-f0-remap"
+    | "material:iridescence"
+    | "material:emissive"
     | "material:no-color-view"
     | "material:grid"
     | "material:shader"
