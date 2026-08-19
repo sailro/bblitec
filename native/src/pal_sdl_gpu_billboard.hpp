@@ -42,6 +42,10 @@ struct BillboardPass {
     SDL_GPUBuffer* instances = nullptr;
     SDL_GPUTexture* atlas = nullptr;
     SDL_GPUSampler* sampler = nullptr;
+    // The custom shader's extra textures, in the order they bind after
+    // the atlas.
+    std::vector<SDL_GPUTexture*> extra_textures;
+    std::vector<SDL_GPUSampler*> extra_samplers;
     BillboardSystemHandle system{};
     // The reordered upload, kept so an unchanged view re-uploads nothing.
     std::vector<float> sorted;
@@ -134,7 +138,7 @@ inline BillboardPass create_billboard_pass(
         device,
         fragment_name,
         SDL_GPU_SHADERSTAGE_FRAGMENT,
-        1,
+        static_cast<std::uint32_t>(slots.textures.size()),
         static_cast<std::uint32_t>(slots.uniforms.size()),
         "mainFragment");
 
@@ -236,6 +240,18 @@ inline BillboardPass create_billboard_pass(
         SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
         "billboard atlas");
     pass.sampler = create_texture_sampler(device, atlas.sampler);
+    for (const PixelsTexture& extra : system.custom_textures) {
+        pass.extra_textures.push_back(upload_2d_texture(
+            device,
+            extra.rgba.data(),
+            extra.rgba.size(),
+            extra.width,
+            extra.height,
+            SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+            "billboard custom texture"));
+        pass.extra_samplers.push_back(
+            create_texture_sampler(device, extra.sampler));
+    }
     return pass;
 }
 
@@ -353,10 +369,20 @@ inline void record_billboard_pass(
         &index_binding,
         SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
-    SDL_GPUTextureSamplerBinding atlas_binding{};
-    atlas_binding.texture = pass.atlas;
-    atlas_binding.sampler = pass.sampler;
-    SDL_BindGPUFragmentSamplers(render_pass, 0, &atlas_binding, 1);
+    // The atlas first, then whatever the custom shader named -- the order
+    // the composed program declares them in.
+    std::vector<SDL_GPUTextureSamplerBinding> textures{
+        SDL_GPUTextureSamplerBinding{pass.atlas, pass.sampler}};
+    for (std::size_t extra = 0; extra < pass.extra_textures.size();
+         ++extra) {
+        textures.push_back(SDL_GPUTextureSamplerBinding{
+            pass.extra_textures[extra], pass.extra_samplers[extra]});
+    }
+    SDL_BindGPUFragmentSamplers(
+        render_pass,
+        0,
+        textures.data(),
+        static_cast<Uint32>(textures.size()));
 
     SDL_DrawGPUIndexedPrimitives(
         render_pass,
@@ -371,6 +397,12 @@ inline void release_billboard_pass(
     SDL_GPUDevice* device,
     BillboardPass& pass) {
     if (pass.sampler) SDL_ReleaseGPUSampler(device, pass.sampler);
+    for (SDL_GPUTexture* extra : pass.extra_textures) {
+        SDL_ReleaseGPUTexture(device, extra);
+    }
+    for (SDL_GPUSampler* extra : pass.extra_samplers) {
+        SDL_ReleaseGPUSampler(device, extra);
+    }
     if (pass.atlas) SDL_ReleaseGPUTexture(device, pass.atlas);
     if (pass.instances) SDL_ReleaseGPUBuffer(device, pass.instances);
     if (pass.index_buffer) {

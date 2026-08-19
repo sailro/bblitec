@@ -10,6 +10,7 @@ import {
 } from "./compiler/assignments.js";
 import {
     registerAsset,
+    registerPixelsAsset,
     registerSpriteAtlasAsset,
     resolveBundledAsset,
     type AssetRegistryContext,
@@ -195,6 +196,7 @@ const featureSources: Record<Feature, string[]> = {
     "sprite:2d": [],
     "sprite:uv-scroll": [],
     "sprite:custom-shader": [],
+    "texture:pixels": [],
     "sprite:billboard": [],
     "sprite:billboard-axis-locked": [],
     "sprite:billboard-cutout": [],
@@ -2166,6 +2168,12 @@ class Compiler
         faceSize?: number,
     ): CompileAsset {
         return registerAsset(this, source, kind, faceSize);
+    }
+
+    public registerPixelsAsset(
+        expression: ts.Expression,
+    ): string {
+        return registerPixelsAsset(this, expression);
     }
 
     public registerSpriteAtlasAsset(

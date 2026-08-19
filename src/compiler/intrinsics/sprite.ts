@@ -24,6 +24,7 @@ export interface SpriteIntrinsicContext
     registerSpriteAtlasAsset(
         expression: ts.Expression,
     ): string;
+    registerPixelsAsset(expression: ts.Expression): string;
     allocateTemporaryCppName(label: string): string;
     /** One layer or system built without a custom shader, so with the stock program. */
     recordPlainSpriteProgram(family: "sprite" | "billboard"): void;
@@ -100,6 +101,46 @@ function blendOption(
 }
 
 /**
+ * The extra textures a custom shader binds after the atlas.
+ *
+ * Each entry names an identifier the caller's WGSL samples through
+ * `<name>Tex` / `<name>Samp`, so the name has to be settled here; the
+ * texture beside it is an ordinary runtime value the layer or system binds.
+ */
+function extraTextureOption(
+    context: SpriteIntrinsicContext,
+    options: Value | undefined,
+    label: string,
+    node: ts.Node,
+): { name: string; cpp: string }[] {
+    const named = property(options, "extraTextures");
+    if (!named) {
+        return [];
+    }
+    if (named.kind !== "tuple" || !named.tupleElements) {
+        context.fail(
+            node,
+            `${label}: 'extraTextures' must be written as an array literal.`,
+        );
+    }
+    return named.tupleElements.map((entry) => {
+        const name = entry.recordProperties?.["name"];
+        const texture = entry.recordProperties?.["texture"];
+        if (
+            entry.kind !== "record" ||
+            name?.staticString === undefined ||
+            texture?.kind !== "texture"
+        ) {
+            context.fail(
+                node,
+                `${label}: each extra texture needs a literal 'name' and a texture.`,
+            );
+        }
+        return { name: name.staticString, cpp: texture.cpp };
+    });
+}
+
+/**
  * The descriptor a `customShader` option names, as the flag the record
  * carries.
  *
@@ -119,7 +160,7 @@ function customShaderOption(
     const named = property(options, "customShader");
     if (!named) {
         context.recordPlainSpriteProgram(family);
-        return "false";
+        return "false, {}";
     }
     if (named.kind !== `${family}-custom-shader`) {
         context.fail(
@@ -131,7 +172,10 @@ function customShaderOption(
             } descriptor.`,
         );
     }
-    return "true";
+    // The descriptor's extra textures travel with the flag: they are what
+    // the layer or system binds after its atlas, in the order the WGSL
+    // declares them.
+    return `true, {${(named.spriteCustomTextures ?? []).join(", ")}}`;
 }
 
 /**
@@ -706,6 +750,48 @@ export function compileSpriteIntrinsic(
             };
         }
 
+        case "createTexture2DFromPixels": {
+            context.expectArgumentCount(call, 4, 5);
+            const engine = context.compileValue(
+                call.arguments[0]!,
+            );
+            context.expectKind(
+                engine,
+                "engine",
+                call.arguments[0]!,
+            );
+            // The bytes are a module's own, settled at generation, so they
+            // are baked as an asset the way a drawn atlas is.
+            const pixels = context.registerPixelsAsset(
+                call.arguments[1]!,
+            );
+            const width = context.compileNumber(
+                call.arguments[2]!,
+                "double",
+            );
+            const height = context.compileNumber(
+                call.arguments[3]!,
+                "double",
+            );
+            // The pin's sampler and format overrides. Only its defaults are
+            // reached, and the emitted factory settles those, so an options
+            // record refuses rather than being dropped.
+            if (call.arguments[4]) {
+                context.fail(
+                    call.arguments[4],
+                    "createTexture2DFromPixels options are not lowered.",
+                );
+            }
+            context.reachFeature("texture:pixels", call);
+            return {
+                kind: "texture",
+                cpp:
+                    `bbl::create_texture_2d_from_pixels(${engine.cpp}, ` +
+                    `bbl::asset_path(${pixels}), ${width}, ${height})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+            };
+        }
+
         case "createSprite2DCustomShader":
         case "createBillboardCustomShader": {
             context.expectArgumentCount(call, 1, 1);
@@ -733,15 +819,16 @@ export function compileSpriteIntrinsic(
                     `${importedName}: 'fragment' must be a non-empty WGSL string.`,
                 );
             }
-            // Each extra texture adds a binding pair the pin emits ahead of
-            // the fx block. Nothing reaches them yet, so they refuse by name
-            // rather than composing a shader whose bindings nothing fills.
-            if (property(options, "extraTextures")) {
-                context.fail(
-                    call.arguments[0] ?? call,
-                    `${importedName} option 'extraTextures' is not lowered.`,
-                );
-            }
+            // Each extra texture adds the binding pair the pin emits ahead
+            // of the fx block: `<name>Tex` and `<name>Samp`, in the order
+            // given. The name is compile-time (it is spliced into WGSL) and
+            // the texture is a runtime value the layer binds.
+            const extras = extraTextureOption(
+                context,
+                options,
+                importedName,
+                call.arguments[0] ?? call,
+            );
             const family =
                 importedName === "createSprite2DCustomShader"
                     ? "sprite"
@@ -773,8 +860,15 @@ export function compileSpriteIntrinsic(
             context.recordSpriteCustomShader({
                 family,
                 fragment: fragment.staticString,
+                extraTextures: extras.map(({ name }) => name),
             });
-            return { kind: `${family}-custom-shader`, cpp: "" };
+            return {
+                kind: `${family}-custom-shader`,
+                cpp: "",
+                spriteCustomTextures: extras.map(
+                    ({ cpp }) => cpp,
+                ),
+            };
         }
 
         case "setSprite2DShaderParams":

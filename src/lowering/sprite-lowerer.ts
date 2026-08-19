@@ -38,6 +38,12 @@ export interface SpriteShaderSource {
      * fragment in, because a body that never names `fx` still has it bound.
      */
     fxStructFields?: string | undefined;
+    /**
+     * The `<name>Tex` / `<name>Samp` pairs a custom shader's extra textures
+     * bind through, at this backend's own group. Emitted by the pin's own
+     * builder, so the pair it writes per texture is the pin's.
+     */
+    extraTextureBindings?: string | undefined;
 }
 
 /**
@@ -780,6 +786,7 @@ export class SpriteLowerer {
     public shaderSource(
         uvScroll = false,
         customFragment?: string,
+        extraTextures: readonly string[] = [],
     ): SpriteShaderSource {
         const permutation = new Map<string, ShaderTextBinding>([
             ["hasDepth", false],
@@ -798,7 +805,12 @@ export class SpriteLowerer {
                       "makeCustomSpriteWgsl",
                       new Map<string, ShaderTextBinding>([
                           ...permutation,
-                          ["extraTextures", []],
+                          [
+                              "extraTextures",
+                              extraTextures.map((name) => ({
+                                  name,
+                              })),
+                          ],
                           ["fragment", customFragment],
                       ]),
                   );
@@ -849,6 +861,23 @@ export class SpriteLowerer {
                       "sprite fx uniform struct",
                   )
                 : undefined,
+            extraTextureBindings:
+                extraTextures.length === 0
+                    ? undefined
+                    : this.shaderText.evaluate(
+                          customShaderCoreModule,
+                          "makeExtraBindingsWgsl",
+                          new Map<string, ShaderTextBinding>([
+                              ["group", "2"],
+                              ["startBinding", 2],
+                              [
+                                  "extras",
+                                  extraTextures.map((name) => ({
+                                      name,
+                                  })),
+                              ],
+                          ]),
+                      ),
         };
     }
 
@@ -1269,8 +1298,10 @@ Sprite2DLayerHandle create_sprite_2d_layer(
     layer.atlas = atlas;
     layer.blend = options.blend_mode;
     // initLayer, through the fx hook: a layer built with a descriptor
-    // draws that program, and its params start zeroed.
+    // draws that program, its extra textures bind after the atlas, and
+    // its params start zeroed.
     layer.custom_shader = options.custom_shader;
+    layer.custom_textures = std::move(options.custom_textures);
     layer.opacity = options.opacity;
     layer.visible = options.visible;
     layer.order = options.order;

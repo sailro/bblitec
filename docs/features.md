@@ -66,7 +66,7 @@ deliberately left live.
 | [Asset materialization](#asset-materialization) | Compile | every reached remote URL downloaded into the generated tree |
 | [Compressed geometry](#compressed-geometry) | Compile | Draco and meshopt decoded to ordinary geometry |
 | [Environment compilation](#environment-compilation) | Compile | HDR and DDS cubemaps, GGX prefiltering, SH projection, BRDF LUT |
-| [Drawn assets](#drawn-assets) | Compile | canvas2D sprite atlases executed and baked to PNG |
+| [Drawn assets](#drawn-assets) | Compile | canvas2D sprite atlases executed and baked to PNG, computed pixel buffers baked to RGBA |
 | [Shader pipeline](#shader-pipeline) | Compile → Run | composed and specialized at generation; compiled offline for SDL_GPU, in-process by Dawn |
 | [Engine, scene, and frame loop](#engine-scene-and-frame-loop) | Run | registration, fixed delta, before-render callbacks, frame gates |
 | [Cameras and input](#cameras-and-input) | Run | ArcRotate/Free, default framing, orthographic opt-in, SDL controls |
@@ -467,6 +467,16 @@ beside that stage — the same one the pinned material variants already bind
 through, now written by both of its compaction passes. The compiled artifact
 answers it; nothing infers it from the WGSL. A layer or system whose every
 one opts in never loads the stock program, so it is not composed either.
+
+A body may also sample textures the caller supplies. Each is named in the
+descriptor and reaches WGSL as the `<name>Tex` / `<name>Samp` pair the pin's
+own builder writes, re-homed after the atlas in this backend's fragment
+texture group. Their pixels come from `createTexture2DFromPixels`, which is
+the second compile-time module asset: a zero-argument scene function whose
+bytes are settled, executed at generation and baked. A palette built from
+`Math.sin` and rounded to bytes is exactly where one libm and another part
+company, so the bytes that ship are the ones the golden's own engine
+produced.
 
 Every blend mode either family exports is lowered as the pure data upstream
 keeps it as — the descriptors are read out of the pinned modules rather than

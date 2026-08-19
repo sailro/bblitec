@@ -24,10 +24,28 @@ function billboards(): BillboardLowerer {
     );
 }
 
-test("folds the pinned extra-binding loop to the empty text", () => {
+test("folds the pinned extra-binding loop over a bound list", () => {
     const text = new PinnedShaderText(new LoweringContext());
-    // Nothing binds an extra texture yet, so every reached permutation binds
-    // the empty list and the loop settles without running.
+    // One pair per extra texture, stepping the binding by two. Folding the
+    // pin's own loop rather than emitting the lines here is what keeps a
+    // changed binding rule the pin's.
+    assert.equal(
+        text.evaluate(
+            "src/sprite/custom-shader-core.ts",
+            "makeExtraBindingsWgsl",
+            new Map<string, ShaderTextBinding>([
+                ["group", "2"],
+                ["startBinding", 2],
+                ["extras", [{ name: "palette" }, { name: "noise" }]],
+            ]),
+        ),
+        "@group(2) @binding(2) var paletteTex: texture_2d<f32>;\n" +
+            "@group(2) @binding(3) var paletteSamp: sampler;\n" +
+            "@group(2) @binding(4) var noiseTex: texture_2d<f32>;\n" +
+            "@group(2) @binding(5) var noiseSamp: sampler;\n",
+    );
+    // A layer that named none binds the empty list, and the loop settles
+    // without running.
     assert.equal(
         text.evaluate(
             "src/sprite/custom-shader-core.ts",
@@ -40,20 +58,25 @@ test("folds the pinned extra-binding loop to the empty text", () => {
         ),
         "",
     );
-    // A list with something in it would emit bindings nothing fills, so it
-    // refuses rather than composing a shader the backends cannot bind.
-    assert.throws(
-        () =>
-            text.evaluate(
-                "src/sprite/custom-shader-core.ts",
-                "makeExtraBindingsWgsl",
-                new Map<string, ShaderTextBinding>([
-                    ["group", "1"],
-                    ["startBinding", 3],
-                    ["extras", [{ name: "palette" }]],
-                ]),
-            ),
-        /emits per-element text/,
+});
+
+test("re-homes the extra-texture bindings after the atlas", () => {
+    const shader = new SpriteLowerer(new LoweringContext()).shaderSource(
+        false,
+        "return textureSample(paletteTex, paletteSamp, in.uv);",
+        ["palette"],
+    );
+    // The pin binds its extras after the atlas inside one group; this
+    // backend keeps fragment textures in a group of their own, so the pair
+    // lands after the atlas pair there.
+    assert.equal(
+        shader.extraTextureBindings,
+        "@group(2) @binding(2) var paletteTex: texture_2d<f32>;\n" +
+            "@group(2) @binding(3) var paletteSamp: sampler;\n",
+    );
+    assert.match(
+        spriteFragmentWgsl("test", shader),
+        /@binding\(1\) var atlasSamp: sampler;\n@group\(2\) @binding\(2\) var paletteTex/,
     );
 });
 

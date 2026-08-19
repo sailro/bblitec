@@ -374,6 +374,20 @@ struct FileTexture {
     bool srgb = false;
 };
 
+/**
+ * A texture built from bytes the caller supplied (`pixels-texture.ts`).
+ *
+ * Unlike a file texture there is nothing to decode: the compiler baked the
+ * module's own bytes, so these are the RGBA texels themselves and the size is
+ * the caller's rather than an image header's.
+ */
+struct PixelsTexture {
+    std::vector<std::uint8_t> rgba;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    TextureSamplerState sampler{};
+};
+
 struct ModelVertex {
     Vec3 position{};
     Vec3 normal{0.0f, 1.0f, 0.0f};
@@ -555,6 +569,9 @@ struct Sprite2DLayerRecord {
     // pin reaches both through a hook that is null until a descriptor
     // exists, so the flag is the same "is there one" question.
     bool custom_shader = false;
+    // custom-shader-core.ts: the descriptor's extra textures, in the order
+    // they bind after the atlas. Empty unless a custom shader named any.
+    std::vector<PixelsTexture> custom_textures;
     // The `fx.params` vec4, zero until setSprite2DShaderParams writes it.
     Vec4 shader_params{};
     std::uint64_t version = 0;
@@ -592,6 +609,9 @@ struct BillboardSystemRecord {
     // a system built with a descriptor draws the composed program and
     // binds the fx block beside its system block.
     bool custom_shader = false;
+    // custom-shader-core.ts: the descriptor's extra textures, in the order
+    // they bind after the atlas. Empty unless a custom shader named any.
+    std::vector<PixelsTexture> custom_textures;
     // The `fx.params` vec4, zero until setBillboardShaderParams writes it.
     Vec4 shader_params{};
 };
@@ -1359,6 +1379,7 @@ struct Sprite2DLayerOptions {
     float order = 0.0f;
     Vec2 pivot{0.5f, 0.5f};
     bool custom_shader = false;
+    std::vector<PixelsTexture> custom_textures;
 };
 
 /**
@@ -1376,6 +1397,7 @@ struct BillboardSystemOptions {
     float alpha_cutoff = 0.0f;
     bool has_alpha_cutoff = false;
     bool custom_shader = false;
+    std::vector<PixelsTexture> custom_textures;
 };
 
 /** addBillboardSpriteIndex's props; a `has_` flag marks what was named. */
@@ -1467,6 +1489,12 @@ void set_billboard_shader_params(
     Engine& engine,
     BillboardSystemHandle system,
     Vec4 params);
+
+PixelsTexture create_texture_2d_from_pixels(
+    Engine& engine,
+    const std::string& path,
+    double width,
+    double height);
 
 double add_sprite_2d_index(
     Engine& engine,

@@ -55,6 +55,12 @@ export interface CompileManifest {
 export interface SpriteCustomShaderManifest {
     family: "sprite" | "billboard";
     fragment: string;
+    /**
+     * The identifiers the caller's WGSL samples the extra textures through,
+     * in binding order. The pin splices each into a `<name>Tex` /
+     * `<name>Samp` pair ahead of the fx block.
+     */
+    extraTextures: string[];
 }
 
 /**
@@ -194,10 +200,12 @@ export interface CompileAsset {
         | "environment"
         | "gltf"
         | "hdr-environment"
-        // The one asset kind whose source is scene-adjacent TypeScript run at
-        // compile time rather than a URL fetched and repacked: the pinned
-        // sprite-atlas module draws its pixels with canvas2D.
+        // The two asset kinds whose source is scene-adjacent TypeScript run
+        // at compile time rather than a URL fetched and repacked: the
+        // sprite-atlas module draws its pixels with canvas2D, and a pixels
+        // module computes a texture's bytes outright.
         | "sprite-atlas"
+        | "pixels"
         | "texture";
     faceSize?: number;
     /**
@@ -316,6 +324,12 @@ export interface Value {
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     lightKind?: LightKind;
+    /**
+     * The extra textures a custom-shader descriptor binds, as the native
+     * expressions that build them, in binding order. They ride the
+     * descriptor because that is what the layer or system is handed.
+     */
+    spriteCustomTextures?: string[];
     shaderVariant?: string;
     animationFrameRate?: string;
     animationDuration?: string;
@@ -421,6 +435,7 @@ export type Feature =
     | "sprite:2d"
     | "sprite:uv-scroll"
     | "sprite:custom-shader"
+    | "texture:pixels"
     | "sprite:billboard"
     | "sprite:billboard-axis-locked"
     | "sprite:billboard-cutout"

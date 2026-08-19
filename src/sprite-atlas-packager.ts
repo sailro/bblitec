@@ -41,21 +41,35 @@ export function spriteAtlasAssetSource(
     return `${spriteAtlasSourcePrefix}${repositoryRelativeModulePath}#${exportName}`;
 }
 
-export function parseSpriteAtlasAssetSource(
+function parseGeneratedSource(
     source: string,
+    prefix: string,
     repositoryRoot: string,
+    label: string,
 ): SpriteAtlasSource {
-    const rest = source.slice(spriteAtlasSourcePrefix.length);
+    const rest = source.slice(prefix.length);
     const separator = rest.lastIndexOf("#");
     if (separator < 0) {
         throw new Error(
-            `Malformed drawn sprite-atlas asset source '${source}'.`,
+            `Malformed generated ${label} asset source '${source}'.`,
         );
     }
     return {
         modulePath: resolve(repositoryRoot, rest.slice(0, separator)),
         exportName: rest.slice(separator + 1),
     };
+}
+
+export function parseSpriteAtlasAssetSource(
+    source: string,
+    repositoryRoot: string,
+): SpriteAtlasSource {
+    return parseGeneratedSource(
+        source,
+        spriteAtlasSourcePrefix,
+        repositoryRoot,
+        "drawn sprite-atlas",
+    );
 }
 
 function decodeDataUrl(dataUrl: string): Uint8Array {
@@ -68,20 +82,51 @@ function decodeDataUrl(dataUrl: string): Uint8Array {
     return new Uint8Array(Buffer.from(match[1], "base64"));
 }
 
+/** The `source` string baked pixel bytes carry through the asset list. */
+export const pixelsSourcePrefix = "generated:pixels:";
+
+export function pixelsAssetSource(
+    repositoryRelativeModulePath: string,
+    exportName: string,
+): string {
+    return `${pixelsSourcePrefix}${repositoryRelativeModulePath}#${exportName}`;
+}
+
+export function parsePixelsAssetSource(
+    source: string,
+    repositoryRoot: string,
+): SpriteAtlasSource {
+    return parseGeneratedSource(
+        source,
+        pixelsSourcePrefix,
+        repositoryRoot,
+        "pixels",
+    );
+}
+
 /**
- * Run the pinned atlas module in headless Chromium and return the PNG bytes
- * its factory draws.
+ * Run a scene-adjacent module in headless Chromium and return what its
+ * zero-argument export produced.
+ *
+ * Both compile-time module assets go through here. They are baked for
+ * different reasons — an atlas because only a browser rasterizer draws those
+ * pixels, a palette because its bytes are `Math.sin` rounded to integers and
+ * a last-ulp difference between one libm and another flips an entry — but
+ * the answer is the same in both cases: run the module the golden runs, in
+ * the engine the golden runs it in, and keep what it returned.
  */
-export async function drawSpriteAtlasPng(
+async function evaluateModuleExport(
     source: SpriteAtlasSource,
-): Promise<Uint8Array> {
+    label: string,
+    browserRequirement: string,
+): Promise<unknown> {
     const moduleName = basename(source.modulePath).replace(/\.ts$/, ".js");
     const moduleSource = transpileForBrowser(
         readFileSync(source.modulePath, "utf8"),
         source.modulePath,
     );
     const html =
-        "<!doctype html><html><head><title>Sprite atlas</title></head>" +
+        `<!doctype html><html><head><title>${label}</title></head>` +
         "<body></body></html>";
 
     const server = createServer((request, response) => {
@@ -98,28 +143,77 @@ export async function drawSpriteAtlasPng(
         response.end(html);
     });
     return withBrowserPage(server, {
-        serverName: "sprite-atlas server",
-        browserRequirement:
-            "Drawing a canvas2D sprite atlas requires Chrome or Edge.",
+        serverName: `${label} server`,
+        browserRequirement,
     }, async (page, origin) => {
         await page.goto(`${origin}/`);
-        const dataUrl: unknown = await page.evaluate(
+        return page.evaluate(
             `import("/${moduleName}").then((module) => {
                 const factory = module[${JSON.stringify(source.exportName)}];
                 if (typeof factory !== "function") {
                     throw new Error(
-                        "Pinned sprite atlas export ${source.exportName} is not a function."
+                        "Module export ${source.exportName} is not a function."
                     );
                 }
-                return factory();
+                const value = factory();
+                // A typed array does not survive the page boundary as one.
+                return ArrayBuffer.isView(value)
+                    ? Array.from(new Uint8Array(
+                          value.buffer,
+                          value.byteOffset,
+                          value.byteLength))
+                    : value;
             })`,
         );
-        if (typeof dataUrl !== "string") {
-            throw new Error(
-                `Pinned sprite atlas export ${source.exportName} did not return a data URL.`,
-            );
-        }
-        return decodeDataUrl(dataUrl);
     });
+}
+
+/**
+ * Run the pinned atlas module in headless Chromium and return the PNG bytes
+ * its factory draws.
+ */
+export async function drawSpriteAtlasPng(
+    source: SpriteAtlasSource,
+): Promise<Uint8Array> {
+    const dataUrl = await evaluateModuleExport(
+        source,
+        "Sprite atlas",
+        "Drawing a canvas2D sprite atlas requires Chrome or Edge.",
+    );
+    if (typeof dataUrl !== "string") {
+        throw new Error(
+            `Sprite atlas export ${source.exportName} did not return a data URL.`,
+        );
+    }
+    return decodeDataUrl(dataUrl);
+}
+
+/**
+ * Run a pixel-buffer module in headless Chromium and return the bytes its
+ * factory built, as the texture upload takes them.
+ */
+export async function bakePixelBytes(
+    source: SpriteAtlasSource,
+): Promise<Uint8Array> {
+    const bytes = await evaluateModuleExport(
+        source,
+        "Pixel buffer",
+        "Baking a computed pixel buffer requires Chrome or Edge.",
+    );
+    if (
+        !Array.isArray(bytes) ||
+        bytes.some(
+            (byte) =>
+                typeof byte !== "number" ||
+                !Number.isInteger(byte) ||
+                byte < 0 ||
+                byte > 255,
+        )
+    ) {
+        throw new Error(
+            `Pixel buffer export ${source.exportName} did not return a byte array.`,
+        );
+    }
+    return new Uint8Array(bytes as number[]);
 }
 

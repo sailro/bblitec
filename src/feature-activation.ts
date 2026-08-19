@@ -377,6 +377,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/sprite/sprite-2d-uvscroll.ts",
         consumers: CMAKE,
     },
+    "texture:pixels": {
+        provenance: "src/texture/pixels-texture.ts",
+        consumers: CMAKE,
+    },
     "sprite:custom-shader": {
         provenance:
             "src/sprite/sprite-custom-shader.ts + src/sprite/custom-shader-core.ts",

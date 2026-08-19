@@ -36,7 +36,9 @@ import {
     computeBuildStamp,
 } from "./build-stamp.js";
 import {
+    bakePixelBytes,
     drawSpriteAtlasPng,
+    parsePixelsAssetSource,
     parseSpriteAtlasAssetSource,
 } from "./sprite-atlas-packager.js";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
@@ -157,6 +159,19 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
 
     if (asset.source === "generated:pinned-ibl-brdf-lut") {
         writeFileSync(destination, await generateIblBrdfLutRgba16f());
+        return;
+    }
+
+    if (asset.kind === "pixels") {
+        writeFileSync(
+            destination,
+            await bakePixelBytes(
+                parsePixelsAssetSource(
+                    asset.source,
+                    findRepositoryRoot(dirname(inputPath)),
+                ),
+            ),
+        );
         return;
     }
 

@@ -56,6 +56,39 @@ inline WGPUStringView string_view(const char* text) {
     throw std::runtime_error("Dawn backend: " + message);
 }
 
+/**
+ * Upload RGBA8 texels as a sampled 2D texture.
+ *
+ * Shared because a sprite atlas and a custom shader's extra texture are the
+ * same upload: tightly packed rows, no mip chain, no sRGB view.
+ */
+inline WGPUTexture upload_dawn_rgba_texture(
+    WGPUDevice device,
+    WGPUQueue queue,
+    const std::uint8_t* rgba,
+    std::size_t bytes,
+    std::uint32_t width,
+    std::uint32_t height) {
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.dimension = WGPUTextureDimension_2D;
+    descriptor.format = WGPUTextureFormat_RGBA8Unorm;
+    descriptor.usage =
+        WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    descriptor.size = WGPUExtent3D{width, height, 1};
+    WGPUTexture texture = wgpuDeviceCreateTexture(device, &descriptor);
+    if (!texture) dawn_error("wgpuDeviceCreateTexture rgba texture");
+    WGPUTexelCopyTextureInfo destination =
+        WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    destination.texture = texture;
+    WGPUTexelCopyBufferLayout layout{};
+    layout.bytesPerRow = width * 4u;
+    layout.rowsPerImage = height;
+    const WGPUExtent3D size{width, height, 1};
+    wgpuQueueWriteTexture(
+        queue, &destination, rgba, bytes, &layout, &size);
+    return texture;
+}
+
 inline void wait_for(WGPUInstance instance, WGPUFuture future) {
     WGPUFutureWaitInfo wait_info{};
     wait_info.future = future;

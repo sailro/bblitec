@@ -267,8 +267,8 @@ that does to the deferred lane by default.
     depth slot: the sprite pass appends to the scene's frame.
   - `setSprite2DCoverageGamma`, a shader permutation the pin installs
     through a lazily-registered hook, as the custom shaders do.
-  - a custom shader's `extraTextures` (93, 95), which bind ahead of the fx
-    block, and `createTexture2DFromPixels` for the palette behind them.
+  - `createTexture2DFromPixels` past its defaults: the `srgb` format and
+    the sampler overrides refuse, because no reached call passes options.
   - `updateSprite2DIndex`, `removeSprite2DIndex`, `setSprite2DFrameIndex`,
     `clearSprite2DLayer` and the Handle API: the writer is lowered for the add
     arm only; the update arm's "preserve what was not supplied" resolution needs
@@ -285,8 +285,6 @@ that does to the deferred lane by default.
     renderers refuse.
   - Scene 53: `spriteBlendOpaque`, then depth-hosted layers.
   - Scene 58: its `PLAYER_SPRITE_URL` module constant, then sprite animation.
-  - Scenes 93, 95: `createTexture2DFromPixels` for the palette their custom
-    shaders sample.
   - Scenes 205, 206 reach the billboard path but stop at engine options.
   - Scene 117: an unsupported constructor expression, then sprite picking.
   - Scenes 205, 206: engine options.

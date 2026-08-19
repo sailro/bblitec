@@ -572,6 +572,7 @@ class GeneratedSourceWriter {
                     const shader = sprites.shaderSource(
                         false,
                         custom.fragment,
+                        custom.extraTextures,
                     );
                     const customProvenance = context.provenance(
                         "src/sprite/sprite-custom-shader.ts",
@@ -681,6 +682,7 @@ class GeneratedSourceWriter {
                     "facing",
                     "transparent",
                     customBillboard.fragment,
+                    customBillboard.extraTextures,
                 );
                 const customProvenance = context.provenance(
                     "src/sprite/billboard-custom-shader.ts",
@@ -944,6 +946,13 @@ class GeneratedSourceWriter {
             this.writeSource(
                 "upstream/src/material_grid.cpp",
                 factories.lowerGridMaterialFactory(),
+                generated,
+            );
+        }
+        if (features.includes("texture:pixels")) {
+            this.writeSource(
+                "upstream/src/texture_pixels.cpp",
+                factories.lowerPixelsTextureFactory(),
                 generated,
             );
         }

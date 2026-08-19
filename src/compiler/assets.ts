@@ -12,7 +12,10 @@ import {
     findRepositoryRoot,
     readUpstreamPin,
 } from "../upstream-source.js";
-import { spriteAtlasAssetSource } from "../sprite-atlas-packager.js";
+import {
+    pixelsAssetSource,
+    spriteAtlasAssetSource,
+} from "../sprite-atlas-packager.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type {
     CompileAsset,
@@ -62,6 +65,10 @@ export function registerAsset(
             // beside the executable is the PNG that module returns.
             : kind === "sprite-atlas"
                 ? `${basenameWithoutExtension(sourceName)}.png`
+            // A pixels module likewise names the module; what lands beside
+            // the executable is the raw RGBA buffer it built.
+            : kind === "pixels"
+                ? `${basenameWithoutExtension(sourceName)}.rgba`
             : sourceName;
     const safeName = packagedName.replace(/[^A-Za-z0-9._-]/g, "_");
     const output =
@@ -125,6 +132,59 @@ export function registerSpriteAtlasAsset(
     return context.cppString(
         registerAsset(context, url, "texture").output,
     );
+}
+
+/**
+ * A texture built from bytes a scene module computes.
+ *
+ * The same shape as a drawn atlas: a zero-argument export whose result is
+ * settled at compile time, so it is executed and baked rather than lowered.
+ * The reason differs — these bytes are arithmetic, not a rasterizer's — but
+ * rounding `Math.sin` to an integer is exactly where one libm and another
+ * part company, so the bytes the golden's own engine produced are the ones
+ * that ship.
+ */
+export function registerPixelsAsset(
+    context: AssetRegistryContext,
+    expression: ts.Expression,
+): string {
+    const unwrapped = context.unwrap(expression);
+    const callee = ts.isCallExpression(unwrapped)
+        ? context.unwrap(unwrapped.expression)
+        : undefined;
+    const modulePath =
+        callee && ts.isIdentifier(callee)
+            ? context.symbols.declarationSourcePath(callee)
+            : undefined;
+    if (
+        !ts.isCallExpression(unwrapped) ||
+        !callee ||
+        !ts.isIdentifier(callee) ||
+        !modulePath
+    ) {
+        return context.fail(
+            expression,
+            "Texture pixels must come from a module function this compiler can run at generation.",
+        );
+    }
+    if (unwrapped.arguments.length !== 0) {
+        context.fail(
+            unwrapped,
+            "A pixel-buffer factory takes no arguments.",
+        );
+    }
+    const root = findRepositoryRoot(
+        dirname(resolve(context.options.fileName)),
+    );
+    const asset = registerAsset(
+        context,
+        pixelsAssetSource(
+            relative(root, modulePath).split(sep).join("/"),
+            callee.text,
+        ),
+        "pixels",
+    );
+    return context.cppString(asset.output);
 }
 
 export function resolveBundledAsset(source: string): string {

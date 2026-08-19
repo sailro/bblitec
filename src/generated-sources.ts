@@ -146,6 +146,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["material:grid"],
     },
     {
+        source: "upstream/src/texture_pixels.cpp",
+        features: ["texture:pixels"],
+    },
+    {
         source: "upstream/src/material_shader.cpp",
         features: ["material:shader"],
     },

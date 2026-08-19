@@ -1230,10 +1230,34 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene93",
+        name: "Scene 93 - Sprite Palette Shader",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene93.ts",
+        title: "Babylon Lite Native - Sprite Palette Shader",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 15, 23],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene94",
         name: "Scene 94 - Billboard Custom Shader",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene94.ts",
         title: "Babylon Lite Native - Billboard Custom Shader",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [41, 46, 56],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene95",
+        name: "Scene 95 - Billboard Palette Shader",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene95.ts",
+        title: "Babylon Lite Native - Billboard Palette Shader",
         parity: {
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,

@@ -50,6 +50,11 @@ struct DawnBillboardPass {
     WGPUTexture atlas = nullptr;
     WGPUTextureView atlas_view = nullptr;
     WGPUSampler sampler = nullptr;
+    // The custom shader's extra textures, in the order they bind after
+    // the atlas.
+    std::vector<WGPUTexture> extra_textures;
+    std::vector<WGPUTextureView> extra_views;
+    std::vector<WGPUSampler> extra_samplers;
     WGPUBindGroup vertex_group = nullptr;
     WGPUBindGroup texture_group = nullptr;
     WGPUBindGroup fragment_group = nullptr;
@@ -171,19 +176,30 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         pass.group_layouts[1] =
             wgpuDeviceCreateBindGroupLayout(device, &vertex_layout);
 
-        std::array<WGPUBindGroupLayoutEntry, 2> texture_entries{};
-        texture_entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        texture_entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        texture_entries[0].binding = 0;
-        texture_entries[0].visibility = WGPUShaderStage_Fragment;
-        texture_entries[0].texture.sampleType =
-            WGPUTextureSampleType_Float;
-        texture_entries[0].texture.viewDimension =
-            WGPUTextureViewDimension_2D;
-        texture_entries[1].binding = 1;
-        texture_entries[1].visibility = WGPUShaderStage_Fragment;
-        texture_entries[1].sampler.type =
-            WGPUSamplerBindingType_Filtering;
+        // The atlas pair, then one pair per extra texture a custom shader
+        // named -- the order the composed program declares them in.
+        std::vector<WGPUBindGroupLayoutEntry> texture_entries;
+        for (std::size_t pair = 0;
+             pair < 1u + system.custom_textures.size();
+             ++pair) {
+            WGPUBindGroupLayoutEntry sampled =
+                WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            sampled.binding = static_cast<std::uint32_t>(pair * 2u);
+            sampled.visibility = WGPUShaderStage_Fragment;
+            sampled.texture.sampleType =
+                WGPUTextureSampleType_Float;
+            sampled.texture.viewDimension =
+                WGPUTextureViewDimension_2D;
+            WGPUBindGroupLayoutEntry sampler_entry =
+                WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            sampler_entry.binding =
+                static_cast<std::uint32_t>(pair * 2u + 1u);
+            sampler_entry.visibility = WGPUShaderStage_Fragment;
+            sampler_entry.sampler.type =
+                WGPUSamplerBindingType_Filtering;
+            texture_entries.push_back(sampled);
+            texture_entries.push_back(sampler_entry);
+        }
         WGPUBindGroupLayoutDescriptor texture_layout =
             WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
         texture_layout.entryCount =
@@ -391,13 +407,37 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     vertex_group.entries = vertex_bindings.data();
     pass.vertex_group = wgpuDeviceCreateBindGroup(device, &vertex_group);
 
-    std::array<WGPUBindGroupEntry, 2> texture_bindings{};
-    texture_bindings[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-    texture_bindings[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-    texture_bindings[0].binding = 0;
-    texture_bindings[0].textureView = pass.atlas_view;
-    texture_bindings[1].binding = 1;
-    texture_bindings[1].sampler = pass.sampler;
+    std::vector<WGPUBindGroupEntry> texture_bindings;
+    const auto bind_texture =
+        [&](WGPUTextureView view, WGPUSampler sampler) {
+            WGPUBindGroupEntry sampled = WGPU_BIND_GROUP_ENTRY_INIT;
+            sampled.binding = static_cast<std::uint32_t>(
+                texture_bindings.size());
+            sampled.textureView = view;
+            WGPUBindGroupEntry sampler_entry =
+                WGPU_BIND_GROUP_ENTRY_INIT;
+            sampler_entry.binding = static_cast<std::uint32_t>(
+                texture_bindings.size() + 1u);
+            sampler_entry.sampler = sampler;
+            texture_bindings.push_back(sampled);
+            texture_bindings.push_back(sampler_entry);
+        };
+    bind_texture(pass.atlas_view, pass.sampler);
+    for (const PixelsTexture& extra : system.custom_textures) {
+        pass.extra_textures.push_back(upload_dawn_rgba_texture(
+            device,
+            queue,
+            extra.rgba.data(),
+            extra.rgba.size(),
+            extra.width,
+            extra.height));
+        pass.extra_views.push_back(wgpuTextureCreateView(
+            pass.extra_textures.back(), nullptr));
+        pass.extra_samplers.push_back(
+            create_texture_sampler(device, extra.sampler));
+        bind_texture(
+            pass.extra_views.back(), pass.extra_samplers.back());
+    }
     WGPUBindGroupDescriptor texture_group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     texture_group.layout = pass.group_layouts[2];
     texture_group.entryCount =
@@ -533,6 +573,15 @@ inline void record_dawn_billboard_pass(
 
 inline void release_dawn_billboard_pass(DawnBillboardPass& pass) {
     if (pass.fx_uniforms) wgpuBufferRelease(pass.fx_uniforms);
+    for (WGPUSampler extra : pass.extra_samplers) {
+        wgpuSamplerRelease(extra);
+    }
+    for (WGPUTextureView extra : pass.extra_views) {
+        wgpuTextureViewRelease(extra);
+    }
+    for (WGPUTexture extra : pass.extra_textures) {
+        wgpuTextureRelease(extra);
+    }
     if (pass.vertex_group) wgpuBindGroupRelease(pass.vertex_group);
     if (pass.texture_group) wgpuBindGroupRelease(pass.texture_group);
     if (pass.fragment_group) wgpuBindGroupRelease(pass.fragment_group);
