@@ -43,6 +43,7 @@ function emitOptions(
     return {
         idDiagnostics: false,
         shaderPrograms: [],
+        spriteCustomShaders: [],
         geometryOutputTasks: [],
         gpuDeformation: false,
         animatedWorldBounds: false,

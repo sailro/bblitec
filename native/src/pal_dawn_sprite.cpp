@@ -97,7 +97,9 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
             }
             const double frame_start = monotonic_milliseconds();
-            static_cast<void>(frame_clock.advance(0.0f));
+            // The delta a custom shader's `fx.time` accumulates. A pure-2D
+            // renderer has no scene to pin it, so it is always measured.
+            const float delta_ms = frame_clock.advance(0.0f);
 
             WGPUSurfaceTexture surface_texture{};
             wgpuSurfaceGetCurrentTexture(state.surface, &surface_texture);
@@ -111,7 +113,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
             // pinned loop's order.
             for (DawnSpritePass& pass : passes) {
                 upload_dawn_sprite_pass(
-                    state.queue, engine, pass, width, height);
+                    state.queue, engine, pass, width, height, delta_ms);
             }
 
             WGPUCommandEncoder encoder =

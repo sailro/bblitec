@@ -120,6 +120,59 @@ export class LoweringContext {
         );
     }
 
+    /**
+     * The module a named import comes from, as a store path.
+     *
+     * The pin splits a composer across modules — the sprite custom shader's
+     * prologue lives in the pipeline module and its extra-texture bindings in
+     * the shared custom-shader core — so following the import is what lets a
+     * builder be read where the pin actually declares it rather than only
+     * where it is called.
+     */
+    public moduleOfImport(
+        modulePath: string,
+        importedName: string,
+    ): string | undefined {
+        for (const statement of this.sourceFile(modulePath)
+            .statements) {
+            if (
+                !ts.isImportDeclaration(statement) ||
+                !statement.importClause?.namedBindings ||
+                !ts.isNamedImports(
+                    statement.importClause.namedBindings,
+                ) ||
+                !ts.isStringLiteral(statement.moduleSpecifier)
+            ) {
+                continue;
+            }
+            const imports =
+                statement.importClause.namedBindings.elements.some(
+                    (element) =>
+                        (element.propertyName?.text ??
+                            element.name.text) === importedName,
+                );
+            if (!imports) {
+                continue;
+            }
+            const specifier = statement.moduleSpecifier.text;
+            if (!specifier.startsWith(".")) {
+                return undefined;
+            }
+            const directory = modulePath
+                .split("/")
+                .slice(0, -1);
+            for (const part of specifier
+                .replace(/\.js$/, ".ts")
+                .split("/")) {
+                if (part === ".") continue;
+                if (part === "..") directory.pop();
+                else directory.push(part);
+            }
+            return directory.join("/");
+        }
+        return undefined;
+    }
+
     public functionDeclaration(modulePath: string, symbolName: string): {
         file: ts.SourceFile;
         declaration: ts.FunctionDeclaration;

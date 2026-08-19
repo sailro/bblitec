@@ -127,6 +127,7 @@ import type {
     ScenePbrIridescenceManifest,
     ScenePbrMaterialManifest,
     ScenePbrSheenManifest,
+    SpriteCustomShaderManifest,
     Value,
     ValueKind,
 } from "./compiler/types.js";
@@ -193,9 +194,11 @@ const featureSources: Record<Feature, string[]> = {
     "scene:remove": [],
     "sprite:2d": [],
     "sprite:uv-scroll": [],
+    "sprite:custom-shader": [],
     "sprite:billboard": [],
     "sprite:billboard-axis-locked": [],
     "sprite:billboard-cutout": [],
+    "sprite:billboard-custom-shader": [],
     "renderer:sprite": ["src/pal_sdl_gpu_sprite.cpp"],
     "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],
@@ -332,6 +335,8 @@ class Compiler
     public readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
     public readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
     private readonly sceneMeshes: SceneMeshManifest[] = [];
+    public readonly spriteCustomShaders: SpriteCustomShaderManifest[] =
+        [];
     private sceneMaterialCount = 0;
     public hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
@@ -440,6 +445,7 @@ class Compiler
                 scenePbrMaterials: this.scenePbrMaterials,
                 sceneMaterialCount: this.sceneMaterialCount,
                 sceneMeshes: this.sceneMeshes,
+                spriteCustomShaders: this.spriteCustomShaders,
             },
         };
     }
@@ -615,7 +621,12 @@ class Compiler
         if (
             value.kind === "tuple" ||
             value.kind === "record" ||
-            value.kind === "morph-targets"
+            value.kind === "morph-targets" ||
+            // A custom-shader descriptor is compile-time data: the program
+            // it names is composed at generation and the layer it is passed
+            // to carries only that it has one, so there is nothing to
+            // declare natively.
+            value.kind === "sprite-custom-shader"
         ) {
             this.defineVariable(declaration.name, value);
             return;
@@ -1340,6 +1351,10 @@ class Compiler
 
     public compileVec2(expression: ts.Expression): string {
         return this.evaluator.compileVec2(expression);
+    }
+
+    public compileVec4(expression: ts.Expression): string {
+        return this.evaluator.compileVec4(expression);
     }
 
     public compileBoolean(expression: ts.Expression): string {
@@ -2881,6 +2896,30 @@ class Compiler
     }
 
     /** Records a scene-code mesh creation for the per-renderable variant key. */
+    /**
+     * One custom-shader descriptor, in the pin's own `_key` order.
+     *
+     * The pin composes one shader module per descriptor. Only one per family
+     * is reached, and a second would need the layer and system records to
+     * carry which program they draw with, so it refuses here rather than
+     * quietly drawing every layer with the first one.
+     */
+    public recordSpriteCustomShader(
+        shader: SpriteCustomShaderManifest,
+        node: ts.Node,
+    ): number {
+        const existing = this.spriteCustomShaders.findIndex(
+            (entry) => entry.family === shader.family,
+        );
+        if (existing >= 0) {
+            this.fail(
+                node,
+                `A second ${shader.family} custom shader is not lowered; one program per family is composed.`,
+            );
+        }
+        return this.spriteCustomShaders.push(shader) - 1;
+    }
+
     public recordSceneMesh(
         kind: string,
         streams?: {

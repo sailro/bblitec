@@ -45,20 +45,29 @@ struct DawnSpriteLayer {
     WGPUBuffer instances = nullptr;
     WGPUBuffer vertex_uniforms = nullptr;
     WGPUBuffer fragment_uniforms = nullptr;
+    // Bound beside the fragment uniforms for a custom-shader layer, and
+    // null for a plain one, which is the pin's own nullable fx attachment.
+    WGPUBuffer fx_uniforms = nullptr;
     WGPUTexture atlas = nullptr;
     WGPUTextureView atlas_view = nullptr;
     WGPUSampler sampler = nullptr;
     WGPUBindGroup vertex_group = nullptr;
     WGPUBindGroup texture_group = nullptr;
     WGPUBindGroup fragment_group = nullptr;
+    // The groups this layer's pipeline is laid out with. They belong to the
+    // layer for the same reason the pipeline does: a custom shader adds the
+    // fx block to the fragment group, so the interface is the layer's.
+    std::array<WGPUBindGroupLayout, 4> group_layouts{};
     std::uint64_t uploaded_version = 0;
     bool uploaded = false;
+    // The custom shader's own clock: seconds since this layer's first
+    // frame, which the pin accumulates inside the layer's fx attachment.
+    float elapsed_ms = 0.0f;
 };
 
 /** One registered `SpriteRenderer`, as GPU resources. */
 struct DawnSpritePass {
     WGPUBuffer index_buffer = nullptr;
-    std::array<WGPUBindGroupLayout, 4> group_layouts{};
     std::vector<DawnSpriteLayer> layers;
     SpriteRendererHandle renderer{};
 };
@@ -81,13 +90,100 @@ inline WGPUBlendFactor dawn_sprite_blend_factor(SpriteBlendFactor factor) {
     return WGPUBlendFactor_One;
 }
 
-inline WGPUBuffer dawn_sprite_uniform_buffer(WGPUDevice device) {
+inline WGPUBuffer dawn_sprite_uniform_buffer(
+    WGPUDevice device,
+    std::uint64_t size = 64) {
     WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
     descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-    descriptor.size = 64;
+    descriptor.size = size;
     WGPUBuffer buffer = wgpuDeviceCreateBuffer(device, &descriptor);
     if (!buffer) dawn_error("wgpuDeviceCreateBuffer sprite uniforms");
     return buffer;
+}
+
+/**
+ * The four bind-group layouts one layer's pipeline is laid out with.
+ *
+ * Group 0 is unused by the specialized WGSL and is declared empty so the
+ * pipeline layout's group indexes line up with it; the rest follow the
+ * SDL_GPU grouping the generated WGSL is written in -- vertex uniforms at
+ * 1, the atlas pair at 2, fragment uniforms at 3. A custom-shader layer
+ * adds the fx block beside its layer block in group 3, which is why these
+ * belong to the layer rather than to the pass.
+ */
+inline std::array<WGPUBindGroupLayout, 4>
+create_dawn_sprite_layer_layouts(
+    WGPUDevice device,
+    bool custom_shader) {
+    std::array<WGPUBindGroupLayout, 4> layouts{};
+
+    WGPUBindGroupLayoutDescriptor empty =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    layouts[0] = wgpuDeviceCreateBindGroupLayout(device, &empty);
+
+    WGPUBindGroupLayoutEntry vertex_entry =
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    vertex_entry.binding = 0;
+    vertex_entry.visibility = WGPUShaderStage_Vertex;
+    vertex_entry.buffer.type = WGPUBufferBindingType_Uniform;
+    vertex_entry.buffer.minBindingSize = 64;
+    WGPUBindGroupLayoutDescriptor vertex_layout =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    vertex_layout.entryCount = 1;
+    vertex_layout.entries = &vertex_entry;
+    layouts[1] = wgpuDeviceCreateBindGroupLayout(device, &vertex_layout);
+
+    std::array<WGPUBindGroupLayoutEntry, 2> texture_entries{};
+    texture_entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    texture_entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    texture_entries[0].binding = 0;
+    texture_entries[0].visibility = WGPUShaderStage_Fragment;
+    texture_entries[0].texture.sampleType = WGPUTextureSampleType_Float;
+    texture_entries[0].texture.viewDimension =
+        WGPUTextureViewDimension_2D;
+    texture_entries[1].binding = 1;
+    texture_entries[1].visibility = WGPUShaderStage_Fragment;
+    texture_entries[1].sampler.type = WGPUSamplerBindingType_Filtering;
+    WGPUBindGroupLayoutDescriptor texture_layout =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    texture_layout.entryCount =
+        static_cast<std::uint32_t>(texture_entries.size());
+    texture_layout.entries = texture_entries.data();
+    layouts[2] = wgpuDeviceCreateBindGroupLayout(device, &texture_layout);
+
+    // The composed custom program declares only the blocks its body reads,
+    // at the bindings generation published, so the group follows those
+    // rather than a fixed pair.
+    std::array<WGPUBindGroupLayoutEntry, 2> fragment_entries{};
+    std::uint32_t fragment_entry_count = 0;
+    const auto declare_fragment_block =
+        [&](int slot, std::uint64_t size) {
+            if (slot < 0) return;
+            WGPUBindGroupLayoutEntry& entry =
+                fragment_entries[fragment_entry_count];
+            entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            entry.binding = static_cast<std::uint32_t>(slot);
+            entry.visibility = WGPUShaderStage_Fragment;
+            entry.buffer.type = WGPUBufferBindingType_Uniform;
+            entry.buffer.minBindingSize = size;
+            fragment_entry_count += 1u;
+        };
+    if (custom_shader) {
+        declare_fragment_block(
+            upstream::sprite_custom_layer_block_slot, 64);
+        declare_fragment_block(
+            upstream::sprite_custom_fx_block_slot,
+            upstream::sprite_fx_ubo_bytes);
+    } else {
+        declare_fragment_block(0, 64);
+    }
+    WGPUBindGroupLayoutDescriptor fragment_layout =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    fragment_layout.entryCount = fragment_entry_count;
+    fragment_layout.entries = fragment_entries.data();
+    layouts[3] = wgpuDeviceCreateBindGroupLayout(device, &fragment_layout);
+
+    return layouts;
 }
 
 /**
@@ -104,12 +200,17 @@ inline WGPURenderPipeline create_dawn_sprite_layer_pipeline(
     const std::array<WGPUBindGroupLayout, 4>& group_layouts,
     const SpriteBlendDescriptor& blend,
     bool scroll,
+    bool custom_shader,
     WGPUTextureFormat target_format) {
     WGPUShaderModule vertex_module = load_wgsl_module(
         device,
         scroll ? "sprite_uvscroll.vert" : "sprite.vert");
+    // The custom program replaces the fragment stage alone -- the pin
+    // composes it from the same prologue -- so it pairs with whichever
+    // vertex stage the layout chose.
     WGPUShaderModule fragment_module = load_wgsl_module(
-        device, "sprite.frag");
+        device,
+        custom_shader ? "sprite_custom.frag" : "sprite.frag");
 
     // The generated instance layout (sprite_layer.hpp, from
     // sprite-pipeline.ts): the pure-2D attributes at their pinned byte
@@ -243,60 +344,6 @@ inline DawnSpritePass create_dawn_sprite_pass(
             sizeof(quad_indices));
     }
 
-    {
-        // Group 0 is unused by the specialized WGSL and is declared empty
-        // so the pipeline layout's group indexes line up with it.
-        WGPUBindGroupLayoutDescriptor empty =
-            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        pass.group_layouts[0] =
-            wgpuDeviceCreateBindGroupLayout(device, &empty);
-
-        WGPUBindGroupLayoutEntry vertex_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        vertex_entry.binding = 0;
-        vertex_entry.visibility = WGPUShaderStage_Vertex;
-        vertex_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        vertex_entry.buffer.minBindingSize = 64;
-        WGPUBindGroupLayoutDescriptor vertex_layout =
-            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        vertex_layout.entryCount = 1;
-        vertex_layout.entries = &vertex_entry;
-        pass.group_layouts[1] =
-            wgpuDeviceCreateBindGroupLayout(device, &vertex_layout);
-
-        std::array<WGPUBindGroupLayoutEntry, 2> texture_entries{};
-        texture_entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        texture_entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        texture_entries[0].binding = 0;
-        texture_entries[0].visibility = WGPUShaderStage_Fragment;
-        texture_entries[0].texture.sampleType = WGPUTextureSampleType_Float;
-        texture_entries[0].texture.viewDimension =
-            WGPUTextureViewDimension_2D;
-        texture_entries[1].binding = 1;
-        texture_entries[1].visibility = WGPUShaderStage_Fragment;
-        texture_entries[1].sampler.type = WGPUSamplerBindingType_Filtering;
-        WGPUBindGroupLayoutDescriptor texture_layout =
-            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        texture_layout.entryCount =
-            static_cast<std::uint32_t>(texture_entries.size());
-        texture_layout.entries = texture_entries.data();
-        pass.group_layouts[2] =
-            wgpuDeviceCreateBindGroupLayout(device, &texture_layout);
-
-        WGPUBindGroupLayoutEntry fragment_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        fragment_entry.binding = 0;
-        fragment_entry.visibility = WGPUShaderStage_Fragment;
-        fragment_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        fragment_entry.buffer.minBindingSize = 64;
-        WGPUBindGroupLayoutDescriptor fragment_layout =
-            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        fragment_layout.entryCount = 1;
-        fragment_layout.entries = &fragment_entry;
-        pass.group_layouts[3] =
-            wgpuDeviceCreateBindGroupLayout(device, &fragment_layout);
-    }
-
     pass.layers.resize(renderer.layers.size());
     for (std::size_t index = 0; index < renderer.layers.size(); ++index) {
         const Sprite2DLayerRecord& layer =
@@ -304,11 +351,14 @@ inline DawnSpritePass create_dawn_sprite_pass(
         const SpriteAtlasRecord& atlas =
             engine.sprite_atlases[layer.atlas.value];
         DawnSpriteLayer& gpu = pass.layers[index];
+        gpu.group_layouts = create_dawn_sprite_layer_layouts(
+            device, layer.custom_shader);
         gpu.pipeline = create_dawn_sprite_layer_pipeline(
             device,
-            pass.group_layouts,
+            gpu.group_layouts,
             layer.blend,
             layer.uv_scroll,
+            layer.custom_shader,
             target_format);
 
         WGPUBufferDescriptor instance_descriptor =
@@ -365,7 +415,7 @@ inline DawnSpritePass create_dawn_sprite_pass(
         vertex_binding.size = 64;
         WGPUBindGroupDescriptor vertex_group =
             WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-        vertex_group.layout = pass.group_layouts[1];
+        vertex_group.layout = gpu.group_layouts[1];
         vertex_group.entryCount = 1;
         vertex_group.entries = &vertex_binding;
         gpu.vertex_group =
@@ -380,22 +430,47 @@ inline DawnSpritePass create_dawn_sprite_pass(
         texture_bindings[1].sampler = gpu.sampler;
         WGPUBindGroupDescriptor texture_group =
             WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-        texture_group.layout = pass.group_layouts[2];
+        texture_group.layout = gpu.group_layouts[2];
         texture_group.entryCount =
             static_cast<std::uint32_t>(texture_bindings.size());
         texture_group.entries = texture_bindings.data();
         gpu.texture_group =
             wgpuDeviceCreateBindGroup(device, &texture_group);
 
-        WGPUBindGroupEntry fragment_binding = WGPU_BIND_GROUP_ENTRY_INIT;
-        fragment_binding.binding = 0;
-        fragment_binding.buffer = gpu.fragment_uniforms;
-        fragment_binding.size = 64;
+        std::array<WGPUBindGroupEntry, 2> fragment_bindings{};
+        std::uint32_t fragment_binding_count = 0;
+        const auto bind_fragment_block =
+            [&](int slot, WGPUBuffer buffer, std::uint64_t size) {
+                if (slot < 0) return;
+                WGPUBindGroupEntry& entry =
+                    fragment_bindings[fragment_binding_count];
+                entry = WGPU_BIND_GROUP_ENTRY_INIT;
+                entry.binding = static_cast<std::uint32_t>(slot);
+                entry.buffer = buffer;
+                entry.size = size;
+                fragment_binding_count += 1u;
+            };
+        if (layer.custom_shader) {
+            if constexpr (upstream::sprite_custom_fx_block_slot >= 0) {
+                gpu.fx_uniforms = dawn_sprite_uniform_buffer(
+                    device, upstream::sprite_fx_ubo_bytes);
+            }
+            bind_fragment_block(
+                upstream::sprite_custom_layer_block_slot,
+                gpu.fragment_uniforms,
+                64);
+            bind_fragment_block(
+                upstream::sprite_custom_fx_block_slot,
+                gpu.fx_uniforms,
+                upstream::sprite_fx_ubo_bytes);
+        } else {
+            bind_fragment_block(0, gpu.fragment_uniforms, 64);
+        }
         WGPUBindGroupDescriptor fragment_group =
             WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-        fragment_group.layout = pass.group_layouts[3];
-        fragment_group.entryCount = 1;
-        fragment_group.entries = &fragment_binding;
+        fragment_group.layout = gpu.group_layouts[3];
+        fragment_group.entryCount = fragment_binding_count;
+        fragment_group.entries = fragment_bindings.data();
         gpu.fragment_group =
             wgpuDeviceCreateBindGroup(device, &fragment_group);
     }
@@ -411,7 +486,8 @@ inline void upload_dawn_sprite_pass(
     Engine& engine,
     DawnSpritePass& pass,
     std::uint32_t width,
-    std::uint32_t height) {
+    std::uint32_t height,
+    float delta_ms) {
     const SpriteRendererRecord& renderer =
         engine.sprite_renderers[pass.renderer.value];
     for (std::size_t index = 0; index < renderer.layers.size(); ++index) {
@@ -441,6 +517,19 @@ inline void upload_dawn_sprite_pass(
             queue, gpu.vertex_uniforms, 0, ubo.data(), sizeof(ubo));
         wgpuQueueWriteBuffer(
             queue, gpu.fragment_uniforms, 0, ubo.data(), sizeof(ubo));
+        // The pin advances the clock and rewrites the fx block here, in
+        // `_update`, whether or not the instance data moved.
+        if (layer.custom_shader) {
+            gpu.elapsed_ms += delta_ms;
+            if constexpr (upstream::sprite_custom_fx_block_slot >= 0) {
+                std::array<float, upstream::sprite_fx_ubo_bytes / 4u>
+                    fx{};
+                upstream::build_sprite_fx_ubo(
+                    gpu.elapsed_ms / 1000.0f, layer.shader_params, fx);
+                wgpuQueueWriteBuffer(
+                    queue, gpu.fx_uniforms, 0, fx.data(), sizeof(fx));
+            }
+        }
     }
 }
 
@@ -502,12 +591,12 @@ inline void release_dawn_sprite_pass(DawnSpritePass& pass) {
         if (layer.fragment_uniforms) {
             wgpuBufferRelease(layer.fragment_uniforms);
         }
+        if (layer.fx_uniforms) wgpuBufferRelease(layer.fx_uniforms);
+        for (WGPUBindGroupLayout layout : layer.group_layouts) {
+            if (layout) wgpuBindGroupLayoutRelease(layout);
+        }
     }
     pass.layers.clear();
-    for (WGPUBindGroupLayout layout : pass.group_layouts) {
-        if (layout) wgpuBindGroupLayoutRelease(layout);
-    }
-    pass.group_layouts = {};
     if (pass.index_buffer) {
         wgpuBufferRelease(pass.index_buffer);
         pass.index_buffer = nullptr;

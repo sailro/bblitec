@@ -1,10 +1,14 @@
 import ts from "typescript";
-import { PinnedShaderText } from "./pinned-shader-text.js";
+import {
+    PinnedShaderText,
+    ShaderTextBinding,
+} from "./pinned-shader-text.js";
 import {
     blendFactoriesCpp,
     readPinnedBlendTable,
 } from "./pinned-blend-table.js";
 import { LoweredSource, LoweringContext } from "./context.js";
+import type { FragmentUniformSlots } from "../shader-builtins-sprite-fx.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const layerModule = "src/sprite/sprite-2d.ts";
@@ -12,6 +16,10 @@ const blendModule = "src/sprite/sprite-blend.ts";
 const pipelineModule = "src/sprite/sprite-pipeline.ts";
 const rendererModule = "src/sprite/sprite-renderer.ts";
 const uvScrollModule = "src/sprite/sprite-2d-uvscroll.ts";
+const customShaderModule = "src/sprite/sprite-custom-shader.ts";
+// Shared by both families: the fx block, its byte count, and the extra
+// binding lines the composers splice in.
+const customShaderCoreModule = "src/sprite/custom-shader-core.ts";
 
 /** The pinned WGSL, reconstructed for the pure-2D permutation. */
 export interface SpriteShaderSource {
@@ -25,6 +33,12 @@ export interface SpriteShaderSource {
     vertexBody: string;
     /** The `fs` body between its braces. */
     fragmentBody: string;
+    /**
+     * `SpriteFx` struct body, present only for a custom-shader layer. The
+     * pin declares the block in the same builder that splices the caller's
+     * fragment in, because a body that never names `fx` still has it bound.
+     */
+    fxStructFields?: string | undefined;
 }
 
 /**
@@ -560,6 +574,74 @@ export class SpriteLowerer {
     }
 
     /** `spriteBlendAlpha` and the shared straight-alpha blend state. */
+    /**
+     * `writeSpriteFxUbo` fills eight floats in a fixed order, and
+     * `SPRITE_FX_UBO_BYTES` is what the block is bound as.
+     *
+     * The module is shared between the two families, so the check and the
+     * function it guards are stated once here and the billboard system
+     * reads them out of the same header, the way it already does for
+     * `resolveSpriteFrame`.
+     */
+    private assertFxUbo(): number {
+        const { declaration, file } = this.functionOf(
+            customShaderCoreModule,
+            "writeSpriteFxUbo",
+        );
+        const expected: readonly string[] = [
+            "timeSeconds",
+            "0",
+            "0",
+            "0",
+            "params[0] ?? 0",
+            "params[1] ?? 0",
+            "params[2] ?? 0",
+            "params[3] ?? 0",
+        ];
+        const writes = this.context.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                ts.isElementAccessExpression(node.left) &&
+                ts.isIdentifier(node.left.expression) &&
+                node.left.expression.text === "scratch",
+        );
+        expected.forEach((source, slot) => {
+            const write = writes.find(
+                (node) =>
+                    this.elementIndexText(node.left) ===
+                    String(slot),
+            );
+            if (!write) {
+                this.context.contractError(
+                    declaration,
+                    `Pinned writeSpriteFxUbo no longer writes float ${slot}.`,
+                );
+            }
+            this.context.assertExpressionShape(
+                write.right,
+                source,
+                `writeSpriteFxUbo float ${slot}`,
+            );
+        });
+        const bytes = this.context.numericValue(
+            this.context.variableInitializer(
+                this.context.sourceFile(customShaderCoreModule),
+                "SPRITE_FX_UBO_BYTES",
+            ),
+            file,
+        );
+        if (bytes !== expected.length * 4) {
+            this.context.contractError(
+                declaration,
+                `Pinned SPRITE_FX_UBO_BYTES is ${bytes}, which is not the ${expected.length} floats written.`,
+            );
+        }
+        return bytes;
+    }
+
     /** `buildSpriteLayerUbo` fills sixteen floats in a fixed order. */
     private assertLayerUbo(): void {
         const { declaration, file } = this.functionOf(
@@ -699,22 +781,43 @@ export class SpriteLowerer {
      */
     public shaderSource(
         uvScroll = false,
+        customFragment?: string,
     ): SpriteShaderSource {
-        const permutation = new Map<string, string | boolean>([
+        const permutation = new Map<string, ShaderTextBinding>([
             ["hasDepth", false],
             ["spriteGroupIndex", "0"],
             ["uvScroll", uvScroll],
         ]);
-        const prologue = this.shaderText.evaluate(
-            pipelineModule,
-            "makeSpritePrologueWgsl",
-            permutation,
-        );
-        const full = this.shaderText.evaluate(
-            pipelineModule,
-            "makeSpriteWgsl",
-            permutation,
-        );
+        // A custom-shader layer keeps the engine's vertex stage and
+        // replaces only the fragment body, which the pin expresses by
+        // composing the same prologue with the caller's text -- so one
+        // builder yields both halves here.
+        const composed =
+            customFragment === undefined
+                ? undefined
+                : this.shaderText.evaluate(
+                      customShaderModule,
+                      "makeCustomSpriteWgsl",
+                      new Map<string, ShaderTextBinding>([
+                          ...permutation,
+                          ["extraTextures", []],
+                          ["fragment", customFragment],
+                      ]),
+                  );
+        const prologue =
+            composed ??
+            this.shaderText.evaluate(
+                pipelineModule,
+                "makeSpritePrologueWgsl",
+                permutation,
+            );
+        const full =
+            composed ??
+            this.shaderText.evaluate(
+                pipelineModule,
+                "makeSpriteWgsl",
+                permutation,
+            );
         return {
             layerStructFields: this.shaderText.braced(
                 prologue,
@@ -741,6 +844,13 @@ export class SpriteLowerer {
                 "fn fs(in: O) -> @location(0) vec4f {",
                 "sprite fragment stage",
             ),
+            fxStructFields: composed
+                ? this.shaderText.braced(
+                      composed,
+                      "struct SpriteFx {",
+                      "sprite fx uniform struct",
+                  )
+                : undefined,
         };
     }
 
@@ -775,7 +885,9 @@ export class SpriteLowerer {
             .trim();
     }
 
-    public lowerCore(): LoweredSource {
+    public lowerCore(
+        customSlots?: FragmentUniformSlots,
+    ): LoweredSource {
         const layout = this.layout();
         const blends = readPinnedBlendTable(
             this.context,
@@ -808,6 +920,7 @@ export class SpriteLowerer {
         this.assertInstanceBase();
         this.assertInstanceSlots();
         this.assertLayerUbo();
+        const fxUboBytes = this.assertFxUbo();
         this.assertQuad();
 
         const provenance = this.context.provenance(
@@ -857,6 +970,43 @@ inline std::uint32_t resolve_sprite_frame(
             "resolveSpriteFrame: index out of range.");
     }
     return static_cast<std::uint32_t>(frame);
+}
+
+/**
+ * custom-shader-core.ts#writeSpriteFxUbo: the block a custom-shader layer
+ * or system binds beside its own. It is here for the reason the frame
+ * resolver is: the pinned module is shared by both families, so the write
+ * is stated once and both read it.
+ *
+ * The clock is seconds since the layer's first frame, which the caller
+ * accumulates; a body that never names it still has the block bound.
+ */
+inline constexpr std::size_t sprite_fx_ubo_bytes = ${fxUboBytes}u;
+
+/**
+ * Which fragment uniform slot each block of the composed custom program
+ * takes, and -1 for a block its body never reads.
+ *
+ * The composed program declares only what the caller's body reads, because
+ * a block nothing reads does not reach the compiled shader and would shift
+ * the slots behind it. Both backends bind from these, so the two ends
+ * cannot disagree about which block a slot holds.
+ */
+inline constexpr int sprite_custom_layer_block_slot = ${customSlots?.layerBlock ?? -1};
+inline constexpr int sprite_custom_fx_block_slot = ${customSlots?.fxBlock ?? -1};
+
+inline void build_sprite_fx_ubo(
+    float time_seconds,
+    const Vec4& params,
+    std::array<float, sprite_fx_ubo_bytes / 4u>& ubo) {
+    ubo[0] = time_seconds;
+    ubo[1] = 0.0f;
+    ubo[2] = 0.0f;
+    ubo[3] = 0.0f;
+    ubo[4] = params.x;
+    ubo[5] = params.y;
+    ubo[6] = params.z;
+    ubo[7] = params.w;
 }
 
 inline constexpr std::array<SpriteInstanceAttribute, ${attributeRows.length}>
@@ -1000,6 +1150,17 @@ void ensure_sprite_uv_scroll(Sprite2DLayerRecord& layer) {
     layer.version += 1u;
 }
 
+// setSprite2DShaderParams: the fx UBO the pipeline binds reads these four
+// floats each frame. A layer without a custom shader has no fx block to
+// read them, which is the pin's own "no visual effect unless" -- so the
+// write stands on its own and the renderer decides whether it is bound.
+void set_sprite_2d_shader_params(
+    Engine& engine,
+    Sprite2DLayerHandle layer_handle,
+    Vec4 params) {
+    engine.sprite_layers[layer_handle.value].shader_params = params;
+}
+
 // setSprite2DUvOffset: the two floats sit right after the base layout, and
 // the first call is what enables the layout at all.
 void set_sprite_2d_uv_offset(
@@ -1123,6 +1284,9 @@ Sprite2DLayerHandle create_sprite_2d_layer(
     Sprite2DLayerRecord layer;
     layer.atlas = atlas;
     layer.blend = options.blend_mode;
+    // initLayer, through the fx hook: a layer built with a descriptor
+    // draws that program, and its params start zeroed.
+    layer.custom_shader = options.custom_shader;
     layer.opacity = options.opacity;
     layer.visible = options.visible;
     layer.order = options.order;

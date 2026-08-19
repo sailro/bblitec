@@ -1,6 +1,10 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
-import { PinnedShaderText } from "./pinned-shader-text.js";
+import type { FragmentUniformSlots } from "../shader-builtins-sprite-fx.js";
+import {
+    PinnedShaderText,
+    ShaderTextBinding,
+} from "./pinned-shader-text.js";
 import {
     blendFactoriesCpp,
     readPinnedBlendTable,
@@ -11,6 +15,7 @@ const sceneModule = "src/sprite/billboard-scene.ts";
 const blendModule = "src/sprite/billboard-blend.ts";
 const pipelineModule = "src/sprite/billboard-pipeline.ts";
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
+const customShaderModule = "src/sprite/billboard-custom-shader.ts";
 
 /**
  * Which basis the vertex stage builds. The pin's composer emits one of two
@@ -45,6 +50,12 @@ export interface BillboardShaderSource {
     varyingStructFields: string;
     vertexBody: string;
     fragmentBody: string;
+    /**
+     * `SpriteFx` struct body, present only for a custom-shader system. The
+     * block is bound whether or not the caller's body names `fx`, which is
+     * why it rides the source rather than being sniffed out of the text.
+     */
+    fxStructFields?: string | undefined;
 }
 
 /** One per-instance vertex attribute, at the pin's own byte offset. */
@@ -532,17 +543,35 @@ export class BillboardLowerer {
     public shaderSource(
         orientation: BillboardOrientation = "facing",
         depthMode: BillboardDepthMode = "transparent",
+        customFragment?: string,
     ): BillboardShaderSource {
-        const permutation = new Map<string, string | boolean>([
+        const permutation = new Map<string, ShaderTextBinding>([
             ["orientation", orientation],
             ["depthMode", depthMode],
             ["alphaToCoverage", false],
         ]);
-        const full = this.shaderText.evaluate(
-            pipelineModule,
-            "makeBillboardWgsl",
-            permutation,
-        );
+        // The custom composer is the pin's own second builder, not this one
+        // with a body swapped in: it keeps the world-space vertex stage and
+        // the varying contract, and adds the fx block the caller may read.
+        const composed =
+            customFragment === undefined
+                ? undefined
+                : this.shaderText.evaluate(
+                      customShaderModule,
+                      "makeCustomBillboardWgsl",
+                      new Map<string, ShaderTextBinding>([
+                          ...permutation,
+                          ["extraTextures", []],
+                          ["fragment", customFragment],
+                      ]),
+                  );
+        const full =
+            composed ??
+            this.shaderText.evaluate(
+                pipelineModule,
+                "makeBillboardWgsl",
+                permutation,
+            );
         const basis = this.shaderText.evaluate(
             pipelineModule,
             "makeBillboardBasisWgsl",
@@ -578,6 +607,13 @@ export class BillboardLowerer {
                 "fn fs(in: O) -> @location(0) vec4f {",
                 "billboard fragment stage",
             ),
+            fxStructFields: composed
+                ? this.shaderText.braced(
+                      composed,
+                      "struct SpriteFx {",
+                      "billboard fx uniform struct",
+                  )
+                : undefined,
         };
     }
 
@@ -597,7 +633,9 @@ export class BillboardLowerer {
     // Emission
     // -----------------------------------------------------------------
 
-    public lowerCore(): LoweredSource {
+    public lowerCore(
+        customSlots?: FragmentUniformSlots,
+    ): LoweredSource {
         const layout = this.layout();
         const rows = this.attributeRows(layout.instanceFloats);
         this.assertSystemDefaults();
@@ -680,6 +718,18 @@ namespace bbl::upstream {
 /** The quad, expanded in the vertex stage; six indices, one draw. */
 inline constexpr std::array<std::uint16_t, 6> billboard_index_data{
     {0u, 1u, 2u, 0u, 2u, 3u}};
+
+/**
+ * Which fragment uniform slot each block of the composed custom program
+ * takes, and -1 for a block its body never reads.
+ *
+ * The composed program declares only what the caller's body reads, because
+ * a block nothing reads does not reach the compiled shader and would shift
+ * the slots behind it. Both backends bind from these, so the two ends
+ * cannot disagree about which block a slot holds.
+ */
+inline constexpr int billboard_custom_system_block_slot = ${customSlots?.layerBlock ?? -1};
+inline constexpr int billboard_custom_fx_block_slot = ${customSlots?.fxBlock ?? -1};
 
 /**
  * buildBillboardSystemUbo: a premultiplied source scales RGB and A together
@@ -830,6 +880,9 @@ BillboardSystemHandle create_billboard_system(
     BillboardSystemRecord system;
     system.atlas = atlas;
     system.blend = options.blend;
+    // initSystem, through the fx hook: a system built with a descriptor
+    // draws that program, and its params start zeroed.
+    system.custom_shader = options.custom_shader;
     system.opacity = options.opacity;
     system.visible = options.visible;
     system.orientation = orientation;
@@ -977,6 +1030,19 @@ double add_billboard_sprite_index(
 
     system.count = index + 1u;
     return static_cast<double>(index);
+}
+
+// setBillboardShaderParams: the fx UBO the pipeline binds reads these four
+// floats each frame. A system without a custom shader has no fx block to
+// read them, which is the pin's own "no visual effect unless".
+void set_billboard_shader_params(
+    Engine& engine,
+    BillboardSystemHandle system,
+    Vec4 params) {
+    if (system.value >= engine.billboard_systems.size()) {
+        throw std::runtime_error("Invalid billboard system handle.");
+    }
+    engine.billboard_systems[system.value].shader_params = params;
 }
 
 // render/alpha-to-coverage.ts setAlphaToCoverage: membership of the enabled

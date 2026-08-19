@@ -4523,7 +4523,8 @@ bool run_gpu_engine(Engine& engine) {
                     state.device,
                     engine,
                     billboard,
-                    billboard_view);
+                    billboard_view,
+                    delta_ms);
             }
 #endif
             // The render capture describes CPU state alone, so it is

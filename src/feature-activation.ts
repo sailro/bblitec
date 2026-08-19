@@ -377,9 +377,19 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/sprite/sprite-2d-uvscroll.ts",
         consumers: CMAKE,
     },
+    "sprite:custom-shader": {
+        provenance:
+            "src/sprite/sprite-custom-shader.ts + src/sprite/custom-shader-core.ts",
+        consumers: CMAKE,
+    },
     "sprite:billboard": {
         provenance:
             "src/sprite/billboard-sprite.ts + src/sprite/billboard-scene.ts",
+        consumers: CMAKE,
+    },
+    "sprite:billboard-custom-shader": {
+        provenance:
+            "src/sprite/billboard-custom-shader.ts + src/sprite/custom-shader-core.ts",
         consumers: CMAKE,
     },
     "sprite:billboard-axis-locked": {

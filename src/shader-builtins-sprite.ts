@@ -1,4 +1,8 @@
 import type { SpriteShaderSource } from "./lowering/sprite-lowerer.js";
+import {
+    fragmentUniformSlots,
+    fxBlockWgsl,
+} from "./shader-builtins-sprite-fx.js";
 import { indent } from "./shader-builtins-utility.js";
 
 /**
@@ -48,13 +52,26 @@ export function spriteFragmentWgsl(
     provenance: string,
     shader: SpriteShaderSource,
 ): string {
-    return `// ${provenance}
-struct Lr {
+    // The fragment uniform slots this body actually takes: a custom body
+    // owns its own alpha, so it often reads neither the layer block nor the
+    // fx block, and a slot nothing reads would shift the ones behind it.
+    const slots = fragmentUniformSlots(shader);
+    const layerBlock =
+        slots.layerBlock < 0
+            ? ""
+            : `struct Lr {
 ${indent(shader.layerStructFields, "    ")}
 };
-@group(3) @binding(0) var<uniform> L: Lr;
-@group(2) @binding(0) var atlasTex: texture_2d<f32>;
+@group(3) @binding(${slots.layerBlock}) var<uniform> L: Lr;
+`;
+    const fxBlock =
+        slots.fxBlock < 0 || !shader.fxStructFields
+            ? ""
+            : fxBlockWgsl(shader.fxStructFields, 3, slots.fxBlock);
+    return `// ${provenance}
+${layerBlock}@group(2) @binding(0) var atlasTex: texture_2d<f32>;
 @group(2) @binding(1) var atlasSamp: sampler;
+${fxBlock}
 
 struct O {
 ${indent(shader.varyingStructFields, "    ")}

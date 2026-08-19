@@ -6345,7 +6345,8 @@ bool run_dawn_engine(Engine& engine) {
                     engine,
                     billboard,
                     matrix,
-                    billboard_view);
+                    billboard_view,
+                    delta_ms);
             }
         }
 #endif

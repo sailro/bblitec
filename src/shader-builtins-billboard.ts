@@ -1,4 +1,8 @@
 import type { BillboardShaderSource } from "./lowering/billboard-lowerer.js";
+import {
+    fragmentUniformSlots,
+    fxBlockWgsl,
+} from "./shader-builtins-sprite-fx.js";
 import { indent } from "./shader-builtins-utility.js";
 
 /**
@@ -79,9 +83,22 @@ export function billboardFragmentWgsl(
     provenance: string,
     shader: BillboardShaderSource,
 ): string {
+    // The fragment uniform slots this body actually takes; a custom body
+    // owns its own alpha and often reads neither block, and a slot nothing
+    // reads would shift the ones behind it.
+    const slots = fragmentUniformSlots(shader);
+    const systemBlock =
+        slots.layerBlock < 0
+            ? ""
+            : systemBlockWgsl(shader, 3, slots.layerBlock);
+    const fxBlock =
+        slots.fxBlock < 0 || !shader.fxStructFields
+            ? ""
+            : fxBlockWgsl(shader.fxStructFields, 3, slots.fxBlock);
     return `// ${provenance}
-${systemBlockWgsl(shader, 3, 0)}@group(2) @binding(0) var atlasTex: texture_2d<f32>;
+${systemBlock}@group(2) @binding(0) var atlasTex: texture_2d<f32>;
 @group(2) @binding(1) var atlasSamp: sampler;
+${fxBlock}
 
 struct O {
 ${indent(shader.varyingStructFields, "    ")}

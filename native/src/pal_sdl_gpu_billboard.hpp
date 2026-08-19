@@ -17,6 +17,9 @@
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/billboard_system.hpp>
+// The fx block a custom-shader system binds is the shared custom-shader
+// module's, which the sprite family's header carries for both.
+#include <bblite/upstream/sprite_layer.hpp>
 
 #include <algorithm>
 #include <array>
@@ -44,6 +47,9 @@ struct BillboardPass {
     std::vector<float> sorted;
     std::array<float, 16> uploaded_view{};
     bool uploaded = false;
+    // The custom shader's own clock: seconds since this system's first
+    // frame, which the pin accumulates inside its fx attachment.
+    float elapsed_ms = 0.0f;
 };
 
 /** The vertex block the reconstructed billboard stage declares. */
@@ -70,6 +76,19 @@ inline SDL_GPUVertexElementFormat billboard_attribute_format(
     }
 }
 
+/**
+ * How many fragment uniform blocks a custom-shader system's program takes.
+ *
+ * The composed program declares only the blocks the caller's body reads --
+ * a body that owns its own alpha reads neither -- and SDL_GPU addresses a
+ * stage's uniform buffers by dense slot, so the count and the slots come
+ * from what generation published rather than from a fixed pair.
+ */
+inline constexpr std::uint32_t billboard_custom_uniform_count =
+    static_cast<std::uint32_t>(
+        (upstream::billboard_custom_system_block_slot >= 0 ? 1 : 0) +
+        (upstream::billboard_custom_fx_block_slot >= 0 ? 1 : 0));
+
 inline BillboardPass create_billboard_pass(
     SDL_GPUDevice* device,
     Engine& engine,
@@ -93,9 +112,15 @@ inline BillboardPass create_billboard_pass(
 
     const bool axis_locked =
         system.orientation == BillboardOrientation::axis_locked;
+    // Unlike the 2D layer, a custom billboard program brings its own vertex
+    // stage: the pin's composer exposes the view distance and the world
+    // position to a custom body, which the stock stage does not write.
     SDL_GPUShader* vertex_shader = load_shader(
         device,
-        axis_locked ? "billboard_axis_locked.vert" : "billboard.vert",
+        system.custom_shader
+            ? "billboard_custom.vert"
+            : axis_locked ? "billboard_axis_locked.vert"
+                          : "billboard.vert",
         SDL_GPU_SHADERSTAGE_VERTEX,
         0,
         // The axis-locked basis reads the system block for its lock axis.
@@ -108,12 +133,13 @@ inline BillboardPass create_billboard_pass(
         system.depth_mode == BillboardDepthMode::cutout;
     SDL_GPUShader* fragment_shader = load_shader(
         device,
-        cutout && !system.alpha_to_coverage
+        system.custom_shader ? "billboard_custom.frag"
+        : cutout && !system.alpha_to_coverage
             ? "billboard_cutout.frag"
             : "billboard.frag",
         SDL_GPU_SHADERSTAGE_FRAGMENT,
         1,
-        1,
+        system.custom_shader ? billboard_custom_uniform_count : 1u,
         "mainFragment");
 
     std::array<
@@ -227,9 +253,15 @@ inline void upload_billboard_pass(
     SDL_GPUDevice* device,
     Engine& engine,
     BillboardPass& pass,
-    const std::array<float, 16>& view) {
+    const std::array<float, 16>& view,
+    float delta_ms) {
     const BillboardSystemRecord& system =
         engine.billboard_systems[pass.system.value];
+    // The pin advances the clock in `_update`, before and regardless of
+    // whether the sorted instance data moved.
+    if (system.custom_shader) {
+        pass.elapsed_ms += delta_ms;
+    }
     if (system.count == 0) {
         return;
     }
@@ -284,11 +316,37 @@ inline void record_billboard_pass(
     std::array<float, upstream::billboard_system_ubo_bytes / 4>
         system_ubo{};
     upstream::build_billboard_system_ubo(system, system_ubo);
-    SDL_PushGPUFragmentUniformData(
-        command,
-        0,
-        system_ubo.data(),
-        static_cast<Uint32>(system_ubo.size() * sizeof(float)));
+    // The stock fragment reads the system block; a custom one reads
+    // whichever blocks its body named, at the slots generation published.
+    if (!system.custom_shader) {
+        SDL_PushGPUFragmentUniformData(
+            command,
+            0,
+            system_ubo.data(),
+            static_cast<Uint32>(system_ubo.size() * sizeof(float)));
+    } else {
+        if constexpr (
+            upstream::billboard_custom_system_block_slot >= 0) {
+            SDL_PushGPUFragmentUniformData(
+                command,
+                static_cast<Uint32>(
+                    upstream::billboard_custom_system_block_slot),
+                system_ubo.data(),
+                static_cast<Uint32>(
+                    system_ubo.size() * sizeof(float)));
+        }
+        if constexpr (upstream::billboard_custom_fx_block_slot >= 0) {
+            std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
+            upstream::build_sprite_fx_ubo(
+                pass.elapsed_ms / 1000.0f, system.shader_params, fx);
+            SDL_PushGPUFragmentUniformData(
+                command,
+                static_cast<Uint32>(
+                    upstream::billboard_custom_fx_block_slot),
+                fx.data(),
+                static_cast<Uint32>(fx.size() * sizeof(float)));
+        }
+    }
     if (system.orientation == BillboardOrientation::axis_locked) {
         // The same block, in the vertex stage that reads the lock axis.
         SDL_PushGPUVertexUniformData(

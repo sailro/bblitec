@@ -37,6 +37,19 @@
 #include "pal_sdl_gpu_shared.hpp"
 
 namespace bbl::pal {
+/**
+ * How many fragment uniform blocks a custom-shader layer's program takes.
+ *
+ * The composed program declares only the blocks the caller's body reads --
+ * a body that owns its own alpha reads neither -- and SDL_GPU addresses a
+ * stage's uniform buffers by dense slot, so the count and the slots come
+ * from what generation published rather than from a fixed pair.
+ */
+inline constexpr std::uint32_t sprite_custom_uniform_count =
+    static_cast<std::uint32_t>(
+        (upstream::sprite_custom_layer_block_slot >= 0 ? 1 : 0) +
+        (upstream::sprite_custom_fx_block_slot >= 0 ? 1 : 0));
+
 /** Per-layer GPU state, matching the pinned `LayerGpu`. */
 struct SpriteLayerGpu {
     // One pipeline per layer: the uvScroll opt-in widens a layer's stride
@@ -48,6 +61,9 @@ struct SpriteLayerGpu {
     SDL_GPUSampler* sampler = nullptr;
     std::uint64_t uploaded_version = 0;
     bool uploaded = false;
+    // The custom shader's own clock: seconds since this layer's first
+    // frame, which the pin accumulates inside the layer's fx attachment.
+    float elapsed_ms = 0.0f;
 };
 
 /** One registered `SpriteRenderer`, as GPU resources. */
@@ -88,6 +104,7 @@ inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
     SDL_GPUDevice* device,
     const SpriteBlendDescriptor& blend,
     bool scroll,
+    bool custom_shader,
     SDL_GPUTextureFormat target_format) {
     SDL_GPUShader* vertex_shader = load_shader(
         device,
@@ -96,12 +113,16 @@ inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
         0,
         1,
         "mainVertex");
+    // The custom program replaces the fragment stage alone -- the pin
+    // composes it from the same prologue -- so it pairs with whichever
+    // vertex stage the layout chose, and adds the fx block as a second
+    // fragment uniform.
     SDL_GPUShader* fragment_shader = load_shader(
         device,
-        "sprite.frag",
+        custom_shader ? "sprite_custom.frag" : "sprite.frag",
         SDL_GPU_SHADERSTAGE_FRAGMENT,
         1,
-        1,
+        custom_shader ? sprite_custom_uniform_count : 1u,
         "mainFragment");
 
     // The generated instance layout (sprite_layer.hpp, from
@@ -232,6 +253,7 @@ inline SpritePass create_sprite_pass(
             device,
             layer.blend,
             layer.uv_scroll,
+            layer.custom_shader,
             target_format);
         SDL_GPUBufferCreateInfo buffer_info{};
         buffer_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
@@ -263,13 +285,19 @@ inline SpritePass create_sprite_pass(
 inline void upload_sprite_pass(
     SDL_GPUDevice* device,
     Engine& engine,
-    SpritePass& pass) {
+    SpritePass& pass,
+    float delta_ms) {
     const SpriteRendererRecord& renderer =
         engine.sprite_renderers[pass.renderer.value];
     for (std::size_t index = 0; index < renderer.layers.size(); ++index) {
         Sprite2DLayerRecord& layer =
             engine.sprite_layers[renderer.layers[index].value];
         SpriteLayerGpu& gpu = pass.layers[index];
+        // The pin advances the clock in `_update`, before and regardless of
+        // whether the instance data moved.
+        if (layer.custom_shader) {
+            gpu.elapsed_ms += delta_ms;
+        }
         if (gpu.uploaded && gpu.uploaded_version == layer.version) {
             continue;
         }
@@ -325,7 +353,37 @@ inline void record_sprite_pass(
             static_cast<float>(height),
             ubo);
         SDL_PushGPUVertexUniformData(command, 0, ubo.data(), sizeof(ubo));
-        SDL_PushGPUFragmentUniformData(command, 0, ubo.data(), sizeof(ubo));
+        // The stock fragment reads the layer block; a custom one reads
+        // whichever blocks its body named, at the slots generation
+        // published for them.
+        if (!layer.custom_shader) {
+            SDL_PushGPUFragmentUniformData(
+                command, 0, ubo.data(), sizeof(ubo));
+        } else {
+            if constexpr (
+                upstream::sprite_custom_layer_block_slot >= 0) {
+                SDL_PushGPUFragmentUniformData(
+                    command,
+                    static_cast<Uint32>(
+                        upstream::sprite_custom_layer_block_slot),
+                    ubo.data(),
+                    sizeof(ubo));
+            }
+            if constexpr (upstream::sprite_custom_fx_block_slot >= 0) {
+                std::array<
+                    float,
+                    upstream::sprite_fx_ubo_bytes / 4u>
+                    fx{};
+                upstream::build_sprite_fx_ubo(
+                    gpu.elapsed_ms / 1000.0f, layer.shader_params, fx);
+                SDL_PushGPUFragmentUniformData(
+                    command,
+                    static_cast<Uint32>(
+                        upstream::sprite_custom_fx_block_slot),
+                    fx.data(),
+                    sizeof(fx));
+            }
+        }
         const SDL_GPUTextureSamplerBinding atlas_binding{
             gpu.atlas, gpu.sampler};
         SDL_BindGPUFragmentSamplers(render_pass, 0, &atlas_binding, 1);
