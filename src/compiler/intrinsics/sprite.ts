@@ -1,14 +1,15 @@
 import ts from "typescript";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import {
-    billboardBlendSymbol,
-    isBillboardBlendExport,
-} from "../../billboard-blend-symbol.js";
+import { parseBlendExport } from "../../lowering/pinned-blend-table.js";
 
 export interface SpriteIntrinsicContext
     extends IntrinsicCallContext {
     requireDefaultEngine(node: ts.Node): string;
+    compileVec3(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
     registerSpriteAtlasAsset(
         expression: ts.Expression,
     ): string;
@@ -27,14 +28,46 @@ export interface SpriteIntrinsicContext
 export function compileSpriteConstant(
     importedName: string,
 ): Value | undefined {
-    if (!isBillboardBlendExport(importedName)) {
+    const blend = parseBlendExport(importedName);
+    if (!blend) {
         return undefined;
     }
     return {
         kind: "sprite-blend",
-        cpp: `bbl::${billboardBlendSymbol(importedName)}()`,
-        staticString: importedName,
+        cpp: `bbl::${blend.symbol}()`,
+        // The family the descriptor belongs to, so a call site can refuse a
+        // 2D descriptor at a billboard system and the reverse.
+        staticString: blend.family,
     };
+}
+
+/**
+ * The native factory a `blendMode` option names, or the family's default.
+ *
+ * The family is checked because the two sets are not interchangeable: a 2D
+ * descriptor at a billboard system would otherwise compile straight through
+ * to a `sprite_blend_*` factory the billboard pipeline cannot mean.
+ */
+function blendOption(
+    context: SpriteIntrinsicContext,
+    options: Value | undefined,
+    family: "sprite" | "billboard",
+    node: ts.Node,
+): string {
+    const blendMode = property(options, "blendMode");
+    if (!blendMode) {
+        return `bbl::${family}_blend_alpha()`;
+    }
+    if (
+        blendMode.kind !== "sprite-blend" ||
+        blendMode.staticString !== family
+    ) {
+        context.fail(
+            node,
+            `blendMode must be one of the pinned ${family}Blend* descriptors.`,
+        );
+    }
+    return blendMode.cpp;
 }
 
 /**
@@ -258,12 +291,17 @@ export function compileSpriteIntrinsic(
                     );
                 }
             }
-            if (property(options, "blendMode")) {
-                context.fail(
-                    call.arguments[1]!,
-                    "Only the default straight-alpha sprite blend is lowered.",
-                );
-            }
+            // One of the pin's own exported descriptors, resolved by the
+            // name the scene imported. `spriteBlendOpaque` names no colour
+            // blend at all, which the 2D pipeline expresses by disabling
+            // blending -- so unlike the billboard family's cutout it needs no
+            // second depth path and is lowered with the rest.
+            const blendCpp = blendOption(
+                context,
+                options,
+                "sprite",
+                call.arguments[1] ?? call,
+            );
             const pivot = tupleOption(
                 context,
                 options,
@@ -281,7 +319,7 @@ export function compileSpriteIntrinsic(
                     `bbl::create_sprite_2d_layer(${engineCpp}, ` +
                     `${atlas.cpp}, bbl::Sprite2DLayerOptions{` +
                     `${numberOption(options, "capacity", "16.0f")}, ` +
-                    `bbl::sprite_blend_alpha(), ` +
+                    `${blendCpp}, ` +
                     `${numberOption(options, "opacity", "1.0f")}, ` +
                     `${property(options, "visible")?.cpp ?? "true"}, ` +
                     `${numberOption(options, "order", "0.0f")}, ` +
@@ -378,8 +416,18 @@ export function compileSpriteIntrinsic(
             };
         }
 
-        case "createFacingBillboardSystem": {
-            context.expectArgumentCount(call, 1, 2);
+        case "createFacingBillboardSystem":
+        case "createAxisLockedBillboardSystem": {
+            // The axis-locked factory takes the lock axis between the atlas
+            // and the options.
+            const locked =
+                importedName === "createAxisLockedBillboardSystem";
+            const optionsIndex = locked ? 2 : 1;
+            context.expectArgumentCount(
+                call,
+                optionsIndex,
+                optionsIndex + 1,
+            );
             const atlas = context.compileValue(
                 call.arguments[0]!,
             );
@@ -388,10 +436,11 @@ export function compileSpriteIntrinsic(
                 "sprite-atlas",
                 call.arguments[0]!,
             );
+            const optionsArg = call.arguments[optionsIndex];
             const options = optionsRecord(
                 context,
-                call.arguments[1],
-                "createFacingBillboardSystem",
+                optionsArg,
+                importedName,
             );
             // Every arm the lowered permutation does not cover refuses
             // here, so a scene reaching one gets a message naming it
@@ -401,23 +450,12 @@ export function compileSpriteIntrinsic(
             // is `billboard_blend_alpha()`. `cutout` carries no colour blend
             // and drives an alpha-test depth-write path this slice does not
             // render, so it refuses rather than drawing the wrong one.
-            const blendMode = property(options, "blendMode");
-            let blendCpp = "bbl::billboard_blend_alpha()";
-            if (blendMode) {
-                if (blendMode.kind !== "sprite-blend") {
-                    context.fail(
-                        call.arguments[1]!,
-                        "createFacingBillboardSystem blendMode must be one of the pinned billboardBlend* descriptors.",
-                    );
-                }
-                if (blendMode.staticString === "billboardBlendCutout") {
-                    context.fail(
-                        call.arguments[1]!,
-                        "billboardBlendCutout drives the alpha-test depth-write path, which is not lowered.",
-                    );
-                }
-                blendCpp = blendMode.cpp;
-            }
+            const blendCpp = blendOption(
+                context,
+                options,
+                "billboard",
+                optionsArg ?? call,
+            );
             // `order` sorts a system against the scene's other transparent
             // renderables upstream. This path draws billboards after the
             // scene's own stages instead, which is the same image only while
@@ -431,20 +469,34 @@ export function compileSpriteIntrinsic(
             ]) {
                 if (property(options, unreached)) {
                     context.fail(
-                        call.arguments[1]!,
-                        `createFacingBillboardSystem option '${unreached}' is not lowered.`,
+                        optionsArg ?? call,
+                        `${importedName} option '${unreached}' is not lowered.`,
                     );
                 }
             }
+            // The raw axis: the pin normalises it inside the factory and
+            // rejects a degenerate one there, so that stays lowered rather
+            // than recomputed at the call site.
+            const axisCpp = locked
+                ? context.compileVec3(call.arguments[1]!)
+                : "bbl::Vec3{0.0f, 0.0f, 0.0f}";
             const engineCpp =
                 atlas.engineCpp ??
                 context.requireDefaultEngine(call);
             context.reachFeature("sprite:billboard", call);
+            if (locked) {
+                context.reachFeature(
+                    "sprite:billboard-axis-locked",
+                    call,
+                );
+            }
             return {
                 kind: "billboard-system",
                 cpp:
-                    `bbl::create_facing_billboard_system(${engineCpp}, ` +
-                    `${atlas.cpp}, bbl::BillboardSystemOptions{` +
+                    `bbl::create_billboard_system(${engineCpp}, ` +
+                    `${atlas.cpp}, bbl::BillboardOrientation::` +
+                    `${locked ? "axis_locked" : "facing"}, ${axisCpp}, ` +
+                    `bbl::BillboardSystemOptions{` +
                     `${numberOption(options, "capacity", "16.0f")}, ` +
                     `${blendCpp}, ` +
                     `${numberOption(options, "opacity", "1.0f")}, ` +
@@ -541,7 +593,8 @@ export function compileSpriteIntrinsic(
             };
         }
 
-        case "addFacingBillboardSystem": {
+        case "addFacingBillboardSystem":
+        case "addAxisLockedBillboardSystem": {
             context.expectArgumentCount(call, 2, 2);
             const scene = context.compileValue(
                 call.arguments[0]!,
@@ -562,7 +615,7 @@ export function compileSpriteIntrinsic(
             // a render target does.
             context.reachFeature("renderer:pbr", call);
             context.emit(
-                `bbl::add_facing_billboard_system(${scene.cpp}, ${system.cpp});`,
+                `bbl::add_billboard_system(${scene.cpp}, ${system.cpp});`,
             );
             return { kind: "void", cpp: "" };
         }

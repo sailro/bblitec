@@ -91,12 +91,15 @@ inline BillboardPass create_billboard_pass(
         upstream::billboard_index_data.size() *
             sizeof(std::uint16_t));
 
+    const bool axis_locked =
+        system.orientation == BillboardOrientation::axis_locked;
     SDL_GPUShader* vertex_shader = load_shader(
         device,
-        "billboard.vert",
+        axis_locked ? "billboard_axis_locked.vert" : "billboard.vert",
         SDL_GPU_SHADERSTAGE_VERTEX,
         0,
-        1,
+        // The axis-locked basis reads the system block for its lock axis.
+        axis_locked ? 2u : 1u,
         "mainVertex");
     SDL_GPUShader* fragment_shader = load_shader(
         device,
@@ -270,6 +273,14 @@ inline void record_billboard_pass(
         0,
         system_ubo.data(),
         static_cast<Uint32>(system_ubo.size() * sizeof(float)));
+    if (system.orientation == BillboardOrientation::axis_locked) {
+        // The same block, in the vertex stage that reads the lock axis.
+        SDL_PushGPUVertexUniformData(
+            command,
+            1,
+            system_ubo.data(),
+            static_cast<Uint32>(system_ubo.size() * sizeof(float)));
+    }
 
     SDL_GPUBufferBinding instance_binding{};
     instance_binding.buffer = pass.instances;

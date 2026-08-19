@@ -107,7 +107,11 @@ inline DawnBillboardPass create_dawn_billboard_pass(
             static_cast<std::size_t>(descriptor.size));
     }
 
-    pass.vertex_module = load_wgsl_module(device, "billboard.vert");
+    const bool axis_locked =
+        system.orientation == BillboardOrientation::axis_locked;
+    pass.vertex_module = load_wgsl_module(
+        device,
+        axis_locked ? "billboard_axis_locked.vert" : "billboard.vert");
     pass.fragment_module = load_wgsl_module(device, "billboard.frag");
 
     // Group 0 is unused by the specialized WGSL (the scene block is
@@ -126,10 +130,20 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         vertex_entry.buffer.type = WGPUBufferBindingType_Uniform;
         vertex_entry.buffer.minBindingSize =
             sizeof(DawnBillboardSceneUniforms);
+        WGPUBindGroupLayoutEntry vertex_system_entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        vertex_system_entry.binding = 1;
+        vertex_system_entry.visibility = WGPUShaderStage_Vertex;
+        vertex_system_entry.buffer.type = WGPUBufferBindingType_Uniform;
+        vertex_system_entry.buffer.minBindingSize =
+            upstream::billboard_system_ubo_bytes;
+        const std::array<WGPUBindGroupLayoutEntry, 2> vertex_entries{
+            vertex_entry, vertex_system_entry};
         WGPUBindGroupLayoutDescriptor vertex_layout =
             WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        vertex_layout.entryCount = 1;
-        vertex_layout.entries = &vertex_entry;
+        // The axis-locked basis reads the system block for its lock axis.
+        vertex_layout.entryCount = axis_locked ? 2u : 1u;
+        vertex_layout.entries = vertex_entries.data();
         pass.group_layouts[1] =
             wgpuDeviceCreateBindGroupLayout(device, &vertex_layout);
 
@@ -315,14 +329,19 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     pass.atlas_view = wgpuTextureCreateView(pass.atlas, nullptr);
     pass.sampler = create_texture_sampler(device, atlas.sampler);
 
-    WGPUBindGroupEntry vertex_binding = WGPU_BIND_GROUP_ENTRY_INIT;
-    vertex_binding.binding = 0;
-    vertex_binding.buffer = pass.vertex_uniforms;
-    vertex_binding.size = sizeof(DawnBillboardSceneUniforms);
+    std::array<WGPUBindGroupEntry, 2> vertex_bindings{};
+    vertex_bindings[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+    vertex_bindings[0].binding = 0;
+    vertex_bindings[0].buffer = pass.vertex_uniforms;
+    vertex_bindings[0].size = sizeof(DawnBillboardSceneUniforms);
+    vertex_bindings[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+    vertex_bindings[1].binding = 1;
+    vertex_bindings[1].buffer = pass.fragment_uniforms;
+    vertex_bindings[1].size = upstream::billboard_system_ubo_bytes;
     WGPUBindGroupDescriptor vertex_group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     vertex_group.layout = pass.group_layouts[1];
-    vertex_group.entryCount = 1;
-    vertex_group.entries = &vertex_binding;
+    vertex_group.entryCount = axis_locked ? 2u : 1u;
+    vertex_group.entries = vertex_bindings.data();
     pass.vertex_group = wgpuDeviceCreateBindGroup(device, &vertex_group);
 
     std::array<WGPUBindGroupEntry, 2> texture_bindings{};

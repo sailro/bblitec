@@ -442,16 +442,26 @@ per-sprite instance writes, and the straight-alpha blend, on both GPU
 backends from one generated WGSL pair. The pinned renderer split and
 instance layout are in [fidelity](fidelity.md#shader-contract).
 
-Camera-facing world-space billboards share that atlas and nothing else. A
+Every blend mode either family exports is lowered as the pure data upstream
+keeps it as — the descriptors are read out of the pinned modules rather than
+listed here, so a mode the pin adds needs no compiler change. Sprites reach
+alpha, premultiplied, additive, multiply and the opaque replacement; the
+billboard family reaches its own alpha, premultiplied and additive, while
+`billboardBlendCutout` refuses because its alpha-test depth-write path is a
+second pipeline rather than another factor pair.
+
+World-space billboards share that atlas and nothing else. A
 billboard system is a scene renderable rather than a renderer of its own: it
 draws at the end of the scene's pass, expanding its quad around a basis taken
 from the scene camera and testing against the depth the scene wrote, so a
 billboard occludes and is occluded by geometry. Because the transparent modes
 write no depth, the back-to-front sort by view depth IS the composite, and it
-runs every frame. Any of the pin's blend descriptors that names a colour
-blend is lowered as data — straight alpha, premultiplied, additive and
-one-one — while `billboardBlendCutout`, the axis-locked orientation, custom
-shaders and alpha-to-coverage refuse at the call.
+runs every frame. Both orientations the pin composes are reached: a facing
+system builds its basis from the camera alone, and an axis-locked one rotates
+only around a lock axis it normalises where the pin normalises it — that basis
+reads the axis out of the system block, so the vertex stage binds it only for
+the orientation that needs it. Custom shaders and alpha-to-coverage refuse at
+the call.
 
 ### Frame graph
 

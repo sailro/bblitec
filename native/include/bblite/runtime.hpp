@@ -541,8 +541,14 @@ struct Sprite2DLayerRecord {
  * it draws inside the scene's pass against the scene camera and depth
  * buffer, which is what makes it occlude and be occluded by geometry.
  */
+enum class BillboardOrientation {
+    facing,
+    axis_locked,
+};
+
 struct BillboardSystemRecord {
     SpriteAtlasHandle atlas{};
+    BillboardOrientation orientation = BillboardOrientation::facing;
     SpriteBlendDescriptor blend{};
     float opacity = 1.0f;
     bool visible = true;
@@ -1373,7 +1379,6 @@ struct SpriteRendererOptions {
     Color4 clear_value{0.0f, 0.0f, 0.0f, 1.0f};
 };
 
-SpriteBlendDescriptor sprite_blend_alpha();
 SpriteAtlasHandle load_sprite_atlas(
     Engine& engine,
     const std::string& path,
@@ -1382,9 +1387,11 @@ Sprite2DLayerHandle create_sprite_2d_layer(
     Engine& engine,
     SpriteAtlasHandle atlas,
     Sprite2DLayerOptions options);
-BillboardSystemHandle create_facing_billboard_system(
+BillboardSystemHandle create_billboard_system(
     Engine& engine,
     SpriteAtlasHandle atlas,
+    BillboardOrientation orientation,
+    Vec3 axis,
     BillboardSystemOptions options);
 
 double add_billboard_sprite_index(
@@ -1392,7 +1399,7 @@ double add_billboard_sprite_index(
     BillboardSystemHandle system,
     BillboardSpriteProps props);
 
-void add_facing_billboard_system(
+void add_billboard_system(
     Scene& scene,
     BillboardSystemHandle system);
 

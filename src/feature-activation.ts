@@ -378,6 +378,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/sprite/billboard-sprite.ts + src/sprite/billboard-scene.ts",
         consumers: CMAKE,
     },
+    "sprite:billboard-axis-locked": {
+        provenance:
+            "src/sprite/billboard-sprite.ts#createAxisLockedBillboardSystem " +
+            "+ src/sprite/billboard-pipeline.ts#makeBillboardBasisWgsl",
+        consumers: CMAKE,
+    },
     "renderer:sprite": {
         provenance: "src/sprite/sprite-pipeline.ts",
         consumers: CMAKE,

@@ -1,52 +1,41 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { PinnedShaderText } from "./pinned-shader-text.js";
-import { billboardBlendSymbol } from "../billboard-blend-symbol.js";
+import {
+    blendFactoriesCpp,
+    readPinnedBlendTable,
+} from "./pinned-blend-table.js";
 
 const systemModule = "src/sprite/billboard-sprite.ts";
 const sceneModule = "src/sprite/billboard-scene.ts";
 const blendModule = "src/sprite/billboard-blend.ts";
-// The blend states billboard-blend.ts shares with the 2D layer.
-const blendStateModule = "src/sprite/blend-descriptors.ts";
 const pipelineModule = "src/sprite/billboard-pipeline.ts";
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 
+/**
+ * Which basis the vertex stage builds. The pin's composer emits one of two
+ * functions from `system._orientation` and leaves the rest of the stage
+ * identical, so this is the whole difference between the two families of
+ * billboard.
+ */
+export type BillboardOrientation = "facing" | "axis-locked";
+
 /** The billboard shader, split into the pieces each backend re-homes. */
 export interface BillboardShaderSource {
+    /**
+     * Whether the vertex stage reads the system block. Derived from the
+     * pin's own basis rather than from a table here — an orientation that
+     * starts reading the lock axis picks the binding up by itself — but
+     * carried as a value so the WGSL emitter and the two PALs cannot state
+     * it differently.
+     */
+    vertexReadsSystemBlock: boolean;
     systemStructFields: string;
     basisFunction: string;
     instanceStructFields: string;
     varyingStructFields: string;
     vertexBody: string;
     fragmentBody: string;
-}
-
-/** A WebGPU blend factor as the runtime's own enumerator. */
-function nativeFactor(factor: string): string {
-    const known: Record<string, string> = {
-        zero: "zero",
-        one: "one",
-        "src-alpha": "src_alpha",
-        "one-minus-src-alpha": "one_minus_src_alpha",
-        dst: "dst",
-        "dst-alpha": "dst_alpha",
-    };
-    const mapped = known[factor];
-    if (!mapped) {
-        throw new Error(
-            `Pinned billboard blend uses factor '${factor}', which this runtime has no enumerator for.`,
-        );
-    }
-    return mapped;
-}
-
-/** One pinned blend descriptor, as the factory emitted for it. */
-interface BillboardBlendRow {
-    key: string;
-    exportName: string;
-    color: readonly [string, string];
-    alpha: readonly [string, string];
-    premultipliedOpacity: boolean;
 }
 
 /** One per-instance vertex attribute, at the pin's own byte offset. */
@@ -309,6 +298,29 @@ export class BillboardLowerer {
             'createBillboardSystem(atlas, "facing", [0, 0, 0], opts)',
             "createFacingBillboardSystem",
         );
+        // The axis-locked factory normalises its axis before storing it, and
+        // the basis reads `normalize(billboards.axisAndCutoff.xyz)` again --
+        // so a scene's raw axis has to be normalised at the same point the
+        // pin normalises it, not left to the shader.
+        const axisLocked = this.context.functionDeclaration(
+            systemModule,
+            "createAxisLockedBillboardSystem",
+        ).declaration;
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(axisLocked, "lengthSq"),
+            "axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]",
+            "createAxisLockedBillboardSystem lengthSq",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(axisLocked, "invLength"),
+            "1 / Math.sqrt(lengthSq)",
+            "createAxisLockedBillboardSystem invLength",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(axisLocked, "normalized"),
+            "[axis[0] * invLength, axis[1] * invLength, axis[2] * invLength]",
+            "createAxisLockedBillboardSystem normalized",
+        );
         this.context.assertExpressionShape(
             this.context.variableInitializer(
                 this.context.functionDeclaration(
@@ -344,137 +356,6 @@ export class BillboardLowerer {
      * path this slice does not render, so it is skipped here and refused at
      * the intrinsic.
      */
-    private blendDescriptors(): BillboardBlendRow[] {
-        const file = this.context.sourceFile(blendModule);
-        const rows: BillboardBlendRow[] = [];
-        for (const statement of file.statements) {
-            if (!ts.isVariableStatement(statement)) continue;
-            for (const binding of statement.declarationList
-                .declarations) {
-                if (
-                    !ts.isIdentifier(binding.name) ||
-                    !binding.name.text.startsWith("billboardBlend") ||
-                    !binding.initializer
-                ) {
-                    continue;
-                }
-                const literal = this.objectLiteral(
-                    binding.initializer,
-                    binding.name.text,
-                );
-                const descriptor = this.optionalProperty(
-                    literal,
-                    "_descriptor",
-                );
-                if (!descriptor) continue;
-                const key = this.context.stringValue(
-                    this.context.propertyInitializer(literal, "_key"),
-                    file,
-                );
-                const state = this.blendState(descriptor, key);
-                rows.push({
-                    key,
-                    exportName: binding.name.text,
-                    color: this.blendSide(state, "color", key),
-                    alpha: this.blendSide(state, "alpha", key),
-                    premultipliedOpacity: Boolean(
-                        this.optionalProperty(
-                            literal,
-                            "_premultipliedOpacity",
-                        ),
-                    ),
-                });
-            }
-        }
-        if (!rows.some((row) => row.key === "alpha")) {
-            this.context.contractError(
-                file,
-                "Pinned billboard blends no longer include the default alpha descriptor.",
-            );
-        }
-        return rows;
-    }
-
-    /**
-     * The `GPUBlendState` a descriptor names, whether it writes one inline
-     * or names one of the states `blend-descriptors.ts` shares with the 2D
-     * layer. A shared state is RESOLVED out of that module rather than
-     * transcribed here: the sprite family already pins its shape through
-     * `assertAlphaBlend`, and a second hand-typed copy is what drifts when
-     * the pin edits a factor.
-     */
-    private blendState(
-        descriptor: ts.Expression,
-        key: string,
-    ): ts.ObjectLiteralExpression {
-        const unwrapped =
-            this.context.unwrapExpression(descriptor);
-        if (ts.isIdentifier(unwrapped)) {
-            return this.objectLiteral(
-                this.context.variableInitializer(
-                    this.context.sourceFile(blendStateModule),
-                    unwrapped.text,
-                ),
-                `shared blend state '${unwrapped.text}'`,
-            );
-        }
-        return this.objectLiteral(unwrapped, `blend '${key}'`);
-    }
-
-    /** One side of a blend state, which the pin always writes as an add. */
-    private blendSide(
-        state: ts.ObjectLiteralExpression,
-        side: "color" | "alpha",
-        key: string,
-    ): readonly [string, string] {
-        const file = state.getSourceFile();
-        const value = this.objectLiteral(
-            this.context.propertyInitializer(state, side),
-            `blend '${key}' ${side}`,
-        );
-        const factor = (field: string): string =>
-            this.context.stringValue(
-                this.context.propertyInitializer(value, field),
-                file,
-            );
-        if (factor("operation") !== "add") {
-            this.context.contractError(
-                value,
-                `Pinned blend '${key}' ${side} is not an add.`,
-            );
-        }
-        return [factor("srcFactor"), factor("dstFactor")];
-    }
-
-    /** An object literal, or a contract error naming what was expected. */
-    private objectLiteral(
-        expression: ts.Expression,
-        what: string,
-    ): ts.ObjectLiteralExpression {
-        const unwrapped =
-            this.context.unwrapExpression(expression);
-        if (!ts.isObjectLiteralExpression(unwrapped)) {
-            this.context.contractError(
-                unwrapped,
-                `Expected ${what} to be an object literal.`,
-            );
-        }
-        return unwrapped;
-    }
-
-    /** A property the pin may legitimately omit. */
-    private optionalProperty(
-        literal: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined {
-        return literal.properties.find(
-            (member): member is ts.PropertyAssignment =>
-                ts.isPropertyAssignment(member) &&
-                this.context.propertyName(member.name) === name,
-        )?.initializer;
-    }
-
-
     /** The transparent arm draws without writing depth. */
     private assertDepthMode(): void {
         const file = this.context.sourceFile(pipelineModule);
@@ -626,9 +507,11 @@ export class BillboardLowerer {
      * The WGSL for the permutation scene code reaches, reconstructed by
      * folding the pin's own builders.
      */
-    public shaderSource(): BillboardShaderSource {
+    public shaderSource(
+        orientation: BillboardOrientation = "facing",
+    ): BillboardShaderSource {
         const permutation = new Map<string, string | boolean>([
-            ["orientation", "facing"],
+            ["orientation", orientation],
             ["depthMode", "transparent"],
             ["alphaToCoverage", false],
         ]);
@@ -641,10 +524,11 @@ export class BillboardLowerer {
             pipelineModule,
             "makeBillboardBasisWgsl",
             new Map<string, string | boolean>([
-                ["orientation", "facing"],
+                ["orientation", orientation],
             ]),
         );
         return {
+            vertexReadsSystemBlock: basis.includes("billboards."),
             systemStructFields: this.shaderText.between(
                 full,
                 "struct S {",
@@ -699,7 +583,16 @@ export class BillboardLowerer {
         const layout = this.layout();
         const rows = this.attributeRows(layout.instanceFloats);
         this.assertSystemDefaults();
-        const blends = this.blendDescriptors();
+        // A cutout mode is not another factor pair: the pin's own
+        // `_depthMode` says it drives an alpha-test depth-write pipeline,
+        // which this path does not render. Filtering on that field rather
+        // than on a descriptor's name is what keeps the lowerer and the
+        // intrinsic refusing the same set.
+        const blends = readPinnedBlendTable(
+            this.context,
+            blendModule,
+            "billboardBlend",
+        ).filter((blend) => blend.depthMode === "transparent");
         this.assertDepthMode();
         this.assertInstanceSlots();
         this.assertSystemUbo();
@@ -766,18 +659,7 @@ namespace bbl {
  * They live here rather than in the system's own translation unit because
  * the scene names one at the call site.
  */
-${blends.map((blend) => `inline SpriteBlendDescriptor ${billboardBlendSymbol(blend.exportName)}() {
-    // billboard-blend.ts#${blend.exportName}.
-    SpriteBlendDescriptor blend;
-    blend.enabled = true;
-    blend.color.src = SpriteBlendFactor::${nativeFactor(blend.color[0])};
-    blend.color.dst = SpriteBlendFactor::${nativeFactor(blend.color[1])};
-    blend.alpha.src = SpriteBlendFactor::${nativeFactor(blend.alpha[0])};
-    blend.alpha.dst = SpriteBlendFactor::${nativeFactor(blend.alpha[1])};
-    blend.premultiplied_opacity = ${blend.premultipliedOpacity};
-    return blend;
-}
-`).join("\n")}
+${blendFactoriesCpp(blends, "billboard", "billboard-blend.ts")}
 } // namespace bbl
 
 namespace bbl::upstream {
@@ -893,9 +775,14 @@ inline void billboard_sorted_instances(
 
 namespace bbl {
 
-BillboardSystemHandle create_facing_billboard_system(
+// createBillboardSystem: both factories delegate here, differing only in the
+// orientation and the axis it carries. A facing system's axis is the pin's
+// zero vector -- its basis reads the camera, not the axis.
+BillboardSystemHandle create_billboard_system(
     Engine& engine,
     SpriteAtlasHandle atlas,
+    BillboardOrientation orientation,
+    Vec3 axis,
     BillboardSystemOptions options) {
     if (atlas.value >= engine.sprite_atlases.size()) {
         throw std::runtime_error("Invalid sprite atlas handle.");
@@ -905,9 +792,32 @@ BillboardSystemHandle create_facing_billboard_system(
     system.blend = options.blend;
     system.opacity = options.opacity;
     system.visible = options.visible;
-    // A facing system's axis is the pin's zero vector: the facing basis
-    // reads the camera, not the axis.
-    system.axis = Vec3{0.0f, 0.0f, 0.0f};
+    system.orientation = orientation;
+    // createAxisLockedBillboardSystem: the axis is normalised before it is
+    // stored, and a non-finite or zero axis is rejected. The basis
+    // normalises again in WGSL, but a zero axis has no direction to recover
+    // there, so the refusal belongs here as it does upstream.
+    if (orientation == BillboardOrientation::axis_locked) {
+        const double length_sq =
+            static_cast<double>(axis.x) * axis.x +
+            static_cast<double>(axis.y) * axis.y +
+            static_cast<double>(axis.z) * axis.z;
+        if (!std::isfinite(length_sq)) {
+            throw std::runtime_error(
+                "createAxisLockedBillboardSystem: axis components must be "
+                "finite numbers.");
+        }
+        if (length_sq < 1e-8) {
+            throw std::runtime_error(
+                "createAxisLockedBillboardSystem: axis must be non-zero.");
+        }
+        const double inv_length = 1.0 / std::sqrt(length_sq);
+        axis = Vec3{
+            static_cast<float>(axis.x * inv_length),
+            static_cast<float>(axis.y * inv_length),
+            static_cast<float>(axis.z * inv_length)};
+    }
+    system.axis = axis;
     system.alpha_cutoff = 0.0f;
     system.instance_floats_per_sprite = ${layout.instanceFloats}u;
     system.capacity = static_cast<std::uint32_t>(
@@ -1021,7 +931,7 @@ double add_billboard_sprite_index(
     return static_cast<double>(index);
 }
 
-void add_facing_billboard_system(
+void add_billboard_system(
     Scene& scene,
     BillboardSystemHandle system) {
     if (!scene.engine) {

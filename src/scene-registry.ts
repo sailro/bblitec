@@ -1194,6 +1194,30 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene56",
+        name: "Scene 56 - Axis-Locked Billboards",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene56.ts",
+        title: "Babylon Lite Native - Axis-Locked Billboards",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [36, 41, 51],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene97",
+        name: "Scene 97 - Sprite Multiply Blend",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene97.ts",
+        title: "Babylon Lite Native - Sprite Multiply Blend",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [209, 204, 219],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene54",
         name: "Scene 54 - Facing Billboards",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene54.ts",

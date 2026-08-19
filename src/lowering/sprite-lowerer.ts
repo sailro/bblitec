@@ -1,11 +1,14 @@
 import ts from "typescript";
 import { PinnedShaderText } from "./pinned-shader-text.js";
+import {
+    blendFactoriesCpp,
+    readPinnedBlendTable,
+} from "./pinned-blend-table.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const layerModule = "src/sprite/sprite-2d.ts";
 const blendModule = "src/sprite/sprite-blend.ts";
-const blendStateModule = "src/sprite/blend-descriptors.ts";
 const pipelineModule = "src/sprite/sprite-pipeline.ts";
 const rendererModule = "src/sprite/sprite-renderer.ts";
 
@@ -471,70 +474,6 @@ export class SpriteLowerer {
     }
 
     /** `spriteBlendAlpha` and the shared straight-alpha blend state. */
-    private assertAlphaBlend(): void {
-        const blendFile =
-            this.context.sourceFile(blendModule);
-        const alpha = this.context.unwrapExpression(
-            this.context.variableInitializer(
-                blendFile,
-                "spriteBlendAlpha",
-            ),
-        );
-        if (!ts.isObjectLiteralExpression(alpha)) {
-            this.context.contractError(
-                alpha,
-                "Expected spriteBlendAlpha to be an object literal.",
-            );
-        }
-        if (
-            this.context.stringValue(
-                this.context.propertyInitializer(
-                    alpha,
-                    "_key",
-                ),
-                blendFile,
-            ) !== "alpha"
-        ) {
-            this.context.contractError(
-                alpha,
-                "Pinned spriteBlendAlpha key changed.",
-            );
-        }
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(
-                alpha,
-                "_descriptor",
-            ),
-            "_ALPHA_BLEND_STATE",
-            "spriteBlendAlpha descriptor",
-        );
-        const stateFile = this.context.sourceFile(
-            blendStateModule,
-        );
-        const state = this.context.unwrapExpression(
-            this.context.variableInitializer(
-                stateFile,
-                "_ALPHA_BLEND_STATE",
-            ),
-        );
-        if (!ts.isObjectLiteralExpression(state)) {
-            this.context.contractError(
-                state,
-                "Expected _ALPHA_BLEND_STATE to be an object literal.",
-            );
-        }
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(state, "color"),
-            '{ srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" }',
-            "_ALPHA_BLEND_STATE color",
-        );
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(state, "alpha"),
-            '{ srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" }',
-            "_ALPHA_BLEND_STATE alpha",
-        );
-    }
-
     /** `buildSpriteLayerUbo` fills sixteen floats in a fixed order. */
     private assertLayerUbo(): void {
         const { declaration, file } = this.functionOf(
@@ -758,13 +697,31 @@ export class SpriteLowerer {
 
     public lowerCore(): LoweredSource {
         const layout = this.layout();
+        const blends = readPinnedBlendTable(
+            this.context,
+            blendModule,
+            "spriteBlend",
+        );
+        // The intrinsic defaults an unnamed blendMode to this factory, so the
+        // descriptor the default names has to be one the pin still exports.
+        // Everything about its factors is read, not asserted -- a hand-typed
+        // expectation here would fail a bump the table lowers correctly.
+        if (
+            !blends.some(
+                (blend) => blend.exportName === "spriteBlendAlpha",
+            )
+        ) {
+            this.context.contractError(
+                this.context.sourceFile(blendModule),
+                "Pinned sprite blends no longer export spriteBlendAlpha, which the default names.",
+            );
+        }
         const attributeRows = this.instanceAttributeRows(
             layout.instanceFloats,
         );
         this.assertGridAtlas();
         this.assertFrameResolution();
         this.assertAtlasLoader();
-        this.assertAlphaBlend();
         this.assertInstanceBase();
         this.assertInstanceSlots();
         this.assertLayerUbo();
@@ -870,6 +827,16 @@ inline void build_sprite_layer_ubo(
 }
 
 } // namespace bbl::upstream
+
+namespace bbl {
+
+/**
+ * sprite-blend.ts: each exported descriptor, as the factory scene code
+ * reaches when it names that descriptor at a layer. A mode with no colour
+ * blend is the pin's opaque replacement, which is blending disabled.
+ */
+${blendFactoriesCpp(blends, "sprite", "sprite-blend.ts")}
+} // namespace bbl
 `,
             source: `// ${provenance}
 #include <bblite/pal.hpp>
@@ -908,18 +875,6 @@ void grow_sprite_capacity(
 }
 
 } // namespace
-
-SpriteBlendDescriptor sprite_blend_alpha() {
-    // blend-descriptors.ts#_ALPHA_BLEND_STATE.
-    SpriteBlendDescriptor blend;
-    blend.enabled = true;
-    blend.color.src = SpriteBlendFactor::src_alpha;
-    blend.color.dst = SpriteBlendFactor::one_minus_src_alpha;
-    blend.alpha.src = SpriteBlendFactor::one;
-    blend.alpha.dst = SpriteBlendFactor::one_minus_src_alpha;
-    blend.premultiplied_opacity = false;
-    return blend;
-}
 
 SpriteAtlasHandle load_sprite_atlas(
     Engine& engine,
