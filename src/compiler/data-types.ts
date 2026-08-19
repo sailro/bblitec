@@ -35,6 +35,12 @@ export type DataType =
     // ids, so the value-copy model carries them unchanged: copying a
     // struct copies the id and both refer to the same resource, which
     // is exactly the JavaScript object-reference behavior.
+    // A runtime string. Deliberately not inferred from a declared `string`
+    // type: widening the shared mapper made records that had been outside
+    // the subset map, pulling unused definitions into scenes that never
+    // asked for one. A string enters the model only where a
+    // declared-property rule names it, so its producer is always explicit.
+    | { kind: "string" }
     | { kind: "handle"; handle: HandleKind }
     | { kind: "struct"; name: string }
     | { kind: "enum"; name: string }
@@ -99,6 +105,7 @@ export function dataTypesEqual(
     switch (left.kind) {
         case "number":
         case "boolean":
+        case "string":
         case "f32array":
         case "u32array":
             return true;
@@ -817,6 +824,8 @@ export class DataTypeRegistry {
                 return "double";
             case "boolean":
                 return "bool";
+            case "string":
+                return "std::string";
             case "handle":
                 return handleCppTypes[dataType.handle];
             case "struct":
@@ -848,6 +857,8 @@ export class DataTypeRegistry {
                 return "n";
             case "boolean":
                 return "b";
+            case "string":
+                return "str";
             case "handle":
                 return `h(${dataType.handle})`;
             case "struct":

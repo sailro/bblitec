@@ -16,6 +16,7 @@
 // not in which field they name.
 import type ts from "typescript";
 
+import type { DataType } from "./data-types.js";
 import type { Value, ValueKind } from "./types.js";
 
 /** A property the compiled surface deliberately does not serve. */
@@ -53,6 +54,13 @@ interface PropertyRead {
      * object identity, which a field read alone would drop.
      */
     carriesScenePbrMaterial?: true;
+    /**
+     * The plain-data type this read produces, when it produces data rather
+     * than a handle or a scalar the compiler models itself. Set it and the
+     * value arrives as `kind: "data"`, which is what the comparison, sink
+     * and binding paths consume.
+     */
+    dataType?: DataType;
     /**
      * Rejects an owner this read cannot serve, returning the message.
      * Runs before anything is emitted.
@@ -308,6 +316,7 @@ export function readProperty(
     const read = (cpp: string): Value => ({
         kind: rule.value,
         cpp,
+        ...(rule.dataType ? { dataType: rule.dataType } : {}),
         ...(engineCpp ? { engineCpp } : {}),
         ...(rule.carriesScenePbrMaterial &&
         owner.scenePbrMaterialIndex !== undefined

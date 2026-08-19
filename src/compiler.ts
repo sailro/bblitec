@@ -2350,6 +2350,33 @@ class Compiler
      * data lowerer to try next. The general path handles records itself,
      * where a missing property is an error with a message.
      */
+    /**
+     * A declared property of an engine handle that the table types as plain
+     * data. The data lowerer asks here so a comparison, a sink and a binding
+     * all read the one table the expression path reads, instead of each
+     * growing its own notion of which handle properties are data.
+     */
+    public declaredDataProperty(
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        // The owner is looked up rather than compiled: this runs inside the
+        // data lowerer's path resolution, which must stay free of emission
+        // and of failure, and a handle owner is always a bound local.
+        const owner = ts.isIdentifier(expression.expression)
+            ? this.lookupOptional(expression.expression)
+            : undefined;
+        if (!owner || owner.kind === "data") {
+            return undefined;
+        }
+        // Through the same single funnel every other read uses, so this
+        // does not become a third reader of the table.
+        const declared = this.readOwnerProperty(
+            owner,
+            expression,
+        );
+        return declared?.dataType ? declared : undefined;
+    }
+
     private readOwnerProperty(
         owner: Value,
         expression: ts.PropertyAccessExpression,
