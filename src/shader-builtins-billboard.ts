@@ -31,13 +31,24 @@ export function billboardVertexWgsl(
     provenance: string,
     shader: BillboardShaderSource,
 ): string {
+    // An axis-locked basis reads `billboards.axisAndCutoff` for its lock
+    // axis, so that stage needs the system block as a second vertex uniform.
+    // The facing basis reads only the camera and declares neither.
+    const systemBlock = shader.basisFunction.includes("billboards.")
+        ? `
+struct S {
+${indent(shader.systemStructFields, "    ")}
+};
+@group(1) @binding(1) var<uniform> billboards: S;
+`
+        : "";
     return `// ${provenance}
 struct SceneUniforms {
     viewProjection: mat4x4<f32>,
     view: mat4x4<f32>,
 };
 @group(1) @binding(0) var<uniform> scene: SceneUniforms;
-
+${systemBlock}
 ${shader.basisFunction}
 
 struct I {

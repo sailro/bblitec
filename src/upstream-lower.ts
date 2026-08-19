@@ -583,6 +583,19 @@ class GeneratedSourceWriter {
                     data: billboardFragmentWgsl(provenance, shader),
                 },
             );
+            if (features.includes("sprite:billboard-axis-locked")) {
+                // The pin's composer swaps only the basis function; the
+                // fragment stage is the same text, so the second orientation
+                // costs one vertex stage rather than a pair.
+                composedShaders.push({
+                    output:
+                        "upstream/shaders/billboard_axis_locked.vert.native.wgsl",
+                    data: billboardVertexWgsl(
+                        provenance,
+                        billboards.shaderSource("axis-locked"),
+                    ),
+                });
+            }
             generated.push({
                 modulePath: "src/sprite/billboard-pipeline.ts",
                 symbolName:

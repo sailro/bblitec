@@ -1,5 +1,10 @@
 import ts from "typescript";
 import { PinnedShaderText } from "./pinned-shader-text.js";
+import {
+    blendFactorySymbol,
+    nativeBlendFactor,
+    readPinnedBlendTable,
+} from "./pinned-blend-table.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
@@ -758,6 +763,11 @@ export class SpriteLowerer {
 
     public lowerCore(): LoweredSource {
         const layout = this.layout();
+        const blends = readPinnedBlendTable(
+            this.context,
+            blendModule,
+            "spriteBlend",
+        );
         const attributeRows = this.instanceAttributeRows(
             layout.instanceFloats,
         );
@@ -808,6 +818,31 @@ struct SpriteInstanceAttribute {
  * It lives in the shared header because it is the shared atlas module's, and
  * both the 2D layer and the billboard system resolve a frame through it.
  */
+} // namespace bbl::upstream
+
+namespace bbl {
+
+/**
+ * sprite-blend.ts: each exported descriptor, as the factory scene code
+ * reaches when it names that descriptor at a layer. A mode with no colour
+ * blend is the pin's opaque replacement, which is blending disabled.
+ */
+${blends.map((blend) => `inline SpriteBlendDescriptor ${blendFactorySymbol(blend.exportName)}() {
+    // sprite-blend.ts#${blend.exportName}.
+    SpriteBlendDescriptor blend;
+    blend.enabled = ${blend.enabled};
+    blend.color.src = SpriteBlendFactor::${nativeBlendFactor(blend.color[0])};
+    blend.color.dst = SpriteBlendFactor::${nativeBlendFactor(blend.color[1])};
+    blend.alpha.src = SpriteBlendFactor::${nativeBlendFactor(blend.alpha[0])};
+    blend.alpha.dst = SpriteBlendFactor::${nativeBlendFactor(blend.alpha[1])};
+    blend.premultiplied_opacity = ${blend.premultipliedOpacity};
+    return blend;
+}
+`).join("\n")}
+} // namespace bbl
+
+namespace bbl::upstream {
+
 inline std::uint32_t resolve_sprite_frame(
     const SpriteAtlasRecord& atlas,
     double frame) {
@@ -908,18 +943,6 @@ void grow_sprite_capacity(
 }
 
 } // namespace
-
-SpriteBlendDescriptor sprite_blend_alpha() {
-    // blend-descriptors.ts#_ALPHA_BLEND_STATE.
-    SpriteBlendDescriptor blend;
-    blend.enabled = true;
-    blend.color.src = SpriteBlendFactor::src_alpha;
-    blend.color.dst = SpriteBlendFactor::one_minus_src_alpha;
-    blend.alpha.src = SpriteBlendFactor::one;
-    blend.alpha.dst = SpriteBlendFactor::one_minus_src_alpha;
-    blend.premultiplied_opacity = false;
-    return blend;
-}
 
 SpriteAtlasHandle load_sprite_atlas(
     Engine& engine,

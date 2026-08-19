@@ -256,10 +256,10 @@ that does to the deferred lane by default.
 - [ ] Extend the sprite path past the slice Scene 50 measures. Each item is a
   separate arm upstream keeps behind its own module or hook, and each fails
   explicitly today:
-  - the other blend descriptors — `spriteBlendPremultiplied` (51, with
-    `premultiplyOnLoad`), `spriteBlendMultiply` (97), `spriteBlendOpaque` (53).
-    The native record carries the pin's factor pairs, so this is compiler-side
-    plus one pipeline per distinct blend.
+  - `spriteBlendPremultiplied` still needs scene 51's premultiplied atlas:
+    `premultiplyOnLoad` decodes the image with premultiplied alpha and
+    `premultipliedAlpha` marks the record, which together drive the pin's
+    `_premultipliedOpacity` fade. The descriptor itself is lowered.
   - depth-hosted layers: `addDepthHostedSpriteLayer` with `depth: "test"` /
     `"test-write"` (53), which adds the 14th instance float, the depth
     attachment and the scene bind group, and composes with a `SceneContext`.
@@ -273,13 +273,11 @@ that does to the deferred lane by default.
     arm only; the update arm's "preserve what was not supplied" resolution needs
     the previous instance read back. The billboard writer has the same shape
     and the same gap.
-  - the billboard arms past the facing systems scenes 54, 55 and 98 measure:
-    `createAxisLockedBillboardSystem` (56), whose basis the pinned shader
-    builder already carries behind the orientation the evaluator folds;
-    `createBillboardCustomShader` and `setBillboardShaderParams` (94); and
-    `billboardBlendCutout`, which is the alpha-test depth-write path rather
-    than another factor pair. Scene 118 needs `marker.name`; scenes 57 and 59
-    sit behind a Vec3-argument shape.
+  - the billboard arms past the two orientations scenes 54, 55, 56 and 98
+    measure: `createBillboardCustomShader` and `setBillboardShaderParams`
+    (94), and `billboardBlendCutout`, which is the alpha-test depth-write
+    path rather than another factor pair. Scene 118 needs `marker.name`;
+    scenes 57 and 59 want the sprite animation manager.
 - [ ] The sprite cluster past Scene 50, each its measured first blocker:
   - Scene 51: a browser-derived numeric value, with the premultiplied atlas and
     blend behind it.

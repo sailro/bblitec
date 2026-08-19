@@ -397,6 +397,7 @@ export type Feature =
     | "scene:remove"
     | "sprite:2d"
     | "sprite:billboard"
+    | "sprite:billboard-axis-locked"
     | "renderer:sprite"
     | "renderer:pbr"
     | "renderer:transmission"
