@@ -446,7 +446,7 @@ Every blend mode either family exports is lowered as the pure data upstream
 keeps it as — the descriptors are read out of the pinned modules rather than
 listed here, so a mode the pin adds needs no compiler change. Sprites reach
 alpha, premultiplied, additive, multiply and the opaque replacement; the
-billboard family reaches all four of its own, cutout included.
+billboard family reaches every one of its own, cutout included.
 
 World-space billboards share that atlas and nothing else. A
 billboard system is a scene renderable rather than a renderer of its own: it

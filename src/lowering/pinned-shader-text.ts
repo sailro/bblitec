@@ -412,23 +412,4 @@ export class PinnedShaderText {
         throw new Error(`Pinned ${label} has no closing brace.`);
     }
 
-    /**
-     * The text between two markers in a reconstructed shader — how a caller
-     * takes one struct or one stage body out of a whole module's text.
-     */
-    public between(
-        source: string,
-        open: string,
-        close: string,
-        label: string,
-    ): string {
-        const start = source.indexOf(open);
-        const end = source.indexOf(close, start + open.length);
-        if (start < 0 || end < 0) {
-            throw new Error(
-                `Pinned ${label} is no longer shaped as '${open} ... ${close}'.`,
-            );
-        }
-        return source.slice(start + open.length, end).trim();
-    }
 }

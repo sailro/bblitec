@@ -294,6 +294,19 @@ export class BillboardLowerer {
                 `createBillboardSystem ${name}`,
             );
         }
+        // The slot each depth mode draws in. Nothing stores this number --
+        // the record carries the mode and both backends select on it -- but
+        // the mapping it states is what the two draw slots ARE, so a pin
+        // that retunes it has to fail generation rather than leave the
+        // backends drawing in the old order.
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(
+                this.context.objectInitializer(declaration, "system"),
+                "order",
+            ),
+            'opts.order ?? (depthMode === "transparent" ? 200 : 100)',
+            "createBillboardSystem order",
+        );
         // A facing system's axis is the zero vector, which the UBO carries
         // and the facing basis ignores.
         this.context.assertExpressionShape(
@@ -539,23 +552,20 @@ export class BillboardLowerer {
         );
         return {
             vertexReadsSystemBlock: basis.includes("billboards."),
-            systemStructFields: this.shaderText.between(
+            systemStructFields: this.shaderText.braced(
                 full,
                 "struct S {",
-                "};",
                 "billboard system uniform struct",
             ),
             basisFunction: basis,
-            instanceStructFields: this.shaderText.between(
+            instanceStructFields: this.shaderText.braced(
                 full,
                 "struct I {",
-                "};",
                 "billboard instance struct",
             ),
-            varyingStructFields: this.shaderText.between(
+            varyingStructFields: this.shaderText.braced(
                 full,
                 "struct O {",
-                "};",
                 "billboard varying struct",
             ),
             vertexBody: this.shaderText.braced(
@@ -596,20 +606,6 @@ export class BillboardLowerer {
             blendModule,
             "billboardBlend",
         );
-        // Both of the pin's depth paths are rendered, so every mode becomes
-        // a factory; a mode naming a third path would have no pipeline and
-        // has to refuse rather than draw through one of these.
-        for (const blend of blends) {
-            if (
-                blend.depthMode !== "transparent" &&
-                blend.depthMode !== "cutout"
-            ) {
-                this.context.contractError(
-                    this.context.sourceFile(blendModule),
-                    `Pinned billboard blend '${blend.exportName}' names depth mode '${blend.depthMode}', which has no pipeline here.`,
-                );
-            }
-        }
         this.assertDepthMode();
         this.assertInstanceSlots();
         this.assertSystemUbo();
@@ -737,24 +733,6 @@ inline float billboard_sort_depth(
  * sequence keeps the pin's own left-minus-right tie-break without spelling
  * it.
  */
-/**
- * The instance data as it stands, for a path that does not sort.
- *
- * A cutout system writes depth, so the GPU resolves overlap between its
- * quads and the pin uploads them in logical insertion order rather than
- * staging a sorted copy.
- */
-inline void billboard_instances(
-    const BillboardSystemRecord& system,
-    std::vector<float>& out) {
-    out.assign(
-        system.instance_data.begin(),
-        system.instance_data.begin() +
-            static_cast<std::ptrdiff_t>(
-                static_cast<std::size_t>(system.count) *
-                system.instance_floats_per_sprite));
-}
-
 inline void billboard_sorted_instances(
     const BillboardSystemRecord& system,
     const std::array<float, 16>& view,
@@ -794,6 +772,33 @@ inline void billboard_sorted_instances(
     }
 }
 
+/**
+ * The instance data a system uploads this frame, in the order its depth mode
+ * gives it.
+ *
+ * A transparent system writes no depth, so the draw order IS the composite
+ * and the instances are staged back to front for the view. A cutout system
+ * writes depth, so the GPU resolves its own overlap and the pin uploads in
+ * logical insertion order instead. Neither backend chooses: a per-backend
+ * copy of this choice would be a per-backend copy of the image.
+ */
+inline void billboard_upload_instances(
+    const BillboardSystemRecord& system,
+    const std::array<float, 16>& view,
+    std::vector<float>& out) {
+    if (system.depth_mode == BillboardDepthMode::cutout) {
+        const std::size_t floats =
+            static_cast<std::size_t>(system.count) *
+            system.instance_floats_per_sprite;
+        out.assign(
+            system.instance_data.begin(),
+            system.instance_data.begin() +
+                static_cast<std::ptrdiff_t>(floats));
+        return;
+    }
+    billboard_sorted_instances(system, view, out);
+}
+
 } // namespace bbl::upstream
 `,
             source: `// ${provenance}
@@ -828,14 +833,12 @@ BillboardSystemHandle create_billboard_system(
     system.opacity = options.opacity;
     system.visible = options.visible;
     system.orientation = orientation;
-    // resolveAlphaCutoff and the order default both follow the descriptor's
-    // depth mode: a cutout system cuts at 0.5 and draws at 100, among the
-    // opaque meshes, while every other mode cuts at 0 and draws at 200,
-    // after them.
+    // resolveAlphaCutoff follows the descriptor's depth mode, and so does
+    // the slot the system draws in -- which is the mode itself, so only the
+    // mode is stored.
     const bool cutout =
         options.blend.depth_mode == BillboardDepthMode::cutout;
     system.depth_mode = options.blend.depth_mode;
-    system.order = cutout ? 100.0f : 200.0f;
     // createAxisLockedBillboardSystem: the axis is normalised before it is
     // stored, and a non-finite or zero axis is rejected. The basis
     // normalises again in WGSL, but a zero axis has no direction to recover

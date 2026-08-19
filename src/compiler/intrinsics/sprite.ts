@@ -10,6 +10,7 @@ export interface SpriteIntrinsicContext
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
+    compileBoolean(expression: ts.Expression): string;
     registerSpriteAtlasAsset(
         expression: ts.Expression,
     ): string;
@@ -54,7 +55,6 @@ function blendOption(
     options: Value | undefined,
     family: "sprite" | "billboard",
     node: ts.Node,
-    call?: ts.CallExpression,
 ): string {
     const blendMode = property(options, "blendMode");
     if (!blendMode) {
@@ -72,8 +72,8 @@ function blendOption(
     }
     // The cutout mode is the one billboard descriptor with a second
     // pipeline behind it, so naming it reaches that arm's shader.
-    if (call && family === "billboard" && named.mode === "cutout") {
-        context.reachFeature("sprite:billboard-cutout", call);
+    if (family === "billboard" && named.mode === "cutout") {
+        context.reachFeature("sprite:billboard-cutout", node);
     }
     return blendMode.cpp;
 }
@@ -302,8 +302,7 @@ export function compileSpriteIntrinsic(
             // One of the pin's own exported descriptors, resolved by the
             // name the scene imported. `spriteBlendOpaque` names no colour
             // blend at all, which the 2D pipeline expresses by disabling
-            // blending -- so unlike the billboard family's cutout it needs no
-            // second depth path and is lowered with the rest.
+            // blending.
             const blendCpp = blendOption(
                 context,
                 options,
@@ -463,17 +462,15 @@ export function compileSpriteIntrinsic(
                 options,
                 "billboard",
                 optionsArg ?? call,
-                call,
             );
 
             // `order` sorts a system against the scene's other transparent
-            // renderables upstream. This path draws billboards after the
-            // scene's own stages instead, which is the same image only while
-            // nothing else is transparent, so an explicit order refuses
-            // rather than being silently dropped.
+            // renderables upstream. A system here draws in the slot its depth
+            // mode gives it, which is the same image only while nothing else
+            // is transparent, so an explicit order refuses rather than being
+            // silently dropped.
             for (const unreached of [
                 "customShader",
-                "alphaToCoverage",
                 "order",
             ]) {
                 if (property(options, unreached)) {
@@ -618,10 +615,7 @@ export function compileSpriteIntrinsic(
                 "billboard-system",
                 call.arguments[0]!,
             );
-            const enabled = context.compileValue(call.arguments[1]!);
-            context.expectKind(
-                enabled,
-                "boolean",
+            const enabled = context.compileBoolean(
                 call.arguments[1]!,
             );
             const engineCpp =
@@ -629,7 +623,7 @@ export function compileSpriteIntrinsic(
                 context.requireDefaultEngine(call);
             context.reachFeature("sprite:billboard", call);
             context.emit(
-                `bbl::set_billboard_alpha_to_coverage(${engineCpp}, ${target.cpp}, ${enabled.cpp});`,
+                `bbl::set_billboard_alpha_to_coverage(${engineCpp}, ${target.cpp}, ${enabled});`,
             );
             return { kind: "void", cpp: "" };
         }

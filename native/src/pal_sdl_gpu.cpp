@@ -6267,11 +6267,12 @@ bool run_gpu_engine(Engine& engine) {
             // 100 among the opaque meshes, because a cutout system writes
             // depth and everything after has to see it, and 200 after the
             // scene's own stages for the transparent modes.
-            const auto draw_billboards = [&](float order) {
+            const auto draw_billboards =
+                [&](BillboardDepthMode mode) {
                 for (const BillboardPass& billboard :
                      state.billboard_passes) {
-                    if (engine.billboard_systems[billboard.system.value]
-                            .order != order) {
+                    if (engine.billboard_systems[billboard.system.value].depth_mode !=
+                        mode) {
                         continue;
                     }
                     record_billboard_pass(
@@ -6311,7 +6312,7 @@ bool run_gpu_engine(Engine& engine) {
                     case upstream::RenderStage::opaque:
                         draw_render_list(render_plan.draw_lists.opaque);
 #if BBLITE_HAS_BILLBOARDS
-                        draw_billboards(100.0f);
+                        draw_billboards(BillboardDepthMode::cutout);
 #endif
                         break;
                     case upstream::RenderStage::transparent:
@@ -6325,7 +6326,7 @@ bool run_gpu_engine(Engine& engine) {
 #if BBLITE_HAS_BILLBOARDS
             // The transparent systems close the scene's pass: they blend
             // over every stage above and test against the depth they wrote.
-            draw_billboards(200.0f);
+            draw_billboards(BillboardDepthMode::transparent);
 #endif
             SDL_EndGPURenderPass(pass);
             SDL_GPUTexture* visible_color = state.color;

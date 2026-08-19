@@ -7248,11 +7248,10 @@ bool run_dawn_engine(Engine& engine) {
         // among the opaque meshes, because a cutout system writes depth and
         // everything after has to see it, and 200 after the scene stages for
         // the transparent modes.
-        const auto draw_billboards = [&](float order) {
+        const auto draw_billboards = [&](BillboardDepthMode mode) {
             for (const DawnBillboardPass& billboard :
                  state.billboard_passes) {
-                if (engine.billboard_systems[billboard.system.value].order !=
-                    order) {
+                if (engine.billboard_systems[billboard.system.value].depth_mode != mode) {
                     continue;
                 }
                 record_dawn_billboard_pass(pass, engine, billboard);
@@ -7286,7 +7285,7 @@ bool run_dawn_engine(Engine& engine) {
                 case upstream::RenderStage::opaque:
                     draw_render_list(render_plan.draw_lists.opaque);
 #if BBLITE_HAS_BILLBOARDS
-                    draw_billboards(100.0f);
+                    draw_billboards(BillboardDepthMode::cutout);
 #endif
                     break;
                 case upstream::RenderStage::transparent:
@@ -7301,7 +7300,7 @@ bool run_dawn_engine(Engine& engine) {
 #if BBLITE_HAS_BILLBOARDS
         // The transparent systems close the scene's pass: they blend over
         // every stage above and test against the depth they wrote.
-        draw_billboards(200.0f);
+        draw_billboards(BillboardDepthMode::transparent);
 #endif
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);

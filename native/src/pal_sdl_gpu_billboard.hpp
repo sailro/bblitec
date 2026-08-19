@@ -247,11 +247,7 @@ inline void upload_billboard_pass(
     if (pass.uploaded && (cutout || pass.uploaded_view == view)) {
         return;
     }
-    if (cutout) {
-        upstream::billboard_instances(system, pass.sorted);
-    } else {
-        upstream::billboard_sorted_instances(system, view, pass.sorted);
-    }
+    upstream::billboard_upload_instances(system, view, pass.sorted);
     update_buffer(
         device,
         pass.instances,

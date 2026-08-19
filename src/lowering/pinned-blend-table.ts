@@ -216,7 +216,7 @@ export function blendFactoriesCpp(
     blend.enabled = ${row.enabled};${
         row.depthMode
             ? `
-    blend.depth_mode = BillboardDepthMode::${row.depthMode.replace("-", "_")};`
+    blend.depth_mode = BillboardDepthMode::${row.depthMode};`
             : ""
     }${
         row.color && row.alpha

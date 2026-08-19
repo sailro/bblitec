@@ -425,13 +425,7 @@ inline void upload_dawn_billboard_pass(
     if (system.count == 0) {
         return;
     }
-    // A cutout system writes depth, so the GPU resolves overlap and the pin
-    // uploads in logical insertion order rather than staging a sorted copy.
-    if (system.depth_mode == BillboardDepthMode::cutout) {
-        upstream::billboard_instances(system, pass.sorted);
-    } else {
-        upstream::billboard_sorted_instances(system, view, pass.sorted);
-    }
+    upstream::billboard_upload_instances(system, view, pass.sorted);
     wgpuQueueWriteBuffer(
         queue,
         pass.instances,

@@ -564,9 +564,6 @@ struct BillboardSystemRecord {
     SpriteAtlasHandle atlas{};
     BillboardOrientation orientation = BillboardOrientation::facing;
     BillboardDepthMode depth_mode = BillboardDepthMode::transparent;
-    // The pin's own slot: 200 draws after the opaque meshes with the other
-    // transparent renderables, 100 draws among them.
-    float order = 200.0f;
     // setAlphaToCoverage: immutable pipeline state, so it is read when the
     // pass is built rather than per frame.
     bool alpha_to_coverage = false;
