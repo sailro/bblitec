@@ -318,6 +318,17 @@ made from a frame callback is refused because it would fold a per-frame
 reassignment into frame zero. An asset carrying the extension that no scene
 selects on renders identically on both sides, because the pin reassigns
 nothing until `selectVariant` runs. Scene 27 gates it.
+A glTF file's animations are one group each, carrying the name, duration and
+frame rate `src/animation/animation-group.ts` gives them, and upstream starts
+only the first (`isPlaying: clipIndex === 0`) with each looping over its own
+length. Two consequences are not guessable from the file. A stopped group
+writes nothing at all — upstream's `tickAnimationCore` returns early for one,
+so holding its channels at time zero is different: where two clips animate the
+same target, a zero write would overwrite the playing clip's value. And a seek
+reaches only groups that are not stopped, because the reference harness seeks
+with `goToFrame(group, frame)` and no engine, which leaves the pin's tick
+condition false for a stopped group. The project-owned animation-groups gate
+measures both, selecting a clip upstream did not start.
 A scene's `setPbr*` options reach composition through the pin's own setters,
 the way the loader half already runs `setPbrEmissive`: each stamps its props
 under the field name its extension's `detect` reads, so the composed arm set

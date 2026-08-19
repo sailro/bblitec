@@ -117,6 +117,35 @@ export function compileAnimationIntrinsic(
             };
         }
 
+        case "playAnimation":
+        case "pauseAnimation":
+        case "stopAnimation": {
+            // src/animation/animation-group.ts: three writes over one group.
+            // Only a glTF group is reachable — a property-animation group is
+            // driven by its manager — so the kind check names which.
+            context.expectArgumentCount(call, 1, 1);
+            const group =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                group,
+                "animation-group",
+                call.arguments[0]!,
+            );
+            context.reachFeature("animation:gltf-groups", call);
+            const native = {
+                playAnimation: "play_animation",
+                pauseAnimation: "pause_animation",
+                stopAnimation: "stop_animation",
+            }[importedName]!;
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::${native}(` +
+                    `${context.requireEngine(group, call)}, ` +
+                    `${group.cpp})`,
+            };
+        }
+
         case "goToFrame": {
             context.expectArgumentCount(call, 2, 2);
             const group =

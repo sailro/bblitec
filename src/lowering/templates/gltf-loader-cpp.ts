@@ -3552,14 +3552,14 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
             }
         }
         const auto apply_animation_time =
-            [animation_runtime, &engine](float time) {
+            [animation_runtime, &engine](float time, bool seek) {
             // The master clock is the scene's elapsed animation time and no
             // longer wraps: each clip loops over its own duration, the way
             // upstream's per-group controllers do, and a clip upstream never
             // started holds at zero.
             animation_runtime->time = std::max(time, 0.0f);
             for (AnimationClip& clip : animation_runtime->clips) {
-                if (!clip.playing) {
+                if (seek ? clip.stopped : !clip.playing) {
                     continue;
                 }
                 clip.time = clip.duration > 0.0f
@@ -3567,9 +3567,13 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                           animation_runtime->time,
                           clip.duration)
                     : 0.0f;
+                if (seek) {
+                    clip.playing = false;
+                }
             }${animationPointer ? `
             for (const VisibilityTrack& track :
                  animation_runtime->visibility_tracks) {
+                 if (animation_runtime->clips[track.clip].stopped) continue;
                 if (track.times.empty()) continue;
                 // STEP holds each output until the next keyframe, so the
                 // key in effect is the last one at or before the current
@@ -3599,6 +3603,7 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
             }` : ""}
 ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                  animation_runtime->material_tracks) {
+                 if (animation_runtime->clips[track.clip].stopped) continue;
                 if (
                     track.times.empty() ||
                     track.material >= engine.materials.size()) {
@@ -3831,6 +3836,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
             }
             for (const TranslationTrack& track :
                  animation_runtime->translation_tracks) {
+                 if (animation_runtime->clips[track.clip].stopped) continue;
                 if (
                     track.times.empty() ||
                     track.node >= animation_runtime->nodes.size()) {
@@ -3895,6 +3901,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
             }
             for (const TranslationTrack& track :
                  animation_runtime->scale_tracks) {
+                 if (animation_runtime->clips[track.clip].stopped) continue;
                 if (
                     track.times.empty() ||
                     track.node >= animation_runtime->nodes.size()) {
@@ -3969,6 +3976,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     *track_iterator;
                 if (
                     track.times.empty() ||
+                    animation_runtime->clips[track.clip].stopped ||
                     track.node >= animation_runtime->nodes.size()) {
                     continue;
                 }
@@ -4296,18 +4304,51 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                 ++mesh_record.transform_version;
             }
         };
-        apply_animation_time(0.0f);
+        apply_animation_time(0.0f, false);
+        // The clips scene code addresses, in the document's animation order,
+        // plus the two writes the group operations need. The clip state stays
+        // inside this runtime; only these writers reach it, the way
+        // animation_tick already does.
+        for (const AnimationClip& clip : animation_runtime->clips) {
+            engine.animation_groups.push_back(
+                AnimationGroupRecord{
+                    clip.name,
+                    clip.duration,
+                    clip.frame_rate,
+                    static_cast<std::uint32_t>(engine.assets.size()),
+                    asset.animation_groups.size(),
+                });
+            asset.animation_groups.push_back(
+                AnimationGroupHandle{static_cast<std::uint32_t>(
+                    engine.animation_groups.size() - 1)});
+        }
+        asset.set_clip_playing =
+            [animation_runtime](std::size_t clip, bool playing) {
+            if (clip >= animation_runtime->clips.size()) return;
+            animation_runtime->clips[clip].playing = playing;
+        };
+        asset.set_clip_stopped =
+            [animation_runtime](std::size_t clip, bool stopped) {
+            if (clip >= animation_runtime->clips.size()) return;
+            animation_runtime->clips[clip].stopped = stopped;
+        };
+        asset.set_clip_time =
+            [animation_runtime](std::size_t clip, float time) {
+            if (clip >= animation_runtime->clips.size()) return;
+            animation_runtime->clips[clip].time = std::max(time, 0.0f);
+        };
         asset.animation_seek =
             [animation_runtime, apply_animation_time](float time) {
             animation_runtime->paused = true;
-            apply_animation_time(time);
+            apply_animation_time(time, true);
         };
         asset.animation_tick =
             [animation_runtime, apply_animation_time](float delta_ms) {
             if (animation_runtime->paused) return;
             apply_animation_time(
                 animation_runtime->time +
-                    delta_ms * 0.001f);
+                    delta_ms * 0.001f,
+                false);
         };
     }
     if (asset.meshes.empty()) throw std::runtime_error("glTF contains no renderable meshes.");

@@ -81,8 +81,8 @@ record future audits build on.
   occlusion samples the ORM image at a transform of its own.
 - [ ] Vertex colors beyond the reached alpha/mask slice.
 - [ ] Sparse accessors, and the point/line/line-strip primitive modes.
-- [ ] glTF animation: STEP channels, multiple clips, richer animation-group
-  controls.
+- [ ] glTF animation: STEP channels, and a group's speed ratio, weight and
+  mask.
 - [ ] glTF cameras. A PBR scene whose first light is a spot fails explicitly:
   the primary analytic slot encodes the light kind in `lightDirection.w` and
   carries no cone.

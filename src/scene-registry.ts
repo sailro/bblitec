@@ -1206,6 +1206,23 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-animation-groups",
+        name: "Regression - glTF Animation Groups",
+        source: "examples/regression-animation-groups.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - glTF Animation Groups",
+        parity: {
+            referenceTimeSeconds: 1,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.006,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "1",
+            },
+        },
+    },
+    {
         id: "scene27",
         name: "Scene 27 - Material Variants",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene27.ts",

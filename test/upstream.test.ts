@@ -367,7 +367,12 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /inverseBindMatrices/);
     assert.match(adapter.source, /RotationTrack/);
     assert.match(adapter.source, /animation_tick/);
-    assert.match(adapter.source, /apply_animation_time\(0\.0f\)/);
+    // The load-time pose is applied as a tick, not a seek: a seek places every
+    // clip that is not stopped, which is not what loading does.
+    assert.match(
+        adapter.source,
+        /apply_animation_time\(0\.0f, false\)/,
+    );
     assert.match(
         adapter.source,
         /for \(const RotationTrack& track[\s\S]*?std::clamp\(/,

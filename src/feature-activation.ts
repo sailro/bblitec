@@ -153,6 +153,12 @@ const CMAKE: readonly FeatureActivationConsumer[] = ["features.cmake"];
  * error: a new `Feature` union member cannot land without a row here.
  */
 const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
+    "animation:gltf-groups": {
+        provenance:
+            "src/animation/animation-group.ts (playAnimation, pauseAnimation, " +
+            "stopAnimation, goToFrame) + src/loader-gltf/gltf-feature-animations.ts",
+        consumers: ["features.cmake", "loader flag"],
+    },
     "animation:property": {
         provenance: "src/animation/property-animation.ts",
         consumers: CMAKE,

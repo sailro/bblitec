@@ -88,8 +88,13 @@ export interface HandleCollectionRead {
     owner: ValueKind;
     /** The property name as the source writes it. */
     property: string;
-    /** The native member on the owner's own expression. */
-    field: string;
+    /**
+     * Where the collection lives, in the same vocabulary the property table
+     * uses: `field` is a member of the owner's own expression, `record` is
+     * `[collection, field]` indexed by the owner handle through its engine.
+     */
+    field?: string;
+    record?: readonly [collection: string, field: string];
     /** The generated temporary's label, so emitted names stay stable. */
     temporaryLabel: string;
 }
@@ -100,6 +105,20 @@ const handleCollections: readonly HandleCollectionRead[] = [
         property: "meshes",
         field: "meshes",
         temporaryLabel: "scene_mesh",
+    },
+    {
+        owner: "scene",
+        property: "animationGroups",
+        field: "animation_groups",
+        temporaryLabel: "animation_group",
+    },
+    {
+        // The container's own groups, before addToScene registers them with
+        // the scene: the same handles, read off the asset.
+        owner: "asset",
+        property: "animationGroups",
+        record: ["assets", "animation_groups"],
+        temporaryLabel: "asset_animation_group",
     },
 ];
 
@@ -217,6 +236,15 @@ const propertyRules: readonly PropertyRule[] = [
         value: "material",
         record: ["meshes", "material"],
         carriesScenePbrMaterial: true,
+    },
+    {
+        // Read as plain data, which is what lets `g.name !== "swimming"`
+        // compile through the ordinary comparison path.
+        owner: "animation-group",
+        property: "name",
+        value: "data",
+        dataType: { kind: "string" },
+        record: ["animation_groups", "name"],
     },
     {
         owner: "scene",

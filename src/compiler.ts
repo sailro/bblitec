@@ -145,6 +145,7 @@ import {
 import { reachedGeneratedSources } from "./generated-sources.js";
 
 const featureSources: Record<Feature, string[]> = {
+    "animation:gltf-groups": [],
     "animation:property": [],
     "core": ["src/pal.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp"],
@@ -2103,12 +2104,15 @@ class Compiler
                     "no engine handle to bind.",
             );
         }
+        const engineCpp = this.requireEngine(owner, unwrapped);
         return {
             collection,
-            containerCpp: `${owner.cpp}.${collection.field}`,
+            containerCpp: collection.record
+                ? `${engineCpp}.${collection.record[0]}[${owner.cpp}.value].${collection.record[1]}`
+                : `${owner.cpp}.${collection.field!}`,
             elementKind: element.handle,
             elementCppType: this.dataTypes.cppType(element),
-            engineCpp: this.requireEngine(owner, unwrapped),
+            engineCpp,
         };
     }
 

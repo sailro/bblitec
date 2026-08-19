@@ -286,6 +286,9 @@ class GeneratedSourceWriter {
             "upstream/src/scene_core.cpp",
             new SceneLowerer(context).lowerCore({
                 fog: features.includes("renderer:fog"),
+                gltfAnimationGroups: features.includes(
+                    "animation:gltf-groups",
+                ),
             }),
             generated,
         );

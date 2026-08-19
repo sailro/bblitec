@@ -399,6 +399,11 @@ Deterministic scene-level seeking over two separate runtimes: property
 animation clips and groups over position, `position.x`, scaling and
 quaternion paths with LINEAR/STEP tracks, ranges, looping and speed ratios;
 and glTF LINEAR/CUBICSPLINE transform channels with LINEAR morph weights.
+A glTF file's animations arrive as one group each, in the document's order,
+reachable as `scene.animationGroups` and by name: upstream starts only the
+first and loops each over its own length, so `playAnimation`,
+`pauseAnimation`, `stopAnimation` and `goToFrame` select among clips of
+different durations.
 
 `KHR_animation_pointer` reaches node visibility; punctual light color,
 intensity, range and outer cone angle; and fifteen material targets — base
@@ -535,8 +540,9 @@ different image.
   slerp, group ranges/looping/speed, and deterministic seeking for the reached
   mesh `position`, `position.x`, `scaling`, and `rotationQuaternion` paths
 - glTF animation covers LINEAR/CUBICSPLINE rotation, translation, and scale
-  plus LINEAR morph weights. glTF STEP channels, multiple-clip controls, and
-  broader property targets remain unsupported
+  plus LINEAR morph weights, one addressable group per declared animation.
+  glTF STEP channels, a group's speed ratio, weight and mask, and broader
+  property targets remain unsupported
 - direct `createMorphTargets` covers one target attached to one mesh
 - a spot light created in scene code carries its colors and intensity; its
   `angle`, `exponent`, and `range` setters fail explicitly
