@@ -1,4 +1,5 @@
 import ts from "typescript";
+import type { HandleCollectionRead } from "./properties.js";
 import type { DataType } from "./data-types.js";
 import type {
     Value,
@@ -17,9 +18,17 @@ export interface StatementLoweringContext {
     ):
         | { container: Value; element: DataType }
         | undefined;
-    sceneMeshIterationTarget(
+    handleCollectionIterationTarget(
         expression: ts.Expression,
-    ): { sceneCpp: string; engineCpp: string } | undefined;
+    ):
+        | {
+              collection: HandleCollectionRead;
+              containerCpp: string;
+              elementKind: ValueKind;
+              elementCppType: string;
+              engineCpp: string;
+          }
+        | undefined;
     bindDataIterationVariable(
         name: ts.BindingName,
         itemCpp: string,
@@ -764,7 +773,7 @@ export class StatementLowerer {
                 : undefined;
         if (
             !staticLiteral &&
-            this.emitSceneMeshForOf(
+            this.emitHandleCollectionForOf(
                 context,
                 statement,
                 declaration,
@@ -839,12 +848,17 @@ export class StatementLowerer {
      * loaded asset's meshes are added by the generated loader — so this
      * stays a real loop rather than being unrolled.
      */
-    private emitSceneMeshForOf(
+    /**
+     * Iterates a collection an engine handle exposes. Which collections exist,
+     * and what each yields, is the table in `properties.ts`; this holds the
+     * loop, the scope and the binding once.
+     */
+    private emitHandleCollectionForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
     ): boolean {
-        const target = context.sceneMeshIterationTarget(
+        const target = context.handleCollectionIterationTarget(
             statement.expression,
         );
         if (!target) {
@@ -853,19 +867,20 @@ export class StatementLowerer {
         if (!ts.isIdentifier(declaration.name)) {
             context.fail(
                 declaration.name,
-                "Iterating scene meshes requires an identifier binding.",
+                `Iterating ${target.collection.property} requires an identifier binding.`,
             );
         }
-        const item =
-            context.allocateTemporaryCppName("scene_mesh");
+        const item = context.allocateTemporaryCppName(
+            target.collection.temporaryLabel,
+        );
         context.emit(
-            `for (const bbl::MeshHandle ${item} : ${target.sceneCpp}.meshes) {`,
+            `for (const ${target.elementCppType} ${item} : ${target.containerCpp}) {`,
         );
         context.increaseIndent();
         context.pushScope(context.allocateBlockPrefix());
         try {
             context.bindLocalValue(declaration.name, {
-                kind: "mesh",
+                kind: target.elementKind,
                 cpp: item,
                 engineCpp: target.engineCpp,
             });

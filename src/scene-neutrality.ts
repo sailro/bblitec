@@ -19,7 +19,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 /** Scenes whose Dawn cells move between runs with no code change at all. */
-const dawnWobbleScenes = new Set(["scene9", "scene37"]);
+export const dawnWobbleScenes = new Set(["scene9", "scene37"]);
 
 /** A cell that names a Dawn measurement, which is the wobbling half. */
 const isDawnCell = (path: string): boolean => /dawn/i.test(path);

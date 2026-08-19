@@ -90,7 +90,9 @@ import {
     createCompilerProgram,
 } from "./compiler/program.js";
 import {
+    readHandleCollection,
     readProperty,
+    type HandleCollectionRead,
     type PropertyContext,
 } from "./compiler/properties.js";
 import type {
@@ -2045,22 +2047,67 @@ class Compiler
      * handles rather than data, so this hands the loop the scene and engine
      * it needs and lets the statement lowering bind a mesh value.
      */
-    public sceneMeshIterationTarget(
+    /**
+     * The engine collection an expression names, resolved through the
+     * declarative table in `properties.ts` rather than by testing one
+     * property name here. A collection the table does not carry returns
+     * undefined, so for-of falls through to the plain-data and
+     * static-literal paths.
+     */
+    public handleCollectionIterationTarget(
         expression: ts.Expression,
-    ): { sceneCpp: string; engineCpp: string } | undefined {
+    ):
+        | {
+              collection: HandleCollectionRead;
+              containerCpp: string;
+              elementKind: ValueKind;
+              elementCppType: string;
+              engineCpp: string;
+          }
+        | undefined {
         const unwrapped = this.unwrap(expression);
-        if (
-            !ts.isPropertyAccessExpression(unwrapped) ||
-            unwrapped.name.text !== "meshes"
-        ) {
+        if (!ts.isPropertyAccessExpression(unwrapped)) {
             return undefined;
         }
         const owner = this.compileValue(unwrapped.expression);
-        if (owner.kind !== "scene") {
+        const collection = readHandleCollection(
+            owner,
+            unwrapped.name.text,
+        );
+        if (!collection) {
             return undefined;
         }
+        // The declared type carries the element model: the property's own
+        // number-index type is what an iteration yields, and the pinned
+        // handle registry turns that type into the kind it binds as and the
+        // C++ type the range-for declares. Neither is restated in the table.
+        const elementType = this.checker.getIndexTypeOfType(
+            this.checker.getTypeAtLocation(unwrapped),
+            ts.IndexKind.Number,
+        );
+        if (!elementType) {
+            this.fail(
+                unwrapped,
+                `'${unwrapped.name.text}' is not an indexable collection.`,
+            );
+        }
+        const element = this.dataTypes.fromTsType(
+            elementType,
+            unwrapped,
+        );
+        if (element?.kind !== "handle") {
+            this.fail(
+                unwrapped,
+                `Iterating '${unwrapped.name.text}' yields ` +
+                    `${element?.kind ?? "an unmapped type"}, which carries ` +
+                    "no engine handle to bind.",
+            );
+        }
         return {
-            sceneCpp: owner.cpp,
+            collection,
+            containerCpp: `${owner.cpp}.${collection.field}`,
+            elementKind: element.handle,
+            elementCppType: this.dataTypes.cppType(element),
             engineCpp: this.requireEngine(owner, unwrapped),
         };
     }

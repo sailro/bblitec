@@ -62,6 +62,54 @@ interface PropertyRead {
 
 type PropertyRule = PropertyRead | RefusedProperty;
 
+/**
+ * A collection an engine handle exposes.
+ *
+ * Only one fact here is this port's to state: which native member holds the
+ * collection, because native spellings are not the source's
+ * (`angularSensitivity` is `angular_sensibility`). Everything else the
+ * program already knows — the declared type says whether the property is
+ * iterable and what its elements are, and `data-types.ts` already turns a
+ * pinned type symbol into a handle kind and that kind into its C++ type. So a
+ * further collection is one row naming a member, not a restatement of the
+ * element model. User code iterating its own arrays never reaches here: that
+ * is the plain-data path.
+ */
+export interface HandleCollectionRead {
+    /** The value kind the owner must have. */
+    owner: ValueKind;
+    /** The property name as the source writes it. */
+    property: string;
+    /** The native member on the owner's own expression. */
+    field: string;
+    /** The generated temporary's label, so emitted names stay stable. */
+    temporaryLabel: string;
+}
+
+const handleCollections: readonly HandleCollectionRead[] = [
+    {
+        owner: "scene",
+        property: "meshes",
+        field: "meshes",
+        temporaryLabel: "scene_mesh",
+    },
+];
+
+/**
+ * The collection an expression names, or undefined when it names none — so
+ * the caller can fall through to the plain-data and static-literal paths.
+ */
+export function readHandleCollection(
+    owner: Value,
+    property: string,
+): HandleCollectionRead | undefined {
+    return handleCollections.find(
+        (candidate) =>
+            candidate.owner === owner.kind &&
+            candidate.property === property,
+    );
+}
+
 const propertyRules: readonly PropertyRule[] = [
     {
         // The lab demos reach the raw GPUDevice to writeBuffer

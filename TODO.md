@@ -237,8 +237,9 @@ that does to the deferred lane by default.
 - [ ] Scenes 4, 22, 65, 141, 223: support light position setters.
 - [ ] Scene 115: support `Number.isFinite`, then re-audit for deterministic
   picking.
-- [ ] Scenes 11, 144, 152, 157, 158, 179: generalize static array resolution to
-  array shapes that are not static literals.
+- [ ] Scenes 11, 144, 152, 157, 158, 179, 218: iterate a loader-returned
+  collection (`animationGroups`, `entities`) — scene 21's axis, not an
+  array shape.
 - [ ] Scene 229: lower the reached spread element.
 - [ ] Scenes 12, 43: fold or explicitly lower the reached browser-dependent
   conditions.
@@ -321,9 +322,8 @@ that does to the deferred lane by default.
 - [ ] Scenes 17, 217: extend reached PBR material options.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
 - [ ] Scenes 202-207: extend reached engine options.
-- [ ] Scene 218: support asset-container entity iteration.
-- [ ] Scene 219: lower a value return that is not an inlined function's final
-  statement.
+- [ ] Scene 219: recursion (`findSkinned`) carries the reported non-final
+  return, and vertex-animation textures (`VatHandle`/`VatClip`) sit behind it.
 - [ ] Scene 231: support `enableStandardSkeleton`; behind it sit
   `enableStandardUvOffset`, `createTexture2DFromPixels`, the skeleton subpath
   imports (`createSkeleton`, `updateSkeletonBoneMatrices`), its shared

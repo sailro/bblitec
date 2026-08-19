@@ -9,6 +9,24 @@ type Fail = (node: ts.Node, message: string) => never;
  * objects, dynamic arrays, readonly views, and all-number tuples. Engine
  * handles never enter this model; they keep their dedicated value kinds.
  */
+/**
+ * The engine handles the data model can carry. Each is a trivially copyable
+ * id, so the value-copy model needs no special case for them, and each pinned
+ * type that names one maps here rather than at every use site.
+ */
+export type HandleKind = "mesh" | "animation-group";
+
+const handleCppTypes: Record<HandleKind, string> = {
+    "mesh": "bbl::MeshHandle",
+    "animation-group": "bbl::AnimationGroupHandle",
+};
+
+/** The pinned type name each handle kind is declared as. */
+const pinnedHandleTypes: Record<string, HandleKind> = {
+    Mesh: "mesh",
+    AnimationGroup: "animation-group",
+};
+
 export type DataType =
     | { kind: "number" }
     | { kind: "boolean" }
@@ -17,7 +35,7 @@ export type DataType =
     // ids, so the value-copy model carries them unchanged: copying a
     // struct copies the id and both refer to the same resource, which
     // is exactly the JavaScript object-reference behavior.
-    | { kind: "handle"; handle: "mesh" }
+    | { kind: "handle"; handle: HandleKind }
     | { kind: "struct"; name: string }
     | { kind: "enum"; name: string }
     | { kind: "optional"; inner: DataType }
@@ -292,11 +310,11 @@ export class DataTypeRegistry {
         if (type.symbol?.name === "Uint32Array") {
             return { kind: "u32array" };
         }
-        if (
-            type.symbol?.name === "Mesh" &&
-            declaredInBabylonLite(type.symbol)
-        ) {
-            return { kind: "handle", handle: "mesh" };
+        const pinnedHandle = type.symbol
+            ? pinnedHandleTypes[type.symbol.name]
+            : undefined;
+        if (pinnedHandle && declaredInBabylonLite(type.symbol!)) {
+            return { kind: "handle", handle: pinnedHandle };
         }
         const objectType = type as ts.ObjectType;
         if (
@@ -800,7 +818,7 @@ export class DataTypeRegistry {
             case "boolean":
                 return "bool";
             case "handle":
-                return "bbl::MeshHandle";
+                return handleCppTypes[dataType.handle];
             case "struct":
                 return `bblscene::${dataType.name}`;
             case "enum":
