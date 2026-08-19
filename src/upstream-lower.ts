@@ -135,6 +135,8 @@ export interface UpstreamEmitOptions {
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
     materialSpecular: boolean;
+    /** The `KHR_materials_variants` a scene selected, or "" when unreached. */
+    selectedMaterialVariant: string;
     standardLights: number;
     standardLightLists: boolean;
     standardDiffuseUv2: boolean;
@@ -445,6 +447,7 @@ class GeneratedSourceWriter {
                     options.animationPointerMaterials,
                     options.assetTransmission,
                     options.materialSpecular,
+                    options.selectedMaterialVariant,
                 ),
                 generated,
             );
@@ -1336,6 +1339,7 @@ export function emitUpstreamGenerated(
         animationPointerMaterials: false,
         assetTransmission: false,
         materialSpecular: false,
+        selectedMaterialVariant: "",
         standardLights: 0,
         standardLightLists: false,
         standardDiffuseUv2: false,

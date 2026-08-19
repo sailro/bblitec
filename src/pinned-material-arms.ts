@@ -22,6 +22,8 @@ import {
     asNumber,
     asObject,
     glbDocument,
+    selectedVariantIndex,
+    variantMaterialIndex,
     type JsonObject,
 } from "./gltf-document.js";
 import {
@@ -511,7 +513,11 @@ export async function composeRenderableVariants(
     path: string,
     arms: readonly PinnedSceneArm[],
     materialIndexBase = 0,
-    scene: { linearImageProcessing?: boolean } = {},
+    scene: {
+        linearImageProcessing?: boolean;
+        /** The `KHR_materials_variants` this scene selected on the asset. */
+        selectedVariant?: string;
+    } = {},
     geometryTasks: readonly PinnedGeometryTaskRequest[] = [],
 ): Promise<readonly PinnedRenderableVariant[]> {
     const document = glbView(path);
@@ -526,7 +532,12 @@ export async function composeRenderableVariants(
     // renderable table keys on `(material, meshFeatures)` so both are
     // reached. Grouped from the same walk that keys the runtime's handles.
     const featureSets = new Map<number, Set<number>>();
-    for (const renderable of await gltfRenderables(document)) {
+    for (
+        const renderable of await gltfRenderables(
+            document,
+            scene.selectedVariant,
+        )
+    ) {
         const set = featureSets.get(renderable.material) ?? new Set<number>();
         set.add(renderable.features);
         featureSets.set(renderable.material, set);
@@ -824,6 +835,8 @@ export async function composeScenePbrVariants(
  */
 export async function gltfRenderables(
     document: GltfDocument,
+    /** The `KHR_materials_variants` a scene selected, by name. */
+    selectedVariantName?: string,
 ): Promise<ReadonlyArray<{ material: number; features: number }>> {
     const record = document as unknown as Record<string, unknown>;
     const nodes = Array.isArray(record["nodes"])
@@ -832,6 +845,13 @@ export async function gltfRenderables(
     const meshes = Array.isArray(record["meshes"])
         ? (record["meshes"] as Record<string, unknown>[])
         : [];
+    // A selected variant reassigns which material a mapped primitive draws
+    // with, so the arms compose for the material the frame actually carries.
+    const selectedVariant = selectedVariantIndex(
+        record,
+        selectedVariantName,
+        "composition",
+    );
     const renderables: { material: number; features: number }[] = [];
     for (const node of nodes) {
         const meshIndex = node["mesh"];
@@ -839,10 +859,12 @@ export async function gltfRenderables(
         const primitives = meshes[meshIndex]?.["primitives"];
         if (!Array.isArray(primitives)) continue;
         for (const primitive of primitives as Record<string, unknown>[]) {
+            const material = variantMaterialIndex(
+                primitive,
+                selectedVariant,
+            );
             renderables.push({
-                material: typeof primitive["material"] === "number"
-                    ? (primitive["material"] as number)
-                    : (document.materials?.length ?? 0),
+                material: material ?? (document.materials?.length ?? 0),
                 features: await pinnedMeshFeaturesFromPrimitive(primitive, {
                     skinned: node["skin"] !== undefined,
                     instanced:

@@ -65,6 +65,16 @@ export const asNumbers = (value: unknown): number[] | undefined =>
         ? (value as number[])
         : undefined;
 
+/**
+ * A glTF index field: a non-negative integer. Stricter than `asNumber` on
+ * purpose — every field read through this names a position in a document
+ * array, and a fractional or negative one is malformed rather than absent.
+ */
+export const asIndex = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isInteger(value) && value >= 0
+        ? value
+        : undefined;
+
 export const asString = (value: unknown): string | undefined =>
     typeof value === "string" ? value : undefined;
 
@@ -158,3 +168,73 @@ export const animatedMaterialPointerPatterns = {
         "extensions/KHR_materials_emissive_strength/emissiveStrength",
     ],
 } as const;
+
+/**
+ * The `KHR_materials_variants` names a document declares, in the index order
+ * its primitives' `mappings` refer to.
+ */
+export function gltfVariantNames(document: JsonRecord): string[] {
+    return asRecords(
+        asObject(asObject(document.extensions)?.["KHR_materials_variants"])
+            ?.variants,
+    ).map((variant) => asString(variant.name) ?? "");
+}
+
+/**
+ * The index a scene's `selectVariant` name resolves to, or undefined when the
+ * scene selected nothing. A name the document does not declare throws here,
+ * once, rather than degrading to "no selection" in one consumer and refusing
+ * in another.
+ */
+export function selectedVariantIndex(
+    document: JsonRecord,
+    selectedVariantName: string | undefined,
+    assetName: string,
+): number | undefined {
+    if (selectedVariantName === undefined) return undefined;
+    const names = gltfVariantNames(document);
+    const index = names.indexOf(selectedVariantName);
+    if (index < 0) {
+        throw new Error(
+            `${assetName}: selectVariant names '${selectedVariantName}', ` +
+                `which the asset does not declare (${
+                    names.join(", ") || "no variants"
+                }).`,
+        );
+    }
+    return index;
+}
+
+/**
+ * The material a primitive draws with once a variant is selected, which is the
+ * pin's `loadVariantMaterials` mapping walk and `selectVariant`'s
+ * reassignment composed: `selectVariant` restores every original and then
+ * assigns every entry the chosen variant maps, in order, so the last mapping
+ * naming that variant wins and a primitive it does not map keeps
+ * `primitive.material`. With no selection nothing is reassigned at all,
+ * which is why an asset carrying the extension renders identically to one
+ * without it until a scene selects.
+ */
+export function variantMaterialIndex(
+    primitive: JsonRecord,
+    selectedVariant: number | undefined,
+): number | undefined {
+    const own = asIndex(primitive.material);
+    if (selectedVariant === undefined) return own;
+    let mapped = own;
+    for (
+        const mapping of asRecords(
+            asObject(asObject(primitive.extensions)?.[
+                "KHR_materials_variants"
+            ])?.mappings,
+        )
+    ) {
+        const variants = Array.isArray(mapping.variants)
+            ? mapping.variants
+            : [];
+        if (variants.some((index) => asIndex(index) === selectedVariant)) {
+            mapped = asIndex(mapping.material) ?? mapped;
+        }
+    }
+    return mapped;
+}

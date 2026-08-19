@@ -53,6 +53,7 @@ function emitOptions(
         animationPointerMaterials: false,
         assetTransmission: false,
         materialSpecular: false,
+        selectedMaterialVariant: "",
         standardLights: 0,
         standardLightLists: false,
         standardDiffuseUv2: false,

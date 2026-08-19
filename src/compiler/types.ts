@@ -179,6 +179,13 @@ export interface CompileAsset {
         | "sprite-atlas"
         | "texture";
     faceSize?: number;
+    /**
+     * The `KHR_materials_variants` name a scene's `selectVariant` chose on
+     * this asset. One static selection is the reached shape, so generation
+     * resolves which material each mapped primitive draws with instead of
+     * carrying the pin's run-time variant table.
+     */
+    selectedVariant?: string;
 }
 
 export type GeometryTextureTypeName =
@@ -275,6 +282,12 @@ export interface Value {
      * the assignment stored.
      */
     scenePbrMaterialIndex?: number;
+    /**
+     * The materialized asset an `asset` value was loaded from.
+     * `selectVariant` needs it the way the pin's own setter reaches
+     * `container.materialVariants`: through the object, not by name.
+     */
+    asset?: CompileAsset;
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     lightKind?: LightKind;
@@ -356,6 +369,7 @@ export type Feature =
     | "light:spot"
     | "loader:babylon"
     | "loader:gltf"
+    | "loader:gltf-variants"
     | "material:pbr"
     | "material:clearcoat"
     | "material:sheen"

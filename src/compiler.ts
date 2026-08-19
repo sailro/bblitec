@@ -164,6 +164,7 @@ const featureSources: Record<Feature, string[]> = {
     "light:spot": [],
     "loader:babylon": [],
     "loader:gltf": [],
+    "loader:gltf-variants": [],
     "material:pbr": [],
     "material:clearcoat": [],
     "material:sheen": [],
@@ -1407,6 +1408,9 @@ class Compiler
         this.fail(unwrapped, "Expected a reached callback condition.");
     }
 
+    /** Nonzero while a frame callback's statements are being lowered. */
+    private frameCallbackDepth = 0;
+
     public compileFrameCallback(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
@@ -1448,11 +1452,13 @@ class Compiler
                     ),
                 });
             }
+            this.frameCallbackDepth += 1;
             for (const statement of unwrapped.body
                 .statements) {
                 this.emitStatement(statement);
             }
         } finally {
+            this.frameCallbackDepth -= 1;
             this.popScope();
             this.indentLevel = previousIndent;
         }
@@ -1469,6 +1475,7 @@ class Compiler
         const start = this.body.length;
         const previousIndent = this.indentLevel;
         this.indentLevel = 0;
+        this.frameCallbackDepth += 1;
         try {
             const value =
                 this.userFunctions.compileReference(
@@ -1485,6 +1492,7 @@ class Compiler
                 this.emit(`${value.cpp};`);
             }
         } finally {
+            this.frameCallbackDepth -= 1;
             this.indentLevel = previousIndent;
         }
         const callbackBody = this.body.splice(start);
@@ -2083,6 +2091,58 @@ class Compiler
         expression: ts.Expression,
     ): string {
         return registerSpriteAtlasAsset(this, expression);
+    }
+
+    /**
+     * Records the one `KHR_materials_variants` selection a scene makes.
+     *
+     * The fold represents a selection that holds for the whole run, so every
+     * shape it cannot produce refuses here rather than compiling to a state
+     * the pin never reaches: a second, differing selection on one asset (only
+     * the last would render), a selection on a second asset (one name is
+     * compiled in and the generated loader matches it against every document
+     * it loads), and a selection made from a frame callback (per-frame
+     * reassignment folded into frame zero).
+     */
+    public selectGltfVariant(
+        asset: CompileAsset,
+        variantName: string,
+        node: ts.Node,
+    ): void {
+        if (this.frameCallbackDepth > 0) {
+            this.fail(
+                node,
+                "selectVariant is folded to one selection for the whole run, " +
+                    "so it cannot be called from a frame callback; that " +
+                    "would need the pin's run-time variant table.",
+            );
+        }
+        if (
+            asset.selectedVariant !== undefined &&
+            asset.selectedVariant !== variantName
+        ) {
+            this.fail(
+                node,
+                `selectVariant already chose '${asset.selectedVariant}' on ` +
+                    "this asset; a second selection would need the pin's " +
+                    "run-time variant table.",
+            );
+        }
+        const other = [...this.assets.values()].find(
+            (candidate) =>
+                candidate !== asset &&
+                candidate.selectedVariant !== undefined,
+        );
+        if (other) {
+            this.fail(
+                node,
+                `selectVariant already chose '${other.selectedVariant}' on ` +
+                    `'${other.output}'; one name is compiled in for the ` +
+                    "scene, so a second selecting asset would need the pin's " +
+                    "run-time variant table.",
+            );
+        }
+        asset.selectedVariant = variantName;
     }
 
     public resolveBundledAsset(source: string): string {

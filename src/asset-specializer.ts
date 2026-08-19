@@ -8,6 +8,8 @@ import {
     asString,
     asStrings,
     parseGlbJson,
+    selectedVariantIndex,
+    variantMaterialIndex,
     type JsonRecord,
 } from "./gltf-document.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
@@ -64,7 +66,10 @@ function asNumber(value: unknown): number | undefined {
     return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
-function renderItemSpecializations(document: JsonRecord): RenderItemSpecialization[] {
+function renderItemSpecializations(
+    document: JsonRecord,
+    selectedVariant: number | undefined,
+): RenderItemSpecialization[] {
     const nodes = asRecords(document.nodes);
     const meshes = asRecords(document.meshes);
     const materials = asRecords(document.materials);
@@ -77,7 +82,10 @@ function renderItemSpecializations(document: JsonRecord): RenderItemSpecializati
         const mesh = meshes[meshIndex];
         if (!mesh) return;
         asRecords(mesh.primitives).forEach((primitive, primitiveIndex) => {
-            const materialIndex = asNumber(primitive.material);
+            const materialIndex = variantMaterialIndex(
+                primitive,
+                selectedVariant,
+            );
             const material = materialIndex === undefined ? undefined : materials[materialIndex];
             const alphaModeValue = asString(material?.alphaMode);
             const alphaMode =
@@ -166,6 +174,10 @@ const supportedExtensions = new Set<string>([
     "EXT_lights_image_based",
     "KHR_node_visibility",
     "KHR_animation_pointer",
+    // The mappings only take effect through `selectVariant`; until a scene
+    // selects, the pin reassigns nothing and both sides draw
+    // `primitive.material`.
+    "KHR_materials_variants",
     "EXT_mesh_gpu_instancing",
     "EXT_texture_webp",
     // Decoded away during materialization (compressed-geometry.ts), so the
@@ -191,7 +203,6 @@ const pinOnlyExtensions = new Set<string>([
     "KHR_materials_anisotropy",
     "KHR_materials_diffuse_transmission",
     "KHR_texture_basisu",
-    "KHR_materials_variants",
 ]);
 
 /**
@@ -397,8 +408,19 @@ function extensionModuleMap(store: UpstreamSourceStore): Map<string, string> {
     return result;
 }
 
-export function specializeGltf(path: string, assetName: string, store = new UpstreamSourceStore()): GltfSpecialization {
+export function specializeGltf(
+    path: string,
+    assetName: string,
+    /** The variant a scene's `selectVariant` chose on this asset, by name. */
+    selectedVariantName?: string,
+    store = new UpstreamSourceStore(),
+): GltfSpecialization {
     const document = parseGlbJson(path);
+    const selectedVariant = selectedVariantIndex(
+        document,
+        selectedVariantName,
+        assetName,
+    );
     const extensionsUsed = asStrings(document.extensionsUsed);
     const modules = new Set<string>();
     const extensionModules = extensionModuleMap(store);
@@ -559,7 +581,7 @@ export function specializeGltf(path: string, assetName: string, store = new Upst
         asset: assetName,
         extensionsUsed,
         staticModules: [...modules].sort(),
-        renderItems: renderItemSpecializations(document),
+        renderItems: renderItemSpecializations(document, selectedVariant),
         features: {
             animations,
             morphTargets,
@@ -640,8 +662,11 @@ export function emitAssetSpecializations(
     let nextDrawId = 1;
     let nextClusterId = 1;
     const specializations = gltfAssets.map((asset) => {
-        const specialization =
-            specializeGltf(resolve(outputRoot, "assets", asset.output), asset.output);
+        const specialization = specializeGltf(
+            resolve(outputRoot, "assets", asset.output),
+            asset.output,
+            asset.selectedVariant,
+        );
         return {
             ...specialization,
             renderItems: specialization.renderItems.map((item) => {

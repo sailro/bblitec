@@ -221,7 +221,21 @@ export function gltfLoaderCpp(
     animationPointerMaterials = false,
     assetTransmission = false,
     materialSpecular = false,
+    /**
+     * The `KHR_materials_variants` name a scene's `selectVariant` chose, or
+     * "" when unreached. One static selection is the reached shape, so the
+     * name is the only compile-time input: the variant order and the
+     * per-primitive mappings are read from the document, like every other
+     * asset fact.
+     */
+    selectedMaterialVariant = "",
 ): string {
+    // The scene selected a variant, so the loader resolves each mapped
+    // primitive's material. `JSON.stringify` is the C++ string literal: the
+    // name is asset-declared text, and every other interpolated literal in
+    // this template is a pin-derived JSON key that needs no escaping.
+    const materialVariants = selectedMaterialVariant !== "";
+    const selectedVariantLiteral = JSON.stringify(selectedMaterialVariant);
     const defaults = lowered.extensionDefaults;
     const materialDefaults = lowered.materialDefaults;
     const factorBake = lowered.factorBake;
@@ -811,7 +825,59 @@ std::size_t texture_image_index(const JsonObject& texture) {
     }
     return unsigned_value(required(texture, "source"));
 }
-
+${materialVariants ? `
+// src/loader-gltf/material-variants.ts#selectVariant composed with
+// gltf-feature-variants.ts's mapping walk: the selection restores every
+// original material and then applies the entries the chosen variant maps, so
+// a primitive that variant does not map keeps its own material. The chosen
+// name is the scene's; the variant order and the mappings are the
+// document's.
+std::size_t variant_material_index(
+    const JsonObject& document,
+    const JsonObject& primitive,
+    std::size_t fallback) {
+    const std::size_t own = unsigned_or(primitive, "material", fallback);
+    const ts::JsonValue* extensions = optional(document, "extensions");
+    if (!extensions) return own;
+    const ts::JsonValue* declared =
+        optional(extensions->as_object(), "KHR_materials_variants");
+    if (!declared) return own;
+    const JsonArray& variants =
+        array_or_empty(declared->as_object(), "variants");
+    std::size_t selected = variants.size();
+    for (std::size_t index = 0; index < variants.size(); ++index) {
+        const ts::JsonValue* name =
+            optional(variants[index].as_object(), "name");
+        if (name && name->as_string() == ${selectedVariantLiteral}) {
+            selected = index;
+            break;
+        }
+    }
+    if (selected == variants.size()) return own;
+    const ts::JsonValue* extended = optional(primitive, "extensions");
+    if (!extended) return own;
+    const ts::JsonValue* mappings_ext =
+        optional(extended->as_object(), "KHR_materials_variants");
+    if (!mappings_ext) return own;
+    // selectVariant assigns every entry the variant maps, in order, so the
+    // last mapping naming it is the one that survives.
+    std::size_t mapped = own;
+    for (
+        const ts::JsonValue& mapping :
+        array_or_empty(mappings_ext->as_object(), "mappings")) {
+        for (
+            const ts::JsonValue& variant :
+            array_or_empty(mapping.as_object(), "variants")) {
+            if (unsigned_value(variant) == selected) {
+                mapped =
+                    unsigned_or(mapping.as_object(), "material", mapped);
+                break;
+            }
+        }
+    }
+    return mapped;
+}
+` : ""}
 TextureData image_data(
     const ts::ArrayBuffer& buffer,
     const upstream::ParsedGlbContainer& container,
@@ -2194,7 +2260,9 @@ ${nonTrianglePrimitives
                 : compute_world(node_index);
             const float determinant = linear_determinant(matrix);
             const std::size_t material_index =
-                unsigned_or(primitive, "material", material_json.size());
+                ${materialVariants
+                    ? `variant_material_index(document, primitive, material_json.size())`
+                    : `unsigned_or(primitive, "material", material_json.size())`};
             // A primitive with no material index takes the pin's default
             // material -- getMat(undefined) assembles one from an empty
             // object -- created once and appended after the document's,

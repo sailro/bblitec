@@ -172,7 +172,12 @@ export async function composeScenePipeline({
             path,
             sceneArms,
             materialIndexBase,
-            { linearImageProcessing },
+            {
+                linearImageProcessing,
+                ...(asset.selectedVariant
+                    ? { selectedVariant: asset.selectedVariant }
+                    : {}),
+            },
             // A PBR mesh drawn in a geometry-output task resolves the pin's
             // own MRT arm for that task's attachment list.
             result.manifest.geometryOutputTasks.map((task, index) => ({

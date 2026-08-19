@@ -345,6 +345,13 @@ compiled away:
   are deindexed with face normals baked in, triangle strips expand to the
   triangle list they describe, `KHR_node_visibility` cascades into each mesh
   record, and texture-less PBR factors bake into 1x1 texels.
+- `KHR_materials_variants`: the loader reads each primitive's mappings and the
+  document's variant order, and draws the material the scene's one static
+  `selectVariant` name resolves to. Only that name is compiled in; the pin's
+  run-time variant table is not carried, so a second differing selection, a
+  second selecting asset, a selection made from a frame callback,
+  `getVariantNames` and `resetVariant` all refuse at generation
+  ([fidelity](fidelity.md#semantic-contract)).
 
 ### Geometry and meshes
 

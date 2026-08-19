@@ -175,7 +175,7 @@ record future audits build on.
 
 ## P1 — Full Babylon Lite corpus audit
 
-166 corpus scenes remain unregistered; measured scenes are in
+165 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -219,7 +219,7 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (132 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25-27, 36, 38,
+**Integrate first (131 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25, 26, 36, 38,
 43, 51-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152, 155-158, 160, 162,
 165, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229, 231, 241, 251,
 261-264, 269-271, 275-280. Includes static CSG/CSG2, compressed assets and
@@ -249,7 +249,6 @@ that does to the deferred lane by default.
 - [ ] Scenes 18, 25: support Standard ground diffuse textures.
 - [ ] Scene 20: lower an arrow function bound to a name and used as a value.
 - [ ] Scenes 26, 87: support image-processing `toneMapping`.
-- [ ] Scene 27: support glTF `selectVariant`.
 - [ ] Scene 36: support `loadBasisTexture2D`.
 - [ ] Scene 38: support `createCylinder`.
 - [ ] Scene 148: support `createDepthOfFieldPostProcessTask`.
