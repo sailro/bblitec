@@ -1194,6 +1194,42 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene54",
+        name: "Scene 54 - Facing Billboards",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene54.ts",
+        title: "Babylon Lite Native - Facing Billboards",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [41, 46, 56],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene55",
+        name: "Scene 55 - Billboard Field",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene55.ts",
+        title: "Babylon Lite Native - Billboard Field",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene98",
+        name: "Scene 98 - Billboard Sprites",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene98.ts",
+        title: "Babylon Lite Native - Billboard Sprites",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene177",
         name: "Scene 177 - Iridescence Sphere",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene177.ts",

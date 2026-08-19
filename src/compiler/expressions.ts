@@ -85,6 +85,7 @@ export interface ExpressionContext
     evaluateBrowserValue(
         expression: ts.Expression,
     ): Value["browserValue"] | undefined;
+    compileRegisteredConstant(importedName: string): Value | undefined;
     compileRegisteredIntrinsic(
         importedName: string,
         call: ts.CallExpression,
@@ -129,6 +130,16 @@ export class ExpressionLowerer {
                 this.context.resolveStaticExpression(unwrapped);
             if (resolved !== unwrapped) {
                 return this.compileValue(resolved);
+            }
+            // A pinned constant a scene imports by name -- pure data the
+            // intrinsic families own, not a local.
+            const importedName =
+                this.context.symbols.importedName(unwrapped);
+            const constant = importedName
+                ? this.context.compileRegisteredConstant(importedName)
+                : undefined;
+            if (constant) {
+                return constant;
             }
             return this.context.lookup(unwrapped);
         }

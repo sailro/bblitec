@@ -10,7 +10,12 @@ import { GltfLowerer } from "./lowering/gltf-lowerer.js";
 import { BabylonLowerer } from "./lowering/babylon-lowerer.js";
 import { FactoryLowerer } from "./lowering/factory-lowerer.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
+import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
 import { SpriteLowerer } from "./lowering/sprite-lowerer.js";
+import {
+    billboardFragmentWgsl,
+    billboardVertexWgsl,
+} from "./shader-builtins-billboard.js";
 import {
     spriteFragmentWgsl,
     spriteVertexWgsl,
@@ -545,6 +550,44 @@ class GeneratedSourceWriter {
                         "makeSpritePrologueWgsl,makeSpriteWgsl,buildSpriteLayerUbo",
                 });
             }
+        }
+        if (features.includes("sprite:billboard")) {
+            // The billboard vertex stage reads the scene block, so it takes
+            // the renderer's own copy of that WGSL rather than a second one.
+            const billboards = new BillboardLowerer(
+                context,
+                new RendererLowerer(
+                    context,
+                ).compiledSceneUniformsWgsl(),
+            );
+            this.writeSource(
+                "upstream/src/billboard_system.cpp",
+                billboards.lowerCore(),
+                generated,
+                "upstream/include/bblite/upstream/billboard_system.hpp",
+            );
+            const shader = billboards.shaderSource();
+            const provenance = context.provenance(
+                "src/sprite/billboard-pipeline.ts",
+                "makeBillboardWgsl",
+            );
+            composedShaders.push(
+                {
+                    output:
+                        "upstream/shaders/billboard.vert.native.wgsl",
+                    data: billboardVertexWgsl(provenance, shader),
+                },
+                {
+                    output:
+                        "upstream/shaders/billboard.frag.native.wgsl",
+                    data: billboardFragmentWgsl(provenance, shader),
+                },
+            );
+            generated.push({
+                modulePath: "src/sprite/billboard-pipeline.ts",
+                symbolName:
+                    "makeBillboardWgsl,makeBillboardBasisWgsl,buildBillboardSystemUbo",
+            });
         }
         if (features.includes("renderer:pbr")) {
             const renderer = new RendererLowerer(context);

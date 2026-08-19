@@ -366,6 +366,28 @@ else()
     )
 endif()
 
+if("sprite:billboard" IN_LIST BBLITE_RUNTIME_FEATURES)
+    # A billboard draws inside the scene's pass, so unlike a 2D sprite layer
+    # it needs no renderer of its own -- but it still decodes the atlas PNG.
+    if(SDL3_FOUND)
+        find_package(SDL3_image CONFIG REQUIRED)
+        target_link_libraries(
+            bblite_native
+            PRIVATE
+            $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
+        )
+    endif()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_BILLBOARDS=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_BILLBOARDS=0
+    )
+endif()
+
 if("renderer:geometry-output" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_compile_definitions(
         bblite_native

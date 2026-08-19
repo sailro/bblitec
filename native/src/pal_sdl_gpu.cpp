@@ -29,6 +29,9 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_gpu_shared.hpp"
+#if BBLITE_HAS_BILLBOARDS
+#include "pal_sdl_gpu_billboard.hpp"
+#endif
 #include "pal_render_capture.hpp"
 
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
@@ -499,6 +502,9 @@ struct GpuState {
     SDL_GPUTextureFormat depth_format =
         SDL_GPU_TEXTUREFORMAT_D16_UNORM;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
+#if BBLITE_HAS_BILLBOARDS
+    std::vector<BillboardPass> billboard_passes;
+#endif
     std::uint32_t color_width = 0;
     std::uint32_t color_height = 0;
     std::uint32_t processed_color_width = 0;
@@ -2668,6 +2674,12 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
 
 void release(GpuState& state) {
     release_frame_graph_textures(state);
+#if BBLITE_HAS_BILLBOARDS
+    for (BillboardPass& billboard : state.billboard_passes) {
+        release_billboard_pass(state.device, billboard);
+    }
+    state.billboard_passes.clear();
+#endif
     for (GpuMesh& mesh : state.meshes) {
         release_gpu_mesh(state, mesh);
     }
@@ -3246,6 +3258,19 @@ bool run_gpu_engine(Engine& engine) {
         // The pinned pipelines are built lazily on first use, long after this
         // point, and they target the same attachment as the transcribed ones.
         state.pinned_color_format = color_target.format;
+#endif
+#if BBLITE_HAS_BILLBOARDS
+        // One pass per system the scene registered, targeting the same
+        // attachment and depth the scene's own draws do.
+        for (const BillboardSystemHandle system : scene.billboard_systems) {
+            state.billboard_passes.push_back(create_billboard_pass(
+                state.device,
+                engine,
+                system,
+                color_target.format,
+                state.depth_format,
+                state.sample_count));
+        }
 #endif
         // The shared material vertex with no fragment: the PBR fragment text
         // is retired -- PBR draws run the pin's own composed stages -- so this
@@ -4485,6 +4510,22 @@ bool run_gpu_engine(Engine& engine) {
                 upstream::build_skybox_view_projection(
                     camera,
                     aspect);
+#if BBLITE_HAS_BILLBOARDS
+            // The sort depends on the camera, so it runs every frame, and on
+            // its own command buffer -- before the frame's is acquired.
+            {
+                const std::array<float, 16> billboard_view =
+                    upstream::build_view_matrix(
+                        upstream::camera_world_matrix(camera));
+                for (BillboardPass& billboard : state.billboard_passes) {
+                    upload_billboard_pass(
+                        state.device,
+                        engine,
+                        billboard,
+                        billboard_view);
+                }
+            }
+#endif
             // The render capture describes CPU state alone, so it is
             // written as soon as the frame's plan, camera and matrix are
             // final rather than after the passes -- the values it reads
@@ -6256,6 +6297,22 @@ bool run_gpu_engine(Engine& engine) {
                         break;
                 }
             }
+#if BBLITE_HAS_BILLBOARDS
+            // Billboards close the scene's pass: transparent geometry that
+            // blends over every stage above and tests against the depth they
+            // wrote, which is what makes them occlude and be occluded.
+            for (const BillboardPass& billboard : state.billboard_passes) {
+                record_billboard_pass(
+                    command,
+                    pass,
+                    engine,
+                    billboard,
+                    matrix,
+                    upstream::build_view_matrix(
+                        upstream::camera_world_matrix(camera)));
+            }
+            scene_matrix_bound = false;
+#endif
             SDL_EndGPURenderPass(pass);
             SDL_GPUTexture* visible_color = state.color;
             if (transmission_enabled) {

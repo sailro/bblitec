@@ -14,6 +14,27 @@ export interface SpriteIntrinsicContext
 }
 
 /**
+ * The pin's billboard blend descriptors are pure-data exports a scene
+ * imports by name, so an identifier naming one compiles to the native
+ * factory the billboard lowerer emits for it. Resolving by name rather than
+ * by a list of cases means a descriptor the pin adds needs no change here;
+ * one it removes fails at the native link, naming the symbol.
+ */
+export function compileSpriteConstant(
+    importedName: string,
+): Value | undefined {
+    if (!/^billboardBlend[A-Z]/.test(importedName)) {
+        return undefined;
+    }
+    const key = importedName.slice("billboardBlend".length);
+    return {
+        kind: "sprite-blend",
+        cpp: `bbl::billboard_blend_${key.toLowerCase()}()`,
+        staticString: importedName,
+    };
+}
+
+/**
  * Reads an options record written as an object literal at the call site.
  * Babylon Lite's sprite entry points all take one, and every reached call
  * writes it inline, so the record is the compile-time thing it looks like.
@@ -352,6 +373,190 @@ export function compileSpriteIntrinsic(
                     `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}})`,
                 engineCpp,
             };
+        }
+
+        case "createFacingBillboardSystem": {
+            context.expectArgumentCount(call, 1, 2);
+            const atlas = context.compileValue(
+                call.arguments[0]!,
+            );
+            context.expectKind(
+                atlas,
+                "sprite-atlas",
+                call.arguments[0]!,
+            );
+            const options = optionsRecord(
+                context,
+                call.arguments[1],
+                "createFacingBillboardSystem",
+            );
+            // Every arm the lowered permutation does not cover refuses
+            // here, so a scene reaching one gets a message naming it
+            // rather than a plausible wrong image.
+            // The blend is one of the pin's own exported descriptors,
+            // resolved by the name the scene imported: `billboardBlendAlpha`
+            // is `billboard_blend_alpha()`. `cutout` carries no colour blend
+            // and drives an alpha-test depth-write path this slice does not
+            // render, so it refuses rather than drawing the wrong one.
+            const blendMode = property(options, "blendMode");
+            let blendCpp = "bbl::billboard_blend_alpha()";
+            if (blendMode) {
+                if (blendMode.kind !== "sprite-blend") {
+                    context.fail(
+                        call.arguments[1]!,
+                        "createFacingBillboardSystem blendMode must be one of the pinned billboardBlend* descriptors.",
+                    );
+                }
+                if (blendMode.staticString === "billboardBlendCutout") {
+                    context.fail(
+                        call.arguments[1]!,
+                        "billboardBlendCutout drives the alpha-test depth-write path, which is not lowered.",
+                    );
+                }
+                blendCpp = blendMode.cpp;
+            }
+            for (const unreached of [
+                "customShader",
+                "alphaCutoff",
+                "alphaToCoverage",
+            ]) {
+                if (property(options, unreached)) {
+                    context.fail(
+                        call.arguments[1]!,
+                        `createFacingBillboardSystem option '${unreached}' is not lowered.`,
+                    );
+                }
+            }
+            const engineCpp =
+                atlas.engineCpp ??
+                context.requireDefaultEngine(call);
+            context.reachFeature("sprite:billboard", call);
+            return {
+                kind: "billboard-system",
+                cpp:
+                    `bbl::create_facing_billboard_system(${engineCpp}, ` +
+                    `${atlas.cpp}, bbl::BillboardSystemOptions{` +
+                    `${numberOption(options, "capacity", "16.0f")}, ` +
+                    `${blendCpp}, ` +
+                    `${numberOption(options, "opacity", "1.0f")}, ` +
+                    `${property(options, "visible")?.cpp ?? "true"}, ` +
+                    `${numberOption(options, "order", "200.0f")}})`,
+                engineCpp,
+            };
+        }
+
+        case "addBillboardSpriteIndex": {
+            context.expectArgumentCount(call, 2, 2);
+            const system = context.compileValue(
+                call.arguments[0]!,
+            );
+            context.expectKind(
+                system,
+                "billboard-system",
+                call.arguments[0]!,
+            );
+            const props = optionsRecord(
+                context,
+                call.arguments[1],
+                "addBillboardSpriteIndex",
+            );
+            const position = tupleOption(
+                context,
+                props,
+                "position",
+                call,
+                3,
+            );
+            if (!position) {
+                context.fail(
+                    call,
+                    "addBillboardSpriteIndex: position required.",
+                );
+            }
+            const sizeWorld = tupleOption(
+                context,
+                props,
+                "sizeWorld",
+                call,
+                2,
+            );
+            const pivot = tupleOption(
+                context,
+                props,
+                "pivot",
+                call,
+                2,
+            );
+            const color = tupleOption(
+                context,
+                props,
+                "color",
+                call,
+                4,
+            );
+            const frame = property(props, "frame");
+            const rotation = property(props, "rotation");
+            const flipX = property(props, "flipX");
+            const flipY = property(props, "flipY");
+            const visible = property(props, "visible");
+            const engineCpp =
+                system.engineCpp ??
+                context.requireDefaultEngine(call);
+            context.reachFeature("sprite:billboard", call);
+            return {
+                kind: "number",
+                cpp:
+                    `bbl::add_billboard_sprite_index(${engineCpp}, ` +
+                    `${system.cpp}, bbl::BillboardSpriteProps{` +
+                    `bbl::Vec3{${position.join(", ")}}, ` +
+                    `bbl::Vec2{${
+                        sizeWorld
+                            ? sizeWorld.join(", ")
+                            : "0.0f, 0.0f"
+                    }}, ${sizeWorld ? "true" : "false"}, ` +
+                    `${frame ? `static_cast<float>(${frame.cpp})` : "0.0f"}, ` +
+                    `${frame ? "true" : "false"}, ` +
+                    `${rotation ? `static_cast<float>(${rotation.cpp})` : "0.0f"}, ` +
+                    `${rotation ? "true" : "false"}, ` +
+                    `bbl::Vec2{${
+                        pivot ? pivot.join(", ") : "0.0f, 0.0f"
+                    }}, ${pivot ? "true" : "false"}, ` +
+                    `bbl::Vec4{${
+                        color
+                            ? color.join(", ")
+                            : "1.0f, 1.0f, 1.0f, 1.0f"
+                    }}, ${color ? "true" : "false"}, ` +
+                    `${flipX?.cpp ?? "false"}, ${flipX ? "true" : "false"}, ` +
+                    `${flipY?.cpp ?? "false"}, ${flipY ? "true" : "false"}, ` +
+                    `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}})`,
+                engineCpp,
+            };
+        }
+
+        case "addFacingBillboardSystem": {
+            context.expectArgumentCount(call, 2, 2);
+            const scene = context.compileValue(
+                call.arguments[0]!,
+            );
+            context.expectKind(scene, "scene", call.arguments[0]!);
+            const system = context.compileValue(
+                call.arguments[1]!,
+            );
+            context.expectKind(
+                system,
+                "billboard-system",
+                call.arguments[1]!,
+            );
+            context.reachFeature("sprite:billboard", call);
+            // A billboard system is a scene renderable: it draws inside the
+            // scene renderer's own pass, against its camera and depth. A
+            // scene of nothing but billboards still needs that pass, the way
+            // a render target does.
+            context.reachFeature("renderer:pbr", call);
+            context.emit(
+                `bbl::add_facing_billboard_system(${scene.cpp}, ${system.cpp});`,
+            );
+            return { kind: "void", cpp: "" };
         }
 
         case "createSpriteRenderer": {
