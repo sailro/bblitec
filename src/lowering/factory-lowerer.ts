@@ -2253,19 +2253,59 @@ void set_alpha_to_coverage(
                 "Expected rgba8unorm solid textures.",
             );
         }
-        // The opt-in setters replaced the unlit/skyboxMode options.
-        this.context.functionDeclaration(
-            "src/material/pbr/set-unlit.ts",
-            "setPbrUnlit",
-        );
-        this.context.functionDeclaration(
-            "src/material/pbr/set-skybox.ts",
-            "setPbrSkybox",
-        );
-        this.context.functionDeclaration(
-            "src/material/pbr/set-emissive.ts",
-            "setPbrEmissive",
-        );
+        // The opt-in setters replaced the unlit/skyboxMode options. Each is
+        // one stamp plus an unconditional extension registration, and the
+        // stamped field name is what `composeScenePbrVariants` hands the
+        // pinned composer: a renamed one would compose a fragment missing
+        // that arm rather than failing, so every stamp is pinned by shape.
+        // The `isEnabled` guards stay where the pin keeps them, in the UBO
+        // writers.
+        for (const [module, symbol, stamp] of [
+            ["set-unlit.ts", "setPbrUnlit", "mat._unlit = true"],
+            ["set-skybox.ts", "setPbrSkybox", "mat._skyboxMode = true"],
+            ["set-emissive.ts", "setPbrEmissive", "mat._emissiveColor = color"],
+            ["set-sheen.ts", "setPbrSheen", "mat._sheen = sheen"],
+            [
+                "set-clearcoat.ts",
+                "setPbrClearCoat",
+                "mat._clearCoat = clearCoat",
+            ],
+            [
+                "set-iridescence.ts",
+                "setPbrIridescence",
+                "mat._iridescence = iridescence",
+            ],
+        ] as const) {
+            const { declaration } = this.context.functionDeclaration(
+                `src/material/pbr/${module}`,
+                symbol,
+            );
+            // `setPbrUnlit`'s optional tint is a second assignment, so the
+            // stamp is located by its own left-hand path rather than by
+            // being the only one.
+            const target = stamp.slice(0, stamp.indexOf(" "));
+            const stamps = this.context
+                .findNodes(
+                    declaration,
+                    (node): node is ts.BinaryExpression =>
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind ===
+                            ts.SyntaxKind.EqualsToken,
+                )
+                .filter(
+                    (node) =>
+                        this.context
+                            .propertyPath(node.left)
+                            ?.join(".") === target,
+                );
+            if (stamps.length !== 1) {
+                this.context.contractError(
+                    declaration,
+                    `Expected ${symbol} to stamp ${stamp}.`,
+                );
+            }
+            this.context.assertExpressionShape(stamps[0]!, stamp, symbol);
+        }
         const { declaration: createPbrMaterial } =
             this.context.functionDeclaration(
                 pbrModule,
@@ -2305,7 +2345,7 @@ void set_alpha_to_coverage(
         );
         return {
             modulePath: pbrModule,
-            symbolName: "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,createSolidTexture2D,loadTexture2D",
+            symbolName: "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence,createSolidTexture2D,loadTexture2D",
             header: "",
             source: `// ${this.context.provenance(
                 pbrModule,
@@ -2437,6 +2477,29 @@ void set_pbr_clearcoat(
     record.clearcoat_roughness = roughness;
     record.clearcoat_index_of_refraction = index_of_refraction;
     record.clearcoat_normal_scale = normal_scale;
+}
+
+// src/material/pbr/fragments/iridescence-fragment.ts#writeIridescenceUBO:
+// a disabled layer writes no slice, and the record's zero intensity shades
+// as none. The pinned defaults are in the same writer -- intensity 1, index
+// of refraction 1.3, thickness 100..400 nm -- and the compiler resolved
+// them at the call site, so the values arrive already defaulted.
+void set_pbr_iridescence(
+    Engine& engine,
+    MaterialHandle material,
+    bool enabled,
+    float intensity,
+    float index_of_refraction,
+    float minimum_thickness,
+    float maximum_thickness) {
+    if (!enabled) {
+        return;
+    }
+    MaterialRecord& record = engine.materials[material.value];
+    record.iridescence_intensity = intensity;
+    record.iridescence_index_of_refraction = index_of_refraction;
+    record.iridescence_minimum_thickness = minimum_thickness;
+    record.iridescence_maximum_thickness = maximum_thickness;
 }
 
 MaterialHandle create_pbr_material(

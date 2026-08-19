@@ -37,7 +37,10 @@ import {
     compilePbrMaterialOptions,
     compileGridMaterialOptions,
     compileClearCoatOptions,
+    compileIridescenceOptions,
     compileSheenOptions,
+    type CompiledLayerOptions,
+    type CompiledPbrMaterialOptions,
     type MaterialOptionContext,
 } from "./compiler/intrinsics/material-options.js";
 import {
@@ -118,6 +121,7 @@ import type {
     ResolvedCompileOptions,
     SceneMeshManifest,
     ScenePbrClearCoatManifest,
+    ScenePbrIridescenceManifest,
     ScenePbrMaterialManifest,
     ScenePbrSheenManifest,
     Value,
@@ -165,6 +169,8 @@ const featureSources: Record<Feature, string[]> = {
     "material:sheen": [],
     "material:sheen-albedo-scaling": [],
     "material:clearcoat-f0-remap": [],
+    "material:iridescence": [],
+    "material:emissive": [],
     "material:no-color-view": [],
     "material:grid": [],
     "material:shader": [],
@@ -1168,26 +1174,7 @@ class Compiler
 
     public compilePbrMaterialOptions(
         expression: ts.Expression,
-    ): [
-        Value,
-        Value,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-    ] {
+    ): CompiledPbrMaterialOptions {
         return compilePbrMaterialOptions(this, expression);
     }
 
@@ -1197,8 +1184,14 @@ class Compiler
 
     public compileClearCoatOptions(
         expression: ts.Expression,
-    ): [string, string, string, string, string] {
+    ): CompiledLayerOptions {
         return compileClearCoatOptions(this, expression);
+    }
+
+    public compileIridescenceOptions(
+        expression: ts.Expression,
+    ): CompiledLayerOptions {
+        return compileIridescenceOptions(this, expression);
     }
 
     public compileSheenOptions(
@@ -2632,36 +2625,51 @@ class Compiler
     }
 
     /**
-     * Stamps setter options on the one scene-code material, the way the
-     * pin's `setPbrSheen`/`setPbrClearCoat` stamp the props object onto the
-     * material record. Identity beyond a single scene material is not
-     * modeled, so more than one is a named failure rather than a guess.
+     * Stamps setter options on the scene-code material the call names, the
+     * way the pin's `setPbrSheen`/`setPbrClearCoat` stamp the props object
+     * onto the material object they are handed. `index` is that object
+     * identity at compile time and rides the value the setter was passed,
+     * so a material of another family — which owns no manifest entry to
+     * stamp — is a named failure rather than a guess.
      */
-    private sceneMaterialForSetter(setter: string): ScenePbrMaterialManifest {
-        if (this.scenePbrMaterials.length !== 1) {
+    private sceneMaterialForSetter(
+        setter: string,
+        index: number | undefined,
+    ): ScenePbrMaterialManifest {
+        const material =
+            index === undefined
+                ? undefined
+                : this.scenePbrMaterials[index];
+        if (!material) {
             throw new Error(
-                `${setter} targets one of ${this.scenePbrMaterials.length} ` +
-                    "scene materials; setter identity beyond a single scene " +
-                    "material is not modeled yet.",
+                `${setter} names no scene-code PBR material; only a value ` +
+                    "createPbrMaterial produced, or a mesh one was assigned " +
+                    "to, resolves which record to stamp.",
             );
         }
-        return this.scenePbrMaterials[0]!;
+        return material;
     }
 
     /**
-     * Records a no-color view of the one scene material: the pin's view is
-     * the same material record rendered with `PBR2_NO_COLOR_OUTPUT`, so the
-     * derived entry copies its source and appends in creation order.
+     * Records a no-color view of the scene material the call names: the
+     * pin's view is the same material record rendered with
+     * `PBR2_NO_COLOR_OUTPUT`, so the derived entry copies its source and
+     * appends in creation order. Returns the new entry's index, which is
+     * the view's own compile-time identity.
      */
-    public recordScenePbrNoColorView(): void {
+    public recordScenePbrNoColorView(
+        sourceIndex: number | undefined,
+    ): number {
         const source = this.sceneMaterialForSetter(
             "createPbrNoColorMaterialView",
+            sourceIndex,
         );
         this.scenePbrMaterials.push({
             ...source,
             materialsBefore: this.recordSceneMaterialSlot(),
             noColorView: true,
         });
+        return this.scenePbrMaterials.length - 1;
     }
 
     /**
@@ -2673,22 +2681,49 @@ class Compiler
         return this.sceneMaterialCount++;
     }
 
-    public recordScenePbrUnlit(): void {
-        this.sceneMaterialForSetter("setPbrUnlit").unlit = true;
+    public recordScenePbrUnlit(index: number | undefined): void {
+        this.sceneMaterialForSetter("setPbrUnlit", index).unlit = true;
     }
 
-    public recordScenePbrSkybox(): void {
-        this.sceneMaterialForSetter("setPbrSkybox").skyboxMode = true;
+    public recordScenePbrSkybox(index: number | undefined): void {
+        this.sceneMaterialForSetter("setPbrSkybox", index).skyboxMode = true;
     }
 
-    public recordScenePbrSheen(sheen: ScenePbrSheenManifest): void {
-        this.sceneMaterialForSetter("setPbrSheen").sheen = sheen;
+    public recordScenePbrSheen(
+        sheen: ScenePbrSheenManifest,
+        index: number | undefined,
+    ): void {
+        this.sceneMaterialForSetter("setPbrSheen", index).sheen = sheen;
     }
 
     public recordScenePbrClearCoat(
         clearCoat: ScenePbrClearCoatManifest,
+        index: number | undefined,
     ): void {
-        this.sceneMaterialForSetter("setPbrClearCoat").clearCoat = clearCoat;
+        this.sceneMaterialForSetter(
+            "setPbrClearCoat",
+            index,
+        ).clearCoat = clearCoat;
+    }
+
+    public recordScenePbrEmissive(
+        color: readonly number[],
+        index: number | undefined,
+    ): void {
+        this.sceneMaterialForSetter(
+            "setPbrEmissive",
+            index,
+        ).emissiveColor = color;
+    }
+
+    public recordScenePbrIridescence(
+        iridescence: ScenePbrIridescenceManifest,
+        index: number | undefined,
+    ): void {
+        this.sceneMaterialForSetter(
+            "setPbrIridescence",
+            index,
+        ).iridescence = iridescence;
     }
 
     /** Records a scene-code mesh creation for the per-renderable variant key. */

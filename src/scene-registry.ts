@@ -1193,6 +1193,18 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene177",
+        name: "Scene 177 - Iridescence Sphere",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene177.ts",
+        title: "Babylon Lite Native - Iridescence Sphere",
+        parity: {
+            maxFullMad: 0.025,
+            maxForegroundMad: 0.025,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

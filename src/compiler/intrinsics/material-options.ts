@@ -49,29 +49,47 @@ export interface MaterialOptionContext
     ): string;
 }
 
+/**
+ * `createPbrMaterial`'s resolved options: the two texture values, the
+ * sixteen native scalar/flag literals in constructor order, and the
+ * appended `scenePbrMaterials` index that is this material's compile-time
+ * identity.
+ */
+export type CompiledPbrMaterialOptions = [
+    Value,
+    Value,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    number,
+];
+
+/** The reached slice of the extension option objects the setters take. */
+export type CompiledLayerOptions = [
+    string,
+    string,
+    string,
+    string,
+    string,
+];
+
 export function compilePbrMaterialOptions(
     context: MaterialOptionContext,
     expression: ts.Expression,
-): [
-    Value,
-    Value,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-] {
+): CompiledPbrMaterialOptions {
     const object = context.expectObjectLiteral(expression);
     validateObjectProperties(
         context,
@@ -194,7 +212,7 @@ export function compilePbrMaterialOptions(
     // ARE the material record its feature derivation reads. Every value
     // above compiles from a static literal, which is why parsing the C++
     // text back is exact.
-    context.scenePbrMaterials.push({
+    const sceneMaterialIndex = context.scenePbrMaterials.push({
         materialsBefore: context.recordSceneMaterialSlot(),
         gltfAssetsBefore: [...context.assets.values()].filter(
             (asset) => asset.kind === "gltf",
@@ -211,7 +229,7 @@ export function compilePbrMaterialOptions(
         transmission: Number.parseFloat(transmission),
         ior: Number.parseFloat(ior),
         thickness: Number.parseFloat(thickness),
-    });
+    }) - 1;
     return [
         baseColor,
         orm,
@@ -231,6 +249,7 @@ export function compilePbrMaterialOptions(
         hasVolume,
         attenuationColor,
         attenuationDistance,
+        sceneMaterialIndex,
     ];
 }
 
@@ -321,7 +340,7 @@ export function compileGridMaterialOptions(
 export function compileClearCoatOptions(
     context: MaterialOptionContext,
     expression: ts.Expression,
-): [string, string, string, string, string] {
+): CompiledLayerOptions {
     const object = context.expectObjectLiteral(expression);
     validateObjectProperties(
         context,
@@ -356,6 +375,62 @@ export function compileClearCoatOptions(
         bumpTextureScale
             ? context.compileNumber(bumpTextureScale)
             : "1.0f",
+    ];
+}
+
+/**
+ * The reached slice of `IridescenceProps`. The pinned defaults come from
+ * `writeIridescenceUBO`, which is also where the `isEnabled` guard lives:
+ * `iri.intensity ?? 1`, `indexOfRefraction ?? 1.3`, and the 100..400 nm
+ * thickness pair. A scene-code coat differs from the glTF one here — the
+ * loader passes `iridescenceFactor ?? 0` for the intensity, so an omitted
+ * intensity means full strength from scene code and none from an asset.
+ * The two texture slots are rejected: each needs its own binding pair and
+ * UV, and `createPbrMaterial` produces no texture for them.
+ */
+export function compileIridescenceOptions(
+    context: MaterialOptionContext,
+    expression: ts.Expression,
+): CompiledLayerOptions {
+    const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        [
+            "isEnabled",
+            "intensity",
+            "indexOfRefraction",
+            "minimumThickness",
+            "maximumThickness",
+        ],
+        "Reached iridescence options support isEnabled, intensity, indexOfRefraction, minimumThickness, and maximumThickness.",
+    );
+    const isEnabled = context.objectProperty(object, "isEnabled");
+    const intensity = context.objectProperty(object, "intensity");
+    const indexOfRefraction = context.objectProperty(
+        object,
+        "indexOfRefraction",
+    );
+    const minimumThickness = context.objectProperty(
+        object,
+        "minimumThickness",
+    );
+    const maximumThickness = context.objectProperty(
+        object,
+        "maximumThickness",
+    );
+    return [
+        isEnabled ? context.compileBoolean(isEnabled) : "false",
+        intensity ? context.compileNumber(intensity) : "1.0f",
+        indexOfRefraction
+            ? context.compileNumber(indexOfRefraction)
+            : "1.3f",
+        minimumThickness
+            ? context.compileNumber(minimumThickness)
+            : "100.0f",
+        maximumThickness
+            ? context.compileNumber(maximumThickness)
+            : "400.0f",
     ];
 }
 

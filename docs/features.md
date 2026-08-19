@@ -151,8 +151,8 @@ site or asset and the pinned module each unit mirrors.
 The rule that decides which mechanism owns a feature: a runtime feature
 exists for API the scene's own source can reach, and a capability exists for
 what assets decide. An extension family with a scene-code setter therefore
-has both (clearcoat and sheen are feature-or-capability), and one without a
-setter has only the capability (iridescence, dispersion).
+has both (clearcoat, sheen and iridescence are feature-or-capability), and one
+without a setter has only the capability (dispersion).
 
 **Why compile time:** there is no dynamic module loading, so upstream's own
 `import()`-behind-a-predicate boundaries have to be resolved somewhere, and
@@ -375,9 +375,11 @@ loop over the same lights buffer.
 
 Standard, PBR, and GridMaterial records, no-color material views, Standard
 cotangent-frame normal maps, PBR vertex colors and the Standard RGB ones
-behind `enableStandardVertexColors`, the opt-in `setPbrUnlit`, `setPbrSkybox`
-and `setPbrEmissive` setters, and scene-local custom shader variants driven
-through their reflected uniform offsets.
+behind `enableStandardVertexColors`, the opt-in `setPbrUnlit`, `setPbrSkybox`,
+`setPbrEmissive`, `setPbrClearCoat`, `setPbrSheen` and `setPbrIridescence`
+setters, and scene-local custom shader variants driven through their reflected
+uniform offsets. A setter stamps the material the call names, so a scene
+carrying several scene-code materials reaches each of them independently.
 
 Material state written and read per frame: alpha mask/blend/coverage,
 reflectance, emissive strength, lighting intensities, double-sided, normal

@@ -48,6 +48,12 @@ interface PropertyRead {
     helper?: string;
     retag?: true;
     /**
+     * Carries the owner's scene-material identity onto the value read.
+     * The native read is a record field either way; this is the pin's
+     * object identity, which a field read alone would drop.
+     */
+    carriesScenePbrMaterial?: true;
+    /**
      * Rejects an owner this read cannot serve, returning the message.
      * Runs before anything is emitted.
      */
@@ -147,11 +153,14 @@ const propertyRules: readonly PropertyRule[] = [
     },
     {
         // The opt-in PBR setters take the material back off the mesh it
-        // was assigned to (`setPbrSkybox(box.material)`).
+        // was assigned to (`setPbrSkybox(box.material)`), and they mutate
+        // the object they are handed, so the read carries which scene
+        // material the assignment stored.
         owner: "mesh",
         property: "material",
         value: "material",
         record: ["meshes", "material"],
+        carriesScenePbrMaterial: true,
     },
     {
         owner: "scene",
@@ -252,6 +261,13 @@ export function readProperty(
         kind: rule.value,
         cpp,
         ...(engineCpp ? { engineCpp } : {}),
+        ...(rule.carriesScenePbrMaterial &&
+        owner.scenePbrMaterialIndex !== undefined
+            ? {
+                  scenePbrMaterialIndex:
+                      owner.scenePbrMaterialIndex,
+              }
+            : {}),
     });
     if (rule.record) {
         const [collection, field] = rule.record;

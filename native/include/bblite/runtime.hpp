@@ -1122,6 +1122,14 @@ void set_pbr_clearcoat(
     float roughness,
     float index_of_refraction,
     float normal_scale);
+void set_pbr_iridescence(
+    Engine& engine,
+    MaterialHandle material,
+    bool enabled,
+    float intensity,
+    float index_of_refraction,
+    float minimum_thickness,
+    float maximum_thickness);
 void set_pbr_sheen(
     Engine& engine,
     MaterialHandle material,

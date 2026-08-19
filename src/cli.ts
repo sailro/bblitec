@@ -446,7 +446,9 @@ async function main(): Promise<void> {
             result.manifest.features.includes(
                 "material:sheen-albedo-scaling",
             ),
-        iridescence: specializationFeatures.iridescence,
+        iridescence:
+            specializationFeatures.iridescence ||
+            result.manifest.features.includes("material:iridescence"),
         dispersion: specializationFeatures.dispersion,
         occlusionUv2: specializationFeatures.occlusionUv2,
         // The same derivation `upstream-lower.ts` uses for the compiled
