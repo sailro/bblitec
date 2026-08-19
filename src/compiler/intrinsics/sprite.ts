@@ -1,6 +1,10 @@
 import ts from "typescript";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import {
+    billboardBlendSymbol,
+    isBillboardBlendExport,
+} from "../../billboard-blend-symbol.js";
 
 export interface SpriteIntrinsicContext
     extends IntrinsicCallContext {
@@ -23,13 +27,12 @@ export interface SpriteIntrinsicContext
 export function compileSpriteConstant(
     importedName: string,
 ): Value | undefined {
-    if (!/^billboardBlend[A-Z]/.test(importedName)) {
+    if (!isBillboardBlendExport(importedName)) {
         return undefined;
     }
-    const key = importedName.slice("billboardBlend".length);
     return {
         kind: "sprite-blend",
-        cpp: `bbl::billboard_blend_${key.toLowerCase()}()`,
+        cpp: `bbl::${billboardBlendSymbol(importedName)}()`,
         staticString: importedName,
     };
 }
@@ -415,10 +418,16 @@ export function compileSpriteIntrinsic(
                 }
                 blendCpp = blendMode.cpp;
             }
+            // `order` sorts a system against the scene's other transparent
+            // renderables upstream. This path draws billboards after the
+            // scene's own stages instead, which is the same image only while
+            // nothing else is transparent, so an explicit order refuses
+            // rather than being silently dropped.
             for (const unreached of [
                 "customShader",
                 "alphaCutoff",
                 "alphaToCoverage",
+                "order",
             ]) {
                 if (property(options, unreached)) {
                     context.fail(
@@ -439,8 +448,7 @@ export function compileSpriteIntrinsic(
                     `${numberOption(options, "capacity", "16.0f")}, ` +
                     `${blendCpp}, ` +
                     `${numberOption(options, "opacity", "1.0f")}, ` +
-                    `${property(options, "visible")?.cpp ?? "true"}, ` +
-                    `${numberOption(options, "order", "200.0f")}})`,
+                    `${property(options, "visible")?.cpp ?? "true"}})`,
                 engineCpp,
             };
         }

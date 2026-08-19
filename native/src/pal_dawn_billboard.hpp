@@ -45,6 +45,8 @@ struct DawnBillboardPass {
     WGPUBindGroup texture_group = nullptr;
     WGPUBindGroup fragment_group = nullptr;
     BillboardSystemHandle system{};
+    // The reordered upload, kept across frames.
+    std::vector<float> sorted;
 };
 
 /** The vertex block the reconstructed billboard stage declares. */
@@ -390,46 +392,13 @@ inline void upload_dawn_billboard_pass(
     if (system.count == 0) {
         return;
     }
-    const std::size_t floats = system.instance_floats_per_sprite;
-    std::vector<std::uint32_t> order(system.count);
-    std::iota(order.begin(), order.end(), 0u);
-    std::vector<float> depths(system.count);
-    for (std::uint32_t index = 0; index < system.count; ++index) {
-        const std::size_t base =
-            static_cast<std::size_t>(index) * floats;
-        depths[index] = upstream::billboard_sort_depth(
-            view,
-            system.instance_data[base],
-            system.instance_data[base + 1u],
-            system.instance_data[base + 2u]);
-    }
-    std::stable_sort(
-        order.begin(),
-        order.end(),
-        [&](std::uint32_t left, std::uint32_t right) {
-            if (depths[left] != depths[right]) {
-                return depths[left] > depths[right];
-            }
-            return left < right;
-        });
-    std::vector<float> sorted(
-        static_cast<std::size_t>(system.count) * floats);
-    for (std::uint32_t out = 0; out < system.count; ++out) {
-        const std::size_t source =
-            static_cast<std::size_t>(order[out]) * floats;
-        const std::size_t destination =
-            static_cast<std::size_t>(out) * floats;
-        for (std::size_t field = 0; field < floats; ++field) {
-            sorted[destination + field] =
-                system.instance_data[source + field];
-        }
-    }
+    upstream::billboard_sorted_instances(system, view, pass.sorted);
     wgpuQueueWriteBuffer(
         queue,
         pass.instances,
         0,
-        sorted.data(),
-        sorted.size() * sizeof(float));
+        pass.sorted.data(),
+        pass.sorted.size() * sizeof(float));
 }
 
 /** Records the draw into an encoder the scene renderer already opened. */

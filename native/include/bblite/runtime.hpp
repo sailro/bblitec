@@ -546,7 +546,6 @@ struct BillboardSystemRecord {
     SpriteBlendDescriptor blend{};
     float opacity = 1.0f;
     bool visible = true;
-    float order = 200.0f;
     // Zero for a facing system: the facing basis reads the camera instead.
     Vec3 axis{};
     float alpha_cutoff = 0.0f;
@@ -1327,7 +1326,6 @@ struct BillboardSystemOptions {
     SpriteBlendDescriptor blend{};
     float opacity = 1.0f;
     bool visible = true;
-    float order = 200.0f;
 };
 
 /** addBillboardSpriteIndex's props; a `has_` flag marks what was named. */

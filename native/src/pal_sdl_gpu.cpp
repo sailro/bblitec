@@ -4511,19 +4511,19 @@ bool run_gpu_engine(Engine& engine) {
                     camera,
                     aspect);
 #if BBLITE_HAS_BILLBOARDS
-            // The sort depends on the camera, so it runs every frame, and on
-            // its own command buffer -- before the frame's is acquired.
-            {
-                const std::array<float, 16> billboard_view =
-                    upstream::build_view_matrix(
-                        upstream::camera_world_matrix(camera));
-                for (BillboardPass& billboard : state.billboard_passes) {
-                    upload_billboard_pass(
-                        state.device,
-                        engine,
-                        billboard,
-                        billboard_view);
-                }
+            // The sorted order depends on the camera alone, so it is built
+            // once for the frame here -- before the frame's command buffer is
+            // acquired, because the upload submits one of its own -- and the
+            // draw below reads the same matrix.
+            const std::array<float, 16> billboard_view =
+                upstream::build_view_matrix(
+                    upstream::camera_world_matrix(camera));
+            for (BillboardPass& billboard : state.billboard_passes) {
+                upload_billboard_pass(
+                    state.device,
+                    engine,
+                    billboard,
+                    billboard_view);
             }
 #endif
             // The render capture describes CPU state alone, so it is
@@ -6308,10 +6308,8 @@ bool run_gpu_engine(Engine& engine) {
                     engine,
                     billboard,
                     matrix,
-                    upstream::build_view_matrix(
-                        upstream::camera_world_matrix(camera)));
+                    billboard_view);
             }
-            scene_matrix_bound = false;
 #endif
             SDL_EndGPURenderPass(pass);
             SDL_GPUTexture* visible_color = state.color;

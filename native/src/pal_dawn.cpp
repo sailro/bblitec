@@ -974,6 +974,12 @@ struct DawnState : DawnDevice {
         if (grid_vertex_module) {
             wgpuShaderModuleRelease(grid_vertex_module);
         }
+#if BBLITE_HAS_BILLBOARDS
+        for (DawnBillboardPass& billboard : billboard_passes) {
+            release_dawn_billboard_pass(billboard);
+        }
+        billboard_passes.clear();
+#endif
         if (pbr_module) wgpuShaderModuleRelease(pbr_module);
         if (vertex_module) wgpuShaderModuleRelease(vertex_module);
         if (depth_view) wgpuTextureViewRelease(depth_view);

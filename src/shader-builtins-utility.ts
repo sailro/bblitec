@@ -12,6 +12,18 @@ import {
     splitWgslStatements,
 } from "./pinned-shader-composer.js";
 
+/**
+ * Indents a reconstructed stage body to sit inside the struct or function
+ * this module wraps it in. Shared because every builtins module that
+ * re-homes pinned text needs it.
+ */
+export function indent(block: string, spaces: string): string {
+    return block
+        .split("\n")
+        .map((line) => (line.length > 0 ? `${spaces}${line}` : line))
+        .join("\n");
+}
+
 export function blitVertexWgsl(): string {
     return `struct VertexOutput {
     @builtin(position) position: vec4<f32>,

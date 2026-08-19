@@ -39,8 +39,11 @@ struct BillboardPass {
     SDL_GPUBuffer* instances = nullptr;
     SDL_GPUTexture* atlas = nullptr;
     SDL_GPUSampler* sampler = nullptr;
-    std::uint32_t capacity = 0;
     BillboardSystemHandle system{};
+    // The reordered upload, kept so an unchanged view re-uploads nothing.
+    std::vector<float> sorted;
+    std::array<float, 16> uploaded_view{};
+    bool uploaded = false;
 };
 
 /** The vertex block the reconstructed billboard stage declares. */
@@ -178,7 +181,6 @@ inline BillboardPass create_billboard_pass(
     SDL_ReleaseGPUShader(device, vertex_shader);
     SDL_ReleaseGPUShader(device, fragment_shader);
 
-    pass.capacity = system.capacity;
     SDL_GPUBufferCreateInfo instances{};
     instances.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
     instances.size = static_cast<Uint32>(
@@ -217,45 +219,23 @@ inline void upload_billboard_pass(
     if (system.count == 0) {
         return;
     }
-    const std::size_t floats = system.instance_floats_per_sprite;
-    std::vector<std::uint32_t> order(system.count);
-    std::iota(order.begin(), order.end(), 0u);
-    std::vector<float> depths(system.count);
-    for (std::uint32_t index = 0; index < system.count; ++index) {
-        const std::size_t base =
-            static_cast<std::size_t>(index) * floats;
-        depths[index] = upstream::billboard_sort_depth(
-            view,
-            system.instance_data[base],
-            system.instance_data[base + 1u],
-            system.instance_data[base + 2u]);
+    // The sorted order depends on the view alone: the lowered permutation
+    // adds instances and never updates or removes them, so an unchanged view
+    // means an unchanged buffer. `update_buffer` creates a transfer buffer
+    // and submits a command buffer of its own, so re-uploading an identical
+    // buffer every frame is the one real per-frame cost here -- every other
+    // upload in this renderer is version-gated the same way.
+    if (pass.uploaded && pass.uploaded_view == view) {
+        return;
     }
-    std::stable_sort(
-        order.begin(),
-        order.end(),
-        [&](std::uint32_t left, std::uint32_t right) {
-            if (depths[left] != depths[right]) {
-                return depths[left] > depths[right];
-            }
-            return left < right;
-        });
-    std::vector<float> sorted(
-        static_cast<std::size_t>(system.count) * floats);
-    for (std::uint32_t out = 0; out < system.count; ++out) {
-        const std::size_t source =
-            static_cast<std::size_t>(order[out]) * floats;
-        const std::size_t destination =
-            static_cast<std::size_t>(out) * floats;
-        for (std::size_t field = 0; field < floats; ++field) {
-            sorted[destination + field] =
-                system.instance_data[source + field];
-        }
-    }
+    upstream::billboard_sorted_instances(system, view, pass.sorted);
     update_buffer(
         device,
         pass.instances,
-        sorted.data(),
-        sorted.size() * sizeof(float));
+        pass.sorted.data(),
+        pass.sorted.size() * sizeof(float));
+    pass.uploaded_view = view;
+    pass.uploaded = true;
 }
 
 /** Records the billboard draw into a pass the scene renderer already began. */

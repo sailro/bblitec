@@ -1,10 +1,13 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { PinnedShaderText } from "./pinned-shader-text.js";
+import { billboardBlendSymbol } from "../billboard-blend-symbol.js";
 
 const systemModule = "src/sprite/billboard-sprite.ts";
 const sceneModule = "src/sprite/billboard-scene.ts";
 const blendModule = "src/sprite/billboard-blend.ts";
+// The blend states billboard-blend.ts shares with the 2D layer.
+const blendStateModule = "src/sprite/blend-descriptors.ts";
 const pipelineModule = "src/sprite/billboard-pipeline.ts";
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 
@@ -35,6 +38,15 @@ function nativeFactor(factor: string): string {
         );
     }
     return mapped;
+}
+
+/** One pinned blend descriptor, as the factory emitted for it. */
+interface BillboardBlendRow {
+    key: string;
+    exportName: string;
+    color: readonly [string, string];
+    alpha: readonly [string, string];
+    premultipliedOpacity: boolean;
 }
 
 /** One per-instance vertex attribute, at the pin's own byte offset. */
@@ -83,7 +95,6 @@ export class BillboardLowerer {
     /** The instance layout, read from the pin's own constants. */
     private layout(): {
         instanceFloats: number;
-        savedSizeFloats: number;
         systemUboBytes: number;
     } {
         const constant = (module: string, name: string): number => {
@@ -97,10 +108,6 @@ export class BillboardLowerer {
             instanceFloats: constant(
                 systemModule,
                 "BILLBOARD_INSTANCE_FLOATS_PER_SPRITE",
-            ),
-            savedSizeFloats: constant(
-                systemModule,
-                "BILLBOARD_SAVED_SIZE_FLOATS_PER_SPRITE",
             ),
             systemUboBytes: constant(
                 pipelineModule,
@@ -337,35 +344,13 @@ export class BillboardLowerer {
      * path this slice does not render, so it is skipped here and refused at
      * the intrinsic.
      */
-    private blendDescriptors(): Array<{
-        key: string;
-        exportName: string;
-        color: readonly [string, string];
-        alpha: readonly [string, string];
-        premultipliedOpacity: boolean;
-    }> {
+    private blendDescriptors(): BillboardBlendRow[] {
         const file = this.context.sourceFile(blendModule);
-        const shared = new Map<string, readonly [string, string, string, string]>([
-            // blend-descriptors.ts, shared with the 2D layer.
-            [
-                "_ALPHA_BLEND_STATE",
-                ["src-alpha", "one-minus-src-alpha", "one", "one-minus-src-alpha"],
-            ],
-            [
-                "_PREMULTIPLIED_BLEND_STATE",
-                ["one", "one-minus-src-alpha", "one", "one-minus-src-alpha"],
-            ],
-        ]);
-        const rows: Array<{
-            key: string;
-            exportName: string;
-            color: readonly [string, string];
-            alpha: readonly [string, string];
-            premultipliedOpacity: boolean;
-        }> = [];
+        const rows: BillboardBlendRow[] = [];
         for (const statement of file.statements) {
             if (!ts.isVariableStatement(statement)) continue;
-            for (const binding of statement.declarationList.declarations) {
+            for (const binding of statement.declarationList
+                .declarations) {
                 if (
                     !ts.isIdentifier(binding.name) ||
                     !binding.name.text.startsWith("billboardBlend") ||
@@ -373,88 +358,30 @@ export class BillboardLowerer {
                 ) {
                     continue;
                 }
-                const literal = this.context.unwrapExpression(
+                const literal = this.objectLiteral(
                     binding.initializer,
+                    binding.name.text,
                 );
-                if (!ts.isObjectLiteralExpression(literal)) {
-                    this.context.contractError(
-                        literal,
-                        `Expected ${binding.name.text} to be an object literal.`,
-                    );
-                }
-                const property = (name: string): ts.Expression | undefined =>
-                    literal.properties.find(
-                        (member): member is ts.PropertyAssignment =>
-                            ts.isPropertyAssignment(member) &&
-                            this.context.propertyName(member.name) === name,
-                    )?.initializer;
-                const descriptor = property("_descriptor");
+                const descriptor = this.optionalProperty(
+                    literal,
+                    "_descriptor",
+                );
                 if (!descriptor) continue;
                 const key = this.context.stringValue(
-                    property("_key")!,
+                    this.context.propertyInitializer(literal, "_key"),
                     file,
                 );
-                let factors: readonly [string, string, string, string];
-                const unwrapped =
-                    this.context.unwrapExpression(descriptor);
-                if (ts.isIdentifier(unwrapped)) {
-                    const named = shared.get(unwrapped.text);
-                    if (!named) {
-                        this.context.contractError(
-                            unwrapped,
-                            `Pinned blend '${key}' names an unknown shared state '${unwrapped.text}'.`,
-                        );
-                    }
-                    factors = named;
-                } else if (ts.isObjectLiteralExpression(unwrapped)) {
-                    const side = (name: string): readonly [string, string] => {
-                        const value = this.context.unwrapExpression(
-                            unwrapped.properties.find(
-                                (member): member is ts.PropertyAssignment =>
-                                    ts.isPropertyAssignment(member) &&
-                                    this.context.propertyName(member.name) === name,
-                            )!.initializer,
-                        );
-                        if (!ts.isObjectLiteralExpression(value)) {
-                            this.context.contractError(
-                                value,
-                                `Pinned blend '${key}' ${name} is not a literal.`,
-                            );
-                        }
-                        const factor = (field: string): string =>
-                            this.context.stringValue(
-                                value.properties.find(
-                                    (member): member is ts.PropertyAssignment =>
-                                        ts.isPropertyAssignment(member) &&
-                                        this.context.propertyName(member.name) ===
-                                            field,
-                                )!.initializer,
-                                file,
-                            );
-                        if (factor("operation") !== "add") {
-                            this.context.contractError(
-                                value,
-                                `Pinned blend '${key}' ${name} is not an add.`,
-                            );
-                        }
-                        return [factor("srcFactor"), factor("dstFactor")];
-                    };
-                    const color = side("color");
-                    const alpha = side("alpha");
-                    factors = [color[0], color[1], alpha[0], alpha[1]];
-                } else {
-                    return this.context.contractError(
-                        descriptor,
-                        `Pinned blend '${key}' has an unreadable descriptor.`,
-                    );
-                }
+                const state = this.blendState(descriptor, key);
                 rows.push({
                     key,
                     exportName: binding.name.text,
-                    color: [factors[0], factors[1]],
-                    alpha: [factors[2], factors[3]],
+                    color: this.blendSide(state, "color", key),
+                    alpha: this.blendSide(state, "alpha", key),
                     premultipliedOpacity: Boolean(
-                        property("_premultipliedOpacity"),
+                        this.optionalProperty(
+                            literal,
+                            "_premultipliedOpacity",
+                        ),
                     ),
                 });
             }
@@ -467,6 +394,86 @@ export class BillboardLowerer {
         }
         return rows;
     }
+
+    /**
+     * The `GPUBlendState` a descriptor names, whether it writes one inline
+     * or names one of the states `blend-descriptors.ts` shares with the 2D
+     * layer. A shared state is RESOLVED out of that module rather than
+     * transcribed here: the sprite family already pins its shape through
+     * `assertAlphaBlend`, and a second hand-typed copy is what drifts when
+     * the pin edits a factor.
+     */
+    private blendState(
+        descriptor: ts.Expression,
+        key: string,
+    ): ts.ObjectLiteralExpression {
+        const unwrapped =
+            this.context.unwrapExpression(descriptor);
+        if (ts.isIdentifier(unwrapped)) {
+            return this.objectLiteral(
+                this.context.variableInitializer(
+                    this.context.sourceFile(blendStateModule),
+                    unwrapped.text,
+                ),
+                `shared blend state '${unwrapped.text}'`,
+            );
+        }
+        return this.objectLiteral(unwrapped, `blend '${key}'`);
+    }
+
+    /** One side of a blend state, which the pin always writes as an add. */
+    private blendSide(
+        state: ts.ObjectLiteralExpression,
+        side: "color" | "alpha",
+        key: string,
+    ): readonly [string, string] {
+        const file = state.getSourceFile();
+        const value = this.objectLiteral(
+            this.context.propertyInitializer(state, side),
+            `blend '${key}' ${side}`,
+        );
+        const factor = (field: string): string =>
+            this.context.stringValue(
+                this.context.propertyInitializer(value, field),
+                file,
+            );
+        if (factor("operation") !== "add") {
+            this.context.contractError(
+                value,
+                `Pinned blend '${key}' ${side} is not an add.`,
+            );
+        }
+        return [factor("srcFactor"), factor("dstFactor")];
+    }
+
+    /** An object literal, or a contract error naming what was expected. */
+    private objectLiteral(
+        expression: ts.Expression,
+        what: string,
+    ): ts.ObjectLiteralExpression {
+        const unwrapped =
+            this.context.unwrapExpression(expression);
+        if (!ts.isObjectLiteralExpression(unwrapped)) {
+            this.context.contractError(
+                unwrapped,
+                `Expected ${what} to be an object literal.`,
+            );
+        }
+        return unwrapped;
+    }
+
+    /** A property the pin may legitimately omit. */
+    private optionalProperty(
+        literal: ts.ObjectLiteralExpression,
+        name: string,
+    ): ts.Expression | undefined {
+        return literal.properties.find(
+            (member): member is ts.PropertyAssignment =>
+                ts.isPropertyAssignment(member) &&
+                this.context.propertyName(member.name) === name,
+        )?.initializer;
+    }
+
 
     /** The transparent arm draws without writing depth. */
     private assertDepthMode(): void {
@@ -714,8 +721,11 @@ export class BillboardLowerer {
 // ${this.context.provenance(pipelineModule, "billboard vertex layout")}
 #include <bblite/runtime.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <numeric>
+#include <vector>
 
 namespace bbl::upstream {
 
@@ -756,7 +766,7 @@ namespace bbl {
  * They live here rather than in the system's own translation unit because
  * the scene names one at the call site.
  */
-${blends.map((blend) => `inline SpriteBlendDescriptor billboard_blend_${blend.key}() {
+${blends.map((blend) => `inline SpriteBlendDescriptor ${billboardBlendSymbol(blend.exportName)}() {
     // billboard-blend.ts#${blend.exportName}.
     SpriteBlendDescriptor blend;
     blend.enabled = true;
@@ -818,6 +828,55 @@ inline float billboard_sort_depth(
            view[10] * anchor_z + view[14];
 }
 
+/**
+ * uploadSortedBillboardInstances: the instance data, reordered back to front
+ * for one view.
+ *
+ * Both backends upload the result verbatim, and neither may decide the
+ * order: with depth writes off it IS the composite, so a per-backend copy of
+ * this would be a per-backend copy of the image. A stable sort over an index
+ * sequence keeps the pin's own left-minus-right tie-break without spelling
+ * it.
+ */
+inline void billboard_sorted_instances(
+    const BillboardSystemRecord& system,
+    const std::array<float, 16>& view,
+    std::vector<float>& out) {
+    const std::size_t floats = system.instance_floats_per_sprite;
+    out.resize(static_cast<std::size_t>(system.count) * floats);
+    if (system.count == 0) {
+        return;
+    }
+    std::vector<std::uint32_t> order(system.count);
+    std::iota(order.begin(), order.end(), 0u);
+    std::vector<float> depths(system.count);
+    for (std::uint32_t index = 0; index < system.count; ++index) {
+        const std::size_t base =
+            static_cast<std::size_t>(index) * floats;
+        depths[index] = billboard_sort_depth(
+            view,
+            system.instance_data[base],
+            system.instance_data[base + 1u],
+            system.instance_data[base + 2u]);
+    }
+    std::stable_sort(
+        order.begin(),
+        order.end(),
+        [&](std::uint32_t left, std::uint32_t right) {
+            return depths[left] > depths[right];
+        });
+    for (std::uint32_t slot = 0; slot < system.count; ++slot) {
+        const std::size_t source =
+            static_cast<std::size_t>(order[slot]) * floats;
+        const std::size_t destination =
+            static_cast<std::size_t>(slot) * floats;
+        for (std::size_t field = 0; field < floats; ++field) {
+            out[destination + field] =
+                system.instance_data[source + field];
+        }
+    }
+}
+
 } // namespace bbl::upstream
 `,
             source: `// ${provenance}
@@ -846,7 +905,6 @@ BillboardSystemHandle create_facing_billboard_system(
     system.blend = options.blend;
     system.opacity = options.opacity;
     system.visible = options.visible;
-    system.order = options.order;
     // A facing system's axis is the pin's zero vector: the facing basis
     // reads the camera, not the axis.
     system.axis = Vec3{0.0f, 0.0f, 0.0f};
