@@ -20,6 +20,15 @@ const atlasModule = "src/sprite/shared/sprite-atlas.ts";
  */
 export type BillboardOrientation = "facing" | "axis-locked";
 
+/**
+ * Which depth path a system draws through. The pin's `DEPTH_MODE_TABLE`
+ * pairs `transparent` with depth writes off and `cutout` with them on, and
+ * the fragment stage discards below the cutoff only on the second — so this
+ * selects a fragment arm, a pipeline state, and (per the module doc) the
+ * slot the system draws in.
+ */
+export type BillboardDepthMode = "transparent" | "cutout";
+
 /** The billboard shader, split into the pieces each backend re-homes. */
 export interface BillboardShaderSource {
     /**
@@ -509,10 +518,11 @@ export class BillboardLowerer {
      */
     public shaderSource(
         orientation: BillboardOrientation = "facing",
+        depthMode: BillboardDepthMode = "transparent",
     ): BillboardShaderSource {
         const permutation = new Map<string, string | boolean>([
             ["orientation", orientation],
-            ["depthMode", "transparent"],
+            ["depthMode", depthMode],
             ["alphaToCoverage", false],
         ]);
         const full = this.shaderText.evaluate(
@@ -548,16 +558,14 @@ export class BillboardLowerer {
                 "};",
                 "billboard varying struct",
             ),
-            vertexBody: this.shaderText.between(
+            vertexBody: this.shaderText.braced(
                 full,
                 "fn vs(in: I) -> O {",
-                "\n}",
                 "billboard vertex stage",
             ),
-            fragmentBody: this.shaderText.between(
+            fragmentBody: this.shaderText.braced(
                 full,
                 "fn fs(in: O) -> @location(0) vec4f {",
-                "\n}",
                 "billboard fragment stage",
             ),
         };
@@ -583,16 +591,25 @@ export class BillboardLowerer {
         const layout = this.layout();
         const rows = this.attributeRows(layout.instanceFloats);
         this.assertSystemDefaults();
-        // A cutout mode is not another factor pair: the pin's own
-        // `_depthMode` says it drives an alpha-test depth-write pipeline,
-        // which this path does not render. Filtering on that field rather
-        // than on a descriptor's name is what keeps the lowerer and the
-        // intrinsic refusing the same set.
         const blends = readPinnedBlendTable(
             this.context,
             blendModule,
             "billboardBlend",
-        ).filter((blend) => blend.depthMode === "transparent");
+        );
+        // Both of the pin's depth paths are rendered, so every mode becomes
+        // a factory; a mode naming a third path would have no pipeline and
+        // has to refuse rather than draw through one of these.
+        for (const blend of blends) {
+            if (
+                blend.depthMode !== "transparent" &&
+                blend.depthMode !== "cutout"
+            ) {
+                this.context.contractError(
+                    this.context.sourceFile(blendModule),
+                    `Pinned billboard blend '${blend.exportName}' names depth mode '${blend.depthMode}', which has no pipeline here.`,
+                );
+            }
+        }
         this.assertDepthMode();
         this.assertInstanceSlots();
         this.assertSystemUbo();
@@ -720,6 +737,24 @@ inline float billboard_sort_depth(
  * sequence keeps the pin's own left-minus-right tie-break without spelling
  * it.
  */
+/**
+ * The instance data as it stands, for a path that does not sort.
+ *
+ * A cutout system writes depth, so the GPU resolves overlap between its
+ * quads and the pin uploads them in logical insertion order rather than
+ * staging a sorted copy.
+ */
+inline void billboard_instances(
+    const BillboardSystemRecord& system,
+    std::vector<float>& out) {
+    out.assign(
+        system.instance_data.begin(),
+        system.instance_data.begin() +
+            static_cast<std::ptrdiff_t>(
+                static_cast<std::size_t>(system.count) *
+                system.instance_floats_per_sprite));
+}
+
 inline void billboard_sorted_instances(
     const BillboardSystemRecord& system,
     const std::array<float, 16>& view,
@@ -793,6 +828,14 @@ BillboardSystemHandle create_billboard_system(
     system.opacity = options.opacity;
     system.visible = options.visible;
     system.orientation = orientation;
+    // resolveAlphaCutoff and the order default both follow the descriptor's
+    // depth mode: a cutout system cuts at 0.5 and draws at 100, among the
+    // opaque meshes, while every other mode cuts at 0 and draws at 200,
+    // after them.
+    const bool cutout =
+        options.blend.depth_mode == BillboardDepthMode::cutout;
+    system.depth_mode = options.blend.depth_mode;
+    system.order = cutout ? 100.0f : 200.0f;
     // createAxisLockedBillboardSystem: the axis is normalised before it is
     // stored, and a non-finite or zero axis is rejected. The basis
     // normalises again in WGSL, but a zero axis has no direction to recover
@@ -818,7 +861,9 @@ BillboardSystemHandle create_billboard_system(
             static_cast<float>(axis.z * inv_length)};
     }
     system.axis = axis;
-    system.alpha_cutoff = 0.0f;
+    system.alpha_cutoff = options.has_alpha_cutoff
+        ? options.alpha_cutoff
+        : (cutout ? 0.5f : 0.0f);
     system.instance_floats_per_sprite = ${layout.instanceFloats}u;
     system.capacity = static_cast<std::uint32_t>(
         std::max(1.0, static_cast<double>(options.capacity)));
@@ -929,6 +974,19 @@ double add_billboard_sprite_index(
 
     system.count = index + 1u;
     return static_cast<double>(index);
+}
+
+// render/alpha-to-coverage.ts setAlphaToCoverage: membership of the enabled
+// set, which the pipeline owner reads when it builds. A flag on the record
+// is the same fact without the WeakSet, because the record IS the target.
+void set_billboard_alpha_to_coverage(
+    Engine& engine,
+    BillboardSystemHandle system,
+    bool enabled) {
+    if (system.value >= engine.billboard_systems.size()) {
+        throw std::runtime_error("Invalid billboard system handle.");
+    }
+    engine.billboard_systems[system.value].alpha_to_coverage = enabled;
 }
 
 void add_billboard_system(

@@ -384,6 +384,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "+ src/sprite/billboard-pipeline.ts#makeBillboardBasisWgsl",
         consumers: CMAKE,
     },
+    "sprite:billboard-cutout": {
+        provenance:
+            "src/sprite/billboard-blend.ts#billboardBlendCutout + " +
+            "src/sprite/billboard-pipeline.ts#makeBillboardFragmentWgsl",
+        consumers: CMAKE,
+    },
     "renderer:sprite": {
         provenance: "src/sprite/sprite-pipeline.ts",
         consumers: CMAKE,

@@ -7243,6 +7243,22 @@ bool run_dawn_engine(Engine& engine) {
             wgpuRenderPassEncoderDrawIndexed(pass, 36, 1, 0, 0, 0);
         };
 #endif
+#if BBLITE_HAS_BILLBOARDS
+        // A billboard system draws in the slot its depth mode gives it: 100
+        // among the opaque meshes, because a cutout system writes depth and
+        // everything after has to see it, and 200 after the scene stages for
+        // the transparent modes.
+        const auto draw_billboards = [&](float order) {
+            for (const DawnBillboardPass& billboard :
+                 state.billboard_passes) {
+                if (engine.billboard_systems[billboard.system.value].order !=
+                    order) {
+                    continue;
+                }
+                record_dawn_billboard_pass(pass, engine, billboard);
+            }
+        };
+#endif
         for (const upstream::RenderStage stage : render_plan.stages) {
             switch (stage) {
                 case upstream::RenderStage::skybox:
@@ -7269,6 +7285,9 @@ bool run_dawn_engine(Engine& engine) {
                     break;
                 case upstream::RenderStage::opaque:
                     draw_render_list(render_plan.draw_lists.opaque);
+#if BBLITE_HAS_BILLBOARDS
+                    draw_billboards(100.0f);
+#endif
                     break;
                 case upstream::RenderStage::transparent:
                     draw_render_list(
@@ -7280,12 +7299,9 @@ bool run_dawn_engine(Engine& engine) {
             }
         }
 #if BBLITE_HAS_BILLBOARDS
-        // Billboards close the scene's pass: transparent geometry that
-        // blends over every stage above and tests against the depth they
-        // wrote, which is what makes them occlude and be occluded.
-        for (const DawnBillboardPass& billboard : state.billboard_passes) {
-            record_dawn_billboard_pass(pass, engine, billboard);
-        }
+        // The transparent systems close the scene's pass: they blend over
+        // every stage above and test against the depth they wrote.
+        draw_billboards(200.0f);
 #endif
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);

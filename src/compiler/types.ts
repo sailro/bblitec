@@ -398,6 +398,7 @@ export type Feature =
     | "sprite:2d"
     | "sprite:billboard"
     | "sprite:billboard-axis-locked"
+    | "sprite:billboard-cutout"
     | "renderer:sprite"
     | "renderer:pbr"
     | "renderer:transmission"

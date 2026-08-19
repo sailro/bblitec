@@ -679,11 +679,11 @@ export function compileMaterialIntrinsic(
             context.expectArgumentCount(call, 2, 2);
             const material =
                 context.compileValue(call.arguments[0]!);
-            context.expectKind(
-                material,
-                "material",
-                call.arguments[0]!,
-            );
+            if (material.kind !== "material") {
+                // Another family owns this target; the registry asks each in
+                // turn, so yielding is how a shared name reaches it.
+                return undefined;
+            }
             context.expectShaderVariant(
                 material,
                 "alpha-card",

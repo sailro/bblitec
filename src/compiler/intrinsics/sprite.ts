@@ -35,9 +35,10 @@ export function compileSpriteConstant(
     return {
         kind: "sprite-blend",
         cpp: `bbl::${blend.symbol}()`,
-        // The family the descriptor belongs to, so a call site can refuse a
-        // 2D descriptor at a billboard system and the reverse.
-        staticString: blend.family,
+        // The export the scene named. Every question a call site asks about
+        // the descriptor -- which family, which mode -- comes from parsing
+        // this once, so none of them is spelled twice.
+        staticString: importedName,
     };
 }
 
@@ -53,19 +54,26 @@ function blendOption(
     options: Value | undefined,
     family: "sprite" | "billboard",
     node: ts.Node,
+    call?: ts.CallExpression,
 ): string {
     const blendMode = property(options, "blendMode");
     if (!blendMode) {
         return `bbl::${family}_blend_alpha()`;
     }
-    if (
-        blendMode.kind !== "sprite-blend" ||
-        blendMode.staticString !== family
-    ) {
+    const named =
+        blendMode.kind === "sprite-blend" && blendMode.staticString
+            ? parseBlendExport(blendMode.staticString)
+            : undefined;
+    if (!named || named.family !== family) {
         context.fail(
             node,
             `blendMode must be one of the pinned ${family}Blend* descriptors.`,
         );
+    }
+    // The cutout mode is the one billboard descriptor with a second
+    // pipeline behind it, so naming it reaches that arm's shader.
+    if (call && family === "billboard" && named.mode === "cutout") {
+        context.reachFeature("sprite:billboard-cutout", call);
     }
     return blendMode.cpp;
 }
@@ -455,7 +463,9 @@ export function compileSpriteIntrinsic(
                 options,
                 "billboard",
                 optionsArg ?? call,
+                call,
             );
+
             // `order` sorts a system against the scene's other transparent
             // renderables upstream. This path draws billboards after the
             // scene's own stages instead, which is the same image only while
@@ -463,7 +473,6 @@ export function compileSpriteIntrinsic(
             // rather than being silently dropped.
             for (const unreached of [
                 "customShader",
-                "alphaCutoff",
                 "alphaToCoverage",
                 "order",
             ]) {
@@ -500,7 +509,12 @@ export function compileSpriteIntrinsic(
                     `${numberOption(options, "capacity", "16.0f")}, ` +
                     `${blendCpp}, ` +
                     `${numberOption(options, "opacity", "1.0f")}, ` +
-                    `${property(options, "visible")?.cpp ?? "true"}})`,
+                    `${property(options, "visible")?.cpp ?? "true"}, ` +
+                    // resolveAlphaCutoff and the order default both follow
+                    // the descriptor's own depth mode, so they are resolved
+                    // beside it rather than from the name at this call site.
+                    `${numberOption(options, "alphaCutoff", "0.0f")}, ` +
+                    `${property(options, "alphaCutoff") ? "true" : "false"}})`,
                 engineCpp,
             };
         }
@@ -591,6 +605,33 @@ export function compileSpriteIntrinsic(
                     `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}})`,
                 engineCpp,
             };
+        }
+
+        case "setAlphaToCoverage": {
+            context.expectArgumentCount(call, 2, 2);
+            const target = context.compileValue(call.arguments[0]!);
+            // The pin accepts several pipeline owners; only a billboard
+            // system is reached, so any other target refuses by name here
+            // rather than compiling into a call that cannot exist.
+            context.expectKind(
+                target,
+                "billboard-system",
+                call.arguments[0]!,
+            );
+            const enabled = context.compileValue(call.arguments[1]!);
+            context.expectKind(
+                enabled,
+                "boolean",
+                call.arguments[1]!,
+            );
+            const engineCpp =
+                target.engineCpp ??
+                context.requireDefaultEngine(call);
+            context.reachFeature("sprite:billboard", call);
+            context.emit(
+                `bbl::set_billboard_alpha_to_coverage(${engineCpp}, ${target.cpp}, ${enabled.cpp});`,
+            );
+            return { kind: "void", cpp: "" };
         }
 
         case "addFacingBillboardSystem":

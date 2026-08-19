@@ -1206,6 +1206,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene57",
+        name: "Scene 57 - Cutout Billboards",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene57.ts",
+        title: "Babylon Lite Native - Cutout Billboards",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [23, 28, 36],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene97",
         name: "Scene 97 - Sprite Multiply Blend",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene97.ts",

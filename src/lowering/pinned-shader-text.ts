@@ -378,6 +378,41 @@ export class PinnedShaderText {
     }
 
     /**
+     * The body of a braced block, from an opening marker to the brace that
+     * closes it. Counting braces rather than cutting at the first `}` is
+     * what keeps a stage whose body opens a block of its own — a cutout
+     * fragment's `discard` guard, say — from being silently truncated.
+     */
+    public braced(
+        source: string,
+        open: string,
+        label: string,
+    ): string {
+        const start = source.indexOf(open);
+        if (start < 0) {
+            throw new Error(
+                `Pinned ${label} is no longer introduced by '${open}'.`,
+            );
+        }
+        let depth = 1;
+        for (
+            let index = start + open.length;
+            index < source.length;
+            index += 1
+        ) {
+            const character = source[index];
+            if (character === "{") depth += 1;
+            if (character === "}") depth -= 1;
+            if (depth === 0) {
+                return source
+                    .slice(start + open.length, index)
+                    .trim();
+            }
+        }
+        throw new Error(`Pinned ${label} has no closing brace.`);
+    }
+
+    /**
      * The text between two markers in a reconstructed shader — how a caller
      * takes one struct or one stage body out of a whole module's text.
      */

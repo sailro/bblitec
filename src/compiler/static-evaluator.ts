@@ -55,7 +55,13 @@ export class StaticEvaluator {
         precision: "float" | "double" = "float",
     ): string {
         const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
-        const unwrapped = this.unwrap(expression);
+        // A vector written once as a module constant and passed by name is
+        // the same literal to a compile-time reader, so the binding is
+        // followed before the shapes below are matched -- the same
+        // resolution every other static sink already does.
+        const unwrapped = this.unwrap(
+            this.resolveStaticExpression(expression),
+        );
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = this.resolveProperty(unwrapped);
             if (value?.kind === "record") {

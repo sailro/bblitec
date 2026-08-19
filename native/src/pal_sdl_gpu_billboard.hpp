@@ -101,9 +101,16 @@ inline BillboardPass create_billboard_pass(
         // The axis-locked basis reads the system block for its lock axis.
         axis_locked ? 2u : 1u,
         "mainVertex");
+    // The cutout arm discards below the cutoff; with alpha-to-coverage the
+    // pin drops the discard and lets sample coverage carry the edge, so that
+    // permutation shares the transparent stage.
+    const bool cutout =
+        system.depth_mode == BillboardDepthMode::cutout;
     SDL_GPUShader* fragment_shader = load_shader(
         device,
-        "billboard.frag",
+        cutout && !system.alpha_to_coverage
+            ? "billboard_cutout.frag"
+            : "billboard.frag",
         SDL_GPU_SHADERSTAGE_FRAGMENT,
         1,
         1,
@@ -133,6 +140,7 @@ inline BillboardPass create_billboard_pass(
     // The descriptor the system was created with: the pinned
     // billboardBlend* the scene named, lowered as data. Every pinned mode is
     // an `add`, so only the factors vary.
+    // A cutout mode carries no colour blend at all: it replaces.
     const SpriteBlendDescriptor& blend = system.blend;
     SDL_GPUColorTargetDescription target{};
     target.format = target_format;
@@ -167,13 +175,16 @@ inline BillboardPass create_billboard_pass(
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     // The pinned pipeline reads `depthCompare: "greater-equal"` under
     // upstream's reverse-Z; this renderer's scene pass is forward-Z, so the
-    // same contract is LESS_OR_EQUAL here — the arm every transparent scene
-    // draw already takes. `transparent` in the pinned depth table means
-    // writes off, which is what makes the sorted draw order the composite.
+    // same contract is LESS_OR_EQUAL here. The pinned depth table pairs
+    // `transparent` with writes off, which is what makes the sorted draw
+    // order the composite, and `cutout` with writes on, which is what lets
+    // the GPU resolve overlap instead.
     info.depth_stencil_state.compare_op =
         SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
     info.depth_stencil_state.enable_depth_test = true;
-    info.depth_stencil_state.enable_depth_write = false;
+    info.depth_stencil_state.enable_depth_write = cutout;
+    info.multisample_state.enable_alpha_to_coverage =
+        system.alpha_to_coverage;
     info.multisample_state.sample_count = sample_count;
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
@@ -222,16 +233,25 @@ inline void upload_billboard_pass(
     if (system.count == 0) {
         return;
     }
+    // A cutout system is not sorted: it writes depth, so the GPU resolves
+    // overlap and the pin uploads in logical insertion order. Its buffer
+    // therefore never depends on the view and is uploaded once.
+    const bool cutout =
+        system.depth_mode == BillboardDepthMode::cutout;
     // The sorted order depends on the view alone: the lowered permutation
     // adds instances and never updates or removes them, so an unchanged view
     // means an unchanged buffer. `update_buffer` creates a transfer buffer
     // and submits a command buffer of its own, so re-uploading an identical
     // buffer every frame is the one real per-frame cost here -- every other
     // upload in this renderer is version-gated the same way.
-    if (pass.uploaded && pass.uploaded_view == view) {
+    if (pass.uploaded && (cutout || pass.uploaded_view == view)) {
         return;
     }
-    upstream::billboard_sorted_instances(system, view, pass.sorted);
+    if (cutout) {
+        upstream::billboard_instances(system, pass.sorted);
+    } else {
+        upstream::billboard_sorted_instances(system, view, pass.sorted);
+    }
     update_buffer(
         device,
         pass.instances,

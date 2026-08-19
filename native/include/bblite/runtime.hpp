@@ -500,9 +500,23 @@ struct SpriteBlendComponent {
     SpriteBlendFactor dst = SpriteBlendFactor::zero;
 };
 
+/**
+ * billboard-blend.ts `_depthMode`: which depth path a mode selects.
+ * `transparent` blends without writing depth and is sorted far to near;
+ * `cutout` discards below the alpha cutoff, writes depth, and draws with the
+ * opaque meshes instead, so the GPU resolves overlap and no sort is needed.
+ */
+enum class BillboardDepthMode {
+    transparent,
+    cutout,
+};
+
 struct SpriteBlendDescriptor {
     // `_descriptor` absent upstream means no colour blend at all.
     bool enabled = true;
+    // Only the billboard family declares one; the 2D descriptors leave it
+    // at the transparent default, which is the path they all take.
+    BillboardDepthMode depth_mode = BillboardDepthMode::transparent;
     SpriteBlendComponent color{};
     SpriteBlendComponent alpha{};
     // `_premultipliedOpacity`: per-layer opacity scales RGB as well as A.
@@ -549,6 +563,13 @@ enum class BillboardOrientation {
 struct BillboardSystemRecord {
     SpriteAtlasHandle atlas{};
     BillboardOrientation orientation = BillboardOrientation::facing;
+    BillboardDepthMode depth_mode = BillboardDepthMode::transparent;
+    // The pin's own slot: 200 draws after the opaque meshes with the other
+    // transparent renderables, 100 draws among them.
+    float order = 200.0f;
+    // setAlphaToCoverage: immutable pipeline state, so it is read when the
+    // pass is built rather than per frame.
+    bool alpha_to_coverage = false;
     SpriteBlendDescriptor blend{};
     float opacity = 1.0f;
     bool visible = true;
@@ -1332,6 +1353,8 @@ struct BillboardSystemOptions {
     SpriteBlendDescriptor blend{};
     float opacity = 1.0f;
     bool visible = true;
+    float alpha_cutoff = 0.0f;
+    bool has_alpha_cutoff = false;
 };
 
 /** addBillboardSpriteIndex's props; a `has_` flag marks what was named. */
@@ -1402,6 +1425,11 @@ double add_billboard_sprite_index(
 void add_billboard_system(
     Scene& scene,
     BillboardSystemHandle system);
+
+void set_billboard_alpha_to_coverage(
+    Engine& engine,
+    BillboardSystemHandle system,
+    bool enabled);
 
 double add_sprite_2d_index(
     Engine& engine,
