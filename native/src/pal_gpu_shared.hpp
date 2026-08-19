@@ -1688,32 +1688,6 @@ inline std::vector<std::size_t> sprite_layer_draw_order(
 }
 
 /**
- * The one blend descriptor a renderer's single pipeline serves. Layers
- * with differing blend modes would need a pipeline each, which neither
- * backend builds, so both refuse them with the same words rather than
- * blending some layers wrongly.
- */
-inline SpriteBlendDescriptor sprite_renderer_blend(
-    const Engine& engine,
-    const SpriteRendererRecord& renderer) {
-    const SpriteBlendDescriptor blend =
-        engine.sprite_layers[renderer.layers.front().value].blend;
-    for (const Sprite2DLayerHandle& handle : renderer.layers) {
-        const SpriteBlendDescriptor& other =
-            engine.sprite_layers[handle.value].blend;
-        if (other.color.src != blend.color.src ||
-            other.color.dst != blend.color.dst ||
-            other.alpha.src != blend.alpha.src ||
-            other.alpha.dst != blend.alpha.dst) {
-            throw std::runtime_error(
-                "Sprite layers with different blend modes need a "
-                "pipeline each.");
-        }
-    }
-    return blend;
-}
-
-/**
  * The delta a scene's before-render callbacks advance by.
  *
  * A scene that sets `fixedDeltaMs` pins it, which is how the measured

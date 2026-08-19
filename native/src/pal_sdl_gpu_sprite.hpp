@@ -37,7 +37,6 @@
 #include "pal_sdl_gpu_shared.hpp"
 
 namespace bbl::pal {
-
 /** Per-layer GPU state, matching the pinned `LayerGpu`. */
 struct SpriteLayerGpu {
     // One pipeline per layer: the uvScroll opt-in widens a layer's stride
@@ -77,18 +76,13 @@ inline SDL_GPUBlendFactor sprite_blend_factor(SpriteBlendFactor factor) {
 }
 
 /**
- * Build the pipeline and per-layer resources for one registered renderer.
- * `target_format` is the format of the colour attachment the caller will
- * record into; the pass is always single-sampled, as the pinned renderer's
- * own `sampleCount: 1` swapchain pass is.
- */
-/**
  * One layer's pipeline.
  *
  * The uvScroll opt-in widens a layer's instance stride and adds an
  * attribute, so the layout a pipeline describes belongs to the layer
- * rather than to the renderer it draws in -- which is how the pin keys
- * its own pipeline cache.
+ * rather than to the renderer it draws in. The pin keys a shared cache on
+ * that layout instead; one pipeline per layer is the same picture while a
+ * renderer holds one layer of each layout, which is every reached scene.
  */
 inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
     SDL_GPUDevice* device,
@@ -104,7 +98,7 @@ inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
         "mainVertex");
     SDL_GPUShader* fragment_shader = load_shader(
         device,
-        scroll ? "sprite_uvscroll.frag" : "sprite.frag",
+        "sprite.frag",
         SDL_GPU_SHADERSTAGE_FRAGMENT,
         1,
         1,
@@ -199,6 +193,12 @@ inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
     SDL_ReleaseGPUShader(device, fragment_shader);
     return pipeline;
 }
+/**
+ * Build the pipeline and per-layer resources for one registered renderer.
+ * `target_format` is the format of the colour attachment the caller will
+ * record into; the pass is always single-sampled, as the pinned renderer's
+ * own `sampleCount: 1` swapchain pass is.
+ */
 inline SpritePass create_sprite_pass(
     SDL_GPUDevice* device,
     Engine& engine,
@@ -221,7 +221,6 @@ inline SpritePass create_sprite_pass(
         quad_indices.data(),
         quad_indices.size() * sizeof(std::uint16_t));
 
-
     pass.layers.resize(renderer.layers.size());
     for (std::size_t index = 0; index < renderer.layers.size(); ++index) {
         const Sprite2DLayerRecord& layer =
@@ -231,7 +230,7 @@ inline SpritePass create_sprite_pass(
         SpriteLayerGpu& gpu = pass.layers[index];
         gpu.pipeline = create_sprite_layer_pipeline(
             device,
-            sprite_renderer_blend(engine, renderer),
+            layer.blend,
             layer.uv_scroll,
             target_format);
         SDL_GPUBufferCreateInfo buffer_info{};

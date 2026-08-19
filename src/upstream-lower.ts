@@ -547,19 +547,15 @@ class GeneratedSourceWriter {
                 if (features.includes("sprite:uv-scroll")) {
                     // The scroll variant adds one attribute and one term to
                     // the sampled UV; the pin gates both on the same flag.
+                    // Only the vertex stage differs: the pin adds the
+                    // offset to the sampled UV there and leaves the fragment
+                    // alone, so the widened layer shares sprite.frag.
                     const scroll = sprites.shaderSource(true);
-                    composedShaders.push(
-                        {
-                            output:
-                                "upstream/shaders/sprite_uvscroll.vert.native.wgsl",
-                            data: spriteVertexWgsl(provenance, scroll),
-                        },
-                        {
-                            output:
-                                "upstream/shaders/sprite_uvscroll.frag.native.wgsl",
-                            data: spriteFragmentWgsl(provenance, scroll),
-                        },
-                    );
+                    composedShaders.push({
+                        output:
+                            "upstream/shaders/sprite_uvscroll.vert.native.wgsl",
+                        data: spriteVertexWgsl(provenance, scroll),
+                    });
                 }
                 generated.push({
                     modulePath: "src/sprite/sprite-pipeline.ts",

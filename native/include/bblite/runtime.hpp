@@ -550,7 +550,6 @@ struct Sprite2DLayerRecord {
     // by two floats per sprite and stashes the attribute the pipeline pushes.
     // A layer that never scrolls keeps the narrow layout and ships none of it.
     bool uv_scroll = false;
-    std::uint32_t uv_scroll_offset_bytes = 0;
     std::uint64_t version = 0;
 };
 

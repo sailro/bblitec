@@ -36,15 +36,12 @@
 #include "pal_gpu_shared.hpp"
 
 namespace bbl::pal {
-
 /** Per-layer GPU state, matching the pinned `LayerGpu`. */
 struct DawnSpriteLayer {
     // One pipeline per layer: the uvScroll opt-in widens a layer's stride
     // and adds an attribute, so the layout a pipeline describes is the
     // layer's, not the renderer's.
     WGPURenderPipeline pipeline = nullptr;
-    WGPUShaderModule vertex_module = nullptr;
-    WGPUShaderModule fragment_module = nullptr;
     WGPUBuffer instances = nullptr;
     WGPUBuffer vertex_uniforms = nullptr;
     WGPUBuffer fragment_uniforms = nullptr;
@@ -98,24 +95,21 @@ inline WGPUBuffer dawn_sprite_uniform_buffer(WGPUDevice device) {
  *
  * The uvScroll opt-in widens a layer's instance stride and adds an
  * attribute, so the layout a pipeline describes belongs to the layer
- * rather than to the renderer it draws in.
+ * rather than to the renderer it draws in. The pin keys a shared cache on
+ * that layout instead; one pipeline per layer is the same picture while a
+ * renderer holds one layer of each layout, which is every reached scene.
  */
-inline void create_dawn_sprite_layer_pipeline(
+inline WGPURenderPipeline create_dawn_sprite_layer_pipeline(
     WGPUDevice device,
-    DawnSpriteLayer& layer_gpu,
     const std::array<WGPUBindGroupLayout, 4>& group_layouts,
     const SpriteBlendDescriptor& blend,
     bool scroll,
     WGPUTextureFormat target_format) {
-    layer_gpu.vertex_module = load_wgsl_module(
+    WGPUShaderModule vertex_module = load_wgsl_module(
         device,
         scroll ? "sprite_uvscroll.vert" : "sprite.vert");
-    layer_gpu.fragment_module = load_wgsl_module(
-        device,
-        scroll ? "sprite_uvscroll.frag" : "sprite.frag");
-
-    // Group 0 is unused by the specialized WGSL and is declared empty so
-    // the pipeline layout's group indexes line up with it.
+    WGPUShaderModule fragment_module = load_wgsl_module(
+        device, "sprite.frag");
 
     // The generated instance layout (sprite_layer.hpp, from
     // sprite-pipeline.ts): the pure-2D attributes at their pinned byte
@@ -180,7 +174,7 @@ inline void create_dawn_sprite_layer_pipeline(
         color_target.blend = &blend_state;
     }
     WGPUFragmentState fragment_state = WGPU_FRAGMENT_STATE_INIT;
-    fragment_state.module = layer_gpu.fragment_module;
+    fragment_state.module = fragment_module;
     fragment_state.entryPoint = string_view("mainFragment");
     fragment_state.targetCount = 1;
     fragment_state.targets = &color_target;
@@ -196,7 +190,7 @@ inline void create_dawn_sprite_layer_pipeline(
     WGPURenderPipelineDescriptor descriptor =
         WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = pipeline_layout;
-    descriptor.vertex.module = layer_gpu.vertex_module;
+    descriptor.vertex.module = vertex_module;
     descriptor.vertex.entryPoint = string_view("mainVertex");
     descriptor.vertex.bufferCount = 1;
     descriptor.vertex.buffers = &instance_layout;
@@ -205,11 +199,16 @@ inline void create_dawn_sprite_layer_pipeline(
     descriptor.multisample.count = 1;
     descriptor.multisample.mask = 0xFFFFFFFFu;
     descriptor.fragment = &fragment_state;
-    layer_gpu.pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
+    WGPURenderPipeline pipeline =
+        wgpuDeviceCreateRenderPipeline(device, &descriptor);
     wgpuPipelineLayoutRelease(pipeline_layout);
-    if (!layer_gpu.pipeline) {
+    // The modules live only until the pipeline names them.
+    wgpuShaderModuleRelease(vertex_module);
+    wgpuShaderModuleRelease(fragment_module);
+    if (!pipeline) {
         dawn_error("wgpuDeviceCreateRenderPipeline sprite");
     }
+    return pipeline;
 }
 inline DawnSpritePass create_dawn_sprite_pass(
     WGPUDevice device,
@@ -244,8 +243,9 @@ inline DawnSpritePass create_dawn_sprite_pass(
             sizeof(quad_indices));
     }
 
-
     {
+        // Group 0 is unused by the specialized WGSL and is declared empty
+        // so the pipeline layout's group indexes line up with it.
         WGPUBindGroupLayoutDescriptor empty =
             WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
         pass.group_layouts[0] =
@@ -304,11 +304,10 @@ inline DawnSpritePass create_dawn_sprite_pass(
         const SpriteAtlasRecord& atlas =
             engine.sprite_atlases[layer.atlas.value];
         DawnSpriteLayer& gpu = pass.layers[index];
-        create_dawn_sprite_layer_pipeline(
+        gpu.pipeline = create_dawn_sprite_layer_pipeline(
             device,
-            gpu,
             pass.group_layouts,
-            sprite_renderer_blend(engine, renderer),
+            layer.blend,
             layer.uv_scroll,
             target_format);
 
@@ -496,12 +495,6 @@ inline void release_dawn_sprite_pass(DawnSpritePass& pass) {
         if (layer.atlas_view) wgpuTextureViewRelease(layer.atlas_view);
         if (layer.atlas) wgpuTextureRelease(layer.atlas);
         if (layer.pipeline) wgpuRenderPipelineRelease(layer.pipeline);
-        if (layer.vertex_module) {
-            wgpuShaderModuleRelease(layer.vertex_module);
-        }
-        if (layer.fragment_module) {
-            wgpuShaderModuleRelease(layer.fragment_module);
-        }
         if (layer.instances) wgpuBufferRelease(layer.instances);
         if (layer.vertex_uniforms) {
             wgpuBufferRelease(layer.vertex_uniforms);

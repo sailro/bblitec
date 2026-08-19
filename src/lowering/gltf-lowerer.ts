@@ -1925,11 +1925,7 @@ const mipmapModeByPin: Readonly<Record<string, string>> = {
     linear: "TextureMipmapMode::linear",
 };
 
-const addressModeByPin: Readonly<Record<string, string>> = {
-    "clamp-to-edge": "TextureAddressMode::clamp",
-    "mirror-repeat": "TextureAddressMode::mirror",
-    repeat: "TextureAddressMode::repeat",
-};
+import { addressModeByPin } from "../pinned-address-modes.js";
 
 /**
  * How the pin's returned `GPUSamplerDescriptor` maps onto the loader's

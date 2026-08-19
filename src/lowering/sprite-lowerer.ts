@@ -48,7 +48,7 @@ export class SpriteLowerer {
     // Pinned contracts
     // -----------------------------------------------------------------
 
-    /** `PURE_2D_INSTANCE_FLOATS_PER_SPRITE`, `SAVED_SIZE_FLOATS_PER_SPRITE`. */
+    /** `sprite-2d-uvscroll.ts` `UVSCROLL_EXTRA_FLOATS_PER_SPRITE`. */
     private uvScrollExtraFloats(): number {
         const file = this.context.sourceFile(uvScrollModule);
         return this.context.numericValue(
@@ -60,6 +60,7 @@ export class SpriteLowerer {
         );
     }
 
+    /** `PURE_2D_INSTANCE_FLOATS_PER_SPRITE`, `SAVED_SIZE_FLOATS_PER_SPRITE`. */
     private layout(): {
         instanceFloats: number;
         savedSizeFloats: number;
@@ -101,6 +102,79 @@ export class SpriteLowerer {
             instanceFloats,
             savedSizeFloats,
             defaultCapacity,
+        };
+    }
+
+    /**
+     * `sprite-2d-uvscroll.ts` ensureWide: the row the pin stashes for the
+     * widened layout, read rather than typed. Its offset is the narrow
+     * stride, which is the one part the pin computes at run time.
+     */
+    private uvScrollAttribute(instanceFloats: number): {
+        location: number;
+        offsetBytes: number;
+        floatCount: number;
+    } {
+        const { declaration } = this.context.functionDeclaration(
+            uvScrollModule,
+            "ensureWide",
+        );
+        const write = this.context
+            .findNodes(
+                declaration,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken &&
+                    ts.isPropertyAccessExpression(node.left) &&
+                    node.left.name.text === "_uvScrollAttr",
+            )
+            .map((node) => node as ts.BinaryExpression)[0];
+        if (!write) {
+            this.context.contractError(
+                declaration,
+                "Pinned ensureWide no longer stashes _uvScrollAttr.",
+            );
+        }
+        const literal = this.context.unwrapExpression(write.right);
+        if (!ts.isObjectLiteralExpression(literal)) {
+            return this.context.contractError(
+                literal,
+                "Expected the pinned _uvScrollAttr object literal.",
+            );
+        }
+        const file = declaration.getSourceFile();
+        const location = this.context.numericValue(
+            this.context.propertyInitializer(literal, "shaderLocation"),
+            file,
+        );
+        const format = this.context.stringValue(
+            this.context.propertyInitializer(literal, "format"),
+            file,
+        );
+        const match = /^float32(?:x([234]))?$/.exec(format);
+        if (!match) {
+            this.context.contractError(
+                literal,
+                `Unsupported uvScroll attribute format '${format}'.`,
+            );
+        }
+        // The pin writes the offset as `oldStride * 4`, which is the narrow
+        // stride in bytes -- so it is asserted rather than read.
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(literal, "offset"),
+            "oldStride * 4",
+            "ensureWide uvScroll attribute offset",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "newStride"),
+            "oldStride + UVSCROLL_EXTRA_FLOATS_PER_SPRITE",
+            "ensureWide newStride",
+        );
+        return {
+            location,
+            offsetBytes: instanceFloats * 4,
+            floatCount: match[1] === undefined ? 1 : Number(match[1]),
         };
     }
 
@@ -626,21 +700,20 @@ export class SpriteLowerer {
     public shaderSource(
         uvScroll = false,
     ): SpriteShaderSource {
-        const permutation = (): Map<string, string | boolean> =>
-            new Map<string, string | boolean>([
-                ["hasDepth", false],
-                ["spriteGroupIndex", "0"],
-                ["uvScroll", uvScroll],
-            ]);
+        const permutation = new Map<string, string | boolean>([
+            ["hasDepth", false],
+            ["spriteGroupIndex", "0"],
+            ["uvScroll", uvScroll],
+        ]);
         const prologue = this.shaderText.evaluate(
             pipelineModule,
             "makeSpritePrologueWgsl",
-            permutation(),
+            permutation,
         );
         const full = this.shaderText.evaluate(
             pipelineModule,
             "makeSpriteWgsl",
-            permutation(),
+            permutation,
         );
         return {
             layerStructFields: this.shaderText.braced(
@@ -726,6 +799,9 @@ export class SpriteLowerer {
         const attributeRows = this.instanceAttributeRows(
             layout.instanceFloats,
         );
+        const uvScrollRow = this.uvScrollAttribute(
+            layout.instanceFloats,
+        );
         this.assertGridAtlas();
         this.assertFrameResolution();
         this.assertAtlasLoader();
@@ -796,7 +872,7 @@ ${attributeRows
 // sprite-2d-uvscroll.ts ensureWide: the uvOffset attribute the widened
 // layout adds, at the byte offset the narrow stride ends on.
 inline constexpr SpriteInstanceAttribute sprite_uvscroll_attribute{
-    7u, ${layout.instanceFloats * 4}u, 2u};
+    ${uvScrollRow.location}u, ${uvScrollRow.offsetBytes}u, ${uvScrollRow.floatCount}u};
 
 inline constexpr std::uint32_t sprite_uvscroll_stride_bytes =
     ${(layout.instanceFloats + this.uvScrollExtraFloats()) * 4}u;
@@ -891,15 +967,6 @@ void grow_sprite_capacity(
     layer.capacity = capacity;
 }
 
-std::runtime_error new_sprite_range_error(
-    double index,
-    std::uint32_t count) {
-    return std::runtime_error(
-        "setSprite2DUvOffset: index " +
-        std::to_string(static_cast<long long>(index)) +
-        " out of range [0, " + std::to_string(count) + ")");
-}
-
 } // namespace
 
 // sprite-2d-uvscroll.ts ensureWide: widen a layer from the narrow base
@@ -921,12 +988,13 @@ void ensure_sprite_uv_scroll(Sprite2DLayerRecord& layer) {
             static_cast<std::size_t>(index) * old_stride;
         const std::size_t to =
             static_cast<std::size_t>(index) * new_stride;
-        for (std::uint32_t field = 0; field < old_stride; ++field) {
-            next[to + field] = layer.instance_data[from + field];
-        }
+        std::copy_n(
+            layer.instance_data.begin() +
+                static_cast<std::ptrdiff_t>(from),
+            old_stride,
+            next.begin() + static_cast<std::ptrdiff_t>(to));
     }
     layer.instance_data = std::move(next);
-    layer.uv_scroll_offset_bytes = old_stride * 4u;
     layer.instance_floats_per_sprite = new_stride;
     layer.uv_scroll = true;
     layer.version += 1u;
@@ -943,7 +1011,10 @@ void set_sprite_2d_uv_offset(
         engine.sprite_layers[layer_handle.value];
     if (index < 0.0 ||
         index >= static_cast<double>(layer.count)) {
-        throw new_sprite_range_error(index, layer.count);
+        throw std::runtime_error(
+            "setSprite2DUvOffset: index " +
+            std::to_string(static_cast<long long>(index)) +
+            " out of range [0, " + std::to_string(layer.count) + ")");
     }
     ensure_sprite_uv_scroll(layer);
     const std::size_t base =

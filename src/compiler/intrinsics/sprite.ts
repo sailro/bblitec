@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { addressModeByPin } from "../../pinned-address-modes.js";
 import { parseBlendExport } from "../../lowering/pinned-blend-table.js";
 
 export interface SpriteIntrinsicContext
@@ -227,35 +228,11 @@ export function compileSpriteIntrinsic(
             // that record would silently not survive the spread, so it
             // refuses by name.
             const textureOptions = property(options, "textureOptions");
-            const addressModes: string[] = [];
             if (textureOptions) {
                 if (textureOptions.kind !== "record") {
                     context.fail(
                         call.arguments[2]!,
                         "loadSpriteAtlas textureOptions must be written as an object literal.",
-                    );
-                }
-                for (const name of [
-                    "addressModeU",
-                    "addressModeV",
-                ] as const) {
-                    const mode = property(textureOptions, name);
-                    if (!mode) continue;
-                    if (
-                        mode.staticString !== "repeat" &&
-                        mode.staticString !== "clamp-to-edge"
-                    ) {
-                        context.fail(
-                            call.arguments[2]!,
-                            `loadSpriteAtlas ${name} must be "repeat" or "clamp-to-edge".`,
-                        );
-                    }
-                    addressModes.push(
-                        `bbl::TextureAddressMode::${
-                            mode.staticString === "repeat"
-                                ? "repeat"
-                                : "clamp"
-                        }`,
                     );
                 }
                 for (const member of Object.keys(
@@ -272,9 +249,25 @@ export function compileSpriteIntrinsic(
                     }
                 }
             }
-            while (addressModes.length < 2) {
-                addressModes.push("bbl::TextureAddressMode::clamp");
-            }
+            // Each axis is read by name: the loader stamps clamp and the
+            // caller's spread replaces it, so an option naming only one axis
+            // must not land on the other.
+            const addressMode = (
+                name: "addressModeU" | "addressModeV",
+            ): string => {
+                const mode = property(textureOptions, name);
+                if (!mode?.staticString) {
+                    return "bbl::TextureAddressMode::clamp";
+                }
+                const mapped = addressModeByPin[mode.staticString];
+                if (!mapped) {
+                    context.fail(
+                        call.arguments[2]!,
+                        `loadSpriteAtlas ${name} '${mode.staticString}' is not a pinned address mode.`,
+                    );
+                }
+                return `bbl::${mapped}`;
+            };
             const sampling = property(options, "sampling");
             if (
                 sampling &&
@@ -310,7 +303,8 @@ export function compileSpriteIntrinsic(
                     }, ` +
                     `${premultipliedAlpha?.cpp ?? "false"}, ` +
                     `${premultiplyOnLoad?.cpp ?? "false"}, ` +
-                    `${addressModes[0]}, ${addressModes[1]}})`,
+                    `${addressMode("addressModeU")}, ` +
+                    `${addressMode("addressModeV")}})`,
                 engineCpp: engine.engineCpp ?? engine.cpp,
             };
         }
