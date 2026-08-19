@@ -2,8 +2,7 @@ import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { PinnedShaderText } from "./pinned-shader-text.js";
 import {
-    blendFactorySymbol,
-    nativeBlendFactor,
+    blendFactoriesCpp,
     readPinnedBlendTable,
 } from "./pinned-blend-table.js";
 
@@ -23,6 +22,14 @@ export type BillboardOrientation = "facing" | "axis-locked";
 
 /** The billboard shader, split into the pieces each backend re-homes. */
 export interface BillboardShaderSource {
+    /**
+     * Whether the vertex stage reads the system block. Derived from the
+     * pin's own basis rather than from a table here — an orientation that
+     * starts reading the lock axis picks the binding up by itself — but
+     * carried as a value so the WGSL emitter and the two PALs cannot state
+     * it differently.
+     */
+    vertexReadsSystemBlock: boolean;
     systemStructFields: string;
     basisFunction: string;
     instanceStructFields: string;
@@ -521,6 +528,7 @@ export class BillboardLowerer {
             ]),
         );
         return {
+            vertexReadsSystemBlock: basis.includes("billboards."),
             systemStructFields: this.shaderText.between(
                 full,
                 "struct S {",
@@ -575,11 +583,16 @@ export class BillboardLowerer {
         const layout = this.layout();
         const rows = this.attributeRows(layout.instanceFloats);
         this.assertSystemDefaults();
+        // A cutout mode is not another factor pair: the pin's own
+        // `_depthMode` says it drives an alpha-test depth-write pipeline,
+        // which this path does not render. Filtering on that field rather
+        // than on a descriptor's name is what keeps the lowerer and the
+        // intrinsic refusing the same set.
         const blends = readPinnedBlendTable(
             this.context,
             blendModule,
             "billboardBlend",
-        );
+        ).filter((blend) => blend.depthMode === "transparent");
         this.assertDepthMode();
         this.assertInstanceSlots();
         this.assertSystemUbo();
@@ -646,18 +659,7 @@ namespace bbl {
  * They live here rather than in the system's own translation unit because
  * the scene names one at the call site.
  */
-${blends.filter((blend) => blend.enabled).map((blend) => `inline SpriteBlendDescriptor ${blendFactorySymbol(blend.exportName)}() {
-    // billboard-blend.ts#${blend.exportName}.
-    SpriteBlendDescriptor blend;
-    blend.enabled = true;
-    blend.color.src = SpriteBlendFactor::${nativeBlendFactor(blend.color[0])};
-    blend.color.dst = SpriteBlendFactor::${nativeBlendFactor(blend.color[1])};
-    blend.alpha.src = SpriteBlendFactor::${nativeBlendFactor(blend.alpha[0])};
-    blend.alpha.dst = SpriteBlendFactor::${nativeBlendFactor(blend.alpha[1])};
-    blend.premultiplied_opacity = ${blend.premultipliedOpacity};
-    return blend;
-}
-`).join("\n")}
+${blendFactoriesCpp(blends, "billboard", "billboard-blend.ts")}
 } // namespace bbl
 
 namespace bbl::upstream {

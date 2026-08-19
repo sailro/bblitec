@@ -27,6 +27,19 @@ import { indent } from "./shader-builtins-utility.js";
  * varying.
  */
 
+/** The system uniform block, at whichever group and binding reads it. */
+function systemBlockWgsl(
+    shader: BillboardShaderSource,
+    group: number,
+    binding: number,
+): string {
+    return `struct S {
+${indent(shader.systemStructFields, "    ")}
+};
+@group(${group}) @binding(${binding}) var<uniform> billboards: S;
+`;
+}
+
 export function billboardVertexWgsl(
     provenance: string,
     shader: BillboardShaderSource,
@@ -34,13 +47,9 @@ export function billboardVertexWgsl(
     // An axis-locked basis reads `billboards.axisAndCutoff` for its lock
     // axis, so that stage needs the system block as a second vertex uniform.
     // The facing basis reads only the camera and declares neither.
-    const systemBlock = shader.basisFunction.includes("billboards.")
+    const systemBlock = shader.vertexReadsSystemBlock
         ? `
-struct S {
-${indent(shader.systemStructFields, "    ")}
-};
-@group(1) @binding(1) var<uniform> billboards: S;
-`
+${systemBlockWgsl(shader, 1, 1)}`
         : "";
     return `// ${provenance}
 struct SceneUniforms {
@@ -71,11 +80,7 @@ export function billboardFragmentWgsl(
     shader: BillboardShaderSource,
 ): string {
     return `// ${provenance}
-struct S {
-${indent(shader.systemStructFields, "    ")}
-};
-@group(3) @binding(0) var<uniform> billboards: S;
-@group(2) @binding(0) var atlasTex: texture_2d<f32>;
+${systemBlockWgsl(shader, 3, 0)}@group(2) @binding(0) var atlasTex: texture_2d<f32>;
 @group(2) @binding(1) var atlasSamp: sampler;
 
 struct O {

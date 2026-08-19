@@ -1,10 +1,7 @@
 import ts from "typescript";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import {
-    blendFactorySymbol,
-    isBlendExport,
-} from "../../lowering/pinned-blend-table.js";
+import { parseBlendExport } from "../../lowering/pinned-blend-table.js";
 
 export interface SpriteIntrinsicContext
     extends IntrinsicCallContext {
@@ -31,14 +28,46 @@ export interface SpriteIntrinsicContext
 export function compileSpriteConstant(
     importedName: string,
 ): Value | undefined {
-    if (!isBlendExport(importedName)) {
+    const blend = parseBlendExport(importedName);
+    if (!blend) {
         return undefined;
     }
     return {
         kind: "sprite-blend",
-        cpp: `bbl::${blendFactorySymbol(importedName)}()`,
-        staticString: importedName,
+        cpp: `bbl::${blend.symbol}()`,
+        // The family the descriptor belongs to, so a call site can refuse a
+        // 2D descriptor at a billboard system and the reverse.
+        staticString: blend.family,
     };
+}
+
+/**
+ * The native factory a `blendMode` option names, or the family's default.
+ *
+ * The family is checked because the two sets are not interchangeable: a 2D
+ * descriptor at a billboard system would otherwise compile straight through
+ * to a `sprite_blend_*` factory the billboard pipeline cannot mean.
+ */
+function blendOption(
+    context: SpriteIntrinsicContext,
+    options: Value | undefined,
+    family: "sprite" | "billboard",
+    node: ts.Node,
+): string {
+    const blendMode = property(options, "blendMode");
+    if (!blendMode) {
+        return `bbl::${family}_blend_alpha()`;
+    }
+    if (
+        blendMode.kind !== "sprite-blend" ||
+        blendMode.staticString !== family
+    ) {
+        context.fail(
+            node,
+            `blendMode must be one of the pinned ${family}Blend* descriptors.`,
+        );
+    }
+    return blendMode.cpp;
 }
 
 /**
@@ -267,20 +296,12 @@ export function compileSpriteIntrinsic(
             // blend at all, which the 2D pipeline expresses by disabling
             // blending -- so unlike the billboard family's cutout it needs no
             // second depth path and is lowered with the rest.
-            const blendMode = property(options, "blendMode");
-            let blendCpp = "bbl::sprite_blend_alpha()";
-            if (blendMode) {
-                if (
-                    blendMode.kind !== "sprite-blend" ||
-                    !blendMode.staticString?.startsWith("spriteBlend")
-                ) {
-                    context.fail(
-                        call.arguments[1]!,
-                        "createSprite2DLayer blendMode must be one of the pinned spriteBlend* descriptors.",
-                    );
-                }
-                blendCpp = blendMode.cpp;
-            }
+            const blendCpp = blendOption(
+                context,
+                options,
+                "sprite",
+                call.arguments[1] ?? call,
+            );
             const pivot = tupleOption(
                 context,
                 options,
@@ -401,10 +422,11 @@ export function compileSpriteIntrinsic(
             // and the options.
             const locked =
                 importedName === "createAxisLockedBillboardSystem";
+            const optionsIndex = locked ? 2 : 1;
             context.expectArgumentCount(
                 call,
-                locked ? 2 : 1,
-                locked ? 3 : 2,
+                optionsIndex,
+                optionsIndex + 1,
             );
             const atlas = context.compileValue(
                 call.arguments[0]!,
@@ -414,9 +436,10 @@ export function compileSpriteIntrinsic(
                 "sprite-atlas",
                 call.arguments[0]!,
             );
+            const optionsArg = call.arguments[optionsIndex];
             const options = optionsRecord(
                 context,
-                call.arguments[locked ? 2 : 1],
+                optionsArg,
                 importedName,
             );
             // Every arm the lowered permutation does not cover refuses
@@ -427,23 +450,12 @@ export function compileSpriteIntrinsic(
             // is `billboard_blend_alpha()`. `cutout` carries no colour blend
             // and drives an alpha-test depth-write path this slice does not
             // render, so it refuses rather than drawing the wrong one.
-            const blendMode = property(options, "blendMode");
-            let blendCpp = "bbl::billboard_blend_alpha()";
-            if (blendMode) {
-                if (blendMode.kind !== "sprite-blend") {
-                    context.fail(
-                        call.arguments[1]!,
-                        "createFacingBillboardSystem blendMode must be one of the pinned billboardBlend* descriptors.",
-                    );
-                }
-                if (blendMode.staticString === "billboardBlendCutout") {
-                    context.fail(
-                        call.arguments[1]!,
-                        "billboardBlendCutout drives the alpha-test depth-write path, which is not lowered.",
-                    );
-                }
-                blendCpp = blendMode.cpp;
-            }
+            const blendCpp = blendOption(
+                context,
+                options,
+                "billboard",
+                optionsArg ?? call,
+            );
             // `order` sorts a system against the scene's other transparent
             // renderables upstream. This path draws billboards after the
             // scene's own stages instead, which is the same image only while
@@ -457,7 +469,7 @@ export function compileSpriteIntrinsic(
             ]) {
                 if (property(options, unreached)) {
                     context.fail(
-                        call.arguments[locked ? 2 : 1]!,
+                        optionsArg ?? call,
                         `${importedName} option '${unreached}' is not lowered.`,
                     );
                 }

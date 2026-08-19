@@ -4,18 +4,23 @@ import type { LoweringContext } from "./context.js";
 /**
  * A pinned blend descriptor, as the native factory emitted for it.
  *
- * `enabled` is false for a descriptor that names no `_descriptor`: upstream
- * documents that as "no colour blend", which is the 2D family's opaque mode
- * and the billboard family's alpha-test cutout. The two mean different things
- * downstream — cutout also drives a depth-write path — so the caller decides
- * which of its own modes it can actually render.
+ * `enabled` is false for a descriptor that names no `_descriptor`, which
+ * upstream documents as "no colour blend". That alone does not say what the
+ * mode means: for the 2D family it is the opaque replacement, and for the
+ * billboard family it is the alpha-test cutout that ALSO writes depth. The
+ * pin distinguishes them with `_depthMode`, a required field on
+ * `BillboardBlendDescriptor` that `SpriteBlendDescriptor` does not have —
+ * so the row carries it and the caller refuses on the pin's own field rather
+ * than on a descriptor's name.
  */
 export interface PinnedBlendRow {
-    key: string;
     exportName: string;
     enabled: boolean;
-    color: readonly [string, string];
-    alpha: readonly [string, string];
+    /** The pin's `_depthMode`, where the family declares one. */
+    depthMode?: string;
+    /** Absent when the descriptor names no colour blend. */
+    color?: readonly [string, string];
+    alpha?: readonly [string, string];
     premultipliedOpacity: boolean;
 }
 
@@ -66,16 +71,28 @@ export function readPinnedBlendTable(
             const state = descriptor
                 ? blendState(context, descriptor, key)
                 : undefined;
+            const depthMode = optionalProperty(
+                context,
+                literal,
+                "_depthMode",
+            );
             rows.push({
-                key,
                 exportName: binding.name.text,
                 enabled: state !== undefined,
-                color: state
-                    ? blendSide(context, state, "color", key)
-                    : ["one", "zero"],
-                alpha: state
-                    ? blendSide(context, state, "alpha", key)
-                    : ["one", "zero"],
+                ...(depthMode
+                    ? {
+                          depthMode: context.stringValue(
+                              depthMode,
+                              file,
+                          ),
+                      }
+                    : {}),
+                ...(state
+                    ? {
+                          color: blendSide(context, state, "color", key),
+                          alpha: blendSide(context, state, "alpha", key),
+                      }
+                    : {}),
                 premultipliedOpacity: Boolean(
                     optionalProperty(
                         context,
@@ -176,6 +193,44 @@ function optionalProperty(
 }
 
 /**
+ * The pinned blend modes, as the C++ factories scene code reaches when it
+ * names a descriptor at a call site.
+ *
+ * Emitted once for both families: a factory that differs by family is a
+ * factory that drifts, and the two templates had already disagreed on
+ * whether `enabled` was written from the row or hard-coded.
+ */
+export function blendFactoriesCpp(
+    rows: readonly PinnedBlendRow[],
+    family: string,
+    moduleName: string,
+): string {
+    return rows
+        .map(
+            (row) => `inline SpriteBlendDescriptor ${blendFactorySymbol(
+                family,
+                row.exportName,
+            )}() {
+    // ${moduleName}#${row.exportName}.
+    SpriteBlendDescriptor blend;
+    blend.enabled = ${row.enabled};${
+        row.color && row.alpha
+            ? `
+    blend.color.src = SpriteBlendFactor::${nativeBlendFactor(row.color[0])};
+    blend.color.dst = SpriteBlendFactor::${nativeBlendFactor(row.color[1])};
+    blend.alpha.src = SpriteBlendFactor::${nativeBlendFactor(row.alpha[0])};
+    blend.alpha.dst = SpriteBlendFactor::${nativeBlendFactor(row.alpha[1])};`
+            : ""
+    }
+    blend.premultiplied_opacity = ${row.premultipliedOpacity};
+    return blend;
+}
+`,
+        )
+        .join("\n");
+}
+
+/**
  * The C++ factory a descriptor is emitted as, from the EXPORT name.
  *
  * Both the compiler (resolving `spriteBlendMultiply` at a call site) and the
@@ -184,14 +239,32 @@ function optionalProperty(
  * `_key` — which upstream documents as a pipeline-cache discriminator, free
  * to change on its own — is what keeps them from agreeing by coincidence.
  */
-export function blendFactorySymbol(exportName: string): string {
-    const match = /^(sprite|billboard)Blend([A-Z].*)$/.exec(exportName);
+export function blendFactorySymbol(
+    family: string,
+    exportName: string,
+): string {
+    const suffix = exportName.slice(`${family}Blend`.length);
+    return `${family}_blend_${suffix.toLowerCase()}`;
+}
+
+/**
+ * The family and native symbol an imported descriptor names, or undefined
+ * when the name is not one. The family is returned rather than re-tested at
+ * each call site, because a 2D descriptor passed to a billboard system (or
+ * the reverse) is a real mistake that no call site was checking for.
+ */
+export function parseBlendExport(
+    importedName: string,
+): { family: string; symbol: string } | undefined {
+    const match = /^([a-z]+)Blend[A-Z]/.exec(importedName);
     if (!match) {
-        throw new Error(
-            `'${exportName}' is not a pinned blend descriptor export.`,
-        );
+        return undefined;
     }
-    return `${match[1]}_blend_${match[2]!.toLowerCase()}`;
+    const family = match[1]!;
+    return {
+        family,
+        symbol: blendFactorySymbol(family, importedName),
+    };
 }
 
 /**
@@ -218,7 +291,3 @@ export function nativeBlendFactor(factor: string): string {
     return mapped;
 }
 
-/** Whether an imported name is one of the pin's blend descriptors. */
-export function isBlendExport(importedName: string): boolean {
-    return /^(sprite|billboard)Blend[A-Z]/.test(importedName);
-}
