@@ -455,4 +455,52 @@ inline SDL_GPUTexture* upload_2d_texture(
     return texture;
 }
 
+/**
+ * The fragment textures a sprite-family pass binds, in declaration order:
+ * the atlas, then whatever a custom shader named.
+ *
+ * Built once when the pass is, because none of it changes per frame, and
+ * shared by both families because the order is the composed program's rather
+ * than either family's.
+ */
+inline std::vector<SDL_GPUTextureSamplerBinding> sprite_fragment_textures(
+    SDL_GPUDevice* device,
+    SDL_GPUTexture* atlas,
+    SDL_GPUSampler* atlas_sampler,
+    const std::vector<PixelsTexture>& extras,
+    const char* label) {
+    std::vector<SDL_GPUTextureSamplerBinding> textures;
+    textures.reserve(1u + extras.size());
+    textures.push_back(
+        SDL_GPUTextureSamplerBinding{atlas, atlas_sampler});
+    for (const PixelsTexture& extra : extras) {
+        textures.push_back(SDL_GPUTextureSamplerBinding{
+            upload_2d_texture(
+                device,
+                extra.rgba.data(),
+                extra.rgba.size(),
+                extra.width,
+                extra.height,
+                SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                label),
+            create_texture_sampler(device, extra.sampler)});
+    }
+    return textures;
+}
+
+/** Releases what {@link sprite_fragment_textures} built, atlas included. */
+inline void release_sprite_fragment_textures(
+    SDL_GPUDevice* device,
+    std::vector<SDL_GPUTextureSamplerBinding>& textures) {
+    for (const SDL_GPUTextureSamplerBinding& binding : textures) {
+        if (binding.texture) {
+            SDL_ReleaseGPUTexture(device, binding.texture);
+        }
+        if (binding.sampler) {
+            SDL_ReleaseGPUSampler(device, binding.sampler);
+        }
+    }
+    textures.clear();
+}
+
 } // namespace bbl::pal

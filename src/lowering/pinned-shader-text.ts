@@ -48,6 +48,13 @@ const ARITHMETIC = new Map<
     [ts.SyntaxKind.AsteriskToken, (left, right) => left * right],
 ]);
 
+/**
+ * The most trips a folded loop may take. A shader builder emits a line or
+ * two per bound element; a count past this is a bound that stopped settling,
+ * which refuses rather than hanging generation.
+ */
+const MAX_LOOP_TRIPS = 1024;
+
 /** The comparison a counted loop bounds itself with. */
 const RELATIONS = new Map<
     ts.SyntaxKind,
@@ -324,19 +331,57 @@ export class PinnedShaderText {
                 modulePath,
             ),
         );
-        // The bound is a value already resolved, so the loop runs a settled
-        // number of times -- once per element of a list the permutation
-        // bound -- and there is no unbounded iteration to guard against.
         const body = ts.isBlock(statement.statement)
             ? statement.statement.statements
             : [statement.statement];
-        while (
+        // A `break` leaves `evaluateStatements` looking exactly like a body
+        // that ran to its end, which here would mean "keep looping". No
+        // pinned builder uses one, so a loop carrying one refuses rather
+        // than folding text from a trip the pin would not have taken.
+        if (
+            this.context.hasNode(
+                statement.statement,
+                (node) =>
+                    node.kind === ts.SyntaxKind.BreakStatement ||
+                    node.kind === ts.SyntaxKind.ContinueStatement,
+            )
+        ) {
+            this.context.contractError(
+                statement,
+                `Pinned ${symbolName} breaks out of a loop, which this evaluator does not fold.`,
+            );
+        }
+        // The counter steps by one and the bound is a resolved value, so the
+        // trip count is settled -- but it is capped anyway, because the
+        // alternative to refusing is a generation that never returns.
+        const step = this.context.unwrapExpression(
+            statement.incrementor,
+        );
+        if (
+            !ts.isPostfixUnaryExpression(step) ||
+            !ts.isIdentifier(step.operand) ||
+            step.operator !== ts.SyntaxKind.PlusPlusToken
+        ) {
+            this.context.contractError(
+                step,
+                `Pinned ${symbolName} steps a loop in a way this evaluator cannot fold.`,
+            );
+        }
+        for (
+            let trip = 0;
             this.condition(
                 statement.condition,
                 scope,
                 modulePath,
-            )
+            );
+            trip += 1
         ) {
+            if (trip > MAX_LOOP_TRIPS) {
+                this.context.contractError(
+                    statement,
+                    `Pinned ${symbolName} loops past ${MAX_LOOP_TRIPS} trips, which no shader builder does.`,
+                );
+            }
             const returned = this.evaluateStatements(
                 body,
                 scope,
@@ -346,32 +391,12 @@ export class PinnedShaderText {
             if (returned !== undefined) {
                 return returned;
             }
-            this.step(statement.incrementor, scope, modulePath);
-        }
-        return undefined;
-    }
-
-    /** The loop counter's own step, the one place the pin writes a binding. */
-    private step(
-        expression: ts.Expression,
-        scope: Map<string, ShaderTextBinding>,
-        modulePath: string,
-    ): void {
-        const node = this.context.unwrapExpression(expression);
-        if (
-            !ts.isPostfixUnaryExpression(node) ||
-            !ts.isIdentifier(node.operand) ||
-            node.operator !== ts.SyntaxKind.PlusPlusToken
-        ) {
-            this.context.contractError(
-                node,
-                "Pinned shader text steps a loop in a way this evaluator cannot fold.",
+            scope.set(
+                step.operand.text,
+                this.number(step.operand, scope, modulePath) + 1,
             );
         }
-        scope.set(
-            node.operand.text,
-            this.number(node.operand, scope, modulePath) + 1,
-        );
+        return undefined;
     }
 
     /** A branch condition, which must fold to a bound boolean or comparison. */

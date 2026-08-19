@@ -236,7 +236,11 @@ test("keeps extracted option and manifest blocks in their modules", () => {
         [
             "src/compiler/assets.ts",
             [
-                /A drawn sprite atlas factory takes no arguments\./,
+                // The two kinds a scene module produces, and the refusal
+                // they share when the call carries arguments.
+                /drawn sprite atlas/,
+                /pixel buffer/,
+                /factory takes no arguments\./,
                 /brdf-lut\.png/,
             ],
         ],

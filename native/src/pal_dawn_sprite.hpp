@@ -53,9 +53,7 @@ struct DawnSpriteLayer {
     WGPUSampler sampler = nullptr;
     // The custom shader's extra textures, in the order they bind after
     // the atlas.
-    std::vector<WGPUTexture> extra_textures;
-    std::vector<WGPUTextureView> extra_views;
-    std::vector<WGPUSampler> extra_samplers;
+    std::vector<DawnSampledTexture> extras;
     WGPUBindGroup vertex_group = nullptr;
     WGPUBindGroup texture_group = nullptr;
     WGPUBindGroup fragment_group = nullptr;
@@ -141,27 +139,8 @@ create_dawn_sprite_layer_layouts(
 
     // The atlas pair, then one pair per extra texture a custom shader
     // named -- the order the composed program declares them in.
-    std::vector<WGPUBindGroupLayoutEntry> texture_entries;
-    for (std::size_t pair = 0; pair < 1u + extra_textures; ++pair) {
-        WGPUBindGroupLayoutEntry texture_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        texture_entry.binding =
-            static_cast<std::uint32_t>(pair * 2u);
-        texture_entry.visibility = WGPUShaderStage_Fragment;
-        texture_entry.texture.sampleType =
-            WGPUTextureSampleType_Float;
-        texture_entry.texture.viewDimension =
-            WGPUTextureViewDimension_2D;
-        WGPUBindGroupLayoutEntry sampler_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        sampler_entry.binding =
-            static_cast<std::uint32_t>(pair * 2u + 1u);
-        sampler_entry.visibility = WGPUShaderStage_Fragment;
-        sampler_entry.sampler.type =
-            WGPUSamplerBindingType_Filtering;
-        texture_entries.push_back(texture_entry);
-        texture_entries.push_back(sampler_entry);
-    }
+    const std::vector<WGPUBindGroupLayoutEntry> texture_entries =
+        dawn_texture_pair_layout_entries(1u + extra_textures);
     WGPUBindGroupLayoutDescriptor texture_layout =
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     texture_layout.entryCount =
@@ -414,37 +393,15 @@ inline DawnSpritePass create_dawn_sprite_pass(
             wgpuDeviceCreateBindGroup(device, &vertex_group);
 
         std::vector<WGPUBindGroupEntry> texture_bindings;
-        const auto bind_texture =
-            [&](WGPUTextureView view, WGPUSampler sampler) {
-                WGPUBindGroupEntry texture_entry =
-                    WGPU_BIND_GROUP_ENTRY_INIT;
-                texture_entry.binding = static_cast<std::uint32_t>(
-                    texture_bindings.size());
-                texture_entry.textureView = view;
-                WGPUBindGroupEntry sampler_entry =
-                    WGPU_BIND_GROUP_ENTRY_INIT;
-                sampler_entry.binding = static_cast<std::uint32_t>(
-                    texture_bindings.size() + 1u);
-                sampler_entry.sampler = sampler;
-                texture_bindings.push_back(texture_entry);
-                texture_bindings.push_back(sampler_entry);
-            };
-        bind_texture(gpu.atlas_view, gpu.sampler);
+        append_dawn_texture_pair(
+            texture_bindings,
+            DawnSampledTexture{
+                gpu.atlas, gpu.atlas_view, gpu.sampler});
         for (const PixelsTexture& extra : layer.custom_textures) {
-            gpu.extra_textures.push_back(upload_dawn_rgba_texture(
-                device,
-                queue,
-                extra.rgba.data(),
-                extra.rgba.size(),
-                extra.width,
-                extra.height));
-            gpu.extra_views.push_back(wgpuTextureCreateView(
-                gpu.extra_textures.back(), nullptr));
-            gpu.extra_samplers.push_back(
-                create_texture_sampler(device, extra.sampler));
-            bind_texture(
-                gpu.extra_views.back(),
-                gpu.extra_samplers.back());
+            gpu.extras.push_back(
+                upload_dawn_extra_texture(device, queue, extra));
+            append_dawn_texture_pair(
+                texture_bindings, gpu.extras.back());
         }
         WGPUBindGroupDescriptor texture_group =
             WGPU_BIND_GROUP_DESCRIPTOR_INIT;
@@ -580,15 +537,7 @@ inline void release_dawn_sprite_pass(DawnSpritePass& pass) {
             wgpuBindGroupRelease(layer.fragment_group);
         }
         if (layer.sampler) wgpuSamplerRelease(layer.sampler);
-        for (WGPUSampler extra : layer.extra_samplers) {
-            wgpuSamplerRelease(extra);
-        }
-        for (WGPUTextureView extra : layer.extra_views) {
-            wgpuTextureViewRelease(extra);
-        }
-        for (WGPUTexture extra : layer.extra_textures) {
-            wgpuTextureRelease(extra);
-        }
+        release_dawn_extra_textures(layer.extras);
         if (layer.atlas_view) wgpuTextureViewRelease(layer.atlas_view);
         if (layer.atlas) wgpuTextureRelease(layer.atlas);
         if (layer.pipeline) wgpuRenderPipelineRelease(layer.pipeline);

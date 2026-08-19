@@ -44,12 +44,9 @@ struct SpriteLayerGpu {
     // layer's, not the renderer's. The pin keys its own cache the same way.
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
     SDL_GPUBuffer* instances = nullptr;
-    SDL_GPUTexture* atlas = nullptr;
-    SDL_GPUSampler* sampler = nullptr;
-    // The custom shader's extra textures, in the order they bind after
-    // the atlas.
-    std::vector<SDL_GPUTexture*> extra_textures;
-    std::vector<SDL_GPUSampler*> extra_samplers;
+    // The atlas and any extra textures, in the order the composed program
+    // declares them, built when the pass is.
+    std::vector<SDL_GPUTextureSamplerBinding> textures;
     std::uint64_t uploaded_version = 0;
     bool uploaded = false;
     // Where this layer's fragment stage kept its two uniform blocks, from
@@ -267,27 +264,19 @@ inline SpritePass create_sprite_pass(
         }
         // rgba8unorm: `loadTexture2D` leaves srgb off, so the atlas
         // texels reach the blend stage as the bytes on disk.
-        gpu.atlas = upload_2d_texture(
+        gpu.textures = sprite_fragment_textures(
             device,
-            atlas.rgba.data(),
-            atlas.rgba.size(),
-            atlas.width,
-            atlas.height,
-            SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-            "sprite atlas");
-        gpu.sampler = create_texture_sampler(device, atlas.sampler);
-        for (const PixelsTexture& extra : layer.custom_textures) {
-            gpu.extra_textures.push_back(upload_2d_texture(
+            upload_2d_texture(
                 device,
-                extra.rgba.data(),
-                extra.rgba.size(),
-                extra.width,
-                extra.height,
+                atlas.rgba.data(),
+                atlas.rgba.size(),
+                atlas.width,
+                atlas.height,
                 SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-                "sprite custom texture"));
-            gpu.extra_samplers.push_back(
-                create_texture_sampler(device, extra.sampler));
-        }
+                "sprite atlas"),
+            create_texture_sampler(device, atlas.sampler),
+            layer.custom_textures,
+            "sprite custom texture");
     }
     return pass;
 }
@@ -378,22 +367,11 @@ inline void record_sprite_pass(
             push_stage_uniform(
                 command, gpu.fx_block_slot, fx.data(), sizeof(fx));
         }
-        // The atlas first, then whatever the custom shader named -- the
-        // order the composed program declares them in.
-        std::vector<SDL_GPUTextureSamplerBinding> textures{
-            SDL_GPUTextureSamplerBinding{gpu.atlas, gpu.sampler}};
-        for (std::size_t extra = 0;
-             extra < gpu.extra_textures.size();
-             ++extra) {
-            textures.push_back(SDL_GPUTextureSamplerBinding{
-                gpu.extra_textures[extra],
-                gpu.extra_samplers[extra]});
-        }
         SDL_BindGPUFragmentSamplers(
             render_pass,
             0,
-            textures.data(),
-            static_cast<Uint32>(textures.size()));
+            gpu.textures.data(),
+            static_cast<Uint32>(gpu.textures.size()));
         const SDL_GPUBufferBinding instance_binding{gpu.instances, 0};
         SDL_BindGPUVertexBuffers(render_pass, 0, &instance_binding, 1);
         SDL_DrawGPUIndexedPrimitives(
@@ -409,14 +387,7 @@ inline void release_sprite_pass(
             SDL_ReleaseGPUGraphicsPipeline(device, layer.pipeline);
         }
         if (layer.instances) SDL_ReleaseGPUBuffer(device, layer.instances);
-        if (layer.atlas) SDL_ReleaseGPUTexture(device, layer.atlas);
-        if (layer.sampler) SDL_ReleaseGPUSampler(device, layer.sampler);
-        for (SDL_GPUTexture* extra : layer.extra_textures) {
-            SDL_ReleaseGPUTexture(device, extra);
-        }
-        for (SDL_GPUSampler* extra : layer.extra_samplers) {
-            SDL_ReleaseGPUSampler(device, extra);
-        }
+        release_sprite_fragment_textures(device, layer.textures);
     }
     pass.layers.clear();
     if (pass.index_buffer) {

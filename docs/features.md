@@ -66,7 +66,7 @@ deliberately left live.
 | [Asset materialization](#asset-materialization) | Compile | every reached remote URL downloaded into the generated tree |
 | [Compressed geometry](#compressed-geometry) | Compile | Draco and meshopt decoded to ordinary geometry |
 | [Environment compilation](#environment-compilation) | Compile | HDR and DDS cubemaps, GGX prefiltering, SH projection, BRDF LUT |
-| [Drawn assets](#drawn-assets) | Compile | canvas2D sprite atlases executed and baked to PNG, computed pixel buffers baked to RGBA |
+| [Drawn and computed assets](#drawn-and-computed-assets) | Compile | canvas2D sprite atlases executed and baked to PNG, computed pixel buffers baked to RGBA |
 | [Shader pipeline](#shader-pipeline) | Compile → Run | composed and specialized at generation; compiled offline for SDL_GPU, in-process by Dawn |
 | [Engine, scene, and frame loop](#engine-scene-and-frame-loop) | Run | registration, fixed delta, before-render callbacks, frame gates |
 | [Cameras and input](#cameras-and-input) | Run | ArcRotate/Free, default framing, orthographic opt-in, SDL controls |
@@ -215,20 +215,35 @@ The `EXT_lights_image_based` BRDF LUT is also integrated offline — 256 square,
 1024 samples, emitted as `rgba16f` — because it is a fixed integration with no
 scene input.
 
-### Drawn assets
+### Drawn and computed assets
 
-A sprite atlas that is *drawn* rather than fetched is executed at generation:
-the pinned module is served from a local server, its exported factory is
-called in headless Chromium, and the PNG its data URL carries is baked as a
-generated asset.
+An asset a scene module *produces* rather than fetches is executed at
+generation: the module is served from a local server, its zero-argument
+export is called in headless Chromium, and what it returned is baked. Two
+kinds reach this — a drawn sprite atlas, and a computed pixel buffer.
 
-**Why compile time:** there is no file to download and no formula to port. The
-atlas is built with canvas2D — rotated wedges, `arc`, `hsl` — so its pixels
-are a browser rasterizer's antialiasing rather than an expression. It is
-executed, not reimplemented. The tradeoff is the HDR prefilter's and is the
-same one: the baked bytes depend on the Chrome that compiled them, which is
-recorded per scene as `drawn-sprite-atlas`. The frame grid is **not** baked
-with them — see [the boundary table](#where-the-boundary-falls-inside-a-family).
+**Why the atlas is compile time:** there is no file to download and no
+formula to port. It is built with canvas2D — rotated wedges, `arc`, `hsl` —
+so its pixels are a browser rasterizer's antialiasing rather than an
+expression. It is executed, not reimplemented. Recorded per scene as
+`drawn-sprite-atlas`. The frame grid is **not** baked with it — see
+[the boundary table](#where-the-boundary-falls-inside-a-family).
+
+**Why a pixel buffer is compile time**, which is a larger adaptation and
+recorded separately as `computed-pixel-buffer`: those bytes *are* an
+expression, so unlike the atlas they could in principle be ported. Two things
+say otherwise. This compiler has no `Math.round` to lower them with, and the
+module memoizes through a module-level binding the data model does not carry
+either — so today the function is simply not lowerable. And it would be
+delicate if it became lowerable: three of the palette's 768 channel values
+land 2.8e-14 below a rounding boundary, which is one ulp of `sin`, so a
+reassociated expression or a different rounding rule flips an entry and with
+it a pixel. Executing it settles the question the way the parity measurement
+can check — the golden computes the same bytes at run time, and the scenes
+measure byte-identical.
+
+The tradeoff both share is the HDR prefilter's: the baked bytes depend on the
+Chrome that compiled them.
 
 ### Shader pipeline
 
@@ -471,12 +486,10 @@ one opts in never loads the stock program, so it is not composed either.
 A body may also sample textures the caller supplies. Each is named in the
 descriptor and reaches WGSL as the `<name>Tex` / `<name>Samp` pair the pin's
 own builder writes, re-homed after the atlas in this backend's fragment
-texture group. Their pixels come from `createTexture2DFromPixels`, which is
-the second compile-time module asset: a zero-argument scene function whose
-bytes are settled, executed at generation and baked. A palette built from
-`Math.sin` and rounded to bytes is exactly where one libm and another part
-company, so the bytes that ship are the ones the golden's own engine
-produced.
+texture group. Their pixels come from `createTexture2DFromPixels`, whose
+bytes a scene module computes and generation bakes — see
+[drawn and computed assets](#drawn-and-computed-assets) for why they are
+executed rather than ported.
 
 Every blend mode either family exports is lowered as the pure data upstream
 keeps it as — the descriptors are read out of the pinned modules rather than

@@ -141,26 +141,26 @@ function extraTextureOption(
 }
 
 /**
- * The descriptor a `customShader` option names, as the flag the record
- * carries.
+ * The two fields a `customShader` option settles on the record: whether
+ * there is a descriptor, and the extra textures it binds.
  *
  * The pin's own hook copies the descriptor onto the layer or system and
- * every later read goes through it, so what generation needs here is only
- * whether there is one — the program itself is composed once per family.
- * The family is checked because a 2D descriptor names a fragment written
- * against a varying struct carrying `uv` and `tint` alone, which a billboard
- * stage would compile against a different contract behind the same names.
+ * every later read goes through it, so the program itself is composed once
+ * per family and what the record carries is only this pair. The family is
+ * checked because a 2D descriptor names a fragment written against a varying
+ * struct carrying `uv` and `tint` alone, which a billboard stage would
+ * compile against a different contract behind the same names.
  */
 function customShaderOption(
     context: SpriteIntrinsicContext,
     options: Value | undefined,
     family: "sprite" | "billboard",
     node: ts.Node,
-): string {
+): { present: string; textures: string } {
     const named = property(options, "customShader");
     if (!named) {
         context.recordPlainSpriteProgram(family);
-        return "false, {}";
+        return { present: "false", textures: "{}" };
     }
     if (named.kind !== `${family}-custom-shader`) {
         context.fail(
@@ -174,8 +174,19 @@ function customShaderOption(
     }
     // The descriptor's extra textures travel with the flag: they are what
     // the layer or system binds after its atlas, in the order the WGSL
-    // declares them.
-    return `true, {${(named.spriteCustomTextures ?? []).join(", ")}}`;
+    // declares them. The factory always sets the list, empty or not, so an
+    // absent one is this compiler disagreeing with itself rather than the
+    // scene naming something odd.
+    if (!named.spriteCustomTextures) {
+        context.fail(
+            node,
+            "A custom-shader descriptor reached a layer without its texture list.",
+        );
+    }
+    return {
+        present: "true",
+        textures: `{${named.spriteCustomTextures.join(", ")}}`,
+    };
 }
 
 /**
@@ -453,6 +464,12 @@ export function compileSpriteIntrinsic(
                 call,
                 2,
             );
+            const custom = customShaderOption(
+                context,
+                options,
+                "sprite",
+                call.arguments[1] ?? call,
+            );
             const engineCpp =
                 atlas.engineCpp ??
                 context.requireDefaultEngine(call);
@@ -472,12 +489,7 @@ export function compileSpriteIntrinsic(
                             ? `${pivot[0]!}, ${pivot[1]!}`
                             : "0.5f, 0.5f"
                     }}, ` +
-                    `${customShaderOption(
-                        context,
-                        options,
-                        "sprite",
-                        call.arguments[1] ?? call,
-                    )}})`,
+                    `${custom.present}, ${custom.textures}})`,
                 engineCpp,
             };
         }
@@ -606,6 +618,12 @@ export function compileSpriteIntrinsic(
                 "billboard",
                 optionsArg ?? call,
             );
+            const custom = customShaderOption(
+                context,
+                options,
+                "billboard",
+                optionsArg ?? call,
+            );
 
             // `order` sorts a system against the scene's other transparent
             // renderables upstream. A system here draws in the slot its depth
@@ -652,12 +670,7 @@ export function compileSpriteIntrinsic(
                     // beside it rather than from the name at this call site.
                     `${numberOption(options, "alphaCutoff", "0.0f")}, ` +
                     `${property(options, "alphaCutoff") ? "true" : "false"}, ` +
-                    `${customShaderOption(
-                        context,
-                        options,
-                        "billboard",
-                        optionsArg ?? call,
-                    )}})`,
+                    `${custom.present}, ${custom.textures}})`,
                 engineCpp,
             };
         }

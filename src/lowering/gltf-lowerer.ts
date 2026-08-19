@@ -1915,17 +1915,12 @@ const samplerEnumLocals: Readonly<
 /** glTF REPEAT, substituted where the pin passes an absent wrap mode. */
 const samplerWrapAbsent = 10497;
 
-const textureFilterByPin: Readonly<Record<string, string>> = {
-    nearest: "TextureFilter::nearest",
-    linear: "TextureFilter::linear",
-};
 
-const mipmapModeByPin: Readonly<Record<string, string>> = {
-    nearest: "TextureMipmapMode::nearest",
-    linear: "TextureMipmapMode::linear",
-};
-
-import { addressModeByPin } from "../pinned-address-modes.js";
+import {
+    addressModeByPin,
+    mipmapModeByPin,
+    textureFilterByPin,
+} from "../pinned-address-modes.js";
 
 /**
  * How the pin's returned `GPUSamplerDescriptor` maps onto the loader's

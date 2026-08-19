@@ -1,4 +1,8 @@
 import ts from "typescript";
+import {
+    addressModeByPin,
+    textureFilterByPin,
+} from "../pinned-address-modes.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 export class FactoryLowerer {
@@ -2216,14 +2220,11 @@ void set_alpha_to_coverage(
                 module,
                 "createTexture2DFromPixels",
             );
-        // The sampler the pin settles with no overrides. Read from its own
-        // defaults rather than restated, so a changed default fails here.
-        const defaults: ReadonlyArray<[string, string]> = [
-            ["addressModeU", 'options.addressModeU ?? "clamp-to-edge"'],
-            ["addressModeV", 'options.addressModeV ?? "clamp-to-edge"'],
-            ["minFilter", 'options.minFilter ?? "nearest"'],
-            ["magFilter", 'options.magFilter ?? "nearest"'],
-        ];
+        // The sampler the pin settles when the caller overrides nothing,
+        // which is every reached call. Each field is checked as the pin
+        // writes it and then emitted through the shared name-to-enumerator
+        // tables, so the default and the enumerator cannot drift apart and a
+        // mode with no row fails generation naming it.
         const sampler = this.context.variableInitializer(
             declaration,
             "samplerDesc",
@@ -2234,13 +2235,45 @@ void set_alpha_to_coverage(
                 "Expected the pinned pixels-texture sampler literal.",
             );
         }
-        for (const [name, source] of defaults) {
+        const samplerDefault = (
+            name: string,
+            fallback: string,
+            table: Readonly<Record<string, string>>,
+        ): string => {
             this.context.assertExpressionShape(
                 this.context.propertyInitializer(sampler, name),
-                source,
+                `options.${name} ?? "${fallback}"`,
                 `createTexture2DFromPixels ${name}`,
             );
-        }
+            const enumerator = table[fallback];
+            if (!enumerator) {
+                this.context.contractError(
+                    sampler,
+                    `Pinned createTexture2DFromPixels defaults ${name} to '${fallback}', which has no runtime enumerator.`,
+                );
+            }
+            return enumerator;
+        };
+        const addressU = samplerDefault(
+            "addressModeU",
+            "clamp-to-edge",
+            addressModeByPin,
+        );
+        const addressV = samplerDefault(
+            "addressModeV",
+            "clamp-to-edge",
+            addressModeByPin,
+        );
+        const minFilter = samplerDefault(
+            "minFilter",
+            "nearest",
+            textureFilterByPin,
+        );
+        const magFilter = samplerDefault(
+            "magFilter",
+            "nearest",
+            textureFilterByPin,
+        );
         // The byte count the pin requires, which the baked buffer has to
         // meet for the same reason it does upstream.
         this.context.assertExpressionShape(
@@ -2278,21 +2311,21 @@ PixelsTexture create_texture_2d_from_pixels(
     texture.width = static_cast<std::uint32_t>(width);
     texture.height = static_cast<std::uint32_t>(height);
     const std::size_t expected =
-        static_cast<std::size_t>(width) *
-        static_cast<std::size_t>(height) * 4u;
+        static_cast<std::size_t>(texture.width) *
+        static_cast<std::size_t>(texture.height) * 4u;
     if (texture.rgba.size() < expected) {
         throw std::runtime_error(
             "createTexture2DFromPixels: data too short for " +
             std::to_string(texture.width) + "x" +
             std::to_string(texture.height) + " RGBA");
     }
-    // The pinned defaults, with no override reached: nearest both ways,
-    // clamped both axes, and no mip chain to sample.
-    texture.sampler.min_filter = TextureFilter::nearest;
-    texture.sampler.mag_filter = TextureFilter::nearest;
+    // The pin's own defaults, read above rather than restated. It creates
+    // no mip chain, so mip sampling clamps to the base level.
+    texture.sampler.min_filter = ${minFilter};
+    texture.sampler.mag_filter = ${magFilter};
     texture.sampler.mipmap_mode = TextureMipmapMode::nearest;
-    texture.sampler.address_u = TextureAddressMode::clamp;
-    texture.sampler.address_v = TextureAddressMode::clamp;
+    texture.sampler.address_u = ${addressU};
+    texture.sampler.address_v = ${addressV};
     texture.sampler.max_anisotropy = 1.0f;
     texture.sampler.max_lod = 0.0f;
     return texture;

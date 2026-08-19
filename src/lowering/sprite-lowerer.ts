@@ -8,6 +8,10 @@ import {
     readPinnedBlendTable,
 } from "./pinned-blend-table.js";
 import { LoweredSource, LoweringContext } from "./context.js";
+import {
+    extraTextureBindingsWgsl,
+    extraTextureRecords,
+} from "../shader-builtins-sprite-fx.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const layerModule = "src/sprite/sprite-2d.ts";
@@ -16,8 +20,7 @@ const pipelineModule = "src/sprite/sprite-pipeline.ts";
 const rendererModule = "src/sprite/sprite-renderer.ts";
 const uvScrollModule = "src/sprite/sprite-2d-uvscroll.ts";
 const customShaderModule = "src/sprite/sprite-custom-shader.ts";
-// Shared by both families: the fx block, its byte count, and the extra
-// binding lines the composers splice in.
+// Shared by both families: the fx block and its byte count.
 const customShaderCoreModule = "src/sprite/custom-shader-core.ts";
 
 /** The pinned WGSL, reconstructed for the pure-2D permutation. */
@@ -40,10 +43,11 @@ export interface SpriteShaderSource {
     fxStructFields?: string | undefined;
     /**
      * The `<name>Tex` / `<name>Samp` pairs a custom shader's extra textures
-     * bind through, at this backend's own group. Emitted by the pin's own
-     * builder, so the pair it writes per texture is the pin's.
+     * bind through, at this backend's own group, and empty when the body
+     * named none. Emitted by the pin's own builder, so the pair it writes
+     * per texture is the pin's.
      */
-    extraTextureBindings?: string | undefined;
+    extraTextureBindings: string;
 }
 
 /**
@@ -807,9 +811,7 @@ export class SpriteLowerer {
                           ...permutation,
                           [
                               "extraTextures",
-                              extraTextures.map((name) => ({
-                                  name,
-                              })),
+                              extraTextureRecords(extraTextures),
                           ],
                           ["fragment", customFragment],
                       ]),
@@ -861,23 +863,10 @@ export class SpriteLowerer {
                       "sprite fx uniform struct",
                   )
                 : undefined,
-            extraTextureBindings:
-                extraTextures.length === 0
-                    ? undefined
-                    : this.shaderText.evaluate(
-                          customShaderCoreModule,
-                          "makeExtraBindingsWgsl",
-                          new Map<string, ShaderTextBinding>([
-                              ["group", "2"],
-                              ["startBinding", 2],
-                              [
-                                  "extras",
-                                  extraTextures.map((name) => ({
-                                      name,
-                                  })),
-                              ],
-                          ]),
-                      ),
+            extraTextureBindings: extraTextureBindingsWgsl(
+                this.shaderText,
+                extraTextures,
+            ),
         };
     }
 

@@ -15,7 +15,7 @@ import {
 import {
     pixelsAssetSource,
     spriteAtlasAssetSource,
-} from "../sprite-atlas-packager.js";
+} from "../executed-module-assets.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type {
     CompileAsset,
@@ -86,51 +86,84 @@ export function registerAsset(
 }
 
 /**
+ * The asset a zero-argument scene-module call produces, registered under
+ * the given kind.
+ *
+ * Both executed kinds resolve the same way -- the call names the module and
+ * the export, and generation runs it -- so the resolution is written once
+ * and each caller says which kind it is registering and what to call the
+ * thing when it refuses. Returns undefined when the expression is not such
+ * a call at all, which the atlas treats as a plain URL.
+ */
+function registerExecutedModuleAsset(
+    context: AssetRegistryContext,
+    expression: ts.Expression,
+    kind: "sprite-atlas" | "pixels",
+    label: string,
+): string | undefined {
+    const unwrapped = context.unwrap(expression);
+    if (!ts.isCallExpression(unwrapped)) {
+        return undefined;
+    }
+    const callee = context.unwrap(unwrapped.expression);
+    if (!ts.isIdentifier(callee)) {
+        return undefined;
+    }
+    const modulePath =
+        context.symbols.declarationSourcePath(callee);
+    if (!modulePath) {
+        return undefined;
+    }
+    if (unwrapped.arguments.length !== 0) {
+        context.fail(
+            unwrapped,
+            `A ${label} factory takes no arguments.`,
+        );
+    }
+    const root = findRepositoryRoot(
+        dirname(resolve(context.options.fileName)),
+    );
+    const relativePath = relative(root, modulePath)
+        .split(sep)
+        .join("/");
+    const asset = registerAsset(
+        context,
+        kind === "pixels"
+            ? pixelsAssetSource(relativePath, callee.text)
+            : spriteAtlasAssetSource(relativePath, callee.text),
+        kind,
+    );
+    return context.cppString(asset.output);
+}
+
+/**
  * A sprite atlas that is DRAWN rather than fetched.
  *
  * `getSpriteAtlasDataUrl()` builds its image with canvas2D and returns a
  * data URL, so there is no URL to materialize and no pixels to lower.
  * The call resolves to the module that draws them, and generation runs
- * that module in headless Chromium and bakes the PNG it returns — the
+ * that module in headless Chromium and bakes the PNG it returns -- the
  * same executable route the pinned GGX prefilter already takes.
  */
 export function registerSpriteAtlasAsset(
     context: AssetRegistryContext,
     expression: ts.Expression,
 ): string {
-    const unwrapped = context.unwrap(expression);
-    if (ts.isCallExpression(unwrapped)) {
-        const callee = context.unwrap(unwrapped.expression);
-        const modulePath = ts.isIdentifier(callee)
-            ? context.symbols.declarationSourcePath(callee)
-            : undefined;
-        if (modulePath && ts.isIdentifier(callee)) {
-            if (unwrapped.arguments.length !== 0) {
-                context.fail(
-                    unwrapped,
-                    "A drawn sprite atlas factory takes no arguments.",
-                );
-            }
-            const root = findRepositoryRoot(
-                dirname(resolve(context.options.fileName)),
-            );
-            const asset = registerAsset(
+    return (
+        registerExecutedModuleAsset(
+            context,
+            expression,
+            "sprite-atlas",
+            "drawn sprite atlas",
+        ) ??
+        // A plain URL still works: the atlas is an image either way.
+        context.cppString(
+            registerAsset(
                 context,
-                spriteAtlasAssetSource(
-                    relative(root, modulePath)
-                        .split(sep)
-                        .join("/"),
-                    callee.text,
-                ),
-                "sprite-atlas",
-            );
-            return context.cppString(asset.output);
-        }
-    }
-    // A plain URL still works: the atlas is an image either way.
-    const url = context.compileStringLiteral(expression);
-    return context.cppString(
-        registerAsset(context, url, "texture").output,
+                context.compileStringLiteral(expression),
+                "texture",
+            ).output,
+        )
     );
 }
 
@@ -139,54 +172,29 @@ export function registerSpriteAtlasAsset(
  *
  * The same shape as a drawn atlas: a zero-argument export whose result is
  * settled at compile time, so it is executed and baked rather than lowered.
- * The reason differs — these bytes are arithmetic, not a rasterizer's — but
- * rounding `Math.sin` to an integer is exactly where one libm and another
- * part company, so the bytes the golden's own engine produced are the ones
- * that ship.
+ * The reason differs -- these bytes are arithmetic, not a rasterizer's --
+ * but this compiler has no `Math.round` to lower them with, and the palette
+ * they build sits one ulp from a rounding boundary in three places, so the
+ * bytes the golden's own engine produced are the ones that ship.
  */
 export function registerPixelsAsset(
     context: AssetRegistryContext,
     expression: ts.Expression,
 ): string {
-    const unwrapped = context.unwrap(expression);
-    const callee = ts.isCallExpression(unwrapped)
-        ? context.unwrap(unwrapped.expression)
-        : undefined;
-    const modulePath =
-        callee && ts.isIdentifier(callee)
-            ? context.symbols.declarationSourcePath(callee)
-            : undefined;
-    if (
-        !ts.isCallExpression(unwrapped) ||
-        !callee ||
-        !ts.isIdentifier(callee) ||
-        !modulePath
-    ) {
-        return context.fail(
+    const registered = registerExecutedModuleAsset(
+        context,
+        expression,
+        "pixels",
+        "pixel buffer",
+    );
+    if (!registered) {
+        context.fail(
             expression,
             "Texture pixels must come from a module function this compiler can run at generation.",
         );
     }
-    if (unwrapped.arguments.length !== 0) {
-        context.fail(
-            unwrapped,
-            "A pixel-buffer factory takes no arguments.",
-        );
-    }
-    const root = findRepositoryRoot(
-        dirname(resolve(context.options.fileName)),
-    );
-    const asset = registerAsset(
-        context,
-        pixelsAssetSource(
-            relative(root, modulePath).split(sep).join("/"),
-            callee.text,
-        ),
-        "pixels",
-    );
-    return context.cppString(asset.output);
+    return registered;
 }
-
 export function resolveBundledAsset(source: string): string {
     if (source === "/brdf-lut.png") {
         const pin = readUpstreamPin();

@@ -1,6 +1,10 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
+    extraTextureBindingsWgsl,
+    extraTextureRecords,
+} from "../shader-builtins-sprite-fx.js";
+import {
     PinnedShaderText,
     ShaderTextBinding,
 } from "./pinned-shader-text.js";
@@ -15,8 +19,6 @@ const blendModule = "src/sprite/billboard-blend.ts";
 const pipelineModule = "src/sprite/billboard-pipeline.ts";
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const customShaderModule = "src/sprite/billboard-custom-shader.ts";
-// Shared by both families: the extra binding lines the composers splice in.
-const customShaderCoreModule = "src/sprite/custom-shader-core.ts";
 
 /**
  * Which basis the vertex stage builds. The pin's composer emits one of two
@@ -59,10 +61,11 @@ export interface BillboardShaderSource {
     fxStructFields?: string | undefined;
     /**
      * The `<name>Tex` / `<name>Samp` pairs a custom shader's extra textures
-     * bind through, at this backend's own group. Emitted by the pin's own
-     * builder, so the pair it writes per texture is the pin's.
+     * bind through, at this backend's own group, and empty when the body
+     * named none. Emitted by the pin's own builder, so the pair it writes
+     * per texture is the pin's.
      */
-    extraTextureBindings?: string | undefined;
+    extraTextureBindings: string;
 }
 
 /** One per-instance vertex attribute, at the pin's own byte offset. */
@@ -574,9 +577,7 @@ export class BillboardLowerer {
                           ["orientation", orientation],
                           [
                               "extraTextures",
-                              extraTextures.map((name) => ({
-                                  name,
-                              })),
+                              extraTextureRecords(extraTextures),
                           ],
                           ["fragment", customFragment],
                       ]),
@@ -630,23 +631,10 @@ export class BillboardLowerer {
                       "billboard fx uniform struct",
                   )
                 : undefined,
-            extraTextureBindings:
-                extraTextures.length === 0
-                    ? undefined
-                    : this.shaderText.evaluate(
-                          customShaderCoreModule,
-                          "makeExtraBindingsWgsl",
-                          new Map<string, ShaderTextBinding>([
-                              ["group", "2"],
-                              ["startBinding", 2],
-                              [
-                                  "extras",
-                                  extraTextures.map((name) => ({
-                                      name,
-                                  })),
-                              ],
-                          ]),
-                      ),
+            extraTextureBindings: extraTextureBindingsWgsl(
+                this.shaderText,
+                extraTextures,
+            ),
         };
     }
 

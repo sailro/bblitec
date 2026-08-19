@@ -5,7 +5,7 @@
 // (`capture-suite-reference.ts`), the instrumented diagnostics capture
 // (`capture-instrumented.ts`), the pinned HDR GGX prefilter
 // (`hdr-prefilter-gpu.ts`), the drawn sprite-atlas baker
-// (`sprite-atlas-packager.ts`), and the pinned BRDF-LUT baker
+// (`executed-module-assets.ts`), and the pinned BRDF-LUT baker
 // (`ibl-brdf-lut.ts`). Each carried its own copy of the ceremony, the
 // same way each once carried its own copy of the browser list -- and that
 // copy had already drifted once (`browser-path.ts` records it). This

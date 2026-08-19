@@ -90,7 +90,7 @@ export function billboardFragmentWgsl(
     return `// ${provenance}
 ${systemBlockWgsl(shader, 3, 0)}@group(2) @binding(0) var atlasTex: texture_2d<f32>;
 @group(2) @binding(1) var atlasSamp: sampler;
-${shader.extraTextureBindings ?? ""}${fxBlock}
+${shader.extraTextureBindings}${fxBlock}
 
 struct O {
 ${indent(shader.varyingStructFields, "    ")}

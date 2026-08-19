@@ -63,7 +63,7 @@ ${indent(shader.layerStructFields, "    ")}
 @group(3) @binding(0) var<uniform> L: Lr;
 @group(2) @binding(0) var atlasTex: texture_2d<f32>;
 @group(2) @binding(1) var atlasSamp: sampler;
-${shader.extraTextureBindings ?? ""}${fxBlock}
+${shader.extraTextureBindings}${fxBlock}
 
 struct O {
 ${indent(shader.varyingStructFields, "    ")}
