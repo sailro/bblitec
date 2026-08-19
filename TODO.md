@@ -326,26 +326,39 @@ that does to the deferred lane by default.
 - [ ] Scenes 160, 162: extend reached shader-material options.
 - [ ] Scenes 17, 217: extend reached PBR material options.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
-- [ ] Scenes 202-207: extend reached engine options. The two they ask for are
-  `useHighPrecisionMatrix` and `useFloatingOrigin`, and accepting them is the
-  small half. Sized 2026-08-19: a strip probe says floating origin is the ONLY
-  blocker for 202 and 205, and 203 adds just `spot.range` — but the probe only
-  proves the compiler accepts the rest, and the renderer is where the work is.
-  The pinned contract is four subtractions of the active camera's world
-  position, all in F64 before the single F32 store: zero the view matrix
-  translation (`camera.ts` `getViewMatrix`), subtract it from mesh world
-  translations (`large-world/pack-mat4-with-offset.ts`) and from positional
-  light entries (`large-world/floating-origin.ts` `applyLightFoOffset`), and
-  zero `vEyePosition` (`frame-graph/scene-uniforms-pack.ts`). What makes this
-  bigger than those four sites here: **a static primitive bakes its node
-  transform into its vertices**, and the generated `main.cpp` stores the
-  position as a `float` literal, so at these scenes' `OFFSET` of 5,000,000 the
-  precision is gone before any matrix exists. Floating origin therefore needs
-  the scene-code mesh emission to stop baking world translation into vertices
-  (or to bake it relative to a rebased origin) before the subtractions can
-  recover anything. `useFloatingOrigin` without `useHighPrecisionMatrix` is
-  not worth accepting: the offset would be subtracted from a transform that
-  already rounded.
+- [ ] Scenes 200-209: large-world rendering (`useHighPrecisionMatrix` +
+  `useFloatingOrigin`). Read
+  `docs/lite/architecture/35-large-world-rendering.md` in the pinned clone
+  first — it is the specification for this entry and names the scene behind
+  every bake. Accepting the two engine options is the small half; the pin
+  itself throws from `createEngine` when floating origin is set without the
+  high-precision matrix, so the compiler should refuse the same pair.
+  Foundation: three subtractions of the active camera's world position, all in
+  F64 before the single F32 store — the view matrix subtracts it before
+  `R_inv * -cameraPos` (and its own upload must NOT subtract again, or the
+  translation is double-biased), the mesh-world UBO subtracts it at the pack
+  boundary, and `vEyePosition` becomes `cameraWorld - offset`. Each further
+  scene then adds one bake: 202/203 the positional light entries, 204
+  thin-instance world matrices, 205/206 the sprite and billboard anchors on
+  both upload paths, 207 the shadow light-space matrix, 208 the node-material
+  mesh world, 209 Havok's multi-region simulation. 200 and 201 are the same
+  far-from-origin scene with the mode off and on, and their captures MUST
+  diverge (the pin's own parity spec requires cross-golden MAD >= 5.0), so
+  they are the pair that proves the path is engaged rather than a scene that
+  merely renders.
+  **What makes this bigger than those sites here**: a static primitive bakes
+  its node transform into its vertices, and the generated `main.cpp` stores
+  the position as a `float` literal, so at these scenes' `OFFSET` of
+  5,000,000 the precision is gone before any matrix exists. The pin keeps
+  vertices local and applies a world matrix per draw, which is exactly the
+  model the offset subtraction assumes. Scene-code mesh emission has to stop
+  baking world translation into vertices before any of the above recovers
+  anything.
+  Note the doc drifts from the source in one place: it describes a
+  `scene._floatingOriginOffset` mirror with a per-frame
+  `updateFloatingOriginOffset`, which the pinned `floating-origin.ts` says it
+  deleted as net cost without value, deriving the offset live from
+  `scene.camera.worldMatrix` instead. Lower from the source.
 - [ ] Scene 219: recursion (`findSkinned`) carries the reported non-final
   return, and vertex-animation textures (`VatHandle`/`VatClip`) sit behind it.
 - [ ] Scene 231: support `enableStandardSkeleton`; behind it sit

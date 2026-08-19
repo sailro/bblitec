@@ -87,6 +87,35 @@ residual.
   the README states the current pair. Never restate them elsewhere — a prose
   copy is what goes stale.
 - Original TypeScript is reconstructed from published source maps.
+- **Read the upstream module doc before sizing a capability.** The pinned
+  clone carries Babylon Lite's own architecture docs under
+  `docs/lite/architecture/` (also published at
+  <https://doc.babylonjs.com/lite/>) — one file per subsystem: sprites,
+  shadows, picking, node materials, the frame graph, large-world rendering.
+  They state the preconditions, the exact list of quantities a feature
+  touches, and often the corpus scene that exercises each one, so reading the
+  page first replaces a strip probe and several hours of reading source. The
+  large-world page, for instance, names the scene behind every floating-origin
+  bake (202/203 lights, 204 thin instances, 205/206 sprites, 207 shadows,
+  208 node materials, 209 physics) and states that `createEngine` throws when
+  `useFloatingOrigin` is set without `useHighPrecisionMatrix`.
+- **In those docs, "Babylon.js" is the legacy library, not our target.** They
+  are written for Babylon Lite, and they reason about Babylon.js because that
+  is what *Lite* checks itself against. Our reference is Lite alone: the
+  golden is the Lite scene run in the browser, so an upstream parity scene
+  described as "Lite versus BJS" is not the comparison we make. A feature the
+  page calls out of scope because it is *degenerate in Babylon.js* — clip
+  planes, clustered point lights, the background-ground fresnel under
+  large-world rendering — is a statement about the legacy reference having no
+  correct far-from-origin answer to match. It says nothing about what Lite
+  renders, and nothing about whether we must match it: if a reached scene puts
+  Lite through that path, Lite produces pixels and the golden carries them.
+- **The docs orient; the pinned source still decides.** They are versioned
+  beside the code but drift from it — the large-world page describes a
+  `scene._floatingOriginOffset` mirror and a per-frame
+  `updateFloatingOriginOffset` that the pinned `floating-origin.ts` says it
+  deleted as "net cost without value". Where the two disagree, lower from the
+  source and say so.
 - Generated files include provenance comments and
   `generated/<scene>/upstream/provenance.json`.
 - Optional Tint compilation is pinned separately in `upstream/tint.json`.
