@@ -273,11 +273,11 @@ that does to the deferred lane by default.
     arm only; the update arm's "preserve what was not supplied" resolution needs
     the previous instance read back. The billboard writer has the same shape
     and the same gap.
-  - the billboard arms past the two orientations scenes 54, 55, 56 and 98
-    measure: `createBillboardCustomShader` and `setBillboardShaderParams`
-    (94), and `billboardBlendCutout`, which is the alpha-test depth-write
-    path rather than another factor pair. Scene 118 needs `marker.name`;
-    scenes 57 and 59 want the sprite animation manager.
+  - the billboard arms past the two orientations and two depth paths that
+    scenes 54, 55, 56, 57 and 98 measure: `createBillboardCustomShader` and
+    `setBillboardShaderParams` (94). Scene 118 needs `marker.name`; scene 59
+    wants the sprite animation manager; scene 206 is a cutout system behind
+    large-world rendering.
 - [ ] The sprite cluster past Scene 50, each its measured first blocker:
   - Scene 51: a browser-derived numeric value, with the premultiplied atlas and
     blend behind it.

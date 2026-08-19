@@ -112,7 +112,16 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     pass.vertex_module = load_wgsl_module(
         device,
         axis_locked ? "billboard_axis_locked.vert" : "billboard.vert");
-    pass.fragment_module = load_wgsl_module(device, "billboard.frag");
+    // The cutout arm discards below the cutoff; with alpha-to-coverage the
+    // pin drops the discard and lets sample coverage carry the edge, so that
+    // permutation shares the transparent stage.
+    const bool cutout =
+        system.depth_mode == BillboardDepthMode::cutout;
+    pass.fragment_module = load_wgsl_module(
+        device,
+        cutout && !system.alpha_to_coverage
+            ? "billboard_cutout.frag"
+            : "billboard.frag");
 
     // Group 0 is unused by the specialized WGSL (the scene block is
     // re-homed into the vertex group) and is declared empty so the layout's
@@ -233,14 +242,17 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     fragment_state.targetCount = 1;
     fragment_state.targets = &color_target;
 
-    // The pinned depth table's `transparent` arm: test on, write off, which
-    // is what makes the sorted draw order the composite. This renderer's
-    // scene pass is forward-Z, so the pin's reverse-Z "greater-equal" is
-    // LessEqual here -- the arm every transparent scene draw already takes.
+    // The pinned depth table pairs `transparent` with writes off, which is
+    // what makes the sorted draw order the composite, and `cutout` with
+    // writes on, which is what lets the GPU resolve overlap instead. This
+    // renderer's scene pass is forward-Z, so the pin's reverse-Z
+    // "greater-equal" is LessEqual here.
     WGPUDepthStencilState depth_state = WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_state.format = depth_format;
     depth_state.depthCompare = WGPUCompareFunction_LessEqual;
-    depth_state.depthWriteEnabled = WGPUOptionalBool_False;
+    depth_state.depthWriteEnabled = cutout
+        ? WGPUOptionalBool_True
+        : WGPUOptionalBool_False;
 
     WGPUPipelineLayoutDescriptor layout_descriptor =
         WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
@@ -264,6 +276,8 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     descriptor.depthStencil = &depth_state;
     descriptor.multisample.count = sample_count;
     descriptor.multisample.mask = 0xFFFFFFFFu;
+    descriptor.multisample.alphaToCoverageEnabled =
+        system.alpha_to_coverage;
     descriptor.fragment = &fragment_state;
     pass.pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
     wgpuPipelineLayoutRelease(pipeline_layout);
@@ -411,7 +425,7 @@ inline void upload_dawn_billboard_pass(
     if (system.count == 0) {
         return;
     }
-    upstream::billboard_sorted_instances(system, view, pass.sorted);
+    upstream::billboard_upload_instances(system, view, pass.sorted);
     wgpuQueueWriteBuffer(
         queue,
         pass.instances,

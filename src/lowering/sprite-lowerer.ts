@@ -631,34 +631,29 @@ export class SpriteLowerer {
             ]),
         );
         return {
-            layerStructFields: this.shaderText.between(
+            layerStructFields: this.shaderText.braced(
                 prologue,
                 "struct Lr {",
-                "};",
                 "sprite layer uniform struct",
             ),
-            instanceStructFields: this.shaderText.between(
+            instanceStructFields: this.shaderText.braced(
                 prologue,
                 "struct I {",
-                "};",
                 "sprite instance struct",
             ),
-            varyingStructFields: this.shaderText.between(
+            varyingStructFields: this.shaderText.braced(
                 prologue,
                 "struct O {",
-                "};",
                 "sprite varying struct",
             ),
-            vertexBody: this.shaderText.between(
+            vertexBody: this.shaderText.braced(
                 prologue,
                 "fn vs(in: I) -> O {",
-                "}",
                 "sprite vertex stage",
             ),
-            fragmentBody: this.shaderText.between(
+            fragmentBody: this.shaderText.braced(
                 full,
                 "fn fs(in: O) -> @location(0) vec4f {",
-                "}",
                 "sprite fragment stage",
             ),
         };

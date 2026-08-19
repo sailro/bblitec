@@ -194,6 +194,7 @@ const featureSources: Record<Feature, string[]> = {
     "sprite:2d": [],
     "sprite:billboard": [],
     "sprite:billboard-axis-locked": [],
+    "sprite:billboard-cutout": [],
     "renderer:sprite": ["src/pal_sdl_gpu_sprite.cpp"],
     "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],

@@ -583,6 +583,19 @@ class GeneratedSourceWriter {
                     data: billboardFragmentWgsl(provenance, shader),
                 },
             );
+            if (features.includes("sprite:billboard-cutout")) {
+                // The cutout arm discards below the cutoff and is otherwise
+                // the same stage, so like the second orientation it costs
+                // one file rather than a pair.
+                composedShaders.push({
+                    output:
+                        "upstream/shaders/billboard_cutout.frag.native.wgsl",
+                    data: billboardFragmentWgsl(
+                        provenance,
+                        billboards.shaderSource("facing", "cutout"),
+                    ),
+                });
+            }
             if (features.includes("sprite:billboard-axis-locked")) {
                 // The pin's composer swaps only the basis function; the
                 // fragment stage is the same text, so the second orientation

@@ -214,6 +214,11 @@ export function blendFactoriesCpp(
     // ${moduleName}#${row.exportName}.
     SpriteBlendDescriptor blend;
     blend.enabled = ${row.enabled};${
+        row.depthMode
+            ? `
+    blend.depth_mode = BillboardDepthMode::${row.depthMode};`
+            : ""
+    }${
         row.color && row.alpha
             ? `
     blend.color.src = SpriteBlendFactor::${nativeBlendFactor(row.color[0])};
@@ -255,14 +260,15 @@ export function blendFactorySymbol(
  */
 export function parseBlendExport(
     importedName: string,
-): { family: string; symbol: string } | undefined {
-    const match = /^([a-z]+)Blend[A-Z]/.exec(importedName);
+): { family: string; mode: string; symbol: string } | undefined {
+    const match = /^([a-z]+)Blend([A-Z].*)$/.exec(importedName);
     if (!match) {
         return undefined;
     }
     const family = match[1]!;
     return {
         family,
+        mode: match[2]!.toLowerCase(),
         symbol: blendFactorySymbol(family, importedName),
     };
 }

@@ -10,6 +10,7 @@ export interface SpriteIntrinsicContext
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
+    compileBoolean(expression: ts.Expression): string;
     registerSpriteAtlasAsset(
         expression: ts.Expression,
     ): string;
@@ -35,9 +36,10 @@ export function compileSpriteConstant(
     return {
         kind: "sprite-blend",
         cpp: `bbl::${blend.symbol}()`,
-        // The family the descriptor belongs to, so a call site can refuse a
-        // 2D descriptor at a billboard system and the reverse.
-        staticString: blend.family,
+        // The export the scene named. Every question a call site asks about
+        // the descriptor -- which family, which mode -- comes from parsing
+        // this once, so none of them is spelled twice.
+        staticString: importedName,
     };
 }
 
@@ -58,14 +60,20 @@ function blendOption(
     if (!blendMode) {
         return `bbl::${family}_blend_alpha()`;
     }
-    if (
-        blendMode.kind !== "sprite-blend" ||
-        blendMode.staticString !== family
-    ) {
+    const named =
+        blendMode.kind === "sprite-blend" && blendMode.staticString
+            ? parseBlendExport(blendMode.staticString)
+            : undefined;
+    if (!named || named.family !== family) {
         context.fail(
             node,
             `blendMode must be one of the pinned ${family}Blend* descriptors.`,
         );
+    }
+    // The cutout mode is the one billboard descriptor with a second
+    // pipeline behind it, so naming it reaches that arm's shader.
+    if (family === "billboard" && named.mode === "cutout") {
+        context.reachFeature("sprite:billboard-cutout", node);
     }
     return blendMode.cpp;
 }
@@ -294,8 +302,7 @@ export function compileSpriteIntrinsic(
             // One of the pin's own exported descriptors, resolved by the
             // name the scene imported. `spriteBlendOpaque` names no colour
             // blend at all, which the 2D pipeline expresses by disabling
-            // blending -- so unlike the billboard family's cutout it needs no
-            // second depth path and is lowered with the rest.
+            // blending.
             const blendCpp = blendOption(
                 context,
                 options,
@@ -456,15 +463,14 @@ export function compileSpriteIntrinsic(
                 "billboard",
                 optionsArg ?? call,
             );
+
             // `order` sorts a system against the scene's other transparent
-            // renderables upstream. This path draws billboards after the
-            // scene's own stages instead, which is the same image only while
-            // nothing else is transparent, so an explicit order refuses
-            // rather than being silently dropped.
+            // renderables upstream. A system here draws in the slot its depth
+            // mode gives it, which is the same image only while nothing else
+            // is transparent, so an explicit order refuses rather than being
+            // silently dropped.
             for (const unreached of [
                 "customShader",
-                "alphaCutoff",
-                "alphaToCoverage",
                 "order",
             ]) {
                 if (property(options, unreached)) {
@@ -500,7 +506,12 @@ export function compileSpriteIntrinsic(
                     `${numberOption(options, "capacity", "16.0f")}, ` +
                     `${blendCpp}, ` +
                     `${numberOption(options, "opacity", "1.0f")}, ` +
-                    `${property(options, "visible")?.cpp ?? "true"}})`,
+                    `${property(options, "visible")?.cpp ?? "true"}, ` +
+                    // resolveAlphaCutoff and the order default both follow
+                    // the descriptor's own depth mode, so they are resolved
+                    // beside it rather than from the name at this call site.
+                    `${numberOption(options, "alphaCutoff", "0.0f")}, ` +
+                    `${property(options, "alphaCutoff") ? "true" : "false"}})`,
                 engineCpp,
             };
         }
@@ -591,6 +602,30 @@ export function compileSpriteIntrinsic(
                     `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}})`,
                 engineCpp,
             };
+        }
+
+        case "setAlphaToCoverage": {
+            context.expectArgumentCount(call, 2, 2);
+            const target = context.compileValue(call.arguments[0]!);
+            // The pin accepts several pipeline owners; only a billboard
+            // system is reached, so any other target refuses by name here
+            // rather than compiling into a call that cannot exist.
+            context.expectKind(
+                target,
+                "billboard-system",
+                call.arguments[0]!,
+            );
+            const enabled = context.compileBoolean(
+                call.arguments[1]!,
+            );
+            const engineCpp =
+                target.engineCpp ??
+                context.requireDefaultEngine(call);
+            context.reachFeature("sprite:billboard", call);
+            context.emit(
+                `bbl::set_billboard_alpha_to_coverage(${engineCpp}, ${target.cpp}, ${enabled});`,
+            );
+            return { kind: "void", cpp: "" };
         }
 
         case "addFacingBillboardSystem":

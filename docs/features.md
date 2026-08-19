@@ -446,9 +446,7 @@ Every blend mode either family exports is lowered as the pure data upstream
 keeps it as — the descriptors are read out of the pinned modules rather than
 listed here, so a mode the pin adds needs no compiler change. Sprites reach
 alpha, premultiplied, additive, multiply and the opaque replacement; the
-billboard family reaches its own alpha, premultiplied and additive, while
-`billboardBlendCutout` refuses because its alpha-test depth-write path is a
-second pipeline rather than another factor pair.
+billboard family reaches every one of its own, cutout included.
 
 World-space billboards share that atlas and nothing else. A
 billboard system is a scene renderable rather than a renderer of its own: it
@@ -460,8 +458,18 @@ runs every frame. Both orientations the pin composes are reached: a facing
 system builds its basis from the camera alone, and an axis-locked one rotates
 only around a lock axis it normalises where the pin normalises it — that basis
 reads the axis out of the system block, so the vertex stage binds it only for
-the orientation that needs it. Custom shaders and alpha-to-coverage refuse at
-the call.
+the orientation that needs it.
+
+Both of the pin's depth paths are reached, and they are not the same drawing.
+A transparent system blends without writing depth, so the back-to-front sort
+is its composite and it draws once the scene's own stages are done. A cutout
+system discards below its alpha cutoff and writes depth, so the GPU resolves
+overlap instead: it takes no sort, uploads in insertion order, and draws among
+the opaque meshes — the slot the pin gives it. `setAlphaToCoverage` turns the
+binary cutoff into sample coverage on a multisampled target, which is the one
+permutation where a cutout system shares the transparent fragment stage,
+because the pin drops the discard when coverage carries the edge. Custom
+shaders refuse at the call.
 
 ### Frame graph
 
