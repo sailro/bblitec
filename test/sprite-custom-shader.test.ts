@@ -9,10 +9,6 @@ import {
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
 import { BillboardLowerer } from "../src/lowering/billboard-lowerer.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
-import {
-    fragmentUniformSlots,
-    stageReadsBlock,
-} from "../src/shader-builtins-sprite-fx.js";
 import { spriteFragmentWgsl } from "../src/shader-builtins-sprite.js";
 import { billboardFragmentWgsl } from "../src/shader-builtins-billboard.js";
 
@@ -28,27 +24,10 @@ function billboards(): BillboardLowerer {
     );
 }
 
-test("folds the pinned extra-binding loop over a bound list", () => {
+test("folds the pinned extra-binding loop to the empty text", () => {
     const text = new PinnedShaderText(new LoweringContext());
-    // The loop runs once per extra texture, stepping the binding by two.
-    // Folding it rather than emitting the lines here is what keeps a
-    // changed binding rule the pin's.
-    assert.equal(
-        text.evaluate(
-            "src/sprite/custom-shader-core.ts",
-            "makeExtraBindingsWgsl",
-            new Map<string, ShaderTextBinding>([
-                ["group", "1"],
-                ["startBinding", 3],
-                ["extras", [{ name: "palette" }, { name: "noise" }]],
-            ]),
-        ),
-        "@group(1) @binding(3) var paletteTex: texture_2d<f32>;\n" +
-            "@group(1) @binding(4) var paletteSamp: sampler;\n" +
-            "@group(1) @binding(5) var noiseTex: texture_2d<f32>;\n" +
-            "@group(1) @binding(6) var noiseSamp: sampler;\n",
-    );
-    // With no extras the loop runs zero times, which is every reached scene.
+    // Nothing binds an extra texture yet, so every reached permutation binds
+    // the empty list and the loop settles without running.
     assert.equal(
         text.evaluate(
             "src/sprite/custom-shader-core.ts",
@@ -60,6 +39,21 @@ test("folds the pinned extra-binding loop over a bound list", () => {
             ]),
         ),
         "",
+    );
+    // A list with something in it would emit bindings nothing fills, so it
+    // refuses rather than composing a shader the backends cannot bind.
+    assert.throws(
+        () =>
+            text.evaluate(
+                "src/sprite/custom-shader-core.ts",
+                "makeExtraBindingsWgsl",
+                new Map<string, ShaderTextBinding>([
+                    ["group", "1"],
+                    ["startBinding", 3],
+                    ["extras", [{ name: "palette" }]],
+                ]),
+            ),
+        /emits per-element text/,
     );
 });
 
@@ -81,44 +75,7 @@ test("composes the custom sprite program from the pin's own builder", () => {
     assert.equal(plain.fxStructFields, undefined);
 });
 
-test("declares only the fragment uniform blocks a body reads", () => {
-    assert.ok(stageReadsBlock("a * fx.params;", "fx"));
-    assert.ok(!stageReadsBlock("TOTAL.x", "L"));
-    // A body that owns its own alpha reads neither the layer block nor,
-    // when it names no `fx`, the fx block. Declaring a block nothing reads
-    // would shift the SDL_GPU slots behind it, because a block the compiled
-    // shader drops takes its slot with it.
-    assert.deepEqual(
-        fragmentUniformSlots({
-            fragmentBody: "return vec4f(1);",
-            fxStructFields: "time: f32,",
-        }),
-        { layerBlock: -1, fxBlock: -1 },
-    );
-    assert.deepEqual(
-        fragmentUniformSlots({
-            fragmentBody: TINT_BODY,
-            fxStructFields: "time: f32,",
-        }),
-        { layerBlock: -1, fxBlock: 0 },
-    );
-    assert.deepEqual(
-        fragmentUniformSlots({
-            fragmentBody: "return vec4f(L.opacityMul * fx.params);",
-            fxStructFields: "time: f32,",
-        }),
-        { layerBlock: 0, fxBlock: 1 },
-    );
-    // The stock stage reads its family's block and has no fx block at all.
-    assert.deepEqual(
-        fragmentUniformSlots(
-            new SpriteLowerer(new LoweringContext()).shaderSource(),
-        ),
-        { layerBlock: 0, fxBlock: -1 },
-    );
-});
-
-test("binds the custom sprite fx block at the slot it declares", () => {
+test("declares both fragment uniform blocks for a custom sprite layer", () => {
     const wgsl = spriteFragmentWgsl(
         "test",
         new SpriteLowerer(new LoweringContext()).shaderSource(
@@ -126,9 +83,19 @@ test("binds the custom sprite fx block at the slot it declares", () => {
             TINT_BODY,
         ),
     );
-    assert.match(wgsl, /@group\(3\) @binding\(0\) var<uniform> fx/);
-    // The layer block this body never reads is not declared.
-    assert.ok(!wgsl.includes("var<uniform> L:"));
+    // The fx block sits beside the layer block, and both are declared
+    // whether or not this body reads them — the one it leaves alone does not
+    // reach the compiled shader, and which slots the survivors took is
+    // published beside that shader rather than decided from the text.
+    assert.match(wgsl, /@group\(3\) @binding\(0\) var<uniform> L: Lr/);
+    assert.match(wgsl, /@group\(3\) @binding\(1\) var<uniform> fx/);
+    // A plain layer has no fx block to declare.
+    assert.ok(
+        !spriteFragmentWgsl(
+            "test",
+            new SpriteLowerer(new LoweringContext()).shaderSource(),
+        ).includes("SpriteFx"),
+    );
 });
 
 test("gives the custom billboard program its own vertex stage", () => {
@@ -145,6 +112,6 @@ test("gives the custom billboard program its own vertex stage", () => {
     assert.match(custom.varyingStructFields, /viewDist/);
     assert.equal(custom.fragmentBody, TINT_BODY);
     const wgsl = billboardFragmentWgsl("test", custom);
-    assert.match(wgsl, /@group\(3\) @binding\(0\) var<uniform> fx/);
-    assert.ok(!wgsl.includes("var<uniform> billboards:"));
+    assert.match(wgsl, /@group\(3\) @binding\(0\) var<uniform> billboards/);
+    assert.match(wgsl, /@group\(3\) @binding\(1\) var<uniform> fx/);
 });

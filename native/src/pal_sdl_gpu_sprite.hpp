@@ -37,19 +37,6 @@
 #include "pal_sdl_gpu_shared.hpp"
 
 namespace bbl::pal {
-/**
- * How many fragment uniform blocks a custom-shader layer's program takes.
- *
- * The composed program declares only the blocks the caller's body reads --
- * a body that owns its own alpha reads neither -- and SDL_GPU addresses a
- * stage's uniform buffers by dense slot, so the count and the slots come
- * from what generation published rather than from a fixed pair.
- */
-inline constexpr std::uint32_t sprite_custom_uniform_count =
-    static_cast<std::uint32_t>(
-        (upstream::sprite_custom_layer_block_slot >= 0 ? 1 : 0) +
-        (upstream::sprite_custom_fx_block_slot >= 0 ? 1 : 0));
-
 /** Per-layer GPU state, matching the pinned `LayerGpu`. */
 struct SpriteLayerGpu {
     // One pipeline per layer: the uvScroll opt-in widens a layer's stride
@@ -61,6 +48,11 @@ struct SpriteLayerGpu {
     SDL_GPUSampler* sampler = nullptr;
     std::uint64_t uploaded_version = 0;
     bool uploaded = false;
+    // Where this layer's fragment stage kept its two uniform blocks, from
+    // the sidecar the shader step wrote beside it. A custom body that reads
+    // neither leaves both at -1.
+    int layer_block_slot = 0;
+    int fx_block_slot = -1;
     // The custom shader's own clock: seconds since this layer's first
     // frame, which the pin accumulates inside the layer's fx attachment.
     float elapsed_ms = 0.0f;
@@ -105,6 +97,7 @@ inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
     const SpriteBlendDescriptor& blend,
     bool scroll,
     bool custom_shader,
+    const PinnedStageSlots& slots,
     SDL_GPUTextureFormat target_format) {
     SDL_GPUShader* vertex_shader = load_shader(
         device,
@@ -122,7 +115,7 @@ inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
         custom_shader ? "sprite_custom.frag" : "sprite.frag",
         SDL_GPU_SHADERSTAGE_FRAGMENT,
         1,
-        custom_shader ? sprite_custom_uniform_count : 1u,
+        static_cast<std::uint32_t>(slots.uniforms.size()),
         "mainFragment");
 
     // The generated instance layout (sprite_layer.hpp, from
@@ -249,11 +242,16 @@ inline SpritePass create_sprite_pass(
         const SpriteAtlasRecord& atlas =
             engine.sprite_atlases[layer.atlas.value];
         SpriteLayerGpu& gpu = pass.layers[index];
+        const PinnedStageSlots slots = read_pinned_stage_slots(
+            layer.custom_shader ? "sprite_custom.frag" : "sprite.frag");
+        gpu.layer_block_slot = stage_uniform_slot(slots, "L");
+        gpu.fx_block_slot = stage_uniform_slot(slots, "fx");
         gpu.pipeline = create_sprite_layer_pipeline(
             device,
             layer.blend,
             layer.uv_scroll,
             layer.custom_shader,
+            slots,
             target_format);
         SDL_GPUBufferCreateInfo buffer_info{};
         buffer_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
@@ -353,36 +351,16 @@ inline void record_sprite_pass(
             static_cast<float>(height),
             ubo);
         SDL_PushGPUVertexUniformData(command, 0, ubo.data(), sizeof(ubo));
-        // The stock fragment reads the layer block; a custom one reads
-        // whichever blocks its body named, at the slots generation
-        // published for them.
-        if (!layer.custom_shader) {
-            SDL_PushGPUFragmentUniformData(
-                command, 0, ubo.data(), sizeof(ubo));
-        } else {
-            if constexpr (
-                upstream::sprite_custom_layer_block_slot >= 0) {
-                SDL_PushGPUFragmentUniformData(
-                    command,
-                    static_cast<Uint32>(
-                        upstream::sprite_custom_layer_block_slot),
-                    ubo.data(),
-                    sizeof(ubo));
-            }
-            if constexpr (upstream::sprite_custom_fx_block_slot >= 0) {
-                std::array<
-                    float,
-                    upstream::sprite_fx_ubo_bytes / 4u>
-                    fx{};
-                upstream::build_sprite_fx_ubo(
-                    gpu.elapsed_ms / 1000.0f, layer.shader_params, fx);
-                SDL_PushGPUFragmentUniformData(
-                    command,
-                    static_cast<Uint32>(
-                        upstream::sprite_custom_fx_block_slot),
-                    fx.data(),
-                    sizeof(fx));
-            }
+        // Each block at the slot its own stage kept it in, which a custom
+        // body decides by reading it or not.
+        push_stage_uniform(
+            command, gpu.layer_block_slot, ubo.data(), sizeof(ubo));
+        if (gpu.fx_block_slot >= 0) {
+            std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
+            upstream::build_sprite_fx_ubo(
+                gpu.elapsed_ms / 1000.0f, layer.shader_params, fx);
+            push_stage_uniform(
+                command, gpu.fx_block_slot, fx.data(), sizeof(fx));
         }
         const SDL_GPUTextureSamplerBinding atlas_binding{
             gpu.atlas, gpu.sampler};

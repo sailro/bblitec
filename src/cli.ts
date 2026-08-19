@@ -570,6 +570,8 @@ async function main(): Promise<void> {
             specializationFeatures.nonTrianglePrimitives,
         nodeVisibility: specializationFeatures.nodeVisibility,
         spriteCustomShaders: result.manifest.spriteCustomShaders,
+        plainSpriteLayer: result.manifest.plainSpriteLayer,
+        plainBillboardSystem: result.manifest.plainBillboardSystem,
         standardLights: reachedStandardLights(reachedBabylonLights),
         standardLightLists: reachedStandardLightLists(
             reachedBabylonLights,

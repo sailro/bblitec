@@ -8,7 +8,6 @@ import {
     readPinnedBlendTable,
 } from "./pinned-blend-table.js";
 import { LoweredSource, LoweringContext } from "./context.js";
-import type { FragmentUniformSlots } from "../shader-builtins-sprite-fx.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const layerModule = "src/sprite/sprite-2d.ts";
@@ -583,6 +582,49 @@ export class SpriteLowerer {
      * reads them out of the same header, the way it already does for
      * `resolveSpriteFrame`.
      */
+    /**
+     * The slot expressions a pinned writer fills, checked against the pin.
+     *
+     * Both pinned writers this lowerer reads state their layout the same
+     * way — an assignment per float into a named array — so the walk is
+     * written once and each caller says which array and what it expects.
+     */
+    private assertSlotWrites(
+        declaration: ts.FunctionDeclaration,
+        symbolName: string,
+        arrayName: string,
+        expected: ReadonlyArray<[number, string]>,
+    ): void {
+        const writes = this.context.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                ts.isElementAccessExpression(node.left) &&
+                ts.isIdentifier(node.left.expression) &&
+                node.left.expression.text === arrayName,
+        );
+        for (const [slot, source] of expected) {
+            const write = writes.find(
+                (node) =>
+                    this.elementIndexText(node.left) ===
+                    String(slot),
+            );
+            if (!write) {
+                this.context.contractError(
+                    declaration,
+                    `Pinned ${symbolName} no longer writes float ${slot}.`,
+                );
+            }
+            this.context.assertExpressionShape(
+                write.right,
+                source,
+                `${symbolName} float ${slot}`,
+            );
+        }
+    }
+
     private assertFxUbo(): number {
         const { declaration, file } = this.functionOf(
             customShaderCoreModule,
@@ -598,34 +640,12 @@ export class SpriteLowerer {
             "params[2] ?? 0",
             "params[3] ?? 0",
         ];
-        const writes = this.context.findNodes(
+        this.assertSlotWrites(
             declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
-                ts.isElementAccessExpression(node.left) &&
-                ts.isIdentifier(node.left.expression) &&
-                node.left.expression.text === "scratch",
+            "writeSpriteFxUbo",
+            "scratch",
+            expected.map((source, slot) => [slot, source]),
         );
-        expected.forEach((source, slot) => {
-            const write = writes.find(
-                (node) =>
-                    this.elementIndexText(node.left) ===
-                    String(slot),
-            );
-            if (!write) {
-                this.context.contractError(
-                    declaration,
-                    `Pinned writeSpriteFxUbo no longer writes float ${slot}.`,
-                );
-            }
-            this.context.assertExpressionShape(
-                write.right,
-                source,
-                `writeSpriteFxUbo float ${slot}`,
-            );
-        });
         const bytes = this.context.numericValue(
             this.context.variableInitializer(
                 this.context.sourceFile(customShaderCoreModule),
@@ -658,34 +678,12 @@ export class SpriteLowerer {
             [6, "layer.pivot[0]"],
             [7, "layer.pivot[1]"],
         ];
-        const writes = this.context.findNodes(
+        this.assertSlotWrites(
             declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
-                ts.isElementAccessExpression(node.left) &&
-                ts.isIdentifier(node.left.expression) &&
-                node.left.expression.text === "ubo",
+            "buildSpriteLayerUbo",
+            "ubo",
+            expected,
         );
-        for (const [slot, source] of expected) {
-            const write = writes.find(
-                (node) =>
-                    this.elementIndexText(node.left) ===
-                    String(slot),
-            );
-            if (!write) {
-                this.context.contractError(
-                    declaration,
-                    `Pinned buildSpriteLayerUbo no longer writes float ${slot}.`,
-                );
-            }
-            this.context.assertExpressionShape(
-                write.right,
-                source,
-                `buildSpriteLayerUbo float ${slot}`,
-            );
-        }
         // Straight alpha scales only A; premultiplied scales RGB too. Only
         // the straight arm is reached, and it has to be the `else`.
         const branch = this.context.findNodes(
@@ -885,9 +883,7 @@ export class SpriteLowerer {
             .trim();
     }
 
-    public lowerCore(
-        customSlots?: FragmentUniformSlots,
-    ): LoweredSource {
+    public lowerCore(): LoweredSource {
         const layout = this.layout();
         const blends = readPinnedBlendTable(
             this.context,
@@ -982,18 +978,6 @@ inline std::uint32_t resolve_sprite_frame(
  * accumulates; a body that never names it still has the block bound.
  */
 inline constexpr std::size_t sprite_fx_ubo_bytes = ${fxUboBytes}u;
-
-/**
- * Which fragment uniform slot each block of the composed custom program
- * takes, and -1 for a block its body never reads.
- *
- * The composed program declares only what the caller's body reads, because
- * a block nothing reads does not reach the compiled shader and would shift
- * the slots behind it. Both backends bind from these, so the two ends
- * cannot disagree about which block a slot holds.
- */
-inline constexpr int sprite_custom_layer_block_slot = ${customSlots?.layerBlock ?? -1};
-inline constexpr int sprite_custom_fx_block_slot = ${customSlots?.fxBlock ?? -1};
 
 inline void build_sprite_fx_ubo(
     float time_seconds,

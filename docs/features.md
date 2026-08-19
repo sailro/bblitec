@@ -458,11 +458,15 @@ program is the pin's around the caller's text. Building the descriptor is the
 opt-in — upstream it registers the hook the always-loaded path reaches the
 feature through — and a layer or system without one draws the stock shader.
 The `fx` block a body may read (`fx.time`, and the `fx.params` vec4 the
-per-family setter writes) binds beside the family's own block. What the body
-does NOT read matters too: a block nothing reads does not survive to the
-compiled shader, and SDL_GPU takes uniform buffers by dense slot, so the
-composed program declares only the blocks the body named and both backends
-bind from the slots generation published for them.
+per-family setter writes) binds beside the family's own block, declared
+whether or not the body names it, as upstream declares it. What the body does
+NOT read still matters: a block nothing reads does not survive to the compiled
+shader, and SDL_GPU takes uniform buffers by dense slot. Which blocks a stage
+kept, and at which slots, is read from the sidecar the shader step writes
+beside that stage — the same one the pinned material variants already bind
+through, now written by both of its compaction passes. The compiled artifact
+answers it; nothing infers it from the WGSL. A layer or system whose every
+one opts in never loads the stock program, so it is not composed either.
 
 Every blend mode either family exports is lowered as the pure data upstream
 keeps it as — the descriptors are read out of the pinned modules rather than

@@ -1,6 +1,5 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
-import type { FragmentUniformSlots } from "../shader-builtins-sprite-fx.js";
 import {
     PinnedShaderText,
     ShaderTextBinding,
@@ -559,8 +558,11 @@ export class BillboardLowerer {
                 : this.shaderText.evaluate(
                       customShaderModule,
                       "makeCustomBillboardWgsl",
+                      // The three the pin's own composer takes: it has no
+                      // depth or coverage arm, so binding those would pre-fill
+                      // a parameter a later pin could add under either name.
                       new Map<string, ShaderTextBinding>([
-                          ...permutation,
+                          ["orientation", orientation],
                           ["extraTextures", []],
                           ["fragment", customFragment],
                       ]),
@@ -633,9 +635,7 @@ export class BillboardLowerer {
     // Emission
     // -----------------------------------------------------------------
 
-    public lowerCore(
-        customSlots?: FragmentUniformSlots,
-    ): LoweredSource {
+    public lowerCore(): LoweredSource {
         const layout = this.layout();
         const rows = this.attributeRows(layout.instanceFloats);
         this.assertSystemDefaults();
@@ -719,17 +719,6 @@ namespace bbl::upstream {
 inline constexpr std::array<std::uint16_t, 6> billboard_index_data{
     {0u, 1u, 2u, 0u, 2u, 3u}};
 
-/**
- * Which fragment uniform slot each block of the composed custom program
- * takes, and -1 for a block its body never reads.
- *
- * The composed program declares only what the caller's body reads, because
- * a block nothing reads does not reach the compiled shader and would shift
- * the slots behind it. Both backends bind from these, so the two ends
- * cannot disagree about which block a slot holds.
- */
-inline constexpr int billboard_custom_system_block_slot = ${customSlots?.layerBlock ?? -1};
-inline constexpr int billboard_custom_fx_block_slot = ${customSlots?.fxBlock ?? -1};
 
 /**
  * buildBillboardSystemUbo: a premultiplied source scales RGB and A together

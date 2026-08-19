@@ -192,37 +192,26 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         pass.group_layouts[2] =
             wgpuDeviceCreateBindGroupLayout(device, &texture_layout);
 
-        // The composed custom program declares only the blocks its body
-        // reads, at the bindings generation published, so the group follows
-        // those rather than a fixed pair.
+        // A custom-shader system declares the fx block beside the system
+        // block, whether or not its body reads either. WebGPU takes a group
+        // entry the shader ignores, so unlike SDL_GPU this side needs no
+        // dense slots.
         std::array<WGPUBindGroupLayoutEntry, 2> fragment_entries{};
-        std::uint32_t fragment_entry_count = 0;
-        const auto declare_fragment_block =
-            [&](int slot, std::uint64_t size) {
-                if (slot < 0) return;
-                WGPUBindGroupLayoutEntry& entry =
-                    fragment_entries[fragment_entry_count];
-                entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-                entry.binding = static_cast<std::uint32_t>(slot);
-                entry.visibility = WGPUShaderStage_Fragment;
-                entry.buffer.type = WGPUBufferBindingType_Uniform;
-                entry.buffer.minBindingSize = size;
-                fragment_entry_count += 1u;
-            };
-        if (system.custom_shader) {
-            declare_fragment_block(
-                upstream::billboard_custom_system_block_slot,
-                upstream::billboard_system_ubo_bytes);
-            declare_fragment_block(
-                upstream::billboard_custom_fx_block_slot,
-                upstream::sprite_fx_ubo_bytes);
-        } else {
-            declare_fragment_block(
-                0, upstream::billboard_system_ubo_bytes);
-        }
+        fragment_entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        fragment_entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        fragment_entries[0].binding = 0;
+        fragment_entries[0].visibility = WGPUShaderStage_Fragment;
+        fragment_entries[0].buffer.type = WGPUBufferBindingType_Uniform;
+        fragment_entries[0].buffer.minBindingSize =
+            upstream::billboard_system_ubo_bytes;
+        fragment_entries[1].binding = 1;
+        fragment_entries[1].visibility = WGPUShaderStage_Fragment;
+        fragment_entries[1].buffer.type = WGPUBufferBindingType_Uniform;
+        fragment_entries[1].buffer.minBindingSize =
+            upstream::sprite_fx_ubo_bytes;
         WGPUBindGroupLayoutDescriptor fragment_layout =
             WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        fragment_layout.entryCount = fragment_entry_count;
+        fragment_layout.entryCount = system.custom_shader ? 2u : 1u;
         fragment_layout.entries = fragment_entries.data();
         pass.group_layouts[3] =
             wgpuDeviceCreateBindGroupLayout(device, &fragment_layout);
@@ -349,8 +338,7 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         if (!pass.vertex_uniforms || !pass.fragment_uniforms) {
             dawn_error("wgpuDeviceCreateBuffer billboard uniforms");
         }
-        if (system.custom_shader &&
-            upstream::billboard_custom_fx_block_slot >= 0) {
+        if (system.custom_shader) {
             uniform_descriptor.size = upstream::sprite_fx_ubo_bytes;
             pass.fx_uniforms =
                 wgpuDeviceCreateBuffer(device, &uniform_descriptor);
@@ -419,37 +407,20 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         wgpuDeviceCreateBindGroup(device, &texture_group);
 
     std::array<WGPUBindGroupEntry, 2> fragment_bindings{};
-    std::uint32_t fragment_binding_count = 0;
-    const auto bind_fragment_block =
-        [&](int slot, WGPUBuffer buffer, std::uint64_t size) {
-            if (slot < 0) return;
-            WGPUBindGroupEntry& entry =
-                fragment_bindings[fragment_binding_count];
-            entry = WGPU_BIND_GROUP_ENTRY_INIT;
-            entry.binding = static_cast<std::uint32_t>(slot);
-            entry.buffer = buffer;
-            entry.size = size;
-            fragment_binding_count += 1u;
-        };
+    fragment_bindings[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+    fragment_bindings[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+    fragment_bindings[0].binding = 0;
+    fragment_bindings[0].buffer = pass.fragment_uniforms;
+    fragment_bindings[0].size = upstream::billboard_system_ubo_bytes;
     if (system.custom_shader) {
-        bind_fragment_block(
-            upstream::billboard_custom_system_block_slot,
-            pass.fragment_uniforms,
-            upstream::billboard_system_ubo_bytes);
-        bind_fragment_block(
-            upstream::billboard_custom_fx_block_slot,
-            pass.fx_uniforms,
-            upstream::sprite_fx_ubo_bytes);
-    } else {
-        bind_fragment_block(
-            0,
-            pass.fragment_uniforms,
-            upstream::billboard_system_ubo_bytes);
+        fragment_bindings[1].binding = 1;
+        fragment_bindings[1].buffer = pass.fx_uniforms;
+        fragment_bindings[1].size = upstream::sprite_fx_ubo_bytes;
     }
     WGPUBindGroupDescriptor fragment_group =
         WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     fragment_group.layout = pass.group_layouts[3];
-    fragment_group.entryCount = fragment_binding_count;
+    fragment_group.entryCount = system.custom_shader ? 2u : 1u;
     fragment_group.entries = fragment_bindings.data();
     pass.fragment_group =
         wgpuDeviceCreateBindGroup(device, &fragment_group);
@@ -496,17 +467,15 @@ inline void upload_dawn_billboard_pass(
     // whether the sorted instance data moved.
     if (system.custom_shader) {
         pass.elapsed_ms += delta_ms;
-        if (upstream::billboard_custom_fx_block_slot >= 0) {
-            std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
-            upstream::build_sprite_fx_ubo(
-                pass.elapsed_ms / 1000.0f, system.shader_params, fx);
-            wgpuQueueWriteBuffer(
-                queue,
-                pass.fx_uniforms,
-                0,
-                fx.data(),
-                fx.size() * sizeof(float));
-        }
+        std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
+        upstream::build_sprite_fx_ubo(
+            pass.elapsed_ms / 1000.0f, system.shader_params, fx);
+        wgpuQueueWriteBuffer(
+            queue,
+            pass.fx_uniforms,
+            0,
+            fx.data(),
+            fx.size() * sizeof(float));
     }
 
     if (system.count == 0) {

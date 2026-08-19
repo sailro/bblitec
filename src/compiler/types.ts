@@ -30,6 +30,13 @@ export interface CompileManifest {
     customShaderPrograms: CompiledShaderProgram[];
     /** The sprite-family custom fragment shaders scene code built. */
     spriteCustomShaders: SpriteCustomShaderManifest[];
+    /**
+     * Whether any layer or system draws with the stock program. A scene whose
+     * every one opts into a custom shader never loads it, so it is not
+     * composed, compiled or deployed.
+     */
+    plainSpriteLayer: boolean;
+    plainBillboardSystem: boolean;
     geometryOutputTasks: GeometryOutputTaskManifest[];
     adaptations: CompileAdaptation[];
     scenePbrMaterials: ScenePbrMaterialManifest[];
@@ -265,6 +272,7 @@ export type ValueKind =
     | "sprite-layer"
     | "sprite-blend"
     | "sprite-custom-shader"
+    | "billboard-custom-shader"
     | "billboard-system"
     | "sprite-renderer"
     | "string"
@@ -308,12 +316,6 @@ export interface Value {
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     lightKind?: LightKind;
-    /**
-     * The custom fragment shader a descriptor names, carried on the value the
-     * factory returned so the layer or system it is passed to can check the
-     * family it belongs to.
-     */
-    spriteCustomShader?: SpriteCustomShaderManifest;
     shaderVariant?: string;
     animationFrameRate?: string;
     animationDuration?: string;

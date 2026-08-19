@@ -25,15 +25,17 @@ export interface SpriteIntrinsicContext
         expression: ts.Expression,
     ): string;
     allocateTemporaryCppName(label: string): string;
+    /** One layer or system built without a custom shader, so with the stock program. */
+    recordPlainSpriteProgram(family: "sprite" | "billboard"): void;
+    /** The custom-shader descriptors built so far, in scene order. */
+    spriteCustomShaders(): readonly SpriteCustomShaderManifest[];
     /**
-     * Records one custom-shader descriptor and returns its index, which is
-     * also the pin's own `_key` order. Generation composes one program per
-     * entry from the pin's builder around the caller's fragment body.
+     * Records one custom-shader descriptor. Generation composes one program
+     * per entry, from the pin's builder around the caller's fragment body.
      */
     recordSpriteCustomShader(
         shader: SpriteCustomShaderManifest,
-        node: ts.Node,
-    ): number;
+    ): void;
     emit(line: string): void;
     fail(node: ts.Node, message: string): never;
 }
@@ -116,12 +118,10 @@ function customShaderOption(
 ): string {
     const named = property(options, "customShader");
     if (!named) {
+        context.recordPlainSpriteProgram(family);
         return "false";
     }
-    if (
-        named.kind !== "sprite-custom-shader" ||
-        named.spriteCustomShader?.family !== family
-    ) {
+    if (named.kind !== `${family}-custom-shader`) {
         context.fail(
             node,
             `customShader must be a ${
@@ -746,10 +746,20 @@ export function compileSpriteIntrinsic(
                 importedName === "createSprite2DCustomShader"
                     ? "sprite"
                     : "billboard";
-            const shader: SpriteCustomShaderManifest = {
-                family,
-                fragment: fragment.staticString,
-            };
+            // One program per family is composed, under a fixed name. A
+            // second descriptor would need the layer and system records to
+            // carry which program they draw with, so it refuses here rather
+            // than quietly drawing every layer with the first one.
+            if (
+                context
+                    .spriteCustomShaders()
+                    .some((entry) => entry.family === family)
+            ) {
+                context.fail(
+                    call,
+                    `A second ${family} custom shader is not lowered; one program per family is composed.`,
+                );
+            }
             // Building a descriptor is the pin's own opt-in trigger: the
             // factory is what registers the fx hook the always-loaded path
             // reaches the feature through, so reaching it here is what
@@ -760,12 +770,11 @@ export function compileSpriteIntrinsic(
                     : "sprite:billboard-custom-shader",
                 call,
             );
-            context.recordSpriteCustomShader(shader, call);
-            return {
-                kind: "sprite-custom-shader",
-                cpp: "",
-                spriteCustomShader: shader,
-            };
+            context.recordSpriteCustomShader({
+                family,
+                fragment: fragment.staticString,
+            });
+            return { kind: `${family}-custom-shader`, cpp: "" };
         }
 
         case "setSprite2DShaderParams":

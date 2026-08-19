@@ -105,10 +105,24 @@ export class LoweringContext {
         modulePath: string,
         importedName: string,
     ): boolean {
-        return this.sourceFile(modulePath).statements.some(
-            (statement) =>
+        return (
+            this.namedImport(modulePath, importedName) !== undefined
+        );
+    }
+    /**
+     * The declaration that brings a named import into a module.
+     *
+     * Shared because two questions are asked of it: whether a module imports
+     * a symbol at all, and which module it comes from.
+     */
+    private namedImport(
+        modulePath: string,
+        importedName: string,
+    ): ts.ImportDeclaration | undefined {
+        return this.sourceFile(modulePath).statements.find(
+            (statement): statement is ts.ImportDeclaration =>
                 ts.isImportDeclaration(statement) &&
-                statement.importClause?.namedBindings &&
+                statement.importClause?.namedBindings !== undefined &&
                 ts.isNamedImports(
                     statement.importClause.namedBindings,
                 ) &&
@@ -133,46 +147,18 @@ export class LoweringContext {
         modulePath: string,
         importedName: string,
     ): string | undefined {
-        for (const statement of this.sourceFile(modulePath)
-            .statements) {
-            if (
-                !ts.isImportDeclaration(statement) ||
-                !statement.importClause?.namedBindings ||
-                !ts.isNamedImports(
-                    statement.importClause.namedBindings,
-                ) ||
-                !ts.isStringLiteral(statement.moduleSpecifier)
-            ) {
-                continue;
-            }
-            const imports =
-                statement.importClause.namedBindings.elements.some(
-                    (element) =>
-                        (element.propertyName?.text ??
-                            element.name.text) === importedName,
-                );
-            if (!imports) {
-                continue;
-            }
-            const specifier = statement.moduleSpecifier.text;
-            if (!specifier.startsWith(".")) {
-                return undefined;
-            }
-            const directory = modulePath
-                .split("/")
-                .slice(0, -1);
-            for (const part of specifier
-                .replace(/\.js$/, ".ts")
-                .split("/")) {
-                if (part === ".") continue;
-                if (part === "..") directory.pop();
-                else directory.push(part);
-            }
-            return directory.join("/");
+        const declaration = this.namedImport(modulePath, importedName);
+        if (
+            !declaration ||
+            !ts.isStringLiteral(declaration.moduleSpecifier)
+        ) {
+            return undefined;
         }
-        return undefined;
+        return this.store.resolveImport(
+            modulePath,
+            declaration.moduleSpecifier.text,
+        );
     }
-
     public functionDeclaration(modulePath: string, symbolName: string): {
         file: ts.SourceFile;
         declaration: ts.FunctionDeclaration;

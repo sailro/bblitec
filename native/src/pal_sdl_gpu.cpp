@@ -351,82 +351,11 @@ struct GpuGeometryTask {
 };
 
 #if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
-/**
- * What `Remap-PinnedVariantRegisters` assigned, read back at load.
- *
- * SDL_GPU addresses uniforms by a per-stage slot and textures by a per-stage
- * index, so this backend needs the order the remap produced. It cannot be
- * derived from the WGSL: a stage may declare a block it never reads -- the pin's
- * unlit fragment declares its mesh block for the `mli()` helper and then takes
- * no light path -- and Tint strips it, so the source over-counts. The remap
- * writes a `.slots` file beside each stage naming every register by the pin's
- * own identifier, and this reads it.
- */
-struct PinnedStageSlots {
-    /** Uniform blocks in slot order: `scene`, `lights`, `mesh`, `material`. */
-    std::vector<std::string> uniforms;
-    /** Texture names in binding order; each one's sampler is bound with it. */
-    std::vector<std::string> textures;
-    /** Storage buffer names in storage-slot order -- the morph arms'. */
-    std::vector<std::string> storage;
-};
-
 /** A texture and its sampler, resolved from the pin's own name for a binding. */
 struct PinnedResource {
     SDL_GPUTexture* texture = nullptr;
     SDL_GPUSampler* sampler = nullptr;
 };
-
-PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
-    const std::string shader_override =
-        environment_variable("BBLITE_GPU_SHADER_DIR");
-    const std::string shader_root = shader_override.empty()
-        ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR)
-        : shader_override;
-    const std::vector<std::uint8_t> bytes =
-        read_binary_file(join_path(shader_root, base_name + ".slots"));
-    PinnedStageSlots slots;
-    std::string line;
-    const auto take = [&]() {
-        const std::size_t space = line.find(' ');
-        if (line.empty() || space == std::string::npos) return;
-        const std::string reg = line.substr(0, space);
-        std::string name = line.substr(space + 1);
-        while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) {
-            name.pop_back();
-        }
-        // Placed at its own register index rather than appended: the sidecar
-        // lists declarations in the order they appear in the HLSL, which is not
-        // register order. A lit fragment's reads `b0 scene`, `b3 material`,
-        // `b2 mesh`, `b1 lights`, and appending pushed `material` where the
-        // shader wanted `lights` -- 9.238 MAD, while an unlit fragment happened
-        // to declare its two blocks in index order and so looked correct.
-        const std::size_t index =
-            static_cast<std::size_t>(std::stoul(reg.substr(1)));
-        // `b` is a uniform slot and `t` a texture; `s` is the sampler paired
-        // with the texture of the same index, which SDL_GPU binds together.
-        // `r` is a storage buffer at its storage slot, which shares the SRV
-        // space after the sampled textures.
-        std::vector<std::string>* target = reg[0] == 'b'
-            ? &slots.uniforms
-            : reg[0] == 't'
-                ? &slots.textures
-                : reg[0] == 'r' ? &slots.storage : nullptr;
-        if (!target) return;
-        if (target->size() <= index) target->resize(index + 1);
-        (*target)[index] = name;
-    };
-    for (const std::uint8_t byte : bytes) {
-        if (byte == '\n') {
-            take();
-            line.clear();
-            continue;
-        }
-        line.push_back(static_cast<char>(byte));
-    }
-    take();
-    return slots;
-}
 #endif
 
 struct GpuState {

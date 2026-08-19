@@ -44,6 +44,8 @@ function emitOptions(
         idDiagnostics: false,
         shaderPrograms: [],
         spriteCustomShaders: [],
+        plainSpriteLayer: true,
+        plainBillboardSystem: true,
         geometryOutputTasks: [],
         gpuDeformation: false,
         animatedWorldBounds: false,

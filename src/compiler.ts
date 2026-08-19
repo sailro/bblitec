@@ -335,8 +335,10 @@ class Compiler
     public readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
     public readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
     private readonly sceneMeshes: SceneMeshManifest[] = [];
-    public readonly spriteCustomShaders: SpriteCustomShaderManifest[] =
+    private readonly sceneSpriteCustomShaders: SpriteCustomShaderManifest[] =
         [];
+    private reachedPlainSpriteLayer = false;
+    private reachedPlainBillboardSystem = false;
     private sceneMaterialCount = 0;
     public hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
@@ -445,7 +447,9 @@ class Compiler
                 scenePbrMaterials: this.scenePbrMaterials,
                 sceneMaterialCount: this.sceneMaterialCount,
                 sceneMeshes: this.sceneMeshes,
-                spriteCustomShaders: this.spriteCustomShaders,
+                spriteCustomShaders: this.sceneSpriteCustomShaders,
+                plainSpriteLayer: this.reachedPlainSpriteLayer,
+                plainBillboardSystem: this.reachedPlainBillboardSystem,
             },
         };
     }
@@ -626,7 +630,8 @@ class Compiler
             // it names is composed at generation and the layer it is passed
             // to carries only that it has one, so there is nothing to
             // declare natively.
-            value.kind === "sprite-custom-shader"
+            value.kind === "sprite-custom-shader" ||
+            value.kind === "billboard-custom-shader"
         ) {
             this.defineVariable(declaration.name, value);
             return;
@@ -2895,31 +2900,24 @@ class Compiler
         ).iridescence = iridescence;
     }
 
-    /** Records a scene-code mesh creation for the per-renderable variant key. */
-    /**
-     * One custom-shader descriptor, in the pin's own `_key` order.
-     *
-     * The pin composes one shader module per descriptor. Only one per family
-     * is reached, and a second would need the layer and system records to
-     * carry which program they draw with, so it refuses here rather than
-     * quietly drawing every layer with the first one.
-     */
-    public recordSpriteCustomShader(
-        shader: SpriteCustomShaderManifest,
-        node: ts.Node,
-    ): number {
-        const existing = this.spriteCustomShaders.findIndex(
-            (entry) => entry.family === shader.family,
-        );
-        if (existing >= 0) {
-            this.fail(
-                node,
-                `A second ${shader.family} custom shader is not lowered; one program per family is composed.`,
-            );
-        }
-        return this.spriteCustomShaders.push(shader) - 1;
+    /** One layer or system built without a custom shader, so with the stock program. */
+    public recordPlainSpriteProgram(family: "sprite" | "billboard"): void {
+        if (family === "sprite") this.reachedPlainSpriteLayer = true;
+        else this.reachedPlainBillboardSystem = true;
     }
 
+    public spriteCustomShaders(): readonly SpriteCustomShaderManifest[] {
+        return this.sceneSpriteCustomShaders;
+    }
+
+    /** One custom-shader descriptor, in the pin's own `_key` order. */
+    public recordSpriteCustomShader(
+        shader: SpriteCustomShaderManifest,
+    ): void {
+        this.sceneSpriteCustomShaders.push(shader);
+    }
+
+    /** Records a scene-code mesh creation for the per-renderable variant key. */
     public recordSceneMesh(
         kind: string,
         streams?: {
