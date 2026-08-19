@@ -373,6 +373,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/sprite/sprite-2d.ts",
         consumers: CMAKE,
     },
+    "sprite:uv-scroll": {
+        provenance: "src/sprite/sprite-2d-uvscroll.ts",
+        consumers: CMAKE,
+    },
     "sprite:billboard": {
         provenance:
             "src/sprite/billboard-sprite.ts + src/sprite/billboard-scene.ts",

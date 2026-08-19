@@ -446,6 +446,12 @@
       "upstreamPath": "lab/lite/src/lite/scene57.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene57.ts",
       "sha256": "14b5545a940ce1f8b614062159ab36bee841fd2011e0c1f9e9731d2c4a190017"
+    },
+    {
+      "id": "scene96",
+      "upstreamPath": "lab/lite/src/lite/scene96.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene96.ts",
+      "sha256": "4047cb9a254c706b87fa5a827c40a1a421f717ce0a1dcd2c752551567ac2450b"
     }
   ],
   "modules": [
@@ -468,6 +474,11 @@
       "upstreamPath": "lab/lite/src/_shared/sprite-atlas-cutout.ts",
       "source": "corpus/babylon-lite/lab/lite/src/_shared/sprite-atlas-cutout.ts",
       "sha256": "30d50021223b3275ccf33616f152a7469fd6fa6bc4719e64960d079ed3cedf8d"
+    },
+    {
+      "upstreamPath": "lab/lite/src/_shared/scroll-tile-image.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/_shared/scroll-tile-image.ts",
+      "sha256": "fca4b180142ee28b01bc2e2e5b8b6d70824da8c84b0fc0d0a3d98f2f6cbeba3c"
     }
   ]
 }

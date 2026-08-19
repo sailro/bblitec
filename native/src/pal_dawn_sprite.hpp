@@ -36,9 +36,12 @@
 #include "pal_gpu_shared.hpp"
 
 namespace bbl::pal {
-
 /** Per-layer GPU state, matching the pinned `LayerGpu`. */
 struct DawnSpriteLayer {
+    // One pipeline per layer: the uvScroll opt-in widens a layer's stride
+    // and adds an attribute, so the layout a pipeline describes is the
+    // layer's, not the renderer's.
+    WGPURenderPipeline pipeline = nullptr;
     WGPUBuffer instances = nullptr;
     WGPUBuffer vertex_uniforms = nullptr;
     WGPUBuffer fragment_uniforms = nullptr;
@@ -54,9 +57,6 @@ struct DawnSpriteLayer {
 
 /** One registered `SpriteRenderer`, as GPU resources. */
 struct DawnSpritePass {
-    WGPURenderPipeline pipeline = nullptr;
-    WGPUShaderModule vertex_module = nullptr;
-    WGPUShaderModule fragment_module = nullptr;
     WGPUBuffer index_buffer = nullptr;
     std::array<WGPUBindGroupLayout, 4> group_layouts{};
     std::vector<DawnSpriteLayer> layers;
@@ -90,6 +90,126 @@ inline WGPUBuffer dawn_sprite_uniform_buffer(WGPUDevice device) {
     return buffer;
 }
 
+/**
+ * One layer's pipeline and the shader modules it names.
+ *
+ * The uvScroll opt-in widens a layer's instance stride and adds an
+ * attribute, so the layout a pipeline describes belongs to the layer
+ * rather than to the renderer it draws in. The pin keys a shared cache on
+ * that layout instead; one pipeline per layer is the same picture while a
+ * renderer holds one layer of each layout, which is every reached scene.
+ */
+inline WGPURenderPipeline create_dawn_sprite_layer_pipeline(
+    WGPUDevice device,
+    const std::array<WGPUBindGroupLayout, 4>& group_layouts,
+    const SpriteBlendDescriptor& blend,
+    bool scroll,
+    WGPUTextureFormat target_format) {
+    WGPUShaderModule vertex_module = load_wgsl_module(
+        device,
+        scroll ? "sprite_uvscroll.vert" : "sprite.vert");
+    WGPUShaderModule fragment_module = load_wgsl_module(
+        device, "sprite.frag");
+
+    // The generated instance layout (sprite_layer.hpp, from
+    // sprite-pipeline.ts): the pure-2D attributes at their pinned byte
+    // offsets, stepped per instance. Only the float count is translated
+    // to this API's vertex formats.
+    std::array<
+        WGPUVertexAttribute,
+        upstream::sprite_instance_attributes.size() + 1u>
+        attributes{};
+    const std::size_t attribute_count =
+        upstream::sprite_instance_attributes.size() + (scroll ? 1u : 0u);
+    for (std::size_t index = 0; index < attribute_count; ++index) {
+        const upstream::SpriteInstanceAttribute& row =
+            index < upstream::sprite_instance_attributes.size()
+                ? upstream::sprite_instance_attributes[index]
+                : upstream::sprite_uvscroll_attribute;
+        WGPUVertexFormat format = WGPUVertexFormat_Float32;
+        switch (row.float_count) {
+            case 1u:
+                format = WGPUVertexFormat_Float32;
+                break;
+            case 2u:
+                format = WGPUVertexFormat_Float32x2;
+                break;
+            case 3u:
+                format = WGPUVertexFormat_Float32x3;
+                break;
+            case 4u:
+                format = WGPUVertexFormat_Float32x4;
+                break;
+            default:
+                throw std::runtime_error(
+                    "Sprite instance attribute has an unsupported float "
+                    "count.");
+        }
+        attributes[index] = WGPUVertexAttribute{
+            nullptr,
+            format,
+            row.byte_offset,
+            row.shader_location};
+    }
+    WGPUVertexBufferLayout instance_layout = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
+    instance_layout.stepMode = WGPUVertexStepMode_Instance;
+    instance_layout.arrayStride = scroll
+        ? upstream::sprite_uvscroll_stride_bytes
+        : upstream::sprite_instance_stride_bytes;
+    instance_layout.attributeCount =
+        static_cast<std::uint32_t>(attribute_count);
+    instance_layout.attributes = attributes.data();
+
+    WGPUBlendState blend_state{};
+    blend_state.color.operation = WGPUBlendOperation_Add;
+    blend_state.color.srcFactor = dawn_sprite_blend_factor(blend.color.src);
+    blend_state.color.dstFactor = dawn_sprite_blend_factor(blend.color.dst);
+    blend_state.alpha.operation = WGPUBlendOperation_Add;
+    blend_state.alpha.srcFactor = dawn_sprite_blend_factor(blend.alpha.src);
+    blend_state.alpha.dstFactor = dawn_sprite_blend_factor(blend.alpha.dst);
+    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
+    color_target.format = target_format;
+    color_target.writeMask = WGPUColorWriteMask_All;
+    if (blend.enabled) {
+        color_target.blend = &blend_state;
+    }
+    WGPUFragmentState fragment_state = WGPU_FRAGMENT_STATE_INIT;
+    fragment_state.module = fragment_module;
+    fragment_state.entryPoint = string_view("mainFragment");
+    fragment_state.targetCount = 1;
+    fragment_state.targets = &color_target;
+
+    WGPUPipelineLayoutDescriptor layout_descriptor =
+        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    layout_descriptor.bindGroupLayoutCount =
+        static_cast<std::uint32_t>(group_layouts.size());
+    layout_descriptor.bindGroupLayouts = group_layouts.data();
+    WGPUPipelineLayout pipeline_layout =
+        wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
+
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.layout = pipeline_layout;
+    descriptor.vertex.module = vertex_module;
+    descriptor.vertex.entryPoint = string_view("mainVertex");
+    descriptor.vertex.bufferCount = 1;
+    descriptor.vertex.buffers = &instance_layout;
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.cullMode = WGPUCullMode_None;
+    descriptor.multisample.count = 1;
+    descriptor.multisample.mask = 0xFFFFFFFFu;
+    descriptor.fragment = &fragment_state;
+    WGPURenderPipeline pipeline =
+        wgpuDeviceCreateRenderPipeline(device, &descriptor);
+    wgpuPipelineLayoutRelease(pipeline_layout);
+    // The modules live only until the pipeline names them.
+    wgpuShaderModuleRelease(vertex_module);
+    wgpuShaderModuleRelease(fragment_module);
+    if (!pipeline) {
+        dawn_error("wgpuDeviceCreateRenderPipeline sprite");
+    }
+    return pipeline;
+}
 inline DawnSpritePass create_dawn_sprite_pass(
     WGPUDevice device,
     WGPUQueue queue,
@@ -123,15 +243,9 @@ inline DawnSpritePass create_dawn_sprite_pass(
             sizeof(quad_indices));
     }
 
-    pass.vertex_module = load_wgsl_module(device, "sprite.vert");
-    pass.fragment_module = load_wgsl_module(device, "sprite.frag");
-
-    const SpriteBlendDescriptor blend =
-        sprite_renderer_blend(engine, renderer);
-
-    // Group 0 is unused by the specialized WGSL and is declared empty so
-    // the pipeline layout's group indexes line up with it.
     {
+        // Group 0 is unused by the specialized WGSL and is declared empty
+        // so the pipeline layout's group indexes line up with it.
         WGPUBindGroupLayoutDescriptor empty =
             WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
         pass.group_layouts[0] =
@@ -183,97 +297,6 @@ inline DawnSpritePass create_dawn_sprite_pass(
             wgpuDeviceCreateBindGroupLayout(device, &fragment_layout);
     }
 
-    // The generated instance layout (sprite_layer.hpp, from
-    // sprite-pipeline.ts): the pure-2D attributes at their pinned byte
-    // offsets, stepped per instance. Only the float count is translated
-    // to this API's vertex formats.
-    std::array<
-        WGPUVertexAttribute,
-        upstream::sprite_instance_attributes.size()>
-        attributes{};
-    for (
-        std::size_t index = 0;
-        index < upstream::sprite_instance_attributes.size();
-        ++index) {
-        const upstream::SpriteInstanceAttribute& row =
-            upstream::sprite_instance_attributes[index];
-        WGPUVertexFormat format = WGPUVertexFormat_Float32;
-        switch (row.float_count) {
-            case 1u:
-                format = WGPUVertexFormat_Float32;
-                break;
-            case 2u:
-                format = WGPUVertexFormat_Float32x2;
-                break;
-            case 3u:
-                format = WGPUVertexFormat_Float32x3;
-                break;
-            case 4u:
-                format = WGPUVertexFormat_Float32x4;
-                break;
-            default:
-                throw std::runtime_error(
-                    "Sprite instance attribute has an unsupported float "
-                    "count.");
-        }
-        attributes[index] = WGPUVertexAttribute{
-            nullptr,
-            format,
-            row.byte_offset,
-            row.shader_location};
-    }
-    WGPUVertexBufferLayout instance_layout = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
-    instance_layout.stepMode = WGPUVertexStepMode_Instance;
-    instance_layout.arrayStride = upstream::sprite_instance_stride_bytes;
-    instance_layout.attributeCount =
-        static_cast<std::uint32_t>(attributes.size());
-    instance_layout.attributes = attributes.data();
-
-    WGPUBlendState blend_state{};
-    blend_state.color.operation = WGPUBlendOperation_Add;
-    blend_state.color.srcFactor = dawn_sprite_blend_factor(blend.color.src);
-    blend_state.color.dstFactor = dawn_sprite_blend_factor(blend.color.dst);
-    blend_state.alpha.operation = WGPUBlendOperation_Add;
-    blend_state.alpha.srcFactor = dawn_sprite_blend_factor(blend.alpha.src);
-    blend_state.alpha.dstFactor = dawn_sprite_blend_factor(blend.alpha.dst);
-    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
-    color_target.format = target_format;
-    color_target.writeMask = WGPUColorWriteMask_All;
-    if (blend.enabled) {
-        color_target.blend = &blend_state;
-    }
-    WGPUFragmentState fragment_state = WGPU_FRAGMENT_STATE_INIT;
-    fragment_state.module = pass.fragment_module;
-    fragment_state.entryPoint = string_view("mainFragment");
-    fragment_state.targetCount = 1;
-    fragment_state.targets = &color_target;
-
-    WGPUPipelineLayoutDescriptor layout_descriptor =
-        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    layout_descriptor.bindGroupLayoutCount =
-        static_cast<std::uint32_t>(pass.group_layouts.size());
-    layout_descriptor.bindGroupLayouts = pass.group_layouts.data();
-    WGPUPipelineLayout pipeline_layout =
-        wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
-
-    WGPURenderPipelineDescriptor descriptor =
-        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.layout = pipeline_layout;
-    descriptor.vertex.module = pass.vertex_module;
-    descriptor.vertex.entryPoint = string_view("mainVertex");
-    descriptor.vertex.bufferCount = 1;
-    descriptor.vertex.buffers = &instance_layout;
-    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-    descriptor.primitive.cullMode = WGPUCullMode_None;
-    descriptor.multisample.count = 1;
-    descriptor.multisample.mask = 0xFFFFFFFFu;
-    descriptor.fragment = &fragment_state;
-    pass.pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
-    wgpuPipelineLayoutRelease(pipeline_layout);
-    if (!pass.pipeline) {
-        dawn_error("wgpuDeviceCreateRenderPipeline sprite");
-    }
-
     pass.layers.resize(renderer.layers.size());
     for (std::size_t index = 0; index < renderer.layers.size(); ++index) {
         const Sprite2DLayerRecord& layer =
@@ -281,6 +304,12 @@ inline DawnSpritePass create_dawn_sprite_pass(
         const SpriteAtlasRecord& atlas =
             engine.sprite_atlases[layer.atlas.value];
         DawnSpriteLayer& gpu = pass.layers[index];
+        gpu.pipeline = create_dawn_sprite_layer_pipeline(
+            device,
+            pass.group_layouts,
+            layer.blend,
+            layer.uv_scroll,
+            target_format);
 
         WGPUBufferDescriptor instance_descriptor =
             WGPU_BUFFER_DESCRIPTOR_INIT;
@@ -422,7 +451,7 @@ inline void record_dawn_sprite_pass(
     const DawnSpritePass& pass) {
     const SpriteRendererRecord& renderer =
         engine.sprite_renderers[pass.renderer.value];
-    wgpuRenderPassEncoderSetPipeline(encoder, pass.pipeline);
+
     wgpuRenderPassEncoderSetIndexBuffer(
         encoder, pass.index_buffer, WGPUIndexFormat_Uint16, 0, 12);
 
@@ -437,6 +466,7 @@ inline void record_dawn_sprite_pass(
             continue;
         }
         const DawnSpriteLayer& gpu = pass.layers[index];
+        wgpuRenderPassEncoderSetPipeline(encoder, gpu.pipeline);
         wgpuRenderPassEncoderSetBindGroup(
             encoder, 1, gpu.vertex_group, 0, nullptr);
         wgpuRenderPassEncoderSetBindGroup(
@@ -464,6 +494,7 @@ inline void release_dawn_sprite_pass(DawnSpritePass& pass) {
         if (layer.sampler) wgpuSamplerRelease(layer.sampler);
         if (layer.atlas_view) wgpuTextureViewRelease(layer.atlas_view);
         if (layer.atlas) wgpuTextureRelease(layer.atlas);
+        if (layer.pipeline) wgpuRenderPipelineRelease(layer.pipeline);
         if (layer.instances) wgpuBufferRelease(layer.instances);
         if (layer.vertex_uniforms) {
             wgpuBufferRelease(layer.vertex_uniforms);
@@ -477,18 +508,6 @@ inline void release_dawn_sprite_pass(DawnSpritePass& pass) {
         if (layout) wgpuBindGroupLayoutRelease(layout);
     }
     pass.group_layouts = {};
-    if (pass.pipeline) {
-        wgpuRenderPipelineRelease(pass.pipeline);
-        pass.pipeline = nullptr;
-    }
-    if (pass.vertex_module) {
-        wgpuShaderModuleRelease(pass.vertex_module);
-        pass.vertex_module = nullptr;
-    }
-    if (pass.fragment_module) {
-        wgpuShaderModuleRelease(pass.fragment_module);
-        pass.fragment_module = nullptr;
-    }
     if (pass.index_buffer) {
         wgpuBufferRelease(pass.index_buffer);
         pass.index_buffer = nullptr;

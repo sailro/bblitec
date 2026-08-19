@@ -192,6 +192,7 @@ const featureSources: Record<Feature, string[]> = {
     "mesh:torus": [],
     "scene:remove": [],
     "sprite:2d": [],
+    "sprite:uv-scroll": [],
     "sprite:billboard": [],
     "sprite:billboard-axis-locked": [],
     "sprite:billboard-cutout": [],

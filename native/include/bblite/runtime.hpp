@@ -546,6 +546,10 @@ struct Sprite2DLayerRecord {
     // The CPU-only shadow holding each sprite's true size regardless of
     // visibility, which is what makes hiding a free degenerate quad.
     std::vector<float> saved_size;
+    // sprite-2d-uvscroll.ts: the first setSprite2DUvOffset widens the layout
+    // by two floats per sprite and stashes the attribute the pipeline pushes.
+    // A layer that never scrolls keeps the narrow layout and ships none of it.
+    bool uv_scroll = false;
     std::uint64_t version = 0;
 };
 
@@ -1327,6 +1331,11 @@ struct LoadSpriteAtlasOptions {
     TextureFilter sampling = TextureFilter::linear;
     bool premultiplied_alpha = false;
     bool premultiply_on_load = false;
+    // `...options.textureOptions` spreads over the atlas defaults, so a
+    // caller's address mode replaces the clamp the loader stamps. A tiling
+    // scroll wants repeat on both axes.
+    TextureAddressMode address_u = TextureAddressMode::clamp;
+    TextureAddressMode address_v = TextureAddressMode::clamp;
 };
 
 struct Sprite2DLayerOptions {
@@ -1427,6 +1436,12 @@ void set_billboard_alpha_to_coverage(
     Engine& engine,
     BillboardSystemHandle system,
     bool enabled);
+
+void set_sprite_2d_uv_offset(
+    Engine& engine,
+    Sprite2DLayerHandle layer,
+    double index,
+    Vec2 uv_offset);
 
 double add_sprite_2d_index(
     Engine& engine,

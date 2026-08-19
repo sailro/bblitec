@@ -442,6 +442,15 @@ per-sprite instance writes, and the straight-alpha blend, on both GPU
 backends from one generated WGSL pair. The pinned renderer split and
 instance layout are in [fidelity](fidelity.md#shader-contract).
 
+A layer opts into per-sprite UV scroll by setting an offset: the first
+`setSprite2DUvOffset` widens that layer's instance layout in place, adds the
+attribute the pin stashes for it, and selects the shader variant that adds the
+offset to the sampled UV. The widening is per layer, so a pipeline describes a
+layer's layout rather than its renderer's, and a scene that never scrolls
+keeps the narrow layout. The atlas address modes a tiling scroll needs come
+through `textureOptions`, which the pin spreads over the loader's own
+defaults.
+
 Every blend mode either family exports is lowered as the pure data upstream
 keeps it as — the descriptors are read out of the pinned modules rather than
 listed here, so a mode the pin adds needs no compiler change. Sprites reach

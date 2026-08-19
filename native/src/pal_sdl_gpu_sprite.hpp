@@ -37,9 +37,12 @@
 #include "pal_sdl_gpu_shared.hpp"
 
 namespace bbl::pal {
-
 /** Per-layer GPU state, matching the pinned `LayerGpu`. */
 struct SpriteLayerGpu {
+    // One pipeline per layer: the uvScroll opt-in widens a layer's stride
+    // and adds an attribute, so the layout a pipeline describes is the
+    // layer's, not the renderer's. The pin keys its own cache the same way.
+    SDL_GPUGraphicsPipeline* pipeline = nullptr;
     SDL_GPUBuffer* instances = nullptr;
     SDL_GPUTexture* atlas = nullptr;
     SDL_GPUSampler* sampler = nullptr;
@@ -49,7 +52,6 @@ struct SpriteLayerGpu {
 
 /** One registered `SpriteRenderer`, as GPU resources. */
 struct SpritePass {
-    SDL_GPUGraphicsPipeline* pipeline = nullptr;
     SDL_GPUBuffer* index_buffer = nullptr;
     std::vector<SpriteLayerGpu> layers;
     SpriteRendererHandle renderer{};
@@ -74,36 +76,22 @@ inline SDL_GPUBlendFactor sprite_blend_factor(SpriteBlendFactor factor) {
 }
 
 /**
- * Build the pipeline and per-layer resources for one registered renderer.
- * `target_format` is the format of the colour attachment the caller will
- * record into; the pass is always single-sampled, as the pinned renderer's
- * own `sampleCount: 1` swapchain pass is.
+ * One layer's pipeline.
+ *
+ * The uvScroll opt-in widens a layer's instance stride and adds an
+ * attribute, so the layout a pipeline describes belongs to the layer
+ * rather than to the renderer it draws in. The pin keys a shared cache on
+ * that layout instead; one pipeline per layer is the same picture while a
+ * renderer holds one layer of each layout, which is every reached scene.
  */
-inline SpritePass create_sprite_pass(
+inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
     SDL_GPUDevice* device,
-    Engine& engine,
-    SpriteRendererHandle renderer_handle,
+    const SpriteBlendDescriptor& blend,
+    bool scroll,
     SDL_GPUTextureFormat target_format) {
-    const SpriteRendererRecord& renderer =
-        engine.sprite_renderers[renderer_handle.value];
-    if (renderer.layers.empty()) {
-        throw std::runtime_error("SpriteRenderer has no layers.");
-    }
-    SpritePass pass;
-    pass.renderer = renderer_handle;
-
-    // The shared two-triangle quad every sprite instance draws.
-    const std::array<std::uint16_t, 6> quad_indices{
-        0u, 1u, 2u, 0u, 2u, 3u};
-    pass.index_buffer = upload_buffer(
-        device,
-        SDL_GPU_BUFFERUSAGE_INDEX,
-        quad_indices.data(),
-        quad_indices.size() * sizeof(std::uint16_t));
-
     SDL_GPUShader* vertex_shader = load_shader(
         device,
-        "sprite.vert",
+        scroll ? "sprite_uvscroll.vert" : "sprite.vert",
         SDL_GPU_SHADERSTAGE_VERTEX,
         0,
         1,
@@ -116,23 +104,21 @@ inline SpritePass create_sprite_pass(
         1,
         "mainFragment");
 
-    const SpriteBlendDescriptor blend =
-        sprite_renderer_blend(engine, renderer);
-
     // The generated instance layout (sprite_layer.hpp, from
     // sprite-pipeline.ts): instance-stepped attributes at the pinned byte
     // offsets, triangle list, no culling, single sample. Only the float
     // count is translated to this API's element formats.
     std::array<
         SDL_GPUVertexAttribute,
-        upstream::sprite_instance_attributes.size()>
+        upstream::sprite_instance_attributes.size() + 1u>
         attributes{};
-    for (
-        std::size_t index = 0;
-        index < upstream::sprite_instance_attributes.size();
-        ++index) {
+    const std::size_t attribute_count =
+        upstream::sprite_instance_attributes.size() + (scroll ? 1u : 0u);
+    for (std::size_t index = 0; index < attribute_count; ++index) {
         const upstream::SpriteInstanceAttribute& row =
-            upstream::sprite_instance_attributes[index];
+            index < upstream::sprite_instance_attributes.size()
+                ? upstream::sprite_instance_attributes[index]
+                : upstream::sprite_uvscroll_attribute;
         SDL_GPUVertexElementFormat format =
             SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
         switch (row.float_count) {
@@ -161,7 +147,9 @@ inline SpritePass create_sprite_pass(
     }
     SDL_GPUVertexBufferDescription instance_buffer{};
     instance_buffer.slot = 0;
-    instance_buffer.pitch = upstream::sprite_instance_stride_bytes;
+    instance_buffer.pitch = scroll
+        ? upstream::sprite_uvscroll_stride_bytes
+        : upstream::sprite_instance_stride_bytes;
     instance_buffer.input_rate = SDL_GPU_VERTEXINPUTRATE_INSTANCE;
     instance_buffer.instance_step_rate = 0;
 
@@ -194,15 +182,44 @@ inline SpritePass create_sprite_pass(
     pipeline_info.vertex_input_state.num_vertex_buffers = 1;
     pipeline_info.vertex_input_state.vertex_attributes = attributes.data();
     pipeline_info.vertex_input_state.num_vertex_attributes =
-        static_cast<Uint32>(attributes.size());
+        static_cast<Uint32>(attribute_count);
     pipeline_info.target_info.color_target_descriptions = &target;
     pipeline_info.target_info.num_color_targets = 1;
-    pass.pipeline = SDL_CreateGPUGraphicsPipeline(device, &pipeline_info);
-    if (!pass.pipeline) {
+    SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(device, &pipeline_info);
+    if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline sprite");
     }
     SDL_ReleaseGPUShader(device, vertex_shader);
     SDL_ReleaseGPUShader(device, fragment_shader);
+    return pipeline;
+}
+/**
+ * Build the pipeline and per-layer resources for one registered renderer.
+ * `target_format` is the format of the colour attachment the caller will
+ * record into; the pass is always single-sampled, as the pinned renderer's
+ * own `sampleCount: 1` swapchain pass is.
+ */
+inline SpritePass create_sprite_pass(
+    SDL_GPUDevice* device,
+    Engine& engine,
+    SpriteRendererHandle renderer_handle,
+    SDL_GPUTextureFormat target_format) {
+    const SpriteRendererRecord& renderer =
+        engine.sprite_renderers[renderer_handle.value];
+    if (renderer.layers.empty()) {
+        throw std::runtime_error("SpriteRenderer has no layers.");
+    }
+    SpritePass pass;
+    pass.renderer = renderer_handle;
+
+    // The shared two-triangle quad every sprite instance draws.
+    const std::array<std::uint16_t, 6> quad_indices{
+        0u, 1u, 2u, 0u, 2u, 3u};
+    pass.index_buffer = upload_buffer(
+        device,
+        SDL_GPU_BUFFERUSAGE_INDEX,
+        quad_indices.data(),
+        quad_indices.size() * sizeof(std::uint16_t));
 
     pass.layers.resize(renderer.layers.size());
     for (std::size_t index = 0; index < renderer.layers.size(); ++index) {
@@ -211,6 +228,11 @@ inline SpritePass create_sprite_pass(
         const SpriteAtlasRecord& atlas =
             engine.sprite_atlases[layer.atlas.value];
         SpriteLayerGpu& gpu = pass.layers[index];
+        gpu.pipeline = create_sprite_layer_pipeline(
+            device,
+            layer.blend,
+            layer.uv_scroll,
+            target_format);
         SDL_GPUBufferCreateInfo buffer_info{};
         buffer_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
         buffer_info.size = static_cast<Uint32>(
@@ -279,7 +301,7 @@ inline void record_sprite_pass(
     std::uint32_t height) {
     const SpriteRendererRecord& renderer =
         engine.sprite_renderers[pass.renderer.value];
-    SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline);
+
     const SDL_GPUBufferBinding index_binding{pass.index_buffer, 0};
     SDL_BindGPUIndexBuffer(
         render_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
@@ -295,6 +317,7 @@ inline void record_sprite_pass(
             continue;
         }
         const SpriteLayerGpu& gpu = pass.layers[index];
+        SDL_BindGPUGraphicsPipeline(render_pass, gpu.pipeline);
         std::array<float, 16> ubo{};
         upstream::build_sprite_layer_ubo(
             layer,
@@ -317,15 +340,14 @@ inline void release_sprite_pass(
     SDL_GPUDevice* device,
     SpritePass& pass) {
     for (SpriteLayerGpu& layer : pass.layers) {
+        if (layer.pipeline) {
+            SDL_ReleaseGPUGraphicsPipeline(device, layer.pipeline);
+        }
         if (layer.instances) SDL_ReleaseGPUBuffer(device, layer.instances);
         if (layer.atlas) SDL_ReleaseGPUTexture(device, layer.atlas);
         if (layer.sampler) SDL_ReleaseGPUSampler(device, layer.sampler);
     }
     pass.layers.clear();
-    if (pass.pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(device, pass.pipeline);
-        pass.pipeline = nullptr;
-    }
     if (pass.index_buffer) {
         SDL_ReleaseGPUBuffer(device, pass.index_buffer);
         pass.index_buffer = nullptr;

@@ -265,9 +265,9 @@ that does to the deferred lane by default.
     attachment and the scene bind group, and composes with a `SceneContext`.
   - a `SpriteRenderer` overlaid on a scene (52) — that composition without the
     depth slot: the sprite pass appends to the scene's frame.
-  - `createSprite2DCustomShader` (92, 93), `setSprite2DUvOffset` (96) and
-    `setSprite2DCoverageGamma`, each a shader permutation the pin installs
-    through a lazily-registered hook.
+  - `createSprite2DCustomShader` (92, 93) and `setSprite2DCoverageGamma`,
+    each a shader permutation the pin installs through a lazily-registered
+    hook.
   - `updateSprite2DIndex`, `removeSprite2DIndex`, `setSprite2DFrameIndex`,
     `clearSprite2DLayer` and the Handle API: the writer is lowered for the add
     arm only; the update arm's "preserve what was not supplied" resolution needs
