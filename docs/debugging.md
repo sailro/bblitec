@@ -203,6 +203,22 @@ values out of the wrong layout is worse than reporting the ambiguity.
 Identify a material by a distinctive field before concluding two buffers
 are two materials: a double-buffered material looks like two.
 
+If a stage looks like it is reading the *wrong* block — a uniform whose
+values belong to a different one, a texture sampling as another — read the
+`.slots` file beside that stage in `generated/<scene>/upstream/shaders/`
+before anything else:
+
+```powershell
+Get-Content generated/scene93/upstream/shaders/sprite_custom.frag.slots
+```
+
+Each line is a register and the block that kept it (`b0 fx`, `t0 atlasTex`).
+That file, not the WGSL, is what SDL_GPU binds against, and the two disagree
+by design: a stage may declare a block it never reads, Tint drops it, and the
+compaction that follows is dense — so a dropped block takes its slot and
+everything behind it moves up one. Counting declarations in the `.native.wgsl`
+will tell you the wrong answer with total confidence.
+
 ### 5. Which draw, which pixels
 
 Registry-enabled scenes emit draw-id and triangle-cluster buffers, and

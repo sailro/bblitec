@@ -878,6 +878,15 @@ alike. Those are reported as expected wobble and excluded from the exit
 status; every other moved cell is real. (Only their *Dawn* cells — SDL_GPU
 and single-sampled Dawn are both bit-stable, which is what localised it.)
 
+Scene 145 has been seen doing the same thing once, moving a single Dawn pixel
+of 921600 under a change that could not reach it. It is deliberately **not**
+on that list: one observation that did not reproduce — three consecutive runs
+returned the baseline value bit for bit, and a second full comparison reported
+zero moved — is not enough to start excusing a scene's Dawn cells, and a
+whitelist entry would hide a real regression there forever. The tool already
+prescribes the right response, which is to re-run before concluding. Add it
+only if it moves again under a change that cannot explain it.
+
 There is no hosted CI. During iteration, run only the smallest relevant tests,
 generation steps, affected native builds, and scene parity gates. Do not repeat
 the complete corpus matrix after every local change.

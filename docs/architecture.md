@@ -64,6 +64,7 @@ Primary source ownership:
 | `src/compiler/property-animation.ts` | compile-time clip/track/key lowering and group options |
 | `src/compiler/shader-material.ts` | shader-material variant matching by IR identity and scene-local variant registration |
 | `src/compiler/assets.ts` | asset registration from scene URLs to packaged local files |
+| `src/executed-module-assets.ts` | the assets a scene module produces rather than fetches: a drawn canvas2D atlas and a computed pixel buffer, each run in headless Chromium at generation and baked |
 | `src/compiler/adaptations.ts` | the reached-adaptation manifest entries generation records |
 | `src/compiler/option-helpers.ts` | the shared option-object validation contracts |
 | `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, material, and sprite intrinsic lowerers |
@@ -255,8 +256,11 @@ Each scene records:
 - `upstream/shaders/*.wgsl`: reached custom material source before IR lowering
 - `upstream/shaders/*.native.wgsl`: SDL binding/location/depth specialization
 - `upstream/shaders/variant-*.native.wgsl`: the pin's own composed PBR
-  (`variant-`) and Standard (`variant-std-`) stages, verbatim; processing
-  adds a `.slots` register sidecar per stage for SDL_GPU addressing
+  (`variant-`) and Standard (`variant-std-`) stages, verbatim
+- `upstream/shaders/*.slots`: per stage, the register each block kept after
+  compaction, by its own name. Written for every compiled stage, and the
+  only authority on SDL_GPU slot order -- a block a stage declares but never
+  reads does not survive, and the compaction is dense
 - `upstream/shaders/*.tint-reflection.txt`: Tint binding reflection check
 - `upstream/shaders/shader-compiler.json`: selected offline compiler backend
 - `upstream/shaders/composition.json`: reached WGSL modules and content hashes

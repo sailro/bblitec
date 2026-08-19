@@ -480,8 +480,8 @@ shader, and SDL_GPU takes uniform buffers by dense slot. Which blocks a stage
 kept, and at which slots, is read from the sidecar the shader step writes
 beside that stage — the same one the pinned material variants already bind
 through, now written by both of its compaction passes. The compiled artifact
-answers it; nothing infers it from the WGSL. A layer or system whose every
-one opts in never loads the stock program, so it is not composed either.
+answers it; nothing infers it from the WGSL. A scene whose every layer or
+system opts in never loads the stock program, so it is not composed either.
 
 A body may also sample textures the caller supplies. Each is named in the
 descriptor and reaches WGSL as the `<name>Tex` / `<name>Samp` pair the pin's
