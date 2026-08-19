@@ -325,7 +325,12 @@ afterwards). Only the GPU API layer differs:
   the generated binding table, and SDL_GPU gets the addressing from
   `Remap-PinnedVariantRegisters` in `tools/compile-shaders.ps1`, which
   moves each register class into the SDL spaces and publishes the
-  result as a `.slots` sidecar. A stage whose emitted HLSL exceeds
+  result as a `.slots` sidecar. Every compiled stage has one, not only
+  the pinned variants: the normalizer this repository's own specialized
+  stages go through publishes the same file, because they raise the same
+  question the moment a stage's contents depend on scene code — a custom
+  sprite fragment declares its layer block and its `fx` block, and which
+  of them survives is the caller's WGSL to decide. A stage whose emitted HLSL exceeds
   SDL_GPU's four uniform buffers — the composed Standard geometry
   fragments spend all four on scene, lights, mesh and mat before the
   tasks' `gp` block — is recompiled with `gp` demoted to a read-only
@@ -334,8 +339,13 @@ afterwards). Only the GPU API layer differs:
   declaration in the `.native.wgsl` it consumes. The PAL binds by that
   file, never by
   the WGSL: a stage can declare a block it never reads — the unlit
-  fragment declares its mesh block for `mli()` — and Tint strips it,
-  so the source over-counts. Vertex convention (the glTF family's
+  fragment declares its mesh block for `mli()`, and a custom sprite body
+  that owns its own alpha reads neither block it is offered — and Tint
+  strips it, so the source over-counts. The compaction that follows is
+  dense, so a dropped block takes its slot with it and everything behind
+  it shifts. The pass that assigned the slots is the only authority on
+  them, which is why the Tint reflection cross-check asserts that every
+  binding Tint kept was declared, and not the reverse. Vertex convention (the glTF family's
   X-mirror): an unskinned pinned
   draw reads the unmirrored buffer with `diag(-1,1,1,1)` in the mesh
   block; a skinned draw reads the mirrored buffer with the identity,

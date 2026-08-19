@@ -225,7 +225,26 @@ binaries are the same, which means no measurement can have moved. See
   `src/pinned-shader-composer.ts`. A re-typed formula agrees only until
   upstream changes it. Give it no transcribed fallback either: the
   fallback is the copy that drifts.
-- Avoid unrelated cleanup.
+- **Fold the pin's builder when the shape is the contract; execute it when
+  the value is fragile.** Both are legitimate ports, and which one applies
+  is a question about the thing being ported, not a preference. A shader
+  builder's *shape* is what must not drift, so it is folded and any change
+  refuses generation. A computed asset's *value* is what must not drift,
+  and folding cannot promise that: the palette scenes 93 and 95 sample is
+  `Math.sin` rounded to a byte, which this compiler has no `Math.round` to
+  lower at all, and three of its 768 channel values sit one ulp of `sin`
+  from a rounding boundary. So it is executed in the engine the golden runs
+  it in and baked, like the drawn atlas, and recorded as an adaptation.
+  Executing hides a shape change, so never execute what you can fold.
+- **Reach a capability where the pin reaches it.** Upstream keeps optional
+  features behind lazily-registered null hooks — `sprite/sprite-fx-hook.ts`
+  for custom shaders, `pbr-flags.ts` for the PBR extensions — so the
+  always-loaded path names nothing and the *factory call* is the opt-in
+  trigger. Mirror that: reach the feature at the same call, and let a
+  layer or system without one fall back exactly as the null hook does.
+  Do not invent a second detector by scanning options or sniffing text;
+  a port that decides reachability differently from the pin will disagree
+  with it eventually.
 - There is no hosted CI. Complete the documented local validation matrix
   before committing or pushing.
 - Batch validated milestones and push intentionally.
