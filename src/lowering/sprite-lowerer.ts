@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { PinnedShaderText } from "./pinned-shader-text.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
@@ -33,7 +34,11 @@ export interface SpriteShaderSource {
  * which is where upstream keeps it too.
  */
 export class SpriteLowerer {
-    public constructor(private readonly context: LoweringContext) {}
+    private readonly shaderText: PinnedShaderText;
+
+    public constructor(private readonly context: LoweringContext) {
+        this.shaderText = new PinnedShaderText(context);
+    }
 
     // -----------------------------------------------------------------
     // Pinned contracts
@@ -668,7 +673,7 @@ export class SpriteLowerer {
      * stops generation instead of silently keeping this copy.
      */
     public shaderSource(): SpriteShaderSource {
-        const prologue = this.evaluateStringFunction(
+        const prologue = this.shaderText.evaluate(
             pipelineModule,
             "makeSpritePrologueWgsl",
             new Map<string, string | boolean>([
@@ -677,7 +682,7 @@ export class SpriteLowerer {
                 ["uvScroll", false],
             ]),
         );
-        const full = this.evaluateStringFunction(
+        const full = this.shaderText.evaluate(
             pipelineModule,
             "makeSpriteWgsl",
             new Map<string, string | boolean>([
@@ -687,31 +692,31 @@ export class SpriteLowerer {
             ]),
         );
         return {
-            layerStructFields: this.between(
+            layerStructFields: this.shaderText.between(
                 prologue,
                 "struct Lr {",
                 "};",
                 "sprite layer uniform struct",
             ),
-            instanceStructFields: this.between(
+            instanceStructFields: this.shaderText.between(
                 prologue,
                 "struct I {",
                 "};",
                 "sprite instance struct",
             ),
-            varyingStructFields: this.between(
+            varyingStructFields: this.shaderText.between(
                 prologue,
                 "struct O {",
                 "};",
                 "sprite varying struct",
             ),
-            vertexBody: this.between(
+            vertexBody: this.shaderText.between(
                 prologue,
                 "fn vs(in: I) -> O {",
                 "}",
                 "sprite vertex stage",
             ),
-            fragmentBody: this.between(
+            fragmentBody: this.shaderText.between(
                 full,
                 "fn fs(in: O) -> @location(0) vec4f {",
                 "}",
@@ -720,165 +725,7 @@ export class SpriteLowerer {
         };
     }
 
-    private between(
-        source: string,
-        open: string,
-        close: string,
-        label: string,
-    ): string {
-        const start = source.indexOf(open);
-        const end = source.indexOf(close, start + open.length);
-        if (start < 0 || end < 0) {
-            throw new Error(
-                `Pinned ${label} is no longer shaped as '${open} ... ${close}'.`,
-            );
-        }
-        return source.slice(start + open.length, end).trim();
-    }
 
-    /**
-     * A bounded evaluator for the pin's shader-text builders: string and
-     * template literals, `const` bindings inside the body, conditionals
-     * over the permutation flags, and a call to the prologue builder. Any
-     * other node fails, which is the contract.
-     */
-    private evaluateStringFunction(
-        modulePath: string,
-        symbolName: string,
-        parameters: ReadonlyMap<string, string | boolean>,
-    ): string {
-        const { declaration } = this.functionOf(
-            modulePath,
-            symbolName,
-        );
-        const scope = new Map(parameters);
-        for (const statement of declaration.body!
-            .statements) {
-            if (ts.isVariableStatement(statement)) {
-                for (const binding of statement
-                    .declarationList.declarations) {
-                    if (
-                        !ts.isIdentifier(binding.name) ||
-                        !binding.initializer
-                    ) {
-                        this.context.contractError(
-                            binding,
-                            `Unsupported binding in pinned ${symbolName}.`,
-                        );
-                    }
-                    scope.set(
-                        binding.name.text,
-                        this.evaluateString(
-                            binding.initializer,
-                            scope,
-                            modulePath,
-                        ),
-                    );
-                }
-                continue;
-            }
-            if (ts.isReturnStatement(statement)) {
-                if (!statement.expression) {
-                    this.context.contractError(
-                        statement,
-                        `Pinned ${symbolName} returns nothing.`,
-                    );
-                }
-                return this.evaluateString(
-                    statement.expression,
-                    scope,
-                    modulePath,
-                );
-            }
-            this.context.contractError(
-                statement,
-                `Unsupported statement in pinned ${symbolName}.`,
-            );
-        }
-        return this.context.contractError(
-            declaration,
-            `Pinned ${symbolName} has no return statement.`,
-        );
-    }
-
-    private evaluateString(
-        expression: ts.Expression,
-        scope: ReadonlyMap<string, string | boolean>,
-        modulePath: string,
-    ): string {
-        const node = this.context.unwrapExpression(expression);
-        if (
-            ts.isStringLiteral(node) ||
-            ts.isNoSubstitutionTemplateLiteral(node)
-        ) {
-            return node.text;
-        }
-        if (ts.isTemplateExpression(node)) {
-            let text = node.head.text;
-            for (const span of node.templateSpans) {
-                text += this.evaluateString(
-                    span.expression,
-                    scope,
-                    modulePath,
-                );
-                text += span.literal.text;
-            }
-            return text;
-        }
-        if (ts.isIdentifier(node)) {
-            const bound = scope.get(node.text);
-            if (typeof bound !== "string") {
-                this.context.contractError(
-                    node,
-                    `Pinned shader text reads '${node.text}', which is not a resolved string.`,
-                );
-            }
-            return bound;
-        }
-        if (ts.isConditionalExpression(node)) {
-            const condition = this.context.unwrapExpression(
-                node.condition,
-            );
-            if (!ts.isIdentifier(condition)) {
-                this.context.contractError(
-                    condition,
-                    "Pinned shader text branches on an expression this evaluator cannot fold.",
-                );
-            }
-            const flag = scope.get(condition.text);
-            if (typeof flag !== "boolean") {
-                this.context.contractError(
-                    condition,
-                    `Pinned shader text branches on '${condition.text}', which is not a permutation flag.`,
-                );
-            }
-            return this.evaluateString(
-                flag ? node.whenTrue : node.whenFalse,
-                scope,
-                modulePath,
-            );
-        }
-        if (
-            ts.isCallExpression(node) &&
-            ts.isIdentifier(node.expression) &&
-            node.expression.text ===
-                "makeSpritePrologueWgsl"
-        ) {
-            return this.evaluateStringFunction(
-                modulePath,
-                "makeSpritePrologueWgsl",
-                new Map<string, string | boolean>([
-                    ["hasDepth", false],
-                    ["spriteGroupIndex", "0"],
-                    ["uvScroll", false],
-                ]),
-            );
-        }
-        return this.context.contractError(
-            node,
-            `Unsupported expression in pinned shader text: ${ts.SyntaxKind[node.kind]}.`,
-        );
-    }
 
     // -----------------------------------------------------------------
     // Emission
@@ -939,6 +786,7 @@ export class SpriteLowerer {
 
 #include <array>
 #include <cstdint>
+#include <stdexcept>
 
 namespace bbl::upstream {
 
@@ -954,6 +802,22 @@ struct SpriteInstanceAttribute {
     std::uint32_t byte_offset;
     std::uint32_t float_count;
 };
+
+/**
+ * shared/sprite-atlas.ts#resolveSpriteFrame: a bounds check, nothing more.
+ * It lives in the shared header because it is the shared atlas module's, and
+ * both the 2D layer and the billboard system resolve a frame through it.
+ */
+inline std::uint32_t resolve_sprite_frame(
+    const SpriteAtlasRecord& atlas,
+    double frame) {
+    if (frame < 0.0 ||
+        frame >= static_cast<double>(atlas.frames.size())) {
+        throw std::runtime_error(
+            "resolveSpriteFrame: index out of range.");
+    }
+    return static_cast<std::uint32_t>(frame);
+}
 
 inline constexpr std::array<SpriteInstanceAttribute, ${attributeRows.length}>
     sprite_instance_attributes{{
@@ -1012,6 +876,7 @@ inline void build_sprite_layer_ubo(
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
+#include <bblite/upstream/sprite_layer.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -1025,18 +890,6 @@ namespace {
 // keeps a hidden sprite's true size.
 constexpr std::uint32_t sprite_instance_floats = ${layout.instanceFloats}u;
 constexpr std::uint32_t sprite_saved_size_floats = ${layout.savedSizeFloats}u;
-
-// shared/sprite-atlas.ts#resolveSpriteFrame: a bounds check, nothing more.
-std::uint32_t resolve_sprite_frame(
-    const SpriteAtlasRecord& atlas,
-    double frame) {
-    if (frame < 0.0 ||
-        frame >= static_cast<double>(atlas.frames.size())) {
-        throw std::runtime_error(
-            "resolveSpriteFrame: index out of range.");
-    }
-    return static_cast<std::uint32_t>(frame);
-}
 
 void grow_sprite_capacity(
     Sprite2DLayerRecord& layer,
@@ -1209,7 +1062,7 @@ double add_sprite_2d_index(
         sprite_saved_size_floats;
     const bool has_frame = props.has_frame;
     const SpriteFrame frame = has_frame
-        ? atlas.frames[resolve_sprite_frame(
+        ? atlas.frames[upstream::resolve_sprite_frame(
               atlas,
               static_cast<double>(props.frame))]
         : SpriteFrame{};

@@ -32,6 +32,7 @@ import {
     type SceneIntrinsicContext,
 } from "./scene.js";
 import {
+    compileSpriteConstant,
     compileSpriteIntrinsic,
     type SpriteIntrinsicContext,
 } from "./sprite.js";
@@ -65,6 +66,17 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileAssetIntrinsic,
     compileSpriteIntrinsic,
 ];
+
+/**
+ * A pinned constant a scene imports by name. Same shape as the call
+ * dispatch: each family answers for its own exports, and an unknown name
+ * falls through to the ordinary variable lookup and its error.
+ */
+export function compileRegisteredConstant(
+    importedName: string,
+): Value | undefined {
+    return compileSpriteConstant(importedName);
+}
 
 export function compileRegisteredIntrinsic(
     context: IntrinsicContext,

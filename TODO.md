@@ -271,7 +271,15 @@ that does to the deferred lane by default.
   - `updateSprite2DIndex`, `removeSprite2DIndex`, `setSprite2DFrameIndex`,
     `clearSprite2DLayer` and the Handle API: the writer is lowered for the add
     arm only; the update arm's "preserve what was not supplied" resolution needs
-    the previous instance read back.
+    the previous instance read back. The billboard writer has the same shape
+    and the same gap.
+  - the billboard arms past the facing systems scenes 54, 55 and 98 measure:
+    `createAxisLockedBillboardSystem` (56), whose basis the pinned shader
+    builder already carries behind the orientation the evaluator folds;
+    `createBillboardCustomShader` and `setBillboardShaderParams` (94); and
+    `billboardBlendCutout`, which is the alpha-test depth-write path rather
+    than another factor pair. Scene 118 needs `marker.name`; scenes 57 and 59
+    sit behind a Vec3-argument shape.
 - [ ] The sprite cluster past Scene 50, each its measured first blocker:
   - Scene 51: a browser-derived numeric value, with the premultiplied atlas and
     blend behind it.
@@ -281,12 +289,9 @@ that does to the deferred lane by default.
   - Scene 58: its `PLAYER_SPRITE_URL` module constant, then sprite animation.
   - Scene 92: `createSprite2DCustomShader`; 93, 95, 96 want a string-literal
     argument first; 97: `spriteBlendMultiply`.
+  - Scenes 205, 206 reach the billboard path but stop at engine options.
   - Scene 117: an unsupported constructor expression, then sprite picking.
   - Scenes 205, 206: engine options.
-- [ ] The billboard family, a different module set (`billboard-*.js`) sharing
-  only the atlas: `createFacingBillboardSystem` (54, 55, 98, 118),
-  `createAxisLockedBillboardSystem` (56), `createBillboardCustomShader` (94).
-  Scenes 57 and 59 sit behind a Vec3-argument shape.
 - [ ] Scenes 60, 61, 64, 67-71, 77-80, 82, 84, 85, 88, 89: support node-material
   snippets.
 - [ ] Scenes 62, 81, 83: resolve the module-level texture-URL constants

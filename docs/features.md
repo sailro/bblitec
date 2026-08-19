@@ -76,7 +76,7 @@ deliberately left live.
 | [Materials and material state](#materials-and-material-state) | Run | Standard, PBR, Grid, no-color views, alpha and extension state |
 | [Animation playback](#animation-playback) | Run | deterministic seeking, property clips, glTF channels |
 | [Deformation and instancing](#deformation-and-instancing) | Run | GPU skinning, morph targets, storage morphing, GPU instancing |
-| [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass |
+| [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards |
 | [Frame graph](#frame-graph) | Run | render targets, tasks, geometry MRTs, blits, MSAA resolve |
 | [Render backends](#render-backends) | Run | SDL_GPU, Dawn, CPU fallback, transmission, image processing |
 | [Runtime scene mutation](#runtime-scene-mutation) | Run | removal with plan rematching, material-family append, instance counts |
@@ -442,6 +442,17 @@ per-sprite instance writes, and the straight-alpha blend, on both GPU
 backends from one generated WGSL pair. The pinned renderer split and
 instance layout are in [fidelity](fidelity.md#shader-contract).
 
+Camera-facing world-space billboards share that atlas and nothing else. A
+billboard system is a scene renderable rather than a renderer of its own: it
+draws at the end of the scene's pass, expanding its quad around a basis taken
+from the scene camera and testing against the depth the scene wrote, so a
+billboard occludes and is occluded by geometry. Because the transparent modes
+write no depth, the back-to-front sort by view depth IS the composite, and it
+runs every frame. Any of the pin's blend descriptors that names a colour
+blend is lowered as data — straight alpha, premultiplied, additive and
+one-one — while `billboardBlendCutout`, the axis-locked orientation, custom
+shaders and alpha-to-coverage refuse at the call.
+
 ### Frame graph
 
 Render targets and tasks, material overrides, depth-only passes, 7+4 geometry
@@ -483,7 +494,7 @@ before it trusts a measurement.
 | glTF assets | download, Draco/meshopt decode, upstream feature-predicate specialization, capability defines | parse, build meshes/materials/skins, deindex, strip expansion, upload |
 | Environments | HDR and DDS packaged (GGX prefilter, SH projection); BRDF LUT integrated | `.env` parsed, RGBD decoded, cubes uploaded and sampled |
 | Shaders | composition, specialization and reflection for both backends, plus DXIL/SPIR-V/MSL for SDL_GPU | Dawn's embedded Tint and DXC compile the same WGSL at startup; pipelines built lazily per kind |
-| Sprites | the atlas image executed and baked | the frame grid derived from it, instance writes, the pass |
+| Sprites | the atlas image executed and baked | the frame grid derived from it, instance writes, the pass, the billboard sort |
 | Animation | property clips and groups lowered to typed records | glTF channel data read from the asset; all evaluation and seeking |
 | Deformation | which vertex layout and shader variant exist, from the asset | joint palettes, morph weights, skinning and morphing, CPU fallbacks |
 | Lights | which light-kind writers and `light_*.cpp` units exist | the lights buffer, per-mesh light sets, uniforms |

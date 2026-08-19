@@ -122,6 +122,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["sprite:2d"],
     },
     {
+        source: "upstream/src/billboard_system.cpp",
+        features: ["sprite:billboard"],
+    },
+    {
         source: "upstream/src/renderer_plan.cpp",
         features: ["renderer:pbr"],
     },

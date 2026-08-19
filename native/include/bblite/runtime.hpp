@@ -118,6 +118,10 @@ struct SpriteRendererHandle {
     std::uint32_t value = invalid_handle;
 };
 
+struct BillboardSystemHandle {
+    std::uint32_t value = invalid_handle;
+};
+
 enum class PrimitiveKind {
     babylon,
     box,
@@ -531,6 +535,26 @@ struct Sprite2DLayerRecord {
     std::uint64_t version = 0;
 };
 
+/**
+ * A world-space billboard system: an atlas, a packed instance buffer, and
+ * the per-system uniforms. Unlike a 2D layer it carries no view of its own —
+ * it draws inside the scene's pass against the scene camera and depth
+ * buffer, which is what makes it occlude and be occluded by geometry.
+ */
+struct BillboardSystemRecord {
+    SpriteAtlasHandle atlas{};
+    SpriteBlendDescriptor blend{};
+    float opacity = 1.0f;
+    bool visible = true;
+    // Zero for a facing system: the facing basis reads the camera instead.
+    Vec3 axis{};
+    float alpha_cutoff = 0.0f;
+    std::uint32_t count = 0;
+    std::uint32_t capacity = 0;
+    std::uint32_t instance_floats_per_sprite = 16;
+    std::vector<float> instance_data;
+};
+
 struct SpriteRendererRecord {
     std::vector<Sprite2DLayerHandle> layers;
     Color4 clear_value{0.0f, 0.0f, 0.0f, 1.0f};
@@ -897,6 +921,7 @@ struct Engine {
     std::vector<Scene*> registered_scenes;
     std::vector<SpriteAtlasRecord> sprite_atlases;
     std::vector<Sprite2DLayerRecord> sprite_layers;
+    std::vector<BillboardSystemRecord> billboard_systems;
     std::vector<SpriteRendererRecord> sprite_renderers;
     // `engine._renderingContexts`, for the sprite half: registration
     // order is draw order across renderers.
@@ -955,6 +980,7 @@ struct Scene {
     std::vector<LightHandle> lights;
     std::vector<TaskHandle> tasks;
     std::vector<AnimationGroupHandle> animation_groups;
+    std::vector<BillboardSystemHandle> billboard_systems;
     std::vector<std::function<void(float)>> before_render;
     std::vector<std::function<void(float)>> animation_seekers;
     std::vector<std::function<void()>> deferred_builders;
@@ -1294,6 +1320,35 @@ struct Sprite2DLayerOptions {
  * value: an absent `sizePx` falls back to the frame, an absent `flipX`
  * preserves the orientation already baked into the UVs.
  */
+/** createFacingBillboardSystem's options, with the pin's own defaults. */
+struct BillboardSystemOptions {
+    double capacity = 16.0;
+    SpriteBlendDescriptor blend{};
+    float opacity = 1.0f;
+    bool visible = true;
+};
+
+/** addBillboardSpriteIndex's props; a `has_` flag marks what was named. */
+struct BillboardSpriteProps {
+    Vec3 position{};
+    Vec2 size_world{};
+    bool has_size_world = false;
+    float frame = 0.0f;
+    bool has_frame = false;
+    float rotation = 0.0f;
+    bool has_rotation = false;
+    Vec2 pivot{};
+    bool has_pivot = false;
+    Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
+    bool has_color = false;
+    bool flip_x = false;
+    bool has_flip_x = false;
+    bool flip_y = false;
+    bool has_flip_y = false;
+    bool visible = true;
+    bool has_visible = false;
+};
+
 struct Sprite2DProps {
     Vec2 position_px{};
     Vec2 size_px{};
@@ -1327,6 +1382,20 @@ Sprite2DLayerHandle create_sprite_2d_layer(
     Engine& engine,
     SpriteAtlasHandle atlas,
     Sprite2DLayerOptions options);
+BillboardSystemHandle create_facing_billboard_system(
+    Engine& engine,
+    SpriteAtlasHandle atlas,
+    BillboardSystemOptions options);
+
+double add_billboard_sprite_index(
+    Engine& engine,
+    BillboardSystemHandle system,
+    BillboardSpriteProps props);
+
+void add_facing_billboard_system(
+    Scene& scene,
+    BillboardSystemHandle system);
+
 double add_sprite_2d_index(
     Engine& engine,
     Sprite2DLayerHandle layer,

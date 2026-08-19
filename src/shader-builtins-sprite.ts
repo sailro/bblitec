@@ -1,4 +1,5 @@
 import type { SpriteShaderSource } from "./lowering/sprite-lowerer.js";
+import { indent } from "./shader-builtins-utility.js";
 
 /**
  * The pure-2D sprite shader, in SDL_GPU's binding convention.
@@ -17,13 +18,6 @@ import type { SpriteShaderSource } from "./lowering/sprite-lowerer.js";
  * and fragment signatures by hardware register, so moving it shifts every
  * varying.
  */
-
-function indent(block: string, spaces: string): string {
-    return block
-        .split("\n")
-        .map((line) => (line.length > 0 ? `${spaces}${line}` : line))
-        .join("\n");
-}
 
 export function spriteVertexWgsl(
     provenance: string,

@@ -28,6 +28,9 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_dawn_shared.hpp"
+#if BBLITE_HAS_BILLBOARDS
+#include "pal_dawn_billboard.hpp"
+#endif
 #include "pal_gpu_shared.hpp"
 #include "pal_render_capture.hpp"
 
@@ -297,6 +300,9 @@ struct DawnState : DawnDevice {
      * multisampled one.
      */
     std::uint32_t sample_count = 4;
+#if BBLITE_HAS_BILLBOARDS
+    std::vector<DawnBillboardPass> billboard_passes;
+#endif
     [[nodiscard]] bool multisampled() const {
         return sample_count > 1;
     }
@@ -968,6 +974,12 @@ struct DawnState : DawnDevice {
         if (grid_vertex_module) {
             wgpuShaderModuleRelease(grid_vertex_module);
         }
+#if BBLITE_HAS_BILLBOARDS
+        for (DawnBillboardPass& billboard : billboard_passes) {
+            release_dawn_billboard_pass(billboard);
+        }
+        billboard_passes.clear();
+#endif
         if (pbr_module) wgpuShaderModuleRelease(pbr_module);
         if (vertex_module) wgpuShaderModuleRelease(vertex_module);
         if (depth_view) wgpuTextureViewRelease(depth_view);
@@ -6306,6 +6318,37 @@ bool run_dawn_engine(Engine& engine) {
             static_cast<double>(height);
         const std::array<float, 16> matrix =
             upstream::build_view_projection(camera, aspect);
+#if BBLITE_HAS_BILLBOARDS
+        {
+            // Lazily built, because the systems are known only once the
+            // scene has run; the sort then follows the camera every frame.
+            const std::array<float, 16> billboard_view =
+                upstream::build_view_matrix(
+                    upstream::camera_world_matrix(camera));
+            if (state.billboard_passes.empty()) {
+                for (const BillboardSystemHandle system :
+                     scene.billboard_systems) {
+                    state.billboard_passes.push_back(
+                        create_dawn_billboard_pass(
+                            state.device,
+                            state.queue,
+                            engine,
+                            system,
+                            state.frame_color_format,
+                            WGPUTextureFormat_Depth24PlusStencil8,
+                            state.sample_count));
+                }
+            }
+            for (DawnBillboardPass& billboard : state.billboard_passes) {
+                upload_dawn_billboard_pass(
+                    state.queue,
+                    engine,
+                    billboard,
+                    matrix,
+                    billboard_view);
+            }
+        }
+#endif
         // Written from the same plan, camera and matrix the uploads
         // below read, so the two backends' captures are comparable to
         // each other as well as to the browser's.
@@ -7236,6 +7279,14 @@ bool run_dawn_engine(Engine& engine) {
                     break;
             }
         }
+#if BBLITE_HAS_BILLBOARDS
+        // Billboards close the scene's pass: transparent geometry that
+        // blends over every stage above and tests against the depth they
+        // wrote, which is what makes them occlude and be occluded.
+        for (const DawnBillboardPass& billboard : state.billboard_passes) {
+            record_dawn_billboard_pass(pass, engine, billboard);
+        }
+#endif
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);
         if (transmission) {
