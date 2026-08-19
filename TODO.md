@@ -321,7 +321,26 @@ that does to the deferred lane by default.
 - [ ] Scenes 160, 162: extend reached shader-material options.
 - [ ] Scenes 17, 217: extend reached PBR material options.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
-- [ ] Scenes 202-207: extend reached engine options.
+- [ ] Scenes 202-207: extend reached engine options. The two they ask for are
+  `useHighPrecisionMatrix` and `useFloatingOrigin`, and accepting them is the
+  small half. Sized 2026-08-19: a strip probe says floating origin is the ONLY
+  blocker for 202 and 205, and 203 adds just `spot.range` — but the probe only
+  proves the compiler accepts the rest, and the renderer is where the work is.
+  The pinned contract is four subtractions of the active camera's world
+  position, all in F64 before the single F32 store: zero the view matrix
+  translation (`camera.ts` `getViewMatrix`), subtract it from mesh world
+  translations (`large-world/pack-mat4-with-offset.ts`) and from positional
+  light entries (`large-world/floating-origin.ts` `applyLightFoOffset`), and
+  zero `vEyePosition` (`frame-graph/scene-uniforms-pack.ts`). What makes this
+  bigger than those four sites here: **a static primitive bakes its node
+  transform into its vertices**, and the generated `main.cpp` stores the
+  position as a `float` literal, so at these scenes' `OFFSET` of 5,000,000 the
+  precision is gone before any matrix exists. Floating origin therefore needs
+  the scene-code mesh emission to stop baking world translation into vertices
+  (or to bake it relative to a rebased origin) before the subtractions can
+  recover anything. `useFloatingOrigin` without `useHighPrecisionMatrix` is
+  not worth accepting: the offset would be subtracted from a transform that
+  already rounded.
 - [ ] Scene 219: recursion (`findSkinned`) carries the reported non-final
   return, and vertex-animation textures (`VatHandle`/`VatClip`) sit behind it.
 - [ ] Scene 231: support `enableStandardSkeleton`; behind it sit
