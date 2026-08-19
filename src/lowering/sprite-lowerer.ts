@@ -11,6 +11,7 @@ const layerModule = "src/sprite/sprite-2d.ts";
 const blendModule = "src/sprite/sprite-blend.ts";
 const pipelineModule = "src/sprite/sprite-pipeline.ts";
 const rendererModule = "src/sprite/sprite-renderer.ts";
+const uvScrollModule = "src/sprite/sprite-2d-uvscroll.ts";
 
 /** The pinned WGSL, reconstructed for the pure-2D permutation. */
 export interface SpriteShaderSource {
@@ -48,6 +49,17 @@ export class SpriteLowerer {
     // -----------------------------------------------------------------
 
     /** `PURE_2D_INSTANCE_FLOATS_PER_SPRITE`, `SAVED_SIZE_FLOATS_PER_SPRITE`. */
+    private uvScrollExtraFloats(): number {
+        const file = this.context.sourceFile(uvScrollModule);
+        return this.context.numericValue(
+            this.context.variableInitializer(
+                file,
+                "UVSCROLL_EXTRA_FLOATS_PER_SPRITE",
+            ),
+            file,
+        );
+    }
+
     private layout(): {
         instanceFloats: number;
         savedSizeFloats: number;
@@ -611,24 +623,24 @@ export class SpriteLowerer {
      * evaluator cannot fold is a contract failure, so a changed shader
      * stops generation instead of silently keeping this copy.
      */
-    public shaderSource(): SpriteShaderSource {
-        const prologue = this.shaderText.evaluate(
-            pipelineModule,
-            "makeSpritePrologueWgsl",
+    public shaderSource(
+        uvScroll = false,
+    ): SpriteShaderSource {
+        const permutation = (): Map<string, string | boolean> =>
             new Map<string, string | boolean>([
                 ["hasDepth", false],
                 ["spriteGroupIndex", "0"],
-                ["uvScroll", false],
-            ]),
+                ["uvScroll", uvScroll],
+            ]);
+        const prologue = this.shaderText.evaluate(
+            pipelineModule,
+            "makeSpritePrologueWgsl",
+            permutation(),
         );
         const full = this.shaderText.evaluate(
             pipelineModule,
             "makeSpriteWgsl",
-            new Map<string, string | boolean>([
-                ["hasDepth", false],
-                ["spriteGroupIndex", "0"],
-                ["uvScroll", false],
-            ]),
+            permutation(),
         );
         return {
             layerStructFields: this.shaderText.braced(
@@ -781,6 +793,14 @@ ${attributeRows
     .join("\n")}
     }};
 
+// sprite-2d-uvscroll.ts ensureWide: the uvOffset attribute the widened
+// layout adds, at the byte offset the narrow stride ends on.
+inline constexpr SpriteInstanceAttribute sprite_uvscroll_attribute{
+    7u, ${layout.instanceFloats * 4}u, 2u};
+
+inline constexpr std::uint32_t sprite_uvscroll_stride_bytes =
+    ${(layout.instanceFloats + this.uvScrollExtraFloats()) * 4}u;
+
 inline constexpr std::uint32_t sprite_instance_stride_bytes =
     ${layout.instanceFloats * 4}u;
 
@@ -852,6 +872,8 @@ namespace {
 // keeps a hidden sprite's true size.
 constexpr std::uint32_t sprite_instance_floats = ${layout.instanceFloats}u;
 constexpr std::uint32_t sprite_saved_size_floats = ${layout.savedSizeFloats}u;
+// sprite-2d-uvscroll.ts UVSCROLL_EXTRA_FLOATS_PER_SPRITE.
+constexpr std::uint32_t sprite_uvscroll_extra_floats = ${this.uvScrollExtraFloats()}u;
 
 void grow_sprite_capacity(
     Sprite2DLayerRecord& layer,
@@ -869,7 +891,68 @@ void grow_sprite_capacity(
     layer.capacity = capacity;
 }
 
+std::runtime_error new_sprite_range_error(
+    double index,
+    std::uint32_t count) {
+    return std::runtime_error(
+        "setSprite2DUvOffset: index " +
+        std::to_string(static_cast<long long>(index)) +
+        " out of range [0, " + std::to_string(count) + ")");
+}
+
 } // namespace
+
+// sprite-2d-uvscroll.ts ensureWide: widen a layer from the narrow base
+// layout to the uvOffset layout, re-striding the sprites already written.
+// The offset slots default to zero, and the attribute the pipeline pushes
+// sits right after the base layout -- so its byte offset IS the narrow
+// stride.
+void ensure_sprite_uv_scroll(Sprite2DLayerRecord& layer) {
+    if (layer.uv_scroll) {
+        return;
+    }
+    const std::uint32_t old_stride = layer.instance_floats_per_sprite;
+    const std::uint32_t new_stride =
+        old_stride + sprite_uvscroll_extra_floats;
+    std::vector<float> next(
+        static_cast<std::size_t>(layer.capacity) * new_stride, 0.0f);
+    for (std::uint32_t index = 0; index < layer.count; ++index) {
+        const std::size_t from =
+            static_cast<std::size_t>(index) * old_stride;
+        const std::size_t to =
+            static_cast<std::size_t>(index) * new_stride;
+        for (std::uint32_t field = 0; field < old_stride; ++field) {
+            next[to + field] = layer.instance_data[from + field];
+        }
+    }
+    layer.instance_data = std::move(next);
+    layer.uv_scroll_offset_bytes = old_stride * 4u;
+    layer.instance_floats_per_sprite = new_stride;
+    layer.uv_scroll = true;
+    layer.version += 1u;
+}
+
+// setSprite2DUvOffset: the two floats sit right after the base layout, and
+// the first call is what enables the layout at all.
+void set_sprite_2d_uv_offset(
+    Engine& engine,
+    Sprite2DLayerHandle layer_handle,
+    double index,
+    Vec2 uv_offset) {
+    Sprite2DLayerRecord& layer =
+        engine.sprite_layers[layer_handle.value];
+    if (index < 0.0 ||
+        index >= static_cast<double>(layer.count)) {
+        throw new_sprite_range_error(index, layer.count);
+    }
+    ensure_sprite_uv_scroll(layer);
+    const std::size_t base =
+        static_cast<std::size_t>(index) *
+        layer.instance_floats_per_sprite;
+    const std::size_t slot = base + sprite_instance_floats;
+    layer.instance_data[slot] = uv_offset.x;
+    layer.instance_data[slot + 1u] = uv_offset.y;
+}
 
 SpriteAtlasHandle load_sprite_atlas(
     Engine& engine,
@@ -914,8 +997,9 @@ SpriteAtlasHandle load_sprite_atlas(
     atlas.sampler.min_filter = options.sampling;
     atlas.sampler.mag_filter = options.sampling;
     atlas.sampler.mipmap_mode = TextureMipmapMode::nearest;
-    atlas.sampler.address_u = TextureAddressMode::clamp;
-    atlas.sampler.address_v = TextureAddressMode::clamp;
+    // The pinned defaults, with the caller-spread texture options over them.
+    atlas.sampler.address_u = options.address_u;
+    atlas.sampler.address_v = options.address_v;
     atlas.sampler.max_anisotropy = 1.0f;
     atlas.sampler.max_lod = 0.0f;
 

@@ -1218,6 +1218,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene96",
+        name: "Scene 96 - Sprite UV Scroll",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene96.ts",
+        title: "Babylon Lite Native - Sprite UV Scroll",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 15, 23],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene97",
         name: "Scene 97 - Sprite Multiply Blend",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene97.ts",

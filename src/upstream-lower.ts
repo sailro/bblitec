@@ -544,6 +544,23 @@ class GeneratedSourceWriter {
                         ),
                     },
                 );
+                if (features.includes("sprite:uv-scroll")) {
+                    // The scroll variant adds one attribute and one term to
+                    // the sampled UV; the pin gates both on the same flag.
+                    const scroll = sprites.shaderSource(true);
+                    composedShaders.push(
+                        {
+                            output:
+                                "upstream/shaders/sprite_uvscroll.vert.native.wgsl",
+                            data: spriteVertexWgsl(provenance, scroll),
+                        },
+                        {
+                            output:
+                                "upstream/shaders/sprite_uvscroll.frag.native.wgsl",
+                            data: spriteFragmentWgsl(provenance, scroll),
+                        },
+                    );
+                }
                 generated.push({
                     modulePath: "src/sprite/sprite-pipeline.ts",
                     symbolName:

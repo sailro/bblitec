@@ -11,6 +11,11 @@ export interface SpriteIntrinsicContext
         precision?: "float" | "double",
     ): string;
     compileBoolean(expression: ts.Expression): string;
+    compileNumber(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
+    compileVec2(expression: ts.Expression): string;
     registerSpriteAtlasAsset(
         expression: ts.Expression,
     ): string;
@@ -217,11 +222,58 @@ export function compileSpriteIntrinsic(
                     "loadSpriteAtlas: metadataUrl unsupported.",
                 );
             }
-            if (property(options, "textureOptions")) {
-                context.fail(
-                    call,
-                    "loadSpriteAtlas textureOptions are not lowered.",
-                );
+            // `...options.textureOptions` spreads over the loader's own
+            // defaults. Only the address modes are reached; anything else in
+            // that record would silently not survive the spread, so it
+            // refuses by name.
+            const textureOptions = property(options, "textureOptions");
+            const addressModes: string[] = [];
+            if (textureOptions) {
+                if (textureOptions.kind !== "record") {
+                    context.fail(
+                        call.arguments[2]!,
+                        "loadSpriteAtlas textureOptions must be written as an object literal.",
+                    );
+                }
+                for (const name of [
+                    "addressModeU",
+                    "addressModeV",
+                ] as const) {
+                    const mode = property(textureOptions, name);
+                    if (!mode) continue;
+                    if (
+                        mode.staticString !== "repeat" &&
+                        mode.staticString !== "clamp-to-edge"
+                    ) {
+                        context.fail(
+                            call.arguments[2]!,
+                            `loadSpriteAtlas ${name} must be "repeat" or "clamp-to-edge".`,
+                        );
+                    }
+                    addressModes.push(
+                        `bbl::TextureAddressMode::${
+                            mode.staticString === "repeat"
+                                ? "repeat"
+                                : "clamp"
+                        }`,
+                    );
+                }
+                for (const member of Object.keys(
+                    textureOptions.recordProperties ?? {},
+                )) {
+                    if (
+                        member !== "addressModeU" &&
+                        member !== "addressModeV"
+                    ) {
+                        context.fail(
+                            call.arguments[2]!,
+                            `loadSpriteAtlas textureOptions '${member}' is not lowered.`,
+                        );
+                    }
+                }
+            }
+            while (addressModes.length < 2) {
+                addressModes.push("bbl::TextureAddressMode::clamp");
             }
             const sampling = property(options, "sampling");
             if (
@@ -257,7 +309,8 @@ export function compileSpriteIntrinsic(
                             : "linear"
                     }, ` +
                     `${premultipliedAlpha?.cpp ?? "false"}, ` +
-                    `${premultiplyOnLoad?.cpp ?? "false"}})`,
+                    `${premultiplyOnLoad?.cpp ?? "false"}, ` +
+                    `${addressModes[0]}, ${addressModes[1]}})`,
                 engineCpp: engine.engineCpp ?? engine.cpp,
             };
         }
@@ -651,6 +704,30 @@ export function compileSpriteIntrinsic(
             context.reachFeature("renderer:pbr", call);
             context.emit(
                 `bbl::add_billboard_system(${scene.cpp}, ${system.cpp});`,
+            );
+            return { kind: "void", cpp: "" };
+        }
+
+        case "setSprite2DUvOffset": {
+            context.expectArgumentCount(call, 3, 3);
+            const layer = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                layer,
+                "sprite-layer",
+                call.arguments[0]!,
+            );
+            const index = context.compileNumber(call.arguments[1]!);
+            const offset = context.compileVec2(call.arguments[2]!);
+            const engineCpp =
+                layer.engineCpp ??
+                context.requireDefaultEngine(call);
+            context.reachFeature("sprite:2d", call);
+            // Importing the setter is the pin's own opt-in trigger for the
+            // widened layout, so reaching it here is what selects the
+            // widened attribute row and the shader that reads it.
+            context.reachFeature("sprite:uv-scroll", call);
+            context.emit(
+                `bbl::set_sprite_2d_uv_offset(${engineCpp}, ${layer.cpp}, ${index}, ${offset});`,
             );
             return { kind: "void", cpp: "" };
         }
