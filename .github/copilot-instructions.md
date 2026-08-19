@@ -99,6 +99,17 @@ residual.
   bake (202/203 lights, 204 thin instances, 205/206 sprites, 207 shadows,
   208 node materials, 209 physics) and states that `createEngine` throws when
   `useFloatingOrigin` is set without `useHighPrecisionMatrix`.
+- **In those docs, "Babylon.js" is the legacy library, not our target.** They
+  are written for Babylon Lite, and they reason about Babylon.js because that
+  is what *Lite* checks itself against. Our reference is Lite alone: the
+  golden is the Lite scene run in the browser, so an upstream parity scene
+  described as "Lite versus BJS" is not the comparison we make. A feature the
+  page calls out of scope because it is *degenerate in Babylon.js* — clip
+  planes, clustered point lights, the background-ground fresnel under
+  large-world rendering — is a statement about the legacy reference having no
+  correct far-from-origin answer to match. It says nothing about what Lite
+  renders, and nothing about whether we must match it: if a reached scene puts
+  Lite through that path, Lite produces pixels and the golden carries them.
 - **The docs orient; the pinned source still decides.** They are versioned
   beside the code but drift from it — the large-world page describes a
   `scene._floatingOriginOffset` mirror and a per-frame
