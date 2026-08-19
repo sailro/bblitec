@@ -286,9 +286,6 @@ class GeneratedSourceWriter {
             "upstream/src/scene_core.cpp",
             new SceneLowerer(context).lowerCore({
                 fog: features.includes("renderer:fog"),
-                gltfAnimationGroups: features.includes(
-                    "animation:gltf-groups",
-                ),
             }),
             generated,
         );
@@ -422,6 +419,13 @@ class GeneratedSourceWriter {
             this.writeSource(
                 "upstream/src/light_spot.cpp",
                 new LightLowerer(context).lowerSpotFactory(),
+                generated,
+            );
+        }
+        if (features.includes("animation:gltf-groups")) {
+            this.writeSource(
+                "upstream/src/animation_group.cpp",
+                new AnimationLowerer(context).lowerGroupOperations(),
                 generated,
             );
         }

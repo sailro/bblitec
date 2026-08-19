@@ -1,5 +1,4 @@
 import ts from "typescript";
-import type { HandleCollectionRead } from "./properties.js";
 import type { DataType } from "./data-types.js";
 import type {
     Value,
@@ -22,7 +21,8 @@ export interface StatementLoweringContext {
         expression: ts.Expression,
     ):
         | {
-              collection: HandleCollectionRead;
+              property: string;
+              temporaryLabel: string;
               containerCpp: string;
               elementKind: ValueKind;
               elementCppType: string;
@@ -836,22 +836,13 @@ export class StatementLowerer {
     }
 
     /**
-     * Emits a range-for over a runtime data container (vector, span, or
-     * static-table rows). Returns false when the iterated expression is not
-     * a data container, so the static-literal unroll can proceed.
-     */
-    /**
-     * `for (const mesh of scene.meshes)` walks the scene's own mesh list,
-     * which is a list of handles into the engine rather than a data
-     * container, so it binds a mesh value instead of a data element. The
-     * count is a run-time property of what the scene ended up holding — a
-     * loaded asset's meshes are added by the generated loader — so this
+     * Iterates a collection an engine handle exposes — handles into the
+     * engine, not a data container, so it binds a handle value instead of a
+     * data element. Which collections exist is the table in `properties.ts`;
+     * this holds the loop, the scope and the binding once. The count is a
+     * run-time property of what the owner ended up holding — a loaded
+     * asset's meshes and groups are added by the generated loader — so this
      * stays a real loop rather than being unrolled.
-     */
-    /**
-     * Iterates a collection an engine handle exposes. Which collections exist,
-     * and what each yields, is the table in `properties.ts`; this holds the
-     * loop, the scope and the binding once.
      */
     private emitHandleCollectionForOf(
         context: StatementLoweringContext,
@@ -867,11 +858,11 @@ export class StatementLowerer {
         if (!ts.isIdentifier(declaration.name)) {
             context.fail(
                 declaration.name,
-                `Iterating ${target.collection.property} requires an identifier binding.`,
+                `Iterating ${target.property} requires an identifier binding.`,
             );
         }
         const item = context.allocateTemporaryCppName(
-            target.collection.temporaryLabel,
+            target.temporaryLabel,
         );
         context.emit(
             `for (const ${target.elementCppType} ${item} : ${target.containerCpp}) {`,
@@ -898,6 +889,11 @@ export class StatementLowerer {
         return true;
     }
 
+    /**
+     * Emits a range-for over a runtime data container (vector, span, or
+     * static-table rows). Returns false when the iterated expression is not
+     * a data container, so the static-literal unroll can proceed.
+     */
     private emitRuntimeForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,

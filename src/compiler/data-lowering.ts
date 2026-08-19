@@ -1378,20 +1378,36 @@ export class DataLowerer {
                     unwrapped,
                 );
             case "string": {
-                // A literal is the string itself; anything else has to be a
-                // path already typed as one, so a number or handle reaching
-                // a string sink fails by type rather than by concatenation.
+                // A literal is the string itself; a name bound to a
+                // compile-time string is too, the way the enum arm below
+                // reads one. Anything else has to be a path already typed as
+                // a string, so a number or handle reaching a string sink
+                // fails by type rather than by concatenation.
                 if (
                     ts.isStringLiteral(unwrapped) ||
                     ts.isNoSubstitutionTemplateLiteral(unwrapped)
                 ) {
                     return this.context.cppString(unwrapped.text);
                 }
+                if (ts.isIdentifier(unwrapped)) {
+                    const bound =
+                        this.context.lookupIdentifierValue(
+                            unwrapped,
+                        );
+                    if (bound?.staticString !== undefined) {
+                        return this.context.cppString(
+                            bound.staticString,
+                        );
+                    }
+                }
                 const value = this.compileDataPath(
                     unwrapped,
                     "read",
                 );
-                if (value?.dataType?.kind !== "string") {
+                if (
+                    value?.dataType === undefined ||
+                    !dataTypesEqual(value.dataType, dataType)
+                ) {
                     this.context.fail(
                         unwrapped,
                         "Expected a string.",

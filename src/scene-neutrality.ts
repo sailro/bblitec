@@ -22,7 +22,7 @@ import { join } from "node:path";
 export const dawnWobbleScenes = new Set(["scene9", "scene37"]);
 
 /** A cell that names a Dawn measurement, which is the wobbling half. */
-const isDawnCell = (path: string): boolean => /dawn/i.test(path);
+export const isDawnCell = (path: string): boolean => /dawn/i.test(path);
 
 type Json = Record<string, unknown>;
 

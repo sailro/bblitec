@@ -122,6 +122,39 @@ const handleCollections: readonly HandleCollectionRead[] = [
     },
 ];
 
+/** The rule in a table claiming this (owner kind, property) pair. */
+function ruleFor<Rule extends { owner: ValueKind; property: string }>(
+    table: readonly Rule[],
+    owner: Value,
+    property: string,
+): Rule | undefined {
+    return table.find(
+        (candidate) =>
+            candidate.owner === owner.kind &&
+            candidate.property === property,
+    );
+}
+
+/**
+ * The native expression a `record`/`field` location names. Both tables
+ * speak this vocabulary, and the expression it denotes must not be spelled
+ * twice.
+ */
+export function nativeLocation(
+    rule: {
+        record?: readonly [collection: string, field: string];
+        field?: string;
+    },
+    ownerCpp: string,
+    engineCpp: string,
+): string {
+    if (rule.record) {
+        const [collection, field] = rule.record;
+        return `${engineCpp}.${collection}[${ownerCpp}.value].${field}`;
+    }
+    return `${ownerCpp}.${rule.field!}`;
+}
+
 /**
  * The collection an expression names, or undefined when it names none — so
  * the caller can fall through to the plain-data and static-literal paths.
@@ -130,11 +163,7 @@ export function readHandleCollection(
     owner: Value,
     property: string,
 ): HandleCollectionRead | undefined {
-    return handleCollections.find(
-        (candidate) =>
-            candidate.owner === owner.kind &&
-            candidate.property === property,
-    );
+    return ruleFor(handleCollections, owner, property);
 }
 
 const propertyRules: readonly PropertyRule[] = [
@@ -320,11 +349,7 @@ export function readProperty(
      */
     expression: ts.Node,
 ): Value | undefined {
-    const rule = propertyRules.find(
-        (candidate) =>
-            candidate.owner === owner.kind &&
-            candidate.property === property,
-    );
+    const rule = ruleFor(propertyRules, owner, property);
     if (!rule) {
         return undefined;
     }
@@ -354,18 +379,16 @@ export function readProperty(
               }
             : {}),
     });
-    if (rule.record) {
-        const [collection, field] = rule.record;
-        const engine = context.requireEngine(
-            owner,
-            expression,
-        );
+    if (rule.record || rule.field) {
         return read(
-            `${engine}.${collection}[${owner.cpp}.value].${field}`,
+            nativeLocation(
+                rule,
+                owner.cpp,
+                rule.record
+                    ? context.requireEngine(owner, expression)
+                    : "",
+            ),
         );
-    }
-    if (rule.field) {
-        return read(`${owner.cpp}.${rule.field}`);
     }
     if (rule.helper) {
         return read(`${rule.helper}(${owner.cpp})`);

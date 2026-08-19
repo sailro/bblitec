@@ -13,7 +13,7 @@
 // as when it keeps the old number.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { dawnWobbleScenes } from "./scene-neutrality.js";
+import { dawnWobbleScenes, isDawnCell } from "./scene-neutrality.js";
 
 interface ParityReport {
     full: { mad: number };
@@ -179,7 +179,8 @@ export function verifyStatus(statusPath = "docs/status.md"): string[] {
         // is not compared there. The severity colour still is: the wobble is
         // one level, never a band.
         const wobblingDawnCell = (index: number): boolean =>
-            index >= 2 && dawnWobbleScenes.has(row.sceneId);
+            isDawnCell(columns[index]!) &&
+            dawnWobbleScenes.has(row.sceneId);
         result.values.forEach((value, index) => {
             const rendered = value.toFixed(3);
             if (

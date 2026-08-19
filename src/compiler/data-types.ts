@@ -36,10 +36,14 @@ export type DataType =
     // struct copies the id and both refer to the same resource, which
     // is exactly the JavaScript object-reference behavior.
     // A runtime string. Deliberately not inferred from a declared `string`
-    // type: widening the shared mapper made records that had been outside
-    // the subset map, pulling unused definitions into scenes that never
-    // asked for one. A string enters the model only where a
-    // declared-property rule names it, so its producer is always explicit.
+    // type — not because inference is wrong, but because the record and
+    // union mappers REGISTER definitions as a side effect of speculative
+    // mapping (`structsByKey.set`, `registerEnum`), and the data lowerer
+    // probes types constantly: widening the mapper made probed-but-unused
+    // records register, pulling unused enum definitions into scene 274.
+    // Until registration is decoupled from probing, a string enters the
+    // model only where a declared-property rule names it, so its producer
+    // is always explicit.
     | { kind: "string" }
     | { kind: "handle"; handle: HandleKind }
     | { kind: "struct"; name: string }

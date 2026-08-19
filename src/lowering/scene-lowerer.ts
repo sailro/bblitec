@@ -5,7 +5,7 @@ export class SceneLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
     public lowerCore(
-        options: { fog?: boolean; gltfAnimationGroups?: boolean } = {},
+        options: { fog?: boolean } = {},
     ): LoweredSource {
         const modulePath = "src/scene/scene-core.ts";
         const createName = "createSceneContext";
@@ -302,10 +302,21 @@ void add_to_scene(Scene& scene, LightHandle light) {
     scene.lights.push_back(light);
 }
 
+namespace {
+
+AssetRecord& asset_record(Engine& engine, std::uint32_t asset) {
+    if (asset >= engine.assets.size()) {
+        throw std::runtime_error("Invalid asset handle.");
+    }
+    return engine.assets[asset];
+}
+
+}  // namespace
+
 void add_to_scene(Scene& scene, AssetHandle asset) {
     require_scene_engine(scene);
-    if (asset.value >= scene.engine->assets.size()) throw std::runtime_error("Invalid asset handle.");
-    const AssetRecord& record = scene.engine->assets[asset.value];
+    const AssetRecord& record =
+        asset_record(*scene.engine, asset.value);
     for (const MeshHandle mesh : record.meshes) add_to_scene(scene, mesh);
     for (const LightHandle light : record.lights) add_to_scene(scene, light);
     // addToScene registers the file's animation groups with the scene, which
@@ -324,88 +335,7 @@ void add_to_scene(Scene& scene, AssetHandle asset) {
     }
 }
 
-${options.gltfAnimationGroups ? `// src/animation/animation-group.ts's own four operations over a glTF clip.
-// playAnimation clears the stopped flag, pauseAnimation only stops advancing,
-// stopAnimation also rewinds, and goToFrame divides by the group's frame rate
-// and pauses. Each reaches the owning asset's clip through the writer the
-// loader published, so the clip state stays where the loader keeps it.
-namespace {
-
-const AnimationGroupRecord& group_record(
-    Engine& engine,
-    AnimationGroupHandle group) {
-    if (group.value >= engine.animation_groups.size()) {
-        throw std::runtime_error(
-            "Animation group handle is out of range.");
-    }
-    return engine.animation_groups[group.value];
-}
-
-AssetRecord& group_asset(
-    Engine& engine,
-    const AnimationGroupRecord& record) {
-    if (record.asset >= engine.assets.size()) {
-        throw std::runtime_error(
-            "Animation group names no loaded asset.");
-    }
-    return engine.assets[record.asset];
-}
-
-}  // namespace
-
-void play_animation(Engine& engine, AnimationGroupHandle group) {
-    const AnimationGroupRecord& record =
-        group_record(engine, group);
-    AssetRecord& asset = group_asset(engine, record);
-    if (asset.set_clip_playing) {
-        asset.set_clip_playing(record.clip, true);
-    }
-    if (asset.set_clip_stopped) {
-        asset.set_clip_stopped(record.clip, false);
-    }
-}
-
-void pause_animation(Engine& engine, AnimationGroupHandle group) {
-    const AnimationGroupRecord& record =
-        group_record(engine, group);
-    AssetRecord& asset = group_asset(engine, record);
-    if (asset.set_clip_playing) {
-        asset.set_clip_playing(record.clip, false);
-    }
-}
-
-void stop_animation(Engine& engine, AnimationGroupHandle group) {
-    const AnimationGroupRecord& record =
-        group_record(engine, group);
-    AssetRecord& asset = group_asset(engine, record);
-    if (asset.set_clip_playing) {
-        asset.set_clip_playing(record.clip, false);
-    }
-    if (asset.set_clip_time) {
-        asset.set_clip_time(record.clip, 0.0f);
-    }
-    if (asset.set_clip_stopped) {
-        asset.set_clip_stopped(record.clip, true);
-    }
-}
-
-void go_to_group_frame(
-    Engine& engine,
-    AnimationGroupHandle group,
-    float frame) {
-    const AnimationGroupRecord& record =
-        group_record(engine, group);
-    AssetRecord& asset = group_asset(engine, record);
-    const float rate =
-        record.frame_rate > 0.0f ? record.frame_rate : 60.0f;
-    if (asset.set_clip_time) {
-        asset.set_clip_time(record.clip, frame / rate);
-    }
-    if (asset.set_clip_playing) {
-        asset.set_clip_playing(record.clip, false);
-    }
-}
-` : ""}void on_before_render(
+void on_before_render(
     Scene& scene,
     std::function<void(float)> callback) {
     scene.before_render.insert(

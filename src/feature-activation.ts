@@ -156,8 +156,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "animation:gltf-groups": {
         provenance:
             "src/animation/animation-group.ts (playAnimation, pauseAnimation, " +
-            "stopAnimation, goToFrame) + src/loader-gltf/gltf-feature-animations.ts",
-        consumers: ["features.cmake", "loader flag"],
+            "stopAnimation) + src/loader-gltf/gltf-feature-animations.ts",
+        consumers: ["features.cmake"],
     },
     "animation:property": {
         provenance: "src/animation/property-animation.ts",

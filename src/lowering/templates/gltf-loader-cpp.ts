@@ -637,14 +637,12 @@ struct AnimationClip {
     std::string name;
     float time = 0.0f;
     float duration = 0.0f;
-    float frame_rate = 60.0f;
     bool playing = false;
     bool stopped = true;
 };
 
 struct AnimationRuntime {
     float time = 0.0f;
-    float duration = 0.0f;
     bool paused = false;
     std::vector<AnimationClip> clips;
     std::vector<RotationTrack> rotation_tracks;
@@ -2802,8 +2800,6 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
             // only channels are animation pointers still gets a duration.
             const auto note_clip_time =
                 [animation_runtime, clip_index](float time) {
-                animation_runtime->duration =
-                    std::max(animation_runtime->duration, time);
                 AnimationClip& owner =
                     animation_runtime->clips[clip_index];
                 owner.duration = std::max(owner.duration, time);
@@ -3407,12 +3403,6 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                         index,
                         0);
                     note_clip_time(time);
-                    animation_runtime->clips[clip_index].duration =
-                        std::max(
-                            animation_runtime
-                                ->clips[clip_index]
-                                .duration,
-                            time);
                 }
                 if (path_name == "rotation") {
                     const bool cubic =
@@ -3573,7 +3563,9 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
             }${animationPointer ? `
             for (const VisibilityTrack& track :
                  animation_runtime->visibility_tracks) {
-                 if (animation_runtime->clips[track.clip].stopped) continue;
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
                 if (track.times.empty()) continue;
                 // STEP holds each output until the next keyframe, so the
                 // key in effect is the last one at or before the current
@@ -3582,7 +3574,7 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                 while (
                     key + 1 < track.times.size() &&
                     track.times[key + 1] <=
-                        animation_runtime->clips[track.clip].time) {
+                        clip.time) {
                     ++key;
                 }
                 const bool visible = track.values[key];
@@ -3603,7 +3595,9 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
             }` : ""}
 ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                  animation_runtime->material_tracks) {
-                 if (animation_runtime->clips[track.clip].stopped) continue;
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
                 if (
                     track.times.empty() ||
                     track.material >= engine.materials.size()) {
@@ -3612,7 +3606,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                 std::size_t right = 1;
                 while (
                     right < track.times.size() &&
-                    track.times[right] < animation_runtime->clips[track.clip].time) {
+                    track.times[right] < clip.time) {
                     ++right;
                 }
                 if (right >= track.times.size()) {
@@ -3625,7 +3619,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                 const double amount = span > 0.0
                     ? std::clamp(
                           (static_cast<double>(
-                               animation_runtime->clips[track.clip].time) -
+                               clip.time) -
                            track.times[left]) /
                               span,
                           0.0,
@@ -3732,6 +3726,9 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
             }
 ` : ""}${animationPointer ? `            for (const LightTrack& track :
                  animation_runtime->light_tracks) {
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
                 if (
                     track.times.empty() ||
                     track.light.value >= engine.lights.size()) {
@@ -3740,7 +3737,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                 std::size_t right = 1;
                 while (
                     right < track.times.size() &&
-                    track.times[right] < animation_runtime->clips[track.clip].time) {
+                    track.times[right] < clip.time) {
                     ++right;
                 }
                 const std::size_t left =
@@ -3751,7 +3748,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     track.times[clamped_right] - track.times[left];
                 const float amount = span > 0.0f
                     ? std::clamp(
-                          (animation_runtime->clips[track.clip].time - track.times[left]) /
+                          (clip.time - track.times[left]) /
                               span,
                           0.0f,
                           1.0f)
@@ -3789,6 +3786,9 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
             }
 ` : ""}            for (const RotationTrack& track :
                  animation_runtime->rotation_tracks) {
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
                 if (
                     track.times.empty() ||
                     track.node >=
@@ -3799,7 +3799,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                 while (
                     right < track.times.size() &&
                     track.times[right] <
-                        animation_runtime->clips[track.clip].time) {
+                        clip.time) {
                     ++right;
                 }
                 if (right >= track.times.size()) {
@@ -3814,7 +3814,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     span > 0.0
                         ? std::clamp(
                               (static_cast<double>(
-                                   animation_runtime->clips[track.clip].time) -
+                                   clip.time) -
                                track.times[left]) /
                                   span,
                               0.0,
@@ -3836,7 +3836,9 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
             }
             for (const TranslationTrack& track :
                  animation_runtime->translation_tracks) {
-                 if (animation_runtime->clips[track.clip].stopped) continue;
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
                 if (
                     track.times.empty() ||
                     track.node >= animation_runtime->nodes.size()) {
@@ -3846,7 +3848,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                 while (
                     right < track.times.size() &&
                     track.times[right] <
-                        animation_runtime->clips[track.clip].time) {
+                        clip.time) {
                     ++right;
                 }
                 if (right >= track.times.size()) {
@@ -3861,7 +3863,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     span > 0.0
                         ? std::clamp(
                               (static_cast<double>(
-                                   animation_runtime->clips[track.clip].time) -
+                                   clip.time) -
                                track.times[left]) /
                                   span,
                               0.0,
@@ -3901,7 +3903,9 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
             }
             for (const TranslationTrack& track :
                  animation_runtime->scale_tracks) {
-                 if (animation_runtime->clips[track.clip].stopped) continue;
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
                 if (
                     track.times.empty() ||
                     track.node >= animation_runtime->nodes.size()) {
@@ -3911,7 +3915,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                 while (
                     right < track.times.size() &&
                     track.times[right] <
-                        animation_runtime->clips[track.clip].time) {
+                        clip.time) {
                     ++right;
                 }
                 if (right >= track.times.size()) {
@@ -3926,7 +3930,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     span > 0.0
                         ? std::clamp(
                               (static_cast<double>(
-                                   animation_runtime->clips[track.clip].time) -
+                                   clip.time) -
                                track.times[left]) /
                                   span,
                               0.0,
@@ -3974,9 +3978,11 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                 ++track_iterator) {
                 const WeightTrack& track =
                     *track_iterator;
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
                 if (
                     track.times.empty() ||
-                    animation_runtime->clips[track.clip].stopped ||
                     track.node >= animation_runtime->nodes.size()) {
                     continue;
                 }
@@ -3984,7 +3990,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                 while (
                     right < track.times.size() &&
                     track.times[right] <
-                        animation_runtime->clips[track.clip].time) {
+                        clip.time) {
                     ++right;
                 }
                 if (right >= track.times.size()) {
@@ -3999,7 +4005,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     span > 0.0
                         ? std::clamp(
                               (static_cast<double>(
-                                   animation_runtime->clips[track.clip].time) -
+                                   clip.time) -
                                track.times[left]) /
                                   span,
                               0.0,
@@ -4306,15 +4312,13 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
         };
         apply_animation_time(0.0f, false);
         // The clips scene code addresses, in the document's animation order,
-        // plus the two writes the group operations need. The clip state stays
-        // inside this runtime; only these writers reach it, the way
-        // animation_tick already does.
+        // plus the writers the group operations need — one per field the
+        // pin's operations assign. The clip state stays inside this runtime;
+        // only these writers reach it, the way animation_tick already does.
         for (const AnimationClip& clip : animation_runtime->clips) {
             engine.animation_groups.push_back(
                 AnimationGroupRecord{
                     clip.name,
-                    clip.duration,
-                    clip.frame_rate,
                     static_cast<std::uint32_t>(engine.assets.size()),
                     asset.animation_groups.size(),
                 });

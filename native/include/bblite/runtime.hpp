@@ -857,8 +857,6 @@ struct Scene;
 // reads and the coordinates the operations need to reach it.
 struct AnimationGroupRecord {
     std::string name;
-    float duration = 0.0f;
-    float frame_rate = 60.0f;
     std::uint32_t asset = invalid_handle;
     std::size_t clip = 0;
 };
@@ -1271,10 +1269,6 @@ void go_to_frame(
 void play_animation(Engine& engine, AnimationGroupHandle group);
 void pause_animation(Engine& engine, AnimationGroupHandle group);
 void stop_animation(Engine& engine, AnimationGroupHandle group);
-void go_to_group_frame(
-    Engine& engine,
-    AnimationGroupHandle group,
-    float frame);
 void attach_control(Engine& engine, CameraHandle camera, Scene& scene);
 void attach_free_control(Engine& engine, CameraHandle camera, Scene& scene);
 struct LoadSpriteAtlasOptions {

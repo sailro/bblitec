@@ -90,9 +90,9 @@ import {
     createCompilerProgram,
 } from "./compiler/program.js";
 import {
+    nativeLocation,
     readHandleCollection,
     readProperty,
-    type HandleCollectionRead,
     type PropertyContext,
 } from "./compiler/properties.js";
 import type {
@@ -2044,11 +2044,6 @@ class Compiler
     }
 
     /**
-     * Recognises `<scene>.meshes` as an iteration source. The scene keeps
-     * handles rather than data, so this hands the loop the scene and engine
-     * it needs and lets the statement lowering bind a mesh value.
-     */
-    /**
      * The engine collection an expression names, resolved through the
      * declarative table in `properties.ts` rather than by testing one
      * property name here. A collection the table does not carry returns
@@ -2059,7 +2054,8 @@ class Compiler
         expression: ts.Expression,
     ):
         | {
-              collection: HandleCollectionRead;
+              property: string;
+              temporaryLabel: string;
               containerCpp: string;
               elementKind: ValueKind;
               elementCppType: string;
@@ -2106,10 +2102,13 @@ class Compiler
         }
         const engineCpp = this.requireEngine(owner, unwrapped);
         return {
-            collection,
-            containerCpp: collection.record
-                ? `${engineCpp}.${collection.record[0]}[${owner.cpp}.value].${collection.record[1]}`
-                : `${owner.cpp}.${collection.field!}`,
+            property: collection.property,
+            temporaryLabel: collection.temporaryLabel,
+            containerCpp: nativeLocation(
+                collection,
+                owner.cpp,
+                engineCpp,
+            ),
             elementKind: element.handle,
             elementCppType: this.dataTypes.cppType(element),
             engineCpp,
@@ -2340,21 +2339,6 @@ class Compiler
     }
 
     /**
-     * One link of a path, once the owner is resolved. Every read site
-     * ends here -- the general property path, the static evaluator's
-     * lookup, and each nested link -- so a path resolves the same way
-     * wherever it is written and however deep it goes. The readings that
-     * are not a declared field lookup live here because they are what
-     * differs, and each used to sit in only one of the two paths:
-     * `camera.target` and the geometry-task outputs resolved in an
-     * expression but not in a numeric context.
-     *
-     * A record owner is the exception: this returns the property or
-     * nothing, because the lookup path must stay non-throwing for the
-     * data lowerer to try next. The general path handles records itself,
-     * where a missing property is an error with a message.
-     */
-    /**
      * A declared property of an engine handle that the table types as plain
      * data. The data lowerer asks here so a comparison, a sink and a binding
      * all read the one table the expression path reads, instead of each
@@ -2365,7 +2349,12 @@ class Compiler
     ): Value | undefined {
         // The owner is looked up rather than compiled: this runs inside the
         // data lowerer's path resolution, which must stay free of emission
-        // and of failure, and a handle owner is always a bound local.
+        // and of failure, and every current producer of a handle in a data
+        // position is a bound local. The boundary this draws: a handle
+        // STORED IN DATA (`groups[0]` out of a pushed vector) does not
+        // resolve here — its owner path is data, not a local — so its
+        // declared properties stay unreadable until this consults the
+        // nested resolution `lookupRecordProperty` already implements.
         const owner = ts.isIdentifier(expression.expression)
             ? this.lookupOptional(expression.expression)
             : undefined;
@@ -2381,6 +2370,22 @@ class Compiler
         return declared?.dataType ? declared : undefined;
     }
 
+    /**
+     * One link of a path, once the owner is resolved. Every read site
+     * ends here -- the general property path, the static evaluator's
+     * lookup, the data lowerer's plain-data property bridge, and each
+     * nested link -- so a path resolves the same way wherever it is
+     * written and however deep it goes. The readings that are not a
+     * declared field lookup live here because they are what differs, and
+     * each used to sit in only one of the two paths: `camera.target` and
+     * the geometry-task outputs resolved in an expression but not in a
+     * numeric context.
+     *
+     * A record owner is the exception: this returns the property or
+     * nothing, because the lookup path must stay non-throwing for the
+     * data lowerer to try next. The general path handles records itself,
+     * where a missing property is an error with a message.
+     */
     private readOwnerProperty(
         owner: Value,
         expression: ts.PropertyAccessExpression,

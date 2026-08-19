@@ -27,6 +27,13 @@ export interface AnimationIntrinsicContext
     requireEngine(value: Value, node: ts.Node): string;
 }
 
+/** The pinned group operations and the native functions lowered from them. */
+const groupOperationNatives: Record<string, string> = {
+    playAnimation: "play_animation",
+    pauseAnimation: "pause_animation",
+    stopAnimation: "stop_animation",
+};
+
 export function compileAnimationIntrinsic(
     context: AnimationIntrinsicContext,
     importedName: string,
@@ -132,11 +139,7 @@ export function compileAnimationIntrinsic(
                 call.arguments[0]!,
             );
             context.reachFeature("animation:gltf-groups", call);
-            const native = {
-                playAnimation: "play_animation",
-                pauseAnimation: "pause_animation",
-                stopAnimation: "stop_animation",
-            }[importedName]!;
+            const native = groupOperationNatives[importedName]!;
             return {
                 kind: "void",
                 cpp:
