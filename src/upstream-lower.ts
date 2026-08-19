@@ -422,6 +422,13 @@ class GeneratedSourceWriter {
                 generated,
             );
         }
+        if (features.includes("animation:gltf-groups")) {
+            this.writeSource(
+                "upstream/src/animation_group.cpp",
+                new AnimationLowerer(context).lowerGroupOperations(),
+                generated,
+            );
+        }
         if (features.includes("animation:property")) {
             this.writeSource(
                 "upstream/src/animation_property.cpp",

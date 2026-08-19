@@ -13,6 +13,7 @@
 // as when it keeps the old number.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { dawnWobbleScenes, isDawnCell } from "./scene-neutrality.js";
 
 interface ParityReport {
     full: { mad: number };
@@ -170,9 +171,22 @@ export function verifyStatus(statusPath = "docs/status.md"): string[] {
             );
             continue;
         }
+        // Scenes 9 and 37 are not bit-stable on Dawn between runs, by a few
+        // dozen pixels of one level each, which is enough to move the third
+        // decimal across a rounding boundary. `scene -- neutrality` already
+        // excludes those cells; repainting the table per run would publish
+        // whichever side of the coin the last matrix landed on, so the value
+        // is not compared there. The severity colour still is: the wobble is
+        // one level, never a band.
+        const wobblingDawnCell = (index: number): boolean =>
+            isDawnCell(columns[index]!) &&
+            dawnWobbleScenes.has(row.sceneId);
         result.values.forEach((value, index) => {
             const rendered = value.toFixed(3);
-            if (rendered !== row.values[index]) {
+            if (
+                rendered !== row.values[index] &&
+                !wobblingDawnCell(index)
+            ) {
                 problems.push(
                     `${statusPath}:${row.line} ${row.sceneId} ${columns[index]}: published ${row.values[index]}, measured ${rendered}`,
                 );

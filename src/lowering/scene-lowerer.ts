@@ -302,12 +302,28 @@ void add_to_scene(Scene& scene, LightHandle light) {
     scene.lights.push_back(light);
 }
 
+namespace {
+
+AssetRecord& asset_record(Engine& engine, std::uint32_t asset) {
+    if (asset >= engine.assets.size()) {
+        throw std::runtime_error("Invalid asset handle.");
+    }
+    return engine.assets[asset];
+}
+
+}  // namespace
+
 void add_to_scene(Scene& scene, AssetHandle asset) {
     require_scene_engine(scene);
-    if (asset.value >= scene.engine->assets.size()) throw std::runtime_error("Invalid asset handle.");
-    const AssetRecord& record = scene.engine->assets[asset.value];
+    const AssetRecord& record =
+        asset_record(*scene.engine, asset.value);
     for (const MeshHandle mesh : record.meshes) add_to_scene(scene, mesh);
     for (const LightHandle light : record.lights) add_to_scene(scene, light);
+    // addToScene registers the file's animation groups with the scene, which
+    // is what makes them reachable as scene.animationGroups.
+    for (const AnimationGroupHandle group : record.animation_groups) {
+        scene.animation_groups.push_back(group);
+    }
     if (record.scene_setup) record.scene_setup(scene);
     if (record.has_camera) scene.camera = record.camera;
     if (record.has_clear_color) scene.clear_color = record.clear_color;

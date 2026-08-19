@@ -90,6 +90,8 @@ import {
     createCompilerProgram,
 } from "./compiler/program.js";
 import {
+    nativeLocation,
+    readHandleCollection,
     readProperty,
     type PropertyContext,
 } from "./compiler/properties.js";
@@ -143,6 +145,7 @@ import {
 import { reachedGeneratedSources } from "./generated-sources.js";
 
 const featureSources: Record<Feature, string[]> = {
+    "animation:gltf-groups": [],
     "animation:property": [],
     "core": ["src/pal.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp"],
@@ -2041,27 +2044,74 @@ class Compiler
     }
 
     /**
-     * Recognises `<scene>.meshes` as an iteration source. The scene keeps
-     * handles rather than data, so this hands the loop the scene and engine
-     * it needs and lets the statement lowering bind a mesh value.
+     * The engine collection an expression names, resolved through the
+     * declarative table in `properties.ts` rather than by testing one
+     * property name here. A collection the table does not carry returns
+     * undefined, so for-of falls through to the plain-data and
+     * static-literal paths.
      */
-    public sceneMeshIterationTarget(
+    public handleCollectionIterationTarget(
         expression: ts.Expression,
-    ): { sceneCpp: string; engineCpp: string } | undefined {
+    ):
+        | {
+              property: string;
+              temporaryLabel: string;
+              containerCpp: string;
+              elementKind: ValueKind;
+              elementCppType: string;
+              engineCpp: string;
+          }
+        | undefined {
         const unwrapped = this.unwrap(expression);
-        if (
-            !ts.isPropertyAccessExpression(unwrapped) ||
-            unwrapped.name.text !== "meshes"
-        ) {
+        if (!ts.isPropertyAccessExpression(unwrapped)) {
             return undefined;
         }
         const owner = this.compileValue(unwrapped.expression);
-        if (owner.kind !== "scene") {
+        const collection = readHandleCollection(
+            owner,
+            unwrapped.name.text,
+        );
+        if (!collection) {
             return undefined;
         }
+        // The declared type carries the element model: the property's own
+        // number-index type is what an iteration yields, and the pinned
+        // handle registry turns that type into the kind it binds as and the
+        // C++ type the range-for declares. Neither is restated in the table.
+        const elementType = this.checker.getIndexTypeOfType(
+            this.checker.getTypeAtLocation(unwrapped),
+            ts.IndexKind.Number,
+        );
+        if (!elementType) {
+            this.fail(
+                unwrapped,
+                `'${unwrapped.name.text}' is not an indexable collection.`,
+            );
+        }
+        const element = this.dataTypes.fromTsType(
+            elementType,
+            unwrapped,
+        );
+        if (element?.kind !== "handle") {
+            this.fail(
+                unwrapped,
+                `Iterating '${unwrapped.name.text}' yields ` +
+                    `${element?.kind ?? "an unmapped type"}, which carries ` +
+                    "no engine handle to bind.",
+            );
+        }
+        const engineCpp = this.requireEngine(owner, unwrapped);
         return {
-            sceneCpp: owner.cpp,
-            engineCpp: this.requireEngine(owner, unwrapped),
+            property: collection.property,
+            temporaryLabel: collection.temporaryLabel,
+            containerCpp: nativeLocation(
+                collection,
+                owner.cpp,
+                engineCpp,
+            ),
+            elementKind: element.handle,
+            elementCppType: this.dataTypes.cppType(element),
+            engineCpp,
         };
     }
 
@@ -2289,14 +2339,47 @@ class Compiler
     }
 
     /**
+     * A declared property of an engine handle that the table types as plain
+     * data. The data lowerer asks here so a comparison, a sink and a binding
+     * all read the one table the expression path reads, instead of each
+     * growing its own notion of which handle properties are data.
+     */
+    public declaredDataProperty(
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        // The owner is looked up rather than compiled: this runs inside the
+        // data lowerer's path resolution, which must stay free of emission
+        // and of failure, and every current producer of a handle in a data
+        // position is a bound local. The boundary this draws: a handle
+        // STORED IN DATA (`groups[0]` out of a pushed vector) does not
+        // resolve here — its owner path is data, not a local — so its
+        // declared properties stay unreadable until this consults the
+        // nested resolution `lookupRecordProperty` already implements.
+        const owner = ts.isIdentifier(expression.expression)
+            ? this.lookupOptional(expression.expression)
+            : undefined;
+        if (!owner || owner.kind === "data") {
+            return undefined;
+        }
+        // Through the same single funnel every other read uses, so this
+        // does not become a third reader of the table.
+        const declared = this.readOwnerProperty(
+            owner,
+            expression,
+        );
+        return declared?.dataType ? declared : undefined;
+    }
+
+    /**
      * One link of a path, once the owner is resolved. Every read site
      * ends here -- the general property path, the static evaluator's
-     * lookup, and each nested link -- so a path resolves the same way
-     * wherever it is written and however deep it goes. The readings that
-     * are not a declared field lookup live here because they are what
-     * differs, and each used to sit in only one of the two paths:
-     * `camera.target` and the geometry-task outputs resolved in an
-     * expression but not in a numeric context.
+     * lookup, the data lowerer's plain-data property bridge, and each
+     * nested link -- so a path resolves the same way wherever it is
+     * written and however deep it goes. The readings that are not a
+     * declared field lookup live here because they are what differs, and
+     * each used to sit in only one of the two paths: `camera.target` and
+     * the geometry-task outputs resolved in an expression but not in a
+     * numeric context.
      *
      * A record owner is the exception: this returns the property or
      * nothing, because the lookup path must stay non-throwing for the

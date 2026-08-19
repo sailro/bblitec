@@ -16,6 +16,7 @@
 // not in which field they name.
 import type ts from "typescript";
 
+import type { DataType } from "./data-types.js";
 import type { Value, ValueKind } from "./types.js";
 
 /** A property the compiled surface deliberately does not serve. */
@@ -54,6 +55,13 @@ interface PropertyRead {
      */
     carriesScenePbrMaterial?: true;
     /**
+     * The plain-data type this read produces, when it produces data rather
+     * than a handle or a scalar the compiler models itself. Set it and the
+     * value arrives as `kind: "data"`, which is what the comparison, sink
+     * and binding paths consume.
+     */
+    dataType?: DataType;
+    /**
      * Rejects an owner this read cannot serve, returning the message.
      * Runs before anything is emitted.
      */
@@ -61,6 +69,102 @@ interface PropertyRead {
 }
 
 type PropertyRule = PropertyRead | RefusedProperty;
+
+/**
+ * A collection an engine handle exposes.
+ *
+ * Only one fact here is this port's to state: which native member holds the
+ * collection, because native spellings are not the source's
+ * (`angularSensitivity` is `angular_sensibility`). Everything else the
+ * program already knows — the declared type says whether the property is
+ * iterable and what its elements are, and `data-types.ts` already turns a
+ * pinned type symbol into a handle kind and that kind into its C++ type. So a
+ * further collection is one row naming a member, not a restatement of the
+ * element model. User code iterating its own arrays never reaches here: that
+ * is the plain-data path.
+ */
+export interface HandleCollectionRead {
+    /** The value kind the owner must have. */
+    owner: ValueKind;
+    /** The property name as the source writes it. */
+    property: string;
+    /**
+     * Where the collection lives, in the same vocabulary the property table
+     * uses: `field` is a member of the owner's own expression, `record` is
+     * `[collection, field]` indexed by the owner handle through its engine.
+     */
+    field?: string;
+    record?: readonly [collection: string, field: string];
+    /** The generated temporary's label, so emitted names stay stable. */
+    temporaryLabel: string;
+}
+
+const handleCollections: readonly HandleCollectionRead[] = [
+    {
+        owner: "scene",
+        property: "meshes",
+        field: "meshes",
+        temporaryLabel: "scene_mesh",
+    },
+    {
+        owner: "scene",
+        property: "animationGroups",
+        field: "animation_groups",
+        temporaryLabel: "animation_group",
+    },
+    {
+        // The container's own groups, before addToScene registers them with
+        // the scene: the same handles, read off the asset.
+        owner: "asset",
+        property: "animationGroups",
+        record: ["assets", "animation_groups"],
+        temporaryLabel: "asset_animation_group",
+    },
+];
+
+/** The rule in a table claiming this (owner kind, property) pair. */
+function ruleFor<Rule extends { owner: ValueKind; property: string }>(
+    table: readonly Rule[],
+    owner: Value,
+    property: string,
+): Rule | undefined {
+    return table.find(
+        (candidate) =>
+            candidate.owner === owner.kind &&
+            candidate.property === property,
+    );
+}
+
+/**
+ * The native expression a `record`/`field` location names. Both tables
+ * speak this vocabulary, and the expression it denotes must not be spelled
+ * twice.
+ */
+export function nativeLocation(
+    rule: {
+        record?: readonly [collection: string, field: string];
+        field?: string;
+    },
+    ownerCpp: string,
+    engineCpp: string,
+): string {
+    if (rule.record) {
+        const [collection, field] = rule.record;
+        return `${engineCpp}.${collection}[${ownerCpp}.value].${field}`;
+    }
+    return `${ownerCpp}.${rule.field!}`;
+}
+
+/**
+ * The collection an expression names, or undefined when it names none — so
+ * the caller can fall through to the plain-data and static-literal paths.
+ */
+export function readHandleCollection(
+    owner: Value,
+    property: string,
+): HandleCollectionRead | undefined {
+    return ruleFor(handleCollections, owner, property);
+}
 
 const propertyRules: readonly PropertyRule[] = [
     {
@@ -163,6 +267,15 @@ const propertyRules: readonly PropertyRule[] = [
         carriesScenePbrMaterial: true,
     },
     {
+        // Read as plain data, which is what lets `g.name !== "swimming"`
+        // compile through the ordinary comparison path.
+        owner: "animation-group",
+        property: "name",
+        value: "data",
+        dataType: { kind: "string" },
+        record: ["animation_groups", "name"],
+    },
+    {
         owner: "scene",
         property: "clearColor",
         value: "color4",
@@ -236,11 +349,7 @@ export function readProperty(
      */
     expression: ts.Node,
 ): Value | undefined {
-    const rule = propertyRules.find(
-        (candidate) =>
-            candidate.owner === owner.kind &&
-            candidate.property === property,
-    );
+    const rule = ruleFor(propertyRules, owner, property);
     if (!rule) {
         return undefined;
     }
@@ -260,6 +369,7 @@ export function readProperty(
     const read = (cpp: string): Value => ({
         kind: rule.value,
         cpp,
+        ...(rule.dataType ? { dataType: rule.dataType } : {}),
         ...(engineCpp ? { engineCpp } : {}),
         ...(rule.carriesScenePbrMaterial &&
         owner.scenePbrMaterialIndex !== undefined
@@ -269,18 +379,16 @@ export function readProperty(
               }
             : {}),
     });
-    if (rule.record) {
-        const [collection, field] = rule.record;
-        const engine = context.requireEngine(
-            owner,
-            expression,
-        );
+    if (rule.record || rule.field) {
         return read(
-            `${engine}.${collection}[${owner.cpp}.value].${field}`,
+            nativeLocation(
+                rule,
+                owner.cpp,
+                rule.record
+                    ? context.requireEngine(owner, expression)
+                    : "",
+            ),
         );
-    }
-    if (rule.field) {
-        return read(`${owner.cpp}.${rule.field}`);
     }
     if (rule.helper) {
         return read(`${rule.helper}(${owner.cpp})`);

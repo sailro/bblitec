@@ -17,9 +17,18 @@ export interface StatementLoweringContext {
     ):
         | { container: Value; element: DataType }
         | undefined;
-    sceneMeshIterationTarget(
+    handleCollectionIterationTarget(
         expression: ts.Expression,
-    ): { sceneCpp: string; engineCpp: string } | undefined;
+    ):
+        | {
+              property: string;
+              temporaryLabel: string;
+              containerCpp: string;
+              elementKind: ValueKind;
+              elementCppType: string;
+              engineCpp: string;
+          }
+        | undefined;
     bindDataIterationVariable(
         name: ts.BindingName,
         itemCpp: string,
@@ -764,7 +773,7 @@ export class StatementLowerer {
                 : undefined;
         if (
             !staticLiteral &&
-            this.emitSceneMeshForOf(
+            this.emitHandleCollectionForOf(
                 context,
                 statement,
                 declaration,
@@ -827,24 +836,20 @@ export class StatementLowerer {
     }
 
     /**
-     * Emits a range-for over a runtime data container (vector, span, or
-     * static-table rows). Returns false when the iterated expression is not
-     * a data container, so the static-literal unroll can proceed.
-     */
-    /**
-     * `for (const mesh of scene.meshes)` walks the scene's own mesh list,
-     * which is a list of handles into the engine rather than a data
-     * container, so it binds a mesh value instead of a data element. The
-     * count is a run-time property of what the scene ended up holding — a
-     * loaded asset's meshes are added by the generated loader — so this
+     * Iterates a collection an engine handle exposes — handles into the
+     * engine, not a data container, so it binds a handle value instead of a
+     * data element. Which collections exist is the table in `properties.ts`;
+     * this holds the loop, the scope and the binding once. The count is a
+     * run-time property of what the owner ended up holding — a loaded
+     * asset's meshes and groups are added by the generated loader — so this
      * stays a real loop rather than being unrolled.
      */
-    private emitSceneMeshForOf(
+    private emitHandleCollectionForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
     ): boolean {
-        const target = context.sceneMeshIterationTarget(
+        const target = context.handleCollectionIterationTarget(
             statement.expression,
         );
         if (!target) {
@@ -853,19 +858,20 @@ export class StatementLowerer {
         if (!ts.isIdentifier(declaration.name)) {
             context.fail(
                 declaration.name,
-                "Iterating scene meshes requires an identifier binding.",
+                `Iterating ${target.property} requires an identifier binding.`,
             );
         }
-        const item =
-            context.allocateTemporaryCppName("scene_mesh");
+        const item = context.allocateTemporaryCppName(
+            target.temporaryLabel,
+        );
         context.emit(
-            `for (const bbl::MeshHandle ${item} : ${target.sceneCpp}.meshes) {`,
+            `for (const ${target.elementCppType} ${item} : ${target.containerCpp}) {`,
         );
         context.increaseIndent();
         context.pushScope(context.allocateBlockPrefix());
         try {
             context.bindLocalValue(declaration.name, {
-                kind: "mesh",
+                kind: target.elementKind,
                 cpp: item,
                 engineCpp: target.engineCpp,
             });
@@ -883,6 +889,11 @@ export class StatementLowerer {
         return true;
     }
 
+    /**
+     * Emits a range-for over a runtime data container (vector, span, or
+     * static-table rows). Returns false when the iterated expression is not
+     * a data container, so the static-literal unroll can proceed.
+     */
     private emitRuntimeForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,

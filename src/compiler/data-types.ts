@@ -9,6 +9,24 @@ type Fail = (node: ts.Node, message: string) => never;
  * objects, dynamic arrays, readonly views, and all-number tuples. Engine
  * handles never enter this model; they keep their dedicated value kinds.
  */
+/**
+ * The engine handles the data model can carry. Each is a trivially copyable
+ * id, so the value-copy model needs no special case for them, and each pinned
+ * type that names one maps here rather than at every use site.
+ */
+export type HandleKind = "mesh" | "animation-group";
+
+const handleCppTypes: Record<HandleKind, string> = {
+    "mesh": "bbl::MeshHandle",
+    "animation-group": "bbl::AnimationGroupHandle",
+};
+
+/** The pinned type name each handle kind is declared as. */
+const pinnedHandleTypes: Record<string, HandleKind> = {
+    Mesh: "mesh",
+    AnimationGroup: "animation-group",
+};
+
 export type DataType =
     | { kind: "number" }
     | { kind: "boolean" }
@@ -17,7 +35,17 @@ export type DataType =
     // ids, so the value-copy model carries them unchanged: copying a
     // struct copies the id and both refer to the same resource, which
     // is exactly the JavaScript object-reference behavior.
-    | { kind: "handle"; handle: "mesh" }
+    // A runtime string. Deliberately not inferred from a declared `string`
+    // type — not because inference is wrong, but because the record and
+    // union mappers REGISTER definitions as a side effect of speculative
+    // mapping (`structsByKey.set`, `registerEnum`), and the data lowerer
+    // probes types constantly: widening the mapper made probed-but-unused
+    // records register, pulling unused enum definitions into scene 274.
+    // Until registration is decoupled from probing, a string enters the
+    // model only where a declared-property rule names it, so its producer
+    // is always explicit.
+    | { kind: "string" }
+    | { kind: "handle"; handle: HandleKind }
     | { kind: "struct"; name: string }
     | { kind: "enum"; name: string }
     | { kind: "optional"; inner: DataType }
@@ -81,6 +109,7 @@ export function dataTypesEqual(
     switch (left.kind) {
         case "number":
         case "boolean":
+        case "string":
         case "f32array":
         case "u32array":
             return true;
@@ -292,11 +321,11 @@ export class DataTypeRegistry {
         if (type.symbol?.name === "Uint32Array") {
             return { kind: "u32array" };
         }
-        if (
-            type.symbol?.name === "Mesh" &&
-            declaredInBabylonLite(type.symbol)
-        ) {
-            return { kind: "handle", handle: "mesh" };
+        const pinnedHandle = type.symbol
+            ? pinnedHandleTypes[type.symbol.name]
+            : undefined;
+        if (pinnedHandle && declaredInBabylonLite(type.symbol!)) {
+            return { kind: "handle", handle: pinnedHandle };
         }
         const objectType = type as ts.ObjectType;
         if (
@@ -799,8 +828,10 @@ export class DataTypeRegistry {
                 return "double";
             case "boolean":
                 return "bool";
+            case "string":
+                return "std::string";
             case "handle":
-                return "bbl::MeshHandle";
+                return handleCppTypes[dataType.handle];
             case "struct":
                 return `bblscene::${dataType.name}`;
             case "enum":
@@ -830,6 +861,8 @@ export class DataTypeRegistry {
                 return "n";
             case "boolean":
                 return "b";
+            case "string":
+                return "str";
             case "handle":
                 return `h(${dataType.handle})`;
             case "struct":

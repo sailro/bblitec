@@ -29,6 +29,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["animation:property"],
     },
     {
+        source: "upstream/src/animation_group.cpp",
+        features: ["animation:gltf-groups"],
+    },
+    {
         source: "upstream/src/camera_arc_rotate.cpp",
         features: [
             "camera:arc-rotate",

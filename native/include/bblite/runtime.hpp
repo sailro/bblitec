@@ -94,6 +94,10 @@ struct AssetHandle {
     std::uint32_t value = invalid_handle;
 };
 
+struct AnimationGroupHandle {
+    std::uint32_t value = invalid_handle;
+};
+
 struct RenderTargetHandle {
     std::uint32_t value = invalid_handle;
 };
@@ -847,6 +851,16 @@ struct CameraRecord {
 
 struct Scene;
 
+// One glTF animation as scene code addresses it, mirroring the group
+// src/animation/animation-group.ts builds per clip. The play state lives with
+// the clip inside the owning asset's runtime; this record carries what a scene
+// reads and the coordinates the operations need to reach it.
+struct AnimationGroupRecord {
+    std::string name;
+    std::uint32_t asset = invalid_handle;
+    std::size_t clip = 0;
+};
+
 struct AssetRecord {
     std::vector<MeshHandle> meshes;
     std::vector<LightHandle> lights;
@@ -857,6 +871,14 @@ struct AssetRecord {
     std::function<void(float)> animation_tick;
     std::function<void(float)> animation_seek;
     std::function<void(Scene&)> scene_setup;
+    /** This asset's clips, in the document's own animation order. */
+    std::vector<AnimationGroupHandle> animation_groups;
+    /** Sets one clip's isPlaying, through the loader's own runtime. */
+    std::function<void(std::size_t, bool)> set_clip_playing;
+    /** Sets one clip's _stopped, which decides whether a seek reaches it. */
+    std::function<void(std::size_t, bool)> set_clip_stopped;
+    /** Sets one clip's currentTime in seconds. */
+    std::function<void(std::size_t, float)> set_clip_time;
 };
 
 struct Engine {
@@ -868,6 +890,7 @@ struct Engine {
     std::vector<ModelGeometry> geometries;
     std::vector<std::array<TextureData, 6>> reflection_cubes;
     std::vector<AssetRecord> assets;
+    std::vector<AnimationGroupRecord> animation_groups;
     std::vector<RenderTargetRecord> render_targets;
     std::vector<FrameTaskRecord> frame_tasks;
     RenderTargetHandle swapchain_target{};
@@ -931,6 +954,7 @@ struct Scene {
     std::vector<MeshHandle> meshes;
     std::vector<LightHandle> lights;
     std::vector<TaskHandle> tasks;
+    std::vector<AnimationGroupHandle> animation_groups;
     std::vector<std::function<void(float)>> before_render;
     std::vector<std::function<void(float)>> animation_seekers;
     std::vector<std::function<void()>> deferred_builders;
@@ -1242,6 +1266,9 @@ void go_to_frame(
     PropertyAnimationGroup group,
     Engine& engine,
     float frame);
+void play_animation(Engine& engine, AnimationGroupHandle group);
+void pause_animation(Engine& engine, AnimationGroupHandle group);
+void stop_animation(Engine& engine, AnimationGroupHandle group);
 void attach_control(Engine& engine, CameraHandle camera, Scene& scene);
 void attach_free_control(Engine& engine, CameraHandle camera, Scene& scene);
 struct LoadSpriteAtlasOptions {

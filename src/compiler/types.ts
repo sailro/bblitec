@@ -350,6 +350,7 @@ export interface Value {
 }
 
 export type Feature =
+    | "animation:gltf-groups"
     | "animation:property"
     | "background:ground"
     | "background:skybox"

@@ -16,6 +16,10 @@ export interface DataLoweringContext {
         precision?: "float" | "double",
     ): string;
     compileCondition(expression: ts.Expression): string;
+    cppString(value: string): string;
+    declaredDataProperty(
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined;
     resolveStaticExpression(
         expression: ts.Expression,
     ): ts.Expression;
@@ -223,6 +227,16 @@ export class DataLowerer {
                     field.kind === "boolean")
                 ? field
                 : undefined;
+        }
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            // A declared property of an engine handle that the table types
+            // as plain data — a name, an id — is a data path too, read
+            // through the one table every other read site uses.
+            const declared =
+                this.context.declaredDataProperty(unwrapped);
+            if (declared) {
+                return declared;
+            }
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             // A member of a compile-time record — including a getter,
@@ -1363,6 +1377,44 @@ export class DataLowerer {
                 return this.context.compileCondition(
                     unwrapped,
                 );
+            case "string": {
+                // A literal is the string itself; a name bound to a
+                // compile-time string is too, the way the enum arm below
+                // reads one. Anything else has to be a path already typed as
+                // a string, so a number or handle reaching a string sink
+                // fails by type rather than by concatenation.
+                if (
+                    ts.isStringLiteral(unwrapped) ||
+                    ts.isNoSubstitutionTemplateLiteral(unwrapped)
+                ) {
+                    return this.context.cppString(unwrapped.text);
+                }
+                if (ts.isIdentifier(unwrapped)) {
+                    const bound =
+                        this.context.lookupIdentifierValue(
+                            unwrapped,
+                        );
+                    if (bound?.staticString !== undefined) {
+                        return this.context.cppString(
+                            bound.staticString,
+                        );
+                    }
+                }
+                const value = this.compileDataPath(
+                    unwrapped,
+                    "read",
+                );
+                if (
+                    value?.dataType === undefined ||
+                    !dataTypesEqual(value.dataType, dataType)
+                ) {
+                    this.context.fail(
+                        unwrapped,
+                        "Expected a string.",
+                    );
+                }
+                return value.cpp;
+            }
             case "enum": {
                 if (
                     ts.isStringLiteral(unwrapped) ||
@@ -2336,7 +2388,7 @@ export class DataLowerer {
             }
             return undefined;
         }
-        const leftValue = this.enumOperand(left);
+        const leftValue = this.comparableOperand(left);
         if (leftValue) {
             const rightCpp = this.compileForSink(
                 right,
@@ -2344,7 +2396,7 @@ export class DataLowerer {
             );
             return `(${leftValue.cpp} ${negated ? "!=" : "=="} ${rightCpp})`;
         }
-        const rightValue = this.enumOperand(right);
+        const rightValue = this.comparableOperand(right);
         if (rightValue) {
             const leftCpp = this.compileForSink(
                 left,
@@ -2355,10 +2407,16 @@ export class DataLowerer {
         return undefined;
     }
 
-    private enumOperand(
+    /**
+     * An operand whose data type the native `==`/`!=` serve directly, so the
+     * other side compiles against it through the ordinary sink path — an enum
+     * tag or a string. Numbers keep the numeric comparison above, which
+     * carries its own precision contract.
+     */
+    private comparableOperand(
         expression: ts.Expression,
     ):
-        | { cpp: string; dataType: DataType & { kind: "enum" } }
+        | { cpp: string; dataType: DataType }
         | undefined {
         const value = this.compileDataPath(
             expression,
@@ -2366,7 +2424,8 @@ export class DataLowerer {
         );
         if (
             value?.kind === "data" &&
-            value.dataType?.kind === "enum"
+            (value.dataType?.kind === "enum" ||
+                value.dataType?.kind === "string")
         ) {
             return {
                 cpp: value.cpp,

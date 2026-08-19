@@ -1,8 +1,162 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 
+/** A JavaScript number as the C++ float literal the templates emit. */
+function floatLiteral(value: number): string {
+    return Number.isInteger(value) ? `${value}.0` : `${value}`;
+}
+
 export class AnimationLowerer {
     public constructor(private readonly context: LoweringContext) {}
+
+    /**
+     * The glTF animation-group operations, lowered from the pin's own
+     * function bodies. Each pinned operation is a sequence of
+     * `group.<field> = <literal>` writes (src/animation/animation-group.ts),
+     * and each field maps onto the writer the generated loader publishes for
+     * it — isPlaying to set_clip_playing, _stopped to set_clip_stopped,
+     * currentTime to set_clip_time — so the emitted body IS the pin's
+     * statement list, and a pin that grows an operation a new write refuses
+     * generation instead of keeping a stale transcription. goToFrame is
+     * deliberately not lowered: the intrinsic serves the property-animation
+     * overload, and no reached scene calls it on a glTF group.
+     */
+    public lowerGroupOperations(): LoweredSource {
+        const groupModule = "src/animation/animation-group.ts";
+        const writers: Record<string, (value: string) => string> = {
+            isPlaying: (value) =>
+                `    if (asset.set_clip_playing) {
+` +
+                `        asset.set_clip_playing(record.clip, ${value});
+` +
+                `    }`,
+            _stopped: (value) =>
+                `    if (asset.set_clip_stopped) {
+` +
+                `        asset.set_clip_stopped(record.clip, ${value});
+` +
+                `    }`,
+            currentTime: (value) =>
+                `    if (asset.set_clip_time) {
+` +
+                `        asset.set_clip_time(record.clip, ${value}f);
+` +
+                `    }`,
+        };
+        const operation = (pinnedName: string, nativeName: string): string => {
+            const { file, declaration } = this.context.functionDeclaration(
+                groupModule,
+                pinnedName,
+            );
+            if (!declaration.body) {
+                this.context.contractError(
+                    declaration,
+                    `Expected ${pinnedName} to have a body.`,
+                );
+            }
+            const writes: string[] = [];
+            for (const statement of declaration.body.statements) {
+                if (
+                    !ts.isExpressionStatement(statement) ||
+                    !ts.isBinaryExpression(statement.expression) ||
+                    statement.expression.operatorToken.kind !==
+                        ts.SyntaxKind.EqualsToken ||
+                    !ts.isPropertyAccessExpression(
+                        statement.expression.left,
+                    )
+                ) {
+                    this.context.contractError(
+                        statement,
+                        `Expected ${pinnedName} to be a sequence of group field writes.`,
+                    );
+                }
+                const field = statement.expression.left.name.text;
+                const writer = writers[field];
+                if (!writer) {
+                    this.context.contractError(
+                        statement,
+                        `${pinnedName} writes '${field}', which has no native clip writer.`,
+                    );
+                }
+                const right = statement.expression.right;
+                const value =
+                    right.kind === ts.SyntaxKind.TrueKeyword
+                        ? "true"
+                        : right.kind === ts.SyntaxKind.FalseKeyword
+                          ? "false"
+                          : ts.isNumericLiteral(right)
+                            ? floatLiteral(
+                                  this.context.numericValue(right, file),
+                              )
+                            : undefined;
+                if (value === undefined) {
+                    this.context.contractError(
+                        right,
+                        `Expected a literal in ${pinnedName}.`,
+                    );
+                }
+                writes.push(writer(value));
+            }
+            return (
+                `void ${nativeName}(Engine& engine, AnimationGroupHandle group) {
+` +
+                `    const AnimationGroupRecord& record =
+` +
+                `        group_record(engine, group);
+` +
+                `    AssetRecord& asset = group_asset(engine, record);
+` +
+                writes.join("\n") +
+                `
+}`
+            );
+        };
+        const operations = [
+            operation("playAnimation", "play_animation"),
+            operation("pauseAnimation", "pause_animation"),
+            operation("stopAnimation", "stop_animation"),
+        ].join("\n\n");
+        return {
+            modulePath: groupModule,
+            symbolName: "playAnimation,pauseAnimation,stopAnimation",
+            header: "",
+            source: `// ${this.context.provenance(
+                groupModule,
+                "playAnimation,pauseAnimation,stopAnimation",
+            )}
+#include <bblite/runtime.hpp>
+
+#include <stdexcept>
+
+namespace bbl {
+namespace {
+
+const AnimationGroupRecord& group_record(
+    Engine& engine,
+    AnimationGroupHandle group) {
+    if (group.value >= engine.animation_groups.size()) {
+        throw std::runtime_error("Invalid animation group handle.");
+    }
+    return engine.animation_groups[group.value];
+}
+
+AssetRecord& group_asset(
+    Engine& engine,
+    const AnimationGroupRecord& record) {
+    if (record.asset >= engine.assets.size()) {
+        throw std::runtime_error("Invalid asset handle.");
+    }
+    return engine.assets[record.asset];
+}
+
+}  // namespace
+
+${operations}
+
+} // namespace bbl
+`,
+        };
+    }
 
     public lowerPropertyAnimation(): LoweredSource {
         const propertyModule = "src/animation/property-animation.ts";
