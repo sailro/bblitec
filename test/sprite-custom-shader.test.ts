@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { CompileError, compileSource } from "../src/compiler.js";
+
 import { LoweringContext } from "../src/lowering/context.js";
 import {
     PinnedShaderText,
@@ -24,10 +26,28 @@ function billboards(): BillboardLowerer {
     );
 }
 
-test("folds the pinned extra-binding loop to the empty text", () => {
+test("folds the pinned extra-binding loop over a bound list", () => {
     const text = new PinnedShaderText(new LoweringContext());
-    // Nothing binds an extra texture yet, so every reached permutation binds
-    // the empty list and the loop settles without running.
+    // One pair per extra texture, stepping the binding by two. Folding the
+    // pin's own loop rather than emitting the lines here is what keeps a
+    // changed binding rule the pin's.
+    assert.equal(
+        text.evaluate(
+            "src/sprite/custom-shader-core.ts",
+            "makeExtraBindingsWgsl",
+            new Map<string, ShaderTextBinding>([
+                ["group", "2"],
+                ["startBinding", 2],
+                ["extras", [{ name: "palette" }, { name: "noise" }]],
+            ]),
+        ),
+        "@group(2) @binding(2) var paletteTex: texture_2d<f32>;\n" +
+            "@group(2) @binding(3) var paletteSamp: sampler;\n" +
+            "@group(2) @binding(4) var noiseTex: texture_2d<f32>;\n" +
+            "@group(2) @binding(5) var noiseSamp: sampler;\n",
+    );
+    // A layer that named none binds the empty list, and the loop settles
+    // without running.
     assert.equal(
         text.evaluate(
             "src/sprite/custom-shader-core.ts",
@@ -40,20 +60,49 @@ test("folds the pinned extra-binding loop to the empty text", () => {
         ),
         "",
     );
-    // A list with something in it would emit bindings nothing fills, so it
-    // refuses rather than composing a shader the backends cannot bind.
-    assert.throws(
-        () =>
-            text.evaluate(
-                "src/sprite/custom-shader-core.ts",
-                "makeExtraBindingsWgsl",
-                new Map<string, ShaderTextBinding>([
-                    ["group", "1"],
-                    ["startBinding", 3],
-                    ["extras", [{ name: "palette" }]],
-                ]),
-            ),
-        /emits per-element text/,
+});
+
+test("re-homes the extra-texture bindings after the atlas", () => {
+    const shader = new SpriteLowerer(new LoweringContext()).shaderSource(
+        false,
+        "return textureSample(paletteTex, paletteSamp, in.uv);",
+        ["palette"],
+    );
+    // The pin binds its extras after the atlas inside one group; this
+    // backend keeps fragment textures in a group of their own, so the pair
+    // lands after the atlas pair there.
+    assert.equal(
+        shader.extraTextureBindings,
+        "@group(2) @binding(2) var paletteTex: texture_2d<f32>;\n" +
+            "@group(2) @binding(3) var paletteSamp: sampler;\n",
+    );
+    assert.match(
+        spriteFragmentWgsl("test", shader),
+        /@binding\(1\) var atlasSamp: sampler;\n@group\(2\) @binding\(2\) var paletteTex/,
+    );
+    // The billboard family re-homes them the same way, through the same
+    // helper — which is the reason it is one helper.
+    const billboard = billboards().shaderSource(
+        "facing",
+        "transparent",
+        "return textureSample(paletteTex, paletteSamp, in.uv);",
+        ["palette"],
+    );
+    assert.equal(
+        billboard.extraTextureBindings,
+        shader.extraTextureBindings,
+    );
+    assert.match(
+        billboardFragmentWgsl("test", billboard),
+        /@binding\(1\) var atlasSamp: sampler;\n@group\(2\) @binding\(2\) var paletteTex/,
+    );
+    // A body that names none declares none.
+    assert.equal(
+        new SpriteLowerer(new LoweringContext()).shaderSource(
+            false,
+            TINT_BODY,
+        ).extraTextureBindings,
+        "",
     );
 });
 
@@ -114,4 +163,38 @@ test("gives the custom billboard program its own vertex stage", () => {
     const wgsl = billboardFragmentWgsl("test", custom);
     assert.match(wgsl, /@group\(3\) @binding\(0\) var<uniform> billboards/);
     assert.match(wgsl, /@group\(3\) @binding\(1\) var<uniform> fx/);
+});
+
+test("refuses pixels that generation cannot produce", () => {
+    // The bytes are baked by running the module, so the argument has to
+    // name a function generation can call rather than any other value.
+    assert.throws(
+        () =>
+            compileSource(
+                "import {\n    createEngine,\n    createSprite2DCustomShader,\n    createSprite2DLayer,\n    createSpriteRenderer,\n    createTexture2DFromPixels,\n    loadSpriteAtlas,\n    registerSpriteRenderer,\n    startEngine,\n} from \"babylon-lite\";\nimport { getCutoutSpriteAtlasDataUrl } from \"../corpus/babylon-lite/lab/lite/src/_shared/sprite-atlas-cutout\";\nimport { PALETTE_WIDTH } from \"../corpus/babylon-lite/lab/lite/src/_shared/palette-remap\";\n\nasync function main(): Promise<void> {\n    const canvas = document.getElementById(\"renderCanvas\") as HTMLCanvasElement;\n    const engine = await createEngine(canvas);\n    const atlas = await loadSpriteAtlas(engine, getCutoutSpriteAtlasDataUrl(), {\n        gridSize: [32, 32],\n        sampling: \"nearest\",\n    });\n    const paletteTexture = createTexture2DFromPixels(engine, PALETTE_WIDTH as unknown as Uint8Array, 256, 1);\n    const customShader = createSprite2DCustomShader({\n        fragment: \"return textureSample(paletteTex, paletteSamp, in.uv);\",\n        extraTextures: [{ name: \"palette\", texture: paletteTexture }],\n    });\n    const layer = createSprite2DLayer(atlas, { capacity: 4, depth: \"none\", customShader });\n    const sr = createSpriteRenderer(engine, { layers: [layer] });\n    registerSpriteRenderer(sr);\n    await startEngine(engine);\n}\nmain();",
+                { fileName: "examples/pixels.ts" },
+            ),
+        (error: unknown) => {
+            assert.ok(error instanceof CompileError);
+            assert.match(error.message, /run at generation/);
+            return true;
+        },
+    );
+});
+
+test("refuses sampler options the emitted factory settles", () => {
+    // Only the pin's defaults are lowered, so an override refuses rather
+    // than being dropped on the way to the texture.
+    assert.throws(
+        () =>
+            compileSource(
+                "import {\n    createEngine,\n    createSprite2DCustomShader,\n    createSprite2DLayer,\n    createSpriteRenderer,\n    createTexture2DFromPixels,\n    loadSpriteAtlas,\n    registerSpriteRenderer,\n    startEngine,\n} from \"babylon-lite\";\nimport { getCutoutSpriteAtlasDataUrl } from \"../corpus/babylon-lite/lab/lite/src/_shared/sprite-atlas-cutout\";\nimport { buildColormapPalette } from \"../corpus/babylon-lite/lab/lite/src/_shared/palette-remap\";\n\nasync function main(): Promise<void> {\n    const canvas = document.getElementById(\"renderCanvas\") as HTMLCanvasElement;\n    const engine = await createEngine(canvas);\n    const atlas = await loadSpriteAtlas(engine, getCutoutSpriteAtlasDataUrl(), {\n        gridSize: [32, 32],\n        sampling: \"nearest\",\n    });\n    const paletteTexture = createTexture2DFromPixels(\n        engine, buildColormapPalette(), 256, 1, { srgb: true });\n    const customShader = createSprite2DCustomShader({\n        fragment: \"return textureSample(paletteTex, paletteSamp, in.uv);\",\n        extraTextures: [{ name: \"palette\", texture: paletteTexture }],\n    });\n    const layer = createSprite2DLayer(atlas, { capacity: 4, depth: \"none\", customShader });\n    const sr = createSpriteRenderer(engine, { layers: [layer] });\n    registerSpriteRenderer(sr);\n    await startEngine(engine);\n}\nmain();",
+                { fileName: "examples/options.ts" },
+            ),
+        (error: unknown) => {
+            assert.ok(error instanceof CompileError);
+            assert.match(error.message, /options are not lowered/);
+            return true;
+        },
+    );
 });

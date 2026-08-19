@@ -1,4 +1,8 @@
 import ts from "typescript";
+import {
+    addressModeByPin,
+    textureFilterByPin,
+} from "../pinned-address-modes.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 export class FactoryLowerer {
@@ -2195,6 +2199,136 @@ void set_alpha_to_coverage(
     MaterialHandle material,
     bool enabled) {
     shader_material(engine, material).alpha_to_coverage = enabled;
+}
+
+} // namespace bbl
+`,
+        };
+    }
+
+    /**
+     * `pixels-texture.ts`: a texture the caller hands its own RGBA bytes.
+     *
+     * The bytes are baked, so what is lowered is the rest of the pin's
+     * factory — the two size checks and the sampler it settles when the
+     * caller overrides nothing, which is every reached call.
+     */
+    public lowerPixelsTextureFactory(): LoweredSource {
+        const module = "src/texture/pixels-texture.ts";
+        const { declaration } =
+            this.context.functionDeclaration(
+                module,
+                "createTexture2DFromPixels",
+            );
+        // The sampler the pin settles when the caller overrides nothing,
+        // which is every reached call. Each field is checked as the pin
+        // writes it and then emitted through the shared name-to-enumerator
+        // tables, so the default and the enumerator cannot drift apart and a
+        // mode with no row fails generation naming it.
+        const sampler = this.context.variableInitializer(
+            declaration,
+            "samplerDesc",
+        );
+        if (!ts.isObjectLiteralExpression(sampler)) {
+            this.context.contractError(
+                sampler,
+                "Expected the pinned pixels-texture sampler literal.",
+            );
+        }
+        const samplerDefault = (
+            name: string,
+            fallback: string,
+            table: Readonly<Record<string, string>>,
+        ): string => {
+            this.context.assertExpressionShape(
+                this.context.propertyInitializer(sampler, name),
+                `options.${name} ?? "${fallback}"`,
+                `createTexture2DFromPixels ${name}`,
+            );
+            const enumerator = table[fallback];
+            if (!enumerator) {
+                this.context.contractError(
+                    sampler,
+                    `Pinned createTexture2DFromPixels defaults ${name} to '${fallback}', which has no runtime enumerator.`,
+                );
+            }
+            return enumerator;
+        };
+        const addressU = samplerDefault(
+            "addressModeU",
+            "clamp-to-edge",
+            addressModeByPin,
+        );
+        const addressV = samplerDefault(
+            "addressModeV",
+            "clamp-to-edge",
+            addressModeByPin,
+        );
+        const minFilter = samplerDefault(
+            "minFilter",
+            "nearest",
+            textureFilterByPin,
+        );
+        const magFilter = samplerDefault(
+            "magFilter",
+            "nearest",
+            textureFilterByPin,
+        );
+        // The byte count the pin requires, which the baked buffer has to
+        // meet for the same reason it does upstream.
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                declaration,
+                "expected",
+            ),
+            "width * height * 4",
+            "createTexture2DFromPixels expected byte count",
+        );
+        return {
+            modulePath: module,
+            symbolName: "createTexture2DFromPixels",
+            header: "",
+            source: `// ${this.context.provenance(module, "createTexture2DFromPixels")}
+#include <bblite/runtime.hpp>
+#include <bblite/pal.hpp>
+
+#include <stdexcept>
+#include <string>
+
+namespace bbl {
+
+PixelsTexture create_texture_2d_from_pixels(
+    Engine&,
+    const std::string& path,
+    double width,
+    double height) {
+    if (width < 1.0 || height < 1.0) {
+        throw std::runtime_error(
+            "createTexture2DFromPixels: width/height must be >= 1");
+    }
+    PixelsTexture texture;
+    texture.rgba = pal::read_binary_file(path);
+    texture.width = static_cast<std::uint32_t>(width);
+    texture.height = static_cast<std::uint32_t>(height);
+    const std::size_t expected =
+        static_cast<std::size_t>(texture.width) *
+        static_cast<std::size_t>(texture.height) * 4u;
+    if (texture.rgba.size() < expected) {
+        throw std::runtime_error(
+            "createTexture2DFromPixels: data too short for " +
+            std::to_string(texture.width) + "x" +
+            std::to_string(texture.height) + " RGBA");
+    }
+    // The pin's own defaults, read above rather than restated. It creates
+    // no mip chain, so mip sampling clamps to the base level.
+    texture.sampler.min_filter = ${minFilter};
+    texture.sampler.mag_filter = ${magFilter};
+    texture.sampler.mipmap_mode = TextureMipmapMode::nearest;
+    texture.sampler.address_u = ${addressU};
+    texture.sampler.address_v = ${addressV};
+    texture.sampler.max_anisotropy = 1.0f;
+    texture.sampler.max_lod = 0.0f;
+    return texture;
 }
 
 } // namespace bbl

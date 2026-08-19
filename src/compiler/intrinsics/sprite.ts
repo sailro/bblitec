@@ -24,6 +24,7 @@ export interface SpriteIntrinsicContext
     registerSpriteAtlasAsset(
         expression: ts.Expression,
     ): string;
+    registerPixelsAsset(expression: ts.Expression): string;
     allocateTemporaryCppName(label: string): string;
     /** One layer or system built without a custom shader, so with the stock program. */
     recordPlainSpriteProgram(family: "sprite" | "billboard"): void;
@@ -100,26 +101,66 @@ function blendOption(
 }
 
 /**
- * The descriptor a `customShader` option names, as the flag the record
- * carries.
+ * The extra textures a custom shader binds after the atlas.
+ *
+ * Each entry names an identifier the caller's WGSL samples through
+ * `<name>Tex` / `<name>Samp`, so the name has to be settled here; the
+ * texture beside it is an ordinary runtime value the layer or system binds.
+ */
+function extraTextureOption(
+    context: SpriteIntrinsicContext,
+    options: Value | undefined,
+    label: string,
+    node: ts.Node,
+): { name: string; cpp: string }[] {
+    const named = property(options, "extraTextures");
+    if (!named) {
+        return [];
+    }
+    if (named.kind !== "tuple" || !named.tupleElements) {
+        context.fail(
+            node,
+            `${label}: 'extraTextures' must be written as an array literal.`,
+        );
+    }
+    return named.tupleElements.map((entry) => {
+        const name = entry.recordProperties?.["name"];
+        const texture = entry.recordProperties?.["texture"];
+        if (
+            entry.kind !== "record" ||
+            name?.staticString === undefined ||
+            texture?.kind !== "texture"
+        ) {
+            context.fail(
+                node,
+                `${label}: each extra texture needs a literal 'name' and a texture.`,
+            );
+        }
+        return { name: name.staticString, cpp: texture.cpp };
+    });
+}
+
+/**
+ * The two fields a `customShader` option settles on the record: whether
+ * there is a descriptor, and the extra textures it binds.
  *
  * The pin's own hook copies the descriptor onto the layer or system and
- * every later read goes through it, so what generation needs here is only
- * whether there is one — the program itself is composed once per family.
- * The family is checked because a 2D descriptor names a fragment written
- * against a varying struct carrying `uv` and `tint` alone, which a billboard
- * stage would compile against a different contract behind the same names.
+ * every later read goes through it, so the program itself is composed once
+ * per family and what the record carries is only this pair. The family is
+ * checked because a 2D descriptor names a fragment written against a varying
+ * struct carrying `uv` and `tint` alone, which a billboard stage would
+ * compile against a different contract behind the same names.
  */
 function customShaderOption(
     context: SpriteIntrinsicContext,
     options: Value | undefined,
     family: "sprite" | "billboard",
     node: ts.Node,
-): string {
+): { present: string; textures: string } {
     const named = property(options, "customShader");
     if (!named) {
         context.recordPlainSpriteProgram(family);
-        return "false";
+        return { present: "false", textures: "{}" };
     }
     if (named.kind !== `${family}-custom-shader`) {
         context.fail(
@@ -131,7 +172,21 @@ function customShaderOption(
             } descriptor.`,
         );
     }
-    return "true";
+    // The descriptor's extra textures travel with the flag: they are what
+    // the layer or system binds after its atlas, in the order the WGSL
+    // declares them. The factory always sets the list, empty or not, so an
+    // absent one is this compiler disagreeing with itself rather than the
+    // scene naming something odd.
+    if (!named.spriteCustomTextures) {
+        context.fail(
+            node,
+            "A custom-shader descriptor reached a layer without its texture list.",
+        );
+    }
+    return {
+        present: "true",
+        textures: `{${named.spriteCustomTextures.join(", ")}}`,
+    };
 }
 
 /**
@@ -409,6 +464,12 @@ export function compileSpriteIntrinsic(
                 call,
                 2,
             );
+            const custom = customShaderOption(
+                context,
+                options,
+                "sprite",
+                call.arguments[1] ?? call,
+            );
             const engineCpp =
                 atlas.engineCpp ??
                 context.requireDefaultEngine(call);
@@ -428,12 +489,7 @@ export function compileSpriteIntrinsic(
                             ? `${pivot[0]!}, ${pivot[1]!}`
                             : "0.5f, 0.5f"
                     }}, ` +
-                    `${customShaderOption(
-                        context,
-                        options,
-                        "sprite",
-                        call.arguments[1] ?? call,
-                    )}})`,
+                    `${custom.present}, ${custom.textures}})`,
                 engineCpp,
             };
         }
@@ -562,6 +618,12 @@ export function compileSpriteIntrinsic(
                 "billboard",
                 optionsArg ?? call,
             );
+            const custom = customShaderOption(
+                context,
+                options,
+                "billboard",
+                optionsArg ?? call,
+            );
 
             // `order` sorts a system against the scene's other transparent
             // renderables upstream. A system here draws in the slot its depth
@@ -608,12 +670,7 @@ export function compileSpriteIntrinsic(
                     // beside it rather than from the name at this call site.
                     `${numberOption(options, "alphaCutoff", "0.0f")}, ` +
                     `${property(options, "alphaCutoff") ? "true" : "false"}, ` +
-                    `${customShaderOption(
-                        context,
-                        options,
-                        "billboard",
-                        optionsArg ?? call,
-                    )}})`,
+                    `${custom.present}, ${custom.textures}})`,
                 engineCpp,
             };
         }
@@ -706,6 +763,48 @@ export function compileSpriteIntrinsic(
             };
         }
 
+        case "createTexture2DFromPixels": {
+            context.expectArgumentCount(call, 4, 5);
+            const engine = context.compileValue(
+                call.arguments[0]!,
+            );
+            context.expectKind(
+                engine,
+                "engine",
+                call.arguments[0]!,
+            );
+            // The bytes are a module's own, settled at generation, so they
+            // are baked as an asset the way a drawn atlas is.
+            const pixels = context.registerPixelsAsset(
+                call.arguments[1]!,
+            );
+            const width = context.compileNumber(
+                call.arguments[2]!,
+                "double",
+            );
+            const height = context.compileNumber(
+                call.arguments[3]!,
+                "double",
+            );
+            // The pin's sampler and format overrides. Only its defaults are
+            // reached, and the emitted factory settles those, so an options
+            // record refuses rather than being dropped.
+            if (call.arguments[4]) {
+                context.fail(
+                    call.arguments[4],
+                    "createTexture2DFromPixels options are not lowered.",
+                );
+            }
+            context.reachFeature("texture:pixels", call);
+            return {
+                kind: "texture",
+                cpp:
+                    `bbl::create_texture_2d_from_pixels(${engine.cpp}, ` +
+                    `bbl::asset_path(${pixels}), ${width}, ${height})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+            };
+        }
+
         case "createSprite2DCustomShader":
         case "createBillboardCustomShader": {
             context.expectArgumentCount(call, 1, 1);
@@ -733,15 +832,16 @@ export function compileSpriteIntrinsic(
                     `${importedName}: 'fragment' must be a non-empty WGSL string.`,
                 );
             }
-            // Each extra texture adds a binding pair the pin emits ahead of
-            // the fx block. Nothing reaches them yet, so they refuse by name
-            // rather than composing a shader whose bindings nothing fills.
-            if (property(options, "extraTextures")) {
-                context.fail(
-                    call.arguments[0] ?? call,
-                    `${importedName} option 'extraTextures' is not lowered.`,
-                );
-            }
+            // Each extra texture adds the binding pair the pin emits ahead
+            // of the fx block: `<name>Tex` and `<name>Samp`, in the order
+            // given. The name is compile-time (it is spliced into WGSL) and
+            // the texture is a runtime value the layer binds.
+            const extras = extraTextureOption(
+                context,
+                options,
+                importedName,
+                call.arguments[0] ?? call,
+            );
             const family =
                 importedName === "createSprite2DCustomShader"
                     ? "sprite"
@@ -773,8 +873,15 @@ export function compileSpriteIntrinsic(
             context.recordSpriteCustomShader({
                 family,
                 fragment: fragment.staticString,
+                extraTextures: extras.map(({ name }) => name),
             });
-            return { kind: `${family}-custom-shader`, cpp: "" };
+            return {
+                kind: `${family}-custom-shader`,
+                cpp: "",
+                spriteCustomTextures: extras.map(
+                    ({ cpp }) => cpp,
+                ),
+            };
         }
 
         case "setSprite2DShaderParams":

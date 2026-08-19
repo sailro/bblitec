@@ -8,6 +8,10 @@ import {
     readPinnedBlendTable,
 } from "./pinned-blend-table.js";
 import { LoweredSource, LoweringContext } from "./context.js";
+import {
+    extraTextureBindingsWgsl,
+    extraTextureRecords,
+} from "../shader-builtins-sprite-fx.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const layerModule = "src/sprite/sprite-2d.ts";
@@ -16,8 +20,7 @@ const pipelineModule = "src/sprite/sprite-pipeline.ts";
 const rendererModule = "src/sprite/sprite-renderer.ts";
 const uvScrollModule = "src/sprite/sprite-2d-uvscroll.ts";
 const customShaderModule = "src/sprite/sprite-custom-shader.ts";
-// Shared by both families: the fx block, its byte count, and the extra
-// binding lines the composers splice in.
+// Shared by both families: the fx block and its byte count.
 const customShaderCoreModule = "src/sprite/custom-shader-core.ts";
 
 /** The pinned WGSL, reconstructed for the pure-2D permutation. */
@@ -38,6 +41,13 @@ export interface SpriteShaderSource {
      * fragment in, because a body that never names `fx` still has it bound.
      */
     fxStructFields?: string | undefined;
+    /**
+     * The `<name>Tex` / `<name>Samp` pairs a custom shader's extra textures
+     * bind through, at this backend's own group, and empty when the body
+     * named none. Emitted by the pin's own builder, so the pair it writes
+     * per texture is the pin's.
+     */
+    extraTextureBindings: string;
 }
 
 /**
@@ -780,6 +790,7 @@ export class SpriteLowerer {
     public shaderSource(
         uvScroll = false,
         customFragment?: string,
+        extraTextures: readonly string[] = [],
     ): SpriteShaderSource {
         const permutation = new Map<string, ShaderTextBinding>([
             ["hasDepth", false],
@@ -798,7 +809,10 @@ export class SpriteLowerer {
                       "makeCustomSpriteWgsl",
                       new Map<string, ShaderTextBinding>([
                           ...permutation,
-                          ["extraTextures", []],
+                          [
+                              "extraTextures",
+                              extraTextureRecords(extraTextures),
+                          ],
                           ["fragment", customFragment],
                       ]),
                   );
@@ -849,6 +863,10 @@ export class SpriteLowerer {
                       "sprite fx uniform struct",
                   )
                 : undefined,
+            extraTextureBindings: extraTextureBindingsWgsl(
+                this.shaderText,
+                extraTextures,
+            ),
         };
     }
 
@@ -1269,8 +1287,10 @@ Sprite2DLayerHandle create_sprite_2d_layer(
     layer.atlas = atlas;
     layer.blend = options.blend_mode;
     // initLayer, through the fx hook: a layer built with a descriptor
-    // draws that program, and its params start zeroed.
+    // draws that program, its extra textures bind after the atlas, and
+    // its params start zeroed.
     layer.custom_shader = options.custom_shader;
+    layer.custom_textures = std::move(options.custom_textures);
     layer.opacity = options.opacity;
     layer.visible = options.visible;
     layer.order = options.order;

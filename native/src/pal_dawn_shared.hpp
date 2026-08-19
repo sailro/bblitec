@@ -56,6 +56,92 @@ inline WGPUStringView string_view(const char* text) {
     throw std::runtime_error("Dawn backend: " + message);
 }
 
+/**
+ * Upload RGBA8 texels as a sampled 2D texture.
+ *
+ * Shared because a sprite atlas and a custom shader's extra texture are the
+ * same upload: tightly packed rows, no mip chain, no sRGB view.
+ */
+inline WGPUTexture upload_dawn_rgba_texture(
+    WGPUDevice device,
+    WGPUQueue queue,
+    const std::uint8_t* rgba,
+    std::size_t bytes,
+    std::uint32_t width,
+    std::uint32_t height) {
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.dimension = WGPUTextureDimension_2D;
+    descriptor.format = WGPUTextureFormat_RGBA8Unorm;
+    descriptor.usage =
+        WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    descriptor.size = WGPUExtent3D{width, height, 1};
+    WGPUTexture texture = wgpuDeviceCreateTexture(device, &descriptor);
+    if (!texture) dawn_error("wgpuDeviceCreateTexture rgba texture");
+    WGPUTexelCopyTextureInfo destination =
+        WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    destination.texture = texture;
+    WGPUTexelCopyBufferLayout layout{};
+    layout.bytesPerRow = width * 4u;
+    layout.rowsPerImage = height;
+    const WGPUExtent3D size{width, height, 1};
+    wgpuQueueWriteTexture(
+        queue, &destination, rgba, bytes, &layout, &size);
+    return texture;
+}
+
+/** One texture a sprite-family pass samples: the atlas, or a custom
+ *  shader's extra. The three handles are created, bound and released
+ *  together, so they travel together. */
+struct DawnSampledTexture {
+    WGPUTexture texture = nullptr;
+    WGPUTextureView view = nullptr;
+    WGPUSampler sampler = nullptr;
+};
+
+/**
+ * The texture-group layout entries for `pairs` sampled textures.
+ *
+ * Each contributes a texture then its sampler, which is the order the
+ * pin's own binding lines declare them in and the order
+ * {@link append_dawn_texture_pair} binds them.
+ */
+inline std::vector<WGPUBindGroupLayoutEntry>
+dawn_texture_pair_layout_entries(std::size_t pairs) {
+    std::vector<WGPUBindGroupLayoutEntry> entries;
+    entries.reserve(pairs * 2u);
+    for (std::size_t pair = 0; pair < pairs; ++pair) {
+        WGPUBindGroupLayoutEntry sampled =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        sampled.binding = static_cast<std::uint32_t>(pair * 2u);
+        sampled.visibility = WGPUShaderStage_Fragment;
+        sampled.texture.sampleType = WGPUTextureSampleType_Float;
+        sampled.texture.viewDimension = WGPUTextureViewDimension_2D;
+        WGPUBindGroupLayoutEntry sampler_entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        sampler_entry.binding =
+            static_cast<std::uint32_t>(pair * 2u + 1u);
+        sampler_entry.visibility = WGPUShaderStage_Fragment;
+        sampler_entry.sampler.type = WGPUSamplerBindingType_Filtering;
+        entries.push_back(sampled);
+        entries.push_back(sampler_entry);
+    }
+    return entries;
+}
+
+/** Appends one texture and its sampler at the next two bindings. */
+inline void append_dawn_texture_pair(
+    std::vector<WGPUBindGroupEntry>& into,
+    const DawnSampledTexture& texture) {
+    WGPUBindGroupEntry sampled = WGPU_BIND_GROUP_ENTRY_INIT;
+    sampled.binding = static_cast<std::uint32_t>(into.size());
+    sampled.textureView = texture.view;
+    WGPUBindGroupEntry sampler_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    sampler_entry.binding = static_cast<std::uint32_t>(into.size() + 1u);
+    sampler_entry.sampler = texture.sampler;
+    into.push_back(sampled);
+    into.push_back(sampler_entry);
+}
+
 inline void wait_for(WGPUInstance instance, WGPUFuture future) {
     WGPUFutureWaitInfo wait_info{};
     wait_info.future = future;
@@ -385,6 +471,35 @@ inline WGPUSampler create_texture_sampler(
     WGPUSampler result = wgpuDeviceCreateSampler(device, &descriptor);
     if (!result) dawn_error("wgpuDeviceCreateSampler material");
     return result;
+}
+
+/** Uploads one extra texture with the sampler its record carries. */
+inline DawnSampledTexture upload_dawn_extra_texture(
+    WGPUDevice device,
+    WGPUQueue queue,
+    const PixelsTexture& extra) {
+    DawnSampledTexture texture;
+    texture.texture = upload_dawn_rgba_texture(
+        device,
+        queue,
+        extra.rgba.data(),
+        extra.rgba.size(),
+        extra.width,
+        extra.height);
+    texture.view = wgpuTextureCreateView(texture.texture, nullptr);
+    texture.sampler = create_texture_sampler(device, extra.sampler);
+    return texture;
+}
+
+/** Releases what {@link upload_dawn_extra_texture} built. */
+inline void release_dawn_extra_textures(
+    std::vector<DawnSampledTexture>& extras) {
+    for (const DawnSampledTexture& extra : extras) {
+        if (extra.sampler) wgpuSamplerRelease(extra.sampler);
+        if (extra.view) wgpuTextureViewRelease(extra.view);
+        if (extra.texture) wgpuTextureRelease(extra.texture);
+    }
+    extras.clear();
 }
 
 inline void save_capture_png(

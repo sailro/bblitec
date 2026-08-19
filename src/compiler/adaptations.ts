@@ -113,6 +113,25 @@ export function compileAdaptations(
             ],
         });
     }
+    if (
+        [...context.assets.values()].some(
+            (asset) => asset.kind === "pixels",
+        )
+    ) {
+        adaptations.push({
+            id: "computed-pixel-buffer",
+            category: "asset-materialization",
+            sourceSemantics:
+                "The scene computes a texture's bytes at run time and hands them to createTexture2DFromPixels.",
+            nativeSemantics:
+                "Generation runs the same module in headless Chromium and bakes the bytes it returns. This is a larger adaptation than the drawn atlas beside it: those pixels are a rasterizer's and could never be lowered, while these are arithmetic. They are frozen because this compiler has no Math.round to lower them with, and because the palette they build lands three of its 768 channel values 2.8e-14 under a rounding boundary -- one ulp of sin -- so any change in how the expression evaluates would flip an entry and with it a pixel. The bytes depend on the Chrome that compiled them.",
+            risk: "medium",
+            validation: [
+                "scenes 93 and 95 parity against the browser golden, which computes the same bytes at run time",
+                "byte-stable across repeated compilations",
+            ],
+        });
+    }
     if (features.includes("backend:sdl")) {
         adaptations.push({
             id: "sdl-platform-boundary",

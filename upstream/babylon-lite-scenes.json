@@ -464,6 +464,18 @@
       "upstreamPath": "lab/lite/src/lite/scene94.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene94.ts",
       "sha256": "4f88e8933f6b156a93b35b12cb2b546f99bf4bbc53ced7d9b26e0a20108cc6bb"
+    },
+    {
+      "id": "scene93",
+      "upstreamPath": "lab/lite/src/lite/scene93.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene93.ts",
+      "sha256": "0fde92477066d757986d03e535e83f6f4078b453ea01837955f7b467190cb4fc"
+    },
+    {
+      "id": "scene95",
+      "upstreamPath": "lab/lite/src/lite/scene95.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene95.ts",
+      "sha256": "356ab466883af4f6c7862a2afefc3ef2e1b826a1d0b04afc50fb3dcb1045365f"
     }
   ],
   "modules": [
@@ -491,6 +503,11 @@
       "upstreamPath": "lab/lite/src/_shared/scroll-tile-image.ts",
       "source": "corpus/babylon-lite/lab/lite/src/_shared/scroll-tile-image.ts",
       "sha256": "fca4b180142ee28b01bc2e2e5b8b6d70824da8c84b0fc0d0a3d98f2f6cbeba3c"
+    },
+    {
+      "upstreamPath": "lab/lite/src/_shared/palette-remap.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/_shared/palette-remap.ts",
+      "sha256": "bbfcffe9873449dafc59e48a03be1c6e083d9ac6ff611565ef0e6e21adbe6ccd"
     }
   ]
 }

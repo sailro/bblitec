@@ -51,6 +51,9 @@ struct DawnSpriteLayer {
     WGPUTexture atlas = nullptr;
     WGPUTextureView atlas_view = nullptr;
     WGPUSampler sampler = nullptr;
+    // The custom shader's extra textures, in the order they bind after
+    // the atlas.
+    std::vector<DawnSampledTexture> extras;
     WGPUBindGroup vertex_group = nullptr;
     WGPUBindGroup texture_group = nullptr;
     WGPUBindGroup fragment_group = nullptr;
@@ -114,7 +117,8 @@ inline WGPUBuffer dawn_sprite_uniform_buffer(
 inline std::array<WGPUBindGroupLayout, 4>
 create_dawn_sprite_layer_layouts(
     WGPUDevice device,
-    bool custom_shader) {
+    bool custom_shader,
+    std::size_t extra_textures) {
     std::array<WGPUBindGroupLayout, 4> layouts{};
 
     WGPUBindGroupLayoutDescriptor empty =
@@ -133,17 +137,10 @@ create_dawn_sprite_layer_layouts(
     vertex_layout.entries = &vertex_entry;
     layouts[1] = wgpuDeviceCreateBindGroupLayout(device, &vertex_layout);
 
-    std::array<WGPUBindGroupLayoutEntry, 2> texture_entries{};
-    texture_entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    texture_entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    texture_entries[0].binding = 0;
-    texture_entries[0].visibility = WGPUShaderStage_Fragment;
-    texture_entries[0].texture.sampleType = WGPUTextureSampleType_Float;
-    texture_entries[0].texture.viewDimension =
-        WGPUTextureViewDimension_2D;
-    texture_entries[1].binding = 1;
-    texture_entries[1].visibility = WGPUShaderStage_Fragment;
-    texture_entries[1].sampler.type = WGPUSamplerBindingType_Filtering;
+    // The atlas pair, then one pair per extra texture a custom shader
+    // named -- the order the composed program declares them in.
+    const std::vector<WGPUBindGroupLayoutEntry> texture_entries =
+        dawn_texture_pair_layout_entries(1u + extra_textures);
     WGPUBindGroupLayoutDescriptor texture_layout =
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     texture_layout.entryCount =
@@ -341,7 +338,9 @@ inline DawnSpritePass create_dawn_sprite_pass(
             engine.sprite_atlases[layer.atlas.value];
         DawnSpriteLayer& gpu = pass.layers[index];
         gpu.group_layouts = create_dawn_sprite_layer_layouts(
-            device, layer.custom_shader);
+            device,
+            layer.custom_shader,
+            layer.custom_textures.size());
         gpu.pipeline = create_dawn_sprite_layer_pipeline(
             device,
             gpu.group_layouts,
@@ -367,30 +366,13 @@ inline DawnSpritePass create_dawn_sprite_pass(
 
         // rgba8unorm: `loadTexture2D` leaves srgb off, so the atlas texels
         // reach the blend stage as the bytes on disk.
-        WGPUTextureDescriptor texture_descriptor =
-            WGPU_TEXTURE_DESCRIPTOR_INIT;
-        texture_descriptor.dimension = WGPUTextureDimension_2D;
-        texture_descriptor.format = WGPUTextureFormat_RGBA8Unorm;
-        texture_descriptor.usage =
-            WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
-        texture_descriptor.size =
-            WGPUExtent3D{atlas.width, atlas.height, 1};
-        gpu.atlas = wgpuDeviceCreateTexture(device, &texture_descriptor);
-        if (!gpu.atlas) dawn_error("wgpuDeviceCreateTexture sprite atlas");
-        WGPUTexelCopyTextureInfo upload_destination =
-            WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-        upload_destination.texture = gpu.atlas;
-        WGPUTexelCopyBufferLayout upload_layout{};
-        upload_layout.bytesPerRow = atlas.width * 4;
-        upload_layout.rowsPerImage = atlas.height;
-        const WGPUExtent3D upload_size{atlas.width, atlas.height, 1};
-        wgpuQueueWriteTexture(
+        gpu.atlas = upload_dawn_rgba_texture(
+            device,
             queue,
-            &upload_destination,
             atlas.rgba.data(),
             atlas.rgba.size(),
-            &upload_layout,
-            &upload_size);
+            atlas.width,
+            atlas.height);
         gpu.atlas_view = wgpuTextureCreateView(gpu.atlas, nullptr);
 
         // The pinned sampler, derived from the record like the SDL_GPU
@@ -410,13 +392,17 @@ inline DawnSpritePass create_dawn_sprite_pass(
         gpu.vertex_group =
             wgpuDeviceCreateBindGroup(device, &vertex_group);
 
-        std::array<WGPUBindGroupEntry, 2> texture_bindings{};
-        texture_bindings[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-        texture_bindings[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-        texture_bindings[0].binding = 0;
-        texture_bindings[0].textureView = gpu.atlas_view;
-        texture_bindings[1].binding = 1;
-        texture_bindings[1].sampler = gpu.sampler;
+        std::vector<WGPUBindGroupEntry> texture_bindings;
+        append_dawn_texture_pair(
+            texture_bindings,
+            DawnSampledTexture{
+                gpu.atlas, gpu.atlas_view, gpu.sampler});
+        for (const PixelsTexture& extra : layer.custom_textures) {
+            gpu.extras.push_back(
+                upload_dawn_extra_texture(device, queue, extra));
+            append_dawn_texture_pair(
+                texture_bindings, gpu.extras.back());
+        }
         WGPUBindGroupDescriptor texture_group =
             WGPU_BIND_GROUP_DESCRIPTOR_INIT;
         texture_group.layout = gpu.group_layouts[2];
@@ -551,6 +537,7 @@ inline void release_dawn_sprite_pass(DawnSpritePass& pass) {
             wgpuBindGroupRelease(layer.fragment_group);
         }
         if (layer.sampler) wgpuSamplerRelease(layer.sampler);
+        release_dawn_extra_textures(layer.extras);
         if (layer.atlas_view) wgpuTextureViewRelease(layer.atlas_view);
         if (layer.atlas) wgpuTextureRelease(layer.atlas);
         if (layer.pipeline) wgpuRenderPipelineRelease(layer.pipeline);

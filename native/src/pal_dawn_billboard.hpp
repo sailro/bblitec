@@ -50,6 +50,9 @@ struct DawnBillboardPass {
     WGPUTexture atlas = nullptr;
     WGPUTextureView atlas_view = nullptr;
     WGPUSampler sampler = nullptr;
+    // The custom shader's extra textures, in the order they bind after
+    // the atlas.
+    std::vector<DawnSampledTexture> extras;
     WGPUBindGroup vertex_group = nullptr;
     WGPUBindGroup texture_group = nullptr;
     WGPUBindGroup fragment_group = nullptr;
@@ -171,19 +174,11 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         pass.group_layouts[1] =
             wgpuDeviceCreateBindGroupLayout(device, &vertex_layout);
 
-        std::array<WGPUBindGroupLayoutEntry, 2> texture_entries{};
-        texture_entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        texture_entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        texture_entries[0].binding = 0;
-        texture_entries[0].visibility = WGPUShaderStage_Fragment;
-        texture_entries[0].texture.sampleType =
-            WGPUTextureSampleType_Float;
-        texture_entries[0].texture.viewDimension =
-            WGPUTextureViewDimension_2D;
-        texture_entries[1].binding = 1;
-        texture_entries[1].visibility = WGPUShaderStage_Fragment;
-        texture_entries[1].sampler.type =
-            WGPUSamplerBindingType_Filtering;
+        // The atlas pair, then one pair per extra texture a custom shader
+        // named -- the order the composed program declares them in.
+        const std::vector<WGPUBindGroupLayoutEntry> texture_entries =
+            dawn_texture_pair_layout_entries(
+                1u + system.custom_textures.size());
         WGPUBindGroupLayoutDescriptor texture_layout =
             WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
         texture_layout.entryCount =
@@ -350,29 +345,13 @@ inline DawnBillboardPass create_dawn_billboard_pass(
 
     // rgba8unorm: `loadTexture2D` leaves srgb off, so the atlas texels reach
     // the blend stage as the bytes on disk.
-    WGPUTextureDescriptor texture_descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
-    texture_descriptor.dimension = WGPUTextureDimension_2D;
-    texture_descriptor.format = WGPUTextureFormat_RGBA8Unorm;
-    texture_descriptor.usage =
-        WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
-    texture_descriptor.size =
-        WGPUExtent3D{atlas.width, atlas.height, 1};
-    pass.atlas = wgpuDeviceCreateTexture(device, &texture_descriptor);
-    if (!pass.atlas) dawn_error("wgpuDeviceCreateTexture billboard atlas");
-    WGPUTexelCopyTextureInfo upload_destination =
-        WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-    upload_destination.texture = pass.atlas;
-    WGPUTexelCopyBufferLayout upload_layout{};
-    upload_layout.bytesPerRow = atlas.width * 4;
-    upload_layout.rowsPerImage = atlas.height;
-    const WGPUExtent3D upload_size{atlas.width, atlas.height, 1};
-    wgpuQueueWriteTexture(
+    pass.atlas = upload_dawn_rgba_texture(
+        device,
         queue,
-        &upload_destination,
         atlas.rgba.data(),
         atlas.rgba.size(),
-        &upload_layout,
-        &upload_size);
+        atlas.width,
+        atlas.height);
     pass.atlas_view = wgpuTextureCreateView(pass.atlas, nullptr);
     pass.sampler = create_texture_sampler(device, atlas.sampler);
 
@@ -391,13 +370,16 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     vertex_group.entries = vertex_bindings.data();
     pass.vertex_group = wgpuDeviceCreateBindGroup(device, &vertex_group);
 
-    std::array<WGPUBindGroupEntry, 2> texture_bindings{};
-    texture_bindings[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-    texture_bindings[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-    texture_bindings[0].binding = 0;
-    texture_bindings[0].textureView = pass.atlas_view;
-    texture_bindings[1].binding = 1;
-    texture_bindings[1].sampler = pass.sampler;
+    std::vector<WGPUBindGroupEntry> texture_bindings;
+    append_dawn_texture_pair(
+        texture_bindings,
+        DawnSampledTexture{
+            pass.atlas, pass.atlas_view, pass.sampler});
+    for (const PixelsTexture& extra : system.custom_textures) {
+        pass.extras.push_back(
+            upload_dawn_extra_texture(device, queue, extra));
+        append_dawn_texture_pair(texture_bindings, pass.extras.back());
+    }
     WGPUBindGroupDescriptor texture_group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     texture_group.layout = pass.group_layouts[2];
     texture_group.entryCount =
@@ -533,6 +515,7 @@ inline void record_dawn_billboard_pass(
 
 inline void release_dawn_billboard_pass(DawnBillboardPass& pass) {
     if (pass.fx_uniforms) wgpuBufferRelease(pass.fx_uniforms);
+    release_dawn_extra_textures(pass.extras);
     if (pass.vertex_group) wgpuBindGroupRelease(pass.vertex_group);
     if (pass.texture_group) wgpuBindGroupRelease(pass.texture_group);
     if (pass.fragment_group) wgpuBindGroupRelease(pass.fragment_group);

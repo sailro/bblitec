@@ -12,3 +12,18 @@ export const addressModeByPin: Readonly<Record<string, string>> = {
     "mirror-repeat": "TextureAddressMode::mirror",
     repeat: "TextureAddressMode::repeat",
 };
+
+/**
+ * The pin's filter names, as the runtime enumerators. Same rule as the
+ * address modes: a filter the pin starts using that has no row here fails
+ * generation naming it.
+ */
+export const textureFilterByPin: Readonly<Record<string, string>> = {
+    nearest: "TextureFilter::nearest",
+    linear: "TextureFilter::linear",
+};
+
+export const mipmapModeByPin: Readonly<Record<string, string>> = {
+    nearest: "TextureMipmapMode::nearest",
+    linear: "TextureMipmapMode::linear",
+};

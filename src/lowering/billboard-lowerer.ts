@@ -1,6 +1,10 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
+    extraTextureBindingsWgsl,
+    extraTextureRecords,
+} from "../shader-builtins-sprite-fx.js";
+import {
     PinnedShaderText,
     ShaderTextBinding,
 } from "./pinned-shader-text.js";
@@ -55,6 +59,13 @@ export interface BillboardShaderSource {
      * why it rides the source rather than being sniffed out of the text.
      */
     fxStructFields?: string | undefined;
+    /**
+     * The `<name>Tex` / `<name>Samp` pairs a custom shader's extra textures
+     * bind through, at this backend's own group, and empty when the body
+     * named none. Emitted by the pin's own builder, so the pair it writes
+     * per texture is the pin's.
+     */
+    extraTextureBindings: string;
 }
 
 /** One per-instance vertex attribute, at the pin's own byte offset. */
@@ -543,6 +554,7 @@ export class BillboardLowerer {
         orientation: BillboardOrientation = "facing",
         depthMode: BillboardDepthMode = "transparent",
         customFragment?: string,
+        extraTextures: readonly string[] = [],
     ): BillboardShaderSource {
         const permutation = new Map<string, ShaderTextBinding>([
             ["orientation", orientation],
@@ -563,7 +575,10 @@ export class BillboardLowerer {
                       // a parameter a later pin could add under either name.
                       new Map<string, ShaderTextBinding>([
                           ["orientation", orientation],
-                          ["extraTextures", []],
+                          [
+                              "extraTextures",
+                              extraTextureRecords(extraTextures),
+                          ],
                           ["fragment", customFragment],
                       ]),
                   );
@@ -616,6 +631,10 @@ export class BillboardLowerer {
                       "billboard fx uniform struct",
                   )
                 : undefined,
+            extraTextureBindings: extraTextureBindingsWgsl(
+                this.shaderText,
+                extraTextures,
+            ),
         };
     }
 
@@ -870,8 +889,10 @@ BillboardSystemHandle create_billboard_system(
     system.atlas = atlas;
     system.blend = options.blend;
     // initSystem, through the fx hook: a system built with a descriptor
-    // draws that program, and its params start zeroed.
+    // draws that program, its extra textures bind after the atlas, and
+    // its params start zeroed.
     system.custom_shader = options.custom_shader;
+    system.custom_textures = std::move(options.custom_textures);
     system.opacity = options.opacity;
     system.visible = options.visible;
     system.orientation = orientation;

@@ -36,9 +36,10 @@ import {
     computeBuildStamp,
 } from "./build-stamp.js";
 import {
+    bakePixelBytes,
     drawSpriteAtlasPng,
-    parseSpriteAtlasAssetSource,
-} from "./sprite-atlas-packager.js";
+    parseExecutedModuleSource,
+} from "./executed-module-assets.js";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { downloadCached } from "./asset-download-cache.js";
@@ -160,11 +161,19 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
         return;
     }
 
-    if (asset.kind === "sprite-atlas") {
+    // The two asset kinds a scene module produces rather than fetches: same
+    // execution, one decoder each for what the export returned.
+    const bake =
+        asset.kind === "pixels"
+            ? bakePixelBytes
+            : asset.kind === "sprite-atlas"
+              ? drawSpriteAtlasPng
+              : undefined;
+    if (bake) {
         writeFileSync(
             destination,
-            await drawSpriteAtlasPng(
-                parseSpriteAtlasAssetSource(
+            await bake(
+                parseExecutedModuleSource(
                     asset.source,
                     findRepositoryRoot(dirname(inputPath)),
                 ),
