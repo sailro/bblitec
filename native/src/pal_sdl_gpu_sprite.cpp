@@ -129,15 +129,16 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
             }
             const double frame_start = monotonic_milliseconds();
-            // A sprite layer holds its own state; the clock is advanced
-            // to keep the frame pacing identical to the scene path.
-            static_cast<void>(frame_clock.advance(0.0f));
+            // The delta a custom shader's `fx.time` accumulates, and what
+            // keeps the frame pacing identical to the scene path. A pure-2D
+            // renderer has no scene to pin it, so it is always measured.
+            const float delta_ms = frame_clock.advance(0.0f);
 
             // Every context updates before any records, which is the
             // pinned loop's order and, on D3D12, the only legal one: an
             // upload and a draw cannot share two open command lists.
             for (SpritePass& pass : passes) {
-                upload_sprite_pass(device, engine, pass);
+                upload_sprite_pass(device, engine, pass, delta_ms);
             }
 
             SDL_GPUCommandBuffer* command =

@@ -1,5 +1,8 @@
 import ts from "typescript";
-import type { Value } from "../types.js";
+import type {
+    SpriteCustomShaderManifest,
+    Value,
+} from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { addressModeByPin } from "../../pinned-address-modes.js";
 import { parseBlendExport } from "../../lowering/pinned-blend-table.js";
@@ -17,10 +20,22 @@ export interface SpriteIntrinsicContext
         precision?: "float" | "double",
     ): string;
     compileVec2(expression: ts.Expression): string;
+    compileVec4(expression: ts.Expression): string;
     registerSpriteAtlasAsset(
         expression: ts.Expression,
     ): string;
     allocateTemporaryCppName(label: string): string;
+    /** One layer or system built without a custom shader, so with the stock program. */
+    recordPlainSpriteProgram(family: "sprite" | "billboard"): void;
+    /** The custom-shader descriptors built so far, in scene order. */
+    spriteCustomShaders(): readonly SpriteCustomShaderManifest[];
+    /**
+     * Records one custom-shader descriptor. Generation composes one program
+     * per entry, from the pin's builder around the caller's fragment body.
+     */
+    recordSpriteCustomShader(
+        shader: SpriteCustomShaderManifest,
+    ): void;
     emit(line: string): void;
     fail(node: ts.Node, message: string): never;
 }
@@ -82,6 +97,41 @@ function blendOption(
         context.reachFeature("sprite:billboard-cutout", node);
     }
     return blendMode.cpp;
+}
+
+/**
+ * The descriptor a `customShader` option names, as the flag the record
+ * carries.
+ *
+ * The pin's own hook copies the descriptor onto the layer or system and
+ * every later read goes through it, so what generation needs here is only
+ * whether there is one — the program itself is composed once per family.
+ * The family is checked because a 2D descriptor names a fragment written
+ * against a varying struct carrying `uv` and `tint` alone, which a billboard
+ * stage would compile against a different contract behind the same names.
+ */
+function customShaderOption(
+    context: SpriteIntrinsicContext,
+    options: Value | undefined,
+    family: "sprite" | "billboard",
+    node: ts.Node,
+): string {
+    const named = property(options, "customShader");
+    if (!named) {
+        context.recordPlainSpriteProgram(family);
+        return "false";
+    }
+    if (named.kind !== `${family}-custom-shader`) {
+        context.fail(
+            node,
+            `customShader must be a ${
+                family === "sprite"
+                    ? "createSprite2DCustomShader"
+                    : "createBillboardCustomShader"
+            } descriptor.`,
+        );
+    }
+    return "true";
 }
 
 /**
@@ -334,11 +384,7 @@ export function compileSpriteIntrinsic(
                     'Only depth: "none" sprite layers are lowered; depth-hosted layers need the scene sprite path.',
                 );
             }
-            for (const unreached of [
-                "customShader",
-                "layerZ",
-                "view",
-            ]) {
+            for (const unreached of ["layerZ", "view"]) {
                 if (property(options, unreached)) {
                     context.fail(
                         call.arguments[1]!,
@@ -381,7 +427,13 @@ export function compileSpriteIntrinsic(
                         pivot
                             ? `${pivot[0]!}, ${pivot[1]!}`
                             : "0.5f, 0.5f"
-                    }}})`,
+                    }}, ` +
+                    `${customShaderOption(
+                        context,
+                        options,
+                        "sprite",
+                        call.arguments[1] ?? call,
+                    )}})`,
                 engineCpp,
             };
         }
@@ -516,10 +568,7 @@ export function compileSpriteIntrinsic(
             // mode gives it, which is the same image only while nothing else
             // is transparent, so an explicit order refuses rather than being
             // silently dropped.
-            for (const unreached of [
-                "customShader",
-                "order",
-            ]) {
+            for (const unreached of ["order"]) {
                 if (property(options, unreached)) {
                     context.fail(
                         optionsArg ?? call,
@@ -558,7 +607,13 @@ export function compileSpriteIntrinsic(
                     // the descriptor's own depth mode, so they are resolved
                     // beside it rather than from the name at this call site.
                     `${numberOption(options, "alphaCutoff", "0.0f")}, ` +
-                    `${property(options, "alphaCutoff") ? "true" : "false"}})`,
+                    `${property(options, "alphaCutoff") ? "true" : "false"}, ` +
+                    `${customShaderOption(
+                        context,
+                        options,
+                        "billboard",
+                        optionsArg ?? call,
+                    )}})`,
                 engineCpp,
             };
         }
@@ -649,6 +704,102 @@ export function compileSpriteIntrinsic(
                     `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}})`,
                 engineCpp,
             };
+        }
+
+        case "createSprite2DCustomShader":
+        case "createBillboardCustomShader": {
+            context.expectArgumentCount(call, 1, 1);
+            const options = optionsRecord(
+                context,
+                call.arguments[0],
+                importedName,
+            );
+            const fragment = property(options, "fragment");
+            // The pin takes the body as an opaque string it splices into
+            // its own composer, so it has to be settled here: a body built
+            // at run time would have no program to compile against.
+            if (
+                fragment?.kind !== "string" ||
+                fragment.staticString === undefined
+            ) {
+                context.fail(
+                    call.arguments[0] ?? call,
+                    `${importedName}: 'fragment' must be a WGSL string literal.`,
+                );
+            }
+            if (fragment.staticString.trim().length === 0) {
+                context.fail(
+                    call.arguments[0] ?? call,
+                    `${importedName}: 'fragment' must be a non-empty WGSL string.`,
+                );
+            }
+            // Each extra texture adds a binding pair the pin emits ahead of
+            // the fx block. Nothing reaches them yet, so they refuse by name
+            // rather than composing a shader whose bindings nothing fills.
+            if (property(options, "extraTextures")) {
+                context.fail(
+                    call.arguments[0] ?? call,
+                    `${importedName} option 'extraTextures' is not lowered.`,
+                );
+            }
+            const family =
+                importedName === "createSprite2DCustomShader"
+                    ? "sprite"
+                    : "billboard";
+            // One program per family is composed, under a fixed name. A
+            // second descriptor would need the layer and system records to
+            // carry which program they draw with, so it refuses here rather
+            // than quietly drawing every layer with the first one.
+            if (
+                context
+                    .spriteCustomShaders()
+                    .some((entry) => entry.family === family)
+            ) {
+                context.fail(
+                    call,
+                    `A second ${family} custom shader is not lowered; one program per family is composed.`,
+                );
+            }
+            // Building a descriptor is the pin's own opt-in trigger: the
+            // factory is what registers the fx hook the always-loaded path
+            // reaches the feature through, so reaching it here is what
+            // composes the program and binds the fx block.
+            context.reachFeature(
+                family === "sprite"
+                    ? "sprite:custom-shader"
+                    : "sprite:billboard-custom-shader",
+                call,
+            );
+            context.recordSpriteCustomShader({
+                family,
+                fragment: fragment.staticString,
+            });
+            return { kind: `${family}-custom-shader`, cpp: "" };
+        }
+
+        case "setSprite2DShaderParams":
+        case "setBillboardShaderParams": {
+            context.expectArgumentCount(call, 2, 2);
+            const target = context.compileValue(call.arguments[0]!);
+            const sprite =
+                importedName === "setSprite2DShaderParams";
+            context.expectKind(
+                target,
+                sprite ? "sprite-layer" : "billboard-system",
+                call.arguments[0]!,
+            );
+            const params = context.compileVec4(call.arguments[1]!);
+            const engineCpp =
+                target.engineCpp ??
+                context.requireDefaultEngine(call);
+            context.emit(
+                `bbl::${
+                    sprite
+                        ? "set_sprite_2d_shader_params"
+                        : "set_billboard_shader_params"
+                }(${engineCpp}, ${target.cpp}, ${params});`,
+            );
+            return { kind: "void", cpp: "" };
         }
 
         case "setAlphaToCoverage": {

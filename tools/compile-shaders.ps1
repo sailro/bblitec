@@ -277,15 +277,33 @@ function Remap-PinnedVariantRegisters {
         }
     )
     Set-Content $Path $normalized
-    # What the remap produced, by the pin's own names, for a backend that binds
-    # by slot. Nothing else can publish this: the WGSL over-counts, because a
-    # stage can declare a block it never reads and Tint strips it, and Tint's
-    # own inspector dump lists sampled textures and samplers but no uniform
-    # buffers. The pass that assigns the slots is the only authority on them.
-    # Storage buffers share the t registers after the sampled textures under
-    # SDL_GPU's convention; the sidecar names them as their own `r` class,
-    # rebased to storage slot 0, which is the index
-    # SDL_BindGPUVertexStorageBuffers takes.
+    Write-StageSlots $Path $normalized
+}
+
+function Write-StageSlots {
+    <#
+    .SYNOPSIS
+    Publishes the slots a compaction pass assigned, beside the stage.
+
+    .DESCRIPTION
+    What the pass produced, by each block's own name, for a backend that binds
+    by slot. Nothing else can publish this: the WGSL over-counts, because a
+    stage can declare a block it never reads and Tint strips it, and Tint's
+    own inspector dump lists sampled textures and samplers but no uniform
+    buffers. The pass that assigns the slots is the only authority on them.
+
+    Both compaction passes write it -- the pinned variants' remap and the
+    specialization normalizer -- because both leave the same question behind.
+    A custom sprite fragment declares the layer block and the `fx` block, and
+    which of them survives is the caller's own WGSL to decide.
+
+    Storage buffers share the t registers after the sampled textures under
+    SDL_GPU's convention; the sidecar names them as their own `r` class,
+    rebased to storage slot 0, which is the index
+    SDL_BindGPUVertexStorageBuffers takes.
+    #>
+    param([string]$Path, [string]$normalized)
+
     $sampledCount = [regex]::Matches(
         $normalized,
         "Texture\w*<[^>]+>\s+\w+\s*:\s*register\(t\d+"
@@ -494,6 +512,7 @@ function Normalize-TintHlslBindings {
     )
     $normalized = $normalized -replace "\bdiscard;", "clip(-1.0f);"
     Set-Content $Path $normalized
+    Write-StageSlots $Path $normalized
 }
 
 $compiled = 0
@@ -556,16 +575,24 @@ foreach ($shaderDirectory in $shaderDirectories) {
                     Sort-Object -Unique
             )
             # The cross-check validates *this repository's* binding
-            # specialization survived Tint. A pinned composed variant is not
-            # specialized here — its groups and bindings are the pin's own, and
-            # Tint validates them by compiling the module — and the inspector
-            # dump lists only sampled textures and samplers, so comparing it
-            # against every declared binding would compare unlike sets.
-            if (
-                (-not $isPinnedVariant) -and
-                (Compare-Object $expectedBindings $actualBindings)
-            ) {
-                throw "Tint binding reflection differs from native WGSL for $($source.FullName)."
+            # specialization survived Tint: every binding Tint kept has to be
+            # one the WGSL declared, at the group and binding it declared it
+            # at. The other direction does not hold — a stage may declare a
+            # block it never reads, which Tint drops, and a custom sprite
+            # fragment does exactly that with whichever of the layer block
+            # and the `fx` block the caller's body left alone. Which ones
+            # survived is published by `Write-StageSlots`, not inferred here.
+            # A pinned composed variant is not specialized here — its groups
+            # and bindings are the pin's own, and Tint validates them by
+            # compiling the module.
+            $undeclared = @(
+                $actualBindings | Where-Object { $expectedBindings -notcontains $_ }
+            )
+            if ((-not $isPinnedVariant) -and $undeclared.Count -gt 0) {
+                throw (
+                    "Tint reports binding(s) $($undeclared -join ', ') that " +
+                    "$($source.FullName) does not declare."
+                )
             }
             # SDL_GPU caps uniform buffers at four per stage. The count that
             # binds is the emitted HLSL's, not the WGSL's -- Tint strips a

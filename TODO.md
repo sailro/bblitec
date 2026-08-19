@@ -265,19 +265,19 @@ that does to the deferred lane by default.
     attachment and the scene bind group, and composes with a `SceneContext`.
   - a `SpriteRenderer` overlaid on a scene (52) — that composition without the
     depth slot: the sprite pass appends to the scene's frame.
-  - `createSprite2DCustomShader` (92, 93) and `setSprite2DCoverageGamma`,
-    each a shader permutation the pin installs through a lazily-registered
-    hook.
+  - `setSprite2DCoverageGamma`, a shader permutation the pin installs
+    through a lazily-registered hook, as the custom shaders do.
+  - a custom shader's `extraTextures` (93, 95), which bind ahead of the fx
+    block, and `createTexture2DFromPixels` for the palette behind them.
   - `updateSprite2DIndex`, `removeSprite2DIndex`, `setSprite2DFrameIndex`,
     `clearSprite2DLayer` and the Handle API: the writer is lowered for the add
     arm only; the update arm's "preserve what was not supplied" resolution needs
     the previous instance read back. The billboard writer has the same shape
     and the same gap.
-  - the billboard arms past the two orientations and two depth paths that
-    scenes 54, 55, 56, 57 and 98 measure: `createBillboardCustomShader` and
-    `setBillboardShaderParams` (94). Scene 118 needs `marker.name`; scene 59
-    wants the sprite animation manager; scene 206 is a cutout system behind
-    large-world rendering.
+  - the billboard arms past the two orientations, two depth paths and the
+    custom shader that scenes 54, 55, 56, 57, 94 and 98 measure. Scene 118
+    needs `marker.name`; scene 59 wants the sprite animation manager; scene
+    206 is a cutout system behind large-world rendering.
 - [ ] The sprite cluster past Scene 50, each its measured first blocker:
   - Scene 51: a browser-derived numeric value, with the premultiplied atlas and
     blend behind it.
@@ -285,8 +285,8 @@ that does to the deferred lane by default.
     renderers refuse.
   - Scene 53: `spriteBlendOpaque`, then depth-hosted layers.
   - Scene 58: its `PLAYER_SPRITE_URL` module constant, then sprite animation.
-  - Scene 92: `createSprite2DCustomShader`; 93, 95, 96 want a string-literal
-    argument first; 97: `spriteBlendMultiply`.
+  - Scenes 93, 95: `createTexture2DFromPixels` for the palette their custom
+    shaders sample.
   - Scenes 205, 206 reach the billboard path but stop at engine options.
   - Scene 117: an unsupported constructor expression, then sprite picking.
   - Scenes 205, 206: engine options.

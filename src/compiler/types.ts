@@ -28,12 +28,33 @@ export interface CompileManifest {
     assets: CompileAsset[];
     shaderVariants: string[];
     customShaderPrograms: CompiledShaderProgram[];
+    /** The sprite-family custom fragment shaders scene code built. */
+    spriteCustomShaders: SpriteCustomShaderManifest[];
+    /**
+     * Whether any layer or system draws with the stock program. A scene whose
+     * every one opts into a custom shader never loads it, so it is not
+     * composed, compiled or deployed.
+     */
+    plainSpriteLayer: boolean;
+    plainBillboardSystem: boolean;
     geometryOutputTasks: GeometryOutputTaskManifest[];
     adaptations: CompileAdaptation[];
     scenePbrMaterials: ScenePbrMaterialManifest[];
     /** Every scene-code material creation, any family, for the handle count. */
     sceneMaterialCount: number;
     sceneMeshes: SceneMeshManifest[];
+}
+
+/**
+ * One `createSprite2DCustomShader` / `createBillboardCustomShader` descriptor.
+ *
+ * The caller's WGSL fragment body is scene data, so it travels to generation
+ * rather than being read back out of the pin: what the pin owns is the
+ * composition around it, which the lowerer folds from the pin's own builder.
+ */
+export interface SpriteCustomShaderManifest {
+    family: "sprite" | "billboard";
+    fragment: string;
 }
 
 /**
@@ -250,6 +271,8 @@ export type ValueKind =
     | "sprite-atlas"
     | "sprite-layer"
     | "sprite-blend"
+    | "sprite-custom-shader"
+    | "billboard-custom-shader"
     | "billboard-system"
     | "sprite-renderer"
     | "string"
@@ -397,9 +420,11 @@ export type Feature =
     | "scene:remove"
     | "sprite:2d"
     | "sprite:uv-scroll"
+    | "sprite:custom-shader"
     | "sprite:billboard"
     | "sprite:billboard-axis-locked"
     | "sprite:billboard-cutout"
+    | "sprite:billboard-custom-shader"
     | "renderer:sprite"
     | "renderer:pbr"
     | "renderer:transmission"

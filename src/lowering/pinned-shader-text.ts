@@ -14,9 +14,11 @@ import type { LoweringContext } from "./context.js";
  *
  * What it evaluates is deliberately small — string and template literals,
  * `const` bindings, `if`/`switch`/conditional branches over bound values,
- * and calls to sibling builders whose parameters bind positionally. Anything
- * else is a contract error, which is the point: the evaluator is a proof
- * that the pinned text still has the shape we think it has.
+ * the arithmetic a binding index takes, a counted `for` whose bound settles
+ * to zero trips, and calls to builders whose parameters bind positionally,
+ * in this module or one it imports. Anything else is a contract error, which
+ * is the point: the evaluator is a proof that the pinned text still has the
+ * shape we think it has.
  *
  * Callers bind the permutation: a flag the scene settles at compile time
  * (`hasDepth`, `orientation`) enters as a value here, and a name the
@@ -24,7 +26,26 @@ import type { LoweringContext } from "./context.js";
  * through `constants` so the module it lives in stays the module that owns
  * it.
  */
-export type ShaderTextBinding = string | boolean;
+export type ShaderTextBinding =
+    | string
+    | boolean
+    | number
+    | readonly unknown[];
+
+/** The arithmetic a binding computation uses: a binding index, a stride. */
+const ARITHMETIC = new Map<
+    ts.SyntaxKind,
+    (left: number, right: number) => number
+>([
+    [ts.SyntaxKind.PlusToken, (left, right) => left + right],
+    [ts.SyntaxKind.AsteriskToken, (left, right) => left * right],
+]);
+
+/** The comparison a counted loop bounds itself with. */
+const RELATIONS = new Map<
+    ts.SyntaxKind,
+    (left: number, right: number) => boolean
+>([[ts.SyntaxKind.LessThanToken, (left, right) => left < right]]);
 
 export class PinnedShaderText {
     public constructor(
@@ -196,12 +217,80 @@ export class PinnedShaderText {
                 }
                 continue;
             }
+            if (ts.isForStatement(statement)) {
+                const returned = this.evaluateFor(
+                    statement,
+                    scope,
+                    modulePath,
+                    symbolName,
+                );
+                if (returned !== undefined) {
+                    return returned;
+                }
+                continue;
+            }
             if (statement.kind === ts.SyntaxKind.BreakStatement) {
                 return undefined;
             }
             this.context.contractError(
                 statement,
                 `Unsupported statement in pinned ${symbolName}.`,
+            );
+        }
+        return undefined;
+    }
+
+    /**
+     * A counted `for` over a bound list, which is how the pin emits one
+     * binding pair per extra texture. The bound is a value this evaluator
+     * already resolved, so the loop runs a settled number of times or the
+     * shape refuses -- there is no unbounded iteration to guard against.
+     */
+    private evaluateFor(
+        statement: ts.ForStatement,
+        scope: Map<string, ShaderTextBinding>,
+        modulePath: string,
+        symbolName: string,
+    ): string | undefined {
+        const list = statement.initializer;
+        if (
+            !list ||
+            !ts.isVariableDeclarationList(list) ||
+            list.declarations.length !== 1 ||
+            !statement.condition ||
+            !statement.incrementor
+        ) {
+            this.context.contractError(
+                statement,
+                `Pinned ${symbolName} loops in a shape this evaluator cannot fold.`,
+            );
+        }
+        const counter = list.declarations[0]!;
+        if (
+            !ts.isIdentifier(counter.name) ||
+            !counter.initializer
+        ) {
+            this.context.contractError(
+                counter,
+                `Pinned ${symbolName} loops on a binding this evaluator cannot fold.`,
+            );
+        }
+        scope.set(
+            counter.name.text,
+            this.evaluateValue(
+                counter.initializer,
+                scope,
+                modulePath,
+            ),
+        );
+        // The bound is a value already resolved, so the loop settles here
+        // rather than running. Every reached permutation binds an empty list
+        // -- nothing yet fills a binding a loop body would emit -- so a trip
+        // through the body refuses, naming what would have to exist first.
+        if (this.condition(statement.condition, scope, modulePath)) {
+            this.context.contractError(
+                statement,
+                `Pinned ${symbolName} emits per-element text for a list this permutation binds, which nothing binds a resource for.`,
             );
         }
         return undefined;
@@ -243,6 +332,13 @@ export class PinnedShaderText {
                     ? left && right
                     : left || right;
             }
+            const relation = RELATIONS.get(kind);
+            if (relation) {
+                return relation(
+                    this.number(node.left, scope, modulePath),
+                    this.number(node.right, scope, modulePath),
+                );
+            }
             const equal =
                 this.evaluateValue(node.left, scope, modulePath) ===
                 this.evaluateValue(node.right, scope, modulePath);
@@ -273,13 +369,64 @@ export class PinnedShaderText {
         return value;
     }
 
-    /** A string or boolean the pinned text reads. */
+    /** A number the pinned text computes, which an index or a binding is. */
+    private number(
+        expression: ts.Expression,
+        scope: ReadonlyMap<string, ShaderTextBinding>,
+        modulePath: string,
+    ): number {
+        const value = this.evaluateValue(
+            expression,
+            scope,
+            modulePath,
+        );
+        if (typeof value !== "number") {
+            this.context.contractError(
+                expression,
+                "Pinned shader text computes with a value that is not a number.",
+            );
+        }
+        return value;
+    }
+
+    /** A string, boolean, number, or bound list the pinned text reads. */
     private evaluateValue(
         expression: ts.Expression,
         scope: ReadonlyMap<string, ShaderTextBinding>,
         modulePath: string,
     ): ShaderTextBinding {
         const node = this.context.unwrapExpression(expression);
+        if (ts.isNumericLiteral(node)) {
+            return Number(node.text);
+        }
+        if (
+            ts.isBinaryExpression(node) &&
+            ARITHMETIC.has(node.operatorToken.kind)
+        ) {
+            return ARITHMETIC.get(node.operatorToken.kind)!(
+                this.number(node.left, scope, modulePath),
+                this.number(node.right, scope, modulePath),
+            );
+        }
+        // How long a bound list is, which is what a binding index counts
+        // from: `3 + extraTextures.length * 2`.
+        if (
+            ts.isPropertyAccessExpression(node) &&
+            node.name.text === "length"
+        ) {
+            const target = this.evaluateValue(
+                node.expression,
+                scope,
+                modulePath,
+            );
+            if (!Array.isArray(target)) {
+                this.context.contractError(
+                    node,
+                    "Pinned shader text takes the length of a value the permutation does not bind as a list.",
+                );
+            }
+            return target.length;
+        }
         if (node.kind === ts.SyntaxKind.TrueKeyword) {
             return true;
         }
@@ -323,6 +470,12 @@ export class PinnedShaderText {
                     scope,
                     modulePath,
                 );
+                if (Array.isArray(value)) {
+                    this.context.contractError(
+                        span.expression,
+                        "Pinned shader text interpolates a list, which has no text form.",
+                    );
+                }
                 text += typeof value === "string" ? value : String(value);
                 text += span.literal.text;
             }
@@ -347,17 +500,22 @@ export class PinnedShaderText {
                 modulePath,
             );
         }
-        // A sibling builder in the same module, whose parameters bind
-        // positionally from the arguments evaluated here. Resolving it by
-        // name rather than by a table keeps a builder the pin splits out
-        // working without a compiler change.
+        // A builder called by name, whose parameters bind positionally from
+        // the arguments evaluated here. It is looked for in this module and
+        // then in the one this module imports it from, so a composer the pin
+        // splits across modules -- its prologue in the pipeline module, its
+        // binding lines in the shared custom-shader core -- is read where the
+        // pin declares it, without a table naming either.
         if (
             ts.isCallExpression(node) &&
             ts.isIdentifier(node.expression)
         ) {
             const callee = node.expression.text;
+            const home =
+                this.context.moduleOfImport(modulePath, callee) ??
+                modulePath;
             const { declaration } =
-                this.context.functionDeclaration(modulePath, callee);
+                this.context.functionDeclaration(home, callee);
             const bound = new Map<string, ShaderTextBinding>();
             declaration.parameters.forEach((parameter, index) => {
                 const argument = node.arguments[index];
@@ -369,7 +527,7 @@ export class PinnedShaderText {
                     this.evaluateValue(argument, scope, modulePath),
                 );
             });
-            return this.evaluate(modulePath, callee, bound);
+            return this.evaluate(home, callee, bound);
         }
         return this.context.contractError(
             node,

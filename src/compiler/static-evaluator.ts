@@ -139,6 +139,30 @@ export class StaticEvaluator {
         this.fail(unwrapped, "Expected a Vec2 array [x, y].");
     }
 
+    public compileVec4(expression: ts.Expression): string {
+        const unwrapped = this.unwrap(expression);
+        const tuple = this.tupleElements(unwrapped, 4);
+        if (tuple) {
+            return `bbl::Vec4{${tuple
+                .map((value) =>
+                    this.numberValue(value, unwrapped),
+                )
+                .join(", ")}}`;
+        }
+        if (
+            ts.isArrayLiteralExpression(unwrapped) &&
+            unwrapped.elements.length === 4
+        ) {
+            return `bbl::Vec4{${unwrapped.elements
+                .map((element) => this.compileNumber(element))
+                .join(", ")}}`;
+        }
+        this.fail(
+            unwrapped,
+            "Expected a Vec4 array [x, y, z, w].",
+        );
+    }
+
     public compileColor3(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
         const tuple = this.tupleElements(unwrapped, 3);

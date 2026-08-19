@@ -1,4 +1,5 @@
 import type { BillboardShaderSource } from "./lowering/billboard-lowerer.js";
+import { fxBlockWgsl } from "./shader-builtins-sprite-fx.js";
 import { indent } from "./shader-builtins-utility.js";
 
 /**
@@ -79,9 +80,17 @@ export function billboardFragmentWgsl(
     provenance: string,
     shader: BillboardShaderSource,
 ): string {
+    // A custom-shader system binds the fx block beside the system block.
+    // Both are declared whether or not the caller's body reads them, as
+    // upstream declares them; the one a body leaves alone does not reach the
+    // compiled shader, and the slots the survivors took are published there.
+    const fxBlock = shader.fxStructFields
+        ? fxBlockWgsl(shader.fxStructFields, 3, 1)
+        : "";
     return `// ${provenance}
 ${systemBlockWgsl(shader, 3, 0)}@group(2) @binding(0) var atlasTex: texture_2d<f32>;
 @group(2) @binding(1) var atlasSamp: sampler;
+${fxBlock}
 
 struct O {
 ${indent(shader.varyingStructFields, "    ")}

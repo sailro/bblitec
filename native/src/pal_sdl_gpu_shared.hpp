@@ -138,6 +138,115 @@ inline void save_texture_png(
     if (!saved) gpu_error("IMG_SavePNG screenshot");
 }
 
+/**
+ * What the shader step's compaction pass assigned, read back at load.
+ *
+ * SDL_GPU addresses uniforms by a per-stage slot and textures by a per-stage
+ * index, so this backend needs the order the compaction produced. It cannot be
+ * derived from the WGSL: a stage may declare a block it never reads -- the pin's
+ * unlit fragment declares its mesh block for the `mli()` helper and then takes
+ * no light path -- and Tint strips it, so the source over-counts. The remap
+ * writes a `.slots` file beside each stage naming every register by the pin's
+ * own identifier, and this reads it. Both compaction passes write one: a
+ * custom sprite fragment declares the layer block and the `fx` block, and
+ * which of them survives is the caller's own WGSL to decide.
+ */
+struct PinnedStageSlots {
+    /** Uniform blocks in slot order: `scene`, `lights`, `mesh`, `material`. */
+    std::vector<std::string> uniforms;
+    /** Texture names in binding order; each one's sampler is bound with it. */
+    std::vector<std::string> textures;
+    /** Storage buffer names in storage-slot order -- the morph arms'. */
+    std::vector<std::string> storage;
+};
+
+inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
+    const std::string shader_override =
+        environment_variable("BBLITE_GPU_SHADER_DIR");
+    const std::string shader_root = shader_override.empty()
+        ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR)
+        : shader_override;
+    const std::vector<std::uint8_t> bytes =
+        read_binary_file(join_path(shader_root, base_name + ".slots"));
+    PinnedStageSlots slots;
+    std::string line;
+    const auto take = [&]() {
+        const std::size_t space = line.find(' ');
+        if (line.empty() || space == std::string::npos) return;
+        const std::string reg = line.substr(0, space);
+        std::string name = line.substr(space + 1);
+        while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) {
+            name.pop_back();
+        }
+        // Placed at its own register index rather than appended: the sidecar
+        // lists declarations in the order they appear in the HLSL, which is not
+        // register order. A lit fragment's reads `b0 scene`, `b3 material`,
+        // `b2 mesh`, `b1 lights`, and appending pushed `material` where the
+        // shader wanted `lights` -- 9.238 MAD, while an unlit fragment happened
+        // to declare its two blocks in index order and so looked correct.
+        const std::size_t index =
+            static_cast<std::size_t>(std::stoul(reg.substr(1)));
+        // `b` is a uniform slot and `t` a texture; `s` is the sampler paired
+        // with the texture of the same index, which SDL_GPU binds together.
+        // `r` is a storage buffer at its storage slot, which shares the SRV
+        // space after the sampled textures.
+        std::vector<std::string>* target = reg[0] == 'b'
+            ? &slots.uniforms
+            : reg[0] == 't'
+                ? &slots.textures
+                : reg[0] == 'r' ? &slots.storage : nullptr;
+        if (!target) return;
+        if (target->size() <= index) target->resize(index + 1);
+        (*target)[index] = name;
+    };
+    for (const std::uint8_t byte : bytes) {
+        if (byte == '\n') {
+            take();
+            line.clear();
+            continue;
+        }
+        line.push_back(static_cast<char>(byte));
+    }
+    take();
+    return slots;
+}
+
+/**
+ * Where a stage keeps a uniform block, or -1 when the compiled shader has
+ * none.
+ *
+ * A custom sprite or billboard program declares the family's own block and
+ * the `fx` block; a body that owns its alpha reads neither, and a block a
+ * stage does not read is dropped on the way to the compiled shader. So which
+ * of them exists, and at which of this stage's dense slots, is a question
+ * only the compaction pass can answer -- which is what it writes beside the
+ * stage.
+ */
+inline int stage_uniform_slot(
+    const PinnedStageSlots& slots,
+    const char* block_name) {
+    for (std::size_t index = 0; index < slots.uniforms.size(); ++index) {
+        if (slots.uniforms[index] == block_name) {
+            return static_cast<int>(index);
+        }
+    }
+    return -1;
+}
+
+/** Push `bytes` at `slot`, or nothing when the stage kept no such block. */
+inline void push_stage_uniform(
+    SDL_GPUCommandBuffer* command,
+    int slot,
+    const void* data,
+    std::size_t bytes) {
+    if (slot < 0) return;
+    SDL_PushGPUFragmentUniformData(
+        command,
+        static_cast<Uint32>(slot),
+        data,
+        static_cast<Uint32>(bytes));
+}
+
 inline SDL_GPUShader* load_shader(
     SDL_GPUDevice* device,
     const char* base_name,

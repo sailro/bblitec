@@ -127,6 +127,7 @@ import type {
     ScenePbrIridescenceManifest,
     ScenePbrMaterialManifest,
     ScenePbrSheenManifest,
+    SpriteCustomShaderManifest,
     Value,
     ValueKind,
 } from "./compiler/types.js";
@@ -193,9 +194,11 @@ const featureSources: Record<Feature, string[]> = {
     "scene:remove": [],
     "sprite:2d": [],
     "sprite:uv-scroll": [],
+    "sprite:custom-shader": [],
     "sprite:billboard": [],
     "sprite:billboard-axis-locked": [],
     "sprite:billboard-cutout": [],
+    "sprite:billboard-custom-shader": [],
     "renderer:sprite": ["src/pal_sdl_gpu_sprite.cpp"],
     "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],
@@ -332,6 +335,10 @@ class Compiler
     public readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
     public readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
     private readonly sceneMeshes: SceneMeshManifest[] = [];
+    private readonly sceneSpriteCustomShaders: SpriteCustomShaderManifest[] =
+        [];
+    private reachedPlainSpriteLayer = false;
+    private reachedPlainBillboardSystem = false;
     private sceneMaterialCount = 0;
     public hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
@@ -440,6 +447,9 @@ class Compiler
                 scenePbrMaterials: this.scenePbrMaterials,
                 sceneMaterialCount: this.sceneMaterialCount,
                 sceneMeshes: this.sceneMeshes,
+                spriteCustomShaders: this.sceneSpriteCustomShaders,
+                plainSpriteLayer: this.reachedPlainSpriteLayer,
+                plainBillboardSystem: this.reachedPlainBillboardSystem,
             },
         };
     }
@@ -615,7 +625,13 @@ class Compiler
         if (
             value.kind === "tuple" ||
             value.kind === "record" ||
-            value.kind === "morph-targets"
+            value.kind === "morph-targets" ||
+            // A custom-shader descriptor is compile-time data: the program
+            // it names is composed at generation and the layer it is passed
+            // to carries only that it has one, so there is nothing to
+            // declare natively.
+            value.kind === "sprite-custom-shader" ||
+            value.kind === "billboard-custom-shader"
         ) {
             this.defineVariable(declaration.name, value);
             return;
@@ -1340,6 +1356,10 @@ class Compiler
 
     public compileVec2(expression: ts.Expression): string {
         return this.evaluator.compileVec2(expression);
+    }
+
+    public compileVec4(expression: ts.Expression): string {
+        return this.evaluator.compileVec4(expression);
     }
 
     public compileBoolean(expression: ts.Expression): string {
@@ -2878,6 +2898,23 @@ class Compiler
             "setPbrIridescence",
             index,
         ).iridescence = iridescence;
+    }
+
+    /** One layer or system built without a custom shader, so with the stock program. */
+    public recordPlainSpriteProgram(family: "sprite" | "billboard"): void {
+        if (family === "sprite") this.reachedPlainSpriteLayer = true;
+        else this.reachedPlainBillboardSystem = true;
+    }
+
+    public spriteCustomShaders(): readonly SpriteCustomShaderManifest[] {
+        return this.sceneSpriteCustomShaders;
+    }
+
+    /** One custom-shader descriptor, in the pin's own `_key` order. */
+    public recordSpriteCustomShader(
+        shader: SpriteCustomShaderManifest,
+    ): void {
+        this.sceneSpriteCustomShaders.push(shader);
     }
 
     /** Records a scene-code mesh creation for the per-renderable variant key. */

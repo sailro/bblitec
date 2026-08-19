@@ -13,6 +13,9 @@
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/billboard_system.hpp>
+// The fx block a custom-shader system binds is the shared custom-shader
+// module's, which the sprite family's header carries for both.
+#include <bblite/upstream/sprite_layer.hpp>
 
 #include <algorithm>
 #include <array>
@@ -38,6 +41,12 @@ struct DawnBillboardPass {
     WGPUBuffer instances = nullptr;
     WGPUBuffer vertex_uniforms = nullptr;
     WGPUBuffer fragment_uniforms = nullptr;
+    // Bound beside the system uniforms for a custom-shader system, and
+    // null for a plain one, which is the pin's own nullable fx attachment.
+    WGPUBuffer fx_uniforms = nullptr;
+    // The custom shader's own clock: seconds since this system's first
+    // frame, which the pin accumulates inside its fx attachment.
+    float elapsed_ms = 0.0f;
     WGPUTexture atlas = nullptr;
     WGPUTextureView atlas_view = nullptr;
     WGPUSampler sampler = nullptr;
@@ -109,9 +118,14 @@ inline DawnBillboardPass create_dawn_billboard_pass(
 
     const bool axis_locked =
         system.orientation == BillboardOrientation::axis_locked;
+    // Unlike the 2D layer, a custom billboard program brings its own vertex
+    // stage: the pin's composer exposes the view distance and the world
+    // position to a custom body, which the stock stage does not write.
     pass.vertex_module = load_wgsl_module(
         device,
-        axis_locked ? "billboard_axis_locked.vert" : "billboard.vert");
+        system.custom_shader ? "billboard_custom.vert"
+        : axis_locked       ? "billboard_axis_locked.vert"
+                            : "billboard.vert");
     // The cutout arm discards below the cutoff; with alpha-to-coverage the
     // pin drops the discard and lets sample coverage carry the edge, so that
     // permutation shares the transparent stage.
@@ -119,7 +133,8 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         system.depth_mode == BillboardDepthMode::cutout;
     pass.fragment_module = load_wgsl_module(
         device,
-        cutout && !system.alpha_to_coverage
+        system.custom_shader ? "billboard_custom.frag"
+        : cutout && !system.alpha_to_coverage
             ? "billboard_cutout.frag"
             : "billboard.frag");
 
@@ -177,17 +192,27 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         pass.group_layouts[2] =
             wgpuDeviceCreateBindGroupLayout(device, &texture_layout);
 
-        WGPUBindGroupLayoutEntry fragment_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        fragment_entry.binding = 0;
-        fragment_entry.visibility = WGPUShaderStage_Fragment;
-        fragment_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        fragment_entry.buffer.minBindingSize =
+        // A custom-shader system declares the fx block beside the system
+        // block, whether or not its body reads either. WebGPU takes a group
+        // entry the shader ignores, so unlike SDL_GPU this side needs no
+        // dense slots.
+        std::array<WGPUBindGroupLayoutEntry, 2> fragment_entries{};
+        fragment_entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        fragment_entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        fragment_entries[0].binding = 0;
+        fragment_entries[0].visibility = WGPUShaderStage_Fragment;
+        fragment_entries[0].buffer.type = WGPUBufferBindingType_Uniform;
+        fragment_entries[0].buffer.minBindingSize =
             upstream::billboard_system_ubo_bytes;
+        fragment_entries[1].binding = 1;
+        fragment_entries[1].visibility = WGPUShaderStage_Fragment;
+        fragment_entries[1].buffer.type = WGPUBufferBindingType_Uniform;
+        fragment_entries[1].buffer.minBindingSize =
+            upstream::sprite_fx_ubo_bytes;
         WGPUBindGroupLayoutDescriptor fragment_layout =
             WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        fragment_layout.entryCount = 1;
-        fragment_layout.entries = &fragment_entry;
+        fragment_layout.entryCount = system.custom_shader ? 2u : 1u;
+        fragment_layout.entries = fragment_entries.data();
         pass.group_layouts[3] =
             wgpuDeviceCreateBindGroupLayout(device, &fragment_layout);
     }
@@ -313,6 +338,14 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         if (!pass.vertex_uniforms || !pass.fragment_uniforms) {
             dawn_error("wgpuDeviceCreateBuffer billboard uniforms");
         }
+        if (system.custom_shader) {
+            uniform_descriptor.size = upstream::sprite_fx_ubo_bytes;
+            pass.fx_uniforms =
+                wgpuDeviceCreateBuffer(device, &uniform_descriptor);
+            if (!pass.fx_uniforms) {
+                dawn_error("wgpuDeviceCreateBuffer billboard fx");
+            }
+        }
     }
 
     // rgba8unorm: `loadTexture2D` leaves srgb off, so the atlas texels reach
@@ -373,15 +406,22 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     pass.texture_group =
         wgpuDeviceCreateBindGroup(device, &texture_group);
 
-    WGPUBindGroupEntry fragment_binding = WGPU_BIND_GROUP_ENTRY_INIT;
-    fragment_binding.binding = 0;
-    fragment_binding.buffer = pass.fragment_uniforms;
-    fragment_binding.size = upstream::billboard_system_ubo_bytes;
+    std::array<WGPUBindGroupEntry, 2> fragment_bindings{};
+    fragment_bindings[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+    fragment_bindings[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+    fragment_bindings[0].binding = 0;
+    fragment_bindings[0].buffer = pass.fragment_uniforms;
+    fragment_bindings[0].size = upstream::billboard_system_ubo_bytes;
+    if (system.custom_shader) {
+        fragment_bindings[1].binding = 1;
+        fragment_bindings[1].buffer = pass.fx_uniforms;
+        fragment_bindings[1].size = upstream::sprite_fx_ubo_bytes;
+    }
     WGPUBindGroupDescriptor fragment_group =
         WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     fragment_group.layout = pass.group_layouts[3];
-    fragment_group.entryCount = 1;
-    fragment_group.entries = &fragment_binding;
+    fragment_group.entryCount = system.custom_shader ? 2u : 1u;
+    fragment_group.entries = fragment_bindings.data();
     pass.fragment_group =
         wgpuDeviceCreateBindGroup(device, &fragment_group);
     return pass;
@@ -399,7 +439,8 @@ inline void upload_dawn_billboard_pass(
     Engine& engine,
     DawnBillboardPass& pass,
     const std::array<float, 16>& view_projection,
-    const std::array<float, 16>& view) {
+    const std::array<float, 16>& view,
+    float delta_ms) {
     const BillboardSystemRecord& system =
         engine.billboard_systems[pass.system.value];
 
@@ -421,6 +462,21 @@ inline void upload_dawn_billboard_pass(
         0,
         system_ubo.data(),
         system_ubo.size() * sizeof(float));
+
+    // The pin advances the clock in `_update`, before and regardless of
+    // whether the sorted instance data moved.
+    if (system.custom_shader) {
+        pass.elapsed_ms += delta_ms;
+        std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
+        upstream::build_sprite_fx_ubo(
+            pass.elapsed_ms / 1000.0f, system.shader_params, fx);
+        wgpuQueueWriteBuffer(
+            queue,
+            pass.fx_uniforms,
+            0,
+            fx.data(),
+            fx.size() * sizeof(float));
+    }
 
     if (system.count == 0) {
         return;
@@ -476,6 +532,7 @@ inline void record_dawn_billboard_pass(
 }
 
 inline void release_dawn_billboard_pass(DawnBillboardPass& pass) {
+    if (pass.fx_uniforms) wgpuBufferRelease(pass.fx_uniforms);
     if (pass.vertex_group) wgpuBindGroupRelease(pass.vertex_group);
     if (pass.texture_group) wgpuBindGroupRelease(pass.texture_group);
     if (pass.fragment_group) wgpuBindGroupRelease(pass.fragment_group);

@@ -550,6 +550,13 @@ struct Sprite2DLayerRecord {
     // by two floats per sprite and stashes the attribute the pipeline pushes.
     // A layer that never scrolls keeps the narrow layout and ships none of it.
     bool uv_scroll = false;
+    // sprite-custom-shader.ts: a layer built with a descriptor draws the
+    // composed program and binds the fx block beside its layer block. The
+    // pin reaches both through a hook that is null until a descriptor
+    // exists, so the flag is the same "is there one" question.
+    bool custom_shader = false;
+    // The `fx.params` vec4, zero until setSprite2DShaderParams writes it.
+    Vec4 shader_params{};
     std::uint64_t version = 0;
 };
 
@@ -581,6 +588,12 @@ struct BillboardSystemRecord {
     std::uint32_t capacity = 0;
     std::uint32_t instance_floats_per_sprite = 16;
     std::vector<float> instance_data;
+    // billboard-custom-shader.ts: the same opt-in the 2D layer carries --
+    // a system built with a descriptor draws the composed program and
+    // binds the fx block beside its system block.
+    bool custom_shader = false;
+    // The `fx.params` vec4, zero until setBillboardShaderParams writes it.
+    Vec4 shader_params{};
 };
 
 struct SpriteRendererRecord {
@@ -1345,6 +1358,7 @@ struct Sprite2DLayerOptions {
     bool visible = true;
     float order = 0.0f;
     Vec2 pivot{0.5f, 0.5f};
+    bool custom_shader = false;
 };
 
 /**
@@ -1361,6 +1375,7 @@ struct BillboardSystemOptions {
     bool visible = true;
     float alpha_cutoff = 0.0f;
     bool has_alpha_cutoff = false;
+    bool custom_shader = false;
 };
 
 /** addBillboardSpriteIndex's props; a `has_` flag marks what was named. */
@@ -1442,6 +1457,16 @@ void set_sprite_2d_uv_offset(
     Sprite2DLayerHandle layer,
     double index,
     Vec2 uv_offset);
+
+void set_sprite_2d_shader_params(
+    Engine& engine,
+    Sprite2DLayerHandle layer,
+    Vec4 params);
+
+void set_billboard_shader_params(
+    Engine& engine,
+    BillboardSystemHandle system,
+    Vec4 params);
 
 double add_sprite_2d_index(
     Engine& engine,

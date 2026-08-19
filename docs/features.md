@@ -76,7 +76,7 @@ deliberately left live.
 | [Materials and material state](#materials-and-material-state) | Run | Standard, PBR, Grid, no-color views, alpha and extension state |
 | [Animation playback](#animation-playback) | Run | deterministic seeking, property clips, glTF channels |
 | [Deformation and instancing](#deformation-and-instancing) | Run | GPU skinning, morph targets, storage morphing, GPU instancing |
-| [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards |
+| [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
 | [Frame graph](#frame-graph) | Run | render targets, tasks, geometry MRTs, blits, MSAA resolve |
 | [Render backends](#render-backends) | Run | SDL_GPU, Dawn, CPU fallback, transmission, image processing |
 | [Runtime scene mutation](#runtime-scene-mutation) | Run | removal with plan rematching, material-family append, instance counts |
@@ -451,6 +451,23 @@ keeps the narrow layout. The atlas address modes a tiling scroll needs come
 through `textureOptions`, which the pin spreads over the loader's own
 defaults.
 
+Either family may draw with a custom fragment shader. The caller supplies a
+WGSL body; the pin's own composer wraps it in the stage the engine owns, and
+generation folds that composer rather than assembling a second one, so the
+program is the pin's around the caller's text. Building the descriptor is the
+opt-in — upstream it registers the hook the always-loaded path reaches the
+feature through — and a layer or system without one draws the stock shader.
+The `fx` block a body may read (`fx.time`, and the `fx.params` vec4 the
+per-family setter writes) binds beside the family's own block, declared
+whether or not the body names it, as upstream declares it. What the body does
+NOT read still matters: a block nothing reads does not survive to the compiled
+shader, and SDL_GPU takes uniform buffers by dense slot. Which blocks a stage
+kept, and at which slots, is read from the sidecar the shader step writes
+beside that stage — the same one the pinned material variants already bind
+through, now written by both of its compaction passes. The compiled artifact
+answers it; nothing infers it from the WGSL. A layer or system whose every
+one opts in never loads the stock program, so it is not composed either.
+
 Every blend mode either family exports is lowered as the pure data upstream
 keeps it as — the descriptors are read out of the pinned modules rather than
 listed here, so a mode the pin adds needs no compiler change. Sprites reach
@@ -477,8 +494,11 @@ overlap instead: it takes no sort, uploads in insertion order, and draws among
 the opaque meshes — the slot the pin gives it. `setAlphaToCoverage` turns the
 binary cutoff into sample coverage on a multisampled target, which is the one
 permutation where a cutout system shares the transparent fragment stage,
-because the pin drops the discard when coverage carries the edge. Custom
-shaders refuse at the call.
+because the pin drops the discard when coverage carries the edge.
+
+A custom billboard program brings its own vertex stage, which is the one place
+the two families differ: the pin's billboard composer writes the view distance
+and the world position a custom body may read, and the stock stage does not.
 
 ### Frame graph
 

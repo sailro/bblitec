@@ -105,10 +105,24 @@ export class LoweringContext {
         modulePath: string,
         importedName: string,
     ): boolean {
-        return this.sourceFile(modulePath).statements.some(
-            (statement) =>
+        return (
+            this.namedImport(modulePath, importedName) !== undefined
+        );
+    }
+    /**
+     * The declaration that brings a named import into a module.
+     *
+     * Shared because two questions are asked of it: whether a module imports
+     * a symbol at all, and which module it comes from.
+     */
+    private namedImport(
+        modulePath: string,
+        importedName: string,
+    ): ts.ImportDeclaration | undefined {
+        return this.sourceFile(modulePath).statements.find(
+            (statement): statement is ts.ImportDeclaration =>
                 ts.isImportDeclaration(statement) &&
-                statement.importClause?.namedBindings &&
+                statement.importClause?.namedBindings !== undefined &&
                 ts.isNamedImports(
                     statement.importClause.namedBindings,
                 ) &&
@@ -120,6 +134,31 @@ export class LoweringContext {
         );
     }
 
+    /**
+     * The module a named import comes from, as a store path.
+     *
+     * The pin splits a composer across modules — the sprite custom shader's
+     * prologue lives in the pipeline module and its extra-texture bindings in
+     * the shared custom-shader core — so following the import is what lets a
+     * builder be read where the pin actually declares it rather than only
+     * where it is called.
+     */
+    public moduleOfImport(
+        modulePath: string,
+        importedName: string,
+    ): string | undefined {
+        const declaration = this.namedImport(modulePath, importedName);
+        if (
+            !declaration ||
+            !ts.isStringLiteral(declaration.moduleSpecifier)
+        ) {
+            return undefined;
+        }
+        return this.store.resolveImport(
+            modulePath,
+            declaration.moduleSpecifier.text,
+        );
+    }
     public functionDeclaration(modulePath: string, symbolName: string): {
         file: ts.SourceFile;
         declaration: ts.FunctionDeclaration;

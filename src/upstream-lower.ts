@@ -23,6 +23,7 @@ import {
 import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
 import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
+import type { SpriteCustomShaderManifest } from "./compiler/types.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
 import {
@@ -136,6 +137,20 @@ export interface UpstreamEmitOptions {
     morphStorage: boolean;
     nonTrianglePrimitives: boolean;
     nodeVisibility: boolean;
+    /**
+     * The sprite-family custom fragment bodies scene code built, at most one
+     * per family. Generation composes each into the pin's own builder; the
+     * body itself is scene data, which is why it arrives rather than being
+     * read out of the pin.
+     */
+    spriteCustomShaders: readonly SpriteCustomShaderManifest[];
+    /**
+     * Whether a layer or system draws with the stock program. A scene whose
+     * every one opts into a custom shader never loads it, so it is not
+     * composed here either.
+     */
+    plainSpriteLayer: boolean;
+    plainBillboardSystem: boolean;
     animationPointer: boolean;
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
@@ -514,6 +529,9 @@ class GeneratedSourceWriter {
         }> = [];
         if (features.includes("sprite:2d")) {
             const sprites = new SpriteLowerer(context);
+            const custom = options.spriteCustomShaders.find(
+                (entry) => entry.family === "sprite",
+            );
             this.writeSource(
                 "upstream/src/sprite_2d.cpp",
                 sprites.lowerCore(),
@@ -526,24 +544,59 @@ class GeneratedSourceWriter {
                     "src/sprite/sprite-pipeline.ts",
                     "makeSpriteWgsl",
                 );
-                composedShaders.push(
-                    {
-                        output:
-                            "upstream/shaders/sprite.vert.native.wgsl",
-                        data: spriteVertexWgsl(
-                            provenance,
-                            shader,
-                        ),
-                    },
-                    {
+                composedShaders.push({
+                    output:
+                        "upstream/shaders/sprite.vert.native.wgsl",
+                    data: spriteVertexWgsl(provenance, shader),
+                });
+                // The stock fragment, only where a plain layer draws with
+                // it: a custom layer keeps this vertex stage but brings its
+                // own fragment, so a scene whose every layer opts in would
+                // compile and deploy a stage nothing loads.
+                if (options.plainSpriteLayer) {
+                    composedShaders.push({
                         output:
                             "upstream/shaders/sprite.frag.native.wgsl",
                         data: spriteFragmentWgsl(
                             provenance,
                             shader,
                         ),
-                    },
-                );
+                    });
+                }
+                // The pin composes one module per descriptor, from the same
+                // prologue with the caller's body spliced in, so the custom
+                // program is a second file rather than an edit of the first
+                // — a renderer can hold both, and a plain layer draws the
+                // stock shader as it does when the fx hook is null.
+                if (custom) {
+                    const shader = sprites.shaderSource(
+                        false,
+                        custom.fragment,
+                    );
+                    const customProvenance = context.provenance(
+                        "src/sprite/sprite-custom-shader.ts",
+                        "makeCustomSpriteWgsl",
+                    );
+                    // Only the fragment: the pin composes the custom module
+                    // from the same prologue, so the vertex stage is the
+                    // stock text and a custom layer pairs the stock vertex
+                    // with this fragment. That also keeps the uv-scroll
+                    // vertex free to combine with it rather than needing a
+                    // fourth file for the pair.
+                    composedShaders.push({
+                        output:
+                            "upstream/shaders/sprite_custom.frag.native.wgsl",
+                        data: spriteFragmentWgsl(
+                            customProvenance,
+                            shader,
+                        ),
+                    });
+                    generated.push({
+                        modulePath:
+                            "src/sprite/sprite-custom-shader.ts",
+                        symbolName: "makeCustomSpriteWgsl",
+                    });
+                }
                 if (features.includes("sprite:uv-scroll")) {
                     // The scroll variant adds one attribute and one term to
                     // the sampled UV; the pin gates both on the same flag.
@@ -573,6 +626,10 @@ class GeneratedSourceWriter {
                     context,
                 ).compiledSceneUniformsWgsl(),
             );
+            const customBillboard =
+                options.spriteCustomShaders.find(
+                    (entry) => entry.family === "billboard",
+                );
             this.writeSource(
                 "upstream/src/billboard_system.cpp",
                 billboards.lowerCore(),
@@ -584,18 +641,23 @@ class GeneratedSourceWriter {
                 "src/sprite/billboard-pipeline.ts",
                 "makeBillboardWgsl",
             );
-            composedShaders.push(
-                {
-                    output:
-                        "upstream/shaders/billboard.vert.native.wgsl",
-                    data: billboardVertexWgsl(provenance, shader),
-                },
-                {
-                    output:
-                        "upstream/shaders/billboard.frag.native.wgsl",
-                    data: billboardFragmentWgsl(provenance, shader),
-                },
-            );
+            // The stock pair, only where a plain system draws with it. Unlike
+            // the 2D family a custom billboard brings its own vertex stage
+            // too, so a scene whose every system opts in loads neither half.
+            if (options.plainBillboardSystem) {
+                composedShaders.push(
+                    {
+                        output:
+                            "upstream/shaders/billboard.vert.native.wgsl",
+                        data: billboardVertexWgsl(provenance, shader),
+                    },
+                    {
+                        output:
+                            "upstream/shaders/billboard.frag.native.wgsl",
+                        data: billboardFragmentWgsl(provenance, shader),
+                    },
+                );
+            }
             if (features.includes("sprite:billboard-cutout")) {
                 // The cutout arm discards below the cutoff and is otherwise
                 // the same stage, so like the second orientation it costs
@@ -607,6 +669,45 @@ class GeneratedSourceWriter {
                         provenance,
                         billboards.shaderSource("facing", "cutout"),
                     ),
+                });
+            }
+            // The billboard mirror of the 2D custom program, and the one
+            // place the two families differ: the pin's billboard composer
+            // exposes `viewDist` and the world position to a custom body, so
+            // its vertex stage writes two varyings the stock one does not and
+            // the pair travels together.
+            if (customBillboard) {
+                const shader = billboards.shaderSource(
+                    "facing",
+                    "transparent",
+                    customBillboard.fragment,
+                );
+                const customProvenance = context.provenance(
+                    "src/sprite/billboard-custom-shader.ts",
+                    "makeCustomBillboardWgsl",
+                );
+                composedShaders.push(
+                    {
+                        output:
+                            "upstream/shaders/billboard_custom.vert.native.wgsl",
+                        data: billboardVertexWgsl(
+                            customProvenance,
+                            shader,
+                        ),
+                    },
+                    {
+                        output:
+                            "upstream/shaders/billboard_custom.frag.native.wgsl",
+                        data: billboardFragmentWgsl(
+                            customProvenance,
+                            shader,
+                        ),
+                    },
+                );
+                generated.push({
+                    modulePath:
+                        "src/sprite/billboard-custom-shader.ts",
+                    symbolName: "makeCustomBillboardWgsl",
                 });
             }
             if (features.includes("sprite:billboard-axis-locked")) {
@@ -1418,6 +1519,9 @@ export function emitUpstreamGenerated(
     options: UpstreamEmitOptions = {
         idDiagnostics: false,
         shaderPrograms: [],
+        spriteCustomShaders: [],
+        plainSpriteLayer: true,
+        plainBillboardSystem: true,
         geometryOutputTasks: [],
         gpuDeformation: false,
         animatedWorldBounds: false,
