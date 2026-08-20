@@ -321,6 +321,9 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
             emissiveStrength: this.context.sourceFile(
                 "src/loader-gltf/gltf-ext-emissive-strength.ts",
             ),
+            specGloss: this.context.sourceFile(
+                "src/loader-gltf/gltf-ext-spec-gloss.ts",
+            ),
         });
         const parserFile = this.context.sourceFile(
             "src/loader-gltf/gltf-parser.ts",
@@ -7524,6 +7527,201 @@ function setterOptionsObject(
 }
 
 /**
+ * KHR_materials_pbrSpecularGlossiness, lowered from the extension's own
+ * `out` literal and its two texture reads.
+ *
+ * This extension is the one that does not *default* into the core
+ * workflow but replaces it: metallic goes to a constant, roughness is the
+ * glossiness complement, and reflectance takes the specular factor's
+ * largest channel. All three are pinned formulas, so the loader emits
+ * them from here rather than restating them.
+ *
+ * Two shapes refuse rather than emit. Both `ctx._texture` calls pass the
+ * sRGB flag, which is what the slot table in `pinned-pbr-variant-cpp.ts`
+ * states for the spec-gloss slot; a pin that fetched either map through a
+ * linear view would shade against a table that still says otherwise. And
+ * the maximum is over exactly three channels, which is what the emitted
+ * `std::max` initializer list carries.
+ */
+function specGlossDefaults(
+    file: ts.SourceFile,
+): GltfMaterialDefaults["specGloss"] {
+    const symbol = "KHR_materials_pbrSpecularGlossiness";
+    const body = featureMethod(file, symbol, "applyMaterial").body;
+    // The two fetches, tied to the record fields they land on through the
+    // destructure that names them: a pin that swapped the two calls would
+    // otherwise silently feed the specular map to base colour.
+    const fetched = collectNodes(
+        body,
+        (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            ts.isArrayBindingPattern(node.name) &&
+            node.initializer !== undefined,
+    )[0];
+    const awaited = fetched ? unwrapPin(fetched.initializer!) : undefined;
+    const all = awaited && ts.isAwaitExpression(awaited)
+        ? unwrapPin(awaited.expression)
+        : undefined;
+    const fetches = all && ts.isCallExpression(all) &&
+            all.arguments.length === 1
+        ? unwrapPin(all.arguments[0]!)
+        : undefined;
+    if (!fetched || !fetches || !ts.isArrayLiteralExpression(fetches)) {
+        refuseModule(
+            symbol,
+            "no longer fetches its textures through one awaited array",
+        );
+    }
+    const bindings = (fetched.name as ts.ArrayBindingPattern).elements;
+    const fetchedKeys = new Map<string, string>();
+    fetches.elements.forEach((element, index) => {
+        const call = unwrapPin(element);
+        if (!ts.isCallExpression(call) || call.arguments.length !== 2) {
+            refuseNode(symbol, file, element, "no longer fetches a texture");
+        }
+        const info = unwrapPin(call.arguments[0]!);
+        if (
+            !ts.isPropertyAccessExpression(info) &&
+            !ts.isPropertyAccessChain(info)
+        ) {
+            refuseNode(symbol, file, info, "no longer names the texture it fetches");
+        }
+        if (unwrapPin(call.arguments[1]!).kind !== ts.SyntaxKind.TrueKeyword) {
+            refuseNode(
+                symbol,
+                file,
+                call.arguments[1]!,
+                "no longer fetches this map through an sRGB view (the slot " +
+                    "table in src/pinned-pbr-variant-cpp.ts states srgb)",
+            );
+        }
+        const binding = bindings[index];
+        if (
+            !binding ||
+            !ts.isBindingElement(binding) ||
+            !ts.isIdentifier(binding.name)
+        ) {
+            refuseNode(symbol, file, element, "no longer binds this fetch to a name");
+        }
+        fetchedKeys.set(binding.name.text, info.name.text);
+    });
+    const out = declarationOf(body, "out");
+    const literal = out?.initializer ? unwrapPin(out.initializer) : undefined;
+    if (!literal || !ts.isObjectLiteralExpression(literal)) {
+        refuseModule(symbol, "no longer returns one options literal");
+    }
+    // `out.<field> = <binding>` ties each fetch to the record slot it fills.
+    const textureKey = (field: string): string => {
+        for (const assignment of collectNodes(
+            body,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
+        )) {
+            const target = unwrapPin(assignment.left);
+            if (
+                ts.isPropertyAccessExpression(target) &&
+                target.name.text === field
+            ) {
+                const key = fetchedKeys.get(
+                    identifierText(assignment.right) ?? "",
+                );
+                if (key !== undefined) return key;
+            }
+        }
+        refuseModule(symbol, `no longer fills '${field}' from a fetched texture`);
+    };
+    // `roughnessFactor: complement - (glossinessFactor ?? fallback)`.
+    const complement = unwrapPin(
+        optionInitializer(symbol, literal, "roughnessFactor"),
+    );
+    if (
+        !ts.isBinaryExpression(complement) ||
+        complement.operatorToken.kind !== ts.SyntaxKind.MinusToken
+    ) {
+        refuseModule(symbol, "no longer takes roughness as a glossiness complement");
+    }
+    const glossiness = coalescedPropertyDefault(complement.right);
+    if (!glossiness) {
+        refuseNode(
+            symbol,
+            file,
+            complement.right,
+            "no longer defaults the glossiness factor",
+        );
+    }
+    // `reflectance: sf ? Math.max(sf[0], sf[1], sf[2]) : absent`, where `sf`
+    // is the binding the specular factor was read into.
+    const reflectance = unwrapPin(
+        optionInitializer(symbol, literal, "reflectance"),
+    );
+    if (!ts.isConditionalExpression(reflectance)) {
+        refuseModule(symbol, "no longer conditions reflectance on a specular factor");
+    }
+    const factorName = identifierText(reflectance.condition);
+    const factor = factorName
+        ? declarationOf(body, factorName)?.initializer
+        : undefined;
+    const read = factor ? unwrapPin(factor) : undefined;
+    if (
+        !read ||
+        (!ts.isPropertyAccessExpression(read) && !ts.isPropertyAccessChain(read))
+    ) {
+        refuseNode(
+            symbol,
+            file,
+            reflectance.condition,
+            "no longer conditions reflectance on a named property read",
+        );
+    }
+    const largest = mathCall(reflectance.whenTrue, "max");
+    const channels = largest?.arguments ?? [];
+    const indexed = channels.every((argument, index) => {
+        const element = unwrapPin(argument);
+        if (!ts.isElementAccessExpression(element)) return false;
+        const channel = unwrapPin(element.argumentExpression);
+        return identifierText(element.expression) === factorName &&
+            ts.isNumericLiteral(channel) && Number(channel.text) === index;
+    });
+    if (!largest || channels.length !== 3 || !indexed) {
+        refuseNode(
+            symbol,
+            file,
+            reflectance.whenTrue,
+            "no longer takes the maximum of the specular factor's first " +
+                "three channels",
+        );
+    }
+    return {
+        diffuseTextureKey: textureKey("baseColorTexture"),
+        specGlossTextureKey: textureKey("specGlossTexture"),
+        metallicFactor: floatLiteral(
+            signedNumericValue(
+                symbol,
+                file,
+                optionInitializer(symbol, literal, "metallicFactor"),
+            ),
+        ),
+        glossiness: {
+            key: glossiness.key,
+            literal: floatLiteral(
+                signedNumericValue(symbol, file, glossiness.fallback),
+            ),
+            complement: floatLiteral(
+                signedNumericValue(symbol, file, complement.left),
+            ),
+        },
+        reflectance: {
+            key: read.name.text,
+            channels: String(channels.length),
+            absent: floatLiteral(
+                signedNumericValue(symbol, file, reflectance.whenFalse),
+            ),
+        },
+    };
+}
+
+/**
  * The remaining material float defaults, lowered from their pinned
  * modules — see the round-4 notes above for the absent-arm
  * asymmetries and the provenance of every entry.
@@ -7536,6 +7734,7 @@ export function lowerGltfMaterialDefaults(files: {
     clearcoat: ts.SourceFile;
     sheen: ts.SourceFile;
     emissiveStrength: ts.SourceFile;
+    specGloss: ts.SourceFile;
 }): GltfMaterialDefaults {
     const core = assembleMaterialDefaults(files.material);
     const specularFactor = dielectricSpecularDefault(files.dielectric);
@@ -7694,6 +7893,7 @@ export function lowerGltfMaterialDefaults(files: {
         },
         sheenIntensity: floatLiteral(Number(sheenIntensity.text)),
         emissiveStrength: strengthDefaults[0]!,
+        specGloss: specGlossDefaults(files.specGloss),
     };
 }
 

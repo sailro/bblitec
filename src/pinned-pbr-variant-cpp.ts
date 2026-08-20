@@ -1598,6 +1598,9 @@ export interface MaterialTextureSlotFeatures {
     clearcoat: boolean;
     sheen: boolean;
     iridescence: boolean;
+    /** A composed variant samples the spec-gloss pair, which replaces the
+     *  metallic-roughness workflow rather than layering over it. */
+    specularGlossiness: boolean;
     occlusionUv2: boolean;
     standardBump: boolean;
     /** A composed Standard variant binds the pin's 2D reflection pair
@@ -1751,6 +1754,22 @@ function materialTextureSlotRows(
                 samplerName: "iridescenceThicknessSampler_",
             },
         );
+    }
+    // Appended after the layered extensions rather than beside the base
+    // workflow it replaces, so a scene that compiles it shifts no existing
+    // slot index -- the same reasoning the Standard bump pair follows.
+    if (features.specularGlossiness) {
+        mesh.push({
+            source: "spec_gloss",
+            // `gltf-ext-spec-gloss.ts` fetches this map with its sRGB flag
+            // set, the same as the diffuse one: the RGB it carries is a
+            // specular colour, and the glossiness rides the alpha, which an
+            // sRGB view leaves alone.
+            srgb: "srgb",
+            fallback: "white",
+            textureName: "specGlossTexture",
+            samplerName: "specGlossSampler",
+        });
     }
     if (features.occlusionUv2) {
         mesh.push({
@@ -1920,6 +1939,9 @@ enum class MaterialTextureSource {
     ambient_or_emissive,
     /** Standard emissive map; a PBR material leaves the fallback. */
     standard_emissive,
+    /** KHR_materials_pbrSpecularGlossiness map: RGB specular, A glossiness
+     *  (PBR only, and it replaces the metallic-roughness workflow). */
+    spec_gloss,
     /** KHR_materials_transmission map (PBR only). */
     transmission,
     /** KHR_materials_volume thickness map (PBR only). */

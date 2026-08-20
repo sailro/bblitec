@@ -766,6 +766,27 @@ function capabilityRows(
             ["render_capabilities.hpp", "variant table"],
         ),
         checkedRow(
+            "BBLITE_MATERIAL_SPEC_GLOSS",
+            "capability",
+            emit.specularGlossiness,
+            [
+                [
+                    spec.specularGlossiness,
+                    "an asset uses KHR_materials_pbrSpecularGlossiness",
+                ],
+            ],
+            "no asset uses KHR_materials_pbrSpecularGlossiness",
+            "src/loader-gltf/gltf-ext-spec-gloss.ts (registry row " +
+                "KHR_materials_pbrSpecularGlossiness): the workflow " +
+                "replacement has no scene half, so an asset is the only " +
+                "way in",
+            [
+                "render_capabilities.hpp",
+                "material_texture_slots.hpp",
+                "variant table",
+            ],
+        ),
+        checkedRow(
             "BBLITE_MATERIAL_OCCLUSION_UV2",
             "capability",
             emit.occlusionUv2,

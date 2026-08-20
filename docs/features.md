@@ -150,7 +150,8 @@ The rule that decides which mechanism owns a feature: a runtime feature
 exists for API the scene's own source can reach, and a capability exists for
 what assets decide. An extension family with a scene-code setter therefore
 has both (clearcoat, sheen and iridescence are feature-or-capability), and one
-without a setter has only the capability (dispersion).
+without a setter has only the capability (dispersion, and the spec-gloss
+workflow replacement, which no scene API reaches at all).
 
 **Why compile time:** there is no dynamic module loading, so upstream's own
 `import()`-behind-a-predicate boundaries have to be resolved somewhere, and
@@ -400,7 +401,7 @@ carrying several scene-code materials reaches each of them independently.
 Material state written and read per frame: alpha mask/blend/coverage,
 reflectance, emissive strength, lighting intensities, double-sided, normal
 scale, shared texture scaling, transmission, IOR, volume, dispersion,
-clearcoat, sheen, and iridescence.
+clearcoat, sheen, iridescence, and the spec-gloss workflow replacement.
 
 ### Animation playback
 
@@ -684,10 +685,11 @@ build error with a source location, not a silently different image.
 - scene fog is ported for PBR, Standard, and image-skybox surfaces; fog
   composed with Grid, custom-shader, environment-ground/DDS-skybox background,
   transmission, or geometry-output surfaces fails explicitly
-- PBR material extensions cover clearcoat, sheen, iridescence, and dispersion
-  with one shared UV transform; specular textures and anisotropy remain
-  unsupported, and an asset carrying an extension the pinned loader
-  implements that this port does not fails at generation naming it
+- PBR material extensions cover clearcoat, sheen, iridescence, dispersion,
+  and the spec-gloss workflow replacement with one shared UV transform;
+  specular textures and anisotropy remain unsupported, and an asset carrying
+  an extension the pinned loader implements that this port does not fails at
+  generation naming it
 - custom shader variants are bounded by the supported WGSL subset and the
   `worldViewProjection` system uniform; arbitrary system-uniform sets and
   matrix-valued custom uniforms remain unsupported

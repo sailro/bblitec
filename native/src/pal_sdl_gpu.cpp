@@ -125,6 +125,9 @@ struct GpuMesh {
     SDL_GPUTexture* iridescence = nullptr;
     SDL_GPUTexture* iridescence_thickness = nullptr;
 #endif
+#if BBLITE_MATERIAL_SPEC_GLOSS
+    SDL_GPUTexture* spec_gloss = nullptr;
+#endif
 #if BBLITE_MATERIAL_OCCLUSION_UV2
     SDL_GPUTexture* occlusion = nullptr;
 #endif
@@ -156,6 +159,9 @@ struct GpuMesh {
 #if BBLITE_MATERIAL_IRIDESCENCE
     SDL_GPUSampler* iridescence_sampler = nullptr;
     SDL_GPUSampler* iridescence_thickness_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_SPEC_GLOSS
+    SDL_GPUSampler* spec_gloss_sampler = nullptr;
 #endif
 #if BBLITE_MATERIAL_OCCLUSION_UV2
     SDL_GPUSampler* occlusion_sampler = nullptr;
@@ -235,6 +241,10 @@ GpuMeshSlotMembers mesh_slot_members(
             return {
                 &GpuMesh::iridescence_thickness,
                 &GpuMesh::iridescence_thickness_sampler};
+#endif
+#if BBLITE_MATERIAL_SPEC_GLOSS
+        case Source::spec_gloss:
+            return {&GpuMesh::spec_gloss, &GpuMesh::spec_gloss_sampler};
 #endif
 #if BBLITE_MATERIAL_OCCLUSION_UV2
         case Source::occlusion_uv2:

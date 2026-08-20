@@ -436,11 +436,15 @@ function assertPinnedSync<T>(value: T, what: string): T {
  * them per material differs only for an extension a material declares without
  * the document announcing it — which no valid glTF does.
  *
- * `gltf-ext-diffuse-transmission.ts` and `gltf-ext-spec-gloss.ts` sit in the
- * registry between these and are deliberately not run: no corpus asset
- * declares either, and their arms have no generated counterpart yet — a
- * material reaching them should fail the compose gate loudly, not compose an
- * arm generation cannot emit.
+ * `gltf-ext-diffuse-transmission.ts` sits in the registry between these and is
+ * deliberately not run: no corpus asset declares it, and its arms have no
+ * generated counterpart yet — a material reaching it should fail the compose
+ * gate loudly, not compose an arm generation cannot emit.
+ *
+ * Spec-gloss is the one that overrides the base material rather than adding a
+ * layer: it replaces the metallic-roughness workflow outright, so its result
+ * lands on `baseColorTexture`, `metallicFactor`, `roughnessFactor`,
+ * `reflectance` and the `specGlossTexture` slot rather than on a `_layer`.
  */
 const loaderMaterialExtensionModules = [
     "loader-gltf/gltf-ext-clearcoat.js",
@@ -449,6 +453,7 @@ const loaderMaterialExtensionModules = [
     "loader-gltf/gltf-ext-sheen.js",
     "loader-gltf/gltf-ext-anisotropy.js",
     "loader-gltf/gltf-ext-unlit.js",
+    "loader-gltf/gltf-ext-spec-gloss.js",
     "loader-gltf/gltf-ext-dielectric.js",
 ] as const;
 
@@ -458,24 +463,6 @@ const loaderMaterialExtensionModules = [
  * and the right response is a loud failure at generation time, not a silent
  * pass-through whose downstream meaning nobody checked.
  */
-const knownLayerProperties = new Set([
-    "_clearCoat",
-    "_sheen",
-    "_iridescence",
-    "_anisotropy",
-    "_emissiveColor",
-    "_unlit",
-    "_unlitColor",
-    "_transmissive",
-    "_subsurface",
-    "_metallicReflectanceColor",
-    "_metallicReflectanceTexture",
-    "_reflectanceTexture",
-    "_metallicF0Factor",
-    "_specularWeight",
-    "_useOnlyMetallicFromMetallicReflectanceTexture",
-]);
-
 /**
  * `setPbrMetallicReflectance`'s write order, which is also the order the
  * transcription used to write them, so the projection preserves both.
@@ -488,6 +475,33 @@ const reflectanceProperties = [
     "_specularWeight",
     "_useOnlyMetallicFromMetallicReflectanceTexture",
 ] as const;
+
+/**
+ * `gltf-ext-spec-gloss.ts` writes the base workflow rather than a layer, so
+ * these five are the fields its returned fragment merges over the core
+ * material.
+ */
+const specGlossProperties = [
+    "metallicFactor",
+    "roughnessFactor",
+    "reflectance",
+    "baseColorTexture",
+    "specGlossTexture",
+] as const;
+
+const knownLayerProperties = new Set([
+    "_clearCoat",
+    "_sheen",
+    "_iridescence",
+    "_anisotropy",
+    "_emissiveColor",
+    "_unlit",
+    "_unlitColor",
+    "_transmissive",
+    "_subsurface",
+    ...reflectanceProperties,
+    ...specGlossProperties,
+]);
 
 /**
  * The one-time load of every pinned callable this module executes.
@@ -881,6 +895,13 @@ export function pinnedMaterialInputFromGltf(
     if (layers["_transmissive"] === true) input["_transmissive"] = true;
     if ("_subsurface" in layers) input["_subsurface"] = layers["_subsurface"];
     for (const property of reflectanceProperties) {
+        if (property in layers) input[property] = layers[property];
+    }
+    // `gltf-ext-spec-gloss.ts` replaces the metallic-roughness workflow
+    // outright, so its writes land on the base material: the loader merges
+    // the fragment over the core fields, and `specGlossTexture` is what the
+    // pin's own derivation reads for `PBR_HAS_SPEC_GLOSS`.
+    for (const property of specGlossProperties) {
         if (property in layers) input[property] = layers[property];
     }
     // `gltf-ext-unlit.ts`: presence sets `_unlit`, and the tint is carried

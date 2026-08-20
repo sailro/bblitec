@@ -175,7 +175,7 @@ record future audits build on.
 
 ## P1 — Full Babylon Lite corpus audit
 
-150 corpus scenes remain unregistered; measured scenes are in
+157 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -192,14 +192,49 @@ modules (`../shared/sceneNN-nme.js`); integrating from it starts by copying
 those out of the pinned upstream tree and pinning their SHA-256 beside the
 scenes.
 
-**Largest first-blocker clusters:** browser-dependent condition 17 (15 of them
-deferred-lane physics), `parseNodeMaterialFromSnippet` 17, engine options beyond
-msaaSamples/requiredLimits 7, `parseNodeParticleSource` 6, static array literal
-5, `receiveShadows` 5, `loadSplat` 5, `??` over a non-static-record operand 5,
-`light.position.set` 4, string-literal arguments 3,
-`createNavigationPluginAsync` 3. Standard diffuse-texture assignment blocks 5
-(18, 25, 90, 110, 272), vector `.set()` on node properties blocks 5 (4, 22, 65,
-141, 223), mesh name/id setters block 4 (111, 113, 129, 221).
+**Largest first-blocker clusters** (swept against 1.23.0): browser-dependent
+condition 17 (15 of them deferred-lane physics), `parseNodeMaterialFromSnippet`
+17, engine options beyond msaaSamples/requiredLimits 7,
+`parseNodeParticleSource` 7, static array literal 5, `receiveShadows` 5,
+`loadSplat` 5, `??` over a non-static-record operand 5, `light.position.set` 4,
+string-literal arguments 3, `createNavigationPluginAsync` 3. Standard
+diffuse-texture assignment blocks 5 (18, 25, 90, 110, 272), vector `.set()` on
+node properties blocks 5 (4, 22, 65, 141, 223), mesh name/id setters block 4
+(111, 113, 129, 221).
+
+- [ ] Scene 11's residual is a skinned pose, not its material: the composed
+  fragment is byte-identical to the browser's and `scene -- diff` names two
+  bone-palette matrices the browser never uploaded, at every seek tried. The
+  foreground sits at 0.282 against 0.010 full. Sizing that is the animated-
+  skinning determinism axis, which also gates any other skinned glTF.
+
+**Rank by the whole family, not by the first blocker.** Node particles reach
+*eleven* scenes once the ones behind a shared-module import are counted (262,
+263, 264, 276, 277, 280, 281, 283, 284, 300, 301) — the largest axis after node
+materials, and the only one 1.23 grew. Two of those (300, 301) go through the
+new NPE-to-Sprite2D bridge, which lands on the sprite path this repository
+already owns rather than on a new renderer.
+
+### The eight scenes 1.23.0 added
+
+Audited 2026-08-20 by compile probe. Six import a `shared/` module the corpus
+does not carry, so each starts with the same corpus sync the node-material
+cluster needs: copy the module out of the pinned tree and pin its SHA-256.
+
+| Scene | First blocker | Family |
+| --- | --- | --- |
+| 220 | `KHR_mesh_quantization` on Duck.glb | glTF extension, with 11's spec-gloss |
+| 250 | `enableGltfCameras` | glTF camera import, new in 1.21 |
+| 281 | `parseNodeParticleSource` (+ `shared/scene281-npe`) | node particles |
+| 282 | texture pixels from a module function (+ `shared/scene282-standard-uv-transform`) | Standard UV transform |
+| 283 | `shared/scene283-npe-multiply-blend` | node particles |
+| 284 | `shared/scene284-npe-multiply-add-blend` | node particles |
+| 300 | `shared/npe-sprite2d-fixture` | node particles through Sprite2D |
+| 301 | `buildNodeParticleSet` (+ `shared/scene283-npe-multiply-blend`) | node particles through Sprite2D |
+
+Scene 282 is the only corpus scene reaching `stdUvTransformExt`, the ninth
+Standard extension 1.21 added. `pinned-standard-variants.ts` refuses a material
+carrying one by name, so that refusal is what integrating 282 has to lift.
 
 **No corpus scene can retire the runtime-sweep gate.** Of the scenes reaching
 `createMeshFromData` (86, 114, 170-175, 231), `setThinInstances` (16, 17, 43,
@@ -218,12 +253,14 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (127 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25, 26, 36, 38,
-43, 51-99, 110-115, 117, 118, 120-129, 140, 141, 144, 149, 152, 155-158, 160, 162,
-165, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229, 231, 241, 251,
-261-264, 269-271, 275-280. Includes static CSG/CSG2, compressed assets and
-splats, deterministic picking (113-115, 117, 118, 129), and display-only gizmos
-(223).
+**Integrate first (123 scenes):** 4, 12, 16-18, 20, 22, 23, 25, 26, 36, 38, 43,
+51-53, 58-91, 99, 110-115, 117, 118, 120-129, 140, 141, 144, 149, 152, 155-158,
+160, 162, 165, 179, 200-207, 211, 214, 215, 217-220, 223, 226, 229, 231, 241,
+250, 251, 261-264, 269-271, 275-284, 300, 301. Includes static CSG/CSG2,
+compressed assets
+and splats, deterministic picking (113-115, 117, 118, 129), and display-only
+gizmos (223). The eight 1.23.0 added are all first-lane: none needs a platform,
+user-input or external-service contract.
 
 **Defer (34 scenes):** 40-42, 44-49, 100-106, 153, 164, 170-175, 180, 181, 209,
 221, 222, 224, 225, 227, 228, 272.
@@ -236,10 +273,34 @@ that does to the deferred lane by default.
 - [ ] Scenes 4, 22, 65, 141, 223: support light position setters.
 - [ ] Scene 115: support `Number.isFinite`, then re-audit for deterministic
   picking.
-- [ ] Scenes 11, 144, 152, 157, 158, 179, 218: iterate a loader-returned
-  collection (`animationGroups`, `entities`) — scene 21's axis, not an
-  array shape.
+- [ ] Scenes 144, 152, 157, 158, 179, 218, 250: address a loader-returned
+  collection. One compiler contract covering every shape the corpus uses:
+  `for..of` over `entities`/`animationGroups`/`children`, `?? []` over one,
+  `.find(pred)` with an arrow, and `[0]`. Scene 21's axis, not an array shape,
+  and the largest that is a language contract rather than a subsystem.
+
+  It unblocks seven first blockers and finishes none alone — a strip probe of
+  152 lands next on `createAnimationManager({ engine })` and
+  `addAnimationGroups`, which no intrinsic carries; 144 wants
+  `KHR_materials_pbrSpecularGlossiness`, which scene 11 already ships; 250
+  wants `enableGltfCameras` and a browser-derived seek. Size the animation-manager family before committing to
+  it as the finisher for 152/157/158.
 - [ ] Scene 229: lower the reached spread element.
+- [ ] Scene 250: support `enableGltfCameras` — the loader's `_camera` feature,
+  new in 1.21. One scene, self-contained, and the only glTF camera import in
+  the corpus.
+- [ ] Scene 220: lower `KHR_mesh_quantization` plus `KHR_texture_transform`
+  (Duck). It refuses without a source location, so a compile probe reports it
+  last; it is not a compiler contract.
+  `KHR_materials_pbrSpecularGlossiness` shipped with scene 11 and is the
+  template: run the pinned extension at generation, project its base-workflow
+  overrides, append the texture slot after the layered extensions so no index
+  moves, and let the pin compose the fragment.
+- [ ] Scene 282: support the Standard UV transform. The pin gates it behind
+  `enableMaterialUvTransform()`, which registers `stdUvTransformExt` — the
+  ninth Standard extension, and the one `pinned-standard-variants.ts` refuses
+  by name. Its texture also comes from a module function the compiler must run
+  at generation, which is the first blocker.
 - [ ] Scenes 12, 43: fold or explicitly lower the reached browser-dependent
   conditions.
 - [ ] Scenes 171, 174, 175, 226, 251: lower `??` over an operand that is not a

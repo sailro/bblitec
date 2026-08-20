@@ -163,6 +163,24 @@ test("selects PBR material-extension specializations from glTF metadata", () => 
         ]);
         assert.equal(dispersive.dispersion, true);
 
+        // The workflow replacement: `specializeGltf` accepts it now rather
+        // than refusing, and the declared extension is the whole activation
+        // input — there is no scene half and no evaluated predicate.
+        writeGlb(join(scratch, "assets", "spec-gloss.glb"), {
+            extensionsUsed: ["KHR_materials_pbrSpecularGlossiness"],
+            materials: [{ name: "SpecGloss" }],
+            meshes: [],
+            nodes: [],
+        });
+        const specGloss = emitAssetSpecializations(scratch, [
+            {
+                source: "https://example.invalid/spec-gloss.glb",
+                output: "spec-gloss.glb",
+                kind: "gltf",
+            },
+        ]);
+        assert.equal(specGloss.specularGlossiness, true);
+
         writeGlb(join(scratch, "assets", "plain.glb"), {
             materials: [{ name: "Plain" }],
             meshes: [],
@@ -179,6 +197,7 @@ test("selects PBR material-extension specializations from glTF metadata", () => 
         assert.equal(plain.sheen, false);
         assert.equal(plain.iridescence, false);
         assert.equal(plain.dispersion, false);
+        assert.equal(plain.specularGlossiness, false);
     } finally {
         rmSync(scratch, { recursive: true, force: true });
     }
@@ -226,10 +245,8 @@ test("refuses asset content the pinned loader implements and this port does not"
 
         // A pin-implemented extension composes a different fragment upstream,
         // so ignoring it renders silently wrong — the refusal names it.
-        throwsMatching(
-            { extensionsUsed: ["KHR_materials_pbrSpecularGlossiness"] },
-            /pbrSpecularGlossiness/,
-        );
+        // `KHR_materials_pbrSpecularGlossiness` used to sit here and is
+        // lowered now, which is what removing it from the list means.
         throwsMatching(
             { extensionsUsed: ["KHR_materials_anisotropy"] },
             /anisotropy/,

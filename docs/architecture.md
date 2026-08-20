@@ -212,7 +212,8 @@ The current generated slice includes:
 - the HillValley-required `.babylon` loader slice
 - Standard/PBR/Grid material records, no-color views, and typed custom shaders
 - metadata-driven `KHR_materials_clearcoat`, `KHR_materials_sheen`,
-  `KHR_materials_iridescence`, and `KHR_materials_dispersion` layers
+  `KHR_materials_iridescence`, and `KHR_materials_dispersion` layers, plus
+  the `KHR_materials_pbrSpecularGlossiness` workflow replacement
 - authored transmission alpha/depth state with separate post-grab draw
   ordering and full multi-light refraction composition
 - negative-transform winding, including clockwise front-face pipelines for

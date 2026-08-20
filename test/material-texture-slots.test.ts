@@ -20,6 +20,7 @@ const noFeatures: MaterialTextureSlotFeatures = {
     clearcoat: false,
     sheen: false,
     iridescence: false,
+    specularGlossiness: false,
     occlusionUv2: false,
     standardBump: false,
     standardReflection: false,
@@ -109,6 +110,7 @@ test("extension rows append in the pinned registration order", () => {
             clearcoat: true,
             sheen: true,
             iridescence: true,
+            specularGlossiness: true,
             occlusionUv2: true,
             standardBump: true,
             standardReflection: true,
@@ -118,7 +120,7 @@ test("extension rows append in the pinned registration order", () => {
     );
     assert.ok(
         header.includes(
-            "inline constexpr std::size_t material_texture_mesh_slots = 17;",
+            "inline constexpr std::size_t material_texture_mesh_slots = 18;",
         ),
     );
     rowOrder(header, [
@@ -147,18 +149,23 @@ test("extension rows append in the pinned registration order", () => {
         `MaterialTextureSrgb::srgb, `,
         `    {13, MaterialTextureSource::iridescence_thickness, ` +
         `MaterialTextureSrgb::srgb, `,
+        // ...the spec-gloss map, appended after the layered extensions so a
+        // scene compiling it shifts no index above...
+        `    {14, MaterialTextureSource::spec_gloss, ` +
+        `MaterialTextureSrgb::srgb, MaterialTextureFallback::white, ` +
+        `"specGlossTexture", "specGlossSampler"},`,
         // ...the dedicated uv2 occlusion...
-        `    {14, MaterialTextureSource::occlusion_uv2, ` +
+        `    {15, MaterialTextureSource::occlusion_uv2, ` +
         `MaterialTextureSrgb::linear, MaterialTextureFallback::white, ` +
         `"occlusionTexture", "occlusionSampler_"},`,
         // ...then the Standard bump pair, so no index above moves...
-        `    {15, MaterialTextureSource::standard_bump, ` +
+        `    {16, MaterialTextureSource::standard_bump, ` +
         `MaterialTextureSrgb::linear, ` +
         `MaterialTextureFallback::flat_normal, ` +
         `"", ""},`,
         // ...and the Standard 2D reflection pair after bump, the same
         // append-only contract.
-        `    {16, MaterialTextureSource::standard_reflection, ` +
+        `    {17, MaterialTextureSource::standard_reflection, ` +
         `MaterialTextureSrgb::linear, ` +
         `MaterialTextureFallback::white, ` +
         `"", ""},`,

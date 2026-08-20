@@ -209,6 +209,20 @@ export interface GltfMaterialDefaults {
     sheenRoughness: GltfLoweredDefault;
     sheenIntensity: string;
     emissiveStrength: GltfLoweredDefault;
+    /**
+     * KHR_materials_pbrSpecularGlossiness rewrites the metallic-roughness
+     * pair rather than defaulting into it, so all three of its values are
+     * pinned formulas: `metallicFactor`, `complement - (glossiness ?? …)`,
+     * and the specular factor's largest channel with its absent arm. The
+     * two texture keys carry the fields the pin assigns them to.
+     */
+    specGloss: {
+        diffuseTextureKey: string;
+        specGlossTextureKey: string;
+        metallicFactor: string;
+        glossiness: { key: string; literal: string; complement: string };
+        reflectance: { key: string; channels: string; absent: string };
+    };
 }
 
 export function gltfLoaderCpp(
@@ -1357,6 +1371,79 @@ MaterialHandle load_material(
     if (const ts::JsonValue* extensions_value = optional(material_json, "extensions")) {
         const JsonObject& extensions = extensions_value->as_object();
         material.unlit = optional(extensions, "KHR_materials_unlit") != nullptr;
+        // KHR_materials_pbrSpecularGlossiness replaces the metallic-roughness
+        // workflow: gltf-ext-spec-gloss.ts maps the diffuse map onto base
+        // colour, keeps the specular/glossiness pair in one texture, and
+        // rewrites the two factors. The scalars ride the composed variant;
+        // what the record carries is the texture the fragment samples. Every
+        // key and constant below is lowered from the extension's own AST.
+        //
+        // Emitted ahead of the dielectric arms because the pin's registry
+        // lists spec-gloss before the cluster and runGltfMaterialFeatures
+        // Object.assigns each fragment in that order: an IOR or specular
+        // reflectance is the write that survives when both trigger.
+        if (const ts::JsonValue* spec_gloss_value =
+                optional(extensions, "KHR_materials_pbrSpecularGlossiness")) {
+            const JsonObject& spec_gloss = spec_gloss_value->as_object();
+            const ts::JsonValue* diffuse =
+                optional(spec_gloss, "${materialDefaults.specGloss.diffuseTextureKey}");
+            const ts::JsonValue* spec_gloss_texture =
+                optional(spec_gloss, "${materialDefaults.specGloss.specGlossTextureKey}");
+            if (diffuse) {
+                material.base_color_texture = texture_data(
+                    buffer,
+                    container,
+                    views,
+                    images,
+                    textures,
+                    samplers,
+                    diffuse);
+                // The pin fetches both maps through ctx._texture, which runs
+                // the KHR_texture_transform wrap: the diffuse map lands in the
+                // base-color slot, so it takes that slot's transform.
+                apply_texture_transform(
+                    material.base_color_transform,
+                    diffuse);
+            }
+            if (texture_transform_value(spec_gloss_texture)) {
+                // The spec-gloss slot carries no transform of its own, so a
+                // wrapped specular-glossiness map would shade unwrapped.
+                throw std::runtime_error(
+                    "Reached KHR_materials_pbrSpecularGlossiness supports an "
+                    "untransformed specular-glossiness texture only.");
+            }
+            material.spec_gloss_texture = texture_data(
+                buffer,
+                container,
+                views,
+                images,
+                textures,
+                samplers,
+                spec_gloss_texture);
+            // The extension's own rewrite of the metallic-roughness pair:
+            // metallic is a constant, roughness is the glossiness complement,
+            // and reflectance takes the specular factor's largest channel.
+            material.metallic_factor = ${materialDefaults.specGloss.metallicFactor};
+            material.roughness_factor =
+                ${materialDefaults.specGloss.glossiness.complement} -
+                float_or(
+                    spec_gloss,
+                    "${materialDefaults.specGloss.glossiness.key}",
+                    ${materialDefaults.specGloss.glossiness.literal});
+            const ts::JsonValue* specular_factor =
+                optional(spec_gloss, "${materialDefaults.specGloss.reflectance.key}");
+            const std::vector<float> specular = float_array(specular_factor);
+            if (specular_factor && specular.size() != ${materialDefaults.specGloss.reflectance.channels}) {
+                // The pin indexes exactly ${materialDefaults.specGloss.reflectance.channels} channels, so a shorter array is a
+                // NaN reflectance there rather than a defined fallback.
+                throw std::runtime_error(
+                    "Reached KHR_materials_pbrSpecularGlossiness specular "
+                    "factor is not a three-channel array.");
+            }
+            material.reflectance = specular_factor
+                ? std::max({specular[0], specular[1], specular[2]})
+                : ${materialDefaults.specGloss.reflectance.absent};
+        }
         if (const ts::JsonValue* ior_value =
                 optional(extensions, "KHR_materials_ior")) {
             material.has_ior = true;
