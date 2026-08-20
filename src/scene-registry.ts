@@ -1403,6 +1403,29 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene11",
+        name: "Scene 11 - Spec-Gloss Shark",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene11.ts",
+        title: "Babylon Lite Native - Spec-Gloss Shark",
+        parity: {
+            // Animated: the swim cycle is pinned to one frame on both sides,
+            // or the browser and the native run free-run to different poses.
+            referenceTimeSeconds: 1,
+            // The residual is the skinned pose, not the material: the
+            // composed fragment is byte-identical to the browser's, and
+            // `scene -- diff` names two bone-palette matrices the browser
+            // never uploaded. Measured at several seeks; one second is where
+            // the two agree most closely.
+            maxFullMad: 0.02,
+            maxForegroundMad: 0.3,
+            backgroundColor: [36, 36, 36],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "1",
+            },
+        },
+    },
+    {
         id: "scene148",
         name: "Scene 148 - Depth of Field",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene148.ts",

@@ -36,10 +36,9 @@ compile-time family below cites at least one:
    is exact where a transcription is an approximation.
 3. **No extra run-time dependency.** Draco and meshopt decoders are WebAssembly
    modules; image codecs are libraries. Decoding at generation keeps them out
-   of the executable entirely. The Dawn backend is the deliberate exception —
-   it ships a shader compiler on purpose, and
-   [why](#stage-2-compiling-wgsl-for-the-device) is the sharpest illustration
-   of what these forces trade against.
+   of the executable entirely. The Dawn backend is the one exception — it
+   ships a shader compiler, for the reasons in
+   [stage 2](#stage-2-compiling-wgsl-for-the-device).
 4. **No dynamic module loading.** Upstream's `import()`-behind-a-predicate
    feature registry has no native equivalent, so the same predicates are
    evaluated at generation. This is what preserves tree shaking: a scene that
@@ -49,13 +48,12 @@ compile-time family below cites at least one:
    families a scene declares, so computing them once is not an optimization —
    it is where the information already lives.
 
-The counterweight matters as much. **Bytes the browser produced are baked;
+The counterweight is as binding. **Bytes the browser produced are baked;
 decisions the loader can make are not.** The sprite frame table is derived at
 run time from the decoded atlas, so a changed atlas needs no compiler change.
 An unset skybox size is passed through as zero for the generated loader to
 resolve, rather than substituted by the compiler. Mip chains, factor texels,
-and samplers are built at upload. Each of those could have been folded and was
-deliberately left live.
+and samplers are built at upload. Each of those is foldable and stays live.
 
 ## Feature map
 
@@ -83,9 +81,8 @@ deliberately left live.
 | [Runtime scene mutation](#runtime-scene-mutation) | Run | removal with plan rematching, material-family append, instance counts |
 | [Diagnostics and capture](#diagnostics-and-capture) | Run | screenshots, benchmarks, attribution buffers |
 
-Nine families have work on both sides of the line — the shader pipeline most
-sharply, since its second stage changes phase with the backend. Where the cut
-falls in each is
+Nine families have work on both sides of the line; the shader pipeline's
+second stage changes phase with the backend. Where the cut falls in each is
 [tabulated below](#where-the-boundary-falls-inside-a-family).
 
 ## Compile-time feature sets
@@ -153,7 +150,8 @@ The rule that decides which mechanism owns a feature: a runtime feature
 exists for API the scene's own source can reach, and a capability exists for
 what assets decide. An extension family with a scene-code setter therefore
 has both (clearcoat, sheen and iridescence are feature-or-capability), and one
-without a setter has only the capability (dispersion).
+without a setter has only the capability (dispersion, and the spec-gloss
+workflow replacement, which no scene API reaches at all).
 
 **Why compile time:** there is no dynamic module loading, so upstream's own
 `import()`-behind-a-predicate boundaries have to be resolved somewhere, and
@@ -192,8 +190,7 @@ argument.
 
 ### Environment compilation
 
-Three environment routes exist and they do not split the same way, which makes
-this family the clearest illustration of the rule:
+Three environment routes exist and they do not split the same way:
 
 - **HDR (`.hdr`)** is compiled completely. Generation parses RGBE, projects
   the cubemap, and runs the pinned 1024-sample GGX prefilter as the pinned
@@ -226,25 +223,23 @@ kinds reach this — a drawn sprite atlas, and a computed pixel buffer.
 **Why the atlas is compile time:** there is no file to download and no
 formula to port. It is built with canvas2D — rotated wedges, `arc`, `hsl` —
 so its pixels are a browser rasterizer's antialiasing rather than an
-expression. It is executed, not reimplemented. Recorded per scene as
-`drawn-sprite-atlas`. The frame grid is **not** baked with it — see
+expression. Recorded per scene as `drawn-sprite-atlas`. The frame grid is
+**not** baked with it — see
 [the boundary table](#where-the-boundary-falls-inside-a-family).
 
-**Why a pixel buffer is compile time**, which is a larger adaptation and
-recorded separately as `computed-pixel-buffer`: those bytes *are* an
-expression, so unlike the atlas they could in principle be ported. Two things
-say otherwise. This compiler has no `Math.round` to lower them with, and the
-module memoizes through a module-level binding the data model does not carry
-either — so today the function is simply not lowerable. And it would be
-delicate if it became lowerable: three of the palette's 768 channel values
-land 2.8e-14 below a rounding boundary, which is one ulp of `sin`, so a
-reassociated expression or a different rounding rule flips an entry and with
-it a pixel. Executing it settles the question the way the parity measurement
-can check — the golden computes the same bytes at run time, and the scenes
-measure byte-identical.
+**Why a pixel buffer is compile time**, a larger adaptation recorded
+separately as `computed-pixel-buffer`: those bytes *are* an expression, so
+unlike the atlas they are portable in principle. Two facts stand against it.
+The function is not lowerable — this compiler has no `Math.round`, and the
+module memoizes through a module-level binding the data model does not
+carry. And the value is fragile: three of the palette's 768 channel values
+land 2.8e-14 below a rounding boundary, one ulp of `sin`, so a reassociated
+expression or a different rounding rule flips an entry and with it a pixel.
+Executing it under the engine the golden runs in makes the result checkable
+by parity measurement, and the scenes measure byte-identical.
 
-The tradeoff both share is the HDR prefilter's: the baked bytes depend on the
-Chrome that compiled them.
+Both share the HDR prefilter's tradeoff: the baked bytes depend on the Chrome
+that compiled them.
 
 ### Shader pipeline
 
@@ -315,16 +310,15 @@ DXIL, SPIR-V, and MSL, and SDL_GPU carries no shader compiler at all, so those
 binaries have to exist before the executable runs. DXC cannot be dropped from
 the D3D12 path either, because Tint does not emit DXIL.
 
-**Why Dawn's half is legitimately run time, and deliberate:** Dawn is the
-browser's own WebGPU implementation and carries Tint and DXC *inside* it — the
-same components the offline path invokes as tools. Compiling at startup is not
-a shortcut around the offline step; it is the parity mechanism. The goldens
-were produced by that stack, so running it in-process removes the
-offline-versus-browser compile split rather than adapting to it, which is why
-Dawn is bit-exact on scenes where SDL_GPU carries DXC-versus-browser rounding.
-The identity of that compiler is measurable, not assumed: a Dawn built without
-`DAWN_USE_BUILT_DXC` falls back to FXC and puts a systemic one-LSB error on lit
-surfaces, which disappears with DXC.
+**Why Dawn's half is run time:** Dawn is the browser's own WebGPU
+implementation and carries Tint and DXC *inside* it — the same components the
+offline path invokes as tools. Compiling at startup is the parity mechanism:
+the goldens were produced by that stack, so running it in-process removes the
+offline-versus-browser compile split rather than adapting to it, and Dawn is
+bit-exact on scenes where SDL_GPU carries DXC-versus-browser rounding. The
+identity of that compiler is measurable: a Dawn built without
+`DAWN_USE_BUILT_DXC` falls back to FXC and carries a systemic one-LSB error on
+lit surfaces, which DXC does not.
 
 ## Run-time feature sets
 
@@ -407,7 +401,7 @@ carrying several scene-code materials reaches each of them independently.
 Material state written and read per frame: alpha mask/blend/coverage,
 reflectance, emissive strength, lighting intensities, double-sided, normal
 scale, shared texture scaling, transmission, IOR, volume, dispersion,
-clearcoat, sheen, and iridescence.
+clearcoat, sheen, iridescence, and the spec-gloss workflow replacement.
 
 ### Animation playback
 
@@ -479,9 +473,9 @@ whether or not the body names it, as upstream declares it. What the body does
 NOT read still matters: a block nothing reads does not survive to the compiled
 shader, and SDL_GPU takes uniform buffers by dense slot. Which blocks a stage
 kept, and at which slots, is read from the sidecar the shader step writes
-beside that stage — the same one the pinned material variants already bind
-through, now written by both of its compaction passes. The compiled artifact
-answers it; nothing infers it from the WGSL. A scene whose every layer or
+beside that stage — the same one the pinned material variants bind through,
+written by both of its compaction passes. The compiled artifact answers it;
+nothing infers it from the WGSL. A scene whose every layer or
 system opts in never loads the stock program, so it is not composed either.
 
 A body may also sample textures the caller supplies. Each is named in the
@@ -635,8 +629,7 @@ before it trusts a measurement.
 
 ## Knobs
 
-The same split applies to the switches, and mixing them up is the usual cause
-of a measurement that does not mean what it looks like.
+The same split applies to the switches.
 
 **Compile-time** (CMake cache values and generation output; see
 [development](development.md#build-switches)): `BBLITE_GENERATED_DIR`,
@@ -661,9 +654,8 @@ from the two URLs and the pinned `skipSkybox` flag
 
 ## Boundaries
 
-Almost every boundary is enforced at generation, which is the point: an
-unsupported feature is a build error with a source location, not a silently
-different image.
+Almost every boundary is enforced at generation: an unsupported feature is a
+build error with a source location, not a silently different image.
 
 ### Rejected at generation
 
@@ -693,10 +685,11 @@ different image.
 - scene fog is ported for PBR, Standard, and image-skybox surfaces; fog
   composed with Grid, custom-shader, environment-ground/DDS-skybox background,
   transmission, or geometry-output surfaces fails explicitly
-- PBR material extensions cover clearcoat, sheen, iridescence, and dispersion
-  with one shared UV transform; specular textures and anisotropy remain
-  unsupported, and an asset carrying an extension the pinned loader
-  implements that this port does not fails at generation naming it
+- PBR material extensions cover clearcoat, sheen, iridescence, dispersion,
+  and the spec-gloss workflow replacement with one shared UV transform;
+  specular textures and anisotropy remain unsupported, and an asset carrying
+  an extension the pinned loader implements that this port does not fails at
+  generation naming it
 - custom shader variants are bounded by the supported WGSL subset and the
   `worldViewProjection` system uniform; arbitrary system-uniform sets and
   matrix-valued custom uniforms remain unsupported
@@ -724,7 +717,7 @@ through SDL_GPU: the Standard family correct, the PBR family mis-shading —
 [TODO](../TODO.md)'s Vulkan section carries the findings); Metal artifacts are
 generated but untested, and the Dawn integration is Windows-only today by
 configuration rather than architecture
-([backends](backends.md#honest-comparison)).
+([backends](backends.md#backend-comparison)).
 
 ---
 

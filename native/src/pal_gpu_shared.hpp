@@ -153,6 +153,8 @@ inline const TextureData* material_slot_texture(
                 : &material.emissive_texture;
         case Source::standard_emissive:
             return standard_material ? &material.emissive_texture : nullptr;
+        case Source::spec_gloss:
+            return standard_material ? nullptr : &material.spec_gloss_texture;
         case Source::transmission:
             return standard_material
                 ? nullptr

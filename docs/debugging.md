@@ -1,34 +1,32 @@
 # Diagnosing a scene
 
 Every question this page answers has a tool that answers it by
-measurement. Reaching for one is not a last resort after reasoning fails;
-it is the first step, because the reasoning is only worth as much as the
-evidence under it. The recurring cost in this project has never been a
-hard bug — it has been an afternoon spent inferring from a pixel residual
-something that one command prints directly.
+measurement. Reaching for one is the first step, not a last resort after
+reasoning fails: the reasoning is only worth as much as the evidence
+under it.
 
 Three rules make the rest of this page work:
 
 - **Capture before theorizing.** A hypothesis that was not derived from a
-  capture is a guess, and a guess that happens to sound mechanical is the
-  expensive kind.
+  capture is a guess, and a guess that sounds mechanical is the expensive
+  kind.
 - **Never call a residual a floor from statistics alone.** "It is
   probably a sampling floor" is a claim about a mechanism, and a
   mechanism claim needs a mechanism: the pinned line that does something
   ours does not. Percentages of exactly-matching pixels are not that.
 - **Look for the missing line in an *arm*, not in the arithmetic.**
   Upstream forks whole blocks on a boolean that records where an object
-  came from, and a fork we do not model looks exactly like a small
-  systematic bias. `createClearcoatFragment` composes its base-F0 remap
-  unless `gltf-ext-clearcoat.ts` passed `useF0Remap: false`;
+  came from, and a fork this port does not model looks exactly like a
+  small systematic bias. `createClearcoatFragment` composes its base-F0
+  remap unless `gltf-ext-clearcoat.ts` passes `useF0Remap: false`;
   `createSheenFragment` builds materially different arithmetic from
   `hasAlbedoScaling`; `createDefaultPipelineDescriptor` defaults
-  `_cullMode` to `"back"` and only the image skybox overrides it. Two
-  published residuals that had been described as rounding — Scene 19's
-  coat at 0.430 region, and a hard-edged background quad at 7.312 —
-  were each one of those arms, and each closed to measurement noise.
+  `_cullMode` to `"back"` and only the image skybox overrides it. An
+  uncomposed arm reads as rounding at any magnitude: a clearcoat region
+  at 0.430 and a hard-edged background quad at 7.312 each measure as
+  sampling noise once the arm the scene reaches composes.
   **So before writing "floor", find which arm the scene reaches and
-  check we compose that one.**
+  check that this port composes that one.**
 
 ## The ladder
 
@@ -48,8 +46,8 @@ meaningful, and stopping early is how a wrong branch gets taken.
 
 ### 1. Is the measurement real?
 
-Three things go stale independently, and each has been the whole answer
-at least once:
+Three things go stale independently, and any one of them can be the whole
+answer:
 
 - **The executable.** `parity` compares the binary's build stamp against
   the generated tree and refuses a mismatch. Never work around this.
@@ -75,18 +73,17 @@ npm run scene -- parity scene33 --differential
 ```
 
 SDL_GPU and Dawn are two independent compiler and API stacks. Agreement
-to one LSB puts the cause on the CPU side — our values, our plan, our
+to one LSB puts the cause on the CPU side — this port's values, plan and
 loader. Disagreement puts it on the GPU side — a pipeline state, a shader
-translation, a format. This is the sharpest single bit of information
-available, and it costs one command.
+translation, a format. One command separates the two.
 
 Scenes 9 and 37 are not bit-stable on Dawn from run to run, so a moved Dawn
 cell for those two means nothing on its own — `scene -- neutrality` knows that
 and reports them as expected wobble. The scope is measured rather than
 assumed: SDL_GPU is bit-identical across runs and so is Dawn under
 `BBLITE_MSAA=1`, and only 4x Dawn moves, by a few dozen pixels of 921600, all
-of them by exactly one. So it is the multisampled path, and nothing else about
-those two scenes is in question.
+of them by exactly one. The wobble is the multisampled path; nothing else
+about those two scenes is in question.
 
 That check is a command for any scene:
 
@@ -99,9 +96,9 @@ It renders the native side N times (default 5, `--runs N`) and prints every
 run against run 1 *and* against the golden — both columns always, because
 comparing runs only against each other hides a stable-but-wrong image, and the
 report says so out loud when the runs agree while all differing from the
-golden. `--single-sample` re-runs at one sample, the bisection that localised
-the wobble to multisampling; its golden column is context only, since the
-goldens are multisampled.
+golden. `--single-sample` re-runs at one sample — the bisection that separates
+multisampling from everything else; its golden column is context only, since
+the goldens are multisampled.
 
 ### 3. `scene -- diff` — the two captures, paired
 
@@ -162,15 +159,16 @@ can cause:
    fragment matching no arm is promoted to a finding; that is the
    compose-class defect, caught without a compose run.
 5. **Texture sample expressions.** The set of `textureSample(...)` calls
-   in the browser's fragments against ours. A sample taken against a
-   different UV than the pin is invisible in every uniform and obvious
-   here — that is exactly what scene 39's emissive residual was.
+   in the browser's fragments against the generated ones. A sample taken
+   against a different UV than the pin is invisible in every uniform and
+   obvious here; scene 39's emissive slot is the corpus case
+   ([fidelity](fidelity.md#shader-contract)).
 
 Values are matched rather than blocks: every float tuple the browser
 uploaded is indexed, and each native field is looked up in it, so a
 native value with no browser counterpart reads as its own finding
-instead of forcing a block pairing — that usually means our material
-composes a different feature set than the pin's, which is a finding in
+instead of forcing a block pairing — which usually means the generated
+material composes a different feature set than the pin's, a finding in
 itself.
 
 `diff` reuses captures already on disk only while they are still valid
@@ -217,7 +215,7 @@ That file, not the WGSL, is what SDL_GPU binds against, and the two disagree
 by design: a stage may declare a block it never reads, Tint drops it, and the
 compaction that follows is dense — so a dropped block takes its slot and
 everything behind it moves up one. Counting declarations in the `.native.wgsl`
-will tell you the wrong answer with total confidence.
+gives the wrong answer.
 
 ### 5. Which draw, which pixels
 
@@ -237,14 +235,13 @@ npm run scene -- measure artifacts\parity\scene50\native-gpu.png
 npm run scene -- measure probe.png --background 51,51,76
 ```
 
-It prints the non-background bounding box, pixel count and mean RGB.
-That measurement — as a twenty-line throwaway script, then — turned
-"the sprites are in the wrong place" into "exactly 7200 px at
-(640,180)-(719,269)", which inverted through the vertex shader to the
-exact quad corners and named the bug. The background defaults to the
-top-left pixel and matches exactly, because "exactly 7200" is the point:
-native renders clear to one solid color, while browser goldens dither
-theirs, so point it at the native PNG.
+It prints the non-background bounding box, pixel count and mean RGB. An
+exact box and count — "7200 px at (640,180)-(719,269)" — inverts through
+the vertex shader to the quad corners that produced it, which a
+description like "the sprites are in the wrong place" cannot. The
+background defaults to the top-left pixel and matches exactly, because
+the exact count is the point: native renders clear to one solid color
+while browser goldens dither theirs, so point it at the native PNG.
 
 ### 6. Isolation
 
@@ -256,11 +253,11 @@ npm run scene -- process examples\probe.ts
 npm run scene -- parity examples\probe.ts --recapture-reference
 ```
 
-Scene 19's residual was pinned on its clearcoat in one run this way —
-which localized it, but naming it still took reading the browser's own
-composed fragment beside the generated one, where the coat's base-F0
-remap was a block present in theirs and absent in ours. Isolation says
-which feature; the composed shader says which line.
+Isolation says which feature; it does not say which line. Naming the line
+takes reading the browser's own composed fragment beside the generated
+one — a residual isolated to a clearcoat, for instance, resolves only
+once the coat's base-F0 remap shows up as a block present in the
+browser's fragment and absent from the generated one.
 `compile` refuses sources outside the repository, which is why the copy
 goes in `examples/`; delete it and its `generated/` directory afterwards.
 
@@ -322,15 +319,15 @@ scene253: 14 material(s), 15 captured PBR fragment(s)
 ```
 
 That divergence is the finding: the reference binds a dedicated occlusion
-texture we do not, so the uv2 mask is wrong. Every material-mapping defect
-this was built for reads that way.
+texture the generated fragment does not, so the uv2 mask is wrong. Every
+material-mapping defect reads that way.
 
-Two things it deliberately does not derive, because they belong to the scene
-rather than to its asset and guessing them is wrong in both directions: the
-**light mode** — Scene 39's glTF declares two punctual lights and none of its
-captured fragments composes a light path at all — and **tone mapping**, which
-Scene 21 disables in scene code after `loadEnvironment` turned it on. Both are
-swept and the combination that reproduces the capture is reported, so the
+Two things it does not derive, because they belong to the scene rather than to
+its asset and guessing them is wrong in both directions: the **light mode** —
+Scene 39's glTF declares two punctual lights while none of its captured
+fragments composes a light path at all — and **tone mapping**, which Scene 21
+disables in scene code after `loadEnvironment` enables it. Both are swept and
+the combination that reproduces the capture is reported, so the
 `(lights 2 +tonemap)` suffix is a measurement of the scene rather than an
 assumption about it.
 
@@ -346,7 +343,7 @@ does not compose with `all`.
 
 A blocker names a capability; it does not size one. The first error a
 scene reports is the first line of its chain, not its length — scenes
-4, 21, 23, 111, 140, 142, 226, 251 and 270 all hid shadows, node
+4, 21, 23, 111, 140, 142, 226, 251 and 270 each hide shadows, node
 materials, anisotropy, splats or post-process tasks behind a one-line
 blocker.
 
@@ -359,10 +356,11 @@ node dist\src\scene-command.js compile corpus\babylon-lite\lab\lite\src\lite\sce
 **Then the stripped probe.** Copy the scene into `examples/`, replace the
 blocking call with a supported sibling, compile, and repeat until it
 comes back clean. Ten minutes, and it gives the exact scope instead of a
-guess: scene 15's `createSpotLight → createPointLight` came back clean
-and shipped the same day; scene 19's revealed a second contract the TODO
-label never mentioned; scene 50's revealed five language contracts before
-the sprite API it was labelled with.
+guess. The outcomes it separates: a substitution that comes back clean
+scopes the scene to that one call; one that exposes a further contract
+scopes it to a chain the TODO label does not name — a scene labelled
+with a rendering API commonly reports several language contracts ahead
+of it.
 
 Peel the non-intrinsic half first. It is often the cheaper half, and it
 is the half no label mentions.
@@ -379,23 +377,23 @@ before choosing a shape.
 - **Compose its materials.** If the scene loads a glTF, `scene -- compose
   <id>` should report every material matching. A green parity gate does not
   prove the derivation: a fragment missing an arm entirely still renders,
-  still measures, and simply comes out slightly wrong — which is how scene
-  253 held a published gate at 6 of 14 materials composing correctly.
-- **Orbit it.** A gate renders the one pose its author chose. Moving the
-  camera in the demo window found a skybox large enough for the far plane
-  to clip it and a background skybox breaking into a hard-edged quad once
-  the camera leaves the cube — both through a green matrix. When orbiting
+  still measures, and simply comes out slightly wrong, so a scene can hold
+  a published gate while only some of its materials compose correctly.
+- **Orbit it.** A gate renders the one pose its author chose, and a defect
+  that is off-screen or edge-on at that pose passes a green matrix — a
+  skybox the far plane clips, or one that breaks into a hard-edged quad
+  outside the cube, are both invisible from a fixed camera. When orbiting
   finds something, turn it into a measurement: copy the scene to
   `examples/`, move the camera there, and `parity --recapture-reference`
   so both sides are compared at that pose.
-- **Then bisect before believing the description.** Both defects orbiting
-  found were reported against the wrong element by eye — the second was
-  filed against the environment ground for months and was the DDS skybox.
+- **Then bisect before believing the description.** A background defect
+  identified by eye can be filed against the wrong element.
   `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0` each remove one background
   element, and the one whose removal makes the measurement *worse* is not
-  the cause: disabling the ground took that scene from 6.455 to 9.619,
-  disabling the skybox took it to 1.202, and that ordering named the
-  culprit before any code was read. That experiment is a flag now:
+  the cause. On a scene where the ground is the named suspect, disabling
+  the ground moves the measurement from 6.455 to 9.619 while disabling the
+  skybox moves it to 1.202 — that ordering names the skybox, with no code
+  read.
   `scene -- parity <id> --without ground|background` runs the native side
   with one element suppressed against the unchanged golden, artifacts
   suffixed `-without-<element>` so the standard run's stay untouched, and
@@ -486,22 +484,22 @@ names both:
 npm run scene -- parity scene116 --gpu-debug
 ```
 
-That turned "scene 116 refuses `BBLITE_MSAA=1`" into `'!"Store op is RESOLVE
-or RESOLVE_AND_STORE but texture is not multisample!"'` — and into a
-three-line fix. The flag does two things, and the second is why setting
-`BBLITE_GPU_DEBUG=1` by hand used to hang instead of answering: SDL's default
-assertion handler *prompts*, so the run blocks forever waiting for an input
-nothing will give it. `--gpu-debug` sets `SDL_ASSERT=always_ignore` as well,
-which makes the assertion print and the run continue.
+A refusal that surfaces as that generic message reads as
+`'!"Store op is RESOLVE or RESOLVE_AND_STORE but texture is not
+multisample!"'` under the flag. `--gpu-debug` does two things, and the second
+is why `BBLITE_GPU_DEBUG=1` set by hand hangs instead of answering: SDL's
+default assertion handler *prompts*, so the run blocks forever waiting for an
+input nothing will give it. `--gpu-debug` sets `SDL_ASSERT=always_ignore` as
+well, which makes the assertion print and the run continue.
 
 **`BBLITE_MSAA=1` is a bisection tool, not just a diagnostic.** Comparing a
 backend against *itself* at one sample separates multisampling from
-everything else. It is what localised the scenes 9/37 run-to-run wobble:
-SDL_GPU and single-sampled Dawn are both bit-identical across runs, and only
-4x Dawn is not, which excluded the scene, the assets and the shading math in
-three commands. Compare backend-to-backend or run-to-run when you do this —
-the goldens are multisampled, so every scene looks worse against them at one
-sample and that number means nothing.
+everything else — it is what places the scenes 9/37 run-to-run wobble in the
+multisampled path, since SDL_GPU and single-sampled Dawn are both
+bit-identical across runs and only 4x Dawn is not, which excludes the scene,
+the assets and the shading math. Compare backend-to-backend or run-to-run
+when you do this — the goldens are multisampled, so every scene looks worse
+against them at one sample and that number means nothing.
 
 Comparing native bone palettes against the browser's requires the mirror
 similarity map — negate column-major indexes 1, 2, 3, 4, 8 and 12 — which

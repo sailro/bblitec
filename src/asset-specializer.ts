@@ -169,6 +169,10 @@ const supportedExtensions = new Set<string>([
     "KHR_materials_transmission",
     "KHR_materials_emissive_strength",
     "KHR_materials_unlit",
+    // The pin's own extension replaces the metallic-roughness workflow, and
+    // generation runs it: the spec-gloss texture reaches the composed variant
+    // through `PBR_HAS_SPEC_GLOSS` exactly as it does in the browser.
+    "KHR_materials_pbrSpecularGlossiness",
     "KHR_texture_transform",
     "KHR_lights_punctual",
     "EXT_lights_image_based",
@@ -625,6 +629,8 @@ export interface AssetSpecializationFeatures {
     clearcoat: boolean;
     sheen: boolean;
     iridescence: boolean;
+    /** Any material replaces metallic-roughness with the spec-gloss pair. */
+    specularGlossiness: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
     /** Any asset carries JOINTS_1/WEIGHTS_1 the pin would skin and this port truncates. */
@@ -654,6 +660,7 @@ export function emitAssetSpecializations(
             clearcoat: false,
             sheen: false,
             iridescence: false,
+            specularGlossiness: false,
             dispersion: false,
             occlusionUv2: false,
             eightInfluenceSkinning: false,
@@ -744,6 +751,11 @@ export function emitAssetSpecializations(
         clearcoat: usesExtension("KHR_materials_clearcoat"),
         sheen: usesExtension("KHR_materials_sheen"),
         iridescence: usesExtension("KHR_materials_iridescence"),
+        // The spec-gloss workflow binds its own texture pair, so the slot
+        // table needs the row whenever any material declares it.
+        specularGlossiness: usesExtension(
+            "KHR_materials_pbrSpecularGlossiness",
+        ),
         dispersion: specializations.some(
             (specialization) => specialization.features.dispersionReached,
         ),

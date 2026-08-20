@@ -972,6 +972,8 @@ struct MaterialRecord {
     TextureData base_color_texture;
     TextureData metallic_roughness_texture;
     TextureData normal_texture;
+    /** KHR_materials_pbrSpecularGlossiness: RGB specular, A glossiness. */
+    TextureData spec_gloss_texture;
     TextureData transmission_texture;
     TextureData thickness_texture;
     TextureData clearcoat_texture;

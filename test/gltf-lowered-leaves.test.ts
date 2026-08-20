@@ -1390,6 +1390,7 @@ const uvWriterModule =
     "src/material/pbr/fragments/uv-transform-fragment.ts";
 const clearcoatModule = "src/loader-gltf/gltf-ext-clearcoat.ts";
 const sheenModule = "src/loader-gltf/gltf-ext-sheen.ts";
+const specGlossModule = "src/loader-gltf/gltf-ext-spec-gloss.ts";
 const strengthModule =
     "src/loader-gltf/gltf-ext-emissive-strength.ts";
 
@@ -1463,7 +1464,8 @@ function materialDefaultFiles(
         | "uvTransformWriter"
         | "clearcoat"
         | "sheen"
-        | "emissiveStrength",
+        | "emissiveStrength"
+        | "specGloss",
         ts.SourceFile
     >> = {},
 ): Parameters<typeof lowerGltfMaterialDefaults>[0] {
@@ -1478,6 +1480,7 @@ function materialDefaultFiles(
         sheen: overrides.sheen ?? pinnedFile(sheenModule),
         emissiveStrength: overrides.emissiveStrength ??
             pinnedFile(strengthModule),
+        specGloss: overrides.specGloss ?? pinnedFile(specGlossModule),
     };
 }
 
@@ -1609,6 +1612,21 @@ test("lowers the pinned material defaults to the shipped keys and constants", ()
         sheenRoughness: { key: "sheenRoughnessFactor", literal: "0.0f" },
         sheenIntensity: "1.0f",
         emissiveStrength: { key: "emissiveStrength", literal: "1.0f" },
+        specGloss: {
+            diffuseTextureKey: "diffuseTexture",
+            specGlossTextureKey: "specularGlossinessTexture",
+            metallicFactor: "0.0f",
+            glossiness: {
+                key: "glossinessFactor",
+                literal: "1.0f",
+                complement: "1.0f",
+            },
+            reflectance: {
+                key: "specularFactor",
+                channels: "3",
+                absent: "1.0f",
+            },
+        },
     });
 });
 
@@ -1795,6 +1813,90 @@ test("a changed sheen roughness default flows into the emitted keys", () => {
         key: "sheenRoughnessFactor",
         literal: "0.3f",
     });
+});
+
+test("the spec-gloss rewrite lowers from its own out literal", () => {
+    const specGloss = lowerGltfMaterialDefaults(materialDefaultFiles({
+        specGloss: mutatedFile(
+            specGlossModule,
+            "roughnessFactor: 1 - (sg.glossinessFactor ?? 1)",
+            "roughnessFactor: 2 - (sg.glossinessFactor ?? 0.5)",
+        ),
+    })).specGloss;
+    assert.deepEqual(specGloss.glossiness, {
+        key: "glossinessFactor",
+        literal: "0.5f",
+        complement: "2.0f",
+    });
+});
+
+test("a swapped spec-gloss fetch order follows the record field it fills", () => {
+    // The two fetches are told apart by the `out.<field> = <binding>`
+    // assignment, not by their position: swapping the array would otherwise
+    // feed the specular map to base colour in silence.
+    const specGloss = lowerGltfMaterialDefaults(materialDefaultFiles({
+        specGloss: mutatedFile(
+            specGlossModule,
+            "const [diffuse, specGloss] = await Promise.all([" +
+                "ctx._texture(sg.diffuseTexture, true), " +
+                "ctx._texture(sg.specularGlossinessTexture, true)]);",
+            "const [specGloss, diffuse] = await Promise.all([" +
+                "ctx._texture(sg.specularGlossinessTexture, true), " +
+                "ctx._texture(sg.diffuseTexture, true)]);",
+        ),
+    })).specGloss;
+    assert.equal(specGloss.diffuseTextureKey, "diffuseTexture");
+    assert.equal(
+        specGloss.specGlossTextureKey,
+        "specularGlossinessTexture",
+    );
+});
+
+test("a linear spec-gloss fetch refuses against the slot table", () => {
+    assert.throws(
+        () =>
+            lowerGltfMaterialDefaults(materialDefaultFiles({
+                specGloss: mutatedFile(
+                    specGlossModule,
+                    "ctx._texture(sg.specularGlossinessTexture, true)",
+                    "ctx._texture(sg.specularGlossinessTexture, false)",
+                ),
+            })),
+        /no longer fetches this map through an sRGB view/,
+    );
+});
+
+test("a spec-gloss maximum over other channels refuses", () => {
+    assert.throws(
+        () =>
+            lowerGltfMaterialDefaults(materialDefaultFiles({
+                specGloss: mutatedFile(
+                    specGlossModule,
+                    "Math.max(sf[0], sf[1], sf[2])",
+                    "Math.max(sf[0], sf[1])",
+                ),
+            })),
+        /no longer takes the maximum of the specular factor's first three/,
+    );
+});
+
+test("the emitted loader carries the lowered spec-gloss rewrite", () => {
+    const source = new GltfLowerer(new LoweringContext(store))
+        .lowerLoaderAdapter().source;
+    for (const line of [
+        'optional(spec_gloss, "diffuseTexture");',
+        'optional(spec_gloss, "specularGlossinessTexture");',
+        "material.metallic_factor = 0.0f;",
+        '"glossinessFactor",\n                    1.0f);',
+        'optional(spec_gloss, "specularFactor");',
+        "specular.size() != 3",
+        "std::max({specular[0], specular[1], specular[2]})",
+    ]) {
+        assert.ok(
+            source.includes(line),
+            `the emitted loader no longer carries '${line}'`,
+        );
+    }
 });
 
 test("a changed emissive strength default flows into the emitted keys", () => {

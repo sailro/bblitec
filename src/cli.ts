@@ -463,6 +463,9 @@ async function main(): Promise<void> {
             specializationFeatures.iridescence ||
             result.manifest.features.includes("material:iridescence"),
         dispersion: specializationFeatures.dispersion,
+        // Spec-gloss has no scene-code entry point: the pin reaches it only
+        // through the glTF extension, so the asset alone decides.
+        specularGlossiness: specializationFeatures.specularGlossiness,
         occlusionUv2: specializationFeatures.occlusionUv2,
         // The same derivation `upstream-lower.ts` uses for the compiled
         // define: transmission is reached from scene code and from a loaded
@@ -673,6 +676,7 @@ async function main(): Promise<void> {
             ? { runtimeMeshFeatures }
             : {}),
         iridescence: emittedArms.iridescence,
+        specularGlossiness: emittedArms.specularGlossiness,
         dispersion: emittedArms.dispersion,
         occlusionUv2: emittedArms.occlusionUv2,
     };

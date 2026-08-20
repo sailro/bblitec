@@ -212,7 +212,8 @@ The current generated slice includes:
 - the HillValley-required `.babylon` loader slice
 - Standard/PBR/Grid material records, no-color views, and typed custom shaders
 - metadata-driven `KHR_materials_clearcoat`, `KHR_materials_sheen`,
-  `KHR_materials_iridescence`, and `KHR_materials_dispersion` layers
+  `KHR_materials_iridescence`, and `KHR_materials_dispersion` layers, plus
+  the `KHR_materials_pbrSpecularGlossiness` workflow replacement
 - authored transmission alpha/depth state with separate post-grab draw
   ordering and full multi-light refraction composition
 - negative-transform winding, including clockwise front-face pipelines for
@@ -327,10 +328,10 @@ exceptions — is in
 [features](features.md#feature-and-capability-selection).
 
 Generated `render_capabilities.hpp`, shader reflection, and native layout
-declarations must stay synchronized. The D3D12 pipeline failure encountered
-during the initial migration was caused by declaring only 8 SDL vertex
-attributes for a 15-input shader; GridMaterial also reserves location 7 for
-its local normal, so deformation inputs occupy locations 8-15.
+declarations must stay synchronized. Declaring fewer SDL vertex attributes
+than a shader's input count fails D3D12 pipeline creation; GridMaterial also
+reserves location 7 for its local normal, so deformation inputs occupy
+locations 8-15.
 
 ## Renderer
 
@@ -405,10 +406,10 @@ separates CPU-side causes from GPU-side ones immediately.
 [Backends](backends.md) carries the rationale, the full comparison,
 build recipes, and the ported pinned contracts.
 
-The shader-language migration is complete: all native GPU shaders originate as
-WGSL and compile through Tint, with bblitec owning composition, SDL
-specialization, reflection checks, and fixed-function state. The SDL_GPU
-offline paths — including why DXC stays mandatory and why Vulkan temporarily
-recompiles Tint HLSL through it — are tabulated in
+All native GPU shaders originate as WGSL and compile through Tint, with
+bblitec owning composition, SDL specialization, reflection checks, and
+fixed-function state. The SDL_GPU offline paths — including why DXC stays
+mandatory and why Vulkan temporarily recompiles Tint HLSL through it — are
+tabulated in
 [features](features.md#stage-2-compiling-wgsl-for-the-device). Remaining work
 is tracked only in [TODO](../TODO.md).

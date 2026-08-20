@@ -59,12 +59,12 @@ the pinned source commit. Never edit, flatten, normalize, or replace them.
 Thresholds and goldens are equally immutable during ordinary fixes. Add a
 scene or recapture a reference only as an explicit pinned-scene operation.
 
-The original Babylon Lite parity history is supporting evidence for numbered
-scenes because those scenes were built as Lite-versus-Babylon Legacy
-differential tests. Review the scene pair, introduction PR, review discussion,
-and pre-pin follow-up fixes during integration. Historical MAD floors and root
-cause notes help classify native residuals, but generated behavior must still
-be derived from the pinned source rather than copied from an old workaround.
+Upstream's own parity history is supporting evidence for numbered scenes,
+which were built as Lite-versus-Babylon Legacy differential tests. Review the
+scene pair, introduction PR, review discussion, and pre-pin follow-up fixes
+during integration. Upstream MAD floors and root-cause notes help classify
+native residuals, but generated behavior must still be derived from the pinned
+source rather than copied from an upstream workaround.
 
 ## Shader contract
 
@@ -80,7 +80,7 @@ Generated shaders preserve upstream markers for:
 - GridMaterial object-space derivatives, major/minor lines, hard/cosine line
   paths, max-line composition, and transparent opacity
 
-The custom-material WGSL pipeline now reflects uniform layout, binding order,
+The custom-material WGSL pipeline reflects uniform layout, binding order,
 attributes, varyings, stages, and entry points; PAL shader creation consumes
 the reflected uniform-buffer counts. Pinned Tint emits native HLSL/MSL from
 the specialized WGSL; register normalization and DXC produce SDL-compatible
@@ -179,7 +179,7 @@ quantized uniform is bit-equal to the baked texel), while the base
 color bakes the pinned sRGB bytes into the fallback texel itself with
 the shader uniform reverted to white, because the hardware sRGB
 decode of those bytes is the reference — a CPU transcription of the
-IEC formula measurably disagreed with the GPU's table; scene 255
+IEC formula measurably disagrees with the GPU's table; scene 255
 gates the texel-level port. The record keeps the raw alpha for the
 pinned blend semantics.
 An **animated** base color factor inverts that bake. `whiteFallback` in
@@ -189,16 +189,15 @@ material has no base color image, and hands the real factor back to be
 carried as a UBO field for the pointer writer to overwrite. Baking it as
 well applies the factor twice — the authored value in the texel and the
 animated value in the uniform, against the browser's uniform alone; Scene
-253 gates it. Because materials are built before
-animations are read, the answer has to be gathered in a pre-pass, which is
-what upstream does and what the generated loader now does.
+253 gates it. Because materials are built before animations are read, the
+answer is gathered in a pre-pass, as upstream gathers it.
 Environment horizon occlusion applies only to normal-mapped materials:
 the pinned `ibl-fragment` composes `eho = 1.0` without a normal map,
 and each material's composed variant carries whichever arm its features
 produce, so the factor follows the material by construction. Scene 247's
-metallic teapots gate this — applying the
-polynomial unconditionally darkened silhouette speculars by one MSAA
-sample step across the instance field.
+metallic teapots gate this; applying the polynomial unconditionally
+darkens silhouette speculars there by one MSAA sample step across the
+instance field.
 Node TRS and world-matrix composition run in double precision and
 round once per component at the float32 store, matching JavaScript's
 number semantics in the pinned `mat4ComposeInto` and matrix multiply;
@@ -394,11 +393,11 @@ inside, each ray meets exactly one face and the near plane clips the rest, so
 an unculled cube renders identically; from outside, the entry and the exit face
 are both rasterized, and because the skybox writes no depth the later face in
 index order wins rather than the nearer one. The two faces last in that order
-are `+Y` and `-Y`, which is what an unculled cube showed: a hard-edged
-quadrilateral of `-Y` — the projection of the plane through the cube centre —
-over a `+Y` surround, where the pinned cube shows one continuous sky. No gated
-pose reaches it, because every gated camera sits inside its own skybox; Scene
-14 at `cam.beta = 0.55` puts the camera above the cube and reproduces it.
+are `+Y` and `-Y`, so an unculled cube renders a hard-edged quadrilateral of
+`-Y` — the projection of the plane through the cube centre — over a `+Y`
+surround, where the pinned cube shows one continuous sky. No gated pose
+reaches it, because every gated camera sits inside its own skybox; Scene 14 at
+`cam.beta = 0.55` puts the camera above the cube and reproduces it.
 
 Embedded image-based lights evaluate SH unclamped. Environment rotation
 affects SH and cubemap lookup directions, while horizon occlusion
@@ -426,9 +425,9 @@ The project-owned `regression-track-clamp` gate is pixel-exact at 3 seconds
 and verifies that shorter translation, rotation, and morph-weight channels
 hold their final values while a separate channel determines the animation
 duration.
-An audited static-skin experiment was not retained: applying skin deformation
-without an animation array diverged from the pinned Babylon Lite output, so it
-would require an explicit fidelity adaptation rather than an ordinary fix.
+Skin deformation applied without an animation array diverges from the pinned
+Babylon Lite output, so that shape is unsupported: reaching it would require
+an explicit fidelity adaptation rather than an ordinary fix.
 
 Pinned property animations compile static clips and groups into typed native
 records. LINEAR scalar/vector interpolation, quaternion slerp, STEP holds,
@@ -492,11 +491,11 @@ only for the `PBR2_CC_F0_REMAP_OFF` bit, and the single thing that sets it is
 by where the coat came from rather than by any value. `setPbrClearCoat` does
 not expose `useF0Remap`, which is why the generated fragment carries the remap
 for a scene-code coat and omits it for a glTF one, and why the two are
-different fragments rather than one fragment with a uniform. It is worth a
-material amount of light: Scene 19's white dielectric sphere has a base F0 of
-0.04, and its ior-2.0 coat remaps that to 0.0204, so omitting the slot left
-every sphere pixel one channel step bright. Scene 19 gates the remap and Scene
-28 gates its absence.
+different fragments rather than one fragment with a uniform. The magnitude is
+material: Scene 19's white dielectric sphere has a base F0 of 0.04, and its
+ior-2.0 coat remaps that to 0.0204, so omitting the slot puts every sphere
+pixel one channel step bright. Scene 19 gates the remap and Scene 28 gates its
+absence.
 
 **Sheen is composed as one of two pinned models, chosen at generation.**
 `createSheenFragment` takes a `hasAlbedoScaling` flag and builds materially

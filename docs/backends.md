@@ -21,8 +21,8 @@ single backend provides. When a scene diverges from the golden,
 diffing the backends against each other isolates the cause
 immediately — agreement to one LSB puts the divergence on the CPU
 side (inputs, loaders, uniforms), disagreement puts it on the GPU
-side (state, compilation, rasterization). Every residual attribution
-in the migration was settled this way.
+side (state, compilation, rasterization). That comparison is how a
+residual is attributed.
 
 ## Building and running
 
@@ -88,9 +88,8 @@ Parity artifacts are backend-suffixed (`report-gpu.json` /
 SDL_Renderer fallback), so both backends' reports, diff maps, and
 hotspots coexist per scene. **Measure only against a freshly processed
 build**: Dawn reads `*.native.wgsl` from the build snapshot while
-SDL_GPU reads offline DXIL, so a snapshot that mixes generations
-skews only the Dawn side (this masqueraded as scene 248/249
-"residuals" until reprocessing removed them).
+SDL_GPU reads offline DXIL, so a snapshot that mixes generations skews
+only the Dawn side and reads as a Dawn-only residual.
 
 The scene 1 attribution captures (draw-id buffer and triangle-cluster
 buffer) render on either backend under the same environment switch;
@@ -101,7 +100,7 @@ and requests the primitive-index device feature for the cluster
 shader's `enable primitive_index`. Measured cross-backend agreement:
 both buffers byte-identical.
 
-## Honest comparison
+## Backend comparison
 
 Both backends render every expressible scene within its gate; the
 differences that remain are structural.
@@ -109,13 +108,12 @@ differences that remain are structural.
 **Parity.** The two backends sit within a rounding step of each other
 on every measured scene: scene 259 is bit-exact on Dawn because the
 browser's own compiler eliminates SDL_GPU's DXC-versus-browser
-rounding; the
-transmission scenes keep a small Dawn edge (scene 33 foreground 0.010
-versus 0.007) from the scene-colour grab — SDL_GPU copies the
-resolved opaque colour where the pin reads the multisampled
-attachment, the per-sample image-processing half having closed when
-the vendored SDL patch let SDL_GPU run the pinned per-sample pass —
-and HillValley and the Standard geometry MRTs land closest on Dawn.
+rounding; the transmission scenes keep a small Dawn edge (scene 33
+foreground 0.010 versus 0.007) from the scene-colour grab, where
+SDL_GPU copies the resolved opaque colour and the pin reads the
+multisampled attachment; and HillValley and the Standard geometry MRTs
+land closest on Dawn. Image processing is not part of that gap — the
+vendored SDL patch lets SDL_GPU run the pinned per-sample pass.
 
 **Performance.** Scene 1 (BoomBox), Release, 1280x720, 2000 frames
 after adaptive warmup (min(120, max(10, frames/10))), immediate present, same session
@@ -145,20 +143,18 @@ work**: the generated WGSL feeds Dawn directly and Dawn's internal
 Tint emits HLSL, SPIR-V, or MSL itself. SDL_GPU inverts that: the
 API layer is portable, but each target needs the offline shader
 pipeline (DXIL today; SPIR-V still recompiles normalized Tint HLSL
-through DXC as a stopgap; MSL untested). Neither backend has ever
-executed on a non-Windows machine, and the goldens are Chrome on
-D3D12 — Dawn on Vulkan/Metal shares the front-end but not the
-backend codegen, so structural bit-parity there would need
-same-platform references.
+through DXC as a stopgap; MSL untested). Neither backend is validated
+on a non-Windows machine, and the goldens are Chrome on D3D12 — Dawn
+on Vulkan/Metal shares the front-end but not the backend codegen, so
+structural bit-parity there would need same-platform references.
 
 **Validation strictness.** WebGPU validates what D3D12 through
-SDL_GPU tolerates. The shader-frame-graph audit drew with
-depth-stencil pipelines into a depth-less pass for as long as the
-SDL_GPU backend existed; Dawn rejected it and forced the explicit
-depth-less pipeline variant. Strictness costs integration effort
-(superset pipeline layouts, device-limit requests derived from task
-records, per-variant attachment states) and pays it back as an
-always-on conformance check.
+SDL_GPU tolerates: a depth-stencil pipeline drawing into a depth-less
+pass runs on SDL_GPU and is rejected by Dawn, which is why the
+shader-frame-graph gate carries an explicit depth-less pipeline
+variant. Strictness costs integration effort (superset pipeline
+layouts, device-limit requests derived from task records, per-variant
+attachment states) and pays it back as an always-on conformance check.
 
 **Startup model.** SDL_GPU loads content-addressed offline DXIL — no
 compilation at startup, but generation must run DXC and the shader
@@ -191,11 +187,11 @@ header only its own translation units include —
 `pal_sdl_gpu_shared.hpp` (shader loading, buffer and texture upload, sampler
 construction, PNG readback) and `pal_dawn_shared.hpp` (instance, surface,
 adapter, device, swapchain bring-up, WGSL module loading). Each exists
-because its backend now has
-two renderers, not because the backends have anything in common: a scene that
-registers a `SpriteRenderer` and no `SceneContext` generates no camera math and
-no render plan, so it cannot compile the scene renderer's translation unit at
-all and draws from `pal_sdl_gpu_sprite.cpp` or `pal_dawn_sprite.cpp` instead.
+because its backend carries two renderers, not because the backends have
+anything in common: a scene that registers a `SpriteRenderer` and no
+`SceneContext` generates no camera math and no render plan, so it cannot
+compile the scene renderer's translation unit at all and draws from
+`pal_sdl_gpu_sprite.cpp` or `pal_dawn_sprite.cpp` instead.
 That split is upstream's own — a `SpriteRenderer` is its own `RenderingContext`
 on the engine rather than part of a scene.
 
@@ -205,18 +201,17 @@ including its sprite pass, and each entry point compiles to a stub that
 returns false, so the other backend keeps rendering every feature the scene
 reached.
 
-## Empirical findings
+## Measured contracts
 
-Regression guards from the migration; each was measured, not assumed:
+Regression guards, each measured rather than assumed:
 
 - **Shader compiler identity is the parity linchpin.** Dawn
   hard-forces `use_dxc` off unless the library is compiled with
   `DAWN_USE_BUILT_DXC` (`PhysicalDeviceD3D12.cpp` ForceSet), and the
   `dxcompiler` CMake target must be built separately and its DLL
-  deployed beside `webgpu_dawn.dll`. With FXC instead of DXC, a
-  systemic -1 LSB appeared on lit surfaces (scenes 259/248) plus
-  larger filter and discard deltas (248/249); with DXC all of it
-  vanished.
+  deployed beside `webgpu_dawn.dll`. FXC in place of DXC carries a
+  systemic -1 LSB on lit surfaces (scenes 259/248) plus larger filter
+  and discard deltas (248/249); DXC carries none of it.
 - **The `.env` RGBD cubemap Y-flip is pinned behavior**, not an SDL
   adaptation: upstream `uploadCubemapRGBD` documents "BJS uploads
   cubemap faces with invertY=true"; uploading unflipped costs scene 1
@@ -227,11 +222,11 @@ Regression guards from the migration; each was measured, not assumed:
   pair** — an `occlusionTexture` on TEXCOORD_1 without a
   metallic-roughness image binds through its own pair sampled at uv2,
   canonical in [fidelity](fidelity.md). The instrumented differential
-  capture that settled it ships as `scene -- capture` (see
-  [development](development.md#instrumented-browser-capture)), and the
-  same captures proved the native forward-Z and baked-vertex-mirror
-  adaptations render identically to the browser's reverse-Z and
-  world-matrix mirror to ~1e-5 px, so both adaptations stay.
+  capture that establishes it ships as `scene -- capture` (see
+  [development](development.md#instrumented-browser-capture)). The same
+  captures measure the native forward-Z and baked-vertex-mirror
+  adaptations as identical to the browser's reverse-Z and world-matrix
+  mirror to ~1e-5 px, which is why both adaptations stand.
 - **Scene 247 is three shading contracts, none of them instancing
   arithmetic**: texture-less PBR factors shade quantized through the
   pinned factor-texture bake (base color as sRGB bytes whose hardware
@@ -240,15 +235,15 @@ Regression guards from the migration; each was measured, not assumed:
   captured thin-instance matrices are bit-identical), and environment
   horizon occlusion composes only for normal-mapped materials. Each
   contract is canonical in [fidelity](fidelity.md).
-- **Scene 33's backend delta was the image-processing pass, measured
-  rather than argued — and it closed when the vendored SDL patch
-  landed.** At one sample the then-current delta collapsed to
-  0.000/0.002: with nothing to average, the per-sample-versus-resolved
-  distinction disappears, which named the pass. SDL_GPU now runs the
-  pinned per-sample fragment at 4x; the residual foreground step
-  (0.010 versus 0.007) is the scene-colour grab. Scene 1 answers the
-  complementary question: its delta is 0.000/0.001 at *both* sample
-  counts, so what remains there is not multisampling.
+- **Scene 33's backend delta is the scene-colour grab.** SDL_GPU runs
+  the pinned per-sample image-processing fragment at 4x through the
+  vendored SDL patch, leaving the foreground step (0.010 versus 0.007)
+  to the grab alone. The single-sample run identifies which of the two
+  a delta belongs to: at one sample the per-sample-versus-resolved
+  distinction disappears, so a delta that collapses there is the
+  image-processing pass. Scene 1 answers the complementary question —
+  its delta is 0.000/0.001 at *both* sample counts, so what remains
+  there is not multisampling.
 - **The single-sample diagnostic reaches the frame-graph scenes too.**
   At one sample a resolve step becomes a copy on both backends
   (scenes 116, 145 and 146): with nothing to average, the resolve of a
@@ -263,9 +258,8 @@ The backend reuses every semantic layer the SDL_GPU backend uses:
 `sort_transparent_draws`, and the shared vertex packing and decode
 helpers in `native/src/pal_gpu_shared.hpp` (`GpuVertex`,
 `transformed_vertices`, `decode_rgbd`, `float_to_half`,
-`build_deformation_uniforms`, `inverse_image_processed_channel` —
-extracted from the SDL backend, which was re-verified byte-identical
-afterwards). Only the GPU API layer differs:
+`build_deformation_uniforms`, `inverse_image_processed_channel`).
+Only the GPU API layer differs:
 
 - **Shaders**: the generated `*.native.wgsl` files are read from the
   snapshot shader directory and handed to
@@ -417,8 +411,8 @@ afterwards). Only the GPU API layer differs:
 
 ## Ported pinned contracts
 
-These were re-derived from the pinned tree during the port; each is
-the authority if a regression appears:
+Each is derived from the pinned tree and is the authority if a
+regression appears:
 
 - **Mip generation** (`src/texture/generate-mipmaps.ts`): WebGPU has no
   built-in mipmaps; the browser blits mip N-1 → N with a fullscreen

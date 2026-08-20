@@ -227,6 +227,8 @@ export interface UpstreamEmitOptions {
      *  covers every scene-code builder; undefined refuses them. */
     runtimeMeshFeatures?: number;
     iridescence: boolean;
+    /** Any loaded material replaces metallic-roughness with spec-gloss. */
+    specularGlossiness: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
 }
@@ -280,6 +282,7 @@ class GeneratedSourceWriter {
 #define BBLITE_MATERIAL_SHEEN ${options.sheen ? 1 : 0}
 #define BBLITE_MATERIAL_IRIDESCENCE ${options.iridescence ? 1 : 0}
 #define BBLITE_MATERIAL_DISPERSION ${options.dispersion ? 1 : 0}
+#define BBLITE_MATERIAL_SPEC_GLOSS ${options.specularGlossiness ? 1 : 0}
 #define BBLITE_MATERIAL_OCCLUSION_UV2 ${options.occlusionUv2 ? 1 : 0}
 #define BBLITE_MATERIAL_STANDARD_BUMP ${options.standardBump ? 1 : 0}
 #define BBLITE_MATERIAL_STANDARD_REFLECTION ${standardReflection ? 1 : 0}
@@ -311,6 +314,7 @@ class GeneratedSourceWriter {
                     clearcoat: options.clearcoat,
                     sheen: options.sheen,
                     iridescence: options.iridescence,
+                    specularGlossiness: options.specularGlossiness,
                     occlusionUv2: options.occlusionUv2,
                     standardBump: options.standardBump,
                     standardReflection,
@@ -1642,6 +1646,7 @@ export function emitUpstreamGenerated(
         clearcoat: false,
         sheen: false,
         iridescence: false,
+        specularGlossiness: false,
         dispersion: false,
         occlusionUv2: false,
     },
