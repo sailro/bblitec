@@ -389,7 +389,6 @@ that does to the deferred lane by default.
   precision lands rather than only which comparison runs.
 - [ ] Scenes 62, 81, 83: resolve the module-level texture-URL constants
   (`SCENE62_TEXTURE_URL` and siblings).
-- [ ] Scene 63: support reached scene-light insertion.
 - [ ] Scenes 66, 72, 214, 215, 271: support `receiveShadows`.
 - [ ] Scene 73: support camera viewports.
 - [ ] Scenes 74, 76: support `createEffectWrapper`.
