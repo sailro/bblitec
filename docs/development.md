@@ -137,6 +137,7 @@ other, so a missing one fails the corpus tests rather than degrading quietly.
 | `reference/exact-corpus-manifest.json` | `sourceSha256`, `referenceSha256`, and `moduleSha256` over the browser module the capture harness builds |
 | `test/scene-registry.test.ts` | the registry id list in file order, and the curated count the README publishes |
 | `docs/images/scenes/scene<N>.png` | a 320x180 preview: a 4x4 box-filtered average of the golden |
+| `docs/images/scenes/scene<N>-banner.png` | optional. The same box-filtered derivation taken over a centred window of the golden rather than the whole frame, for a README banner cell whose subject is too small to read at 170px |
 | `docs/status.md` | the published row, checked against measurement by `status:verify` |
 
 The README states the curated count twice, and a curated scene is a `sceneNNN`
