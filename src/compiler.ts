@@ -1,5 +1,8 @@
 import ts from "typescript";
-import { sanitizeCppIdentifier } from "./cpp-literals.js";
+import {
+    sanitizeCppIdentifier,
+    stringLiteral,
+} from "./cpp-literals.js";
 import {
     compileAdaptations,
     type AdaptationContext,
@@ -26,7 +29,9 @@ import {
     type AssetOptionContext,
 } from "./compiler/intrinsics/asset-options.js";
 import {
+    compilePostProcessCompositeOptions,
     compilePostProcessTaskOptions,
+    type CompiledPostProcessComposite,
     type CompiledPostProcessTask,
 } from "./compiler/intrinsics/post-process-options.js";
 import {
@@ -126,6 +131,7 @@ import type {
     Feature,
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
+    PostProcessCompositeManifest,
     PostProcessTaskManifest,
     ResolvedCompileOptions,
     SceneMeshManifest,
@@ -144,6 +150,7 @@ export type {
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
+    PostProcessCompositeManifest,
     PostProcessTaskManifest,
     ShaderMaterialVariantName,
 } from "./compiler/types.js";
@@ -343,6 +350,8 @@ class Compiler
     public readonly unwrappedAwaitExpressions = new Set<number>();
     public readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
     public readonly postProcessTasks: PostProcessTaskManifest[] = [];
+    public readonly postProcessComposites: PostProcessCompositeManifest[] =
+        [];
     public readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
     private readonly sceneMeshes: SceneMeshManifest[] = [];
     private readonly sceneSpriteCustomShaders: SpriteCustomShaderManifest[] =
@@ -454,6 +463,7 @@ class Compiler
                     ),
                 geometryOutputTasks: this.geometryOutputTasks,
                 postProcessTasks: this.postProcessTasks,
+                postProcessComposites: this.postProcessComposites,
                 adaptations: compileAdaptations(this, features),
                 scenePbrMaterials: this.scenePbrMaterials,
                 sceneMaterialCount: this.sceneMaterialCount,
@@ -1202,6 +1212,19 @@ class Compiler
             intrinsic,
             expression,
             shaderIndex,
+        );
+    }
+
+    public compilePostProcessCompositeOptions(
+        intrinsic: string,
+        expression: ts.Expression,
+        compositeIndex: number,
+    ): CompiledPostProcessComposite {
+        return compilePostProcessCompositeOptions(
+            this,
+            intrinsic,
+            expression,
+            compositeIndex,
         );
     }
 
@@ -2527,16 +2550,18 @@ class Compiler
         }
         if (
             owner.kind === "task" &&
-            owner.postProcessTask &&
+            (owner.postProcessTask || owner.postProcessComposite) &&
             expression.name.text === "outputTexture"
         ) {
             // A pass writes into the target it was given, or into one it
             // made from the source's own descriptor. The pin resolves that
             // in `prepareOutputTarget`; the record holds whichever it is,
-            // so chaining a pass onto the one before it reads a field.
+            // so chaining a pass onto the one before it reads a field. A
+            // composite's output is its last pass's, which is what the pin
+            // assigns to `outputTexture` at the end of its own `record`.
             return {
                 kind: "render-target",
-                cpp: `${this.requireEngine(owner, expression)}.frame_tasks[${owner.cpp}.value].post_process.output_target`,
+                cpp: `${this.requireEngine(owner, expression)}.frame_tasks[${owner.cpp}.value].post_process.passes.back().output_target`,
                 ...(owner.engineCpp
                     ? { engineCpp: owner.engineCpp }
                     : {}),
@@ -3107,6 +3132,12 @@ class Compiler
         this.postProcessTasks.push(manifest);
     }
 
+    public recordPostProcessComposite(
+        manifest: PostProcessCompositeManifest,
+    ): void {
+        this.postProcessComposites.push(manifest);
+    }
+
     public requireDefaultScene(node: ts.Node): Value {
         const scenes = this.visibleValues().filter(
             (value) => value.kind === "scene",
@@ -3133,9 +3164,7 @@ class Compiler
     }
 
     public cppString(value: string): string {
-        return JSON.stringify(value)
-            .replace(/\u2028/g, "\\u2028")
-            .replace(/\u2029/g, "\\u2029");
+        return stringLiteral(value);
     }
 
     public emit(line: string): void {
@@ -3171,6 +3200,12 @@ class Compiler
         const jsDataInclude = this.jsDataReached
             ? "#include <bblite/js_data.hpp>\n"
             : "";
+        // A composite's factory is generated, so the scene calls it by a name
+        // only its own generated header declares.
+        const postProcessInclude =
+            this.postProcessComposites.length > 0
+                ? "#include <bblite/upstream/frame_graph_post_process.hpp>\n"
+                : "";
         const preambleSections: string[] = [];
         const dataPreamble =
             this.dataTypes.renderPreamble();
@@ -3198,7 +3233,7 @@ class Compiler
             : "";
         return `// Generated by bblitec. Do not edit.
 #include <bblite/runtime.hpp>
-${jsDataInclude}${cameraMathInclude}${spriteInclude}${billboardInclude}
+${jsDataInclude}${cameraMathInclude}${spriteInclude}${billboardInclude}${postProcessInclude}
 #include <cmath>
 #include <exception>
 #include <iostream>

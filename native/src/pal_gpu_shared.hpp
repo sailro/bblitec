@@ -1832,46 +1832,43 @@ inline bool transmissive_draw_material(const MaterialRecord* material) {
          !material->transmission_texture.bytes.empty());
 }
 
-/**
- * The format class and clear rule of one geometry-task attachment.
- *
- * Mirrors the pinned geometry-output attachments
- * (`pbr-geometry-output-shader.ts`): reflectivity and albedo pack into
- * rgba8, VIEW_DEPTH keeps full float precision, the normalized and
- * screenspace depths take r16 (as does any attachment whose description
- * requests r16 explicitly), and every other lane is rgba16. Each backend
- * only translates the class to its API's format constant.
- */
-enum class GeometryFormatClass {
-    rgba8_unorm,
-    r16_float,
-    r32_float,
-    rgba16_float,
-};
 
-inline GeometryFormatClass geometry_format_class(
+/**
+ * The pixels a target scaled from another occupies, by the pin's own rule:
+ * `max(1, floor(extent * ratio))`, evaluated against whatever the source
+ * resolved to this build.
+ */
+inline std::uint32_t scaled_target_extent(
+    std::uint32_t source,
+    double ratio) {
+    return static_cast<std::uint32_t>(std::max(
+        1.0,
+        std::floor(static_cast<double>(source) * ratio)));
+}
+
+inline TextureFormatClass geometry_format_class(
     const GeometryTextureDescription& description) {
     if (description.format == GeometryTextureFormat::r16_float) {
-        return GeometryFormatClass::r16_float;
+        return TextureFormatClass::r16_float;
     }
     switch (description.type) {
         case GeometryTextureType::reflectivity:
         case GeometryTextureType::albedo:
-            return GeometryFormatClass::rgba8_unorm;
+            return TextureFormatClass::rgba8_unorm;
         case GeometryTextureType::view_depth:
-            return GeometryFormatClass::r32_float;
+            return TextureFormatClass::r32_float;
         case GeometryTextureType::normalized_view_depth:
         case GeometryTextureType::screenspace_depth:
-            return GeometryFormatClass::r16_float;
+            return TextureFormatClass::r16_float;
         case GeometryTextureType::irradiance:
         case GeometryTextureType::world_position:
         case GeometryTextureType::local_position:
         case GeometryTextureType::view_normal:
         case GeometryTextureType::world_normal:
         case GeometryTextureType::linear_velocity:
-            return GeometryFormatClass::rgba16_float;
+            return TextureFormatClass::rgba16_float;
     }
-    return GeometryFormatClass::rgba16_float;
+    return TextureFormatClass::rgba16_float;
 }
 
 /**

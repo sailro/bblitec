@@ -529,6 +529,11 @@ and the world position a custom body may read, and the stock stage does not.
 Render targets and tasks, material overrides, depth-only passes, 7+4 geometry
 MRTs, blits, and MSAA resolve, with Babylon Lite's double-precision viewport
 coordinates floored to integer bounds and applied as a scissor. A render task
+whose target is multisampled may name a single-sample target to resolve into
+at end-of-pass, so an MSAA render feeds a post-process that requires a
+single-sample source without a separate resolve pass; the pin ignores it when
+the target is single-sample and so does this port, judged by the sample count
+the target was *allocated* at. A render task
 may bind a depth attachment another task owns instead of its target's own —
 the pin's own eager-wrapper contract, which the geometry renderer hands over
 and the borrowing pass loads rather than clears. It may also draw through a
@@ -546,6 +551,23 @@ and an output that is either the target the caller named or one the pass makes
 from the source's own descriptor. Blur, chromatic aberration, black and white,
 the red/cyan anaglyph and the circle of confusion are reached; each contributes
 only a shader record and a `writeUniforms` body.
+
+A **composite** — depth of field — is one entry point that builds a chain of
+those passes over intermediate targets it owns, and the caller still sees one
+task: one `addTask`, one `updateUniforms`, one output. Which passes, in what
+order, over which textures and at which sizes is decided entirely by its
+config, so generation runs the pin's own factory and emits the chain it built.
+Nothing about depth of field is written into this port: its eight passes and
+seven intermediates are what the factory made, its pass names derive from the
+name the scene gave the task, and the entry points it builds through are
+`@internal` in the pin and refused at a scene's call site here for the same
+reason.
+
+An intermediate is sized as a fraction of the source — the blur pyramid runs
+at 0.75, 0.375 and 0.1875 — re-evaluated whenever the frame graph is built, so
+a window resize moves the whole chain with it. The fractions are not read off
+one run: generation composes twice against sources of different sizes and
+formats, and refuses any extent a single fraction does not reproduce exactly.
 
 **Compile time: the stage.** The effect's factory runs under Node against a
 descriptor-only render target and the pin's own `getShaderModule` concatenates

@@ -49,6 +49,7 @@ function emitOptions(
         geometryOutputTasks: [],
         postProcessTasks: [],
         postProcessShaders: [],
+        postProcessComposites: [],
         gpuDeformation: false,
         animatedWorldBounds: false,
         morphStorage: false,
