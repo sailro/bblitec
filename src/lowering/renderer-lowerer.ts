@@ -1113,7 +1113,7 @@ SolidSkyboxUniforms build_solid_skybox_uniforms(
     const Scene& scene);
 SolidSkyboxSceneUniforms build_solid_skybox_scene_uniforms(
     const CameraRecord& camera,
-    double aspect);
+    const std::array<float, 16>& view_projection);
 `
     : ""}\
 ${options.imageSkybox
@@ -2114,17 +2114,16 @@ SolidSkyboxUniforms build_solid_skybox_uniforms(const Scene& scene) {
 
 SolidSkyboxSceneUniforms build_solid_skybox_scene_uniforms(
     const CameraRecord& camera,
-    double aspect) {
-    const Vec3 eye = camera_basis(camera).eye;
+    const std::array<float, 16>& view_projection) {
+    // The pinned vertex stage reads its own scene block, so this builds the
+    // layout that stage wants -- the frame's matrix beside the view and the
+    // eye position it offsets the cube by. One camera world serves all
+    // three, which is also the order the pin's writers read it in.
+    const std::array<float, 16> world = camera_world_matrix(camera);
     SolidSkyboxSceneUniforms result;
-    // The cube is centred on the eye, so its side faces straddle the near
-    // plane and are clipped -- and the clipper interpolates the attributes of
-    // the vertices it generates from clip space, including z. The dither
-    // seeds on that interpolated positionW, so the clip row has to be the
-    // pin's to the bit for the noise to correlate across a clipped face.
-    result.view_projection = build_view_projection(camera, aspect);
-    result.view = build_view_matrix(camera_world_matrix(camera));
-    result.eye_position = {eye.x, eye.y, eye.z, 0.0f};
+    result.view_projection = view_projection;
+    result.view = build_view_matrix(world);
+    result.eye_position = {world[12], world[13], world[14], 0.0f};
     return result;
 }
 `

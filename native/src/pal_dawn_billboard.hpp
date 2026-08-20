@@ -267,7 +267,8 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     // writes on, which is what lets the GPU resolve overlap instead.
     WGPUDepthStencilState depth_state = WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_state.format = depth_format;
-    depth_state.depthCompare = WGPUCompareFunction_GreaterEqual;
+    depth_state.depthCompare =
+        dawn_depth_compare(upstream::pinned_depth_compare);
     depth_state.depthWriteEnabled = cutout
         ? WGPUOptionalBool_True
         : WGPUOptionalBool_False;

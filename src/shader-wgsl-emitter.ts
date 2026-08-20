@@ -7,11 +7,6 @@ import type {
     ShaderUniformBlockReflection,
 } from "./shader-ir.js";
 
-interface EmitContext {
-    locals: Map<string, string>;
-    structs: Map<string, ShaderStruct>;
-}
-
 function emitExpression(expression: ShaderExpression): string {
     switch (expression.kind) {
         case "binary":
@@ -33,7 +28,6 @@ function emitExpression(expression: ShaderExpression): string {
 
 function emitStatements(
     statements: ShaderStatement[],
-    context: EmitContext,
     indent: string,
 ): string[] {
     const lines: string[] = [];
@@ -52,7 +46,6 @@ function emitStatements(
                     `${indent}if (${emitExpression(statement.condition)}) {`,
                     ...emitStatements(
                         statement.statements,
-                        context,
                         `${indent}    `,
                     ),
                     `${indent}}`,
@@ -69,7 +62,6 @@ function emitStatements(
                 );
                 break;
             case "var":
-                context.locals.set(statement.name, statement.type);
                 lines.push(
                     `${indent}var ${statement.name}: ${statement.type};`,
                 );
@@ -120,13 +112,6 @@ export function emitNativeWgslProgram(
     const block = program.reflection.uniformBlocks.find(
         (candidate) => candidate.stage === stage,
     );
-    const structs = new Map(module.structs.map((struct) => [struct.name, struct]));
-    const context: EmitContext = {
-        locals: new Map(
-            module.entryPoint.parameters.map(({ name, type }) => [name, type]),
-        ),
-        structs,
-    };
     const vertexInput = stage === "vertex"
         ? [
               "struct VertexInput {",
@@ -146,9 +131,6 @@ export function emitNativeWgslProgram(
             ),
             "};",
         ].join("\n"));
-    for (const parameter of module.entryPoint.parameters) {
-        context.locals.set(parameter.name, parameter.type);
-    }
     const returnAttribute =
         module.entryPoint.returnAttribute?.kind === "location"
             ? `@location(${module.entryPoint.returnAttribute.value}) `
@@ -163,7 +145,7 @@ export function emitNativeWgslProgram(
         `fn ${module.entryPoint.name}(${module.entryPoint.parameters
             .map(({ name, type }) => `${name}: ${type}`)
             .join(", ")}) -> ${returnAttribute}${module.entryPoint.returnType} {`,
-        ...emitStatements(module.entryPoint.statements, context, "    "),
+        ...emitStatements(module.entryPoint.statements, "    "),
         "}",
         "",
     ].filter((value): value is string => value !== undefined).join("\n");

@@ -200,7 +200,7 @@ inline BillboardPass create_billboard_pass(
     // what makes the sorted draw order the composite, and `cutout` with
     // writes on, which is what lets the GPU resolve overlap instead.
     info.depth_stencil_state.compare_op =
-        SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
+        gpu_depth_compare(upstream::pinned_depth_compare);
     info.depth_stencil_state.enable_depth_test = true;
     info.depth_stencil_state.enable_depth_write = cutout;
     info.multisample_state.enable_alpha_to_coverage =

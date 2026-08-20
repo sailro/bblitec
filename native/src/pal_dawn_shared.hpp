@@ -16,6 +16,7 @@
 
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/pinned_depth_state.hpp>
 
 #include <algorithm>
 #include <array>
@@ -40,6 +41,36 @@
 #endif
 
 namespace bbl::pal {
+
+/**
+ * The pin's depth compare in this API's enum.
+ *
+ * `upstream::pinned_depth_compare` carries the value the pin declares; only
+ * the mapping onto WebGPU's enum belongs to this backend, the same split
+ * the blend factors already use.
+ */
+inline WGPUCompareFunction dawn_depth_compare(
+    DepthCompare compare) {
+    switch (compare) {
+        case DepthCompare::never:
+            return WGPUCompareFunction_Never;
+        case DepthCompare::less:
+            return WGPUCompareFunction_Less;
+        case DepthCompare::equal:
+            return WGPUCompareFunction_Equal;
+        case DepthCompare::less_equal:
+            return WGPUCompareFunction_LessEqual;
+        case DepthCompare::greater:
+            return WGPUCompareFunction_Greater;
+        case DepthCompare::not_equal:
+            return WGPUCompareFunction_NotEqual;
+        case DepthCompare::greater_equal:
+            return WGPUCompareFunction_GreaterEqual;
+        case DepthCompare::always:
+            return WGPUCompareFunction_Always;
+    }
+    return WGPUCompareFunction_GreaterEqual;
+}
 
 inline std::string view_text(WGPUStringView view) {
     if (!view.data) return {};

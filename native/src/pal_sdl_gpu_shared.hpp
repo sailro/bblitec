@@ -12,6 +12,7 @@
 
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/pinned_depth_state.hpp>
 
 #include <cstdint>
 #include <cstring>
@@ -308,6 +309,35 @@ inline void bind_stage_textures(
         0,
         bindings.data(),
         static_cast<Uint32>(bindings.size()));
+}
+
+/**
+ * The pin's depth compare in this API's enum.
+ *
+ * `upstream::pinned_depth_compare` carries the value the pin declares; only
+ * the mapping onto SDL_GPU's enum belongs to this backend, the same split
+ * `sprite_blend_factor` already uses for the pin's blend factors.
+ */
+inline SDL_GPUCompareOp gpu_depth_compare(DepthCompare compare) {
+    switch (compare) {
+        case DepthCompare::never:
+            return SDL_GPU_COMPAREOP_NEVER;
+        case DepthCompare::less:
+            return SDL_GPU_COMPAREOP_LESS;
+        case DepthCompare::equal:
+            return SDL_GPU_COMPAREOP_EQUAL;
+        case DepthCompare::less_equal:
+            return SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+        case DepthCompare::greater:
+            return SDL_GPU_COMPAREOP_GREATER;
+        case DepthCompare::not_equal:
+            return SDL_GPU_COMPAREOP_NOT_EQUAL;
+        case DepthCompare::greater_equal:
+            return SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
+        case DepthCompare::always:
+            return SDL_GPU_COMPAREOP_ALWAYS;
+    }
+    return SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
 }
 
 /** One block a stage's resolver named: its bytes, or none. */

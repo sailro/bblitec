@@ -226,16 +226,26 @@ round one store early, and that is not a rounding-sized difference:
 `Math.PI / 2` has `cos = 6.1e-17` as a double and `-4.4e-8` as its float32
 neighbour, which moves the whole second row of the view matrix.
 
-**There is one depth convention, and it is the pin's.**
-`src/engine/render-target.ts` defines `REVERSE_DEPTH_COMPARE =
+**The reached slice renders under one depth convention, and it is the
+pin's.** `src/engine/render-target.ts` declares `REVERSE_DEPTH_COMPARE =
 "greater-equal"`, `mat4PerspectiveLHToRef` maps `near -> 1` and `far -> 0`,
-and every pinned family takes that pair as its default: PBR, Standard, node,
-shader materials, the geometry tasks, the background ground and the solid
-skybox. Both backends here carry it on every pipeline and clear depth to
-zero, so the composed view-projection is equal to the browser's uploaded
-matrix in all sixteen elements. A `ShaderMaterial` may still name its own
-`depthCompare`, which is the pin's own per-material opt-out and the only way
-a draw departs.
+and every family this port reaches takes that pair as its default: PBR,
+Standard, node, shader materials, the geometry tasks, the background ground
+and the solid skybox. Both backends carry it on every pipeline and clear
+depth to zero, so the composed view-projection is equal to the browser's
+uploaded matrix in all sixteen elements.
+
+The compare is not typed here. `pinned-depth-state.ts` reads the pin's own
+declaration and emits `upstream::pinned_depth_compare`, failing generation on
+a spelling this runtime has no enumerator for — the contract
+`pinned-blend-table.ts` holds for the pin's blend factors, and the one
+`assertPinnedPerspectiveWriter` already holds for the projection half of the
+same convention. Each backend translates the enumerator to its own API.
+
+Two arms of the library sit outside the slice and name their own compare: the
+pin's shadow targets render standard-Z `less-equal`, and a `ShaderMaterial`
+may pass `depthCompare` (its default is `"greater-equal"`; a scene naming one
+refuses at compilation today).
 
 `FragDepthBlock` composes because of it: the block hands a graph
 `@builtin(frag_depth)`, so the value it returns is a depth in that

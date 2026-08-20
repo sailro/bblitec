@@ -9,6 +9,7 @@ import { SceneLowerer } from "./lowering/scene-lowerer.js";
 import { GltfLowerer } from "./lowering/gltf-lowerer.js";
 import { BabylonLowerer } from "./lowering/babylon-lowerer.js";
 import { FactoryLowerer } from "./lowering/factory-lowerer.js";
+import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
 import { SpriteLowerer } from "./lowering/sprite-lowerer.js";
@@ -384,6 +385,14 @@ class GeneratedSourceWriter {
 // asking.
 #define BBLITE_PINNED_MATERIAL_VARIANTS (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0)
 `,
+        );
+        // The pin's own depth convention, read from its declaration rather
+        // than typed here. Emitted for every scene: a sprite-only scene
+        // registers no SceneContext and so has no render plan, but its
+        // billboard pass draws under the same convention.
+        this.tree.write(
+            "upstream/include/bblite/upstream/pinned_depth_state.hpp",
+            pinnedDepthStateHeader(new LoweringContext(this.store)),
         );
         // The texture-slot table both render backends execute. Emitted for
         // every scene beside the capability defines above (the base slots
