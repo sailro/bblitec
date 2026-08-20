@@ -175,7 +175,7 @@ record future audits build on.
 
 ## P1 — Full Babylon Lite corpus audit
 
-151 corpus scenes remain unregistered; measured scenes are in
+150 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -218,8 +218,8 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (128 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25, 26, 36, 38,
-43, 51-99, 110-115, 117, 118, 120-129, 140, 141, 144, 148, 149, 152, 155-158, 160, 162,
+**Integrate first (127 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25, 26, 36, 38,
+43, 51-99, 110-115, 117, 118, 120-129, 140, 141, 144, 149, 152, 155-158, 160, 162,
 165, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229, 231, 241, 251,
 261-264, 269-271, 275-280. Includes static CSG/CSG2, compressed assets and
 splats, deterministic picking (113-115, 117, 118, 129), and display-only gizmos
@@ -309,8 +309,16 @@ that does to the deferred lane by default.
 - [ ] Scene 123: support `loadSPZ`.
 - [ ] Scenes 127, 128: support `createLinearDepthMaterial`.
 - [ ] Scene 140: fold the reached browser-derived boolean.
-- [ ] Scene 148: add the depth-of-field composite, which records a circle of
-  confusion, two depth-aware blurs and a merge as one task.
+- [ ] Scene 144: support `createBloomPostProcessTask`. Its chain is four
+  passes over the composite machinery scene 148 shipped, but its merge is
+  built by calling `createPostProcessTask` directly with an inline `_shader`,
+  which the observation seam does not see: composing bloom needs that seam
+  moved from the leaf entry points to `createPostProcessTask` itself, across
+  the modules reachable from the composite (`src/upstream-graph.ts` already
+  owns reachability). Its merge writer would then lower from `bloom.ts`'s own
+  body rather than an effect module. The scene also needs one animation group
+  addressed by name (`.find` over a loader collection), `goToFrame`'s optional
+  engine argument, and the dragon asset's `KHR_materials_pbrSpecularGlossiness`.
 - [ ] Scenes 155, 156: support property-animation blending.
 - [ ] Scene 165: the viewProjection + world system-uniform pair, per-instance
   thin-instance colors (`setThinInstanceColors` plus the instance color vertex

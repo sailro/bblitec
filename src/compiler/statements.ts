@@ -1252,7 +1252,7 @@ export class StatementLowerer {
             return false;
         }
         if (method === "updateUniforms") {
-            if (!task.postProcessTask) {
+            if (!task.postProcessTask && !task.postProcessComposite) {
                 context.fail(
                     call,
                     "updateUniforms is a post-process pass method.",

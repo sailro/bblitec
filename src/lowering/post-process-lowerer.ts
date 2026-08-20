@@ -1,11 +1,21 @@
 import ts from "typescript";
 import {
     POST_PROCESS_EFFECTS,
+    postProcessComposite,
     postProcessEffect,
     slotOption,
     type PostProcessEffect,
 } from "../post-process-effects.js";
 import type { PostProcessTaskManifest } from "../compiler/types.js";
+import {
+    COMPOSITION_NAME,
+    type ComposedComposite,
+    type CompositeTextureRef,
+} from "../pinned-post-process.js";
+import {
+    doubleLiteral as dvalue,
+    stringLiteral,
+} from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { blendSide, nativeBlendFactor } from "./pinned-blend-table.js";
 import {
@@ -30,7 +40,22 @@ export class PostProcessLowerer {
     public constructor(
         private readonly context: LoweringContext,
         private readonly tasks: readonly PostProcessTaskManifest[],
-    ) {}
+        private readonly composites: readonly ComposedComposite[] = [],
+    ) {
+        this.passes = postProcessPassOrder(tasks, composites);
+    }
+
+    /**
+     * Every pass this scene records, by the stage index it deploys at.
+     *
+     * The plain effects come first in reach order -- the compiler numbered
+     * them before anything was composed -- and each composite's own chain
+     * follows. One table indexes both because a pass is a pass once composed:
+     * what differs is only who decided its config. Computed once: the writer
+     * dispatch, the emitted records and the deployed stage table all have to
+     * agree on it, and a second derivation is a second thing to keep in step.
+     */
+    private readonly passes: readonly PostProcessPassOrder[];
 
     /** The pin's own `alphaModeToBlend`, mode to four WebGPU factors. */
     private blendModes = new Map<number, readonly string[]>();
@@ -55,7 +80,9 @@ export class PostProcessLowerer {
 
     /** The effects this scene reached, in the pin's own declaration order. */
     private reachedEffects(): PostProcessEffect[] {
-        const reached = new Set(this.tasks.map((task) => task.intrinsic));
+        const reached = new Set(
+            this.passes.map((pass) => pass.intrinsic),
+        );
         return POST_PROCESS_EFFECTS.filter((effect) =>
             reached.has(effect.intrinsic),
         );
@@ -447,7 +474,7 @@ PostProcessBlend post_process_blend(std::uint32_t alpha_mode);
 /** The bytes a pass uploads, written by the effect's own pinned writer. */
 void write_post_process_uniforms(
     const Engine& engine,
-    PostProcessTaskOptions& task,
+    PostProcessPassOptions& task,
     std::uint32_t output_width,
     std::uint32_t output_height,
     std::uint32_t source_width,
@@ -455,7 +482,7 @@ void write_post_process_uniforms(
     float* data);
 
 } // namespace bbl::upstream
-`;
+${this.compositeDeclarations()}`;
     }
 
     /** The pin's own switch, as the emitted table's case arms. */
@@ -532,7 +559,7 @@ ${this.blendCases()}        default:
 
 void write_post_process_uniforms(
     const Engine& engine,
-    PostProcessTaskOptions& task,
+    PostProcessPassOptions& task,
     std::uint32_t output_width,
     std::uint32_t output_height,
     std::uint32_t source_width,
@@ -545,9 +572,7 @@ void write_post_process_uniforms(
     (void)source_height;
     (void)data;
     switch (task.shader_index) {
-${this.tasks
-    .map((task) => this.uniformCase(task))
-    .join("\n")}
+${this.uniformCases()}
         default:
             throw std::runtime_error(
                 "Post-process pass has no generated uniform writer.");
@@ -562,33 +587,38 @@ TaskHandle create_post_process_task(
     Engine& engine,
     Scene&,
     PostProcessTaskOptions options) {
-    if (
-        options.source.source == RenderTextureSource::render_target &&
-        options.source.target.value >= engine.render_targets.size()) {
-        throw std::runtime_error("Post-process source is invalid.");
+    if (options.passes.empty()) {
+        throw std::runtime_error("Post-process task records no pass.");
     }
-    // prepareOutputTarget: the caller's target, or one made from the
-    // source's own descriptor at a single sample.
-    if (options.target.value != invalid_handle) {
-        if (options.target.value >= engine.render_targets.size()) {
-            throw std::runtime_error("Post-process target is invalid.");
+    for (PostProcessPassOptions& pass : options.passes) {
+        if (
+            pass.source.source == RenderTextureSource::render_target &&
+            pass.source.target.value >= engine.render_targets.size()) {
+            throw std::runtime_error("Post-process source is invalid.");
         }
-        options.output_target = options.target;
-    } else {
-        if (options.source.source != RenderTextureSource::render_target) {
+        // prepareOutputTarget: the caller's target, or one made from the
+        // source's own descriptor at a single sample.
+        if (pass.target.value != invalid_handle) {
+            if (pass.target.value >= engine.render_targets.size()) {
+                throw std::runtime_error("Post-process target is invalid.");
+            }
+            pass.output_target = pass.target;
+            continue;
+        }
+        if (pass.source.source != RenderTextureSource::render_target) {
             throw std::runtime_error(
                 "A post-process pass with no target needs a render-target "
                 "source to size its own.");
         }
         const RenderTargetRecord& source =
-            engine.render_targets[options.source.target.value];
+            engine.render_targets[pass.source.target.value];
         RenderTargetOptions internal;
         internal.samples = 1u;
         internal.has_color = true;
         internal.has_depth = false;
         internal.width = source.width;
         internal.height = source.height;
-        options.output_target = create_render_target(engine, internal);
+        pass.output_target = create_render_target(engine, internal);
     }
     FrameTaskRecord task;
     task.kind = FrameTaskKind::post_process;
@@ -607,26 +637,205 @@ void update_post_process_uniforms(Engine& engine, TaskHandle handle) {
         throw std::runtime_error(
             "updateUniforms names a task that is not a post-process pass.");
     }
-    task.post_process.uniforms_dirty = true;
+    // The pin's composite forwards to every sub-pass, and a plain effect is
+    // the same call over a list of one.
+    for (PostProcessPassOptions& pass : task.post_process.passes) {
+        pass.uniforms_dirty = true;
+    }
 }
 
+${this.compositeFactories()}
 } // namespace bbl
 `;
     }
 
-    /** One reached pass's writer, lowered from its effect's own body. */
-    private uniformCase(task: PostProcessTaskManifest): string {
-        const effect = postProcessEffect(task.intrinsic);
-        if (!effect) {
-            throw new Error(
-                `Reached post-process effect '${task.intrinsic}' has no descriptor.`,
+    /** Every reached composite's factory, and the header lines that declare
+     *  them, in the order the scene reached them. */
+    private compositeFactories(): string {
+        let shaderIndex = this.tasks.length;
+        const factories: string[] = [];
+        for (const [index, composite] of this.composites.entries()) {
+            factories.push(
+                this.compositeFactory(composite, index, shaderIndex),
+            );
+            shaderIndex += composite.passes.length;
+        }
+        return factories.length > 0 ? `${factories.join("\n\n")}\n` : "";
+    }
+
+    private compositeDeclarations(): string {
+        if (this.composites.length === 0) {
+            return "";
+        }
+        const declarations = this.composites
+            .map(
+                (_composite, index) =>
+                    `TaskHandle create_composite_post_process_task_${index}(\n` +
+                    "    Engine& engine,\n" +
+                    "    Scene& scene,\n" +
+                    "    PostProcessCompositeInputs inputs);",
+            )
+            .join("\n\n");
+        return `\nnamespace bbl {\n\n${declarations}\n\n} // namespace bbl\n`;
+    }
+
+    /**
+     * One composite's factory, as the chain its own factory built.
+     *
+     * The pin's composite creates its intermediates and then its passes over
+     * them, so this emits exactly that: `create_render_target` per
+     * intermediate, in the order the composite made them, then one
+     * `create_post_process_task` holding every pass. Nothing here decides the
+     * chain — it is read off the run, which is why a composite needs no
+     * per-effect code in this port at all.
+     */
+    private compositeFactory(
+        composite: ComposedComposite,
+        index: number,
+        firstShaderIndex: number,
+    ): string {
+        const lines: string[] = [];
+        for (const [slot, target] of composite.intermediates.entries()) {
+            lines.push(
+                `    RenderTargetOptions ${intermediate(slot)}_options;`,
+                `    ${intermediate(slot)}_options.samples = 1u;`,
+                `    ${intermediate(slot)}_options.has_color = true;`,
+                `    ${intermediate(
+                    slot,
+                )}_options.scale_source = inputs.source;`,
+                `    ${intermediate(
+                    slot,
+                )}_options.width_ratio = ${dvalue(target.widthRatio)};`,
+                `    ${intermediate(
+                    slot,
+                )}_options.height_ratio = ${dvalue(target.heightRatio)};`,
+            );
+            if (target.format) {
+                lines.push(
+                    `    ${intermediate(slot)}_options.format = ` +
+                        `${nativeTextureFormat(target.format, target.label)};`,
+                    `    ${intermediate(slot)}_options.has_format = true;`,
+                );
+            }
+            lines.push(
+                `    const RenderTargetHandle ${intermediate(slot)} =`,
+                `        create_render_target(engine, ${intermediate(
+                    slot,
+                )}_options);`,
+                "",
             );
         }
-        const body = this.uniformWriterBody(effect);
-        return `        case ${task.shaderIndex}u: {
-${body}
+        const reference = (
+            texture: CompositeTextureRef,
+            asTarget: boolean,
+        ): string => {
+            if (texture.kind === "internal") {
+                return asTarget ? "RenderTargetHandle{}" : "RenderTextureRef{}";
+            }
+            if (texture.kind === "intermediate") {
+                const handle = intermediate(texture.index);
+                return asTarget ? handle : `render_target_texture(${handle})`;
+            }
+            if (texture.option === "sourceTexture") {
+                return asTarget
+                    ? "inputs.source"
+                    : "render_target_texture(inputs.source)";
+            }
+            if (texture.option === "targetTexture") {
+                if (!asTarget) {
+                    throw new Error(
+                        "A composite pass reads the task's own output target.",
+                    );
+                }
+                return "inputs.target";
+            }
+            const slot = compositeExtraIndex(
+                composite,
+                texture.option,
+            );
+            return `inputs.extra_textures[${slot}]`;
+        };
+        const passes = composite.passes.map((pass, slot) => {
+            const extras = pass.extraTextures
+                .map((texture) => reference(texture, false))
+                .join(", ");
+            return (
+                `        PostProcessPassOptions{\n` +
+                `            ${passName(pass.name)},\n` +
+                `            ${firstShaderIndex + slot}u,\n` +
+                `            ${reference(pass.source, false)},\n` +
+                `            ${reference(pass.target, true)},\n` +
+                `            PostProcessSampling::${nativeSampling(
+                    pass.sampling,
+                    pass.name,
+                )},\n` +
+                `            ${pass.alphaMode}u,\n` +
+                `            ${pass.viewport ? "true" : "false"},\n` +
+                `            NormalizedViewport{${
+                    pass.viewport
+                        ? [
+                              pass.viewport.x,
+                              pass.viewport.y,
+                              pass.viewport.width,
+                              pass.viewport.height,
+                          ]
+                              .map((value) => dvalue(value))
+                              .join(", ")
+                        : ""
+                }},\n` +
+                `            ${pass.clear ? "true" : "false"},\n` +
+                `            {${extras}},\n` +
+                `            inputs.camera,\n` +
+                `            {${pass.params
+                    .map((value) => dvalue(value))
+                    .join(", ")}},\n` +
+                `        }`
+            );
+        });
+        return `TaskHandle create_composite_post_process_task_${index}(
+    Engine& engine,
+    Scene& scene,
+    PostProcessCompositeInputs inputs) {
+${lines.join("\n")}    PostProcessTaskOptions options;
+    options.name = inputs.name;
+    options.passes = {
+${passes.join(",\n")},
+    };
+    return create_post_process_task(engine, scene, std::move(options));
+}`;
+    }
+
+    /**
+     * The writer dispatch, one arm per effect rather than per pass.
+     *
+     * Two passes of the same effect run the same writer -- depth of field's
+     * six blurs differ only in the direction their parameters carry -- so
+     * their stage indices share a case and the body is lowered once.
+     */
+    private uniformCases(): string {
+        const byEffect = new Map<string, number[]>();
+        for (const pass of this.passes) {
+            const indices = byEffect.get(pass.intrinsic) ?? [];
+            indices.push(pass.shaderIndex);
+            byEffect.set(pass.intrinsic, indices);
+        }
+        return [...byEffect]
+            .map(([intrinsic, indices]) => {
+                const effect = postProcessEffect(intrinsic);
+                if (!effect) {
+                    throw new Error(
+                        `Reached post-process effect '${intrinsic}' has no descriptor.`,
+                    );
+                }
+                const labels = indices
+                    .map((index) => `        case ${index}u:`)
+                    .join("\n");
+                return `${labels} {
+${this.uniformWriterBody(effect)}
             break;
         }`;
+            })
+            .join("\n");
     }
 
     /**
@@ -829,4 +1038,116 @@ ${body}
         }
         return undefined;
     }
+}
+
+/** The sampler a pass asked for, refusing a mode this port does not carry. */
+function nativeSampling(mode: string, name: string): string {
+    if (mode !== "nearest" && mode !== "linear") {
+        throw new Error(
+            `A composite's pass '${name}' samples in '${mode}', which is ` +
+                "neither of the two modes the pass carries.",
+        );
+    }
+    return mode;
+}
+
+/**
+ * A sub-pass's name, as the pin derives it: the composite's own name plus a
+ * suffix. The composite's name is the scene's, known only at run time, so the
+ * suffix is what generation carries.
+ */
+function passName(name: string): string {
+    if (!name.startsWith(COMPOSITION_NAME)) {
+        throw new Error(
+            `A composite named a pass '${name}', which does not derive from ` +
+                "the name it was given.",
+        );
+    }
+    return `inputs.name + ${stringLiteral(
+        name.slice(COMPOSITION_NAME.length),
+    )}`;
+}
+
+/** A composite's own intermediate target, by the order it created them. */
+function intermediate(index: number): string {
+    return `intermediate_${index}`;
+}
+
+/**
+ * Where a composite's config option sits in the inputs' texture list. The
+ * order is the descriptor's, which is also the order the compiler emitted the
+ * scene's textures in.
+ */
+function compositeExtraIndex(
+    composite: ComposedComposite,
+    option: string,
+): number {
+    const descriptor = postProcessComposite(composite.intrinsic);
+    const slot = descriptor?.extraTextures.indexOf(option) ?? -1;
+    if (slot < 0) {
+        throw new Error(
+            `${composite.intrinsic} builds a pass reading '${option}', ` +
+                "which its descriptor does not name as a texture.",
+        );
+    }
+    return slot;
+}
+
+/**
+ * The runtime's own name for a format a composite asked a target for.
+ *
+ * Only a format the composite *chose* reaches here: one it took off the source
+ * is carried as "follows the source" and resolved by the backend against the
+ * target it scales from. So there is no channel-order aliasing to assert --
+ * a swapchain-shaped format arriving here would mean the composite named one,
+ * which it does not, and is refused with everything else unlisted.
+ */
+function nativeTextureFormat(format: string, label: string): string {
+    const native: Readonly<Record<string, string>> = {
+        r16float: "TextureFormatClass::r16_float",
+        r32float: "TextureFormatClass::r32_float",
+        rgba8unorm: "TextureFormatClass::rgba8_unorm",
+        rgba16float: "TextureFormatClass::rgba16_float",
+    };
+    const name = native[format];
+    if (!name) {
+        throw new Error(
+            `A composite sizes '${label}' in '${format}', which this port's ` +
+                "two backends do not both express.",
+        );
+    }
+    return name;
+}
+
+/** One pass, by the stage index it deploys at. */
+interface PostProcessPassOrder {
+    shaderIndex: number;
+    intrinsic: string;
+}
+
+/**
+ * Every pass a scene records, in the one order the whole pipeline agrees on.
+ *
+ * The plain effects come first in reach order -- the compiler numbered them
+ * before anything was composed -- and each composite's own chain follows. The
+ * writer dispatch, the emitted records and the deployed stage table all index
+ * by it, so it is derived here and nowhere else.
+ */
+export function postProcessPassOrder(
+    tasks: readonly PostProcessTaskManifest[],
+    composites: readonly ComposedComposite[],
+): PostProcessPassOrder[] {
+    const passes = tasks.map((task) => ({
+        shaderIndex: task.shaderIndex,
+        intrinsic: task.intrinsic,
+    }));
+    for (const composite of composites) {
+        for (const pass of composite.passes) {
+            passes.push({
+                shaderIndex: passes.length,
+                intrinsic: pass.intrinsic,
+            });
+        }
+    }
+    return passes;
 }

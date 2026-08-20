@@ -1,7 +1,11 @@
 import ts from "typescript";
-import { postProcessEffect } from "../../post-process-effects.js";
+import {
+    postProcessComposite,
+    postProcessEffect,
+} from "../../post-process-effects.js";
 import type {
     GeometryOutputTaskManifest,
+    PostProcessCompositeManifest,
     PostProcessTaskManifest,
     Value,
 } from "../types.js";
@@ -17,8 +21,14 @@ interface CompiledPostProcessTask {
     manifest: PostProcessTaskManifest;
 }
 
+interface CompiledPostProcessComposite {
+    cpp: string;
+    manifest: PostProcessCompositeManifest;
+}
+
 export interface EngineIntrinsicContext
     extends IntrinsicCallContext {
+    fail(node: ts.Node, message: string): never;
     expectSameEngine(
         left: Value,
         right: Value,
@@ -47,13 +57,22 @@ export interface EngineIntrinsicContext
         expression: ts.Expression,
         shaderIndex: number,
     ): CompiledPostProcessTask;
+    compilePostProcessCompositeOptions(
+        intrinsic: string,
+        expression: ts.Expression,
+        compositeIndex: number,
+    ): CompiledPostProcessComposite;
     recordGeometryOutputTask(
         manifest: GeometryOutputTaskManifest,
     ): void;
     recordPostProcessTask(
         manifest: PostProcessTaskManifest,
     ): void;
+    recordPostProcessComposite(
+        manifest: PostProcessCompositeManifest,
+    ): void;
     readonly postProcessTasks: readonly PostProcessTaskManifest[];
+    readonly postProcessComposites: readonly PostProcessCompositeManifest[];
     compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean;
@@ -270,8 +289,20 @@ function compilePostProcessIntrinsic(
     importedName: string,
     call: ts.CallExpression,
 ): Value | undefined {
-    if (!postProcessEffect(importedName)) {
+    const effect = postProcessEffect(importedName);
+    const composite = postProcessComposite(importedName);
+    if (!effect && !composite) {
         return undefined;
+    }
+    if (effect?.internal) {
+        // The pin marks these `@internal`: they exist for a composite to
+        // build, and their config carries textures a caller has no way to
+        // make. Refusing by name says so, rather than failing later on one.
+        context.fail(
+            call,
+            `'${importedName}' is a composite's own pass, not a scene entry ` +
+                "point.",
+        );
     }
     context.expectArgumentCount(call, 3, 3);
     const engine = context.compileValue(call.arguments[1]!);
@@ -279,14 +310,31 @@ function compilePostProcessIntrinsic(
     context.expectKind(engine, "engine", call.arguments[1]!);
     context.expectKind(scene, "scene", call.arguments[2]!);
     context.expectSameEngine(engine, scene, call);
+    reachRenderer(context, call);
+    context.reachFeature("renderer:post-process", call);
+    if (composite) {
+        const built = context.compilePostProcessCompositeOptions(
+            importedName,
+            call.arguments[0]!,
+            context.postProcessComposites.length,
+        );
+        context.recordPostProcessComposite(built.manifest);
+        return {
+            kind: "task",
+            cpp:
+                `bbl::create_composite_post_process_task_${
+                    built.manifest.compositeIndex
+                }(${engine.cpp}, ${scene.cpp}, ${built.cpp})`,
+            engineCpp: engine.engineCpp ?? engine.cpp,
+            postProcessComposite: built.manifest,
+        };
+    }
     const compiled = context.compilePostProcessTaskOptions(
         importedName,
         call.arguments[0]!,
         context.postProcessTasks.length,
     );
     context.recordPostProcessTask(compiled.manifest);
-    reachRenderer(context, call);
-    context.reachFeature("renderer:post-process", call);
     return {
         kind: "task",
         cpp:

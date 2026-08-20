@@ -206,6 +206,24 @@ struct PixelViewport {
     std::int32_t height = 0;
 };
 
+/**
+ * A texture format, as the classes this port's two backends both express.
+ *
+ * Each backend only translates the class to its API's format constant, so a
+ * record naming one says the same thing to both. The geometry attachments
+ * choose theirs by lane (`pbr-geometry-output-shader.ts`): reflectivity and
+ * albedo pack into rgba8, VIEW_DEPTH keeps full float precision, the
+ * normalized and screenspace depths take r16 -- as does any attachment whose
+ * description asks for it -- and every other lane is rgba16. A post-process
+ * composite names its own instead: the circle-of-confusion map is r16.
+ */
+enum class TextureFormatClass {
+    rgba8_unorm,
+    r16_float,
+    r32_float,
+    rgba16_float,
+};
+
 struct RenderTargetOptions {
     std::uint32_t samples = 1;
     bool has_color = true;
@@ -213,6 +231,19 @@ struct RenderTargetOptions {
     bool sampled_depth = false;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    /**
+     * A target sized as a fraction of another, rather than in pixels or by the
+     * canvas. A post-process composite owns its intermediates and sizes each
+     * from its source every time the graph is built, so a window resize moves
+     * them with it. `scale_source` must already exist: the composite creates
+     * its own intermediates after the source it scales from.
+     */
+    RenderTargetHandle scale_source{};
+    double width_ratio = 1.0;
+    double height_ratio = 1.0;
+    /** The colour format, when the target does not take the surface's. */
+    TextureFormatClass format = TextureFormatClass::rgba8_unorm;
+    bool has_format = false;
 };
 
 enum class RenderTextureSource {
@@ -248,6 +279,13 @@ struct RenderTaskOptions {
      * it.
      */
     RenderTextureRef depth{};
+    /**
+     * A single-sample target the colour attachment resolves into at
+     * end-of-pass, so an MSAA render can feed a post-process that needs a
+     * single-sample source without a separate resolve pass. Only read when
+     * the task's own target is multisampled, which is the pin's rule.
+     */
+    RenderTargetHandle resolve_target{};
 };
 
 struct RenderTaskMesh {
@@ -303,12 +341,13 @@ enum class PostProcessSampling {
 /**
  * A fullscreen pass that samples one texture and writes another.
  *
- * Every post-process effect Babylon Lite ships is this task with a different
+ * Every post-process effect Babylon Lite ships is this pass with a different
  * composed stage, so the record carries the pass and the effect's parameter
- * vector rather than one struct per effect. `shader_index` is the reach order,
- * which selects both the deployed stage pair and the generated uniform writer.
+ * vector rather than one struct per effect. `shader_index` selects both the
+ * deployed stage pair and the generated uniform writer; passes are numbered in
+ * the order generation reached them, a composite's own passes included.
  */
-struct PostProcessTaskOptions {
+struct PostProcessPassOptions {
     std::string name;
     std::uint32_t shader_index = 0;
     RenderTextureRef source{};
@@ -332,6 +371,42 @@ struct PostProcessTaskOptions {
     bool uniforms_dirty = true;
 };
 
+/**
+ * The task the scene added, and the passes it records.
+ *
+ * A plain effect records one. A composite -- depth of field -- records the
+ * chain its own factory built, over intermediate targets it owns, and the
+ * caller still sees one task: one `addTask`, one `updateUniforms`, one output.
+ * So the task holds a list and the single-pass case is a list of one, rather
+ * than the composites being a second kind of task beside this one.
+ */
+struct PostProcessTaskOptions {
+    std::string name;
+    std::vector<PostProcessPassOptions> passes;
+};
+
+/**
+ * What a composite reads from the scene.
+ *
+ * Everything else about it -- how many passes, over which intermediates, at
+ * which sizes -- was settled at generation by running the pin's own factory,
+ * so the generated `create_composite_post_process_task_N` carries the chain
+ * and takes only this.
+ *
+ * The source is a render target rather than any render texture because the
+ * composite sizes its own intermediates from it; the pin refuses a source
+ * without a format for the same reason.
+ */
+struct PostProcessCompositeInputs {
+    std::string name;
+    RenderTargetHandle source{};
+    /** The composite's own config textures, in its descriptor's order. */
+    std::vector<RenderTextureRef> extra_textures;
+    /** The target the caller named, or an invalid handle for none. */
+    RenderTargetHandle target{};
+    CameraHandle camera{};
+};
+
 enum class FrameTaskKind {
     render,
     geometry,
@@ -347,6 +422,12 @@ struct RenderTargetRecord {
     bool swapchain = false;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    /** See `RenderTargetOptions::scale_source`. */
+    RenderTargetHandle scale_source{};
+    double width_ratio = 1.0;
+    double height_ratio = 1.0;
+    TextureFormatClass format = TextureFormatClass::rgba8_unorm;
+    bool has_format = false;
 };
 
 struct FrameTaskRecord {

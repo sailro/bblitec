@@ -336,6 +336,8 @@ struct GpuRenderTarget {
     SDL_GPUTexture* depth = nullptr;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    /** What its colour attachment resolved to, for a target that follows it. */
+    SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_INVALID;
 };
 
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
@@ -349,10 +351,28 @@ struct GpuRenderTarget {
 /** SDL_GPU's per-stage sampler cap; a pass binds a source plus its extras. */
 inline constexpr std::size_t max_post_process_textures = 8;
 
-struct GpuPostProcessTask {
+/**
+ * The stage pair and pipeline a pass draws with, shared by every pass that
+ * draws the same way.
+ *
+ * A composite chains passes that differ only in their bindings and uniforms --
+ * depth of field's six blurs are one deployed module and one pipeline state --
+ * so building per pass would read the same files and compile the same shaders
+ * once each. The key is everything a pipeline is made of.
+ */
+struct GpuPostProcessProgram {
+    std::uint32_t module_index = 0;
+    SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_INVALID;
+    SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1;
+    std::uint32_t alpha_mode = 0;
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
     PinnedStageSlots vertex_slots;
     PinnedStageSlots fragment_slots;
+};
+
+struct GpuPostProcessTask {
+    /** Borrowed from `GpuState::post_process_programs`, which owns it. */
+    const GpuPostProcessProgram* program = nullptr;
     /**
      * What each fragment texture slot names, resolved from the `.slots`
      * sidecar once: -1 is the pass's source, and 0.. indexes its extra
@@ -482,7 +502,10 @@ struct GpuState {
     std::vector<GpuRenderTarget> render_targets;
     std::vector<GpuGeometryTask> geometry_tasks;
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
-    std::vector<GpuPostProcessTask> post_process_tasks;
+    // Per frame task, one entry per pass it records.
+    std::vector<std::vector<GpuPostProcessTask>> post_process_tasks;
+    /** The distinct stage pairs and pipelines those passes draw with. */
+    std::vector<GpuPostProcessProgram> post_process_programs;
     // A pass that presents renders here first: SDL_GPU swapchain textures
     // are not readable, and the capture has to read what the pass produced.
     SDL_GPUTexture* post_process_present = nullptr;
@@ -2245,19 +2268,23 @@ SDL_GPUSampleCount task_sample_count(
     return requested == 4 ? state.sample_count : SDL_GPU_SAMPLECOUNT_1;
 }
 
-SDL_GPUTextureFormat geometry_texture_format(
-    const GeometryTextureDescription& description) {
-    switch (geometry_format_class(description)) {
-        case GeometryFormatClass::rgba8_unorm:
+SDL_GPUTextureFormat texture_format(TextureFormatClass format) {
+    switch (format) {
+        case TextureFormatClass::rgba8_unorm:
             return SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-        case GeometryFormatClass::r16_float:
+        case TextureFormatClass::r16_float:
             return SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
-        case GeometryFormatClass::r32_float:
+        case TextureFormatClass::r32_float:
             return SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
-        case GeometryFormatClass::rgba16_float:
+        case TextureFormatClass::rgba16_float:
             return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
     }
     return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+}
+
+SDL_GPUTextureFormat geometry_texture_format(
+    const GeometryTextureDescription& description) {
+    return texture_format(geometry_format_class(description));
 }
 
 SDL_FColor geometry_clear_color(GeometryTextureType type) {
@@ -2317,13 +2344,21 @@ void release_frame_graph_textures(GpuState& state) {
         task.params = nullptr;
     }
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
-    for (GpuPostProcessTask& task : state.post_process_tasks) {
-        if (task.pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(state.device, task.pipeline);
+    for (std::vector<GpuPostProcessTask>& passes :
+         state.post_process_tasks) {
+        for (GpuPostProcessTask& task : passes) {
+            task = {};
         }
-        task = {};
     }
     state.post_process_tasks.clear();
+    // The programs outlive no build: a rebuilt graph may target different
+    // formats, and every pass that borrowed one is being reset above.
+    for (GpuPostProcessProgram& program : state.post_process_programs) {
+        if (program.pipeline) {
+            SDL_ReleaseGPUGraphicsPipeline(state.device, program.pipeline);
+        }
+    }
+    state.post_process_programs.clear();
     if (state.post_process_present) {
         SDL_ReleaseGPUTexture(state.device, state.post_process_present);
         state.post_process_present = nullptr;
@@ -2354,13 +2389,42 @@ void create_frame_graph_textures(
         GpuRenderTarget& target = state.render_targets[index];
         target.width = record.width > 0 ? record.width : width;
         target.height = record.height > 0 ? record.height : height;
-        if (record.swapchain) continue;
+        // A composite's intermediate takes a fraction of whatever its
+        // source resolved to. Creation order guarantees that source is
+        // already sized: `create_render_target` refuses a forward reference.
+        if (record.scale_source.value != invalid_handle) {
+            const GpuRenderTarget& scale_source =
+                state.render_targets[record.scale_source.value];
+            target.width = scaled_target_extent(
+                scale_source.width,
+                record.width_ratio);
+            target.height = scaled_target_extent(
+                scale_source.height,
+                record.height_ratio);
+        }
+        // The swapchain owns no texture here -- its view is acquired per
+        // frame -- but a target that follows it still needs its format.
+        if (record.swapchain) {
+            target.color_format = surface_format;
+            continue;
+        }
         const SDL_GPUSampleCount samples =
             task_sample_count(state, record.samples);
+        // "The source's format" is what a composite's intermediate asks for
+        // when it names none, so it resolves through the target it scales
+        // from rather than falling back to the surface.
+        const SDL_GPUTextureFormat color_format =
+            record.has_format
+                ? texture_format(record.format)
+                : record.scale_source.value != invalid_handle
+                      ? state.render_targets[record.scale_source.value]
+                            .color_format
+                      : surface_format;
+        target.color_format = color_format;
         if (record.has_color) {
             target.color = create_frame_texture(
                 state.device,
-                surface_format,
+                color_format,
                 samples,
                 target.width,
                 target.height,
@@ -2373,7 +2437,7 @@ void create_frame_graph_textures(
                     ? target.color
                     : create_frame_texture(
                           state.device,
-                          surface_format,
+                          color_format,
                           SDL_GPU_SAMPLECOUNT_1,
                           target.width,
                           target.height,
@@ -2400,6 +2464,19 @@ void create_frame_graph_textures(
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
     if (state.post_process_tasks.size() < engine.frame_tasks.size()) {
         state.post_process_tasks.resize(engine.frame_tasks.size());
+    }
+    // Each post-process task keeps one entry per pass it records, sized here
+    // rather than grown from the record path: a composite's chain is known
+    // before a frame starts and its entries own vectors worth not moving.
+    for (std::size_t index = 0; index < engine.frame_tasks.size(); ++index) {
+        const FrameTaskRecord& task = engine.frame_tasks[index];
+        if (task.kind != FrameTaskKind::post_process) continue;
+        if (
+            state.post_process_tasks[index].size() <
+            task.post_process.passes.size()) {
+            state.post_process_tasks[index].resize(
+                task.post_process.passes.size());
+        }
     }
 #endif
     for (std::size_t index = 0; index < engine.frame_tasks.size(); ++index) {
@@ -2854,6 +2931,84 @@ void release(GpuState& state) {
 
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
 /**
+ * The program a post-process pass draws with, built once per distinct one.
+ *
+ * A pass is identified as a drawing by its deployed module and the pipeline
+ * state its output implies; everything else about it -- which textures it
+ * binds, what its uniform block holds -- is per pass and stays there. A
+ * composite's chain repeats the first and varies the second, so depth of
+ * field's six blurs share one entry here.
+ */
+const GpuPostProcessProgram& post_process_program(
+    GpuState& state,
+    std::uint32_t module_index,
+    SDL_GPUTextureFormat format,
+    SDL_GPUSampleCount samples,
+    std::uint32_t alpha_mode) {
+    for (const GpuPostProcessProgram& program :
+         state.post_process_programs) {
+        if (
+            program.module_index == module_index &&
+            program.format == format &&
+            program.samples == samples &&
+            program.alpha_mode == alpha_mode) {
+            return program;
+        }
+    }
+    GpuPostProcessProgram program;
+    program.module_index = module_index;
+    program.format = format;
+    program.samples = samples;
+    program.alpha_mode = alpha_mode;
+    const std::string stem =
+        "postprocess-" + std::to_string(module_index);
+    const std::string vertex_name = stem + ".vert";
+    const std::string fragment_name = stem + ".frag";
+    program.vertex_slots = read_pinned_stage_slots(vertex_name);
+    program.fragment_slots = read_pinned_stage_slots(fragment_name);
+    SDL_GPUShader* vertex_shader = load_shader(
+        state.device,
+        vertex_name.c_str(),
+        SDL_GPU_SHADERSTAGE_VERTEX,
+        static_cast<Uint32>(program.vertex_slots.textures.size()),
+        static_cast<Uint32>(program.vertex_slots.uniforms.size()),
+        "postProcessVertex");
+    SDL_GPUShader* fragment_shader = load_shader(
+        state.device,
+        fragment_name.c_str(),
+        SDL_GPU_SHADERSTAGE_FRAGMENT,
+        static_cast<Uint32>(program.fragment_slots.textures.size()),
+        static_cast<Uint32>(program.fragment_slots.uniforms.size()),
+        "postProcessFragment");
+    // The generated table names the pin's factors; turning them into this
+    // API's enums is the backend's own `blend_state_from`.
+    const upstream::PostProcessBlend blend =
+        upstream::post_process_blend(alpha_mode);
+    SDL_GPUColorTargetDescription target{};
+    target.format = format;
+    if (blend.enabled) {
+        target.blend_state = blend_state_from(blend.factors);
+    }
+    SDL_GPUGraphicsPipelineCreateInfo info{};
+    info.vertex_shader = vertex_shader;
+    info.fragment_shader = fragment_shader;
+    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    info.multisample_state.sample_count = samples;
+    info.target_info.color_target_descriptions = &target;
+    info.target_info.num_color_targets = 1;
+    program.pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &info);
+    if (!program.pipeline) {
+        gpu_error("SDL_CreateGPUGraphicsPipeline post-process");
+    }
+    SDL_ReleaseGPUShader(state.device, vertex_shader);
+    SDL_ReleaseGPUShader(state.device, fragment_shader);
+    state.post_process_programs.push_back(std::move(program));
+    return state.post_process_programs.back();
+}
+
+/**
  * One post-process pass, recorded into the frame's command buffer.
  *
  * The pin runs every effect through the same pass -- a three-vertex draw over
@@ -2877,16 +3032,17 @@ void record_post_process_pass(
     SDL_GPUTextureFormat swapchain_format,
     std::uint32_t width,
     std::uint32_t height,
+    std::size_t index,
     SDL_GPUTexture*& capture_texture,
     SourceTexture source_texture,
     TargetTexture target_texture) {
-    PostProcessTaskOptions& pass =
-        engine.frame_tasks[handle.value].post_process;
+    PostProcessPassOptions& pass =
+        engine.frame_tasks[handle.value].post_process.passes[index];
     const upstream::PostProcessShaderInfo& shader_info =
         upstream::post_process_shader_infos[
             pass.shader_index];
     GpuPostProcessTask& gpu =
-        state.post_process_tasks[handle.value];
+        state.post_process_tasks[handle.value][index];
     const RenderTargetRecord& output_record =
         engine.render_targets[pass.output_target.value];
     const std::uint32_t output_width =
@@ -2934,82 +3090,20 @@ void record_post_process_pass(
                 SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
                     SDL_GPU_TEXTUREUSAGE_SAMPLER);
     }
-    if (!gpu.pipeline) {
-        const std::string stage_stem =
-            "postprocess-" +
-            std::to_string(shader_info.module_index);
-        const std::string vertex_name =
-            stage_stem + ".vert";
-        const std::string fragment_name =
-            stage_stem + ".frag";
-        gpu.vertex_slots =
-            read_pinned_stage_slots(vertex_name);
-        gpu.fragment_slots =
-            read_pinned_stage_slots(fragment_name);
-        SDL_GPUShader* pass_vertex_shader = load_shader(
-            state.device,
-            vertex_name.c_str(),
-            SDL_GPU_SHADERSTAGE_VERTEX,
-            static_cast<Uint32>(
-                gpu.vertex_slots.textures.size()),
-            static_cast<Uint32>(
-                gpu.vertex_slots.uniforms.size()),
-            "postProcessVertex");
-        SDL_GPUShader* pass_fragment_shader = load_shader(
-            state.device,
-            fragment_name.c_str(),
-            SDL_GPU_SHADERSTAGE_FRAGMENT,
-            static_cast<Uint32>(
-                gpu.fragment_slots.textures.size()),
-            static_cast<Uint32>(
-                gpu.fragment_slots.uniforms.size()),
-            "postProcessFragment");
-        // The generated table names the pin's factors;
-        // turning them into this API's enums is the
-        // backend's own `blend_state_from`.
-        const upstream::PostProcessBlend blend =
-            upstream::post_process_blend(
-                pass.alpha_mode);
-        SDL_GPUColorTargetDescription target{};
-        target.format = swapchain_format;
-        if (blend.enabled) {
-            target.blend_state =
-                blend_state_from(blend.factors);
-        }
-        SDL_GPUGraphicsPipelineCreateInfo info{};
-        info.vertex_shader = pass_vertex_shader;
-        info.fragment_shader = pass_fragment_shader;
-        info.primitive_type =
-            SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-        info.rasterizer_state.fill_mode =
-            SDL_GPU_FILLMODE_FILL;
-        info.rasterizer_state.cull_mode =
-            SDL_GPU_CULLMODE_NONE;
-        // The pin builds the pipeline against its output
-        // target's own sample count and resolves nothing;
-        // what it refuses is a multisampled *source*.
-        info.multisample_state.sample_count = presents
-            ? SDL_GPU_SAMPLECOUNT_1
-            : task_sample_count(
-                  state,
-                  output_record.samples);
-        info.target_info.color_target_descriptions =
-            &target;
-        info.target_info.num_color_targets = 1;
-        gpu.pipeline = SDL_CreateGPUGraphicsPipeline(
-            state.device,
-            &info);
-        if (!gpu.pipeline) {
-            gpu_error(
-                "SDL_CreateGPUGraphicsPipeline "
-                "post-process");
-        }
-        SDL_ReleaseGPUShader(
-            state.device,
-            pass_vertex_shader);
-        SDL_ReleaseGPUShader(
-            state.device,
-            pass_fragment_shader);
+    if (!gpu.program) {
+        // A pass writes into its own output, whose format the frame graph
+        // already resolved -- a composite's intermediate may name its own
+        // (the circle-of-confusion map is r16) or follow its source's. The
+        // pin builds the pipeline against that target's own sample count and
+        // resolves nothing; what it refuses is a multisampled *source*.
+        gpu.program = &post_process_program(
+            state,
+            shader_info.module_index,
+            state.render_targets[pass.output_target.value].color_format,
+            presents
+                ? SDL_GPU_SAMPLECOUNT_1
+                : task_sample_count(state, output_record.samples),
+            pass.alpha_mode);
         gpu.uniform_data.assign(
             ((shader_info.uniform_byte_length + 15u) &
              ~15u) /
@@ -3017,9 +3111,9 @@ void record_post_process_pass(
             0.0f);
         std::size_t extra_slot = 0;
         gpu.texture_sources.reserve(
-            gpu.fragment_slots.textures.size());
+            gpu.program->fragment_slots.textures.size());
         for (const std::string& name :
-             gpu.fragment_slots.textures) {
+             gpu.program->fragment_slots.textures) {
             if (name == "sourceTextureSampler") {
                 gpu.texture_sources.push_back(-1);
                 continue;
@@ -3053,14 +3147,14 @@ void record_post_process_pass(
             gpu.uniform_data.size() * sizeof(float);
         // At most one block per stage, so the slot the
         // compaction left it at is zero when it survived.
-        if (!gpu.vertex_slots.uniforms.empty()) {
+        if (!gpu.program->vertex_slots.uniforms.empty()) {
             SDL_PushGPUVertexUniformData(
                 command,
                 0,
                 gpu.uniform_data.data(),
                 static_cast<Uint32>(uniform_bytes));
         }
-        if (!gpu.fragment_slots.uniforms.empty()) {
+        if (!gpu.program->fragment_slots.uniforms.empty()) {
             SDL_PushGPUFragmentUniformData(
                 command,
                 0,
@@ -3090,7 +3184,7 @@ void record_post_process_pass(
             &pass_target,
             1,
             nullptr);
-    SDL_BindGPUGraphicsPipeline(post_pass, gpu.pipeline);
+    SDL_BindGPUGraphicsPipeline(post_pass, gpu.program->pipeline);
     if (pass.has_viewport) {
         const PixelViewport rectangle =
             upstream::resolve_post_process_viewport(
@@ -5504,6 +5598,22 @@ bool run_gpu_engine(Engine& engine) {
                                 ? SDL_GPU_LOADOP_CLEAR
                                 : SDL_GPU_LOADOP_LOAD;
                         target_info.store_op = SDL_GPU_STOREOP_STORE;
+                        // The pin resolves into `rst` at end-of-pass, and
+                        // ignores it outright when the task's own target is
+                        // single-sample. That is the count the target was
+                        // *allocated* at, not the one it asked for: a run
+                        // forced to one sample resolves nothing.
+                        if (
+                            task.render.resolve_target.value !=
+                                invalid_handle &&
+                            task_sample_count(state, target_record.samples) !=
+                                SDL_GPU_SAMPLECOUNT_1) {
+                            target_info.store_op =
+                                SDL_GPU_STOREOP_RESOLVE_AND_STORE;
+                            target_info.resolve_texture = target_texture(
+                                task.render.resolve_target,
+                                false);
+                        }
                         SDL_GPUDepthStencilTargetInfo task_depth{};
                         SDL_GPUDepthStencilTargetInfo* task_depth_pointer =
                             nullptr;
@@ -5737,18 +5847,26 @@ bool run_gpu_engine(Engine& engine) {
 
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
                     if (task.kind == FrameTaskKind::post_process) {
-                        record_post_process_pass(
-                            state,
-                            engine,
-                            handle,
-                            command,
-                            swapchain,
-                            swapchain_format,
-                            width,
-                            height,
-                            capture_texture,
-                            source_texture,
-                            target_texture);
+                        // A composite records the chain its own factory
+                        // built; a plain effect is the same loop over one.
+                        for (
+                            std::size_t index = 0;
+                            index < task.post_process.passes.size();
+                            ++index) {
+                            record_post_process_pass(
+                                state,
+                                engine,
+                                handle,
+                                command,
+                                swapchain,
+                                swapchain_format,
+                                width,
+                                height,
+                                index,
+                                capture_texture,
+                                source_texture,
+                                target_texture);
+                        }
                         continue;
                     }
 #endif

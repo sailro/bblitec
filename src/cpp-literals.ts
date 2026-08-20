@@ -19,6 +19,20 @@ export function doubleLiteral(value: number): string {
 }
 
 /**
+ * A string as a C++ literal.
+ *
+ * JSON's escaping is C++'s for everything a scene can carry, except the two
+ * line separators JavaScript allows raw inside a string and C++ does not.
+ */
+export function stringLiteral(value: string): string {
+    return JSON.stringify(value)
+        .split("\u2028")
+        .join("\\u2028")
+        .split("\u2029")
+        .join("\\u2029");
+}
+
+/**
  * The one identifier-sanitizing regex. Callers keep their own prefixing and
  * reserved-word policies (a `v_`-prefixed local needs neither; a struct
  * field needs both), but the character class they share lives here.

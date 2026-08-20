@@ -16,6 +16,7 @@ import type {
 } from "../types.js";
 import {
     compilePositiveInteger,
+    compileStaticNumber,
     validateObjectProperties,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
@@ -108,8 +109,8 @@ export function compileRenderTaskOptions(
     validateObjectProperties(
         context,
         object,
-        ["name", "rt", "clrColor", "clr", "cam", "cs", "autoMirror", "depth"],
-        "Reached render tasks support name, rt, clrColor, clr, cam, cs, autoMirror, and depth.",
+        ["name", "rt", "rst", "clrColor", "clr", "cam", "cs", "autoMirror", "depth"],
+        "Reached render tasks support name, rt, rst, clrColor, clr, cam, cs, autoMirror, and depth.",
     );
     const nameExpression = context.objectProperty(object, "name");
     const targetExpression = context.objectProperty(object, "rt");
@@ -118,6 +119,13 @@ export function compileRenderTaskOptions(
     }
     const target = context.compileValue(targetExpression);
     context.expectKind(target, "render-target", targetExpression);
+    // The single-sample target an MSAA colour attachment resolves into. The
+    // pin ignores it when `rt` is single-sample rather than refusing it, so
+    // this carries the handle and lets the backend apply the same rule.
+    const resolve = optionalRenderTarget(context, object, "rst");
+    if (resolve.value) {
+        context.expectSameEngine(target, resolve.value, object);
+    }
     const clearColor = context.objectProperty(object, "clrColor");
     const clear = context.objectProperty(object, "clr");
     const cameraExpression = context.objectProperty(object, "cam");
@@ -150,7 +158,7 @@ export function compileRenderTaskOptions(
     }
     return `bbl::RenderTaskOptions{${context.cppString(
         nameExpression ? context.compileStringLiteral(nameExpression) : "render-task",
-    )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "bbl::Color4{}"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? "bbl::CameraHandle{}"}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}, ${depth}}`;
+    )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "bbl::Color4{}"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? "bbl::CameraHandle{}"}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}, ${depth}, ${resolve.cpp}}`;
 }
 
 export function compileGeometryTaskOptions(
@@ -198,6 +206,12 @@ export function compileGeometryTaskOptions(
     const attachments: GeometryTextureTypeName[] = [];
     const compiledDescriptions = descriptions.elements.map((element) => {
         const description = context.expectObjectLiteral(element);
+        validateObjectProperties(
+            context,
+            description,
+            ["type", "format", "clearValue"],
+            "Geometry texture descriptions support type, format, and clearValue.",
+        );
         const typeExpression = context.objectProperty(description, "type");
         if (!typeExpression) {
             context.fail(description, "Geometry texture description requires type.");
@@ -216,6 +230,33 @@ export function compileGeometryTaskOptions(
                 formatExpression!,
                 `Unsupported geometry texture format override '${format}'.`,
             );
+        }
+        // An attachment's clear value is the pin's own, per lane
+        // (`GEOMETRY_TEXTURE_DESCRIPTIONS`), and the runtime already carries
+        // that table. A descriptor may restate it -- scene 148 spells out
+        // VIEW_DEPTH's zero -- but a genuine override has nowhere to go yet,
+        // so it is refused rather than dropped.
+        const clearExpression = context.objectProperty(
+            description,
+            "clearValue",
+        );
+        if (clearExpression) {
+            const clear = context.expectObjectLiteral(clearExpression);
+            const pinned = pinnedGeometryClearValue(type);
+            for (const channel of ["r", "g", "b", "a"] as const) {
+                const value = context.objectProperty(clear, channel);
+                const written = value
+                    ? compileStaticNumber(context, value, "clearValue")
+                    : 0;
+                if (written !== pinned) {
+                    context.fail(
+                        clearExpression,
+                        `Geometry ${type} clears to ${pinned} in Babylon Lite; ` +
+                            `this descriptor asks for ${written}, which this ` +
+                            "port does not carry per attachment.",
+                    );
+                }
+            }
         }
         return `bbl::GeometryTextureDescription{bbl::GeometryTextureType::${geometryEnumMember(type)}, ${format === "r16float" ? "bbl::GeometryTextureFormat::r16_float" : "bbl::GeometryTextureFormat::automatic"}}`;
     });
@@ -356,6 +397,28 @@ export function requiredObjectNumber(
 }
 
 /**
+ * A render-target option the caller may omit, as the handle it names.
+ *
+ * Four task options are written this way -- a copy task's target and its
+ * resolve, a render task's resolve, a post-process pass's target -- and each
+ * means the same thing: a target when the scene named one, and the invalid
+ * handle when it did not.
+ */
+export function optionalRenderTarget(
+    context: EngineOptionContext,
+    object: ts.ObjectLiteralExpression,
+    property: string,
+): { cpp: string; value?: Value } {
+    const expression = context.objectProperty(object, property);
+    if (!expression) {
+        return { cpp: "bbl::RenderTargetHandle{}" };
+    }
+    const value = context.compileValue(expression);
+    context.expectKind(value, "render-target", expression);
+    return { cpp: value.cpp, value };
+}
+
+/**
  * A texture option, as the render-texture reference the frame graph carries.
  *
  * A render target names its own colour attachment; a render texture — a
@@ -419,4 +482,16 @@ export function compileSceneDefaultRenderTask(
         );
     }
     return compiled === "true";
+}
+
+/**
+ * What Babylon Lite clears one geometry attachment to.
+ *
+ * The pin's own per-lane table: every attachment clears to zero except the
+ * normalized view depth, whose zero is the near plane under reverse-Z, so it
+ * clears to one. The runtime carries the same table; this is only what a
+ * descriptor's `clearValue` is checked against.
+ */
+function pinnedGeometryClearValue(type: GeometryTextureTypeName): number {
+    return type === "NORMALIZED_VIEW_DEPTH" ? 1 : 0;
 }

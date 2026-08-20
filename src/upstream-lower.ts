@@ -42,7 +42,10 @@ import {
     type PinnedStandardSelector,
     type PinnedStandardVariantManifestEntry,
 } from "./pinned-standard-variants.js";
-import type { ComposedPostProcess } from "./pinned-post-process.js";
+import type {
+    ComposedComposite,
+    ComposedPostProcess,
+} from "./pinned-post-process.js";
 import {
     extractPackagedTemplateLiteral,
     extractWgslFunction,
@@ -142,6 +145,11 @@ export interface UpstreamEmitOptions {
      * produced each, so nothing about them is restated here.
      */
     postProcessShaders: readonly ComposedPostProcess[];
+    /**
+     * What each reached composite's own factory built, in reach order. Its
+     * passes are numbered after every plain pass, so one table indexes both.
+     */
+    postProcessComposites: readonly ComposedComposite[];
     gpuDeformation: boolean;
     /**
      * Whether the loader records live world boxes and default framing reads
@@ -948,10 +956,25 @@ class GeneratedSourceWriter {
                 new PostProcessLowerer(
                     context,
                     options.postProcessTasks,
+                    options.postProcessComposites,
                 ).lowerTaskRecords(),
                 generated,
                 "upstream/include/bblite/upstream/frame_graph_post_process.hpp",
             );
+            // One stage table over both kinds of pass: the plain effects in
+            // reach order, then each composite's own chain. A pass is a pass
+            // once composed, so the deployed modules and the layout table do
+            // not distinguish where it came from.
+            const postProcessStages: ComposedPostProcess[] = [
+                ...options.postProcessShaders,
+                ...options.postProcessComposites.flatMap((composite) =>
+                    composite.passes.map((pass) => ({
+                        wgsl: pass.wgsl,
+                        uniformByteLength: pass.uniformByteLength,
+                        uniformBinding: pass.uniformBinding,
+                    })),
+                ),
+            ];
             // Both stages of a pass live in one composed module: Tint takes
             // one entry point per file, so the same text is deployed twice and
             // each copy is compiled at the stage its name selects. The text is
@@ -969,7 +992,7 @@ class GeneratedSourceWriter {
                 "getShaderModule",
             );
             const postProcessModules = new Map<string, number>();
-            for (const composed of options.postProcessShaders) {
+            for (const composed of postProcessStages) {
                 if (postProcessModules.has(composed.wgsl)) continue;
                 const index = postProcessModules.size;
                 postProcessModules.set(composed.wgsl, index);
@@ -985,7 +1008,7 @@ ${composed.wgsl}`,
                 "upstream/include/bblite/upstream/post_process_shaders.hpp",
                 postProcessShadersHeader(
                     postProcessProvenance,
-                    options.postProcessShaders,
+                    postProcessStages,
                     postProcessModules,
                 ),
             );
@@ -1597,6 +1620,7 @@ export function emitUpstreamGenerated(
         geometryOutputTasks: [],
         postProcessTasks: [],
         postProcessShaders: [],
+        postProcessComposites: [],
         gpuDeformation: false,
         animatedWorldBounds: false,
         morphStorage: false,

@@ -18,7 +18,10 @@ import {
     type UpstreamEmitOptions,
 } from "./upstream-lower.js";
 import { emitAssetSpecializations } from "./asset-specializer.js";
-import { composePostProcess } from "./pinned-post-process.js";
+import {
+    composeComposite,
+    composePostProcess,
+} from "./pinned-post-process.js";
 import {
     featureActivationPath,
     featureActivationRows,
@@ -568,6 +571,17 @@ async function main(): Promise<void> {
             }),
         ),
     );
+    // A composite runs its own factory instead: which passes it records, over
+    // which intermediates and at which sizes, is the factory's answer.
+    const postProcessComposites = await Promise.all(
+        result.manifest.postProcessComposites.map((composite) =>
+            composeComposite({
+                intrinsic: composite.intrinsic,
+                options: composite.options,
+                hasTarget: composite.hasTarget,
+            }),
+        ),
+    );
     // Named rather than inline so the activation inventory below records
     // the exact values the emitters consumed, not a restatement of them.
     const emitOptions: UpstreamEmitOptions = {
@@ -577,6 +591,7 @@ async function main(): Promise<void> {
         geometryOutputTasks: result.manifest.geometryOutputTasks,
         postProcessTasks: result.manifest.postProcessTasks,
         postProcessShaders,
+        postProcessComposites,
         gpuDeformation:
             specializationFeatures.gpuDeformation ||
             result.manifest.features.includes(

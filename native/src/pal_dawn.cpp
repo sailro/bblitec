@@ -262,6 +262,8 @@ struct DawnRenderTarget {
     WGPUTextureView depth_copy_view = nullptr;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    /** What its colour attachment resolved to, for a target that follows it. */
+    WGPUTextureFormat color_format = WGPUTextureFormat_Undefined;
 };
 
 struct DawnRenderTask {
@@ -302,14 +304,35 @@ struct DawnGeometryTask {
  * first time the pass records and rebuilt whenever the frame graph's textures
  * are.
  */
-struct DawnPostProcessTask {
+/**
+ * The module, layout and pipeline a post-process pass draws with, shared by
+ * every pass that draws the same way.
+ *
+ * A composite chains passes that differ only in which textures they bind and
+ * what their uniform block holds -- depth of field's six blurs are one
+ * deployed module and one pipeline state -- so building per pass would parse
+ * the same WGSL and compile the same pipeline once each. The key is
+ * everything the layout and the pipeline are made of.
+ */
+struct DawnPostProcessProgram {
+    std::uint32_t module_index = 0;
+    WGPUTextureFormat format = WGPUTextureFormat_Undefined;
+    std::uint32_t samples = 1;
+    std::uint32_t alpha_mode = 0;
+    std::size_t extra_textures = 0;
+    std::uint32_t uniform_binding = 0;
+    std::uint32_t uniform_size = 0;
     WGPUShaderModule module = nullptr;
     WGPUBindGroupLayout group_layout = nullptr;
     WGPUPipelineLayout pipeline_layout = nullptr;
     WGPURenderPipeline pipeline = nullptr;
+};
+
+struct DawnPostProcessTask {
+    /** Borrowed from `DawnState::post_process_programs`, which owns it. */
+    const DawnPostProcessProgram* program = nullptr;
     WGPUBindGroup group = nullptr;
     WGPUBuffer uniforms = nullptr;
-    std::uint32_t uniform_size = 0;
 };
 #endif
 
@@ -385,7 +408,10 @@ struct DawnState : DawnDevice {
     std::vector<DawnRenderTask> render_tasks;
     std::vector<DawnGeometryTask> geometry_tasks;
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
-    std::vector<DawnPostProcessTask> post_process_tasks;
+    // Per frame task, one entry per pass it records.
+    std::vector<std::vector<DawnPostProcessTask>> post_process_tasks;
+    /** The distinct programs those passes draw with. */
+    std::vector<DawnPostProcessProgram> post_process_programs;
     // The pin's own `getBilinearSampler`: linear magnification and
     // minification over WebGPU's defaults, which is clamp addressing and a
     // nearest mip filter. `nearest_sampler` is already its `getNearestSampler`
@@ -663,20 +689,31 @@ struct DawnState : DawnDevice {
         // The pass's pipeline and bind group name the attachments the graph
         // just released, so they are rebuilt with them; the pin discards the
         // same state when its own internal target is re-created.
-        for (DawnPostProcessTask& task : post_process_tasks) {
-            if (task.group) wgpuBindGroupRelease(task.group);
-            if (task.pipeline) wgpuRenderPipelineRelease(task.pipeline);
-            if (task.pipeline_layout) {
-                wgpuPipelineLayoutRelease(task.pipeline_layout);
+        for (std::vector<DawnPostProcessTask>& passes :
+             post_process_tasks) {
+            for (DawnPostProcessTask& task : passes) {
+                if (task.group) wgpuBindGroupRelease(task.group);
+                if (task.uniforms) wgpuBufferRelease(task.uniforms);
+                task = {};
             }
-            if (task.group_layout) {
-                wgpuBindGroupLayoutRelease(task.group_layout);
-            }
-            if (task.uniforms) wgpuBufferRelease(task.uniforms);
-            if (task.module) wgpuShaderModuleRelease(task.module);
-            task = {};
         }
         post_process_tasks.clear();
+        // The programs outlive no build: a rebuilt graph may target different
+        // formats, and every pass that borrowed one was just reset.
+        for (DawnPostProcessProgram& program : post_process_programs) {
+            if (program.pipeline) {
+                wgpuRenderPipelineRelease(program.pipeline);
+            }
+            if (program.pipeline_layout) {
+                wgpuPipelineLayoutRelease(program.pipeline_layout);
+            }
+            if (program.group_layout) {
+                wgpuBindGroupLayoutRelease(program.group_layout);
+            }
+            if (program.module) wgpuShaderModuleRelease(program.module);
+            program = {};
+        }
+        post_process_programs.clear();
 #endif
         frame_graph_width = 0;
         frame_graph_height = 0;
@@ -1609,19 +1646,23 @@ std::uint32_t task_sample_count(
     return requested == 4 ? state.sample_count : 1u;
 }
 
-WGPUTextureFormat geometry_texture_format(
-    const GeometryTextureDescription& description) {
-    switch (geometry_format_class(description)) {
-        case GeometryFormatClass::rgba8_unorm:
+WGPUTextureFormat texture_format(TextureFormatClass format) {
+    switch (format) {
+        case TextureFormatClass::rgba8_unorm:
             return WGPUTextureFormat_RGBA8Unorm;
-        case GeometryFormatClass::r16_float:
+        case TextureFormatClass::r16_float:
             return WGPUTextureFormat_R16Float;
-        case GeometryFormatClass::r32_float:
+        case TextureFormatClass::r32_float:
             return WGPUTextureFormat_R32Float;
-        case GeometryFormatClass::rgba16_float:
+        case TextureFormatClass::rgba16_float:
             return WGPUTextureFormat_RGBA16Float;
     }
     return WGPUTextureFormat_RGBA16Float;
+}
+
+WGPUTextureFormat geometry_texture_format(
+    const GeometryTextureDescription& description) {
+    return texture_format(geometry_format_class(description));
 }
 
 WGPUColor geometry_clear_color(GeometryTextureType type) {
@@ -1673,12 +1714,41 @@ void create_frame_graph_textures(
         DawnRenderTarget& target = state.render_targets[index];
         target.width = record.width > 0 ? record.width : width;
         target.height = record.height > 0 ? record.height : height;
-        if (record.swapchain) continue;
+        // A composite's intermediate takes a fraction of whatever its
+        // source resolved to. Creation order guarantees that source is
+        // already sized: `create_render_target` refuses a forward reference.
+        if (record.scale_source.value != invalid_handle) {
+            const DawnRenderTarget& scale_source =
+                state.render_targets[record.scale_source.value];
+            target.width = scaled_target_extent(
+                scale_source.width,
+                record.width_ratio);
+            target.height = scaled_target_extent(
+                scale_source.height,
+                record.height_ratio);
+        }
+        // The swapchain owns no texture here -- its view is acquired per
+        // frame -- but a target that follows it still needs its format.
+        if (record.swapchain) {
+            target.color_format = state.surface_format;
+            continue;
+        }
         const std::uint32_t samples = task_sample_count(state, record.samples);
+        // "The source's format" is what a composite's intermediate asks for
+        // when it names none, so it resolves through the target it scales
+        // from rather than falling back to the surface.
+        const WGPUTextureFormat color_format =
+            record.has_format
+                ? texture_format(record.format)
+                : record.scale_source.value != invalid_handle
+                      ? state.render_targets[record.scale_source.value]
+                            .color_format
+                      : state.surface_format;
+        target.color_format = color_format;
         if (record.has_color) {
             target.color = create_frame_texture(
                 state,
-                state.surface_format,
+                color_format,
                 samples,
                 target.width,
                 target.height,
@@ -1700,7 +1770,7 @@ void create_frame_graph_textures(
             } else {
                 target.sampled_color = create_frame_texture(
                     state,
-                    state.surface_format,
+                    color_format,
                     1,
                     target.width,
                     target.height,
@@ -1753,6 +1823,19 @@ void create_frame_graph_textures(
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
     if (state.post_process_tasks.size() < engine.frame_tasks.size()) {
         state.post_process_tasks.resize(engine.frame_tasks.size());
+    }
+    // Each post-process task keeps one entry per pass it records, sized here
+    // rather than grown from the record path: a composite's chain is known
+    // before a frame starts and its entries own vectors worth not moving.
+    for (std::size_t index = 0; index < engine.frame_tasks.size(); ++index) {
+        const FrameTaskRecord& task = engine.frame_tasks[index];
+        if (task.kind != FrameTaskKind::post_process) continue;
+        if (
+            state.post_process_tasks[index].size() <
+            task.post_process.passes.size()) {
+            state.post_process_tasks[index].resize(
+                task.post_process.passes.size());
+        }
     }
 #endif
     for (
@@ -4865,6 +4948,123 @@ void save_dawn_geometry_id_buffer(
 
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
 /**
+ * The program a post-process pass draws with, built once per distinct one.
+ *
+ * A pass is identified as a drawing by its deployed module, the pipeline state
+ * its output implies, and the shape of its bind group; which textures fill
+ * that shape and what its uniform block holds stay per pass. A composite's
+ * chain repeats the first and varies the second, so depth of field's six
+ * blurs share one entry here.
+ */
+const DawnPostProcessProgram& post_process_program(
+    DawnState& state,
+    const upstream::PostProcessShaderInfo& info,
+    WGPUTextureFormat format,
+    std::uint32_t samples,
+    std::uint32_t alpha_mode,
+    std::size_t extra_textures) {
+    const std::uint32_t uniform_size =
+        (info.uniform_byte_length + 15u) & ~15u;
+    for (const DawnPostProcessProgram& program :
+         state.post_process_programs) {
+        if (
+            program.module_index == info.module_index &&
+            program.format == format &&
+            program.samples == samples &&
+            program.alpha_mode == alpha_mode &&
+            program.extra_textures == extra_textures &&
+            program.uniform_binding == info.uniform_binding &&
+            program.uniform_size == uniform_size) {
+            return program;
+        }
+    }
+    DawnPostProcessProgram program;
+    program.module_index = info.module_index;
+    program.format = format;
+    program.samples = samples;
+    program.alpha_mode = alpha_mode;
+    program.extra_textures = extra_textures;
+    program.uniform_binding = info.uniform_binding;
+    program.uniform_size = uniform_size;
+    // Both stages live in one composed module; the two deployed files carry
+    // the same text, so either loads it.
+    program.module = load_wgsl_module(
+        state,
+        "postprocess-" + std::to_string(info.module_index) + ".frag");
+    std::vector<WGPUBindGroupLayoutEntry> layout_entries;
+    WGPUBindGroupLayoutEntry sampler_entry =
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    sampler_entry.binding = 0;
+    sampler_entry.visibility = WGPUShaderStage_Fragment;
+    sampler_entry.sampler.type = WGPUSamplerBindingType_Filtering;
+    layout_entries.push_back(sampler_entry);
+    WGPUBindGroupLayoutEntry texture_entry =
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    texture_entry.binding = 1;
+    texture_entry.visibility = WGPUShaderStage_Fragment;
+    texture_entry.texture.sampleType = WGPUTextureSampleType_Float;
+    layout_entries.push_back(texture_entry);
+    for (std::size_t extra = 0; extra < extra_textures; ++extra) {
+        WGPUBindGroupLayoutEntry extra_entry = texture_entry;
+        extra_entry.binding = 2u + static_cast<std::uint32_t>(extra);
+        layout_entries.push_back(extra_entry);
+    }
+    if (uniform_size > 0) {
+        WGPUBindGroupLayoutEntry uniform_entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        uniform_entry.binding = info.uniform_binding;
+        uniform_entry.visibility =
+            WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+        uniform_entry.buffer.type = WGPUBufferBindingType_Uniform;
+        layout_entries.push_back(uniform_entry);
+    }
+    WGPUBindGroupLayoutDescriptor layout_descriptor =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    layout_descriptor.entryCount = layout_entries.size();
+    layout_descriptor.entries = layout_entries.data();
+    program.group_layout =
+        wgpuDeviceCreateBindGroupLayout(state.device, &layout_descriptor);
+    WGPUPipelineLayoutDescriptor pipeline_layout =
+        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    pipeline_layout.bindGroupLayoutCount = 1;
+    pipeline_layout.bindGroupLayouts = &program.group_layout;
+    program.pipeline_layout =
+        wgpuDeviceCreatePipelineLayout(state.device, &pipeline_layout);
+    // The generated table names the pin's factors; turning them into this
+    // API's enums is the backend's own `blend_state_from`.
+    const upstream::PostProcessBlend blend =
+        upstream::post_process_blend(alpha_mode);
+    const WGPUBlendState blend_state = blend_state_from(blend.factors);
+    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
+    color_target.format = format;
+    if (blend.enabled) color_target.blend = &blend_state;
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = program.module;
+    fragment.entryPoint = string_view("postProcessFragment");
+    fragment.targetCount = 1;
+    fragment.targets = &color_target;
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.layout = program.pipeline_layout;
+    descriptor.vertex.module = program.module;
+    descriptor.vertex.entryPoint = string_view("postProcessVertex");
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.cullMode = WGPUCullMode_None;
+    // The pin builds the pipeline against its output target's own sample
+    // count and resolves nothing; what it refuses is a multisampled *source*.
+    descriptor.multisample.count = samples;
+    descriptor.multisample.mask = ~0u;
+    descriptor.fragment = &fragment;
+    program.pipeline =
+        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    if (!program.pipeline) {
+        dawn_error("post-process pipeline creation failed.");
+    }
+    state.post_process_programs.push_back(program);
+    return state.post_process_programs.back();
+}
+
+/**
  * One post-process pass, recorded into the frame's encoder.
  *
  * The pin runs every effect through the same pass -- a three-vertex draw over
@@ -4887,14 +5087,15 @@ void record_post_process_pass(
     WGPUTextureView surface_view,
     std::uint32_t width,
     std::uint32_t height,
+    std::size_t index,
     SourceTextureView source_texture_view) {
-    PostProcessTaskOptions& pass =
-        engine.frame_tasks[handle.value].post_process;
+    PostProcessPassOptions& pass =
+        engine.frame_tasks[handle.value].post_process.passes[index];
     const upstream::PostProcessShaderInfo& info =
         upstream::post_process_shader_infos[
             pass.shader_index];
     DawnPostProcessTask& gpu =
-        state.post_process_tasks[handle.value];
+        state.post_process_tasks[handle.value][index];
     const RenderTargetRecord& output_record =
         engine.render_targets[pass.output_target.value];
     DawnRenderTarget& output =
@@ -4919,113 +5120,25 @@ void record_post_process_pass(
             state.render_targets[pass.source.target.value]
                 .height;
     }
-    if (!gpu.pipeline) {
-        // Both stages live in one composed module; the two
-        // deployed files carry the same text, so either loads it.
-        gpu.module = load_wgsl_module(
+    if (!gpu.program) {
+        gpu.program = &post_process_program(
             state,
-            "postprocess-" +
-                std::to_string(info.module_index) + ".frag");
-        gpu.uniform_size =
-            (info.uniform_byte_length + 15u) & ~15u;
-        std::vector<WGPUBindGroupLayoutEntry> layout_entries;
-        WGPUBindGroupLayoutEntry sampler_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        sampler_entry.binding = 0;
-        sampler_entry.visibility = WGPUShaderStage_Fragment;
-        sampler_entry.sampler.type =
-            WGPUSamplerBindingType_Filtering;
-        layout_entries.push_back(sampler_entry);
-        WGPUBindGroupLayoutEntry texture_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        texture_entry.binding = 1;
-        texture_entry.visibility = WGPUShaderStage_Fragment;
-        texture_entry.texture.sampleType =
-            WGPUTextureSampleType_Float;
-        layout_entries.push_back(texture_entry);
-        for (
-            std::size_t extra = 0;
-            extra < pass.extra_textures.size();
-            ++extra) {
-            WGPUBindGroupLayoutEntry extra_entry =
-                texture_entry;
-            extra_entry.binding =
-                2u + static_cast<std::uint32_t>(extra);
-            layout_entries.push_back(extra_entry);
-        }
-        if (gpu.uniform_size > 0) {
-            WGPUBindGroupLayoutEntry uniform_entry =
-                WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            uniform_entry.binding = info.uniform_binding;
-            uniform_entry.visibility =
-                WGPUShaderStage_Vertex |
-                WGPUShaderStage_Fragment;
-            uniform_entry.buffer.type =
-                WGPUBufferBindingType_Uniform;
-            layout_entries.push_back(uniform_entry);
+            info,
+            state.render_targets[pass.output_target.value].color_format,
+            output_record.swapchain
+                ? 1u
+                : task_sample_count(state, output_record.samples),
+            pass.alpha_mode,
+            pass.extra_textures.size());
+        if (gpu.program->uniform_size > 0) {
             WGPUBufferDescriptor uniform_descriptor =
                 WGPU_BUFFER_DESCRIPTOR_INIT;
-            uniform_descriptor.size = gpu.uniform_size;
+            uniform_descriptor.size = gpu.program->uniform_size;
             uniform_descriptor.usage =
-                WGPUBufferUsage_Uniform |
-                WGPUBufferUsage_CopyDst;
+                WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
             gpu.uniforms = wgpuDeviceCreateBuffer(
                 state.device,
                 &uniform_descriptor);
-        }
-        WGPUBindGroupLayoutDescriptor layout_descriptor =
-            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        layout_descriptor.entryCount = layout_entries.size();
-        layout_descriptor.entries = layout_entries.data();
-        gpu.group_layout = wgpuDeviceCreateBindGroupLayout(
-            state.device,
-            &layout_descriptor);
-        WGPUPipelineLayoutDescriptor pipeline_layout =
-            WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-        pipeline_layout.bindGroupLayoutCount = 1;
-        pipeline_layout.bindGroupLayouts = &gpu.group_layout;
-        gpu.pipeline_layout = wgpuDeviceCreatePipelineLayout(
-            state.device,
-            &pipeline_layout);
-        // The generated table names the pin's factors; turning
-        // them into this API's enums is the backend's own
-        // `blend_state_from`.
-        const upstream::PostProcessBlend blend =
-            upstream::post_process_blend(pass.alpha_mode);
-        const WGPUBlendState blend_state =
-            blend_state_from(blend.factors);
-        WGPUColorTargetState color_target =
-            WGPU_COLOR_TARGET_STATE_INIT;
-        color_target.format = state.surface_format;
-        if (blend.enabled) color_target.blend = &blend_state;
-        WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-        fragment.module = gpu.module;
-        fragment.entryPoint =
-            string_view("postProcessFragment");
-        fragment.targetCount = 1;
-        fragment.targets = &color_target;
-        WGPURenderPipelineDescriptor descriptor =
-            WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-        descriptor.layout = gpu.pipeline_layout;
-        descriptor.vertex.module = gpu.module;
-        descriptor.vertex.entryPoint =
-            string_view("postProcessVertex");
-        descriptor.primitive.topology =
-            WGPUPrimitiveTopology_TriangleList;
-        descriptor.primitive.cullMode = WGPUCullMode_None;
-        // The pin builds the pipeline against its output target's
-        // own sample count and resolves nothing; what it refuses
-        // is a multisampled *source*.
-        descriptor.multisample.count = output_record.swapchain
-            ? 1u
-            : task_sample_count(state, output_record.samples);
-        descriptor.multisample.mask = ~0u;
-        descriptor.fragment = &fragment;
-        gpu.pipeline = wgpuDeviceCreateRenderPipeline(
-            state.device,
-            &descriptor);
-        if (!gpu.pipeline) {
-            dawn_error("post-process pipeline creation failed.");
         }
         std::vector<WGPUBindGroupEntry> group_entries;
         WGPUBindGroupEntry sampler_binding =
@@ -5061,12 +5174,12 @@ void record_post_process_pass(
                 WGPU_BIND_GROUP_ENTRY_INIT;
             uniform_binding.binding = info.uniform_binding;
             uniform_binding.buffer = gpu.uniforms;
-            uniform_binding.size = gpu.uniform_size;
+            uniform_binding.size = gpu.program->uniform_size;
             group_entries.push_back(uniform_binding);
         }
         WGPUBindGroupDescriptor group_descriptor =
             WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-        group_descriptor.layout = gpu.group_layout;
+        group_descriptor.layout = gpu.program->group_layout;
         group_descriptor.entryCount = group_entries.size();
         group_descriptor.entries = group_entries.data();
         gpu.group = wgpuDeviceCreateBindGroup(
@@ -5075,7 +5188,7 @@ void record_post_process_pass(
         pass.uniforms_dirty = true;
     }
     if (gpu.uniforms && pass.uniforms_dirty) {
-        std::vector<float> data(gpu.uniform_size / 4u, 0.0f);
+        std::vector<float> data(gpu.program->uniform_size / 4u, 0.0f);
         upstream::write_post_process_uniforms(
             engine,
             pass,
@@ -5089,7 +5202,7 @@ void record_post_process_pass(
             gpu.uniforms,
             0,
             data.data(),
-            gpu.uniform_size);
+            gpu.program->uniform_size);
         pass.uniforms_dirty = false;
     }
     WGPURenderPassColorAttachment attachment =
@@ -5130,7 +5243,7 @@ void record_post_process_pass(
             static_cast<std::uint32_t>(rectangle.width),
             static_cast<std::uint32_t>(rectangle.height));
     }
-    wgpuRenderPassEncoderSetPipeline(post_pass, gpu.pipeline);
+    wgpuRenderPassEncoderSetPipeline(post_pass, gpu.program->pipeline);
     wgpuRenderPassEncoderSetBindGroup(
         post_pass,
         0,
@@ -7963,6 +8076,20 @@ bool run_dawn_engine(Engine& engine) {
                     task.render.clear_color.b,
                     task.render.clear_color.a,
                 };
+                // The pin resolves into `rst` at end-of-pass, and ignores it
+                // outright when the task's own target is single-sample. That
+                // is the count the target was *allocated* at, not the one it
+                // asked for: a run forced to one sample resolves nothing.
+                const std::uint32_t resolve =
+                    task.render.resolve_target.value;
+                if (
+                    resolve < state.render_targets.size() &&
+                    task_sample_count(state, target_record.samples) > 1) {
+                    color_attachment.resolveTarget =
+                        engine.render_targets[resolve].swapchain
+                            ? surface_view
+                            : state.render_targets[resolve].color_view;
+                }
                 WGPURenderPassDepthStencilAttachment depth_attachment{};
                 WGPURenderPassDescriptor pass_descriptor =
                     WGPU_RENDER_PASS_DESCRIPTOR_INIT;
@@ -8271,15 +8398,23 @@ bool run_dawn_engine(Engine& engine) {
             }
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
             if (task.kind == FrameTaskKind::post_process) {
-                record_post_process_pass(
-                    state,
-                    engine,
-                    handle,
-                    encoder,
-                    surface_view,
-                    width,
-                    height,
-                    source_texture_view);
+                // A composite records the chain its own factory built; a
+                // plain effect is the same loop over one.
+                for (
+                    std::size_t index = 0;
+                    index < task.post_process.passes.size();
+                    ++index) {
+                    record_post_process_pass(
+                        state,
+                        engine,
+                        handle,
+                        encoder,
+                        surface_view,
+                        width,
+                        height,
+                        index,
+                        source_texture_view);
+                }
                 continue;
             }
 #endif

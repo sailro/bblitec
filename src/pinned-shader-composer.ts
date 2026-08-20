@@ -220,21 +220,94 @@ export async function importPinnedModuleWithExports<T>(
         return (await cached) as T;
     }
     const modulePath = join(pinnedLibraryRoot(), relativePath);
-    const anchored = readFileSync(modulePath, "utf8").replace(
+    const anchored = anchorPinnedSpecifiers(modulePath);
+    const loading = import(
+        dataModule(`${anchored}\nexport { ${extraExports.join(", ")} };\n`)
+    );
+    augmentedModules.set(key, loading);
+    return (await loading) as T;
+}
+
+/** Distinct per import, so two observed compositions never share a hook. */
+let observationCount = 0;
+
+/**
+ * Imports a pinned module with some of its own imports observed.
+ *
+ * A composite post-process task is not a shader: it is a factory that calls
+ * other factories, and what generation needs is which passes it built, in
+ * which order, through which entry point. Nothing on the returned object says
+ * so — the pin has no reason to record it — and reading it back out of the
+ * task's own fields would be this port restating the composite's structure.
+ *
+ * So the composite's own text is imported through a `data:` URL exactly as
+ * `importPinnedModuleWithExports` does, except that the specifiers named in
+ * `observe` resolve to a shim: it re-exports the real module untouched and
+ * wraps the named factories to announce each call. Only the module under
+ * import is rewritten, which is enough because a composite calls its leaf
+ * factories itself; what those leaves call in turn is the pin's own business.
+ *
+ * `record` is invoked with the entry point's name and its return value, in
+ * call order, before the caller sees anything.
+ */
+export async function importPinnedModuleObserving<T>(
+    relativePath: string,
+    observe: Readonly<Record<string, readonly string[]>>,
+    record: (symbol: string, value: unknown) => void,
+): Promise<T> {
+    const modulePath = join(pinnedLibraryRoot(), relativePath);
+    const hook = `__bblitecObserve${observationCount++}`;
+    (globalThis as Record<string, unknown>)[hook] = record;
+    const shims = new Map<string, string>();
+    for (const [specifier, symbols] of Object.entries(observe)) {
+        const target = JSON.stringify(
+            pathToFileURL(resolve(dirname(modulePath), specifier)).href,
+        );
+        const lines = [
+            `import * as real from ${target};`,
+            // `export *` skips a name the shim exports itself, so the wrapper
+            // wins for the observed factories and every other export stays
+            // the pin's own binding.
+            `export * from ${target};`,
+        ];
+        for (const symbol of symbols) {
+            lines.push(
+                `export function ${symbol}(...args) {`,
+                `  const value = real.${symbol}(...args);`,
+                `  globalThis[${JSON.stringify(hook)}](${JSON.stringify(
+                    symbol,
+                )}, value);`,
+                "  return value;",
+                "}",
+            );
+        }
+        shims.set(specifier, dataModule(lines.join("\n")));
+    }
+    return (await import(
+        dataModule(anchorPinnedSpecifiers(modulePath, shims))
+    )) as T;
+}
+
+/** The pinned module's text with every relative specifier made importable. */
+function anchorPinnedSpecifiers(
+    modulePath: string,
+    shims: ReadonlyMap<string, string> = new Map(),
+): string {
+    return readFileSync(modulePath, "utf8").replace(
         /(from\s*|import\()(["'])(\.\.?\/[^"']+)\2/g,
         (_match, keyword: string, quote: string, specifier: string) =>
             `${keyword}${quote}${
+                shims.get(specifier) ??
                 pathToFileURL(resolve(dirname(modulePath), specifier)).href
             }${quote}`,
     );
-    const augmented = `${anchored}\nexport { ${extraExports.join(", ")} };\n`;
-    const url = `data:text/javascript;base64,${Buffer.from(
-        augmented,
-        "utf8",
-    ).toString("base64")}`;
-    const loading = import(url);
-    augmentedModules.set(key, loading);
-    return (await loading) as T;
+}
+
+/** Module text as an importable URL. */
+function dataModule(text: string): string {
+    return `data:text/javascript;base64,${Buffer.from(text, "utf8").toString(
+        "base64",
+    )}`;
 }
 
 async function pinnedComposer(): Promise<PinnedComposerModules> {

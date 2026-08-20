@@ -39,18 +39,96 @@ export interface PostProcessParamSlot {
 
 export interface PostProcessEffect {
     /**
-     * The Babylon Lite entry point scene code calls, which is also the name
-     * the pinned module exports its factory under.
+     * The Babylon Lite entry point that builds the pass, which is also the
+     * name the pinned module exports its factory under.
      */
     intrinsic: string;
     /** The pinned module it lives in, by its own source path. */
     module: string;
     /** The scalars the effect's `writeUniforms` reads, in storage order. */
     params: readonly PostProcessParamSlot[];
-    /** The config options naming textures that bind after the source. */
+    /**
+     * The config options naming textures that bind after the source.
+     *
+     * Read only for a pass scene code creates. A composite's sub-pass is
+     * handed its textures by the composite, so what it binds is whatever the
+     * pin put in that pass's own `_shader.extraTextures` — observed, not
+     * listed here.
+     */
     extraTextures: readonly string[];
     /** Whether `writeUniforms` reads the camera's near and far planes. */
     usesCamera: boolean;
+    /**
+     * An entry point a composite reaches but scene code cannot: the pin marks
+     * these `@internal`, and this port refuses them at the call site for the
+     * same reason. The row exists because the pass still needs its writer.
+     */
+    internal?: true;
+}
+
+/**
+ * A composite task: one entry point that builds several passes.
+ *
+ * The pin gives bloom and depth-of-field the same shape as every other
+ * effect from the caller's side — one `addTask`, one `updateUniforms`, one
+ * `outputTexture` — and inside, each is a fixed chain of ordinary passes over
+ * intermediate targets it owns. Which passes, in which order, over which
+ * textures, at which sizes, is decided entirely by the config, so generation
+ * obtains all of it by running the factory rather than restating it. What this
+ * table carries is only what running it cannot say: which entry points to
+ * watch, and which of its options name a texture or a camera.
+ */
+export interface PostProcessComposite {
+    /** The Babylon Lite entry point scene code calls. */
+    intrinsic: string;
+    /** The pinned module it lives in, by its own source path. */
+    module: string;
+    /**
+     * The leaf entry points the composite builds its passes through, by the
+     * `lib`-relative module each is imported from.
+     *
+     * The observation seam rewrites the composite's own imports, so it sees a
+     * pass only if the composite reached it through one of these. A composite
+     * that calls `createPostProcessTask` directly -- bloom builds its merge
+     * that way -- has no entry point to name, and composing it needs the seam
+     * moved to that one function across the reachable graph. Until then a
+     * chain that ends on an unobserved pass is refused rather than composed
+     * short: `runComposite` checks the composite's own `outputTexture`
+     * against the last pass it saw.
+     */
+    passes: Readonly<Record<string, readonly string[]>>;
+    /** The config options naming textures the composite reads. */
+    extraTextures: readonly string[];
+    /** Whether any of its passes reads the camera's near and far planes. */
+    usesCamera: boolean;
+}
+
+export const POST_PROCESS_COMPOSITES: readonly PostProcessComposite[] = [
+    {
+        intrinsic: "createDepthOfFieldPostProcessTask",
+        module: "src/post-process/depth-of-field.ts",
+        passes: {
+            "./circle-of-confusion.js": [
+                "createCircleOfConfusionPostProcessTask",
+            ],
+            "./depth-of-field-blur.js": [
+                "createDepthOfFieldBlurPostProcessTask",
+            ],
+            "./depth-of-field-merge.js": [
+                "createDepthOfFieldMergePostProcessTask",
+            ],
+        },
+        extraTextures: ["depthTexture"],
+        usesCamera: true,
+    },
+];
+
+export function postProcessComposite(
+    intrinsic: string,
+): PostProcessComposite | undefined {
+    return POST_PROCESS_COMPOSITES.find(
+        (composite) => composite.intrinsic === intrinsic,
+    );
 }
 
 export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
@@ -110,6 +188,31 @@ export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
         extraTextures: ["depthTexture"],
         usesCamera: true,
     },
+    {
+        // The depth-of-field blur's writer is the plain blur's, line for line:
+        // both spend their block on `direction / outputSize`. What differs is
+        // the composed text, which weighs every tap by the circle of confusion.
+        intrinsic: "createDepthOfFieldBlurPostProcessTask",
+        module: "src/post-process/depth-of-field-blur.ts",
+        params: [
+            { path: "direction.x", fallback: 1 },
+            { path: "direction.y", fallback: 0 },
+        ],
+        extraTextures: ["circleOfConfusionTexture"],
+        usesCamera: false,
+        internal: true,
+    },
+    {
+        // The merge carries no uniform block at all: which blur step a pixel
+        // takes is decided by the circle of confusion it samples, and how many
+        // steps exist is decided by the composed text.
+        intrinsic: "createDepthOfFieldMergePostProcessTask",
+        module: "src/post-process/depth-of-field-merge.ts",
+        params: [],
+        extraTextures: ["circleOfConfusionTexture"],
+        usesCamera: false,
+        internal: true,
+    },
 ];
 
 /**
@@ -127,6 +230,22 @@ export const POST_PROCESS_PASS_SETTINGS: readonly string[] = [
     "clear",
 ];
 
+/**
+ * The settings a *composite* consumes itself, which is only its name and the
+ * two textures it wires by hand.
+ *
+ * The rest of `POST_PROCESS_PASS_SETTINGS` is not the framework's from a
+ * composite's side: it reads `sourceSamplingMode`, `alphaMode`, `viewport`
+ * and `clear` off its own config and hands them to the pass it ends on. They
+ * have to reach the factory, or the chain composes against the pin's defaults
+ * instead of what the scene asked for.
+ */
+export const COMPOSITE_PASS_SETTINGS: readonly string[] = [
+    "name",
+    "sourceTexture",
+    "targetTexture",
+];
+
 export function postProcessEffect(
     intrinsic: string,
 ): PostProcessEffect | undefined {
@@ -135,9 +254,11 @@ export function postProcessEffect(
     );
 }
 
-/** The `lib`-relative module the pinned package ships the effect in. */
-export function pinnedEffectModule(effect: PostProcessEffect): string {
-    return effect.module.replace(/^src\//, "").replace(/\.ts$/, ".js");
+/** The `lib`-relative module the pinned package ships an entry point in. */
+export function pinnedEffectModule(
+    entry: Pick<PostProcessEffect, "module">,
+): string {
+    return entry.module.replace(/^src\//, "").replace(/\.ts$/, ".js");
 }
 
 /**

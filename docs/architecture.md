@@ -72,8 +72,8 @@ Primary source ownership:
 | `src/upstream-source.ts` | pinned source-map reconstruction |
 | `src/upstream-graph.ts` | conservative reachable-module analysis |
 | `src/upstream-lower.ts` | lowerer orchestration, provenance, generated capabilities |
-| `src/pinned-shader-composer.ts` | executes the pin's own `composeShader`, and lifts named declarations out of a composition verbatim |
-| `src/pinned-post-process.ts` | runs a post-process factory and the pin's own `getShaderModule`, so a pass deploys the module the browser compiles |
+| `src/pinned-shader-composer.ts` | executes the pin's own `composeShader`, lifts named declarations out of a composition verbatim, and imports a pinned module with chosen imports observed |
+| `src/pinned-post-process.ts` | runs a post-process factory and the pin's own `getShaderModule`, so a pass deploys the module the browser compiles; runs a composite's factory to learn the chain it builds |
 | `src/post-process-effects.ts` | the reached effects: which options reach the composed text, which scalars the effect's writer reads, and which textures bind after the source |
 | `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant |
 | `src/pinned-standard-variants.ts` | the Standard sibling: derives the pin's own feature words and composes the Standard colour and geometry variants |
@@ -232,7 +232,8 @@ The current generated slice includes:
 - Standard/PBR geometry MRTs, depth-only passes, blits, and MSAA resolve
 - frame-graph post-process passes — blur, chromatic aberration, black and
   white, anaglyph, circle of confusion — each drawing the pin's own composed
-  module
+  module, and the depth-of-field composite as the chain of them its own
+  factory builds
 - linear RGBA16F opaque/transmission rendering followed by one final
   image-processing pass
 - reached custom WGSL lowered through a typed shader IR into reflected HLSL/MSL

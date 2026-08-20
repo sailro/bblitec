@@ -444,6 +444,12 @@ RenderTargetHandle create_render_target(
         throw std::runtime_error(
             "Render target fixed dimensions must both be non-zero.");
     }
+    if (
+        options.scale_source.value != invalid_handle &&
+        options.scale_source.value >= engine.render_targets.size()) {
+        throw std::runtime_error(
+            "Render target scales from a target that does not exist yet.");
+    }
     engine.render_targets.push_back(RenderTargetRecord{
         options.samples == 4 ? 4u : 1u,
         options.has_color,
@@ -452,6 +458,11 @@ RenderTargetHandle create_render_target(
         false,
         options.width,
         options.height,
+        options.scale_source,
+        options.width_ratio,
+        options.height_ratio,
+        options.format,
+        options.has_format,
     });
     return RenderTargetHandle{
         static_cast<std::uint32_t>(engine.render_targets.size() - 1)};

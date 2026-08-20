@@ -8,8 +8,9 @@
 //
 // No corpus scene reaches it yet — scene 243 writes the same loop inside a
 // query-parameter branch that folds away natively, scene 11's asset needs
-// KHR_materials_pbrSpecularGlossiness, scene 144 needs a bloom task, and
-// scenes 152/157/158 iterate `entities`. Delete this gate once one of them
+// KHR_materials_pbrSpecularGlossiness, scene 144 addresses its group through
+// `.find` and needs that same extension, and scenes 152/157/158 iterate
+// `entities`. Delete this gate once one of them
 // covers the contract.
 
 import { addToScene, startEngine, createEngine, createSceneContext, createArcRotateCamera, loadEnvironment, loadGltf, attachControl, registerScene, playAnimation, stopAnimation } from "babylon-lite";

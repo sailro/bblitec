@@ -39,6 +39,7 @@ export interface CompileManifest {
     plainBillboardSystem: boolean;
     geometryOutputTasks: GeometryOutputTaskManifest[];
     postProcessTasks: PostProcessTaskManifest[];
+    postProcessComposites: PostProcessCompositeManifest[];
     adaptations: CompileAdaptation[];
     scenePbrMaterials: ScenePbrMaterialManifest[];
     /** Every scene-code material creation, any family, for the handle count. */
@@ -254,7 +255,14 @@ export interface GeometryOutputTaskManifest {
 export type PostProcessOptionValue =
     | number
     | boolean
-    | { x: number; y: number };
+    | { x: number; y: number }
+    /**
+     * A member of one of the pin's own enums, unresolved. Scene code writes
+     * `DepthOfFieldBlurLevel.High` and what that is worth is the pin's to
+     * say, so the name travels to composition and the pinned module answers
+     * it -- the value is never restated here.
+     */
+    | { pinnedEnum: string; member: string };
 
 /**
  * One reached post-process pass, in reach order.
@@ -265,6 +273,24 @@ export type PostProcessOptionValue =
  * text, and nothing about the pass itself. `shaderIndex` is the reach order,
  * which is the generated shader table's index order.
  */
+/**
+ * One reached composite pass, in reach order.
+ *
+ * What its passes are is the pin's own factory's to say, so this carries only
+ * the entry point and the options that reach it; generation runs the factory
+ * and emits the chain it built.
+ */
+export interface PostProcessCompositeManifest {
+    /** Reach order, which is the generated factory's identity. */
+    compositeIndex: number;
+    /** The Babylon Lite entry point the task was created through. */
+    intrinsic: string;
+    /** Every option the composite reads, statically resolved. */
+    options: Record<string, PostProcessOptionValue>;
+    /** Whether the scene named a target, which a composite branches on. */
+    hasTarget: boolean;
+}
+
 export interface PostProcessTaskManifest {
     shaderIndex: number;
     /** The Babylon Lite entry point the pass was created through. */
@@ -364,6 +390,13 @@ export interface Value {
      * and a settable effect option resolves its parameter slot through it.
      */
     postProcessTask?: PostProcessTaskManifest;
+    /**
+     * Set instead when a `task` value names a composite. It records passes of
+     * its own, so it answers `updateUniforms` and `outputTexture` the same way
+     * -- but its parameters live on the passes the pin built, not on a slot a
+     * scene can name, so a setter on one is refused.
+     */
+    postProcessComposite?: PostProcessCompositeManifest;
     lightKind?: LightKind;
     /**
      * The extra textures a custom-shader descriptor binds, as the native

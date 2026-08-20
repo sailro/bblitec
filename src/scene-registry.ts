@@ -1402,6 +1402,18 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene148",
+        name: "Scene 148 - Depth of Field",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene148.ts",
+        title: "Babylon Lite Native - Depth of Field",
+        parity: {
+            maxFullMad: 0.003,
+            maxForegroundMad: 0.003,
+            backgroundColor: [255, 255, 255],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

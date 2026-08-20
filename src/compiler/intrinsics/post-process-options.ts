@@ -10,19 +10,24 @@
 // so an option the pin starts branching on needs no compiler change.
 import ts from "typescript";
 import {
+    COMPOSITE_PASS_SETTINGS,
     POST_PROCESS_PASS_SETTINGS,
+    postProcessComposite,
     postProcessEffect,
     slotOption,
+    type PostProcessComposite,
     type PostProcessEffect,
 } from "../../post-process-effects.js";
 import { doubleLiteral } from "../../cpp-literals.js";
 import { compileStaticNumber } from "../option-helpers.js";
 import type {
+    PostProcessCompositeManifest,
     PostProcessOptionValue,
     PostProcessTaskManifest,
 } from "../types.js";
 import {
     compileTextureReference,
+    optionalRenderTarget,
     requiredObjectNumber,
     type EngineOptionContext,
 } from "./engine-options.js";
@@ -60,13 +65,7 @@ export function compilePostProcessTaskOptions(
         "sourceTexture",
         "color",
     );
-    const targetExpression = context.objectProperty(object, "targetTexture");
-    let target = "bbl::RenderTargetHandle{}";
-    if (targetExpression) {
-        const value = context.compileValue(targetExpression);
-        context.expectKind(value, "render-target", targetExpression);
-        target = value.cpp;
-    }
+    const target = optionalRenderTarget(context, object, "targetTexture");
 
     const samplingExpression = context.objectProperty(
         object,
@@ -130,21 +129,111 @@ export function compilePostProcessTaskOptions(
         object,
         effect,
         intrinsic,
+        POST_PROCESS_PASS_SETTINGS,
     );
     const params = effect.params.map((slot) =>
         paramValue(context, object, options, slot),
     );
 
     return {
+        // One pass, in the list a task records: the composites put several
+        // there and the caller sees the same task either way.
         cpp:
             `bbl::PostProcessTaskOptions{${context.cppString(name)}, ` +
-            `${shaderIndex}u, ${source}, ${target}, ${sampling}, ` +
+            `{bbl::PostProcessPassOptions{${context.cppString(name)}, ` +
+            `${shaderIndex}u, ${source}, ${target.cpp}, ${sampling}, ` +
             `${alphaMode}u, ${viewportExpression ? "true" : "false"}, ` +
             `${viewport}, ${clear}, {${extraTextures.join(", ")}}, ` +
             `${camera}, {${params
                 .map((value) => doubleLiteral(value))
-                .join(", ")}}}`,
+                .join(", ")}}}}}`,
         manifest: { shaderIndex, intrinsic: effect.intrinsic, options },
+    };
+}
+
+export interface CompiledPostProcessComposite {
+    cpp: string;
+    manifest: PostProcessCompositeManifest;
+}
+
+/**
+ * A composite pass, as the inputs its generated factory takes.
+ *
+ * What the composite does with them — how many passes, over which
+ * intermediates, at which sizes — is decided by running the pin's own factory
+ * at generation, so nothing about the chain is compiled here. What is compiled
+ * is only what the chain reads from the scene: the textures it samples, the
+ * target it writes, and the camera its lens model reads.
+ *
+ * The source must be a render target rather than any render texture, because
+ * the composite sizes its own intermediates from it and reads its format. The
+ * pin refuses a source without one for the same reason.
+ */
+export function compilePostProcessCompositeOptions(
+    context: EngineOptionContext,
+    intrinsic: string,
+    expression: ts.Expression,
+    compositeIndex: number,
+): CompiledPostProcessComposite {
+    const composite = postProcessComposite(intrinsic);
+    if (!composite) {
+        context.fail(
+            expression,
+            `Post-process composite '${intrinsic}' has no reached descriptor.`,
+        );
+    }
+    const object = context.expectObjectLiteral(expression);
+    const nameExpression = context.objectProperty(object, "name");
+    const name = nameExpression
+        ? context.compileStringLiteral(nameExpression)
+        : defaultTaskName(composite);
+
+    const sourceExpression = context.objectProperty(object, "sourceTexture");
+    if (!sourceExpression) {
+        context.fail(object, `${intrinsic} requires a sourceTexture.`);
+    }
+    const source = context.compileValue(sourceExpression);
+    context.expectKind(source, "render-target", sourceExpression);
+
+    const target = optionalRenderTarget(context, object, "targetTexture");
+
+    const extraTextures = composite.extraTextures.map((option) =>
+        compileTextureReference(context, object, option, "color"),
+    );
+
+    let camera = "bbl::CameraHandle{}";
+    if (composite.usesCamera) {
+        const cameraExpression = context.objectProperty(object, "camera");
+        if (!cameraExpression) {
+            context.fail(object, `${intrinsic} requires a camera.`);
+        }
+        const value = context.compileValue(cameraExpression);
+        context.expectKind(value, "camera", cameraExpression);
+        camera = value.cpp;
+    }
+
+    // A composite reads the pass settings itself and forwards them to the
+    // pass it ends on, so they are its options rather than the framework's:
+    // only the name and the textures are consumed here. A `clear: false` that
+    // stopped at this boundary would compose the pin's default instead.
+    const options = compileEffectOptions(
+        context,
+        object,
+        composite,
+        intrinsic,
+        COMPOSITE_PASS_SETTINGS,
+    );
+    return {
+        cpp:
+            `bbl::PostProcessCompositeInputs{${context.cppString(name)}, ` +
+            `${source.cpp}, {${extraTextures.join(", ")}}, ${target.cpp}, ` +
+            `${camera}}`,
+        manifest: {
+            compositeIndex,
+            intrinsic,
+            options,
+            hasTarget: target.value !== undefined,
+        },
     };
 }
 
@@ -152,11 +241,12 @@ export function compilePostProcessTaskOptions(
 function compileEffectOptions(
     context: EngineOptionContext,
     object: ts.ObjectLiteralExpression,
-    effect: PostProcessEffect,
+    effect: PostProcessEffect | PostProcessComposite,
     intrinsic: string,
+    handledSettings: readonly string[],
 ): Record<string, PostProcessOptionValue> {
     const handled = new Set([
-        ...POST_PROCESS_PASS_SETTINGS,
+        ...handledSettings,
         ...effect.extraTextures,
         ...(effect.usesCamera ? ["camera"] : []),
     ]);
@@ -207,10 +297,10 @@ function paramValue(
         }
         return value;
     }
-    if (typeof value !== "object") {
+    if (typeof value !== "object" || !(component in value)) {
         context.fail(object, `Post-process '${option}' must be a vector.`);
     }
-    return value[component];
+    return (value as { x: number; y: number })[component];
 }
 
 /**
@@ -235,6 +325,17 @@ function compileOptionValue(
     }
     if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) return true;
     if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) return false;
+    // `DepthOfFieldBlurLevel.High`: an enum the scene imported from Babylon
+    // Lite, whose value the pinned module decides at composition.
+    if (
+        ts.isPropertyAccessExpression(unwrapped) &&
+        ts.isIdentifier(unwrapped.expression)
+    ) {
+        const imported = context.symbols.importedName(unwrapped.expression);
+        if (imported) {
+            return { pinnedEnum: imported, member: unwrapped.name.text };
+        }
+    }
     return compileStaticNumber(context, unwrapped, label);
 }
 
@@ -243,7 +344,9 @@ function compileOptionValue(
  * label: `config.name ?? "blur"`. Derived from the entry point rather than
  * listed, so a renamed factory renames its passes with it.
  */
-function defaultTaskName(effect: PostProcessEffect): string {
+function defaultTaskName(
+    effect: Pick<PostProcessEffect, "intrinsic">,
+): string {
     return effect.intrinsic
         .replace(/^create/, "")
         .replace(/PostProcessTask$/, "")

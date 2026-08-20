@@ -378,6 +378,17 @@ function emitPostProcessOptionAssignment(
     left: ts.PropertyAccessExpression,
     owner: Value,
 ): boolean {
+    if (owner.kind === "task" && owner.postProcessComposite) {
+        // The pin publishes setters on a composite too, but each writes a
+        // parameter on a pass its own factory built, and generation baked
+        // those in. Refusing says so rather than writing a slot that is not
+        // the one the pin would have moved.
+        context.fail(
+            left,
+            `'${left.name.text}' is a setter on a composite post-process ` +
+                "task, which this port bakes at generation.",
+        );
+    }
     if (owner.kind !== "task" || !owner.postProcessTask) {
         return false;
     }
@@ -398,10 +409,14 @@ function emitPostProcessOptionAssignment(
         expression,
         "post-process option",
     );
+    // A plain effect is a task recording one pass, so its parameter vector is
+    // that pass's. A composite's would be several, which is why a setter on
+    // one is refused above.
+
     context.emit(
         `${context.requireEngine(owner, expression)}.frame_tasks[${
             owner.cpp
-        }.value].post_process.params[${slot}] = ${context.compileNumber(
+        }.value].post_process.passes[0].params[${slot}] = ${context.compileNumber(
             expression.right,
             "double",
         )};`,
