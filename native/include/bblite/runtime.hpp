@@ -1443,6 +1443,10 @@ MaterialHandle create_pbr_no_color_material_view(
     Engine& engine,
     MaterialHandle source);
 void mark_material_ubo_dirty(Engine& engine, MaterialHandle material);
+void set_standard_emissive_texture(
+    Engine& engine,
+    MaterialHandle material,
+    RenderTextureRef texture);
 LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
 LightHandle create_directional_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
 LightHandle create_point_light(Engine& engine, Vec3 position, float intensity = 1.0f);

@@ -5254,7 +5254,10 @@ bool run_gpu_engine(Engine& engine) {
                                          std::to_string(
                                              draw_item.material.value) +
                                          " resolves no composed variant in "
-                                         "a render task.")
+                                         "a render task: " +
+                                         standard_variant_request(
+                                             engine,
+                                             draw))
                                             .c_str());
                                 }
                                 draw_standard_variant(
@@ -6520,7 +6523,8 @@ bool run_gpu_engine(Engine& engine) {
                                  std::to_string(item.mesh.value) +
                                  ", material " +
                                  std::to_string(item.material.value) +
-                                 " resolves no composed variant.")
+                                 " resolves no composed variant: " +
+                                 standard_variant_request(engine, draw))
                                     .c_str());
                         }
                         draw_standard_variant(

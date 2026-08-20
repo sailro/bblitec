@@ -788,41 +788,6 @@ export function emitPropertyAssignment(
         }
 
         if (
-            target.kind === "material" &&
-            property === "emissiveTexture"
-        ) {
-            requireSimpleAssignment(
-                context,
-                expression,
-                "material emissiveTexture",
-            );
-            const texture = context.compileValue(
-                expression.right,
-            );
-            context.expectKind(
-                texture,
-                "render-texture",
-                expression.right,
-            );
-            context.expectSameEngine(
-                target,
-                texture,
-                expression,
-            );
-            const engine = context.requireEngine(
-                target,
-                expression,
-            );
-            context.emit(
-                `${engine}.materials[${target.cpp}.value].emissive_render_texture = ${texture.cpp};`,
-            );
-            context.emit(
-                `${engine}.materials[${target.cpp}.value].has_emissive_render_texture = true;`,
-            );
-            return;
-        }
-
-        if (
             target.kind === "camera" &&
             property === "target"
         ) {

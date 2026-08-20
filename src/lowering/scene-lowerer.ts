@@ -125,7 +125,9 @@ export class SceneLowerer {
             if (
                 !this.context.hasCall(
                     setFog,
-                    "registerContributor",
+                    // 1.23 renamed this from `registerContributor`; the body
+                    // is the same store-then-register pair.
+                    "_registerSceneUboContributor",
                 )
             ) {
                 this.context.contractError(

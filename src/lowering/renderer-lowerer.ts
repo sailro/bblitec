@@ -3654,8 +3654,14 @@ ${lifted.fragmentBody}
                 "glTF transmission activation",
             ],
             [
+                // 1.23 renamed `vertexAlphaBlend` to `colorAlphaBlend` and
+                // widened it: a thin-instance fragment declaring RGBA alpha
+                // now blends even without a mesh colour buffer. That arm is
+                // unreachable here -- `pinned-standard-variants.ts` refuses
+                // `MSH_HAS_INSTANCE_COLOR` outright -- so for every Standard
+                // variant this port composes the predicate is the old one.
                 "src/material/standard/standard-renderable.ts",
-                "const isTransparent = !shadowOutput && ((features & HAS_OPACITY_TEXTURE) !== 0 || mat.alpha < 1 || vertexAlphaBlend);",
+                "const isTransparent = !shadowOutput && ((features & HAS_OPACITY_TEXTURE) !== 0 || mat.alpha < 1 || colorAlphaBlend);",
                 "Standard transparency stamp",
             ],
             [

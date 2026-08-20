@@ -146,24 +146,39 @@ export interface PinnedStandardComposeOptions {
 interface StdExtDescriptor {
     _id: string;
     _feature: number;
-    _meshFeatures?: (meshFeatures: number) => number;
+    _meshFeatures?: (
+        meshFeatures: number,
+        material?: unknown,
+    ) => number;
     _frag: (features: number, meshFeatures: number) => unknown;
 }
 
 /**
- * The pin's own material-extension registrations, from
- * `standard-group-builder.ts` `_STD_MAT_EXTS`. Upstream registers each on
- * demand when a scene material carries the property; iteration order is
+ * The pin's own optional-texture extensions.
+ *
+ * Each is registered by its own setter (`setStandardBumpTexture` and its
+ * siblings) or, for a `.babylon` material, by the loader; iteration order is
  * `_getStdExtsSorted()` — sorted by id — either way, and none of these
- * contributes `_meshFeatures`, so registering all of them unconditionally
+ * contributes `_meshFeatures`, so registering all eight unconditionally
  * composes identically for every feature set while keeping the process-global
  * registry independent of which scene composes first (the same reasoning as
  * the PBR environment extension).
  *
- * Deliberately absent: `stdSkeletonExt` — upstream registers it only through
- * `enableStandardSkeleton()`, which no reached scene calls, and unlike these
- * eight it rewrites mesh bits into feature bits (`_meshFeatures`), so its
- * registration is observable. A skeleton request throws below instead.
+ * Registering them is also a precondition of *deriving* features at all:
+ * 1.23 moved each texture's detection into its extension's own `_detect`, so
+ * an unregistered one silently contributes no bit.
+ *
+ * The pin ships two more, and both are deliberately absent because both
+ * rewrite mesh bits into feature bits through `_meshFeatures`, which makes
+ * their registration observable rather than free:
+ *
+ * - `stdSkeletonExt`, registered only by `enableStandardSkeleton()`.
+ * - `stdUvTransformExt` (1.21), registered only by
+ *   `enableMaterialUvTransform()`, whose `_meshFeatures` reads
+ *   `material._hasUvTx`.
+ *
+ * No reached scene calls either enabler, and a material arriving with either
+ * throws below rather than composing without the fragment.
  */
 const standardExtensionModules: ReadonlyArray<readonly [string, string]> = [
     ["material/standard/fragments/normal-map-fragment.js", "bumpStdExt"],
@@ -181,6 +196,11 @@ const standardExtensionModules: ReadonlyArray<readonly [string, string]> = [
         "stdCubeReflectionExt",
     ],
 ];
+
+/** A `lib`-relative runtime module, as the source path its AST is read at. */
+function pinnedSourcePath(runtimeModule: string): string {
+    return `src/${runtimeModule.replace(/\.js$/, ".ts")}`;
+}
 
 let registered: Promise<void> | undefined;
 
@@ -228,16 +248,50 @@ export async function registeredStandardExtensionIds(): Promise<
 export async function pinnedStandardMaterialFeatures(
     material: PinnedStandardMaterialInput,
 ): Promise<number> {
+    // 1.23 moved every optional texture's detection into its own extension,
+    // so registration is now a precondition of *deriving* features, not only
+    // of composing a fragment: an unregistered extension silently contributes
+    // no bit and the variant table comes out short.
+    await registerStandardExtensions();
     const materialModule = await importPinnedModule<{
         _computeStandardMaterialFeatures: (
             material: PinnedStandardMaterialInput,
         ) => number;
     }>("material/standard/standard-material.js");
     return materialModule._computeStandardMaterialFeatures({
-        ...material,
+        ...pinnedOptInSlots(material),
         backFaceCulling: material.backFaceCulling ?? true,
         alpha: material.alpha ?? 1,
     });
+}
+
+/**
+ * The optional texture slots, under the names the pin reads them by.
+ *
+ * 1.23 moved each behind its own setter and renamed the field it stores into
+ * (`emissiveTexture` became `_emissiveTexture`), so a scene bundles only the
+ * fragments it uses. That is the pin's bundling convention rather than a fact
+ * about a material, so this port keeps its own names and translates here --
+ * the one place the input crosses into pinned code.
+ */
+function pinnedOptInSlots(
+    material: PinnedStandardMaterialInput,
+): Record<string, unknown> {
+    const translated: Record<string, unknown> = { ...material };
+    // The slots the pin reads under a leading underscore are exactly the ones
+    // it moved behind a setter, and the record-source table already names
+    // them that way. Deriving the list from it means the two cannot drift --
+    // an untranslated slot derives as untextured, silently.
+    const slots = Object.keys(standardFeatureRecordSources)
+        .filter((key) => key.startsWith("_"))
+        .map((key) => key.slice(1));
+    for (const slot of slots) {
+        if (slot in translated) {
+            translated[`_${slot}`] = translated[slot];
+            delete translated[slot];
+        }
+    }
+    return translated;
 }
 
 interface ComposedStandardShader {
@@ -346,6 +400,14 @@ export async function composePinnedStandardVariant(
                 "HAS_SKELETON, and no reached scene enables it.",
         );
     }
+    if ((material as { _hasUvTx?: unknown })._hasUvTx) {
+        throw new Error(
+            "Pinned Standard UV transforms are not composable yet: upstream " +
+                "reaches them through enableMaterialUvTransform(), which " +
+                "registers stdUvTransformExt and rewrites mesh bits into " +
+                "STD_HAS_UV_TRANSFORM, and no reached scene enables it.",
+        );
+    }
     if (meshFeatures & meshBits.MSH_RECEIVE_SHADOWS) {
         throw new Error(
             "Pinned Standard received shadows are not composable yet: the " +
@@ -381,7 +443,10 @@ export async function composePinnedStandardVariant(
         fragments.push(morph.createMorphFragment());
     }
     for (const ext of flags._getStdExtsSorted()) {
-        features |= ext._meshFeatures?.(meshFeatures) ?? 0;
+        // 1.23 hands the material to `_meshFeatures` as well: the UV
+        // transform reads `material._hasUvTx` from it. Passing what the pin
+        // passes keeps a hook that reads it from seeing `undefined`.
+        features |= ext._meshFeatures?.(meshFeatures, material) ?? 0;
         if (features & ext._feature) {
             const fragment = ext._frag(features, meshFeatures);
             if (fragment) fragments.push(fragment);
@@ -606,21 +671,21 @@ const standardFeatureRecordSources: Readonly<
     // babylon-loader-cpp.ts fills base_color_texture from diffuseTexture.
     diffuseTexture: "!material.base_color_texture.bytes.empty()",
     diffuseCoordIndex: "material.diffuse_coord_index",
-    // The compiled `material.emissiveTexture = <render texture>` setter is
-    // the only native source of a Standard emissive texture (the .babylon
-    // loader loads none), and it is always the pin's depth-sampled render
-    // texture, so both the presence bit and the depth arm key off the flag.
-    emissiveTexture: "material.has_emissive_render_texture",
-    bumpTexture: "!material.bump_texture.bytes.empty()",
-    specularTexture: "!material.specular_texture.bytes.empty()",
+    // `setStandardEmissiveTexture` is the only native source of a Standard
+    // emissive texture (the .babylon loader loads none), and it is always the
+    // pin's depth-sampled render texture, so both the presence bit and the
+    // depth arm key off the flag.
+    _emissiveTexture: "material.has_emissive_render_texture",
+    _bumpTexture: "!material.bump_texture.bytes.empty()",
+    _specularTexture: "!material.specular_texture.bytes.empty()",
     specularCoordIndex: "material.specular_coord_index",
-    ambientTexture: "!material.ambient_texture.bytes.empty()",
+    _ambientTexture: "!material.ambient_texture.bytes.empty()",
     ambientCoordIndex: "material.ambient_coord_index",
     // The generated .babylon loader loads no lightmap slot.
-    lightmapTexture: null,
+    _lightmapTexture: null,
     lightmapCoordIndex: null,
     useLightmapAsShadowmap: null,
-    opacityTexture: "!material.opacity_texture.bytes.empty()",
+    _opacityTexture: "!material.opacity_texture.bytes.empty()",
     // babylon-loader-cpp.ts reads opacityTexture.getAlphaFromRGB into the
     // record, mirroring the pin's own loader write (load-babylon.ts
     // TEX_SLOTS opacity extra: `if (t.getAlphaFromRGB) m.opacityFromRGB`).
@@ -629,8 +694,8 @@ const standardFeatureRecordSources: Readonly<
     // of reflectionTexture (texture_data() drops isCube entries), the same
     // split the pin's loader makes (TEX_SLOTS `skipIf: isCube` vs the
     // separate cube branch).
-    reflectionTexture: "!material.reflection_texture.bytes.empty()",
-    reflectionCubeTexture: "material.reflection_cube != invalid_handle",
+    _reflectionTexture: "!material.reflection_texture.bytes.empty()",
+    _reflectionCubeTexture: "material.reflection_cube != invalid_handle",
     backFaceCulling: "!material.double_sided",
     disableLighting: "material.disable_lighting",
     // Standard alpha rides the record's base colour alpha: the compiled
@@ -663,18 +728,61 @@ function lowerStandardFeatureDerivation(
             "src/material/standard/standard-flags.ts",
             name,
         );
+    /** Whether a branch body is the pin's `return 0` early out. */
+    const returnsZero = (branch: ts.Statement): boolean => {
+        const only = ts.isBlock(branch)
+            ? branch.statements.length === 1
+                ? branch.statements[0]
+                : undefined
+            : branch;
+        if (!only || !ts.isReturnStatement(only) || !only.expression) {
+            return false;
+        }
+        const value = context.unwrapExpression(only.expression);
+        return ts.isNumericLiteral(value) && value.text === "0";
+    };
     const fail = (node: ts.Node, reason: string): never => {
         throw new Error(
             `Cannot lower _computeStandardMaterialFeatures: ${reason} ` +
                 `(${node.getText(file)}).`,
         );
     };
+    /**
+     * What names mean inside the body being walked.
+     *
+     * `parameter` is what the material is called -- the main derivation says
+     * `m` and each extension's `_detect` says `mat`. `aliases` are the
+     * `const tex = mat._lightmapTexture` bindings, which resolve to the same
+     * record source the property would. `accumulators` are the running
+     * totals, whose `return` adds nothing because the lines already did.
+     *
+     * All three are per body, so `lowerDetect` swaps the whole scope rather
+     * than resetting each -- a fourth cannot then be forgotten in one of
+     * three places.
+     */
+    interface WalkScope {
+        parameter: string;
+        aliases: Map<string, string>;
+        accumulators: Set<string>;
+    }
+    const newScope = (parameter: string): WalkScope => ({
+        parameter,
+        aliases: new Map(),
+        accumulators: new Set(),
+    });
+    let scope = newScope("m");
     const propertyName = (expression: ts.Expression): string | undefined => {
         const unwrapped = context.unwrapExpression(expression);
         if (
+            ts.isIdentifier(unwrapped) &&
+            scope.aliases.has(unwrapped.text)
+        ) {
+            return scope.aliases.get(unwrapped.text);
+        }
+        if (
             ts.isPropertyAccessExpression(unwrapped) &&
             ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "m"
+            unwrapped.expression.text === scope.parameter
         ) {
             return unwrapped.name.text;
         }
@@ -716,11 +824,11 @@ function lowerStandardFeatureDerivation(
                 operator === ts.SyntaxKind.EqualsEqualsEqualsToken &&
                 ts.isPropertyAccessExpression(left) &&
                 left.name.text === "_sampleType" &&
-                propertyName(left.expression) === "emissiveTexture" &&
+                propertyName(left.expression) === "_emissiveTexture" &&
                 ts.isStringLiteral(right) &&
                 right.text === "depth"
             ) {
-                return standardFeatureRecordSources["emissiveTexture"] ??
+                return standardFeatureRecordSources["_emissiveTexture"] ??
                     undefined;
             }
             // `m.lightmapTexture.uAng === Math.PI` and any other read off an
@@ -756,40 +864,181 @@ function lowerStandardFeatureDerivation(
         return fail(unwrapped, "unsupported condition shape");
     };
     const lines: string[] = [];
-    const lowerStatements = (
-        statements: ts.NodeArray<ts.Statement>,
+    /**
+     * A flag expression, as the `features |= ...` lines it stands for.
+     *
+     * An extension states its detection as an OR of flags, each optionally
+     * behind a `cond ? FLAG : 0`. A branch whose condition folds away emits
+     * nothing, exactly as the absent record input would upstream.
+     */
+    const lowerFlagExpression = (
+        expression: ts.Expression,
         indent: string,
     ): void => {
-        for (const statement of statements) {
-            if (ts.isVariableStatement(statement)) continue;
-            if (ts.isReturnStatement(statement)) continue;
+        const unwrapped = context.unwrapExpression(expression);
+        if (ts.isNumericLiteral(unwrapped)) {
+            if (unwrapped.text !== "0") {
+                fail(unwrapped, "a non-zero literal in a flag expression");
+            }
+            return;
+        }
+        if (ts.isIdentifier(unwrapped)) {
+            lines.push(
+                `${indent}features |= ${flagValue(unwrapped.text)}u; ` +
+                    `// ${unwrapped.text}`,
+            );
+            return;
+        }
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.BarToken
+        ) {
+            lowerFlagExpression(unwrapped.left, indent);
+            lowerFlagExpression(unwrapped.right, indent);
+            return;
+        }
+        if (ts.isConditionalExpression(unwrapped)) {
+            const otherwise = context.unwrapExpression(
+                unwrapped.whenFalse,
+            );
+            if (
+                !ts.isNumericLiteral(otherwise) ||
+                otherwise.text !== "0"
+            ) {
+                fail(unwrapped, "a conditional whose else arm is not 0");
+            }
+            const condition = lowerCondition(unwrapped.condition);
+            if (condition === undefined) return;
+            lines.push(`${indent}if (${condition}) {`);
+            lowerFlagExpression(unwrapped.whenTrue, `${indent}    `);
+            lines.push(`${indent}}`);
+            return;
+        }
+        fail(unwrapped, "unsupported flag expression");
+    };
+    /**
+     * One extension's `_detect`, as the lines it contributes.
+     *
+     * 1.23 moved every optional Standard texture behind its own extension, so
+     * the derivation is no longer one function: it is this loop over what the
+     * pin has registered. Each body is lowered the same way the inline one
+     * was, and a shape the walker does not know fails by name.
+     */
+    const lowerDetect = (
+        runtimeModule: string,
+        exportName: string,
+        indent: string,
+    ): void => {
+        const { declaration: detect } = context.methodDeclaration(
+            pinnedSourcePath(runtimeModule),
+            `${exportName}._detect`,
+        );
+        const parameter = detect.parameters[0];
+        if (!parameter || !ts.isIdentifier(parameter.name)) {
+            throw new Error(
+                `Pinned ${exportName}._detect takes no named material.`,
+            );
+        }
+        const previous = scope;
+        scope = newScope(parameter.name.text);
+        lines.push(`${indent}// ${exportName}`);
+        const body = detect.body;
+        if (!body) {
+            throw new Error(`Pinned ${exportName}._detect has no body.`);
+        }
+        if (ts.isBlock(body)) {
+            lowerStatements(body.statements, indent);
+        } else {
+            lowerFlagExpression(body, indent);
+        }
+        scope = previous;
+    };
+    const lowerStatements = (
+        statements: readonly ts.Statement[],
+        indent: string,
+    ): void => {
+        for (const [index, statement] of statements.entries()) {
+            if (ts.isVariableStatement(statement)) {
+                // `const tex = mat._lightmapTexture` aliases a slot; the
+                // accumulator `let f = FLAG` states its base flag.
+                for (const binding of statement.declarationList.declarations) {
+                    if (
+                        !ts.isIdentifier(binding.name) ||
+                        !binding.initializer
+                    ) {
+                        continue;
+                    }
+                    const aliased = propertyName(binding.initializer);
+                    if (aliased !== undefined) {
+                        scope.aliases.set(binding.name.text, aliased);
+                        continue;
+                    }
+                    scope.accumulators.add(binding.name.text);
+                    lowerFlagExpression(binding.initializer, indent);
+                }
+                continue;
+            }
+            if (ts.isReturnStatement(statement)) {
+                const value = statement.expression
+                    ? context.unwrapExpression(statement.expression)
+                    : undefined;
+                // `return f` hands back what the lines above already added.
+                if (
+                    value &&
+                    !(
+                        ts.isIdentifier(value) &&
+                        scope.accumulators.has(value.text)
+                    )
+                ) {
+                    lowerFlagExpression(value, indent);
+                }
+                continue;
+            }
+            // `for (const ext of _getStdExts().values())`: 1.23's detection
+            // lives in the extensions, so each registered one is lowered in
+            // its place. The result is an OR, so their order does not matter.
+            if (ts.isForOfStatement(statement)) {
+                for (const [module, name] of standardExtensionModules) {
+                    lowerDetect(module, name, indent);
+                }
+                continue;
+            }
             if (
                 ts.isExpressionStatement(statement) &&
                 ts.isBinaryExpression(statement.expression) &&
                 statement.expression.operatorToken.kind ===
                     ts.SyntaxKind.BarEqualsToken
             ) {
-                const flag = context.unwrapExpression(
-                    statement.expression.right,
-                );
-                if (!ts.isIdentifier(flag)) {
-                    fail(flag, "|= against a non-identifier flag");
-                    continue;
-                }
-                lines.push(
-                    `${indent}features |= ${
-                        flagValue((flag as ts.Identifier).text)
-                    }u; // ${(flag as ts.Identifier).text}`,
-                );
+                lowerFlagExpression(statement.expression.right, indent);
                 continue;
             }
             if (ts.isIfStatement(statement)) {
+                if (statement.elseStatement) {
+                    fail(statement, "else branches are not lowered");
+                }
+                // `if (!tex) return 0;` is the pin's early out: everything
+                // after it is what that slot's presence guards.
+                if (
+                    returnsZero(statement.thenStatement) &&
+                    ts.isPrefixUnaryExpression(statement.expression) &&
+                    statement.expression.operator ===
+                        ts.SyntaxKind.ExclamationToken
+                ) {
+                    const present = lowerCondition(
+                        statement.expression.operand,
+                    );
+                    if (present === undefined) return;
+                    lines.push(`${indent}if (${present}) {`);
+                    lowerStatements(
+                        statements.slice(index + 1),
+                        `${indent}    `,
+                    );
+                    lines.push(`${indent}}`);
+                    return;
+                }
                 if (!ts.isBlock(statement.thenStatement)) {
                     fail(statement, "if without a block body");
                     continue;
-                }
-                if (statement.elseStatement) {
-                    fail(statement, "else branches are not lowered");
                 }
                 const condition = lowerCondition(statement.expression);
                 if (condition === undefined) continue;

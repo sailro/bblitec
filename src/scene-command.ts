@@ -36,7 +36,11 @@ import {
     seekBracketPlan,
     writeReport,
 } from "./parity-scene.js";
-import { computeBuildStamp } from "./build-stamp.js";
+import {
+    comparePayload,
+    computeBuildStamp,
+    deployedPayloads,
+} from "./build-stamp.js";
 import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
 import { runInstrumentedCapture } from "./capture-instrumented.js";
 import {
@@ -671,6 +675,31 @@ function buildSetup(): SharedBuildSetup {
     return sharedBuildSetup;
 }
 
+/**
+ * Deletes what the build directory deploys and the generated tree no longer
+ * has.
+ *
+ * The asset deploy merges rather than mirrors, for the reason
+ * `native/CMakeLists.txt` records beside it. The cost is that a file the
+ * generated tree drops stays behind, and the measured run then refuses to
+ * start over an asset it never asked for. Pruning here keeps the copy
+ * incremental: only the orphans are removed.
+ *
+ * `comparePayload` decides what an orphan is, so the prune and the guard that
+ * reports one cannot disagree about it.
+ */
+function pruneDeployedOrphans(scene: (typeof scenes)[number]): void {
+    for (const { source, deployed } of deployedPayloads(
+        resolve(scene.buildDirectory),
+        resolve(scene.output),
+    )) {
+        for (const mismatch of comparePayload(source, deployed)) {
+            if (mismatch.reason !== "unexpected") continue;
+            rmSync(resolve(deployed, mismatch.path), { force: true });
+        }
+    }
+}
+
 async function runSceneBuild(
     scene: (typeof scenes)[number],
     jobsPerScene: number | undefined,
@@ -739,6 +768,7 @@ async function runSceneBuild(
                 ),
             );
         }
+        pruneDeployedOrphans(scene);
         await runAsync(
             cmake,
             [

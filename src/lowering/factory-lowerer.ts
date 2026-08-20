@@ -3067,6 +3067,20 @@ void mark_material_ubo_dirty(
     }
 }
 
+// The pinned setter stores the texture and registers the emissive extension;
+// registration is a bundling concern with no native counterpart, because
+// generation composes against every Standard extension the pin ships.
+void set_standard_emissive_texture(
+    Engine& engine,
+    MaterialHandle material,
+    RenderTextureRef texture) {
+    if (material.value >= engine.materials.size()) {
+        throw std::runtime_error("Invalid material handle.");
+    }
+    engine.materials[material.value].emissive_render_texture = texture;
+    engine.materials[material.value].has_emissive_render_texture = true;
+}
+
 } // namespace bbl
 `,
         };
