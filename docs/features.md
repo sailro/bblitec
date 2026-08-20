@@ -435,13 +435,23 @@ per-pass scene block and lights in group 0, the graph's mesh block and uniform
 block in group 1 — and both backends execute the compiled stages, entered at
 the pin's own `vs_main`/`fs_main`.
 
-The reached slice is a graph that samples no texture and reads no light: the
-scene-code side of a node material is one call and one `mesh.material`
-assignment. Every other arm — `TextureBlock`, `LightBlock`, `ReflectionBlock`,
-morph targets, shadows, clip planes, frag depth, screen size, the PBR layer
-blocks, alpha blending — refuses at generation naming the block that reached
-it, and a graph fetched by snippet id refuses because the fetch is a network
-read at page load.
+The reached slice covers the scene's lights and its environment. Both are
+resources the port already holds for the material families — the lights array
+at the group-0 slot all three composed families share, and the specular cube
+and BRDF LUT the pin's own `node-env.ts` binds from the scene's
+`EnvironmentTextures` — so a graph reaching them declares bindings rather than
+needing anything new. The five PBR layer blocks (clearcoat, sheen,
+anisotropy, iridescence, subsurface) declare nothing at all: each changes what
+`PBRMetallicRoughnessBlock` composes and the module binds the same resources
+either way.
+
+What refuses at generation, naming the block that reached it: `TextureBlock`
+and `ImageSourceBlock`, morph targets, shadows, clip planes, the
+mesh-attribute test, and `FragDepthBlock` — that last one because a graph
+writing `@builtin(frag_depth)` puts the depth *convention* into its own
+output, and this port's main pass is the forward-Z one
+([fidelity](fidelity.md#shader-contract)). A graph fetched by snippet id
+refuses too, because the fetch is a network read at page load.
 
 ### Animation playback
 
@@ -741,9 +751,9 @@ build error with a source location, not a silently different image.
 - a node material graph is taken inline; a snippet id fetches it from the
   snippet server at page load and fails. The graph itself is read as a JSON
   literal or executed as the module that builds it, and every block outside
-  the reached slice — textures, lights, environment, morph targets, shadows,
-  clip planes, frag depth, screen size, the PBR layer blocks and alpha
-  blending — refuses at generation naming the block that reached it
+  the reached slice — textures, morph targets, shadows, clip planes, the
+  mesh-attribute test, fragment depth and alpha blending — refuses at
+  generation naming the block that reached it
 - an asset carrying more punctual light nodes than the pinned `MAX_LIGHTS`
   (16) fails, where upstream grows the constant at run time
 - a scene-code mesh or PBR material created before a later glTF load fails,

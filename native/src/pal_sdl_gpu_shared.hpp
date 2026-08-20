@@ -275,6 +275,41 @@ inline void bind_stage_storage(
         static_cast<Uint32>(buffers.size()));
 }
 
+/**
+ * Bind the texture/sampler pairs a stage kept, in the sidecar's own order.
+ *
+ * The storage twin above says why the resolver is the parameter, and this is
+ * the same walk over the other list: SDL_GPU binds a texture and its sampler
+ * as one pair at a dense index, so the sampler names never reach the sidecar
+ * and the resolver answers for the pair.
+ */
+template <typename Resolve>
+inline void bind_stage_textures(
+    SDL_GPURenderPass* pass,
+    const PinnedStageSlots& slots,
+    bool fragment,
+    Resolve resolve) {
+    if (slots.textures.empty()) return;
+    std::vector<SDL_GPUTextureSamplerBinding> bindings;
+    bindings.reserve(slots.textures.size());
+    for (const std::string& name : slots.textures) {
+        bindings.push_back(resolve(name));
+    }
+    if (fragment) {
+        SDL_BindGPUFragmentSamplers(
+            pass,
+            0,
+            bindings.data(),
+            static_cast<Uint32>(bindings.size()));
+        return;
+    }
+    SDL_BindGPUVertexSamplers(
+        pass,
+        0,
+        bindings.data(),
+        static_cast<Uint32>(bindings.size()));
+}
+
 /** One block a stage's resolver named: its bytes, or none. */
 struct PinnedStageBlock {
     const void* data = nullptr;

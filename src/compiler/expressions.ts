@@ -5,9 +5,10 @@
 // the module that owns it -- data paths and constructors to the data
 // lowerer, local classes to the class lowerer, property reads to the
 // compiler's property path, and calls to `compileCall`, whose order
-// (immediate promises, math and data methods, record and class
-// methods, bound callbacks, registered intrinsics, native functions,
-// user functions) is the resolution order a call site observes.
+// (immediate promises, math and data methods, scene collection pushes,
+// record and class methods, bound callbacks, registered intrinsics,
+// native functions, user functions) is the resolution order a call site
+// observes.
 import ts from "typescript";
 import type { ClassLowerer } from "./classes.js";
 import type { DataLowerer } from "./data-lowering.js";
@@ -18,7 +19,7 @@ import {
 } from "./promises.js";
 import type { StaticEvaluator } from "./static-evaluator.js";
 import type { CompilerSymbols } from "./symbols.js";
-import type { Value } from "./types.js";
+import type { Value, ValueKind } from "./types.js";
 import type {
     UserFunctionContext,
     UserFunctionLowerer,
@@ -37,6 +38,13 @@ export interface ExpressionContext
         Map<ts.Symbol, { name: string; value: Value }>
     >;
     unwrap(expression: ts.Expression): ts.Expression;
+    expectArgumentCount(
+        call: ts.CallExpression,
+        minimum: number,
+        maximum: number,
+    ): void;
+    expectKind(value: Value, kind: ValueKind, node: ts.Node): void;
+    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     activeThis(): Value | undefined;
     lookup(identifier: ts.Identifier): Value;
     lookupOptional(
@@ -521,6 +529,40 @@ export class ExpressionLowerer {
         return conditional;
     }
 
+    /**
+     * `scene.lights.push(light)`, which is what `addToScene` does with one.
+     *
+     * The pin's own `addToScene` branches on the entity: a light takes
+     * `ctx.lights.push(entity)` and then recurses into `entity.children`,
+     * which a scene-code light has none of. So the two spellings are the same
+     * call here, and a scene that writes the collection directly reaches the
+     * lowering the intrinsic already has rather than a second one.
+     */
+    private compileSceneLightPush(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        if (
+            callee.name.text !== "push" ||
+            !ts.isPropertyAccessExpression(callee.expression) ||
+            callee.expression.name.text !== "lights"
+        ) {
+            return undefined;
+        }
+        const scene = this.context.compileValue(
+            callee.expression.expression,
+        );
+        if (scene.kind !== "scene") return undefined;
+        this.context.expectArgumentCount(call, 1, 1);
+        const light = this.context.compileValue(call.arguments[0]!);
+        this.context.expectKind(light, "light", call.arguments[0]!);
+        this.context.expectSameEngine(scene, light, call);
+        return {
+            kind: "void",
+            cpp: `bbl::add_to_scene(${scene.cpp}, ${light.cpp})`,
+        };
+    }
+
     private compileCall(call: ts.CallExpression): Value {
         const promise = compileImmediatePromise(
             this.context,
@@ -542,6 +584,13 @@ export class ExpressionLowerer {
                 );
             if (method) {
                 return method;
+            }
+            const lightPush = this.compileSceneLightPush(
+                call,
+                callee,
+            );
+            if (lightPush) {
+                return lightPush;
             }
             // A method on a constructed instance inlines with `this`
             // bound to that instance's field record.

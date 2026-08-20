@@ -1580,6 +1580,78 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene63",
+        name: "Scene 63 - NME Directional Light",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene63.ts",
+        title: "Babylon Lite Native - NME Directional Light",
+        parity: {
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene67",
+        name: "Scene 67 - NME PBR Core",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene67.ts",
+        title: "Babylon Lite Native - NME PBR Core",
+        parity: {
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.003,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene68",
+        name: "Scene 68 - NME PBR Clearcoat",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene68.ts",
+        title: "Babylon Lite Native - NME PBR Clearcoat",
+        parity: {
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.005,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene69",
+        name: "Scene 69 - NME PBR Sheen",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene69.ts",
+        title: "Babylon Lite Native - NME PBR Sheen",
+        parity: {
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.010,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene70",
+        name: "Scene 70 - NME PBR Anisotropy",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene70.ts",
+        title: "Babylon Lite Native - NME PBR Anisotropy",
+        parity: {
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.025,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene71",
+        name: "Scene 71 - NME PBR Subsurface",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene71.ts",
+        title: "Babylon Lite Native - NME PBR Subsurface",
+        parity: {
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.010,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

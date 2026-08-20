@@ -945,6 +945,7 @@ inline std::array<float, 16> pinned_draw_world(
  */
 inline upstream::SceneUniforms pinned_scene_block(
     const Scene& scene,
+    const Engine& engine,
     const CameraRecord& camera,
     const std::array<float, 16>& view_projection) {
     upstream::SceneUniforms scene_block{};
@@ -984,12 +985,17 @@ inline upstream::SceneUniforms pinned_scene_block(
         scene.fog_end,
         scene.fog_density,
     };
+    // `_packSceneUniforms` writes the canvas size into the block's two spare
+    // lanes -- `vFogColor.w` and `_envPad0` -- for every scene, and a node
+    // graph's ScreenSizeBlock is what reads them back. The size is the
+    // engine's configured one, which is what `eng.canvas` reports.
     scene_block.vFogColor = {
         scene.fog_color.r,
         scene.fog_color.g,
         scene.fog_color.b,
-        1.0f,
+        static_cast<float>(engine.options.width),
     };
+    scene_block._envPad0 = static_cast<float>(engine.options.height);
     const std::array<std::array<float, 4>*, 9> harmonics{
         &scene_block.vSphericalL00,
         &scene_block.vSphericalL1_1,

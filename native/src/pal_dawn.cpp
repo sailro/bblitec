@@ -2289,12 +2289,13 @@ WGPUBindGroup pinned_geometry_frame_group(DawnState& state) {
 void write_pinned_geometry_prologue(
     DawnState& state,
     const Scene& scene,
+    const Engine& engine,
     const CameraRecord& camera,
     DawnGeometryTask& geometry,
     const std::array<float, 16>& geometry_matrix) {
     pinned_geometry_frame_group(state);
     const upstream::SceneUniforms scene_block =
-        pinned_scene_block(scene, camera, geometry_matrix);
+        pinned_scene_block(scene, engine, camera, geometry_matrix);
     wgpuQueueWriteBuffer(
         state.queue,
         state.pinned_geometry_scene_uniforms,
@@ -2334,6 +2335,39 @@ void write_pinned_geometry_prologue(
     geometry.previous_view_projection = geometry_matrix;
 }
 
+#if BBLITE_PINNED_MATERIALS
+struct PinnedResource {
+    WGPUTextureView view = nullptr;
+    WGPUSampler sampler = nullptr;
+};
+
+/**
+ * The scene-owned pair one slot source names, or an empty pair.
+ *
+ * A source outside the mesh's own slots is served by something this backend
+ * holds for the whole scene, and every composed family wants the same answer
+ * -- so the pairing is stated once here rather than per family.
+ */
+PinnedResource state_resource_for(
+    const DawnState& state,
+    upstream::MaterialTextureSource source) {
+    switch (source) {
+        case upstream::MaterialTextureSource::environment_cube:
+            return PinnedResource{
+                state.environment_cube_view,
+                state.default_sampler};
+        case upstream::MaterialTextureSource::brdf_lut:
+            return PinnedResource{state.brdf_view, state.clamp_sampler};
+        case upstream::MaterialTextureSource::scene_color:
+            return PinnedResource{
+                state.transmission_color_view,
+                state.transmission_sampler};
+        default:
+            return {};
+    }
+}
+#endif
+
 #if BBLITE_PBR_VARIANTS > 0
 /**
  * Which of our resources the pin's own name for a binding refers to.
@@ -2342,11 +2376,6 @@ void write_pinned_geometry_prologue(
  * meet. A variant that declares a resource this does not know fails by name
  * rather than drawing with whatever sat at that index.
  */
-struct PinnedResource {
-    WGPUTextureView view = nullptr;
-    WGPUSampler sampler = nullptr;
-};
-
 PinnedResource pinned_resource_for(
     DawnState& state,
     const DawnMesh& mesh,
@@ -2361,25 +2390,17 @@ PinnedResource pinned_resource_for(
                 mesh.views[slot->slot],
                 mesh.samplers[slot->slot]};
         }
+        const PinnedResource resource = state_resource_for(state, slot->source);
+        if (resource.view != nullptr) return resource;
         switch (slot->source) {
-            case upstream::MaterialTextureSource::environment_cube:
-                return PinnedResource{
-                    state.environment_cube_view,
-                    state.default_sampler};
-            case upstream::MaterialTextureSource::brdf_lut:
-                return PinnedResource{state.brdf_view, state.clamp_sampler};
             case upstream::MaterialTextureSource::scene_color:
                 // The scene-colour grab the pin refracts through. The
                 // persistent bind group needs a complete entry before the
                 // grab exists, so the base-colour pair stands in until the
-                // group is rebuilt with the real texture.
-                return PinnedResource{
-                    state.transmission_color_view
-                        ? state.transmission_color_view
-                        : mesh.views[0],
-                    state.transmission_color_view
-                        ? state.transmission_sampler
-                        : mesh.samplers[0]};
+                // group is rebuilt with the real texture -- which is the
+                // mesh's, so this one arm cannot move to the scene-owned
+                // resolver above.
+                return PinnedResource{mesh.views[0], mesh.samplers[0]};
             case upstream::MaterialTextureSource::bone_palette:
                 return PinnedResource{mesh.pinned_bone_view, nullptr};
             default:
@@ -2694,6 +2715,7 @@ void write_pinned_geometry_task(
     write_pinned_geometry_prologue(
         state,
         scene,
+        engine,
         camera,
         geometry,
         geometry_matrix);
@@ -2760,7 +2782,7 @@ void write_pinned_frame_blocks(
     const std::array<float, 16>& view_projection) {
     ensure_pinned_frame_buffers(state);
     const upstream::SceneUniforms scene_block =
-        pinned_scene_block(scene, camera, view_projection);
+        pinned_scene_block(scene, engine, camera, view_projection);
     wgpuQueueWriteBuffer(
         state.queue,
         state.pinned_scene_uniforms,
@@ -3252,6 +3274,7 @@ void write_standard_geometry_task(
     write_pinned_geometry_prologue(
         state,
         scene,
+        engine,
         camera,
         geometry,
         geometry_matrix);
@@ -3966,8 +3989,9 @@ WGPURenderPipeline standard_variant_pipeline(
 
 #if BBLITE_NODE_VARIANTS > 0
 /**
- * Group 1 for one node graph: the pin's mesh block, plus the graph's own
- * uniform block at whichever binding `compileNodePipeline` gave it.
+ * Group 1 for one node graph: the pin's mesh block, the graph's own uniform
+ * block at whichever binding `compileNodePipeline` gave it, and the
+ * environment pair a graph reaching `ReflectionBlock` declares.
  */
 WGPUBindGroupLayout node_draw_layout_for(
     DawnState& state,
@@ -3998,6 +4022,33 @@ WGPUBindGroupLayout node_draw_layout_for(
             WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
         node_entry.buffer.type = WGPUBufferBindingType_Uniform;
         entries.push_back(node_entry);
+    }
+    if (entry.env.present) {
+        // The pin's own four, in the order `emitEnv` allocates them: the
+        // specular cube and its sampler, then the BRDF LUT and its own.
+        const auto texture = [&](
+                                 std::uint32_t binding,
+                                 WGPUTextureViewDimension dimension) {
+            WGPUBindGroupLayoutEntry item =
+                WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            item.binding = binding;
+            item.visibility = WGPUShaderStage_Fragment;
+            item.texture.sampleType = WGPUTextureSampleType_Float;
+            item.texture.viewDimension = dimension;
+            entries.push_back(item);
+        };
+        const auto sampler = [&](std::uint32_t binding) {
+            WGPUBindGroupLayoutEntry item =
+                WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            item.binding = binding;
+            item.visibility = WGPUShaderStage_Fragment;
+            item.sampler.type = WGPUSamplerBindingType_Filtering;
+            entries.push_back(item);
+        };
+        texture(entry.env.ibl_texture, WGPUTextureViewDimension_Cube);
+        sampler(entry.env.ibl_sampler);
+        texture(entry.env.brdf_lut, WGPUTextureViewDimension_2D);
+        sampler(entry.env.brdf_sampler);
     }
     WGPUBindGroupLayoutDescriptor descriptor =
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
@@ -4201,6 +4252,41 @@ WGPUBindGroup build_node_draw_group(
         node_entry.buffer = mesh.node_uniforms;
         node_entry.size = static_cast<std::uint64_t>(entry.ubo_bytes);
         entries.push_back(node_entry);
+    }
+    if (entry.env.present) {
+        // `pushEnvBindGroupEntries` binds the scene's own EnvironmentTextures,
+        // which is what the material families already sample here.
+        if (!state.environment_cube_view || !state.brdf_view) {
+            dawn_error(
+                "a node graph reaches the environment in a scene that "
+                "loaded none.");
+        }
+        // Which of our resources each role names is the slot table's
+        // answer, the same one `pinned_resource_for` gives the other
+        // families -- the graph's names join it by source.
+        const auto pair = [&](
+                              std::uint32_t texture_binding,
+                              std::uint32_t sampler_binding,
+                              upstream::MaterialTextureSource source) {
+            const PinnedResource resource =
+                state_resource_for(state, source);
+            WGPUBindGroupEntry view = WGPU_BIND_GROUP_ENTRY_INIT;
+            view.binding = texture_binding;
+            view.textureView = resource.view;
+            entries.push_back(view);
+            WGPUBindGroupEntry item = WGPU_BIND_GROUP_ENTRY_INIT;
+            item.binding = sampler_binding;
+            item.sampler = resource.sampler;
+            entries.push_back(item);
+        };
+        pair(
+            entry.env.ibl_texture,
+            entry.env.ibl_sampler,
+            upstream::MaterialTextureSource::environment_cube);
+        pair(
+            entry.env.brdf_lut,
+            entry.env.brdf_sampler,
+            upstream::MaterialTextureSource::brdf_lut);
     }
     WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     descriptor.layout = node_draw_layout_for(state, variant);
@@ -7565,6 +7651,7 @@ bool run_dawn_engine(Engine& engine) {
                     const upstream::SceneUniforms task_scene_block =
                         pinned_scene_block(
                             scene,
+                            engine,
                             task_camera,
                             task_matrix);
                     task_pinned_frame_group(state, render_task);
