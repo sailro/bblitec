@@ -412,7 +412,7 @@ struct GpuGeometryTask {
     bool depth_borrowed = false;
 };
 
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIAL_VARIANTS
 /** A texture and its sampler, resolved from the pin's own name for a binding. */
 struct PinnedResource {
     SDL_GPUTexture* texture = nullptr;
@@ -486,7 +486,13 @@ struct GpuState {
     std::vector<PinnedStageSlots> standard_vertex_slots;
     std::vector<PinnedStageSlots> standard_fragment_slots;
 #endif
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_NODE_VARIANTS > 0
+    // The node family's pipelines and slot maps, cached the same way.
+    std::map<std::size_t, SDL_GPUGraphicsPipeline*> node_variant_pipelines;
+    std::vector<PinnedStageSlots> node_vertex_slots;
+    std::vector<PinnedStageSlots> node_fragment_slots;
+#endif
+#if BBLITE_PINNED_MATERIALS
     SDL_GPUTextureFormat pinned_color_format =
         SDL_GPU_TEXTUREFORMAT_INVALID;
 #endif
@@ -550,6 +556,43 @@ SDL_GPUSampleCount task_sample_count(
     std::uint32_t requested);
 SDL_GPUTextureFormat geometry_texture_format(
     const GeometryTextureDescription& description);
+
+#if BBLITE_PINNED_MATERIALS
+/**
+ * One declared vertex input, resolved onto our vertex and into SDL's format
+ * enum. The Dawn sibling reads the same `pinned_vertex_input` table; only the
+ * enum residue and the buffer slot differ.
+ */
+bool append_variant_attribute(
+    std::string_view name,
+    Uint32 location,
+    bool uses_local_position,
+    std::vector<SDL_GPUVertexAttribute>& attributes) {
+    const PinnedVertexInput input =
+        pinned_vertex_input(name, uses_local_position);
+    if (!input.mapped) return false;
+    SDL_GPUVertexAttribute attribute{};
+    attribute.location = location;
+    attribute.buffer_slot = input.instance_stream ? 1u : 0u;
+    attribute.offset = static_cast<Uint32>(input.offset);
+    switch (input.lane) {
+        case VertexInputLane::float2:
+            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+            break;
+        case VertexInputLane::float3:
+            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+            break;
+        case VertexInputLane::float4:
+            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+            break;
+        case VertexInputLane::uint4:
+            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_UINT4;
+            break;
+    }
+    attributes.push_back(attribute);
+    return true;
+}
+#endif
 
 #if BBLITE_PBR_VARIANTS > 0
 /**
@@ -630,6 +673,8 @@ void ensure_pinned_slots(GpuState& state, std::size_t variant) {
         read_pinned_stage_slots(pinned_stage_name(entry.fragment_shader));
 }
 
+
+
 /**
  * The graphics pipeline for one composed variant under one pipeline kind.
  *
@@ -682,62 +727,17 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::PbrVariantAttribute& input =
             upstream::pbr_variant_attributes[entry.first_attribute + index];
-        SDL_GPUVertexAttribute attribute{};
-        attribute.location = input.location;
-        attribute.buffer_slot = 0;
-        if (input.name == "position") {
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
-            // A LOCAL_POSITION geometry variant's varying reads the raw
-            // attribute, so it binds the vertex's local lanes; its mesh
-            // world is the real node world, keeping worldPos the same
-            // product the baked pair produces.
-            attribute.offset = entry.uses_local_position
-                ? offsetof(GpuVertex, local_position)
-                : offsetof(GpuVertex, position);
-        } else if (input.name == "normal") {
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
-            attribute.offset = offsetof(GpuVertex, normal);
-        } else if (input.name == "tangent") {
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
-            attribute.offset = offsetof(GpuVertex, tangent);
-        } else if (input.name == "uv") {
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-            attribute.offset = offsetof(GpuVertex, uv);
-        } else if (input.name == "uv2") {
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-            attribute.offset = offsetof(GpuVertex, uv2);
-        } else if (input.name == "color") {
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
-            attribute.offset = offsetof(GpuVertex, color);
-        } else if (
-            input.name == "world0" || input.name == "world1" ||
-            input.name == "world2" || input.name == "world3") {
-            // The pin's thin-instance arm: the per-instance matrix as four
-            // vec4 columns from the second, instance-stepped stream.
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
-            attribute.buffer_slot = 1;
-            attribute.offset = static_cast<Uint32>(
-                16 * (input.name.back() - '0'));
-        }
-#if BBLITE_GPU_DEFORMATION
-        else if (input.name == "joints") {
-            // The pin takes joint indices as integers; the transcribed stage
-            // takes them as floats, so the vertex carries both while the two
-            // paths coexist.
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_UINT4;
-            attribute.offset = offsetof(GpuVertex, joint_indices);
-        } else if (input.name == "weights") {
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
-            attribute.offset = offsetof(GpuVertex, weights);
-        }
-#endif
-        else {
+        if (
+            !append_variant_attribute(
+                input.name,
+                input.location,
+                entry.uses_local_position,
+                attributes)) {
             gpu_error(
                 ("pinned variant declares an unmapped vertex input '" +
                  std::string(input.name) + "'.")
                     .c_str());
         }
-        attributes.push_back(attribute);
     }
 
     // The kind carries the fixed-function state, the same way it does for the
@@ -1030,66 +1030,42 @@ void draw_pinned_variant(
     // Each block at the slot the remap assigned it. The
     // order is the `.slots` map's, because a stage can
     // declare a block it never reads and Tint strips it.
-    const auto push_blocks = [&](
-                                 const PinnedStageSlots&
-                                     slots,
-                                 bool fragment_stage) {
-        for (
-            std::size_t slot = 0;
-            slot < slots.uniforms.size();
-            ++slot) {
-            const std::string& block = slots.uniforms[slot];
-            const void* data = nullptr;
-            std::size_t size = 0;
-            if (block == "scene") {
-                data = &pinned_scene;
-                size = sizeof(pinned_scene);
-            } else if (block == "lights") {
-                data = pinned_lights.data();
-                size = pinned_lights.size();
-            } else if (block == "mesh") {
-                data = &pinned_mesh;
-                size = sizeof(pinned_mesh);
-            } else if (block == "material") {
-                data = pinned_material.data();
-                size = pinned_material.size();
-            } else if (block == "gp") {
-                // The geometry-params block: previous view-projection and
-                // camera near/far, built by the geometry task's caller.
-                if (!geometry_params) {
-                    gpu_error(
-                        "pinned variant declares gpUniforms outside a "
-                        "geometry task.");
-                }
-                data = geometry_params;
-                size = sizeof(*geometry_params);
-            } else {
-                gpu_error(
-                    ("pinned variant declares an unmapped "
-                     "uniform block '" + block + "'.")
-                        .c_str());
-            }
-            if (fragment_stage) {
-                SDL_PushGPUFragmentUniformData(
-                    command,
-                    static_cast<Uint32>(slot),
-                    data,
-                    static_cast<Uint32>(size));
-            } else {
-                SDL_PushGPUVertexUniformData(
-                    command,
-                    static_cast<Uint32>(slot),
-                    data,
-                    static_cast<Uint32>(size));
-            }
+    const auto resolve = [&](
+                             const std::string& block) -> PinnedStageBlock {
+        if (block == "scene") {
+            return {&pinned_scene, sizeof(pinned_scene)};
         }
+        if (block == "lights") {
+            return {pinned_lights.data(), pinned_lights.size()};
+        }
+        if (block == "mesh") return {&pinned_mesh, sizeof(pinned_mesh)};
+        if (block == "material") {
+            return {pinned_material.data(), pinned_material.size()};
+        }
+        if (block == "gp") {
+            // The geometry-params block: previous view-projection and
+            // camera near/far, built by the geometry task's caller.
+            if (!geometry_params) {
+                gpu_error(
+                    "pinned variant declares gpUniforms outside a "
+                    "geometry task.");
+            }
+            return {geometry_params, sizeof(*geometry_params)};
+        }
+        return {};
     };
-    push_blocks(
+    push_stage_uniforms(
+        command,
         state.pinned_vertex_slots[pinned_variant],
-        false);
-    push_blocks(
+        false,
+        "pinned variant",
+        resolve);
+    push_stage_uniforms(
+        command,
         state.pinned_fragment_slots[pinned_variant],
-        true);
+        true,
+        "pinned variant",
+        resolve);
     const PinnedStageSlots& pinned_fragment =
         state.pinned_fragment_slots[pinned_variant];
     std::vector<SDL_GPUTextureSamplerBinding>
@@ -1211,6 +1187,198 @@ void draw_pinned_variant(
 }
 #endif
 
+#if BBLITE_NODE_VARIANTS > 0
+void ensure_node_slots(GpuState& state, std::size_t variant) {
+    if (state.node_vertex_slots.size() < upstream::node_variants.size()) {
+        state.node_vertex_slots.resize(upstream::node_variants.size());
+        state.node_fragment_slots.resize(upstream::node_variants.size());
+    }
+    if (!state.node_vertex_slots[variant].uniforms.empty()) return;
+    const upstream::NodeVariantEntry& entry =
+        upstream::node_variants[variant];
+    state.node_vertex_slots[variant] =
+        read_pinned_stage_slots(std::string(entry.vertex_stem));
+    state.node_fragment_slots[variant] =
+        read_pinned_stage_slots(std::string(entry.fragment_stem));
+}
+
+/**
+ * The pipeline for one compiled node graph.
+ *
+ * Its two stages are one module entered twice, so both load under the
+ * graph's own file names; the vertex inputs are named rather than
+ * positional, because the pin's pipeline builder numbers them by emission
+ * order rather than by a fixed convention.
+ */
+SDL_GPUGraphicsPipeline* node_variant_pipeline(
+    GpuState& state,
+    std::size_t variant,
+    upstream::RenderPipelineKind kind) {
+    const std::size_t key = variant * 64 + static_cast<std::size_t>(kind);
+    const auto existing = state.node_variant_pipelines.find(key);
+    if (existing != state.node_variant_pipelines.end()) {
+        return existing->second;
+    }
+    ensure_node_slots(state, variant);
+    const upstream::NodeVariantEntry& entry =
+        upstream::node_variants[variant];
+    const PinnedStageSlots& vertex_slots = state.node_vertex_slots[variant];
+    const PinnedStageSlots& fragment_slots =
+        state.node_fragment_slots[variant];
+    SDL_GPUShader* vertex_shader = load_shader(
+        state.device,
+        std::string(entry.vertex_stem).c_str(),
+        SDL_GPU_SHADERSTAGE_VERTEX,
+        static_cast<Uint32>(vertex_slots.textures.size()),
+        static_cast<Uint32>(vertex_slots.uniforms.size()),
+        "vs_main",
+        static_cast<Uint32>(vertex_slots.storage.size()));
+    SDL_GPUShader* fragment_shader = load_shader(
+        state.device,
+        std::string(entry.fragment_stem).c_str(),
+        SDL_GPU_SHADERSTAGE_FRAGMENT,
+        static_cast<Uint32>(fragment_slots.textures.size()),
+        static_cast<Uint32>(fragment_slots.uniforms.size()),
+        "fs_main",
+        static_cast<Uint32>(fragment_slots.storage.size()));
+    std::vector<SDL_GPUVertexAttribute> attributes;
+    attributes.reserve(entry.attribute_count);
+    for (std::size_t index = 0; index < entry.attribute_count; ++index) {
+        const upstream::NodeVariantAttribute& input =
+            upstream::node_variant_attributes[entry.first_attribute + index];
+        if (
+            !append_variant_attribute(
+                input.name,
+                input.location,
+                false,
+                attributes)) {
+            gpu_error(
+                ("node variant declares an unmapped vertex input '" +
+                 std::string(input.name) + "'.")
+                    .c_str());
+        }
+        if (attributes.back().buffer_slot != 0) {
+            gpu_error(
+                ("node variant declares the per-instance vertex input '" +
+                 std::string(input.name) + "', which its pipeline binds no "
+                 "stream for.")
+                    .c_str());
+        }
+    }
+    SDL_GPUColorTargetDescription color_target{};
+    color_target.format = state.pinned_color_format;
+    SDL_GPUGraphicsPipelineCreateInfo info{};
+    info.vertex_shader = vertex_shader;
+    info.fragment_shader = fragment_shader;
+    SDL_GPUVertexBufferDescription vertex_buffer{};
+    vertex_buffer.slot = 0;
+    vertex_buffer.pitch = sizeof(GpuVertex);
+    vertex_buffer.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    info.vertex_input_state = SDL_GPUVertexInputState{
+        &vertex_buffer,
+        1u,
+        attributes.data(),
+        static_cast<Uint32>(attributes.size()),
+    };
+    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    info.rasterizer_state.cull_mode =
+        kind == upstream::RenderPipelineKind::node_opaque_none
+            ? SDL_GPU_CULLMODE_NONE
+            : SDL_GPU_CULLMODE_BACK;
+    info.rasterizer_state.front_face =
+        SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+    info.rasterizer_state.enable_depth_clip = true;
+    info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
+    info.depth_stencil_state.enable_depth_test = true;
+    info.depth_stencil_state.enable_depth_write = true;
+    info.multisample_state.sample_count = state.sample_count;
+    info.target_info.color_target_descriptions = &color_target;
+    info.target_info.num_color_targets = 1;
+    info.target_info.depth_stencil_format = state.depth_format;
+    info.target_info.has_depth_stencil_target = true;
+    SDL_GPUGraphicsPipeline* pipeline =
+        SDL_CreateGPUGraphicsPipeline(state.device, &info);
+    if (!pipeline) {
+        gpu_error("SDL_CreateGPUGraphicsPipeline node variant");
+    }
+    SDL_ReleaseGPUShader(state.device, vertex_shader);
+    SDL_ReleaseGPUShader(state.device, fragment_shader);
+    return state.node_variant_pipelines.emplace(key, pipeline)
+        .first->second;
+}
+
+/**
+ * Draws one node command through the graph's own compiled stages.
+ *
+ * The blocks are pushed by the names the register remap published beside
+ * each stage: the pin's `scene` in group 0, its `meshU` and the graph's
+ * `nodeU` in group 1. A graph reaching the lights block refuses at
+ * generation, so no stage here declares one and the resolver has no arm for
+ * it — the `else` names whatever a future one declares.
+ */
+void draw_node_variant(
+    GpuState& state,
+    SDL_GPUCommandBuffer* command,
+    SDL_GPURenderPass* pass,
+    const Scene& scene,
+    const Engine& engine,
+    const CameraRecord& camera,
+    const std::array<float, 16>& matrix,
+    const upstream::RenderDrawCommand& draw,
+    const GpuMesh& mesh,
+    std::size_t variant,
+    SDL_GPUGraphicsPipeline*& bound_pipeline) {
+    SDL_GPUGraphicsPipeline* variant_pipeline =
+        node_variant_pipeline(state, variant, draw.pipeline);
+    if (variant_pipeline != bound_pipeline) {
+        SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
+        bound_pipeline = variant_pipeline;
+    }
+    const upstream::NodeVariantEntry& entry =
+        upstream::node_variants[variant];
+    const upstream::SceneUniforms pinned_scene =
+        pinned_scene_block(scene, camera, matrix);
+    const upstream::NodeMeshUniforms node_mesh =
+        node_mesh_block(scene, engine, draw.item.mesh.value);
+    const auto resolve = [&](
+                             const std::string& block) -> PinnedStageBlock {
+        if (block == "scene") {
+            return {&pinned_scene, sizeof(pinned_scene)};
+        }
+        if (block == "meshU") return {&node_mesh, sizeof(node_mesh)};
+        if (block == "nodeU") {
+            return {
+                &upstream::node_variant_uniform_floats[
+                    entry.first_uniform_float],
+                entry.ubo_bytes,
+            };
+        }
+        return {};
+    };
+    push_stage_uniforms(
+        command,
+        state.node_vertex_slots[variant],
+        false,
+        "node variant",
+        resolve);
+    push_stage_uniforms(
+        command,
+        state.node_fragment_slots[variant],
+        true,
+        "node variant",
+        resolve);
+    const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
+    SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+    const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
+    SDL_BindGPUIndexBuffer(
+        pass,
+        &index_binding,
+        SDL_GPU_INDEXELEMENTSIZE_32BIT);
+    SDL_DrawGPUIndexedPrimitives(pass, mesh.index_count, 1, 0, 0, 0);
+}
+#endif
+
 #if BBLITE_STANDARD_VARIANTS > 0
 /** The stem the shader compiler deployed a Standard variant's stage under. */
 std::string standard_stage_name(std::string_view file) {
@@ -1327,42 +1495,18 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     attributes.reserve(entry.attribute_count);
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::StandardVariantAttribute& input =
-            upstream::standard_variant_attributes[
-                entry.first_attribute + index];
-        SDL_GPUVertexAttribute attribute{};
-        attribute.location = input.location;
-        attribute.buffer_slot = 0;
-        if (input.name == "position") {
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
-            attribute.offset = entry.uses_local_position
-                ? offsetof(GpuVertex, local_position)
-                : offsetof(GpuVertex, position);
-        } else if (input.name == "normal") {
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
-            attribute.offset = offsetof(GpuVertex, normal);
-        } else if (input.name == "uv") {
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-            attribute.offset = offsetof(GpuVertex, uv);
-        } else if (input.name == "uv2") {
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-            attribute.offset = offsetof(GpuVertex, uv2);
-        } else if (input.name == "color") {
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
-            attribute.offset = offsetof(GpuVertex, color);
-        } else if (
-            input.name == "world0" || input.name == "world1" ||
-            input.name == "world2" || input.name == "world3") {
-            attribute.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
-            attribute.buffer_slot = 1;
-            attribute.offset = static_cast<Uint32>(
-                16 * (input.name.back() - '0'));
-        } else {
+            upstream::standard_variant_attributes[entry.first_attribute + index];
+        if (
+            !append_variant_attribute(
+                input.name,
+                input.location,
+                entry.uses_local_position,
+                attributes)) {
             gpu_error(
                 ("standard variant declares an unmapped vertex input '" +
                  std::string(input.name) + "'.")
                     .c_str());
         }
-        attributes.push_back(attribute);
     }
     using Kind = upstream::RenderPipelineKind;
     const bool transparent =
@@ -1532,62 +1676,39 @@ void draw_standard_variant(
         standard_material_block(material, features);
     const upstream::StandardUvTransformUniforms uv_block =
         standard_uv_block(material, features);
-    const auto push_blocks = [&](
-                                 const PinnedStageSlots& slots,
-                                 bool fragment_stage) {
-        for (
-            std::size_t slot = 0;
-            slot < slots.uniforms.size();
-            ++slot) {
-            const std::string& block = slots.uniforms[slot];
-            const void* data = nullptr;
-            std::size_t size = 0;
-            if (block == "scene") {
-                data = &pinned_scene;
-                size = sizeof(pinned_scene);
-            } else if (block == "lights") {
-                data = pinned_lights.data();
-                size = pinned_lights.size();
-            } else if (block == "mesh") {
-                data = &pinned_mesh;
-                size = sizeof(pinned_mesh);
-            } else if (block == "mat") {
-                data = &material_block;
-                size = sizeof(material_block);
-            } else if (block == "up") {
-                data = &uv_block;
-                size = sizeof(uv_block);
-            } else if (block == "gp") {
-                if (!geometry_params) {
-                    gpu_error(
-                        "standard variant declares gpUniforms outside a "
-                        "geometry task.");
-                }
-                data = geometry_params;
-                size = sizeof(*geometry_params);
-            } else {
-                gpu_error(
-                    ("standard variant declares an unmapped uniform "
-                     "block '" + block + "'.")
-                        .c_str());
-            }
-            if (fragment_stage) {
-                SDL_PushGPUFragmentUniformData(
-                    command,
-                    static_cast<Uint32>(slot),
-                    data,
-                    static_cast<Uint32>(size));
-            } else {
-                SDL_PushGPUVertexUniformData(
-                    command,
-                    static_cast<Uint32>(slot),
-                    data,
-                    static_cast<Uint32>(size));
-            }
+    const auto resolve = [&](
+                             const std::string& block) -> PinnedStageBlock {
+        if (block == "scene") {
+            return {&pinned_scene, sizeof(pinned_scene)};
         }
+        if (block == "lights") {
+            return {pinned_lights.data(), pinned_lights.size()};
+        }
+        if (block == "mesh") return {&pinned_mesh, sizeof(pinned_mesh)};
+        if (block == "mat") return {&material_block, sizeof(material_block)};
+        if (block == "up") return {&uv_block, sizeof(uv_block)};
+        if (block == "gp") {
+            if (!geometry_params) {
+                gpu_error(
+                    "standard variant declares gpUniforms outside a "
+                    "geometry task.");
+            }
+            return {geometry_params, sizeof(*geometry_params)};
+        }
+        return {};
     };
-    push_blocks(state.standard_vertex_slots[variant], false);
-    push_blocks(state.standard_fragment_slots[variant], true);
+    push_stage_uniforms(
+        command,
+        state.standard_vertex_slots[variant],
+        false,
+        "standard variant",
+        resolve);
+    push_stage_uniforms(
+        command,
+        state.standard_fragment_slots[variant],
+        true,
+        "standard variant",
+        resolve);
     const PinnedStageSlots& fragment_slots =
         state.standard_fragment_slots[variant];
     std::vector<SDL_GPUTextureSamplerBinding> fragment_textures;
@@ -3662,7 +3783,7 @@ bool run_gpu_engine(Engine& engine) {
         color_target.format = transmission_enabled
             ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
             : swapchain_format;
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIALS
         // The pinned pipelines are built lazily on first use, long after this
         // point, and they target the same attachment as the transcribed ones.
         state.pinned_color_format = color_target.format;
@@ -5099,7 +5220,7 @@ bool run_gpu_engine(Engine& engine) {
                                           const std::vector<SDL_GPUGraphicsPipeline*>& shader_variant_pipelines,
                                           const std::vector<SDL_GPUGraphicsPipeline*>& shader_variant_a2c_pipelines,
                                           const std::array<float, 16>& draw_matrix,
-                                          const CameraRecord& draw_camera,
+                                          [[maybe_unused]] const CameraRecord& draw_camera,
                                           const upstream::RenderDrawLists& draw_lists,
                                           [[maybe_unused]] const FrameTaskRecord* geometry_task,
                                           [[maybe_unused]] const PinnedGeometryParams* geometry_params,
@@ -5753,7 +5874,7 @@ bool run_gpu_engine(Engine& engine) {
                         // reverse-Z geometry contract: reverse matrix,
                         // GREATER pipelines, zero depth clear.
                         bool task_has_pbr = false;
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIAL_VARIANTS
                         task_has_pbr = pinned_lists_have_pinned_draws(
                             task_draw_lists[handle.value]);
 #endif
@@ -5787,7 +5908,7 @@ bool run_gpu_engine(Engine& engine) {
                                 0.0f,
                             },
                         };
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIALS
                         // The same block as a real buffer, for a composed
                         // geometry fragment whose gp the shader compile
                         // demoted out of SDL_GPU's four uniform slots --
@@ -6560,6 +6681,36 @@ bool run_gpu_engine(Engine& engine) {
                             "Standard draw in a build with no composed "
                             "variant table; the transcribed fragment is "
                             "retired.");
+                    }
+#endif
+#if BBLITE_NODE_VARIANTS > 0
+                    // A node graph's own compiled stages, the third
+                    // composed family. Its variant is the graph's index,
+                    // which the plan carries on the item.
+                    if (
+                        item.material_kind ==
+                        upstream::RenderMaterialKind::node) {
+                        draw_node_variant(
+                            state,
+                            command,
+                            pass,
+                            scene,
+                            engine,
+                            camera,
+                            matrix,
+                            draw,
+                            mesh,
+                            item.shader_variant,
+                            bound_pipeline);
+                        continue;
+                    }
+#else
+                    if (
+                        item.material_kind ==
+                        upstream::RenderMaterialKind::node) {
+                        gpu_error(
+                            "a node material in a build with no composed "
+                            "graphs.");
                     }
 #endif
                     SDL_GPUGraphicsPipeline* pipeline =

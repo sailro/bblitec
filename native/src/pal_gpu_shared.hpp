@@ -35,6 +35,13 @@
 #if BBLITE_STANDARD_VARIANTS > 0
 #include <bblite/upstream/standard_variants.hpp>
 #endif
+// The node family's compiled graphs: one entry per graph the scene parsed,
+// each naming its stages, its vertex inputs and its uniform block. It hoists
+// the shared scene/lights mirrors when neither header above is emitted, so
+// the include order continues the same one-definition rule.
+#if BBLITE_NODE_VARIANTS > 0
+#include <bblite/upstream/node_variants.hpp>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -727,7 +734,102 @@ inline std::vector<std::array<float, 16>> pinned_instance_matrices(
 
 #endif
 
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIALS
+/**
+ * Where one of Babylon Lite's own vertex-input names sits in our vertex.
+ *
+ * All three composed families declare their inputs by the pin's names, and
+ * the pin numbers the locations densely per variant — an unskinned stage puts
+ * nothing where a skinned one puts `joints`. So a PAL resolves each declared
+ * name against the vertex we pack, and the table that answers it is a
+ * property of `GpuVertex` rather than of a family or a backend.
+ *
+ * `lane` is the shape, which each backend maps to its own format enum;
+ * `instance_stream` marks the thin-instance matrix columns, which come from a
+ * second, instance-stepped buffer rather than from the vertex.
+ */
+enum class VertexInputLane {
+    float2,
+    float3,
+    float4,
+    uint4,
+};
+
+struct PinnedVertexInput {
+    VertexInputLane lane = VertexInputLane::float3;
+    std::uint64_t offset = 0;
+    bool instance_stream = false;
+    /** False when this vertex carries nothing under that name. */
+    bool mapped = false;
+};
+
+/**
+ * Resolve one declared input. `local_position` is the arm a LOCAL_POSITION
+ * geometry variant takes: its varying reads the raw attribute, so the draw
+ * binds the vertex's local lanes and its mesh block carries the real node
+ * world.
+ */
+inline PinnedVertexInput pinned_vertex_input(
+    std::string_view name,
+    bool uses_local_position) {
+    const auto at = [](VertexInputLane lane, std::size_t offset) {
+        return PinnedVertexInput{
+            lane,
+            static_cast<std::uint64_t>(offset),
+            false,
+            true,
+        };
+    };
+    if (name == "position") {
+        return at(
+            VertexInputLane::float3,
+            uses_local_position ? offsetof(GpuVertex, local_position)
+                                : offsetof(GpuVertex, position));
+    }
+    if (name == "normal") {
+        return at(VertexInputLane::float3, offsetof(GpuVertex, normal));
+    }
+    if (name == "tangent") {
+        return at(VertexInputLane::float4, offsetof(GpuVertex, tangent));
+    }
+    if (name == "uv") {
+        return at(VertexInputLane::float2, offsetof(GpuVertex, uv));
+    }
+    if (name == "uv2") {
+        return at(VertexInputLane::float2, offsetof(GpuVertex, uv2));
+    }
+    if (name == "color") {
+        return at(VertexInputLane::float4, offsetof(GpuVertex, color));
+    }
+    // The pin's thin-instance arm reads the per-instance matrix as four vec4
+    // columns from its own stream, so the offset is into that buffer.
+    if (
+        name == "world0" || name == "world1" || name == "world2" ||
+        name == "world3") {
+        return PinnedVertexInput{
+            VertexInputLane::float4,
+            static_cast<std::uint64_t>(16 * (name.back() - '0')),
+            true,
+            true,
+        };
+    }
+#if BBLITE_GPU_DEFORMATION
+    if (name == "weights") {
+        return at(VertexInputLane::float4, offsetof(GpuVertex, weights));
+    }
+#if BBLITE_PBR_VARIANTS > 0
+    // The pin takes joint indices as integers; the transcribed stage takes
+    // them as floats, so the vertex carries both while the two coexist.
+    if (name == "joints") {
+        return at(VertexInputLane::uint4, offsetof(GpuVertex, joint_indices));
+    }
+#endif
+#endif
+    return PinnedVertexInput{};
+}
+#endif
+
+#if BBLITE_PINNED_MATERIAL_VARIANTS
 /** Whether a record draws through the pin's thin-instance arm: stamped by
  *  the scene setter or filled by the glTF EXT_mesh_gpu_instancing pool. */
 inline bool pinned_record_instanced(const MeshRecord& record) {
@@ -759,9 +861,10 @@ inline bool pinned_lists_have_pinned_draws(
 }
 #endif
 
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PINNED_MATERIALS
 
-/** The identity, for a skinned draw whose palette already carries everything. */
+/** The identity, for a skinned draw whose palette already carries everything,
+ *  and for the two families whose vertices are baked with their world. */
 inline std::array<float, 16> pinned_identity_world() {
     return {
         1.0f, 0.0f, 0.0f, 0.0f,
@@ -771,6 +874,9 @@ inline std::array<float, 16> pinned_identity_world() {
     };
 }
 
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0
 /** The pin's own per-mesh world matrix: the mirror its vertices do not carry. */
 inline std::array<float, 16> pinned_mesh_world() {
     return {
@@ -827,7 +933,7 @@ inline std::array<float, 16> pinned_draw_world(
 }
 #endif
 
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIALS
 /**
  * The pin's per-pass scene block.
  *
@@ -942,13 +1048,20 @@ inline std::vector<std::uint8_t> pinned_lights_block(
 // lights affecting this mesh, then their indices. Which lights those are comes
 // from the generated `light_affects_mesh`, lowered from the pin's own
 // `affectsMesh`, so this walks exactly the set the Standard slot writer walks.
-inline upstream::MeshUniforms pinned_mesh_block(
+/**
+ * The pin's own per-mesh light selection (`writeMeshLightSelection`).
+ *
+ * Shared because the mesh block is not one struct: the material families
+ * declare `MeshUniforms` and a node graph declares its own `MeshU` with a
+ * shadow lane between the world matrix and the count. What they agree on is
+ * this walk, so it is written once over whichever block's lanes.
+ */
+template <typename Block>
+inline void pinned_mesh_light_selection(
     const Scene& scene,
     const Engine& engine,
-    const std::array<float, 16>& world,
-    std::uint32_t mesh_index) {
-    upstream::MeshUniforms block{};
-    block.world = world;
+    std::uint32_t mesh_index,
+    Block& block) {
     std::uint32_t count = 0;
     std::uint32_t light_index = 0;
     for (const LightHandle handle : scene.lights) {
@@ -964,6 +1077,17 @@ inline upstream::MeshUniforms pinned_mesh_block(
         ++light_index;
     }
     block.lc = count;
+}
+
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+inline upstream::MeshUniforms pinned_mesh_block(
+    const Scene& scene,
+    const Engine& engine,
+    const std::array<float, 16>& world,
+    std::uint32_t mesh_index) {
+    upstream::MeshUniforms block{};
+    block.world = world;
+    pinned_mesh_light_selection(scene, engine, mesh_index, block);
     // The velocity geometry arm's tail. The native worlds are constant
     // frame to frame (node motion re-bakes vertices), so the previous
     // world is the world itself and the flag stays on: the composed
@@ -984,6 +1108,28 @@ inline upstream::MeshUniforms pinned_mesh_block(
     }(block);
     return block;
 }
+#endif
+
+#if BBLITE_NODE_VARIANTS > 0
+/**
+ * A node graph's per-draw mesh block (`node-renderable.ts`).
+ *
+ * The pin packs the mesh's world matrix, `receiveShadows ? 1 : 0` in the
+ * shadow lane, and the same light selection every family uses. The world is
+ * the identity because our vertices are baked with it, exactly as the
+ * Standard family's are — `receiveShadows` has no lowered setter, so the
+ * lane is the pin's own default.
+ */
+inline upstream::NodeMeshUniforms node_mesh_block(
+    const Scene& scene,
+    const Engine& engine,
+    std::uint32_t mesh_index) {
+    upstream::NodeMeshUniforms block{};
+    block.world = pinned_identity_world();
+    pinned_mesh_light_selection(scene, engine, mesh_index, block);
+    return block;
+}
+#endif
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0

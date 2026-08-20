@@ -158,6 +158,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["material:shader"],
     },
     {
+        source: "upstream/src/material_node.cpp",
+        features: ["material:node"],
+    },
+    {
         source: "upstream/src/material_standard.cpp",
         features: ["material:standard"],
     },

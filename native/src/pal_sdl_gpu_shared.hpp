@@ -275,6 +275,51 @@ inline void bind_stage_storage(
         static_cast<Uint32>(buffers.size()));
 }
 
+/** One block a stage's resolver named: its bytes, or none. */
+struct PinnedStageBlock {
+    const void* data = nullptr;
+    std::size_t bytes = 0;
+};
+
+/**
+ * Push the uniform blocks a stage kept, in the sidecar's own slot order.
+ *
+ * The composed families differ only in which blocks they can name — the walk,
+ * the slot index and the stage split are the same for all of them, which is
+ * why the resolver is the parameter and a name it cannot map fails loudly
+ * rather than pushing a neighbour's bytes.
+ */
+template <typename Resolve>
+inline void push_stage_uniforms(
+    SDL_GPUCommandBuffer* command,
+    const PinnedStageSlots& slots,
+    bool fragment,
+    const char* what,
+    Resolve resolve) {
+    for (std::size_t slot = 0; slot < slots.uniforms.size(); ++slot) {
+        const PinnedStageBlock block = resolve(slots.uniforms[slot]);
+        if (!block.data) {
+            gpu_error(
+                (std::string(what) + " declares an unmapped uniform block '" +
+                 slots.uniforms[slot] + "'.")
+                    .c_str());
+        }
+        if (fragment) {
+            SDL_PushGPUFragmentUniformData(
+                command,
+                static_cast<Uint32>(slot),
+                block.data,
+                static_cast<Uint32>(block.bytes));
+            continue;
+        }
+        SDL_PushGPUVertexUniformData(
+            command,
+            static_cast<Uint32>(slot),
+            block.data,
+            static_cast<Uint32>(block.bytes));
+    }
+}
+
 /** Push `bytes` at `slot`, or nothing when the stage kept no such block. */
 inline void push_stage_uniform(
     SDL_GPUCommandBuffer* command,

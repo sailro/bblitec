@@ -75,6 +75,10 @@ import {
     type PropertyAnimationContext,
 } from "./compiler/property-animation.js";
 import {
+    compileNodeMaterialOptions,
+    type NodeMaterialContext,
+} from "./compiler/node-material.js";
+import {
     compileShaderMaterialOptions,
     compileShaderUniformComponents,
     reachedShaderProgram,
@@ -127,6 +131,7 @@ import type {
     CompileAsset,
     CompileOptions,
     CompileResult,
+    CompiledNodeMaterial,
     CompiledShaderProgram,
     Feature,
     GeometryOutputTaskManifest,
@@ -193,6 +198,7 @@ const featureSources: Record<Feature, string[]> = {
     "material:emissive": [],
     "material:no-color-view": [],
     "material:grid": [],
+    "material:node": [],
     "material:shader": [],
     "material:standard": [],
     "material:standard-vertex-colors": [],
@@ -300,6 +306,7 @@ class Compiler
         MaterialOptionContext,
         MeshOptionContext,
         NativeFunctionContext,
+        NodeMaterialContext,
         PromiseLoweringContext,
         PropertyAnimationContext,
         PropertyContext,
@@ -342,6 +349,7 @@ class Compiler
     private readonly featureSites = new Map<Feature, string>();
     public readonly assets = new Map<string, CompileAsset>();
     public readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
+    public readonly reachedNodeMaterials: CompiledNodeMaterial[] = [];
     private thisInstance: Value | undefined;
     private readonly classInstances = new Map<Value, ts.ClassDeclaration>();
     private readonly body: string[] = [];
@@ -461,6 +469,7 @@ class Compiler
                                     predeclared.name === name,
                             ),
                     ),
+                nodeMaterials: this.reachedNodeMaterials,
                 geometryOutputTasks: this.geometryOutputTasks,
                 postProcessTasks: this.postProcessTasks,
                 postProcessComposites: this.postProcessComposites,
@@ -1289,6 +1298,17 @@ class Compiler
         expression: ts.Expression,
     ): { name: string; id: number } {
         return compileShaderMaterialOptions(this, expression);
+    }
+
+    public compileNodeMaterialOptions(
+        snippetExpression: ts.Expression,
+        optionsExpression: ts.Expression | undefined,
+    ): number {
+        return compileNodeMaterialOptions(
+            this,
+            snippetExpression,
+            optionsExpression,
+        );
     }
 
     public reachedShaderProgram(

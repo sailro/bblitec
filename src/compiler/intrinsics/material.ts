@@ -75,6 +75,10 @@ export interface MaterialIntrinsicContext
     compileShaderMaterialOptions(
         expression: ts.Expression,
     ): { name: string; id: number };
+    compileNodeMaterialOptions(
+        snippetExpression: ts.Expression,
+        optionsExpression: ts.Expression | undefined,
+    ): number;
     expectShaderVariant(
         material: Value,
         variant: string,
@@ -737,6 +741,32 @@ export function compileMaterialIntrinsic(
             return {
                 kind: "material",
                 cpp: `bbl::create_standard_material(${engine})`,
+                engineCpp: engine,
+            };
+        }
+
+        case "parseNodeMaterialFromSnippet": {
+            // The pin parses the graph, walks it through one emitter per
+            // block class and compiles the module — all of it at page load,
+            // from data the source already carries. Generation runs that
+            // same compiler over the same graph
+            // (`src/pinned-node-material.ts`), so what the call reaches here
+            // is the graph's index in the composed table.
+            context.recordSceneMaterialSlot();
+            context.expectArgumentCount(call, 2, 3);
+            const engine = context.requireEngine(
+                context.compileValue(call.arguments[0]!),
+                call,
+            );
+            const index = context.compileNodeMaterialOptions(
+                call.arguments[1]!,
+                call.arguments[2],
+            );
+            context.reachFeature("material:node", call);
+            context.reachFeature("renderer:pbr", call);
+            return {
+                kind: "material",
+                cpp: `bbl::create_node_material(${engine}, ${index}u)`,
                 engineCpp: engine,
             };
         }

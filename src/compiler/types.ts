@@ -28,6 +28,8 @@ export interface CompileManifest {
     assets: CompileAsset[];
     shaderVariants: string[];
     customShaderPrograms: CompiledShaderProgram[];
+    /** Every node-material graph the scene parsed, in reach order. */
+    nodeMaterials: CompiledNodeMaterial[];
     /** The sprite-family custom fragment shaders scene code built. */
     spriteCustomShaders: SpriteCustomShaderManifest[];
     /**
@@ -192,6 +194,30 @@ export interface CompiledShaderUniformDefault {
     name: string;
     values: number[];
 }
+
+/**
+ * One Babylon NME graph a scene handed `parseNodeMaterialFromSnippet`.
+ *
+ * The graph is carried whole rather than summarised: what it means is the
+ * pin's own compiler to decide, and composition runs that compiler over
+ * exactly these bytes.
+ *
+ * Two routes reach one, because the corpus writes graphs both ways. A module
+ * that exports the object outright is read as data — the fold, and the one to
+ * prefer, because a literal cannot drift. A module that *builds* its graph at
+ * load (id counters, spread-composed inputs, arrays it pushes into) is code
+ * this compiler does not lower, so it is executed instead, exactly as a drawn
+ * atlas and a computed pixel buffer are.
+ */
+export type CompiledNodeMaterial =
+    | { kind: "literal"; graph: Record<string, unknown> }
+    | {
+        kind: "module";
+        /** Repository-relative path of the module that builds the graph. */
+        module: string;
+        /** The exported binding whose value is the graph. */
+        exportName: string;
+    };
 
 export interface CompileAsset {
     source: string;
@@ -493,6 +519,7 @@ export type Feature =
     | "material:emissive"
     | "material:no-color-view"
     | "material:grid"
+    | "material:node"
     | "material:shader"
     | "material:standard"
     | "material:standard-vertex-colors"

@@ -348,10 +348,10 @@ function Get-ShaderEntryPoint {
 
     .DESCRIPTION
     Three conventions meet here. Babylon Lite's own composed material variants
-    name both entry points `main`. A post-process pass is composed too, but the
-    pin puts both of its stages in one module, so each names itself. Everything
-    else is a shader this repository authors or specializes, and those carry
-    the mainVertex/mainFragment convention.
+    name both entry points `main`. A post-process pass and a node graph are
+    composed too, but the pin puts both of their stages in one module, so each
+    names itself. Everything else is a shader this repository authors or
+    specializes, and those carry the mainVertex/mainFragment convention.
     #>
     param(
         [string]$Name,
@@ -360,6 +360,9 @@ function Get-ShaderEntryPoint {
 
     if ($Name.StartsWith("postprocess-")) {
         return $(if ($Vertex) { "postProcessVertex" } else { "postProcessFragment" })
+    }
+    if ($Name.StartsWith("node-")) {
+        return $(if ($Vertex) { "vs_main" } else { "fs_main" })
     }
     if ($Name.StartsWith("variant-")) {
         return "main"
@@ -561,7 +564,9 @@ foreach ($shaderDirectory in $shaderDirectories) {
             # read this repository's specialization back out of Tint.
             $isPinnedVariant = $source.Name.StartsWith("variant-")
             $isPinnedComposed = (
-                $isPinnedVariant -or $source.Name.StartsWith("postprocess-")
+                $isPinnedVariant -or
+                $source.Name.StartsWith("postprocess-") -or
+                $source.Name.StartsWith("node-")
             )
             $entryPoint = Get-ShaderEntryPoint `
                 $source.Name `

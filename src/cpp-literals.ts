@@ -9,7 +9,10 @@
  * `1e+21.0f` — not C++.
  */
 export function floatLiteral(value: number): string {
-    const text = String(value);
+    // `String(-0)` is `"0"`, which loses the sign bit. Every emitter that
+    // byte-preserves a block cares — a folded uniform whose default is
+    // negative zero must upload negative zero.
+    const text = Object.is(value, -0) ? "-0" : String(value);
     return text.includes(".") || /e/i.test(text) ? `${text}f` : `${text}.0f`;
 }
 

@@ -10,7 +10,9 @@
 // moved body reads exactly as it did inline, and the values the remainder
 // of `main` consumes travel back in the returned record.
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { executeModuleGraph } from "./executed-module-graph.js";
+import { findRepositoryRoot } from "./upstream-source.js";
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import type { CompileAsset, CompileResult } from "./compiler.js";
 import type { GeneratedTree } from "./generated-tree.js";
@@ -26,6 +28,11 @@ import {
     type PinnedRenderableVariant,
 } from "./pinned-material-arms.js";
 import { pinnedMeshFeaturesFromPrimitive } from "./pinned-mesh-features.js";
+import {
+    nodeVariantStageStems,
+    type NodeVariantManifestEntry,
+} from "./pinned-node-material-cpp.js";
+import { composeNodeMaterial } from "./pinned-node-material.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
 import { writePinnedPbrVariants } from "./pinned-pbr-variant-output.js";
 import {
@@ -65,6 +72,7 @@ export interface ComposedScenePipeline {
     runtimeMeshFeatures: number | undefined;
     standardComposition: StandardSceneComposition | undefined;
     standardRenderableMeshFeatures: number[] | undefined;
+    nodeVariants: readonly NodeVariantManifestEntry[];
 }
 
 // Every glTF material the scene loads, composed through Babylon Lite's own
@@ -328,6 +336,31 @@ export async function composeScenePipeline({
             ...renderableMeshFeatures.slice(gltfCursor),
         );
     }
+    // Every node graph the scene parsed, compiled by the pin's own emitter
+    // and pipeline builder. The index is the scene's reach order, which is
+    // what `create_node_material` was given.
+    const nodeVariants: NodeVariantManifestEntry[] = [];
+    const repositoryRoot = result.manifest.nodeMaterials.length > 0
+        ? findRepositoryRoot(dirname(resolve(result.manifest.source)))
+        : "";
+    for (const [index, material] of result.manifest.nodeMaterials.entries()) {
+        const graph = material.kind === "literal"
+            ? material.graph
+            : await executeModuleGraph({
+                modulePath: resolve(repositoryRoot, material.module),
+                exportName: material.exportName,
+            });
+        nodeVariants.push({
+            index,
+            ...nodeVariantStageStems(index),
+            composed: await composeNodeMaterial(
+                graph,
+                material.kind === "literal"
+                    ? `${index}`
+                    : `${material.module}#${material.exportName}`,
+            ),
+        });
+    }
     return {
         hasEnvironment,
         lightKinds,
@@ -339,5 +372,6 @@ export async function composeScenePipeline({
         runtimeMeshFeatures,
         standardComposition,
         standardRenderableMeshFeatures,
+        nodeVariants,
     };
 }

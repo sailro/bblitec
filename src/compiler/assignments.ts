@@ -643,8 +643,14 @@ export function emitPropertyAssignment(
         );
         return;
     }
-    if (ts.isIdentifier(left.expression)) {
-        const target = context.lookup(left.expression);
+    // A scene may widen the target before writing a property the narrow
+    // type does not carry -- `(sphere as { material?: unknown }).material`
+    // is how the corpus assigns a node material to a mesh. The cast is a
+    // type-level annotation with no value, so the target it names is the
+    // expression underneath it.
+    const targetExpression = context.unwrap(left.expression);
+    if (ts.isIdentifier(targetExpression)) {
+        const target = context.lookup(targetExpression);
         const property = left.name.text;
 
         if (

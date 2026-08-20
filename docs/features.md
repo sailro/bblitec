@@ -72,6 +72,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Geometry and meshes](#geometry-and-meshes) | Run | primitives, typed-array meshes, thin instances, transforms |
 | [Lights](#lights) | Run | directional, hemispheric, point, spot; per-mesh light sets |
 | [Materials and material state](#materials-and-material-state) | Run | Standard, PBR, Grid, no-color views, alpha and extension state |
+| [Node materials](#node-materials) | Compile → Run | a Babylon NME graph compiled by the pin's own emitter at generation; its draw and its blocks at run time |
 | [Animation playback](#animation-playback) | Run | deterministic seeking, property clips, glTF channels |
 | [Deformation and instancing](#deformation-and-instancing) | Run | GPU skinning, morph targets, storage morphing, GPU instancing |
 | [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
@@ -81,7 +82,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Runtime scene mutation](#runtime-scene-mutation) | Run | removal with plan rematching, material-family append, instance counts |
 | [Diagnostics and capture](#diagnostics-and-capture) | Run | screenshots, benchmarks, attribution buffers |
 
-Nine families have work on both sides of the line; the shader pipeline's
+Ten families have work on both sides of the line; the shader pipeline's
 second stage changes phase with the backend. Where the cut falls in each is
 [tabulated below](#where-the-boundary-falls-inside-a-family).
 
@@ -403,6 +404,45 @@ reflectance, emissive strength, lighting intensities, double-sided, normal
 scale, shared texture scaling, transmission, IOR, volume, dispersion,
 clearcoat, sheen, iridescence, and the spec-gloss workflow replacement.
 
+### Node materials
+
+A node material is a graph, not a shader. `parseNodeMaterialFromSnippet`
+parses a Babylon NME document, walks it from its two output blocks through one
+emitter per block class, and wraps the two bodies into the module the browser
+compiles — a hundred and three emitters, which are the graph's semantics rather
+than a formula to restate.
+
+**Compile time: the whole compiler.** Generation runs that entry point against
+a recording device, so what deploys is the module the pin built for this
+graph: its WGSL, the layout of the uniform block its named inputs produced,
+the vertex inputs it declares, and its cull state. The block's bytes are
+folded from the graph's own defaults, because a scene changing one would go
+through the `inputs` handles, which are not lowered.
+
+Two routes reach a graph, because the corpus writes them both ways. A module
+exporting the document as a literal is read as data — the fold, and the one to
+prefer, since a literal cannot drift. A module that *builds* its graph at load
+from id counters, spread-composed inputs and arrays it pushes into is code
+this compiler does not lower, so it is executed instead. That one runs under
+Node rather than in headless Chromium, which is the difference between this
+and the two executed asset kinds beside it: those produce *pixels*, so they
+run where the golden runs them and record an adaptation for it, while a graph
+is structure — an object of numbers, strings and arrays that no two ECMAScript
+engines can disagree about.
+
+**Run time: the draw.** A node draw binds the pin's own group scheme — the
+per-pass scene block and lights in group 0, the graph's mesh block and uniform
+block in group 1 — and both backends execute the compiled stages, entered at
+the pin's own `vs_main`/`fs_main`.
+
+The reached slice is a graph that samples no texture and reads no light: the
+scene-code side of a node material is one call and one `mesh.material`
+assignment. Every other arm — `TextureBlock`, `LightBlock`, `ReflectionBlock`,
+morph targets, shadows, clip planes, frag depth, screen size, the PBR layer
+blocks, alpha blending — refuses at generation naming the block that reached
+it, and a graph fetched by snippet id refuses because the fetch is a network
+read at page load.
+
 ### Animation playback
 
 Deterministic scene-level seeking over two separate runtimes: property
@@ -626,6 +666,7 @@ before it trusts a measurement.
 | Lights | which light-kind writers and `light_*.cpp` units exist | the lights buffer, per-mesh light sets, uniforms |
 | Textures | which image codecs link and ship | decode, mip generation, factor texels, sampler state |
 | Post-process passes | each effect's composed stage, for the options the scene passed | the pass, its uniform block, its viewport rectangle and its blend |
+| Node materials | the graph compiled to a module by the pin's own emitter, its uniform block folded to the graph's defaults | the draw, its mesh block, and the per-mesh light selection that block carries |
 
 ## Knobs
 
@@ -697,6 +738,12 @@ build error with a source location, not a silently different image.
 - custom shader variants are bounded by the supported WGSL subset and the
   `worldViewProjection` system uniform; arbitrary system-uniform sets and
   matrix-valued custom uniforms remain unsupported
+- a node material graph is taken inline; a snippet id fetches it from the
+  snippet server at page load and fails. The graph itself is read as a JSON
+  literal or executed as the module that builds it, and every block outside
+  the reached slice — textures, lights, environment, morph targets, shadows,
+  clip planes, frag depth, screen size, the PBR layer blocks and alpha
+  blending — refuses at generation naming the block that reached it
 - an asset carrying more punctual light nodes than the pinned `MAX_LIGHTS`
   (16) fails, where upstream grows the constant at run time
 - a scene-code mesh or PBR material created before a later glTF load fails,

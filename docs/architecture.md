@@ -76,6 +76,9 @@ Primary source ownership:
 | `src/pinned-post-process.ts` | runs a post-process factory and the pin's own `getShaderModule`, so a pass deploys the module the browser compiles; runs a composite's factory to learn the chain it builds |
 | `src/post-process-effects.ts` | the reached effects: which options reach the composed text, which scalars the effect's writer reads, and which textures bind after the source |
 | `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant |
+| `src/pinned-node-material.ts` | runs the pin's own node-material compiler over a Babylon NME graph, against a recording device, and refuses every arm outside the reached slice |
+| `src/pinned-node-material-cpp.ts` | the C++ transcript of that run: the node variant table, its vertex inputs, the folded uniform bytes, and the pin's own mesh block mirrored |
+| `src/compiler/node-material.ts` | which graph a `parseNodeMaterialFromSnippet` call reached: a static JSON literal read as data, or a module generation executes |
 | `src/pinned-standard-variants.ts` | the Standard sibling: derives the pin's own feature words and composes the Standard colour and geometry variants |
 | `src/pinned-material-input.ts` | maps a glTF material to the shape `_computePbrMaterialFeatures` reads — the loader's own extension builders executed against a recording stub, not re-derived |
 | `src/pinned-material-arms.ts` | composes every material a scene loads and refuses a fragment missing an arm one of them reaches |
@@ -211,6 +214,8 @@ The current generated slice includes:
   outside the reached 64-matrix GPU slice
 - the HillValley-required `.babylon` loader slice
 - Standard/PBR/Grid material records, no-color views, and typed custom shaders
+- Babylon NME node materials: the graph compiled at generation by the pin's own
+  emitter and pipeline builder, deployed as the module it produced
 - metadata-driven `KHR_materials_clearcoat`, `KHR_materials_sheen`,
   `KHR_materials_iridescence`, and `KHR_materials_dispersion` layers, plus
   the `KHR_materials_pbrSpecularGlossiness` workflow replacement

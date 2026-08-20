@@ -947,13 +947,18 @@ struct MaterialRecord {
     bool opacity_from_rgb = false;
     bool standard_material = false;
     bool shader_material = false;
+    // A Babylon NME graph, compiled at generation by the pin's own emitter.
+    // Its variant rides `shader_variant` below, which indexes whichever
+    // family's table the material belongs to.
+    bool node_material = false;
     bool grid_material = false;
     bool alpha_to_coverage = false;
     bool shader_alpha_testing = false;
     bool shader_depth_write = true;
-    // Index into the generated shader-variant table (see the emitted
-    // upstream::shader_variant_info); ids are assigned in reach order by
-    // the compiler and drive pipeline selection and uniform layout.
+    // Index into the material family's own generated variant table -- the
+    // shader-variant one (`upstream::shader_variant_info`) or, for a node
+    // material, `upstream::node_variants`. Ids are assigned in reach order
+    // by the compiler and drive pipeline selection and uniform layout.
     std::uint32_t shader_variant = 0;
     // Flat custom-uniform storage laid out by the variant's reflected
     // member offsets; created (and defaults-applied) by the emitted
@@ -1353,6 +1358,9 @@ MaterialHandle create_grid_material(
     Engine& engine,
     GridMaterialOptions options = {});
 MaterialHandle create_shader_material(
+    Engine& engine,
+    std::uint32_t variant);
+MaterialHandle create_node_material(
     Engine& engine,
     std::uint32_t variant);
 void set_shader_uniform_values(
