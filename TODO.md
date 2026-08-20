@@ -196,11 +196,14 @@ scenes.
 condition 17 (15 of them deferred-lane physics), `parseNodeMaterialFromSnippet`
 17, engine options beyond msaaSamples/requiredLimits 7,
 `parseNodeParticleSource` 7, static array literal 5, `receiveShadows` 5,
-`loadSplat` 5, `??` over a non-static-record operand 5, `light.position.set` 4,
+`loadSplat` 5, `??` over a non-static-record operand 5,
 string-literal arguments 3, `createNavigationPluginAsync` 3. Standard
-diffuse-texture assignment blocks 5 (18, 25, 90, 110, 272), vector `.set()` on
-node properties blocks 5 (4, 22, 65, 141, 223), mesh name/id setters block 4
-(111, 113, 129, 221).
+diffuse-texture assignment blocks 5 (18, 25, 90, 110, 272), mesh name/id
+setters block 4 (111, 113, 129, 221). The light vector setters shipped, and
+the five scenes behind them moved on: 4 and 22 to `createGroundFromHeightMap`
+and the shadow family, 65 to `receiveShadows`, 141 to
+`usePhysicalLightFalloff` then node materials, 207 to engine options, 223 to
+`createUtilityLayer`.
 
 - [ ] Scene 11's residual is a skinned pose, not its material: the composed
   fragment is byte-identical to the browser's and `scene -- diff` names two
@@ -270,7 +273,6 @@ that does to the deferred lane by default.
 
 ### Integration-first compiler contract gaps
 
-- [ ] Scenes 4, 22, 65, 141, 223: support light position setters.
 - [ ] Scene 115: support `Number.isFinite`, then re-audit for deterministic
   picking.
 - [ ] Scenes 144, 152, 157, 158, 179, 218, 250: address a loader-returned

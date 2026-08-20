@@ -634,6 +634,29 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Retires when a corpus scene reaching the light vector setters
+        // compiles (4, 22, 141, 207, 223 all do, each behind another
+        // contract); until then this is the only thing that measures them.
+        id: "regression-light-setters",
+        name: "Regression - Light Vector Setters",
+        source: "examples/regression-light-setters.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Light Vector Setters",
+        buildDirectory: "native/build-regression-light-setters-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-light-setters/babylon-lite-golden.png",
+            },
+            outputDirectory: "artifacts/parity/regression-light-setters",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-compiler-state",
         name: "Regression - Compiler State",
         source: "examples/regression-compiler-state.ts",

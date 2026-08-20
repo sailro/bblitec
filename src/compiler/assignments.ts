@@ -273,6 +273,40 @@ export function directPropertyAssignment(
     return lightProperties[owner.lightKind][property];
 }
 
+/**
+ * The light vectors a scene may write after creation, beside the scalar and
+ * colour properties above and for the same reason: a kind carries the vectors
+ * its pinned type declares, and one no reached scene writes stays unlowered
+ * and fails explicitly rather than being accepted and ignored.
+ *
+ * `light.position.set(x, y, z)` is not a record-field write like the entries
+ * above — an `ObservableVec3` write also marks the light's local matrix
+ * dirty — so each of these lowers to its own kind's emitted entry point
+ * rather than to a `DirectPropertyAssignment`. `LightLowerer` emits exactly
+ * these, checked against the pinned factory's own `ObservableVec3`
+ * properties.
+ */
+const lightVectors: Readonly<Record<LightKind, readonly string[]>> = {
+    // No reached scene writes a hemispheric direction or a point position.
+    hemispheric: [],
+    point: [],
+    directional: ["position"],
+    spot: ["position", "direction"],
+};
+
+/** The emitted entry point for `light.<vector>.set(...)`, if there is one. */
+export function lightVectorSetter(
+    owner: Value,
+    vector: string,
+): string | undefined {
+    if (owner.kind !== "light" || !owner.lightKind) {
+        return undefined;
+    }
+    return lightVectors[owner.lightKind].includes(vector)
+        ? `set_${owner.lightKind}_light_${vector}`
+        : undefined;
+}
+
 export interface AssignmentContext {
     lookup(identifier: ts.Identifier): Value;
     compileValue(expression: ts.Expression): Value;

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { analyzeUpstreamGraph } from "../src/upstream-graph.js";
 import { LoweringContext } from "../src/lowering/context.js";
+import { lightVectorSetter } from "../src/compiler/assignments.js";
+import type { LightKind } from "../src/compiler/types.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
@@ -181,8 +183,12 @@ test("flows the pinned camera inertia constants into the controls", () => {
     );
 });
 
+// One store load serves both light tests: the LoweringContext constructor
+// parses every pinned source map, which dwarfs the lowering itself.
+const lightLowerer = new LightLowerer(new LoweringContext());
+
 test("flows the pinned light matrices and spot cone into the factories", () => {
-    const lowerer = new LightLowerer(new LoweringContext());
+    const lowerer = lightLowerer;
     // The spot half-angle factor flows from the pinned _cosHalfAngle
     // initializer (src/light/spot-light.ts); the precision semantics
     // stay the emission's own (the TODO.md spot-cone ULP entry).
@@ -211,17 +217,66 @@ test("flows the pinned light matrices and spot cone into the factories", () => {
         point.source,
         /light\.local_matrix\[15\] = 1\.0f;/,
     );
-    // The directional zeros are the pinned default position; the
-    // hemispheric zeros are the pinned literal origin arguments.
-    for (const lowered of [
-        lowerer.lowerDirectionalFactory(),
-        lowerer.lowerFactory(),
-    ]) {
-        assert.match(
-            lowered.source,
-            /0\.0f,\s*0\.0f,\s*0\.0f,\s*light\.local_matrix\);/,
-        );
+    // The directional zeros are the pinned default position, which the
+    // factory now stores on the record so the rebuild an ObservableVec3
+    // write triggers reads the same field the setter moved.
+    const directional = lowerer.lowerDirectionalFactory();
+    assert.match(
+        directional.source,
+        /light\.position = Vec3\{\s*0\.0f,\s*0\.0f,\s*0\.0f\};/,
+    );
+    // The hemispheric zeros stay the pinned literal origin arguments: that
+    // kind carries no position to move.
+    assert.match(
+        lowerer.lowerFactory().source,
+        /0\.0f,\s*0\.0f,\s*0\.0f,\s*light\.local_matrix\);/,
+    );
+});
+
+test("every light vector setter rebuilds its own kind's local matrix", () => {
+    // An ObservableVec3 write marks the light's local matrix dirty and the
+    // next read rebuilds it, so a setter that only moved the field would
+    // leave `local_matrix`'s readers on the old pose — including the CPU
+    // raster path, which the image gate does not run. This is what holds
+    // the setters to the rebuild.
+    const sources: Readonly<Record<LightKind, string>> = {
+        hemispheric: lightLowerer.lowerFactory().source,
+        directional: lightLowerer.lowerDirectionalFactory().source,
+        point: lightLowerer.lowerPointFactory().source,
+        spot: lightLowerer.lowerSpotFactory().source,
+    };
+    let emitted = 0;
+    for (const kind of Object.keys(sources) as LightKind[]) {
+        for (const vector of ["position", "direction"]) {
+            const setter = lightVectorSetter(
+                { kind: "light", cpp: "", lightKind: kind },
+                vector,
+            );
+            if (!setter) continue;
+            emitted++;
+            assert.ok(
+                sources[kind].includes(
+                    `    LightRecord& record = engine.lights[light.value];\n` +
+                        `    record.${vector} = ${vector};\n` +
+                        `    refresh_${kind}_light_matrix(record);\n}`,
+                ),
+                `the ${kind} light's ${vector} setter no longer rebuilds its matrix`,
+            );
+        }
+        // A kind the compiler refuses every vector for emits no setter at
+        // all, so its factory stays the pin's plain one.
+        if (
+            !["position", "direction"].some((vector) =>
+                lightVectorSetter(
+                    { kind: "light", cpp: "", lightKind: kind },
+                    vector,
+                )
+            )
+        ) {
+            assert.ok(!sources[kind].includes(`void set_${kind}_light_`));
+        }
     }
+    assert.equal(emitted, 3);
 });
 
 test("generates scene fog storage for the pinned fog UBO field set", () => {
