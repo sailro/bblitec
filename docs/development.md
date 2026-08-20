@@ -219,13 +219,33 @@ re-synced: cross-check the changed file list against `src\scene-registry.ts`.
 
 ### 2. Move the pin
 
-Update `upstream\babylon-lite.json` (both `version` and `sourceVersion`), the
-`package.json` dependency, and the lock file together, then `npm install`.
-The README's pinned-upstream line is the only prose copy of the pair, so it
-moves with them; no other page restates them.
-Copy every changed `lab/lite` file into `corpus\babylon-lite\` — the corpus is
-read-only evidence of the pinned tree — and refresh the `sha256` values in
-`upstream\babylon-lite-scenes.json`.
+Four files carry the pin and all four move together:
+
+| File | What it holds |
+| --- | --- |
+| `upstream\babylon-lite.json` | `version` and `sourceVersion` |
+| `upstream\babylon-lite-scenes.json` | its *own* `version` and `sourceVersion`, beside the corpus digests |
+| `package.json` + lock | the dependency, via `npm install` |
+| `README.md` | the only prose copy of the pair |
+
+**`sourceVersion` is the commit the published package embeds, not the release
+tag's object.** Read it from the package rather than from git — an annotated
+tag's `git rev-parse` returns the tag, and `rev-parse <tag>^{}` its commit,
+neither of which is guaranteed to be what npm shipped:
+
+```powershell
+node -p "require('./node_modules/@babylonjs/lite/package.json').babylonLiteRelease.sourceVersion"
+```
+
+Getting it wrong fails every source-mapped test at once with
+`Upstream source commit mismatch`, which reads like a broken bump and is not.
+
+Then sync the corpus, which is read-only evidence of the pinned tree.
+`corpus\babylon-lite\lab\lite\src\lite\` mirrors upstream's whole scene
+directory, so new scenes land there too; `shared\` and `_shared\` hold only
+the modules a registered scene imports, so those are copied by name. Refresh
+the `sha256` values in `upstream\babylon-lite-scenes.json` afterwards — it
+pins the registered scenes only.
 
 ### 3. Fix the compatibility report
 
@@ -242,6 +262,51 @@ read-only evidence of the pinned tree — and refresh the `sha256` values in
 - **Provenance and pin churn.** Assertions embedding the version or commit sha
   should derive them from `readUpstreamPin()` rather than hardcoding, so the
   next bump does not touch them at all.
+- **Relocated *derivation*.** The hardest kind: a function this repository
+  lowers from its own AST stops computing the thing and starts delegating.
+  1.23's `_computeStandardMaterialFeatures` kept its four base flags and
+  replaced every per-texture branch with a loop over registered extensions
+  calling `ext._detect(m)`. The AST walker refuses the loop by name, which is
+  the design working — a silent partial lowering would have dropped every
+  texture bit. The fix is to follow the delegation: lower each extension's
+  `_detect` in the loop's place. Their results are OR-ed, so their order does
+  not matter, but each body is a new shape to handle (an arrow returning
+  `cond ? FLAG : 0`, an early `return 0`, an accumulator `let f = FLAG`).
+
+  **Delegation moves preconditions with it.** While detection was inline,
+  registering the extensions mattered only for *composing* a fragment. Once it
+  moved into `ext._detect`, registration became a precondition of *deriving
+  features at all*: an unregistered extension contributes no bit, silently, so
+  every material derives as untextured and the variant table comes out short.
+  Nothing fails — generation succeeds, the scene builds, and the first frame
+  dies with `resolves no composed variant`. Ask what else the relocated code
+  now depends on, and satisfy it where the derivation happens rather than
+  where the composition does.
+
+### Read the release notes, not only the log
+
+`git log --oneline` gives subjects; the release page for each tag links the
+pull requests, and the migration detail lives in those bodies. #554's body
+carries the whole setter-to-field table for 1.23's Standard change, which is
+the map this port has to follow, and names the two places the old dispatch
+lived. Reading it first is faster than reconstructing it from the diff, and it
+surfaces changes whose *subject* sounds unrelated — 1.21's "support material
+UV transforms" adds a ninth Standard extension, which matters here even though
+no reached scene enables it.
+
+```bash
+gh api "repos/BabylonJS/Babylon-Lite/releases/tags/npm-lite-v<version>" --jq .body
+gh api "repos/BabylonJS/Babylon-Lite/pulls/<number>" --jq .body
+```
+
+### Assets renamed by the pin leave orphans behind
+
+An asset's deployed filename is hashed from its *source URL*, and the pinned
+BRDF LUT's URL embeds the upstream commit — so every bump renames it, and the
+previous file stays beside the executable (`native\CMakeLists.txt` records why
+the asset deploy merges rather than mirrors). `scene -- build` prunes what the
+generated tree no longer has, so this resolves itself; a stale-payload error
+naming a file with an unfamiliar hash prefix is what it looks like otherwise.
 
 ### 4. Prove the bump is behavior-neutral
 
@@ -260,6 +325,30 @@ something on the native side.
 Then run the full validation sequence. Regenerate everything: a feature that
 silently stops being reached only shows up as a parity regression.
 
+### The pin's own field names are not this port's
+
+When upstream moves a property behind a setter it usually renames the storage
+too — 1.23's `emissiveTexture` became `_emissiveTexture`. Two places have to
+follow, and they are different in kind:
+
+- the **record-source table** that maps a pinned property to its native
+  expression, because the walker looks the property up by the name the pinned
+  code reads;
+- the **material object generation hands to pinned code**, because the pin
+  only sees a slot under its own name.
+
+The second is a translation at one boundary, not a rename through this
+repository: `emissiveTexture` describes what a material has, while
+`_emissiveTexture` is the pin's bundling convention. Keep the port's own
+vocabulary and translate where the object crosses over
+(`pinnedOptInSlots` in `src\pinned-standard-variants.ts`).
+
+A setter that registers an extension needs nothing extra here — generation
+registers every Standard and PBR extension the pin ships before composing, so
+the tree-shaking half of an opt-in change has no native counterpart. Check the
+*feature reach* anyway: an option that gated a compiled feature must have its
+setter gate the same one.
+
 ### Recorded findings
 
 - **1.18.0 → 1.20.0.** `feat(pbr)!` moved the optional PBR material features
@@ -273,6 +362,19 @@ silently stops being reached only shows up as a parity regression.
   Scene 178 caught it because it is the only skybox scene with no actual
   transmission — 176 and 212 reached the feature through their own transmissive
   materials and hid the gap.
+- **1.20.0 → 1.23.0.** Three releases at once, 23 commits, two marked `!`.
+  `feat(standard)!` gave StandardMaterial the same opt-in treatment 1.20 gave
+  PBR, but went further: the eight optional textures moved behind setters
+  *and* their detection moved out of `_computeStandardMaterialFeatures` into
+  each extension's own `_detect`, which is why this bump needed a new failure
+  category above. `fix!` renamed `registerContributor` to
+  `_registerSceneUboContributor` and `vertexAlphaBlend` to `colorAlphaBlend`;
+  the second also widened — a thin-instance fragment declaring RGBA alpha now
+  blends without a mesh colour buffer — but that arm is unreachable here,
+  because variant composition refuses `MSH_HAS_INSTANCE_COLOR` outright. Only
+  one registered scene's source moved (116, to `setStandardEmissiveTexture`),
+  and the old assignment had reached no feature of its own, so the
+  second-order trap did not bite this time. Check it anyway.
 
 ## Ad-hoc scenes
 

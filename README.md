@@ -20,8 +20,8 @@ on both GPU backends — click any frame for the measured numbers.*
 
 ## Current proof points
 
-- Pinned upstream: `@babylonjs/lite@1.20.0`,
-  commit `95ed3029cc43e479ec924741aea4024e9bf33527`.
+- Pinned upstream: `@babylonjs/lite@1.23.0`,
+  commit `19c7c7e4b20b3a133b5025c0b22e40db2f57a408`.
 - 83 curated Babylon Lite parity scenes, plus primitives and project-owned differential regression gates.
 - External glTF/GLB support.
 - Support for Typescript structs, nullable objects, dynamic arrays,

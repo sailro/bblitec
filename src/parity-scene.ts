@@ -13,6 +13,7 @@ import { captureSuiteReference } from "./capture-suite-reference.js";
 import type { RenderItemSpecialization } from "./asset-specializer.js";
 import {
     comparePayload,
+    deployedPayloads,
     computeBuildStamp,
 } from "./build-stamp.js";
 import {
@@ -759,22 +760,15 @@ export function verifyDeployedPayload(
     // lookup, so the deployment beside the executable is only the payload
     // when neither override is active.
     const executableDirectory = resolve(executable, "..");
-    const payloads: Array<[string, string, string]> = [];
-    if (!process.env.BBLITE_GPU_SHADER_DIR) {
-        payloads.push([
-            "shaders",
-            resolve(generatedDirectory, "upstream/shaders"),
-            resolve(executableDirectory, "shaders"),
-        ]);
-    }
-    if (!process.env.BBLITE_ASSET_DIR) {
-        payloads.push([
-            "assets",
-            resolve(generatedDirectory, "assets"),
-            resolve(executableDirectory, "assets"),
-        ]);
-    }
-    for (const [label, source, deployed] of payloads) {
+    const overridden: Readonly<Record<string, string | undefined>> = {
+        shaders: process.env.BBLITE_GPU_SHADER_DIR,
+        assets: process.env.BBLITE_ASSET_DIR,
+    };
+    const payloads = deployedPayloads(
+        executableDirectory,
+        generatedDirectory,
+    ).filter((payload) => !overridden[payload.label]);
+    for (const { label, source, deployed } of payloads) {
         const mismatches = comparePayload(source, deployed);
         if (mismatches.length > 0) {
             const detail = mismatches

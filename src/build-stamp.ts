@@ -175,6 +175,31 @@ export interface PayloadMismatch {
  * a mismatch means the deployment never ran or its source changed after
  * the last build.
  */
+/**
+ * What a build deploys beside its executable, as source/destination pairs.
+ *
+ * Two callers read it: the prune that removes what the generated tree no
+ * longer has, and the guard that refuses to measure a stale one. They have to
+ * agree on the set, or the guard reports something the prune never visits.
+ */
+export function deployedPayloads(
+    executableDirectory: string,
+    generatedDirectory: string,
+): Array<{ label: string; source: string; deployed: string }> {
+    return [
+        {
+            label: "shaders",
+            source: resolve(generatedDirectory, "upstream/shaders"),
+            deployed: resolve(executableDirectory, "shaders"),
+        },
+        {
+            label: "assets",
+            source: resolve(generatedDirectory, "assets"),
+            deployed: resolve(executableDirectory, "assets"),
+        },
+    ];
+}
+
 export function comparePayload(
     sourceDirectory: string,
     deployedDirectory: string,

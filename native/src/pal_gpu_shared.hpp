@@ -1207,6 +1207,79 @@ inline BonePaletteLayout bone_palette_layout(std::uint32_t bones) {
 #endif
 
 #if BBLITE_STANDARD_VARIANTS > 0
+/** The pair `standard_variant_for` looks a draw up by, or none. */
+struct StandardVariantKey {
+    std::uint32_t features = 0;
+    std::size_t mesh_features = 0;
+    bool resolved = false;
+};
+
+/**
+ * The key a draw composes under.
+ *
+ * Split from the lookup so a miss can report what it asked for: the two
+ * numbers are the whole diagnosis, and recomputing them at the error site
+ * would print something subtly different -- the no-color pass bit and the
+ * thin-instance and morph mesh bits are ORed on here, after the raw reads.
+ */
+inline StandardVariantKey standard_variant_key(
+    const Engine& engine,
+    const upstream::RenderDrawCommand& draw) {
+    StandardVariantKey key;
+    if (
+        draw.item.material_kind !=
+            upstream::RenderMaterialKind::standard ||
+        draw.item.material.value >= engine.materials.size()) {
+        return key;
+    }
+    const MaterialRecord& material =
+        engine.materials[draw.item.material.value];
+    key.features = upstream::standard_material_features(material);
+    if (material.no_color) {
+        key.features |= upstream::standard_no_color_output_flag;
+    }
+    key.mesh_features =
+        draw.item.mesh.value <
+            upstream::standard_renderable_mesh_features.size()
+            ? upstream::standard_renderable_mesh_features[
+                  draw.item.mesh.value]
+            : upstream::standard_runtime_mesh_features;
+    if (key.mesh_features == std::numeric_limits<std::size_t>::max()) {
+        return key;
+    }
+    if (draw.item.mesh.value < engine.meshes.size()) {
+        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        if (pinned_record_instanced(record)) {
+            key.mesh_features |= upstream::std_msh_has_thin_instances;
+        }
+    }
+    if (
+        draw.item.geometry < engine.geometries.size() &&
+        !engine.geometries[draw.item.geometry].morph_positions.empty()) {
+        key.mesh_features |= upstream::std_msh_has_morph_targets;
+    }
+    key.resolved = true;
+    return key;
+}
+
+/**
+ * What a failed Standard variant lookup was asked for.
+ *
+ * A miss means the runtime derivation and the composed selector table
+ * disagree, which is what an upstream feature-derivation change looks like
+ * from here.
+ */
+inline std::string standard_variant_request(
+    const Engine& engine,
+    const upstream::RenderDrawCommand& draw) {
+    const StandardVariantKey key = standard_variant_key(engine, draw);
+    if (!key.resolved) {
+        return "no key: the draw names no composable Standard material";
+    }
+    return "features " + std::to_string(key.features) + ", mesh features " +
+        std::to_string(key.mesh_features);
+}
+
 /**
  * The Standard variant a draw composes, or `npos` when none was emitted.
  *
@@ -1224,44 +1297,13 @@ inline std::size_t standard_variant_for_draw(
     const upstream::RenderDrawCommand& draw,
     std::size_t geometry_task = std::numeric_limits<std::size_t>::max()) {
     (void)scene;
-    if (
-        draw.item.material_kind !=
-        upstream::RenderMaterialKind::standard) {
+    const StandardVariantKey key = standard_variant_key(engine, draw);
+    if (!key.resolved) {
         return std::numeric_limits<std::size_t>::max();
-    }
-    if (draw.item.material.value >= engine.materials.size()) {
-        return std::numeric_limits<std::size_t>::max();
-    }
-    const MaterialRecord& material =
-        engine.materials[draw.item.material.value];
-    std::uint32_t features =
-        upstream::standard_material_features(material);
-    if (material.no_color) {
-        features |= upstream::standard_no_color_output_flag;
-    }
-    std::size_t mesh_features =
-        draw.item.mesh.value <
-            upstream::standard_renderable_mesh_features.size()
-            ? upstream::standard_renderable_mesh_features[
-                  draw.item.mesh.value]
-            : upstream::standard_runtime_mesh_features;
-    if (mesh_features == std::numeric_limits<std::size_t>::max()) {
-        return std::numeric_limits<std::size_t>::max();
-    }
-    if (draw.item.mesh.value < engine.meshes.size()) {
-        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
-        if (pinned_record_instanced(record)) {
-            mesh_features |= upstream::std_msh_has_thin_instances;
-        }
-    }
-    if (
-        draw.item.geometry < engine.geometries.size() &&
-        !engine.geometries[draw.item.geometry].morph_positions.empty()) {
-        mesh_features |= upstream::std_msh_has_morph_targets;
     }
     return upstream::standard_variant_for(
-        features,
-        static_cast<std::uint32_t>(mesh_features),
+        key.features,
+        static_cast<std::uint32_t>(key.mesh_features),
         geometry_task);
 }
 

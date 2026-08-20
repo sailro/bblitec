@@ -2765,7 +2765,9 @@ test("compiles Babylon Lite scene 116 no-color depth views", () => {
     assert.match(result.cpp, /bbl::create_standard_no_color_material_view/);
     assert.match(result.cpp, /bbl::create_pbr_no_color_material_view/);
     assert.match(result.cpp, /bbl::add_render_task_mesh/);
-    assert.match(result.cpp, /emissive_render_texture/);
+    // 1.23 moved the Standard emissive texture behind its own setter; the
+    // scene calls that, and the record write is inside it.
+    assert.match(result.cpp, /bbl::set_standard_emissive_texture/);
     assert.match(
         result.cpp,
         /RenderTaskOptions\{"standard-shadow-depth"[\s\S]*v_standardDepthCamera, true, true/,

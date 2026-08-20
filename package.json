@@ -41,7 +41,7 @@
     "lint:exports": "ts-prune -p tsconfig.json"
   },
   "devDependencies": {
-    "@babylonjs/lite": "1.20.0",
+    "@babylonjs/lite": "1.23.0",
     "@types/node": "^22.15.0",
     "@types/pngjs": "^6.0.5",
     "playwright-core": "^1.62.1",

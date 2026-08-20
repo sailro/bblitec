@@ -180,17 +180,19 @@ export class LoweringContext {
     }
 
     /**
-     * A function-like the pin declares as a method on a module-level object.
+     * A function-like the pin declares as a member of a module-level object,
+     * by `object.member`.
      *
-     * Several pinned extensions expose their UBO writer that way — the
-     * uv-transform extension's `writeUbo` is a method on the exported `pbrExt`
-     * literal rather than a top-level declaration — so a lowerer that walks
-     * pinned bodies has to reach both shapes. Accepts `name.member`, e.g.
-     * `pbrExt.writeUbo`.
+     * Several pinned extensions expose their contract that way — the
+     * uv-transform extension's `writeUbo` is a method on the exported
+     * `pbrExt` literal rather than a top-level declaration — so a lowerer
+     * that walks pinned bodies has to reach both shapes. The body may be a
+     * block or a single expression: a Standard extension states `_detect`
+     * both ways, and a caller that needs a block says so itself.
      */
     public methodDeclaration(modulePath: string, path: string): {
         file: ts.SourceFile;
-        declaration: ts.FunctionLikeDeclarationBase & { body: ts.Block };
+        declaration: ts.FunctionLikeDeclarationBase;
     } {
         const file = this.sourceFile(modulePath);
         const [objectName, memberName] = path.split(".");
@@ -201,9 +203,7 @@ export class LoweringContext {
                     `got '${path}'.`,
             );
         }
-        let found:
-            | (ts.FunctionLikeDeclarationBase & { body: ts.Block })
-            | undefined;
+        let found: ts.FunctionLikeDeclarationBase | undefined;
         const visit = (node: ts.Node): void => {
             if (
                 found === undefined &&
@@ -217,20 +217,20 @@ export class LoweringContext {
                     const named = property.name;
                     if (!named || !ts.isIdentifier(named)) continue;
                     if (named.text !== memberName) continue;
-                    // Either `writeUbo(...) {}` or `writeUbo: (...) => {}`.
+                    // `writeUbo(...) {}`, `writeUbo: (...) => {}` and
+                    // `_detect: (mat) => (mat._x ? FLAG : 0)` all qualify.
+                    const initializer = ts.isPropertyAssignment(property)
+                        ? this.unwrapExpression(property.initializer)
+                        : undefined;
                     const candidate = ts.isMethodDeclaration(property)
                         ? property
-                        : ts.isPropertyAssignment(property) &&
-                                (ts.isFunctionExpression(
-                                    property.initializer,
-                                ) ||
-                                    ts.isArrowFunction(property.initializer))
-                            ? property.initializer
+                        : initializer &&
+                                (ts.isFunctionExpression(initializer) ||
+                                    ts.isArrowFunction(initializer))
+                            ? initializer
                             : undefined;
-                    if (candidate?.body && ts.isBlock(candidate.body)) {
-                        found = candidate as ts.FunctionLikeDeclarationBase & {
-                            body: ts.Block;
-                        };
+                    if (candidate?.body) {
+                        found = candidate;
                     }
                 }
             }
@@ -240,7 +240,7 @@ export class LoweringContext {
         if (!found) {
             this.contractError(
                 file,
-                `Expected '${path}' to be a method with a body.`,
+                `Expected '${path}' to be a function with a body.`,
             );
         }
         return { file, declaration: found };

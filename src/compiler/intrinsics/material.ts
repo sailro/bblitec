@@ -350,6 +350,31 @@ export function compileMaterialIntrinsic(
             };
         }
 
+        case "setStandardEmissiveTexture": {
+            // 1.23 moved the optional Standard textures behind per-texture
+            // setters so a scene bundles only the fragments it uses; the
+            // record write is what the assignment did, and registering the
+            // extension is generation's own (`pinned-standard-variants.ts`
+            // registers all eight before composing anything).
+            context.expectArgumentCount(call, 2, 2);
+            const material = context.compileValue(call.arguments[0]!);
+            context.expectKind(material, "material", call.arguments[0]!);
+            const texture = context.compileValue(call.arguments[1]!);
+            context.expectKind(
+                texture,
+                "render-texture",
+                call.arguments[1]!,
+            );
+            context.expectSameEngine(material, texture, call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_standard_emissive_texture(` +
+                    `${context.requireEngine(material, call)}, ` +
+                    `${material.cpp}, ${texture.cpp})`,
+            };
+        }
+
         case "markMaterialUboDirty": {
             context.expectArgumentCount(call, 1, 1);
             const material =

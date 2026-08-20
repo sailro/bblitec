@@ -3259,7 +3259,8 @@ void write_standard_geometry_task(
                      std::to_string(draw.item.mesh.value) +
                      ", material " +
                      std::to_string(draw.item.material.value) +
-                     " resolves no composed variant in a geometry task.")
+                     " resolves no composed variant in a geometry task: " +
+                     standard_variant_request(engine, draw))
                         .c_str());
             }
             DawnMesh& mesh = state.meshes[draw.item_index];
@@ -6895,7 +6896,8 @@ bool run_dawn_engine(Engine& engine) {
                                  std::to_string(draw.item.mesh.value) +
                                  ", material " +
                                  std::to_string(draw.item.material.value) +
-                                 " resolves no composed variant.")
+                                 " resolves no composed variant: " +
+                                 standard_variant_request(engine, draw))
                                     .c_str());
                         }
                         const MaterialRecord* standard_material =
@@ -8332,7 +8334,10 @@ bool run_dawn_engine(Engine& engine) {
                                          std::to_string(
                                              draw.item.mesh.value) +
                                          " resolves no composed variant "
-                                         "in a geometry task.")
+                                         "in a geometry task: " +
+                                         standard_variant_request(
+                                             engine,
+                                             draw))
                                             .c_str());
                                 }
                                 const auto draw_state_it =
