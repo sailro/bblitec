@@ -105,25 +105,24 @@ scene is considered for integration, before implementing native fixes:
    `TODO.md` before setting a curated threshold.
 6. Run the scene in the demo window and move the camera before calling the
    integration done. A gate renders the one pose its author chose, so a
-   defect that is off-screen or edge-on there passes a green matrix: orbiting
-   found a skybox large enough for the camera's far plane to clip it, and a
-   background skybox that breaks into a hard-edged quad once the camera leaves
-   the cube. This stays a manual step deliberately — a second capture
-   per scene would double the matrix to cover something only a few scenes
-   reach. When it finds something, turn it into a measurement rather than a
-   screenshot: copy the scene into `examples\`, move its camera there, and
-   `parity --recapture-reference` so both sides are compared at that pose.
-   Then bisect with the runtime switches before trusting the description the
-   defect came with — `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0` each remove
-   one background element, and the one whose removal makes the measurement
-   *worse* is not the cause
-   ([debugging](debugging.md#before-calling-a-scene-done) carries the measured
-   example).
+   defect that is off-screen or edge-on there passes a green matrix — a
+   skybox the camera's far plane clips, or one that breaks into a hard-edged
+   quad outside the cube, are both invisible from a fixed pose. This is a
+   manual step: a second capture per scene would double the matrix to cover
+   something only a few scenes reach. When it finds something, turn it into a
+   measurement rather than a screenshot: copy the scene into `examples\`, move
+   its camera there, and `parity --recapture-reference` so both sides are
+   compared at that pose. Then bisect with the runtime switches before
+   trusting the description the defect came with — `BBLITE_GROUND=0` and
+   `BBLITE_BACKGROUND=0` each remove one background element, and the one whose
+   removal makes the measurement *worse* is not the cause
+   ([debugging](debugging.md#before-calling-a-scene-done)).
 
-Do not wait for a high MAD investigation to perform this review. Early history
-inspection prevents repeating Babylon Lite's own parity debugging and helps
-separate a known WebGPU/raster floor from a missing compiler or PAL contract.
-Post-pin commits are relevant only to an explicit upstream-version evaluation.
+Do not wait for a high MAD investigation to perform this review. Upstream
+history inspection avoids repeating Babylon Lite's own parity debugging and
+helps separate a known WebGPU/raster floor from a missing compiler or PAL
+contract. Post-pin commits are relevant only to an explicit upstream-version
+evaluation.
 
 ### What a registered scene owns
 
@@ -257,42 +256,43 @@ pins the registered scenes only.
   an assertion to make it pass.
 - **New or relocated API.** Options that became functions need intrinsics.
   Mirror the pinned setter exactly, and check what the *old* form reached:
-  an option that gated a feature must have its setter reach the same feature
-  (see the skybox note below).
+  an option that gated a feature must have its setter reach the same feature.
+  A setter is not only a spelling change when the option it replaces was also
+  the trigger for a compiled feature.
 - **Provenance and pin churn.** Assertions embedding the version or commit sha
   should derive them from `readUpstreamPin()` rather than hardcoding, so the
   next bump does not touch them at all.
 - **Relocated *derivation*.** The hardest kind: a function this repository
-  lowers from its own AST stops computing the thing and starts delegating.
-  1.23's `_computeStandardMaterialFeatures` kept its four base flags and
-  replaced every per-texture branch with a loop over registered extensions
-  calling `ext._detect(m)`. The AST walker refuses the loop by name, which is
-  the design working — a silent partial lowering would have dropped every
-  texture bit. The fix is to follow the delegation: lower each extension's
+  lowers from its own AST stops computing a value and starts delegating it to
+  a per-extension hook. `_computeStandardMaterialFeatures` is the standing
+  shape — it keeps its four base flags and derives every texture bit from a
+  loop over registered extensions calling `ext._detect(m)`. The AST walker
+  refuses a loop it does not recognize by name rather than lowering it
+  partially, which is what keeps the texture bits from being dropped
+  silently. The fix is to follow the delegation: lower each extension's
   `_detect` in the loop's place. Their results are OR-ed, so their order does
-  not matter, but each body is a new shape to handle (an arrow returning
+  not matter, but each body is its own shape to handle (an arrow returning
   `cond ? FLAG : 0`, an early `return 0`, an accumulator `let f = FLAG`).
 
-  **Delegation moves preconditions with it.** While detection was inline,
-  registering the extensions mattered only for *composing* a fragment. Once it
-  moved into `ext._detect`, registration became a precondition of *deriving
-  features at all*: an unregistered extension contributes no bit, silently, so
-  every material derives as untextured and the variant table comes out short.
-  Nothing fails — generation succeeds, the scene builds, and the first frame
-  dies with `resolves no composed variant`. Ask what else the relocated code
-  now depends on, and satisfy it where the derivation happens rather than
-  where the composition does.
+  **Delegation moves preconditions with it.** Detection inside `ext._detect`
+  makes registering the extensions a precondition of *deriving features at
+  all*, not only of composing a fragment: an unregistered extension
+  contributes no bit, silently, so every material derives as untextured and
+  the variant table comes out short. Nothing fails at generation — the scene
+  builds, and the first frame dies with `resolves no composed variant`. Ask
+  what else relocated code depends on, and satisfy it where the derivation
+  happens rather than where the composition does.
 
 ### Read the release notes, not only the log
 
 `git log --oneline` gives subjects; the release page for each tag links the
-pull requests, and the migration detail lives in those bodies. #554's body
-carries the whole setter-to-field table for 1.23's Standard change, which is
-the map this port has to follow, and names the two places the old dispatch
-lived. Reading it first is faster than reconstructing it from the diff, and it
-surfaces changes whose *subject* sounds unrelated — 1.21's "support material
-UV transforms" adds a ninth Standard extension, which matters here even though
-no reached scene enables it.
+pull requests, and the migration detail lives in those bodies. For a
+moved-property change that is a setter-to-field table naming every moved
+property and the places its old dispatch lived — the map this port has to
+follow. Reading it is faster than reconstructing it from the diff, and it
+surfaces changes whose *subject* sounds unrelated: a release described as
+adding material UV transform support can add a Standard material extension,
+which matters here even when no reached scene enables it.
 
 ```bash
 gh api "repos/BabylonJS/Babylon-Lite/releases/tags/npm-lite-v<version>" --jq .body
@@ -328,8 +328,8 @@ silently stops being reached only shows up as a parity regression.
 ### The pin's own field names are not this port's
 
 When upstream moves a property behind a setter it usually renames the storage
-too — 1.23's `emissiveTexture` became `_emissiveTexture`. Two places have to
-follow, and they are different in kind:
+too (`emissiveTexture` becomes `_emissiveTexture`). Two places have to follow,
+and they are different in kind:
 
 - the **record-source table** that maps a pinned property to its native
   expression, because the walker looks the property up by the name the pinned
@@ -348,33 +348,6 @@ registers every Standard and PBR extension the pin ships before composing, so
 the tree-shaking half of an opt-in change has no native counterpart. Check the
 *feature reach* anyway: an option that gated a compiled feature must have its
 setter gate the same one.
-
-### Recorded findings
-
-- **1.18.0 → 1.20.0.** `feat(pbr)!` moved the optional PBR material features
-  from `createPbrMaterial` options to opt-in setters (`unlit: true` →
-  `setPbrUnlit(material)`, `skyboxMode: true` → `setPbrSkybox(material)`), and
-  scenes read the material back off the mesh to call them. The four affected
-  corpus scenes rendered byte-identically in the browser, confirming the
-  refactor was shape-only. The one native regression was second-order: the
-  `skyboxMode` option had also been what reached the `renderer:transmission`
-  feature that emits the skybox uniform, so `setPbrSkybox` has to reach it too.
-  Scene 178 caught it because it is the only skybox scene with no actual
-  transmission — 176 and 212 reached the feature through their own transmissive
-  materials and hid the gap.
-- **1.20.0 → 1.23.0.** Three releases at once, 23 commits, two marked `!`.
-  `feat(standard)!` gave StandardMaterial the same opt-in treatment 1.20 gave
-  PBR, but went further: the eight optional textures moved behind setters
-  *and* their detection moved out of `_computeStandardMaterialFeatures` into
-  each extension's own `_detect`, which is why this bump needed a new failure
-  category above. `fix!` renamed `registerContributor` to
-  `_registerSceneUboContributor` and `vertexAlphaBlend` to `colorAlphaBlend`;
-  the second also widened — a thin-instance fragment declaring RGBA alpha now
-  blends without a mesh colour buffer — but that arm is unreachable here,
-  because variant composition refuses `MSH_HAS_INSTANCE_COLOR` outright. Only
-  one registered scene's source moved (116, to `setStandardEmissiveTexture`),
-  and the old assignment had reached no feature of its own, so the
-  second-order trap did not bite this time. Check it anyway.
 
 ## Ad-hoc scenes
 
@@ -493,8 +466,8 @@ first configured without the toolchain, delete that specific
 `native\build-<scene>-release` directory and configure it again; adding the
 toolchain to an existing cache is not reliable.
 
-The default follows this Release Scene 1 benchmark on the development Windows
-machine using the same MSVC toolchain:
+The default follows the Release Scene 1 measurement on the development Windows
+machine under the same MSVC toolchain:
 
 | Workload | Visual Studio 18 | Ninja |
 | --- | ---: | ---: |
@@ -502,8 +475,9 @@ machine using the same MSVC toolchain:
 | no-op build | 1.16 s | 0.08 s |
 | one-file rebuild | 2.53 s | 2.21 s |
 
-The resulting 1280x720 Scene 1 captures were byte-identical (`MAD 0.000`);
-both measure `0.001` full MAD against the pinned Babylon Lite golden.
+The generator does not affect the image: the two 1280x720 Scene 1 captures are
+byte-identical (`MAD 0.000`) and both measure `0.001` full MAD against the
+pinned Babylon Lite golden.
 
 Override the generator only when needed:
 
@@ -571,8 +545,8 @@ Generation additionally writes `BBLITE_IMAGE_CODECS` into
 `features.cmake` (the image codecs the scene's materialized assets
 reach). The build maps it onto vcpkg manifest features before
 `project()`, so JPEG support is compiled and deployed only for scenes
-that actually carry JPEG content; generated directories predating the
-list keep the historical png+jpeg set.
+that actually carry JPEG content; a generated directory that carries no
+list falls back to the png+jpeg pair.
 
 ### Concurrency
 
@@ -590,25 +564,25 @@ single-scene invocation ignores them and takes the whole machine.
 Thread counts come from `availableParallelism()`, which respects CPU affinity
 and container limits, rather than the host's processor count.
 
-One job per scene is not an arbitrary choice. Rebuilding all 58 scenes after a
-`pal_dawn.cpp` edit, on a 24-core/32-thread host: 246.7s sequential, then
-`32x1` 25.9s, `24x1` 28.4s, `16x2` 30.6s, `12x2` 33.6s, `8x3` 42.3s. Splitting
-the same budget the other way costs 15-33%, because an incremental rebuild
-leaves most scenes with one or two dirty translation units — a second job per
-scene has nothing to do while a second scene always does.
+One job per scene is the measured optimum. An incremental corpus rebuild after
+a `pal_dawn.cpp` edit, 58 scenes on a 24-core/32-thread host: 246.7s
+sequential, `32x1` 25.9s, `24x1` 28.4s, `16x2` 30.6s, `12x2` 33.6s, `8x3`
+42.3s. Splitting the same budget the other way costs 15-33%, because an
+incremental rebuild leaves most scenes with one or two dirty translation
+units — a second job per scene has nothing to do while a second scene always
+does.
 
 Measurement is the one stage whose default is a flat number rather than a
-function of the machine, and the reason is that the resource it looks like it
-should bind on does not. Each scene creates a GPU device, a swapchain and its
-own textures; sampling dedicated GPU memory across a whole sweep puts that at
-0.28 GB per concurrent scene — 2.25 GB attributable at eight at a time, 2.09 GB
-at sixteen, since scenes finish sooner and fewer overlap. That fits a 4 GB card
-beside a desktop, so scaling the default to the adapter would add a platform
-probe to guard a limit nothing reaches.
+function of the machine, because GPU memory does not bind it. Each scene
+creates a GPU device, a swapchain and its own textures, which samples at
+0.28 GB of dedicated GPU memory per concurrent scene — 2.25 GB attributable at
+eight at a time, 2.09 GB at sixteen, since scenes finish sooner and fewer
+overlap. That fits a 4 GB card beside a desktop, so scaling the default to the
+adapter would add a platform probe to guard a limit nothing reaches.
 
 GPU throughput binds instead. All 57 scenes: 195.5s at one, 100.0s at two,
 52.8s at four, 33.6s at eight, 26.0s at sixteen — doubling past eight buys 23%.
-Eight sits at the knee without assuming a workstation GPU. Every level produced
+Eight sits at the knee without assuming a workstation GPU. Every level produces
 byte-identical differential reports, so raising it on a known machine is safe.
 
 ## Minimal-size builds
@@ -632,7 +606,7 @@ sensor, camera, power, dialog, GL/Vulkan, or SDL_Renderer).
 FXC-only Dawn: the package ships no compiler DLLs and resolves
 `d3dcompiler_47.dll` from the executable directory or System32, with
 the documented FXC-versus-DXC LSB tradeoff
-(see [backends](backends.md#empirical-findings)).
+(see [backends](backends.md#measured-contracts)).
 
 Configure with the static triplet:
 
@@ -836,9 +810,9 @@ temporary filter in the native frame loop to localize a residual to a
 single draw. The recorded
 buffer bytes support bit-level comparison against native uploads —
 weights, morph deltas, instance matrices, material UBOs, and factor
-texels. This workflow resolved the scene 243 occlusion gap and the
-scene 247 shading contracts recorded in
-[backends](backends.md#empirical-findings) and
+texels. The scene 243 occlusion and scene 247 shading contracts this
+resolves are recorded in
+[backends](backends.md#measured-contracts) and
 [fidelity](fidelity.md).
 
 ## Native render capture
@@ -950,10 +924,9 @@ pass. The command digests what is on disk and never compiles — hence the
 explicit `compile all` before each invocation. It exits non-zero and lists
 every added, removed or changed file when the tree moved.
 
-Two things used to break the by-hand version, and one still applies. Top-level
-directories under `generated/` that no registry scene owns — a corpus sweep's
-`sceneNNN` leftovers, a deleted probe — are now listed loudly and excluded
-from the digest instead of silently poisoning it; delete them when they are
+Two conditions bound the digest. Top-level directories under `generated/` that
+no registry scene owns — a corpus sweep's `sceneNNN` leftovers, a deleted
+probe — are listed and excluded rather than counted; delete them when they are
 reported. And nothing else may use `dist/` while `npm run build` runs, because
 the build removes the directory first.
 
@@ -977,17 +950,15 @@ It already knows the one movement that is not a finding: scenes 9 and 37 do
 not render bit-identically on Dawn from one run to the next, by a few dozen
 pixels of 921600, so their Dawn cells move for any change and for no change
 alike. Those are reported as expected wobble and excluded from the exit
-status; every other moved cell is real. (Only their *Dawn* cells — SDL_GPU
-and single-sampled Dawn are both bit-stable, which is what localised it.)
+status; every other moved cell is real. Only their *Dawn* cells — SDL_GPU and
+single-sampled Dawn are both bit-stable, which places the wobble in the
+multisampled Dawn path.
 
-Scene 145 has been seen doing the same thing once, moving a single Dawn pixel
-of 921600 under a change that could not reach it. It is deliberately **not**
-on that list: one observation that did not reproduce — three consecutive runs
-returned the baseline value bit for bit, and a second full comparison reported
-zero moved — is not enough to start excusing a scene's Dawn cells, and a
-whitelist entry would hide a real regression there forever. The tool already
-prescribes the right response, which is to re-run before concluding. Add it
-only if it moves again under a change that cannot explain it.
+Nothing else is on that list. A single unreproduced observation is not grounds
+for adding a scene to it: a whitelist entry excuses that scene's Dawn cells
+permanently and would hide a real regression there. Re-run before concluding,
+and add a scene only once it moves repeatedly under changes that cannot reach
+it.
 
 There is no hosted CI. During iteration, run only the smallest relevant tests,
 generation steps, affected native builds, and scene parity gates. Do not repeat
@@ -1089,7 +1060,7 @@ the README embeds the scene's current parity numbers when
 - new build cannot find SDL/nlohmann-json: set `VCPKG_ROOT`, delete only that
   build directory, and reconfigure.
 - D3D12 command-list failure during screenshot after runtime mesh append:
-  capture must occur after the topology-update frame; PAL now defers it
+  capture must occur after the topology-update frame, which PAL defers
   automatically.
 
 ## Common mistakes
