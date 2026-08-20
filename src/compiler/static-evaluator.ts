@@ -1,6 +1,10 @@
 import ts from "typescript";
 import type { Value } from "./types.js";
 import {
+    isDataTuple,
+    tupleComponents,
+} from "./data-types.js";
+import {
     doubleLiteral as cppDoubleLiteral,
     floatLiteral as cppFloatLiteral,
 } from "../cpp-literals.js";
@@ -172,6 +176,10 @@ export class StaticEvaluator {
                     this.numberValue(value, unwrapped),
                 )
                 .join(", ")}}`;
+        }
+        const data = this.dataTupleComponents(unwrapped, 3);
+        if (data) {
+            return `bbl::Color3{${data.join(", ")}}`;
         }
         if (
             ts.isArrayLiteralExpression(unwrapped) &&
@@ -741,6 +749,33 @@ export class StaticEvaluator {
             );
         }
         return value.tupleElements;
+    }
+
+    /**
+     * The components of a plain-data numeric tuple, as native expressions.
+     *
+     * A colour table written with an explicit `[number, number, number][]`
+     * annotation is data rather than a compile-time table, so its element
+     * arrives as a `bbl::js::Tuple<3>` — a `std::array<double, 3>`. The
+     * components round at the sink, which is where the pin's own
+     * `Float32Array` store rounds them.
+     */
+    private dataTupleComponents(
+        expression: ts.Expression,
+        length: number,
+    ): string[] | undefined {
+        if (
+            !ts.isIdentifier(expression) &&
+            !ts.isElementAccessExpression(expression) &&
+            !ts.isPropertyAccessExpression(expression)
+        ) {
+            return undefined;
+        }
+        const value = this.resolveValue(expression);
+        if (!isDataTuple(value, length)) {
+            return undefined;
+        }
+        return tupleComponents(value.cpp, length);
     }
 
     private numberValue(

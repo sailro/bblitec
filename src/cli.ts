@@ -18,6 +18,7 @@ import {
     type UpstreamEmitOptions,
 } from "./upstream-lower.js";
 import { emitAssetSpecializations } from "./asset-specializer.js";
+import { composePostProcess } from "./pinned-post-process.js";
 import {
     featureActivationPath,
     featureActivationRows,
@@ -556,6 +557,17 @@ async function main(): Promise<void> {
         emittedArms,
         tree,
     });
+    // Each reached post-process pass composes its module by running the
+    // pinned factory: the effect's stage is the pin's text for the options
+    // this scene passed, never a reproduction of it.
+    const postProcessShaders = await Promise.all(
+        result.manifest.postProcessTasks.map((task) =>
+            composePostProcess({
+                intrinsic: task.intrinsic,
+                options: task.options,
+            }),
+        ),
+    );
     // Named rather than inline so the activation inventory below records
     // the exact values the emitters consumed, not a restatement of them.
     const emitOptions: UpstreamEmitOptions = {
@@ -563,6 +575,8 @@ async function main(): Promise<void> {
         ...(assetLightNodes !== undefined ? { assetLightNodes } : {}),
         shaderPrograms,
         geometryOutputTasks: result.manifest.geometryOutputTasks,
+        postProcessTasks: result.manifest.postProcessTasks,
+        postProcessShaders,
         gpuDeformation:
             specializationFeatures.gpuDeformation ||
             result.manifest.features.includes(

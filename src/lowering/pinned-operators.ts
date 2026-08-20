@@ -1,0 +1,75 @@
+/**
+ * What a pinned expression's operators and `Math` calls lower to.
+ *
+ * Two lowerers read arithmetic out of pinned bodies — the material UBO writers
+ * and the post-process uniform writers — and both are lowering the same
+ * language. Keeping the tables here means an operator one of them learns is an
+ * operator both know, and means neither rebuilds a map per expression.
+ *
+ * What is deliberately *not* here is `||`. Its meaning depends on what the
+ * pinned expression is doing with it: a boolean guard lowers to C++'s `||`,
+ * while JavaScript's numeric `||` — an extent of zero falling through to the
+ * next — needs `bbl::js::or_number`. Each caller knows which it is reading.
+ */
+import ts from "typescript";
+
+/** The operators that mean in C++ exactly what they mean in TypeScript. */
+export const PINNED_ARITHMETIC_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
+    new Map<ts.SyntaxKind, string>([
+        [ts.SyntaxKind.PlusToken, "+"],
+        [ts.SyntaxKind.MinusToken, "-"],
+        [ts.SyntaxKind.AsteriskToken, "*"],
+        [ts.SyntaxKind.SlashToken, "/"],
+    ]);
+
+/**
+ * The arithmetic set plus the comparisons and boolean joins a writer guards
+ * with. `==` covers both `==` and `===`: every operand a pinned writer
+ * compares has already lowered to a native scalar, so the two are one operator
+ * by the time they reach C++.
+ */
+export const PINNED_BOOLEAN_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
+    new Map<ts.SyntaxKind, string>([
+        ...PINNED_ARITHMETIC_OPERATORS,
+        [ts.SyntaxKind.AmpersandAmpersandToken, "&&"],
+        [ts.SyntaxKind.BarBarToken, "||"],
+        [ts.SyntaxKind.GreaterThanToken, ">"],
+        [ts.SyntaxKind.LessThanToken, "<"],
+        [ts.SyntaxKind.EqualsEqualsEqualsToken, "=="],
+        [ts.SyntaxKind.EqualsEqualsToken, "=="],
+    ]);
+
+/**
+ * The `Math` members that are a `<cmath>` call of the same arity. Every one of
+ * these takes and returns a double, which is what a pinned writer computes in
+ * before it stores.
+ */
+export const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
+    pow: "std::pow",
+    log: "std::log",
+    max: "std::max",
+    min: "std::min",
+    cos: "std::cos",
+    sin: "std::sin",
+    sqrt: "std::sqrt",
+    abs: "std::abs",
+};
+
+/**
+ * The `<cmath>` name a `Math.x(...)` call lowers to, or undefined when the
+ * node is not such a call.
+ */
+export function pinnedMathCall(
+    node: ts.Node,
+): { native: string; call: ts.CallExpression } | undefined {
+    if (
+        !ts.isCallExpression(node) ||
+        !ts.isPropertyAccessExpression(node.expression) ||
+        !ts.isIdentifier(node.expression.expression) ||
+        node.expression.expression.text !== "Math"
+    ) {
+        return undefined;
+    }
+    const native = PINNED_MATH_FUNCTIONS[node.expression.name.text];
+    return native ? { native, call: node } : undefined;
+}

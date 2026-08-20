@@ -1,6 +1,8 @@
 import ts from "typescript";
+import { postProcessEffect } from "../../post-process-effects.js";
 import type {
     GeometryOutputTaskManifest,
+    PostProcessTaskManifest,
     Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -8,6 +10,11 @@ import type { IntrinsicCallContext } from "./context.js";
 interface CompiledGeometryTask {
     cpp: string;
     manifest: GeometryOutputTaskManifest;
+}
+
+interface CompiledPostProcessTask {
+    cpp: string;
+    manifest: PostProcessTaskManifest;
 }
 
 export interface EngineIntrinsicContext
@@ -35,9 +42,18 @@ export interface EngineIntrinsicContext
     compileCopyTaskOptions(
         expression: ts.Expression,
     ): string;
+    compilePostProcessTaskOptions(
+        intrinsic: string,
+        expression: ts.Expression,
+        shaderIndex: number,
+    ): CompiledPostProcessTask;
     recordGeometryOutputTask(
         manifest: GeometryOutputTaskManifest,
     ): void;
+    recordPostProcessTask(
+        manifest: PostProcessTaskManifest,
+    ): void;
+    readonly postProcessTasks: readonly PostProcessTaskManifest[];
     compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean;
@@ -234,6 +250,49 @@ export function compileEngineIntrinsic(
         }
 
         default:
-            return undefined;
+            return compilePostProcessIntrinsic(
+                context,
+                importedName,
+                call,
+            );
     }
+}
+
+/**
+ * Every post-process pass is the same task with a different composed stage, so
+ * one case serves all of them: the effect table names which factories exist,
+ * and the options compiler reads the rest out of the descriptor. Reach order
+ * is the generated shader table's index order, which is why the index comes
+ * from how many passes the scene has already reached.
+ */
+function compilePostProcessIntrinsic(
+    context: EngineIntrinsicContext,
+    importedName: string,
+    call: ts.CallExpression,
+): Value | undefined {
+    if (!postProcessEffect(importedName)) {
+        return undefined;
+    }
+    context.expectArgumentCount(call, 3, 3);
+    const engine = context.compileValue(call.arguments[1]!);
+    const scene = context.compileValue(call.arguments[2]!);
+    context.expectKind(engine, "engine", call.arguments[1]!);
+    context.expectKind(scene, "scene", call.arguments[2]!);
+    context.expectSameEngine(engine, scene, call);
+    const compiled = context.compilePostProcessTaskOptions(
+        importedName,
+        call.arguments[0]!,
+        context.postProcessTasks.length,
+    );
+    context.recordPostProcessTask(compiled.manifest);
+    reachRenderer(context, call);
+    context.reachFeature("renderer:post-process", call);
+    return {
+        kind: "task",
+        cpp:
+            `bbl::create_post_process_task(${engine.cpp}, ` +
+            `${scene.cpp}, ${compiled.cpp})`,
+        engineCpp: engine.engineCpp ?? engine.cpp,
+        postProcessTask: compiled.manifest,
+    };
 }

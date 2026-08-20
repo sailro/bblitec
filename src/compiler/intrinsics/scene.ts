@@ -175,9 +175,12 @@ export function compileSceneIntrinsic(
             return {
                 kind: "void",
                 cpp:
+                    // The scene is checked but not passed: both pinned hooks
+                    // read it only to reach the canvas and the render loop,
+                    // neither of which crosses into the runtime's state.
                     importedName === "attachFreeControl"
-                        ? `bbl::attach_free_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp})`
-                        : `bbl::attach_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp})`,
+                        ? `bbl::attach_free_control(${context.requireEngine(camera, call)}, ${camera.cpp})`
+                        : `bbl::attach_control(${context.requireEngine(camera, call)}, ${camera.cpp})`,
             };
         }
 

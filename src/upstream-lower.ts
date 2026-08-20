@@ -21,6 +21,7 @@ import {
     spriteVertexWgsl,
 } from "./shader-builtins-sprite.js";
 import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
+import { PostProcessLowerer } from "./lowering/post-process-lowerer.js";
 import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 import type { SpriteCustomShaderManifest } from "./compiler/types.js";
@@ -41,6 +42,7 @@ import {
     type PinnedStandardSelector,
     type PinnedStandardVariantManifestEntry,
 } from "./pinned-standard-variants.js";
+import type { ComposedPostProcess } from "./pinned-post-process.js";
 import {
     extractPackagedTemplateLiteral,
     extractWgslFunction,
@@ -108,6 +110,7 @@ function sceneUboBytes(context: LoweringContext): number {
 import type {
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
+    PostProcessTaskManifest,
 } from "./compiler.js";
 
 /**
@@ -127,6 +130,18 @@ export interface UpstreamEmitOptions {
     assetLightNodes?: { count: number; asset: string };
     shaderPrograms: CompiledShaderProgram[];
     geometryOutputTasks: GeometryOutputTaskManifest[];
+    /**
+     * The post-process passes a scene reached, in reach order. Each carries
+     * the pinned factory and the options that reach its composed stage; the
+     * stage itself arrives already composed, in `postProcessShaders`.
+     */
+    postProcessTasks: readonly PostProcessTaskManifest[];
+    /**
+     * One composed module per reached pass, indexed by `shaderIndex`, with
+     * the layout its bind group declares. The pin's own `getShaderModule`
+     * produced each, so nothing about them is restated here.
+     */
+    postProcessShaders: readonly ComposedPostProcess[];
     gpuDeformation: boolean;
     /**
      * Whether the loader records live world boxes and default framing reads
@@ -927,6 +942,54 @@ class GeneratedSourceWriter {
                 },
             );
         }
+        if (features.includes("renderer:post-process")) {
+            this.writeSource(
+                "upstream/src/frame_graph_post_process.cpp",
+                new PostProcessLowerer(
+                    context,
+                    options.postProcessTasks,
+                ).lowerTaskRecords(),
+                generated,
+                "upstream/include/bblite/upstream/frame_graph_post_process.hpp",
+            );
+            // Both stages of a pass live in one composed module: Tint takes
+            // one entry point per file, so the same text is deployed twice and
+            // each copy is compiled at the stage its name selects. The text is
+            // the pin's own, in the pin's own groups, which is why the
+            // register remap treats it exactly like a composed variant.
+            //
+            // A module is identified by that text rather than by the pass that
+            // reached it: two blur passes differing only in `direction` -- a
+            // uniform, not a define -- compose the same text, and deploying it
+            // twice would compile it twice and build a second pipeline from it.
+            // Each pass keeps its own record either way; only the module is
+            // shared.
+            const postProcessProvenance = context.provenance(
+                "src/frame-graph/post-process-task.ts",
+                "getShaderModule",
+            );
+            const postProcessModules = new Map<string, number>();
+            for (const composed of options.postProcessShaders) {
+                if (postProcessModules.has(composed.wgsl)) continue;
+                const index = postProcessModules.size;
+                postProcessModules.set(composed.wgsl, index);
+                for (const stage of ["vert", "frag"] as const) {
+                    composedShaders.push({
+                        output: `upstream/shaders/postprocess-${index}.${stage}.native.wgsl`,
+                        data: `// ${postProcessProvenance}
+${composed.wgsl}`,
+                    });
+                }
+            }
+            this.tree.write(
+                "upstream/include/bblite/upstream/post_process_shaders.hpp",
+                postProcessShadersHeader(
+                    postProcessProvenance,
+                    options.postProcessShaders,
+                    postProcessModules,
+                ),
+            );
+        }
         const factories = new FactoryLowerer(context);
         if (features.includes("material:standard")) {
             this.writeSource(
@@ -1532,6 +1595,8 @@ export function emitUpstreamGenerated(
         plainSpriteLayer: true,
         plainBillboardSystem: true,
         geometryOutputTasks: [],
+        postProcessTasks: [],
+        postProcessShaders: [],
         gpuDeformation: false,
         animatedWorldBounds: false,
         morphStorage: false,
@@ -1562,4 +1627,58 @@ export function emitUpstreamGenerated(
         features,
         options,
     );
+}
+
+/**
+ * The layout each reached post-process stage declares.
+ *
+ * Both backends need it before they can build a bind group, and the values
+ * come from the pin's own composition — `_shader.uniformByteLength` and the
+ * binding `getUniformBinding` derived — rather than from reading the WGSL
+ * back. SDL_GPU still binds by the `.slots` sidecar the compaction wrote;
+ * this says whether a block exists at all and how large it is.
+ */
+function postProcessShadersHeader(
+    provenance: string,
+    shaders: readonly ComposedPostProcess[],
+    modules: ReadonlyMap<string, number>,
+): string {
+    const rows = shaders
+        .map(
+            (shader) =>
+                `    PostProcessShaderInfo{${shader.uniformByteLength}u, ` +
+                `${shader.uniformBinding}u, ` +
+                `${modules.get(shader.wgsl)!}u},`,
+        )
+        .join("\n");
+    return `// ${provenance}
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+
+namespace bbl::upstream {
+
+struct PostProcessShaderInfo {
+    /** The block's size, rounded by the pin's own align16. */
+    std::uint32_t uniform_byte_length = 0;
+    /** The binding the pin's own getUniformBinding gives it. */
+    std::uint32_t uniform_binding = 0;
+    /**
+     * The deployed module this pass loads, shared with every other pass whose
+     * composed text came out identical.
+     */
+    std::uint32_t module_index = 0;
+};
+
+inline constexpr std::size_t post_process_shader_count = ${shaders.length}u;
+
+inline constexpr std::array<PostProcessShaderInfo, post_process_shader_count>
+    post_process_shader_infos{{
+${rows}
+}};
+
+} // namespace bbl::upstream
+`;
 }

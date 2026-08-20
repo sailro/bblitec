@@ -1366,6 +1366,42 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene142",
+        name: "Scene 142 - Post-Process Viewports",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene142.ts",
+        title: "Babylon Lite Native - Post-Process Viewports",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [31, 59, 107],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene143",
+        name: "Scene 143 - Post-Process Chain",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene143.ts",
+        title: "Babylon Lite Native - Post-Process Chain",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene147",
+        name: "Scene 147 - Circle of Confusion",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene147.ts",
+        title: "Babylon Lite Native - Circle of Confusion",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [255, 255, 255],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

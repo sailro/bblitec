@@ -1,5 +1,9 @@
 import ts from "typescript";
-import type { DataType } from "./data-types.js";
+import {
+    isDataTuple,
+    tupleComponents,
+    type DataType,
+} from "./data-types.js";
 import type {
     Value,
     ValueKind,
@@ -1130,6 +1134,28 @@ export class StatementLowerer {
         if (target.kind !== "mesh") {
             return false;
         }
+        if (owner.name.text === "rotationQuaternion") {
+            const components = this.setCallComponents(
+                context,
+                call,
+                4,
+                "rotationQuaternion.set",
+            );
+            const engine = context.requireEngine(target, call);
+            context.emit(
+                `${engine}.meshes[${target.cpp}.value].rotation_quaternion = bbl::Vec4{${components.join(", ")}};`,
+            );
+            // The pinned mesh composes its world matrix from the quaternion
+            // once one is set; the flag is what selects that path over the
+            // Euler rotation, exactly as the property-animation writer does.
+            context.emit(
+                `${engine}.meshes[${target.cpp}.value].has_rotation_quaternion = true;`,
+            );
+            context.emit(
+                `++${engine}.meshes[${target.cpp}.value].transform_version;`,
+            );
+            return true;
+        }
         if (
             !["position", "rotation", "scaling"].includes(
                 owner.name.text,
@@ -1161,15 +1187,62 @@ export class StatementLowerer {
         return true;
     }
 
+    /**
+     * The numeric components a `.set` call passes.
+     *
+     * A caller may write them out, or spread a tuple a helper returned —
+     * which is a plain-data `bbl::js::Tuple<N>`, so the spread binds it once
+     * and indexes it rather than evaluating the call per component.
+     */
+    private setCallComponents(
+        context: StatementLoweringContext,
+        call: ts.CallExpression,
+        arity: number,
+        label: string,
+    ): string[] {
+        if (
+            call.arguments.length === 1 &&
+            ts.isSpreadElement(call.arguments[0]!)
+        ) {
+            const spread = call.arguments[0] as ts.SpreadElement;
+            const value = context.compileValue(spread.expression);
+            if (!isDataTuple(value, arity)) {
+                context.fail(
+                    spread,
+                    `${label} spreads a value that is not a ${arity}-element numeric tuple.`,
+                );
+            }
+            const binding = context.allocateTemporaryCppName(
+                "spread",
+            );
+            context.emit(
+                `const bbl::js::Tuple<${arity}> ${binding} = ${value.cpp};`,
+            );
+            return tupleComponents(binding, arity);
+        }
+        if (call.arguments.length !== arity) {
+            context.fail(
+                call,
+                `${label} expects exactly ${arity} numeric arguments.`,
+            );
+        }
+        return call.arguments.map((argument) =>
+            context.compileNumber(argument),
+        );
+    }
+
     private emitTaskMethodCall(
         context: StatementLoweringContext,
         call: ts.CallExpression,
     ): boolean {
         if (
             !ts.isPropertyAccessExpression(call.expression) ||
-            call.expression.name.text !== "addMesh" ||
             !ts.isIdentifier(call.expression.expression)
         ) {
+            return false;
+        }
+        const method = call.expression.name.text;
+        if (method !== "addMesh" && method !== "updateUniforms") {
             return false;
         }
         const task = context.lookup(
@@ -1178,7 +1251,23 @@ export class StatementLowerer {
         if (task.kind !== "task") {
             return false;
         }
-        context.expectArgumentCount(call, 2, 2);
+        if (method === "updateUniforms") {
+            if (!task.postProcessTask) {
+                context.fail(
+                    call,
+                    "updateUniforms is a post-process pass method.",
+                );
+            }
+            context.expectArgumentCount(call, 0, 0);
+            // The pin recomputes the pass's uniform block and uploads it;
+            // native marks the record so the backend rewrites it from the
+            // parameters before the next frame it records.
+            context.emit(
+                `bbl::update_post_process_uniforms(${context.requireEngine(task, call)}, ${task.cpp});`,
+            );
+            return true;
+        }
+        context.expectArgumentCount(call, 1, 2);
         const mesh = context.compileValue(
             call.arguments[0]!,
         );
@@ -1187,34 +1276,41 @@ export class StatementLowerer {
             "mesh",
             call.arguments[0]!,
         );
-        const options = context.expectObjectLiteral(
-            call.arguments[1]!,
-        );
-        const materialExpression = context.objectProperty(
-            options,
-            "material",
-        );
-        if (
-            !materialExpression ||
-            options.properties.length !== 1
-        ) {
-            context.fail(
-                options,
-                "Reached RenderTask.addMesh requires only a material override.",
-            );
-        }
-        const material = context.compileValue(
-            materialExpression,
-        );
-        context.expectKind(
-            material,
-            "material",
-            materialExpression,
-        );
         context.expectSameEngine(task, mesh, call);
-        context.expectSameEngine(task, material, call);
+        const engine = context.requireEngine(task, call);
+        // The pin's own `opts.material ?? mesh.material`: a call with no
+        // override draws the mesh with the material it already carries.
+        let materialCpp = `${engine}.meshes[${mesh.cpp}.value].material`;
+        if (call.arguments.length === 2) {
+            const options = context.expectObjectLiteral(
+                call.arguments[1]!,
+            );
+            const materialExpression = context.objectProperty(
+                options,
+                "material",
+            );
+            if (
+                !materialExpression ||
+                options.properties.length !== 1
+            ) {
+                context.fail(
+                    options,
+                    "Reached RenderTask.addMesh requires only a material override.",
+                );
+            }
+            const material = context.compileValue(
+                materialExpression,
+            );
+            context.expectKind(
+                material,
+                "material",
+                materialExpression,
+            );
+            context.expectSameEngine(task, material, call);
+            materialCpp = material.cpp;
+        }
         context.emit(
-            `bbl::add_render_task_mesh(${context.requireEngine(task, call)}, ${task.cpp}, ${mesh.cpp}, ${material.cpp});`,
+            `bbl::add_render_task_mesh(${engine}, ${task.cpp}, ${mesh.cpp}, ${materialCpp});`,
         );
         return true;
     }

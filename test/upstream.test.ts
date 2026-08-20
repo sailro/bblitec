@@ -928,7 +928,13 @@ test("generates typed geometry task records and PBR MRT shaders", () => {
     assert.match(tasks.source, /create_render_target_texture/);
     assert.match(tasks.source, /add_render_task_mesh/);
     assert.match(tasks.source, /scene\.tasks\.insert/);
-    assert.match(tasks.header, /struct PixelViewport/);
+    // The rectangle itself is the runtime's, beside NormalizedViewport; what
+    // this header owns is the copy task's own rounding of one.
+    assert.match(
+        tasks.header,
+        /PixelViewport resolve_copy_viewport\(/,
+    );
+    assert.doesNotMatch(tasks.header, /struct PixelViewport/);
     assert.match(tasks.source, /std::floor/);
     assert.match(
         tasks.source,

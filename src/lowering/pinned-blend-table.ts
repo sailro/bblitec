@@ -138,7 +138,7 @@ function blendState(
 }
 
 /** One side of a blend state, which the pin always writes as an add. */
-function blendSide(
+export function blendSide(
     context: LoweringContext,
     state: ts.ObjectLiteralExpression,
     side: "color" | "alpha",

@@ -400,6 +400,18 @@ else()
     )
 endif()
 
+if("renderer:post-process" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_POST_PROCESS=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_POST_PROCESS=0
+    )
+endif()
+
 if(
     "loader:gltf" IN_LIST BBLITE_RUNTIME_FEATURES OR
     "loader:babylon" IN_LIST BBLITE_RUNTIME_FEATURES

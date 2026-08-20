@@ -363,6 +363,52 @@ function emitSceneLightListClear(
     return true;
 }
 
+/**
+ * A post-process effect's own settable option.
+ *
+ * The pin gives each one a `defineProperty` pair over the factory's `params`
+ * record, so a write is a store into that record and nothing else -- the
+ * uniform block moves only when `updateUniforms` runs. Native keeps the same
+ * split: the parameter vector takes the value here, and the backend rewrites
+ * the block when the pass is next recorded.
+ */
+function emitPostProcessOptionAssignment(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+    left: ts.PropertyAccessExpression,
+    owner: Value,
+): boolean {
+    if (owner.kind !== "task" || !owner.postProcessTask) {
+        return false;
+    }
+    const effect = postProcessEffect(owner.postProcessTask.intrinsic);
+    const slot = effect?.params.findIndex(
+        (candidate) => candidate.path === left.name.text,
+    );
+    if (!effect || slot === undefined || slot < 0) {
+        context.fail(
+            left,
+            `Post-process effect '${
+                owner.postProcessTask.intrinsic
+            }' has no settable option '${left.name.text}'.`,
+        );
+    }
+    requireSimpleAssignment(
+        context,
+        expression,
+        "post-process option",
+    );
+    context.emit(
+        `${context.requireEngine(owner, expression)}.frame_tasks[${
+            owner.cpp
+        }.value].post_process.params[${slot}] = ${context.compileNumber(
+            expression.right,
+            "double",
+        )};`,
+    );
+    return true;
+}
+
 export function emitPropertyAssignment(
     context: AssignmentContext,
     expression: ts.BinaryExpression,
@@ -395,6 +441,17 @@ export function emitPropertyAssignment(
         return;
     }
     if (emitSceneLightListClear(context, expression, left)) {
+        return;
+    }
+    if (
+        ts.isIdentifier(left.expression) &&
+        emitPostProcessOptionAssignment(
+            context,
+            expression,
+            left,
+            context.lookup(left.expression),
+        )
+    ) {
         return;
     }
     if (
@@ -889,6 +946,7 @@ function requireSimpleAssignment(
 }
 import ts from "typescript";
 import { cameraRecordField } from "./properties.js";
+import { postProcessEffect } from "../post-process-effects.js";
 import type {
     Feature,
     LightKind,

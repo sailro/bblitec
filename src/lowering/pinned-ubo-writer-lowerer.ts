@@ -17,6 +17,10 @@
  */
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
+import {
+    PINNED_BOOLEAN_OPERATORS,
+    PINNED_MATH_FUNCTIONS,
+} from "./pinned-operators.js";
 
 export interface UboFieldSlot {
     /** The composer's field name. */
@@ -92,17 +96,6 @@ export interface UboWriterRequest {
      */
     absentHooks?: readonly string[];
 }
-
-const mathFunctions: Readonly<Record<string, string>> = {
-    pow: "std::pow",
-    log: "std::log",
-    max: "std::max",
-    min: "std::min",
-    cos: "std::cos",
-    sin: "std::sin",
-    sqrt: "std::sqrt",
-    abs: "std::abs",
-};
 
 interface WriterState {
     file: ts.SourceFile;
@@ -540,19 +533,10 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
         return emitExpression(state, node.left);
     }
     if (ts.isBinaryExpression(node)) {
-        const operators = new Map<ts.SyntaxKind, string>([
-            [ts.SyntaxKind.PlusToken, "+"],
-            [ts.SyntaxKind.MinusToken, "-"],
-            [ts.SyntaxKind.AsteriskToken, "*"],
-            [ts.SyntaxKind.SlashToken, "/"],
-            [ts.SyntaxKind.AmpersandAmpersandToken, "&&"],
-            [ts.SyntaxKind.BarBarToken, "||"],
-            [ts.SyntaxKind.GreaterThanToken, ">"],
-            [ts.SyntaxKind.LessThanToken, "<"],
-            [ts.SyntaxKind.EqualsEqualsEqualsToken, "=="],
-            [ts.SyntaxKind.EqualsEqualsToken, "=="],
-        ]);
-        const operator = operators.get(node.operatorToken.kind);
+        // A writer's `||` is a boolean guard, so it lowers to C++'s own.
+        const operator = PINNED_BOOLEAN_OPERATORS.get(
+            node.operatorToken.kind,
+        );
         if (!operator) {
             throw new Error(
                 `Unsupported operator in pinned ${state.request.symbolName}: ` +
@@ -609,7 +593,7 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
         node.expression.expression.text === "Math"
     ) {
         const name = node.expression.name.getText();
-        const mapped = mathFunctions[name];
+        const mapped = PINNED_MATH_FUNCTIONS[name];
         if (!mapped) {
             throw new Error(
                 `Pinned ${state.request.symbolName} calls Math.${name}, which ` +

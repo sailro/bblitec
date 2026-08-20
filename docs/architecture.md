@@ -73,6 +73,8 @@ Primary source ownership:
 | `src/upstream-graph.ts` | conservative reachable-module analysis |
 | `src/upstream-lower.ts` | lowerer orchestration, provenance, generated capabilities |
 | `src/pinned-shader-composer.ts` | executes the pin's own `composeShader`, and lifts named declarations out of a composition verbatim |
+| `src/pinned-post-process.ts` | runs a post-process factory and the pin's own `getShaderModule`, so a pass deploys the module the browser compiles |
+| `src/post-process-effects.ts` | the reached effects: which options reach the composed text, which scalars the effect's writer reads, and which textures bind after the source |
 | `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant |
 | `src/pinned-standard-variants.ts` | the Standard sibling: derives the pin's own feature words and composes the Standard colour and geometry variants |
 | `src/pinned-material-input.ts` | maps a glTF material to the shape `_computePbrMaterialFeatures` reads — the loader's own extension builders executed against a recording stub, not re-derived |
@@ -82,6 +84,7 @@ Primary source ownership:
 | `src/pinned-pbr-variant-cpp.ts` | the C++ mirrors of each variant's UBO layouts, offsets cross-checked against the composer's own, plus the generated variant-selector and material texture-slot tables |
 | `src/pinned-pbr-variant-output.ts` | writes the composed variant stages into the generated tree verbatim |
 | `src/lowering/pinned-ubo-writer-lowerer.ts` | lowers the pin's material/extension UBO writers from their own ASTs |
+| `src/lowering/post-process-lowerer.ts` | the pass's own contracts — internal target, viewport rectangle, bind-group order, blend table — and each effect's `writeUniforms`, emitted from the pin's AST |
 | `src/lowering/context.ts` | source-located AST declarations, expression contracts, and diagnostics |
 | `src/lowering/*-lowerer.ts` | focused Babylon API and formula lowering |
 | `src/lowering/templates/` | the generated `.babylon`/glTF loader C++ templates |
@@ -227,6 +230,9 @@ The current generated slice includes:
 - ordered opaque/transparent draw lists, camera matrices, uniforms, and
   frame-graph tasks
 - Standard/PBR geometry MRTs, depth-only passes, blits, and MSAA resolve
+- frame-graph post-process passes — blur, chromatic aberration, black and
+  white, anaglyph, circle of confusion — each drawing the pin's own composed
+  module
 - linear RGBA16F opaque/transmission rendering followed by one final
   image-processing pass
 - reached custom WGSL lowered through a typed shader IR into reflected HLSL/MSL
@@ -257,6 +263,10 @@ Each scene records:
 - `upstream/shaders/*.native.wgsl`: SDL binding/location/depth specialization
 - `upstream/shaders/variant-*.native.wgsl`: the pin's own composed PBR
   (`variant-`) and Standard (`variant-std-`) stages, verbatim
+- `upstream/shaders/postprocess-*.native.wgsl`: the composed post-process
+  modules, deployed once per entry point. Indexed by the module rather than
+  by the pass: two passes whose composed text is identical -- a blur pair
+  differing only in its `direction` uniform -- share one
 - `upstream/shaders/*.slots`: per stage, the register each block kept after
   compaction, by its own name. Written for every compiled stage, and the
   only authority on SDL_GPU slot order -- a block a stage declares but never

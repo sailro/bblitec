@@ -233,6 +233,48 @@ inline int stage_uniform_slot(
     return -1;
 }
 
+/**
+ * Bind the storage buffers a stage kept, in the sidecar's own slot order.
+ *
+ * Every caller answers the same two questions — which names this stage
+ * survived with, and which buffer each names — so only the resolver differs;
+ * a name it cannot map fails loudly rather than binding a neighbour.
+ */
+template <typename Resolve>
+inline void bind_stage_storage(
+    SDL_GPURenderPass* pass,
+    const PinnedStageSlots& slots,
+    bool fragment,
+    const char* what,
+    Resolve resolve) {
+    if (slots.storage.empty()) return;
+    std::vector<SDL_GPUBuffer*> buffers;
+    buffers.reserve(slots.storage.size());
+    for (const std::string& name : slots.storage) {
+        SDL_GPUBuffer* buffer = resolve(name);
+        if (!buffer) {
+            gpu_error(
+                (std::string(what) +
+                 " declares an unmapped storage buffer '" + name + "'.")
+                    .c_str());
+        }
+        buffers.push_back(buffer);
+    }
+    if (fragment) {
+        SDL_BindGPUFragmentStorageBuffers(
+            pass,
+            0,
+            buffers.data(),
+            static_cast<Uint32>(buffers.size()));
+        return;
+    }
+    SDL_BindGPUVertexStorageBuffers(
+        pass,
+        0,
+        buffers.data(),
+        static_cast<Uint32>(buffers.size()));
+}
+
 /** Push `bytes` at `slot`, or nothing when the stage kept no such block. */
 inline void push_stage_uniform(
     SDL_GPUCommandBuffer* command,

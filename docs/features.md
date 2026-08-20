@@ -78,11 +78,12 @@ deliberately left live.
 | [Deformation and instancing](#deformation-and-instancing) | Run | GPU skinning, morph targets, storage morphing, GPU instancing |
 | [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
 | [Frame graph](#frame-graph) | Run | render targets, tasks, geometry MRTs, blits, MSAA resolve |
+| [Post-process passes](#post-process-passes) | Compile → Run | each effect's stage composed by the pin at generation; the fullscreen pass, its uniforms and its viewport at run time |
 | [Render backends](#render-backends) | Run | SDL_GPU, Dawn, CPU fallback, transmission, image processing |
 | [Runtime scene mutation](#runtime-scene-mutation) | Run | removal with plan rematching, material-family append, instance counts |
 | [Diagnostics and capture](#diagnostics-and-capture) | Run | screenshots, benchmarks, attribution buffers |
 
-Eight families have work on both sides of the line — the shader pipeline most
+Nine families have work on both sides of the line — the shader pipeline most
 sharply, since its second stage changes phase with the backend. Where the cut
 falls in each is
 [tabulated below](#where-the-boundary-falls-inside-a-family).
@@ -527,7 +528,46 @@ and the world position a custom body may read, and the stock stage does not.
 
 Render targets and tasks, material overrides, depth-only passes, 7+4 geometry
 MRTs, blits, and MSAA resolve, with Babylon Lite's double-precision viewport
-coordinates floored to integer bounds and applied as a scissor.
+coordinates floored to integer bounds and applied as a scissor. A render task
+may bind a depth attachment another task owns instead of its target's own —
+the pin's own eager-wrapper contract, which the geometry renderer hands over
+and the borrowing pass loads rather than clears. It may also draw through a
+camera of its own rather than the scene's — the anaglyph's
+left eye is the reached case — which gives that task its own copy of the pin's
+per-pass scene block and nothing else, since a second camera moves the
+view-projection and the eye position and no other value in it.
+
+### Post-process passes
+
+Every post-process Babylon Lite ships is one `createPostProcessTask`: a
+fullscreen triangle over a single-sample source texture, a bind group of
+sampler, source view, the effect's extra views and its optional uniform block,
+and an output that is either the target the caller named or one the pass makes
+from the source's own descriptor. Blur, chromatic aberration, black and white,
+the red/cyan anaglyph and the circle of confusion are reached; each contributes
+only a shader record and a `writeUniforms` body.
+
+**Compile time: the stage.** The effect's factory runs under Node against a
+descriptor-only render target and the pin's own `getShaderModule` concatenates
+the module — so what deploys is the text the browser compiles, for the options
+this scene passed. That matters most for the blur, whose text is not fixed at
+all: its kernel decides how many taps the vertex stage carries, and each tap's
+offset and weight is a Gaussian evaluated in doubles and printed through the
+pin's own formatter. Both stages live in one module, so it deploys twice — once
+per entry point — and SDL_GPU re-addresses the pin's groups exactly as it does
+for a composed material variant. What identifies a module is that text and not
+the pass that reached it: a blur pair differing only in its `direction` uniform
+composes one module and deploys it once.
+
+**Run time: the pass.** The parameters live on the task record and
+`updateUniforms` marks them for rewrite, which is the pin's own split between
+mutating a parameter and uploading the block. The uniform bytes are written by
+a generated writer lowered from each effect's own `writeUniforms`, so a pass
+whose values depend on the attachments — the blur's per-pixel delta, the
+chromatic aberration's screen size — reads them from the real targets. A
+normalized viewport becomes the pin's own pixel rectangle, which rounds its far
+edges *up* where a frame-graph copy task rounds them down, so the two do not
+share a resolver.
 
 ### Render backends
 
@@ -569,6 +609,7 @@ before it trusts a measurement.
 | Deformation | which vertex layout and shader variant exist, from the asset | joint palettes, morph weights, skinning and morphing, CPU fallbacks |
 | Lights | which light-kind writers and `light_*.cpp` units exist | the lights buffer, per-mesh light sets, uniforms |
 | Textures | which image codecs link and ship | decode, mip generation, factor texels, sampler state |
+| Post-process passes | each effect's composed stage, for the options the scene passed | the pass, its uniform block, its viewport rectangle and its blend |
 
 ## Knobs
 

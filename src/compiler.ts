@@ -26,6 +26,10 @@ import {
     type AssetOptionContext,
 } from "./compiler/intrinsics/asset-options.js";
 import {
+    compilePostProcessTaskOptions,
+    type CompiledPostProcessTask,
+} from "./compiler/intrinsics/post-process-options.js";
+import {
     compileRenderTargetOptions,
     compileRenderTaskOptions,
     compileGeometryTaskOptions,
@@ -122,6 +126,7 @@ import type {
     Feature,
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
+    PostProcessTaskManifest,
     ResolvedCompileOptions,
     SceneMeshManifest,
     ScenePbrClearCoatManifest,
@@ -139,6 +144,7 @@ export type {
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
+    PostProcessTaskManifest,
     ShaderMaterialVariantName,
 } from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
@@ -206,6 +212,7 @@ const featureSources: Record<Feature, string[]> = {
     "renderer:transmission": [],
     "renderer:fog": [],
     "renderer:geometry-output": [],
+    "renderer:post-process": [],
 };
 
 const featureOrder = Object.keys(featureSources) as Feature[];
@@ -335,6 +342,7 @@ class Compiler
     public readonly erasedBrowserInstrumentation = new Set<number>();
     public readonly unwrappedAwaitExpressions = new Set<number>();
     public readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
+    public readonly postProcessTasks: PostProcessTaskManifest[] = [];
     public readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
     private readonly sceneMeshes: SceneMeshManifest[] = [];
     private readonly sceneSpriteCustomShaders: SpriteCustomShaderManifest[] =
@@ -445,6 +453,7 @@ class Compiler
                             ),
                     ),
                 geometryOutputTasks: this.geometryOutputTasks,
+                postProcessTasks: this.postProcessTasks,
                 adaptations: compileAdaptations(this, features),
                 scenePbrMaterials: this.scenePbrMaterials,
                 sceneMaterialCount: this.sceneMaterialCount,
@@ -1181,6 +1190,19 @@ class Compiler
 
     public compileCopyTaskOptions(expression: ts.Expression): string {
         return compileCopyTaskOptions(this, expression);
+    }
+
+    public compilePostProcessTaskOptions(
+        intrinsic: string,
+        expression: ts.Expression,
+        shaderIndex: number,
+    ): CompiledPostProcessTask {
+        return compilePostProcessTaskOptions(
+            this,
+            intrinsic,
+            expression,
+            shaderIndex,
+        );
     }
 
     public compileGroundOptions(
@@ -2503,6 +2525,23 @@ class Compiler
                 expression,
             );
         }
+        if (
+            owner.kind === "task" &&
+            owner.postProcessTask &&
+            expression.name.text === "outputTexture"
+        ) {
+            // A pass writes into the target it was given, or into one it
+            // made from the source's own descriptor. The pin resolves that
+            // in `prepareOutputTarget`; the record holds whichever it is,
+            // so chaining a pass onto the one before it reads a field.
+            return {
+                kind: "render-target",
+                cpp: `${this.requireEngine(owner, expression)}.frame_tasks[${owner.cpp}.value].post_process.output_target`,
+                ...(owner.engineCpp
+                    ? { engineCpp: owner.engineCpp }
+                    : {}),
+            };
+        }
         return undefined;
     }
 
@@ -2529,6 +2568,16 @@ class Compiler
             return {
                 kind: "render-texture",
                 cpp: `bbl::geometry_task_output_texture(${owner.cpp})`,
+                ...engineCpp,
+            };
+        }
+        if (property === "geometryDepthTexture") {
+            // The pin's eager depth wrapper over the task's MRT depth: a later
+            // render task binds and loads it, and owns none of it.
+            return {
+                kind: "render-texture",
+                cpp: `bbl::geometry_task_depth_texture(${owner.cpp})`,
+                isDepthTexture: true,
                 ...engineCpp,
             };
         }
@@ -3050,6 +3099,12 @@ class Compiler
         manifest: GeometryOutputTaskManifest,
     ): void {
         this.geometryOutputTasks.push(manifest);
+    }
+
+    public recordPostProcessTask(
+        manifest: PostProcessTaskManifest,
+    ): void {
+        this.postProcessTasks.push(manifest);
     }
 
     public requireDefaultScene(node: ts.Node): Value {

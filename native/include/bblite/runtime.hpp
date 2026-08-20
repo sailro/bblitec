@@ -192,6 +192,20 @@ struct NormalizedViewport {
     double height = 1.0;
 };
 
+/**
+ * The pixels a normalized viewport covers on a given target.
+ *
+ * Which pixels is the pin's question and each frame-graph task answers it its
+ * own way -- a copy task rounds its far edges down, a post-process pass rounds
+ * them up -- so only the rectangle is shared, never the rounding.
+ */
+struct PixelViewport {
+    std::int32_t x = 0;
+    std::int32_t y = 0;
+    std::int32_t width = 0;
+    std::int32_t height = 0;
+};
+
 struct RenderTargetOptions {
     std::uint32_t samples = 1;
     bool has_color = true;
@@ -199,6 +213,22 @@ struct RenderTargetOptions {
     bool sampled_depth = false;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+};
+
+enum class RenderTextureSource {
+    render_target,
+    geometry,
+    geometry_output,
+    /** A geometry task's own depth attachment, aliased by the pin's eager
+     *  wrapper target: a later pass binds and loads it rather than owning it. */
+    geometry_depth,
+};
+
+struct RenderTextureRef {
+    RenderTextureSource source = RenderTextureSource::render_target;
+    RenderTargetHandle target{};
+    TaskHandle task{};
+    GeometryTextureType geometry_type = GeometryTextureType::irradiance;
 };
 
 struct RenderTaskOptions {
@@ -210,6 +240,14 @@ struct RenderTaskOptions {
     bool has_camera = false;
     bool canvas_size = false;
     bool auto_mirror = true;
+    /**
+     * A depth attachment owned by another task, bound instead of the target's
+     * own — `geometry_depth` when the scene named one, and the default
+     * `render_target` when it did not. The pin marks such a target eager, so
+     * the pass loads the depth already in it and neither builds nor disposes
+     * it.
+     */
+    RenderTextureRef depth{};
 };
 
 struct RenderTaskMesh {
@@ -227,19 +265,6 @@ struct GeometryTaskOptions {
     Color4 target_clear_color{};
 };
 
-enum class RenderTextureSource {
-    render_target,
-    geometry,
-    geometry_output,
-};
-
-struct RenderTextureRef {
-    RenderTextureSource source = RenderTextureSource::render_target;
-    RenderTargetHandle target{};
-    TaskHandle task{};
-    GeometryTextureType geometry_type = GeometryTextureType::irradiance;
-};
-
 struct CopyTaskOptions {
     std::string name;
     RenderTextureRef source{};
@@ -249,10 +274,69 @@ struct CopyTaskOptions {
     NormalizedViewport viewport{};
 };
 
+/**
+ * A WebGPU blend factor, as this runtime's own enumerator, and the four a
+ * blend state carries. The operation is always add — the pinned descriptors
+ * this port reaches never write another one — so a state is its factors.
+ * Generated code names these (the post-process alpha modes) and so does every
+ * blending pipeline in both backends, which is why they sit with the records
+ * rather than in a PAL header.
+ */
+enum class BlendFactor {
+    one,
+    src_alpha,
+    one_minus_src_alpha,
+};
+
+struct BlendFactors {
+    BlendFactor src_color = BlendFactor::one;
+    BlendFactor dst_color = BlendFactor::one;
+    BlendFactor src_alpha = BlendFactor::one;
+    BlendFactor dst_alpha = BlendFactor::one;
+};
+
+enum class PostProcessSampling {
+    nearest,
+    linear,
+};
+
+/**
+ * A fullscreen pass that samples one texture and writes another.
+ *
+ * Every post-process effect Babylon Lite ships is this task with a different
+ * composed stage, so the record carries the pass and the effect's parameter
+ * vector rather than one struct per effect. `shader_index` is the reach order,
+ * which selects both the deployed stage pair and the generated uniform writer.
+ */
+struct PostProcessTaskOptions {
+    std::string name;
+    std::uint32_t shader_index = 0;
+    RenderTextureRef source{};
+    /** The target the caller named, or an invalid handle for none. */
+    RenderTargetHandle target{};
+    PostProcessSampling sampling = PostProcessSampling::linear;
+    /** The pin's `PostProcessAlphaMode`: 0, 1, 2 or 7. */
+    std::uint32_t alpha_mode = 0;
+    bool has_viewport = false;
+    NormalizedViewport viewport{};
+    bool clear = true;
+    /** The views the effect binds after the source, in its own order. */
+    std::vector<RenderTextureRef> extra_textures;
+    /** Read by the effects whose uniforms carry the camera planes. */
+    CameraHandle camera{};
+    /** The effect's own `params`, in the order its writer reads them. */
+    std::vector<double> params;
+    /** Resolved at creation: the caller's target, or the pass's own. */
+    RenderTargetHandle output_target{};
+    /** Set by `updateUniforms`, cleared when a backend rewrites the block. */
+    bool uniforms_dirty = true;
+};
+
 enum class FrameTaskKind {
     render,
     geometry,
     copy,
+    post_process,
 };
 
 struct RenderTargetRecord {
@@ -271,6 +355,7 @@ struct FrameTaskRecord {
     std::vector<RenderTaskMesh> render_meshes;
     GeometryTaskOptions geometry;
     CopyTaskOptions copy;
+    PostProcessTaskOptions post_process;
 };
 
 struct RenderTargetTexture {
@@ -1316,11 +1401,17 @@ TaskHandle create_copy_to_texture_task(
     Engine& engine,
     Scene& scene,
     CopyTaskOptions options);
+TaskHandle create_post_process_task(
+    Engine& engine,
+    Scene& scene,
+    PostProcessTaskOptions options);
+void update_post_process_uniforms(Engine& engine, TaskHandle task);
 RenderTextureRef render_target_texture(RenderTargetHandle target);
 RenderTextureRef geometry_task_texture(
     TaskHandle task,
     GeometryTextureType type);
 RenderTextureRef geometry_task_output_texture(TaskHandle task);
+RenderTextureRef geometry_task_depth_texture(TaskHandle task);
 void add_task(Scene& scene, TaskHandle task);
 void add_task_at_start(Scene& scene, TaskHandle task);
 void add_render_task_mesh(
@@ -1356,8 +1447,8 @@ void go_to_frame(
 void play_animation(Engine& engine, AnimationGroupHandle group);
 void pause_animation(Engine& engine, AnimationGroupHandle group);
 void stop_animation(Engine& engine, AnimationGroupHandle group);
-void attach_control(Engine& engine, CameraHandle camera, Scene& scene);
-void attach_free_control(Engine& engine, CameraHandle camera, Scene& scene);
+void attach_control(Engine& engine, CameraHandle camera);
+void attach_free_control(Engine& engine, CameraHandle camera);
 struct LoadSpriteAtlasOptions {
     float grid_width_px = 0.0f;
     float grid_height_px = 0.0f;

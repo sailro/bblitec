@@ -4,6 +4,10 @@ import type {
     Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import {
+    isDataTuple,
+    tupleComponents,
+} from "../data-types.js";
 import { addressModeByPin } from "../../pinned-address-modes.js";
 import { parseBlendExport } from "../../lowering/pinned-blend-table.js";
 
@@ -261,22 +265,14 @@ function tupleOption(
                 `static_cast<float>(${element.cpp})`,
         );
     }
-    if (
-        value.kind === "data" &&
-        value.dataType?.kind === "tuple" &&
-        value.dataType.arity === arity
-    ) {
+    if (isDataTuple(value, arity)) {
         const local = context.allocateTemporaryCppName(
             `sprite_${name}`,
         );
         context.emit(
             `const bbl::js::Tuple<${arity}> ${local} = ${value.cpp};`,
         );
-        return Array.from(
-            { length: arity },
-            (_unused, index) =>
-                `static_cast<float>(${local}[${index}])`,
-        );
+        return tupleComponents(local, arity);
     }
     return context.fail(
         node,

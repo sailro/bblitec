@@ -99,6 +99,43 @@ function declaredInBabylonLite(symbol: ts.Symbol): boolean {
     );
 }
 
+/**
+ * Whether a compiled value is a plain-data numeric tuple of `arity`.
+ *
+ * The data model gives an annotated `[number, number, number]` a
+ * `bbl::js::Tuple<3>` -- a `std::array<double, 3>` -- rather than the
+ * compile-time tuple an in-place literal produces, so every reader of a
+ * tuple-valued option has to recognise both.
+ */
+export function isDataTuple(
+    value: { kind: string; dataType?: DataType },
+    arity: number,
+): boolean {
+    return (
+        value.kind === "data" &&
+        value.dataType?.kind === "tuple" &&
+        value.dataType.arity === arity
+    );
+}
+
+/**
+ * The `arity` components of a native tuple expression, as float expressions.
+ *
+ * `base` is indexed once per component, so a caller whose expression is not
+ * free to repeat -- a call, or anything else with an effect -- binds it to a
+ * local first and passes the local.
+ */
+export function tupleComponents(
+    base: string,
+    arity: number,
+): string[] {
+    return Array.from(
+        { length: arity },
+        (_unused, index) =>
+            `static_cast<float>(${base}[${index}])`,
+    );
+}
+
 export function dataTypesEqual(
     left: DataType,
     right: DataType,
