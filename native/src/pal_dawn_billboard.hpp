@@ -264,12 +264,10 @@ inline DawnBillboardPass create_dawn_billboard_pass(
 
     // The pinned depth table pairs `transparent` with writes off, which is
     // what makes the sorted draw order the composite, and `cutout` with
-    // writes on, which is what lets the GPU resolve overlap instead. This
-    // renderer's scene pass is forward-Z, so the pin's reverse-Z
-    // "greater-equal" is LessEqual here.
+    // writes on, which is what lets the GPU resolve overlap instead.
     WGPUDepthStencilState depth_state = WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_state.format = depth_format;
-    depth_state.depthCompare = WGPUCompareFunction_LessEqual;
+    depth_state.depthCompare = WGPUCompareFunction_GreaterEqual;
     depth_state.depthWriteEnabled = cutout
         ? WGPUOptionalBool_True
         : WGPUOptionalBool_False;

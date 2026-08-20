@@ -206,9 +206,10 @@ test("the perspective and multiply anchors accept the pinned writers", () => {
     const plan = new RendererLowerer(
         new LoweringContext(),
     ).lowerRenderPlan({});
-    // The reverse-Z arms the anchors pair with stay in the emission, and
-    // the multiply keeps the pinned accumulation shape.
-    assert.match(plan.source, /reverse_depth \? -camera\.near_plane \/ range/);
+    // The pin's own depth rows stay in the emission -- there is no second
+    // convention to select between -- and the multiply keeps the pinned
+    // accumulation shape.
+    assert.match(plan.source, /projection\[10\] = static_cast<float>\(-camera\.near_plane \/ range\);/);
     assert.match(
         plan.source,
         /\(camera\.far_plane \* camera\.near_plane\) \/ range/,

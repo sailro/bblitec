@@ -55,6 +55,10 @@ namespace bbl::pal {
 namespace {
 
 
+// `pinned_depth_clear` names the convention; this is its compare.
+inline constexpr SDL_GPUCompareOp pinned_depth_compare =
+    SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
+
 SDL_GPUBlendFactor gpu_blend_factor(BlendFactor factor) {
     switch (factor) {
         case BlendFactor::one:
@@ -814,14 +818,7 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         ? SDL_GPU_FRONTFACE_CLOCKWISE
         : SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
-    // A no-color view draws in the depth-only tasks, whose matrices are
-    // reverse-depth: GREATER compare, depth writes on -- the same contract
-    // the depth-only pipelines carry.
-    info.depth_stencil_state.compare_op = entry.no_color_output
-        ? SDL_GPU_COMPAREOP_GREATER
-        : transparent
-            ? SDL_GPU_COMPAREOP_LESS_OR_EQUAL
-            : SDL_GPU_COMPAREOP_LESS;
+    info.depth_stencil_state.compare_op = pinned_depth_compare;
     info.depth_stencil_state.enable_depth_test = true;
     info.depth_stencil_state.enable_depth_write =
         entry.no_color_output || !transparent;
@@ -872,11 +869,8 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
             static_cast<Uint32>(geometry_targets.size());
         info.multisample_state.sample_count =
             task_sample_count(state, geometry_task->geometry.samples);
-        // The pin's geometry tasks are reverse-Z -- SCREENSPACE_DEPTH is
-        // documented as far->0, near->1 and the composed fragment reports
-        // `input.clipPos.z` raw -- so the pinned pass renders with the
-        // reverse matrix, GREATER, and a zero depth clear.
-        info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_GREATER;
+        // A geometry task always writes depth, whatever the material's own
+        // alpha would have said.
         info.depth_stencil_state.enable_depth_write = true;
     }
     SDL_GPUGraphicsPipeline* pipeline =
@@ -1291,7 +1285,7 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
     info.rasterizer_state.front_face =
         SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
-    info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
+    info.depth_stencil_state.compare_op = pinned_depth_compare;
     info.depth_stencil_state.enable_depth_test = true;
     info.depth_stencil_state.enable_depth_write = true;
     info.multisample_state.sample_count = state.sample_count;
@@ -1584,14 +1578,7 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     info.rasterizer_state.front_face =
         SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
-    // A no-color view draws in the depth-only tasks, whose matrices are
-    // reverse-depth: GREATER compare, depth writes on -- the same contract
-    // the depth-only pipelines carry.
-    info.depth_stencil_state.compare_op = entry.no_color_output
-        ? SDL_GPU_COMPAREOP_GREATER
-        : transparent
-            ? SDL_GPU_COMPAREOP_LESS_OR_EQUAL
-            : SDL_GPU_COMPAREOP_LESS;
+    info.depth_stencil_state.compare_op = pinned_depth_compare;
     info.depth_stencil_state.enable_depth_test = true;
     info.depth_stencil_state.enable_depth_write =
         entry.no_color_output || !transparent;
@@ -1601,8 +1588,8 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     info.target_info.num_color_targets = entry.no_color_output ? 0 : 1;
     info.target_info.depth_stencil_format = state.depth_format;
     info.target_info.has_depth_stencil_target = true;
-    // A geometry-output MRT variant draws into its task's own attachments
-    // under the pin's reverse-Z contract, exactly as the PBR sibling does.
+    // A geometry-output MRT variant draws into its task's own
+    // attachments, exactly as the PBR sibling does.
     std::vector<SDL_GPUColorTargetDescription> geometry_targets;
     if (geometry_task) {
         geometry_targets.reserve(
@@ -1638,7 +1625,8 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
             static_cast<Uint32>(geometry_targets.size());
         info.multisample_state.sample_count =
             task_sample_count(state, geometry_task->geometry.samples);
-        info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_GREATER;
+        // A geometry task always writes depth, whatever the material's own
+        // alpha would have said.
         info.depth_stencil_state.enable_depth_write = true;
     }
     SDL_GPUGraphicsPipeline* pipeline =
@@ -2739,7 +2727,7 @@ void save_geometry_id_buffer_png(
     target.store_op = SDL_GPU_STOREOP_STORE;
     SDL_GPUDepthStencilTargetInfo depth_target{};
     depth_target.texture = depth;
-    depth_target.clear_depth = 1.0f;
+    depth_target.clear_depth = pinned_depth_clear;
     depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
     depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
     depth_target.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
@@ -3848,7 +3836,7 @@ bool run_gpu_engine(Engine& engine) {
         pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
         pipeline_info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
         pipeline_info.rasterizer_state.enable_depth_clip = true;
-        pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
+        pipeline_info.depth_stencil_state.compare_op = pinned_depth_compare;
         pipeline_info.depth_stencil_state.enable_depth_test = true;
         pipeline_info.depth_stencil_state.enable_depth_write = true;
         pipeline_info.multisample_state.sample_count = state.sample_count;
@@ -3925,8 +3913,6 @@ bool run_gpu_engine(Engine& engine) {
                 depth_only_fragment_shader;
             depth_pipeline_info.rasterizer_state.cull_mode =
                 SDL_GPU_CULLMODE_BACK;
-            depth_pipeline_info.depth_stencil_state.compare_op =
-                SDL_GPU_COMPAREOP_GREATER;
             depth_pipeline_info.depth_stencil_state.enable_depth_test = true;
             depth_pipeline_info.depth_stencil_state.enable_depth_write = true;
             depth_pipeline_info.multisample_state.sample_count =
@@ -4002,9 +3988,6 @@ bool run_gpu_engine(Engine& engine) {
                         ? SDL_GPU_CULLMODE_BACK
                         : SDL_GPU_CULLMODE_NONE;
                 if (!info.depth_write) {
-                    shader_pipeline_info.depth_stencil_state
-                        .compare_op =
-                        SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
                     shader_pipeline_info.depth_stencil_state
                         .enable_depth_write = false;
                 }
@@ -4085,7 +4068,7 @@ bool run_gpu_engine(Engine& engine) {
             SDL_GPUGraphicsPipelineCreateInfo id_pipeline_info = pipeline_info;
             id_pipeline_info.fragment_shader = id_fragment_shader;
             id_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
-            id_pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
+            id_pipeline_info.depth_stencil_state.compare_op = pinned_depth_compare;
             id_pipeline_info.depth_stencil_state.enable_depth_write = true;
             id_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             id_pipeline_info.target_info.color_target_descriptions = &id_target;
@@ -4101,7 +4084,7 @@ bool run_gpu_engine(Engine& engine) {
             SDL_GPUGraphicsPipelineCreateInfo cluster_pipeline_info = pipeline_info;
             cluster_pipeline_info.fragment_shader = cluster_fragment_shader;
             cluster_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
-            cluster_pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
+            cluster_pipeline_info.depth_stencil_state.compare_op = pinned_depth_compare;
             cluster_pipeline_info.depth_stencil_state.enable_depth_write = true;
             cluster_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             cluster_pipeline_info.target_info.color_target_descriptions =
@@ -4114,7 +4097,6 @@ bool run_gpu_engine(Engine& engine) {
         }
         color_target.blend_state = blend_state_from(transparent_blend);
         pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
-        pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
         pipeline_info.depth_stencil_state.enable_depth_write = false;
         if (grid_vertex_shader && grid_fragment_shader) {
             pipeline_info.vertex_shader = grid_vertex_shader;
@@ -5643,8 +5625,7 @@ bool run_gpu_engine(Engine& engine) {
                         const std::array<float, 16> task_matrix =
                             upstream::build_view_projection(
                                 task_camera,
-                                task_aspect,
-                                !target_record.has_color);
+                                task_aspect);
                         SDL_PushGPUVertexUniformData(
                             command,
                             0,
@@ -5661,7 +5642,8 @@ bool run_gpu_engine(Engine& engine) {
                             }
                             SDL_GPUDepthStencilTargetInfo task_depth{};
                             task_depth.texture = target.depth;
-                            task_depth.clear_depth = 0.0f;
+                            task_depth.clear_depth =
+                                pinned_depth_clear;
                             task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
                             task_depth.store_op =
                                 target_record.sampled_depth
@@ -5797,7 +5779,8 @@ bool run_gpu_engine(Engine& engine) {
                             task_depth_pointer = &task_depth;
                         } else if (target_record.has_depth && target.depth) {
                             task_depth.texture = target.depth;
-                            task_depth.clear_depth = 1.0f;
+                            task_depth.clear_depth =
+                                pinned_depth_clear;
                             task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
                             task_depth.store_op =
                                 target_record.sampled_depth
@@ -5897,27 +5880,8 @@ bool run_gpu_engine(Engine& engine) {
                                     : output_target.sampled_color;
                             target_infos.push_back(target_info);
                         }
-                        // A task whose draws are pinned — PBR or
-                        // Standard — renders through the pin's own
-                        // reverse-Z geometry contract: reverse matrix,
-                        // GREATER pipelines, zero depth clear.
-                        bool task_has_pbr = false;
-#if BBLITE_PINNED_MATERIAL_VARIANTS
-                        task_has_pbr = pinned_lists_have_pinned_draws(
-                            task_draw_lists[handle.value]);
-#endif
                         SDL_GPUDepthStencilTargetInfo task_depth{};
-                        // The pinned draws take the reverse-Z matrix the
-                        // pin's geometry tasks render with; the Standard
-                        // path keeps the forward one pushed below.
-                        const std::array<float, 16> geometry_matrix =
-                            task_has_pbr
-                                ? upstream::build_view_projection(
-                                      camera,
-                                      static_cast<double>(width) /
-                                          static_cast<double>(height),
-                                      true)
-                                : matrix;
+                        const std::array<float, 16>& geometry_matrix = matrix;
                         // The pin's gpUniforms for the task's MRT variants:
                         // last frame's view-projection (seeded with the
                         // current one on the first frame) and the camera's
@@ -5963,7 +5927,7 @@ bool run_gpu_engine(Engine& engine) {
 #endif
                         task_depth.texture = geometry.depth;
                         task_depth.clear_depth =
-                            task_has_pbr ? 0.0f : 1.0f;
+                            pinned_depth_clear;
                         task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
                         task_depth.store_op = geometry.depth_borrowed
                             ? SDL_GPU_STOREOP_STORE
@@ -6272,7 +6236,7 @@ bool run_gpu_engine(Engine& engine) {
                     : nullptr;
             SDL_GPUDepthStencilTargetInfo depth_info{};
             depth_info.texture = state.depth;
-            depth_info.clear_depth = 1.0f;
+            depth_info.clear_depth = pinned_depth_clear;
             depth_info.load_op = SDL_GPU_LOADOP_CLEAR;
             depth_info.store_op = SDL_GPU_STOREOP_DONT_CARE;
             if (transmission_enabled) {
@@ -6380,8 +6344,9 @@ bool run_gpu_engine(Engine& engine) {
                 // The pinned vertex stage reads scene.viewProjection and
                 // scene.vEyePosition and offsets the cube by the eye itself,
                 // so this draw builds its own view-projection rather than
-                // binding the frame's: it needs the pin's reverse-Z clip row
-                // for the near-plane clipping its dither seed rides on.
+                // binding the frame's; the near-plane clipping its dither
+                // seed rides on makes that clip row exact rather than
+                // merely equivalent.
                 const upstream::SolidSkyboxSceneUniforms
                     solid_skybox_scene =
                         upstream::build_solid_skybox_scene_uniforms(

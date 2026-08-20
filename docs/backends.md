@@ -224,9 +224,9 @@ Regression guards, each measured rather than assumed:
   canonical in [fidelity](fidelity.md). The instrumented differential
   capture that establishes it ships as `scene -- capture` (see
   [development](development.md#instrumented-browser-capture)). The same
-  captures measure the native forward-Z and baked-vertex-mirror
-  adaptations as identical to the browser's reverse-Z and world-matrix
-  mirror to ~1e-5 px, which is why both adaptations stand.
+  captures measure the native baked-vertex-mirror adaptation as identical
+  to the browser's world-matrix mirror to ~1e-5 px, which is why it
+  stands.
 - **Scene 247 is three shading contracts, none of them instancing
   arithmetic**: texture-less PBR factors shade quantized through the
   pinned factor-texture bake (base color as sRGB bytes whose hardware

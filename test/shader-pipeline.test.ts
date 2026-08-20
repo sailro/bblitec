@@ -76,7 +76,9 @@ test("lowers reached alpha-card WGSL through typed reflection", () => {
     const fragment = emitNativeWgslProgram(program, "fragment");
     assert.match(vertex, /@group\(1\) @binding\(0\)/);
     assert.match(vertex, /shaderUniforms\.center/);
-    assert.match(vertex, /1\.0 - shaderUniforms\.depth/);
+    // The scene's own clip-space depth reaches the stage verbatim: the
+    // renderer shares the pin's convention, so there is nothing to correct.
+    assert.match(vertex, /out\.position = vec4<f32>\(.*shaderUniforms\.depth, 1\.0\)/);
     assert.match(fragment, /@group\(3\) @binding\(0\)/);
     assert.match(fragment, /shaderUniforms\.opacity/);
 });

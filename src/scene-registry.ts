@@ -116,9 +116,9 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene14.ts",
         title: "Babylon Lite Native - Flight Helmet",
         parity: {
-            maxFullMad: 0.09,
-            maxForegroundMad: 0.012,
-            dawnThresholds: { maxFullMad: 0.09, maxForegroundMad: 0.008 },
+            maxFullMad: 0.015,
+            maxForegroundMad: 0.010,
+            dawnThresholds: { maxFullMad: 0.015, maxForegroundMad: 0.007 },
             backgroundColor: [61, 61, 94],
             backgroundThreshold: 30,
         },
@@ -129,9 +129,9 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene24.ts",
         title: "Babylon Lite Native - Hill Valley",
         parity: {
-            maxFullMad: 0.05,
-            maxForegroundMad: 0.05,
-            dawnThresholds: { maxFullMad: 0.03, maxForegroundMad: 0.03 },
+            maxFullMad: 0.007,
+            maxForegroundMad: 0.008,
+            dawnThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
             backgroundColor: [174, 129, 107],
             backgroundThreshold: 30,
         },
@@ -411,8 +411,8 @@ const sceneInputs: readonly SceneInput[] = [
             // root position differs from the pin's by one ULP on two axes
             // (the sizing entry in TODO.md), and the foreground's sub-pixel
             // silhouette epsilon.
-            maxFullMad: 0.06,
-            maxForegroundMad: 0.16,
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.011,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: {
@@ -601,8 +601,8 @@ const sceneInputs: readonly SceneInput[] = [
             },
             outputDirectory:
                 "artifacts/parity/regression-instanced-ground",
-            maxFullMad: 0.1,
-            maxForegroundMad: 0.06,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },
@@ -624,8 +624,8 @@ const sceneInputs: readonly SceneInput[] = [
             referenceTimeSeconds: 0.5,
             outputDirectory:
                 "artifacts/parity/regression-morph-ground",
-            maxFullMad: 0.05,
-            maxForegroundMad: 0.07,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: {
@@ -1647,6 +1647,18 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - NME PBR Subsurface",
         parity: {
             maxFullMad: 0.002,
+            maxForegroundMad: 0.010,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene84",
+        name: "Scene 84 - NME Fragment Depth",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene84.ts",
+        title: "Babylon Lite Native - NME Fragment Depth",
+        parity: {
+            maxFullMad: 0.010,
             maxForegroundMad: 0.010,
             backgroundColor: [0, 0, 0],
             backgroundThreshold: 30,

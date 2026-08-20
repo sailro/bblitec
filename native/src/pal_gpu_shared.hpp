@@ -839,9 +839,8 @@ inline bool pinned_record_instanced(const MeshRecord& record) {
 /**
  * Whether a task's draw lists contain a draw the pinned path owns — a PBR
  * draw, or a Standard one now that both families run Babylon's own composed
- * stages. A geometry task whose draws are pinned renders through the pin's
- * reverse-Z contract (reverse matrix, GREATER pipelines, zero depth clear),
- * and both backends make the same decision from the same lists.
+ * stages. A geometry task with none writes no pinned blocks at all, and both
+ * backends make the same decision from the same lists.
  */
 inline bool pinned_lists_have_pinned_draws(
     const upstream::RenderDrawLists& lists) {
@@ -2077,6 +2076,21 @@ inline float geometry_clear_component(GeometryTextureType type) {
         ? 1.0f
         : 0.0f;
 }
+
+/**
+ * The depth clear the pinned convention wants.
+ *
+ * The pin renders under one depth convention and only one:
+ * src/math/mat4-perspective-lh-to-ref.ts maps near to 1 and far to 0, and
+ * src/engine/render-target.ts compares REVERSE_DEPTH_COMPARE =
+ * "greater-equal" against it. Every pinned family defaults to that compare
+ * -- PBR, Standard, node, shader, the geometry tasks, the background ground
+ * and the solid skybox -- so both backends here carry it on every pipeline
+ * and clear the far plane to zero. There is no second convention to select
+ * between, and a block that writes @builtin(frag_depth) is meaningful only
+ * because there is not.
+ */
+inline constexpr float pinned_depth_clear = 0.0f;
 
 /**
  * The two blend-factor tuples the corpus reaches, stated once. A

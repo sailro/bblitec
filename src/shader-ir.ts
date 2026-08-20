@@ -88,7 +88,6 @@ export interface ShaderIrProgram {
     name: string;
     vertex: ShaderModule;
     fragment: ShaderModule;
-    clipDepth: ShaderMaterialProgramSource["clipDepth"];
     reflection: ShaderProgramReflection;
 }
 
@@ -600,7 +599,6 @@ export function lowerWgslShaderProgram(
         name: source.name,
         vertex,
         fragment,
-        clipDepth: source.clipDepth,
         reflection: {
             name: source.name,
             entryPoints: [

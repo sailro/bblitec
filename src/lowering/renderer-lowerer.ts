@@ -708,7 +708,6 @@ export class RendererLowerer {
                     alphaTesting: program.needAlphaTesting,
                     backFaceCulling: program.backFaceCulling,
                     depthWrite: program.depthWrite,
-                    clipMatrix: program.clipDepth === "matrix",
                     valueCount,
                     defaults,
                     vertex: stageBlock("vertex"),
@@ -744,7 +743,6 @@ export class RendererLowerer {
         ${info.alphaTesting},
         ${info.backFaceCulling},
         ${info.depthWrite},
-        ${info.clipMatrix},
         ${info.valueCount}u,
         {${info.defaults.map(floatLiteral).join(", ")}},
         ${stageBlockLiteral(info.vertex)},
@@ -927,7 +925,6 @@ struct ShaderVariantInfo {
     bool alpha_testing = false;
     bool back_face_culling = true;
     bool depth_write = true;
-    bool clip_matrix = false;
     std::uint32_t value_count = 0;
     std::vector<float> defaults;
     ShaderVariantStageBlock vertex;
@@ -1072,8 +1069,7 @@ std::uint32_t preferred_sample_count();
 // projection writer divides by it before its single float32 store.
 std::array<float, 16> build_view_projection(
     const CameraRecord& camera,
-    double aspect,
-    bool reverse_depth = false);
+    double aspect);
 // The pin's scene.view, from the camera's own world matrix. Declared because
 // the pinned PBR variants read it out of the scene block a PAL fills, where the
 // transcribed fragment never needed it.
@@ -1574,10 +1570,34 @@ std::uint32_t preferred_sample_count() {
     return ${sampleCount}u;
 }
 
+namespace {
+
+// src/math/mat4-perspective-lh-to-ref.ts mat4PerspectiveLHToRef, in the
+// same double-then-store-once shape as the rest of the chain. The pin maps
+// near -> 1 and far -> 0 and compares greater-equal
+// (src/engine/render-target.ts REVERSE_DEPTH_COMPARE), which is the one
+// convention every pinned family renders under, so it is the one this
+// renderer writes -- for the scene's own view and for the skybox's alike.
+std::array<float, 16> build_projection(
+    const CameraRecord& camera,
+    double aspect) {
+    const double focal = 1.0 / std::tan(camera.fov * 0.5);
+    const double range = camera.far_plane - camera.near_plane;
+    std::array<float, 16> projection{};
+    projection[0] = static_cast<float>(focal / aspect);
+    projection[5] = static_cast<float>(focal);
+    projection[10] = static_cast<float>(-camera.near_plane / range);
+    projection[11] = 1.0f;
+    projection[14] = static_cast<float>(
+        (camera.far_plane * camera.near_plane) / range);
+    return projection;
+}
+
+} // namespace
+
 std::array<float, 16> build_view_projection(
     const CameraRecord& camera,
-    double aspect,
-    bool reverse_depth) {
+    double aspect) {
     const std::array<float, 16> view =
         build_view_matrix(camera_world_matrix(camera));
 
@@ -1588,9 +1608,7 @@ ${options.orthographicCamera
         // src/math/mat4-ortho-lh-to-ref.ts mat4OrthoOffCenterLHToRef.
         // The pinned writer runs in JavaScript doubles into a
         // Float32Array cache, so the terms are computed in double here
-        // and stored as float, and the reverse-Z form (near -> 1,
-        // far -> 0) is the pinned one; the native main pass keeps the
-        // near -> 0 convention its perspective branch already uses.
+        // and stored as float.
         const double half_height =
             static_cast<double>(camera.ortho_half_height);
         const double half_width =
@@ -1607,42 +1625,18 @@ ${options.orthographicCamera
         std::array<float, 16> projection{};
         projection[0] = static_cast<float>(2.0 / (right - left));
         projection[5] = static_cast<float>(2.0 / (top - bottom));
-        projection[10] = static_cast<float>(
-            reverse_depth ? -1.0 / range : 1.0 / range);
+        projection[10] = static_cast<float>(-1.0 / range);
         projection[12] =
             static_cast<float>((left + right) / (left - right));
         projection[13] =
             static_cast<float>((top + bottom) / (bottom - top));
-        projection[14] = static_cast<float>(
-            reverse_depth ? far_plane / range
-                          : -near_plane / range);
+        projection[14] = static_cast<float>(far_plane / range);
         projection[15] = 1.0f;
         return multiply_into(projection, view);
     }
 `
     : ""}\
-    // src/math/mat4-perspective-lh-to-ref.ts mat4PerspectiveLHToRef, in
-    // the same double-then-store-once shape as the rest of the chain.
-    // Rows [10] and [14] are the one deliberate departure: the pin maps
-    // near -> 1 and far -> 0, and the native main pass keeps its recorded
-    // forward-Z convention. That row reaches clip z alone -- with
-    // projection[11] = 1 and every other off-diagonal term zero, clip x,
-    // y and w are products of rows [0], [5] and the view's z row -- so it
-    // moves no interpolated varying and no coverage.
-    const double focal = 1.0 / std::tan(camera.fov * 0.5);
-    const double range = camera.far_plane - camera.near_plane;
-    std::array<float, 16> projection{};
-    projection[0] = static_cast<float>(focal / aspect);
-    projection[5] = static_cast<float>(focal);
-    projection[10] = static_cast<float>(
-        reverse_depth ? -camera.near_plane / range
-                      : camera.far_plane / range);
-    projection[11] = 1.0f;
-    projection[14] = static_cast<float>(
-        reverse_depth
-            ? (camera.far_plane * camera.near_plane) / range
-            : (-camera.near_plane * camera.far_plane) / range);
-    return multiply_into(projection, view);
+    return multiply_into(build_projection(camera, aspect), view);
 }
 
 std::array<float, 16> build_skybox_view_projection(
@@ -1657,18 +1651,7 @@ std::array<float, 16> build_skybox_view_projection(
     view[12] = 0.0f;
     view[13] = 0.0f;
     view[14] = 0.0f;
-
-    const double focal = 1.0 / std::tan(camera.fov * 0.5);
-    const double range = camera.far_plane - camera.near_plane;
-    std::array<float, 16> projection{};
-    projection[0] = static_cast<float>(focal / aspect);
-    projection[5] = static_cast<float>(focal);
-    projection[10] =
-        static_cast<float>(camera.far_plane / range);
-    projection[11] = 1.0f;
-    projection[14] = static_cast<float>(
-        (-camera.near_plane * camera.far_plane) / range);
-    return multiply_into(projection, view);
+    return multiply_into(build_projection(camera, aspect), view);
 }
 
 ${options.gpuInstancing
@@ -2134,16 +2117,12 @@ SolidSkyboxSceneUniforms build_solid_skybox_scene_uniforms(
     double aspect) {
     const Vec3 eye = camera_basis(camera).eye;
     SolidSkyboxSceneUniforms result;
-    // This one draw binds the pin's own reverse-Z clip row rather than the
-    // renderer's. The cube is centred on the eye, so its side faces straddle
-    // the near plane and are clipped -- and the clipper interpolates the
-    // attributes of the vertices it generates from clip space, including z.
-    // The dither seeds on that interpolated positionW, so a differing z row
-    // decorrelates the noise across every clipped face while leaving the
-    // unclipped one exact. The draw writes no depth and is first in the pass,
-    // so the convention cannot reach the depth test.
-    result.view_projection =
-        build_view_projection(camera, aspect, true);
+    // The cube is centred on the eye, so its side faces straddle the near
+    // plane and are clipped -- and the clipper interpolates the attributes of
+    // the vertices it generates from clip space, including z. The dither
+    // seeds on that interpolated positionW, so the clip row has to be the
+    // pin's to the bit for the noise to correlate across a clipped face.
+    result.view_projection = build_view_projection(camera, aspect);
     result.view = build_view_matrix(camera_world_matrix(camera));
     result.eye_position = {eye.x, eye.y, eye.z, 0.0f};
     return result;
@@ -3394,8 +3373,8 @@ ${lifted.fragmentBody}
      * Per-term anchors for the perspective writer the projection emissions
      * transcribe: every pinned store is required, shape-checked, and no
      * pinned store may exist that the emission does not carry. Rows [10]
-     * and [14] anchor the pin's reverse-Z arms; the forward-Z arms beside
-     * them are the recorded native departure.
+     * and [14] anchor the reverse-Z depth range, which is the only
+     * convention this renderer writes.
      */
     private assertPinnedPerspectiveWriter(): void {
         const { file, declaration } = this.context.functionDeclaration(
