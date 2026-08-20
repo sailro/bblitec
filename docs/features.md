@@ -445,13 +445,14 @@ anisotropy, iridescence, subsurface) declare nothing at all: each changes what
 `PBRMetallicRoughnessBlock` composes and the module binds the same resources
 either way.
 
+`FragDepthBlock` composes too: a graph writing `@builtin(frag_depth)` puts
+the depth *convention* into its own output, and both backends render under
+the pin's ([fidelity](fidelity.md#shader-contract)).
+
 What refuses at generation, naming the block that reached it: `TextureBlock`
-and `ImageSourceBlock`, morph targets, shadows, clip planes, the
-mesh-attribute test, and `FragDepthBlock` — that last one because a graph
-writing `@builtin(frag_depth)` puts the depth *convention* into its own
-output, and this port's main pass is the forward-Z one
-([fidelity](fidelity.md#shader-contract)). A graph fetched by snippet id
-refuses too, because the fetch is a network read at page load.
+and `ImageSourceBlock`, morph targets, shadows, clip planes and the
+mesh-attribute test. A graph fetched by snippet id refuses too, because the
+fetch is a network read at page load.
 
 ### Animation playback
 

@@ -655,11 +655,11 @@ test("lowers the reverse-Z orthographic projection from its pinned writer", () =
     );
     assert.match(
         plan.source,
-        /reverse_depth \? -1\.0 \/ range : 1\.0 \/ range/,
+        /projection\[10\] = static_cast<float>\(-1\.0 \/ range\);/,
     );
     assert.match(
         plan.source,
-        /reverse_depth \? far_plane \/ range\s*: -near_plane \/ range/,
+        /projection\[14\] = static_cast<float>\(far_plane \/ range\);/,
     );
     // A perspective-only scene keeps the branch out of its plan.
     const perspective = new RendererLowerer(

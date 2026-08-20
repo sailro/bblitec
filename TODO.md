@@ -351,7 +351,7 @@ that does to the deferred lane by default.
   - Scene 117: an unsupported constructor expression, then sprite picking.
   - Scenes 205, 206: engine options.
 - [ ] Extend node materials past the slice scenes 60, 61, 63, 67-71, 77-80,
-  82, 85, 88 and 89 measure. Each item is a block the composed graph reaches
+  82, 84, 85, 88 and 89 measure. Each item is a block the composed graph reaches
   and this port refuses by name at generation, so a scene's own error says
   which:
   - `TextureBlock` / `ImageSourceBlock` (62, 73, 81, 83) and the group-1
@@ -361,11 +361,6 @@ that does to the deferred lane by default.
   - `MorphTargetsBlock` (64, 66), two vertex storage bindings.
   - `ClipPlanesBlock` and `MeshAttributeExistsBlock` (86, which also wants
     `setClipPlane`).
-  - `FragDepthBlock` (84). Not a binding: a graph writing
-    `@builtin(frag_depth)` writes a depth in the pin's own reverse-Z
-    convention, which this port's forward-Z main pass orders the opposite way
-    ([fidelity](docs/fidelity.md#shader-contract) carries the measurement).
-    It closes with the reverse-Z adoption below, not before.
   - alpha blending: the graph's own `alphaMode`, which needs the transparent
     bucket and the sort.
   - a graph reached through `getSceneNNNme()` behind a gzip payload (66, 72,
@@ -376,17 +371,14 @@ that does to the deferred lane by default.
   - image-processing `toneMapping` (87) and shadows (65, 66, 72), neither of
     which is a node-material contract.
 
-- [ ] Adopt the pin's reverse-Z convention in the main pass. The frame-graph
-  paths already render under it — the geometry tasks and the depth-only tasks
-  build their matrices with `build_view_projection(..., true)`, compare
-  GREATER and clear depth to zero — so what remains is the forward pass: its
-  view-projection, the depth compare on every main-pass pipeline (about
-  fourteen in the SDL PAL and twelve in Dawn), the depth clears, the skybox,
-  ground and solid-skybox builders that make their own view-projection, and
-  the CPU fallback. Two recorded residuals close with it: the ground quad a
-  camera stands inside, and `FragDepthBlock` above. Every measured scene has
-  to be re-measured cell by cell, because the change moves where depth
-  precision lands rather than only which comparison runs.
+- [ ] Carry a `ShaderMaterial`'s own `depthCompare` through lowering.
+  `src/material/shader/shader-material.ts` defaults it to `"greater-equal"`
+  and `shader-pipeline.ts` reads `sig._depthCompare ?? material.depthCompare`,
+  so a scene naming `"less"` is the pin's one per-material opt-out from the
+  convention. `ShaderVariantInfo` carries `depth_write` but no compare, and
+  both PALs hardcode `pinned_depth_compare`; no corpus scene names one yet,
+  so this is a contract gap rather than a measured defect.
+
 - [ ] Build the node group-1 layout from the reflected binding table rather
   than by hand. `variantBindings` (src/pinned-pbr-variant-cpp.ts) already
   yields `{binding, name, kind, vertex, fragment}` rows from composed WGSL,
@@ -406,7 +398,6 @@ that does to the deferred lane by default.
   already treats it as per-frame state in `write_pinned_frame_blocks`. The
   push has to stay per draw, but the build does not. One hoist covering all
   three families, not a per-family change.
-
 - [ ] Scenes 62, 81, 83: resolve the module-level texture-URL constants
   (`SCENE62_TEXTURE_URL` and siblings).
 - [ ] Scenes 66, 72, 214, 215, 271: support `receiveShadows`.

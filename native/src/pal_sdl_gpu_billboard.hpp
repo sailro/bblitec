@@ -196,14 +196,11 @@ inline BillboardPass create_billboard_pass(
     // The quad is expanded around a camera basis, so a billboard has no
     // consistent winding to cull against.
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-    // The pinned pipeline reads `depthCompare: "greater-equal"` under
-    // upstream's reverse-Z; this renderer's scene pass is forward-Z, so the
-    // same contract is LESS_OR_EQUAL here. The pinned depth table pairs
-    // `transparent` with writes off, which is what makes the sorted draw
-    // order the composite, and `cutout` with writes on, which is what lets
-    // the GPU resolve overlap instead.
+    // The pinned depth table pairs `transparent` with writes off, which is
+    // what makes the sorted draw order the composite, and `cutout` with
+    // writes on, which is what lets the GPU resolve overlap instead.
     info.depth_stencil_state.compare_op =
-        SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+        gpu_depth_compare(upstream::pinned_depth_compare);
     info.depth_stencil_state.enable_depth_test = true;
     info.depth_stencil_state.enable_depth_write = cutout;
     info.multisample_state.enable_alpha_to_coverage =

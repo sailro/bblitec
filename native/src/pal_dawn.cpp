@@ -513,9 +513,9 @@ struct DawnState : DawnDevice {
     // Standard composed families through the same group-0 layout.
     WGPUBuffer pinned_scene_uniforms = nullptr;
     WGPUBuffer pinned_lights_uniforms = nullptr;
-    // The geometry tasks' scene block: the same struct with the reverse-Z
-    // view-projection the pin's geometry contract renders with, sharing the
-    // lights buffer through its own group 0.
+    // The geometry tasks' scene block: the same struct written for a
+    // task's own camera and aspect, sharing the lights buffer through its
+    // own group 0.
     WGPUBuffer pinned_geometry_scene_uniforms = nullptr;
     WGPUBindGroup pinned_geometry_frame_group = nullptr;
 #endif
@@ -2200,7 +2200,7 @@ void ensure_pinned_frame_buffers(DawnState& state) {
  * Group 0 over one scene block and the frame's shared lights.
  *
  * Three callers want exactly this and differ only in which scene block they
- * read: the frame's own, a geometry task's reverse-Z one, and a render task
+ * read: the frame's own, a geometry task's, and a render task
  * drawing through its own camera. The lights are the scene's in all three.
  */
 WGPUBindGroup pinned_frame_group_over(
@@ -2268,8 +2268,8 @@ WGPUBindGroup task_pinned_frame_group(
         "render task frame");
 }
 
-/** Group 0 for the geometry tasks: the reverse-Z scene block beside the
- *  shared lights buffer, in the same layout as the main frame group. */
+/** Group 0 for the geometry tasks: their scene block beside the shared
+ *  lights buffer, in the same layout as the main frame group. */
 WGPUBindGroup pinned_geometry_frame_group(DawnState& state) {
     return pinned_frame_group_over(
         state,
@@ -2281,7 +2281,7 @@ WGPUBindGroup pinned_geometry_frame_group(DawnState& state) {
 /**
  * A geometry task's frame prologue, run once by whichever family writer
  * owns it (the PBR writer when that family is compiled, the Standard
- * writer otherwise): the reverse-Z scene block, the task's gpUniforms
+ * writer otherwise): the task's scene block, its gpUniforms
  * buffer — previous-frame view-projection beside the camera near/far —
  * and the previous view-projection tracking. Both writers used to carry
  * this sequence verbatim.
@@ -2694,24 +2694,21 @@ void write_pinned_draw_blocks(
 /**
  * Writes one geometry task's pinned blocks for the frame.
  *
- * The pin's geometry contract is reverse-Z, so the shared geometry scene
- * block carries the reverse view-projection; the task's gpUniforms holds
- * last frame's matrix (seeded with the current one) and the camera's
- * near/far; and every PBR draw's mesh and material blocks are written
- * against the MRT variant the selector table keys on this task.
+ * The shared geometry scene block carries the task's view-projection; the
+ * task's gpUniforms holds last frame's matrix (seeded with the current one)
+ * and the camera's near/far; and every PBR draw's mesh and material blocks
+ * are written against the MRT variant the selector table keys on this task.
  */
 void write_pinned_geometry_task(
     DawnState& state,
     const Scene& scene,
     const Engine& engine,
     const CameraRecord& camera,
-    double aspect,
+    const std::array<float, 16>& geometry_matrix,
     const FrameTaskRecord& task,
     DawnGeometryTask& geometry,
     const upstream::RenderDrawLists& draw_lists) {
     if (!pinned_lists_have_pinned_draws(draw_lists)) return;
-    const std::array<float, 16> geometry_matrix =
-        upstream::build_view_projection(camera, aspect, true);
     write_pinned_geometry_prologue(
         state,
         scene,
@@ -3261,13 +3258,11 @@ void write_standard_geometry_task(
     const Scene& scene,
     const Engine& engine,
     const CameraRecord& camera,
-    double aspect,
+    const std::array<float, 16>& geometry_matrix,
     const FrameTaskRecord& task,
     DawnGeometryTask& geometry,
     const upstream::RenderDrawLists& draw_lists) {
     if (!pinned_lists_have_pinned_draws(draw_lists)) return;
-    const std::array<float, 16> geometry_matrix =
-        upstream::build_view_projection(camera, aspect, true);
 #if BBLITE_PBR_VARIANTS == 0
     // With no PBR family compiled, `write_pinned_geometry_task` does not
     // exist, so this side owns the frame prologue it would have run.
@@ -3282,7 +3277,6 @@ void write_standard_geometry_task(
     // The PBR write ran first at the shared call site and owns the
     // prologue; only the Standard draws are resolved here.
     (void)camera;
-    (void)aspect;
     (void)geometry_matrix;
 #endif
     for (const auto* list : {&draw_lists.opaque, &draw_lists.transparent}) {
@@ -3569,26 +3563,25 @@ DawnPipeline& pipeline_for(
         WGPUPrimitiveTopology_TriangleList;
     descriptor.primitive.frontFace = traits.front;
     // The pinned shader-pipeline mapping drives variant state:
-    // backFaceCulling selects the cull mode and depthWrite=false pairs
-    // with the less-equal compare (like transparent draws).
+    // backFaceCulling selects the cull mode, and depthWrite=false turns
+    // depth writes off (as a transparent draw does).
     descriptor.primitive.cullMode = shader_info
         ? (shader_info->back_face_culling
                ? WGPUCullMode_Back
                : WGPUCullMode_None)
         : traits.cull;
 
-    const bool relaxed_depth =
+    const bool depth_write_off =
         traits.transparent ||
         (shader_info && !shader_info->depth_write);
     WGPUDepthStencilState depth_stencil =
         WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
-    depth_stencil.depthWriteEnabled = relaxed_depth
+    depth_stencil.depthWriteEnabled = depth_write_off
         ? WGPUOptionalBool_False
         : WGPUOptionalBool_True;
-    depth_stencil.depthCompare = relaxed_depth
-        ? WGPUCompareFunction_LessEqual
-        : WGPUCompareFunction_Less;
+    depth_stencil.depthCompare =
+        dawn_depth_compare(upstream::pinned_depth_compare);
     // Depth-less render-task targets need attachment-compatible
     // pipelines; WebGPU validates what SDL_GPU tolerated.
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
@@ -3766,18 +3759,14 @@ WGPURenderPipeline pinned_variant_pipeline(
     descriptor.primitive.cullMode = traits.cull;
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
-    // A no-color view draws in the depth-only tasks, whose matrices are
-    // reverse-depth: GREATER compare, depth writes on -- the same contract
-    // the depth-only pipelines carry.
+    // A no-color view draws in the depth-only tasks, which write depth
+    // whatever the material's own alpha would have said.
     depth_stencil.depthWriteEnabled =
         !entry.no_color_output && traits.transparent
             ? WGPUOptionalBool_False
             : WGPUOptionalBool_True;
-    depth_stencil.depthCompare = entry.no_color_output
-        ? WGPUCompareFunction_Greater
-        : traits.transparent
-            ? WGPUCompareFunction_LessEqual
-            : WGPUCompareFunction_Less;
+    depth_stencil.depthCompare =
+        dawn_depth_compare(upstream::pinned_depth_compare);
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
@@ -3797,8 +3786,7 @@ WGPURenderPipeline pinned_variant_pipeline(
     fragment.targets = entry.no_color_output ? nullptr : &color_target;
     // A geometry-output MRT variant draws into its task's own attachments:
     // one target per attachment in the task's formats plus the optional
-    // trailing colour. The pin's geometry contract is reverse-Z, so the
-    // depth pair is GREATER with writes on.
+    // trailing colour, with depth writes forced on.
     std::vector<WGPUColorTargetState> geometry_targets;
     if (geometry_task) {
         geometry_targets.reserve(
@@ -3826,7 +3814,6 @@ WGPURenderPipeline pinned_variant_pipeline(
         }
         fragment.targetCount = geometry_targets.size();
         fragment.targets = geometry_targets.data();
-        depth_stencil.depthCompare = WGPUCompareFunction_Greater;
         depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
     }
     descriptor.fragment = &fragment;
@@ -3842,8 +3829,7 @@ WGPURenderPipeline pinned_variant_pipeline(
  * The render pipeline for one composed Standard variant — the Standard
  * sibling of `pinned_variant_pipeline`. The kind carries the blend and
  * cull state the render plan bucketed (standard-pipeline.ts
- * getOrCreateStandardPipeline), and the geometry arm rides the pin's
- * reverse-Z contract.
+ * getOrCreateStandardPipeline).
  */
 WGPURenderPipeline standard_variant_pipeline(
     DawnState& state,
@@ -3929,11 +3915,8 @@ WGPURenderPipeline standard_variant_pipeline(
         !entry.no_color_output && traits.transparent
             ? WGPUOptionalBool_False
             : WGPUOptionalBool_True;
-    depth_stencil.depthCompare = entry.no_color_output
-        ? WGPUCompareFunction_Greater
-        : traits.transparent
-            ? WGPUCompareFunction_LessEqual
-            : WGPUCompareFunction_Less;
+    depth_stencil.depthCompare =
+        dawn_depth_compare(upstream::pinned_depth_compare);
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
@@ -3976,7 +3959,6 @@ WGPURenderPipeline standard_variant_pipeline(
         }
         fragment.targetCount = geometry_targets.size();
         fragment.targets = geometry_targets.data();
-        depth_stencil.depthCompare = WGPUCompareFunction_Greater;
         depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
     }
     descriptor.fragment = &fragment;
@@ -4181,7 +4163,8 @@ WGPURenderPipeline node_variant_pipeline(
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
     depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
-    depth_stencil.depthCompare = WGPUCompareFunction_Less;
+    depth_stencil.depthCompare =
+        dawn_depth_compare(upstream::pinned_depth_compare);
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
@@ -4323,8 +4306,7 @@ void write_node_mesh_block(
 
 
 // Depth-only pipelines mirror SDL: the scene vertex module with the
-// empty depth-only fragment, GREATER compare (reverse-depth matrix),
-// depth writes on, no color targets.
+// empty depth-only fragment, depth writes on, no color targets.
 WGPURenderPipeline depth_only_pipeline_for(
     DawnState& state,
     bool double_sided,
@@ -4359,7 +4341,8 @@ WGPURenderPipeline depth_only_pipeline_for(
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
     depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
-    depth_stencil.depthCompare = WGPUCompareFunction_Greater;
+    depth_stencil.depthCompare =
+        dawn_depth_compare(upstream::pinned_depth_compare);
     descriptor.depthStencil = &depth_stencil;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
@@ -4950,7 +4933,8 @@ WGPURenderPipeline create_diagnostic_pipeline(
         WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
     depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
-    depth_stencil.depthCompare = WGPUCompareFunction_Less;
+    depth_stencil.depthCompare =
+        dawn_depth_compare(upstream::pinned_depth_compare);
     descriptor.depthStencil = &depth_stencil;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
@@ -5155,7 +5139,7 @@ void save_dawn_geometry_id_buffer(
     WGPURenderPassDepthStencilAttachment depth_attachment{};
     depth_attachment.view = depth_view;
     depth_attachment.depthLoadOp = WGPULoadOp_Clear;
-    depth_attachment.depthClearValue = 1.0f;
+    depth_attachment.depthClearValue = upstream::pinned_depth_clear;
     depth_attachment.depthStoreOp = WGPUStoreOp_Discard;
     depth_attachment.stencilLoadOp = WGPULoadOp_Clear;
     depth_attachment.stencilStoreOp = WGPUStoreOp_Discard;
@@ -6330,7 +6314,8 @@ bool run_dawn_engine(Engine& engine) {
             WGPU_DEPTH_STENCIL_STATE_INIT;
         depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
         depth_stencil.depthWriteEnabled = WGPUOptionalBool_False;
-        depth_stencil.depthCompare = WGPUCompareFunction_Less;
+        depth_stencil.depthCompare =
+        dawn_depth_compare(upstream::pinned_depth_compare);
         descriptor.depthStencil = &depth_stencil;
         descriptor.multisample.count = state.sample_count;
         descriptor.multisample.mask = ~0u;
@@ -6520,7 +6505,8 @@ bool run_dawn_engine(Engine& engine) {
         depth_stencil.format =
             WGPUTextureFormat_Depth24PlusStencil8;
         depth_stencil.depthWriteEnabled = WGPUOptionalBool_False;
-        depth_stencil.depthCompare = WGPUCompareFunction_Less;
+        depth_stencil.depthCompare =
+        dawn_depth_compare(upstream::pinned_depth_compare);
         descriptor.depthStencil = &depth_stencil;
         descriptor.multisample.count = state.sample_count;
         descriptor.multisample.mask = ~0u;
@@ -6646,7 +6632,8 @@ bool run_dawn_engine(Engine& engine) {
         depth_stencil.format =
             WGPUTextureFormat_Depth24PlusStencil8;
         depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
-        depth_stencil.depthCompare = WGPUCompareFunction_Less;
+        depth_stencil.depthCompare =
+        dawn_depth_compare(upstream::pinned_depth_compare);
         descriptor.depthStencil = &depth_stencil;
         descriptor.multisample.count = state.sample_count;
         descriptor.multisample.mask = ~0u;
@@ -6795,7 +6782,8 @@ bool run_dawn_engine(Engine& engine) {
             WGPU_DEPTH_STENCIL_STATE_INIT;
         depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
         depth_stencil.depthWriteEnabled = WGPUOptionalBool_False;
-        depth_stencil.depthCompare = WGPUCompareFunction_Less;
+        depth_stencil.depthCompare =
+        dawn_depth_compare(upstream::pinned_depth_compare);
         descriptor.depthStencil = &depth_stencil;
         descriptor.multisample.count = state.sample_count;
         descriptor.multisample.mask = ~0u;
@@ -7494,15 +7482,15 @@ bool run_dawn_engine(Engine& engine) {
         }
 #if BBLITE_SOLID_SKYBOX
         if (state.solid_skybox_enabled) {
-            // The pinned vertex stage offsets the cube by the eye itself, so
-            // it builds its own view-projection rather than binding the
-            // frame's: it needs the pin's reverse-Z clip row for the
-            // near-plane clipping its dither seed rides on.
+            // The pinned vertex stage reads its own scene block -- the
+            // matrix beside the view and the eye position it offsets the
+            // cube by -- so the draw binds that layout over the frame's
+            // matrix.
             const upstream::SolidSkyboxSceneUniforms
                 solid_skybox_scene =
                     upstream::build_solid_skybox_scene_uniforms(
                         camera,
-                        static_cast<double>(width) / height);
+                        matrix);
             wgpuQueueWriteBuffer(
                 state.queue,
                 state.solid_skybox_scene_uniforms,
@@ -7582,18 +7570,16 @@ bool run_dawn_engine(Engine& engine) {
                         engine,
                         camera);
 #if BBLITE_PBR_VARIANTS > 0
-                    // The pin's geometry tasks are reverse-Z; a task whose
-                    // draws are PBR writes its blocks here: the shared
-                    // reverse scene block, the task's gpUniforms, and each
-                    // draw's mesh and material blocks against the MRT
+                    // A task whose draws are PBR writes its blocks here:
+                    // the shared scene block, the task's gpUniforms, and
+                    // each draw's mesh and material blocks against the MRT
                     // variant the selector table keys on this task.
                     write_pinned_geometry_task(
                         state,
                         scene,
                         engine,
                         camera,
-                        static_cast<double>(width) /
-                            static_cast<double>(height),
+                        matrix,
                         task,
                         state.geometry_tasks[handle.value],
                         state.render_tasks[handle.value].draw_lists);
@@ -7604,8 +7590,7 @@ bool run_dawn_engine(Engine& engine) {
                         scene,
                         engine,
                         camera,
-                        static_cast<double>(width) /
-                            static_cast<double>(height),
+                        matrix,
                         task,
                         state.geometry_tasks[handle.value],
                         state.render_tasks[handle.value].draw_lists);
@@ -7633,8 +7618,7 @@ bool run_dawn_engine(Engine& engine) {
                 const std::array<float, 16> task_matrix =
                     upstream::build_view_projection(
                         task_camera,
-                        task_aspect,
-                        !target_record.has_color);
+                        task_aspect);
                 wgpuQueueWriteBuffer(
                     state.queue,
                     render_task.view_projection,
@@ -7989,7 +7973,7 @@ bool run_dawn_engine(Engine& engine) {
         depth_attachment.depthStoreOp = transmission
             ? WGPUStoreOp_Store
             : WGPUStoreOp_Discard;
-        depth_attachment.depthClearValue = 1.0f;
+        depth_attachment.depthClearValue = upstream::pinned_depth_clear;
         depth_attachment.stencilLoadOp = WGPULoadOp_Clear;
         depth_attachment.stencilStoreOp = WGPUStoreOp_Discard;
         WGPURenderPassDescriptor pass_descriptor =
@@ -8351,7 +8335,8 @@ bool run_dawn_engine(Engine& engine) {
                         depth_attachment{};
                     depth_attachment.view = target.depth_view;
                     depth_attachment.depthLoadOp = WGPULoadOp_Clear;
-                    depth_attachment.depthClearValue = 0.0f;
+                    depth_attachment.depthClearValue =
+                        upstream::pinned_depth_clear;
                     depth_attachment.depthStoreOp =
                         target_record.sampled_depth
                             ? WGPUStoreOp_Store
@@ -8543,7 +8528,8 @@ bool run_dawn_engine(Engine& engine) {
                 } else if (target_record.has_depth && target.depth) {
                     depth_attachment.view = target.depth_view;
                     depth_attachment.depthLoadOp = WGPULoadOp_Clear;
-                    depth_attachment.depthClearValue = 1.0f;
+                    depth_attachment.depthClearValue =
+                        upstream::pinned_depth_clear;
                     depth_attachment.depthStoreOp =
                         target_record.sampled_depth
                             ? WGPUStoreOp_Store
@@ -8634,21 +8620,11 @@ bool run_dawn_engine(Engine& engine) {
                     }
                     color_attachments.push_back(attachment);
                 }
-                // A task whose draws are composed variants — PBR or
-                // Standard — renders through the pin's own reverse-Z
-                // geometry contract: reverse matrix, GREATER pipelines,
-                // zero depth clear. Only the legacy fallback keeps the
-                // forward pair.
-                bool task_has_pinned = false;
-#if BBLITE_PINNED_MATERIAL_VARIANTS
-                task_has_pinned =
-                    pinned_lists_have_pinned_draws(render_task.draw_lists);
-#endif
                 WGPURenderPassDepthStencilAttachment depth_attachment{};
                 depth_attachment.view = geometry.depth_view;
                 depth_attachment.depthLoadOp = WGPULoadOp_Clear;
                 depth_attachment.depthClearValue =
-                    task_has_pinned ? 0.0f : 1.0f;
+                    upstream::pinned_depth_clear;
                 depth_attachment.depthStoreOp = geometry.depth_borrowed
                     ? WGPUStoreOp_Store
                     : WGPUStoreOp_Discard;

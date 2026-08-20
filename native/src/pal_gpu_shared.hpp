@@ -839,9 +839,10 @@ inline bool pinned_record_instanced(const MeshRecord& record) {
 /**
  * Whether a task's draw lists contain a draw the pinned path owns — a PBR
  * draw, or a Standard one now that both families run Babylon's own composed
- * stages. A geometry task whose draws are pinned renders through the pin's
- * reverse-Z contract (reverse matrix, GREATER pipelines, zero depth clear),
- * and both backends make the same decision from the same lists.
+ * stages. A geometry task with none writes no pinned blocks at all. It lives
+ * here rather than in the backend that asks: SDL_GPU stopped needing it when
+ * the depth convention collapsed and the matrix seam went with it, and the
+ * question is the backends' shared one whenever either asks it again.
  */
 inline bool pinned_lists_have_pinned_draws(
     const upstream::RenderDrawLists& lists) {

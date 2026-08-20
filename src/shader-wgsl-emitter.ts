@@ -7,12 +7,6 @@ import type {
     ShaderUniformBlockReflection,
 } from "./shader-ir.js";
 
-interface EmitContext {
-    clipDepth: ShaderIrProgram["clipDepth"];
-    locals: Map<string, string>;
-    structs: Map<string, ShaderStruct>;
-}
-
 function emitExpression(expression: ShaderExpression): string {
     switch (expression.kind) {
         case "binary":
@@ -32,68 +26,18 @@ function emitExpression(expression: ShaderExpression): string {
     }
 }
 
-function isPositionAssignment(
-    target: ShaderExpression,
-    context: EmitContext,
-): boolean {
-    if (target.kind !== "path" || target.parts.length !== 2) return false;
-    const [root, member] = target.parts;
-    const type = root ? context.locals.get(root) : undefined;
-    const struct = type ? context.structs.get(type) : undefined;
-    return member === "position" &&
-        !!struct?.members.find(
-            (candidate) =>
-                candidate.name === member &&
-                candidate.attribute?.kind === "builtin" &&
-                candidate.attribute.value === "position",
-        );
-}
-
-function clipPositionExpression(
-    expression: ShaderExpression,
-    context: EmitContext,
-): ShaderExpression {
-    if (
-        context.clipDepth !== "direct-webgpu" ||
-        expression.kind !== "construct" ||
-        expression.type !== "vec4<f32>" ||
-        expression.arguments.length !== 4
-    ) {
-        return expression;
-    }
-    return {
-        ...expression,
-        arguments: [
-            expression.arguments[0]!,
-            expression.arguments[1]!,
-            {
-                kind: "binary",
-                operator: "-",
-                left: { kind: "number", value: "1.0" },
-                right: expression.arguments[2]!,
-            },
-            expression.arguments[3]!,
-        ],
-    };
-}
-
 function emitStatements(
     statements: ShaderStatement[],
-    context: EmitContext,
     indent: string,
 ): string[] {
     const lines: string[] = [];
     for (const statement of statements) {
         switch (statement.kind) {
-            case "assign": {
-                const value = isPositionAssignment(statement.target, context)
-                    ? clipPositionExpression(statement.value, context)
-                    : statement.value;
+            case "assign":
                 lines.push(
-                    `${indent}${emitExpression(statement.target)} = ${emitExpression(value)};`,
+                    `${indent}${emitExpression(statement.target)} = ${emitExpression(statement.value)};`,
                 );
                 break;
-            }
             case "discard":
                 lines.push(`${indent}discard;`);
                 break;
@@ -102,7 +46,6 @@ function emitStatements(
                     `${indent}if (${emitExpression(statement.condition)}) {`,
                     ...emitStatements(
                         statement.statements,
-                        context,
                         `${indent}    `,
                     ),
                     `${indent}}`,
@@ -119,7 +62,6 @@ function emitStatements(
                 );
                 break;
             case "var":
-                context.locals.set(statement.name, statement.type);
                 lines.push(
                     `${indent}var ${statement.name}: ${statement.type};`,
                 );
@@ -170,14 +112,6 @@ export function emitNativeWgslProgram(
     const block = program.reflection.uniformBlocks.find(
         (candidate) => candidate.stage === stage,
     );
-    const structs = new Map(module.structs.map((struct) => [struct.name, struct]));
-    const context: EmitContext = {
-        clipDepth: program.clipDepth,
-        locals: new Map(
-            module.entryPoint.parameters.map(({ name, type }) => [name, type]),
-        ),
-        structs,
-    };
     const vertexInput = stage === "vertex"
         ? [
               "struct VertexInput {",
@@ -197,9 +131,6 @@ export function emitNativeWgslProgram(
             ),
             "};",
         ].join("\n"));
-    for (const parameter of module.entryPoint.parameters) {
-        context.locals.set(parameter.name, parameter.type);
-    }
     const returnAttribute =
         module.entryPoint.returnAttribute?.kind === "location"
             ? `@location(${module.entryPoint.returnAttribute.value}) `
@@ -214,7 +145,7 @@ export function emitNativeWgslProgram(
         `fn ${module.entryPoint.name}(${module.entryPoint.parameters
             .map(({ name, type }) => `${name}: ${type}`)
             .join(", ")}) -> ${returnAttribute}${module.entryPoint.returnType} {`,
-        ...emitStatements(module.entryPoint.statements, context, "    "),
+        ...emitStatements(module.entryPoint.statements, "    "),
         "}",
         "",
     ].filter((value): value is string => value !== undefined).join("\n");

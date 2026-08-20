@@ -665,6 +665,24 @@ struct SpriteAtlasRecord {
     TextureSamplerState sampler{};
 };
 
+/**
+ * A WebGPU `GPUCompareFunction`, as this runtime's own enumerator.
+ *
+ * The pin writes the WebGPU spelling; `pinned-depth-state.ts` maps it here
+ * and fails generation on a spelling with no enumerator, so a backend
+ * translates an enum rather than re-typing the pin's string.
+ */
+enum class DepthCompare {
+    never,
+    less,
+    equal,
+    less_equal,
+    greater,
+    not_equal,
+    greater_equal,
+    always,
+};
+
 /** blend-descriptors.ts / sprite-blend.ts, as the pure data they are. */
 enum class SpriteBlendFactor {
     zero,

@@ -20,7 +20,6 @@ export interface ShaderMaterialProgramSource {
     needAlphaTesting: boolean;
     backFaceCulling: boolean;
     depthWrite: boolean;
-    clipDepth: "matrix" | "direct-webgpu";
 }
 
 /**
@@ -104,7 +103,6 @@ fn mainFragment() -> @location(0) vec4<f32> {
         needAlphaTesting: false,
         backFaceCulling: false,
         depthWrite: true,
-        clipDepth: "direct-webgpu",
     },
     {
         name: "circular-cutout",
@@ -139,7 +137,6 @@ fn mainFragment(input: VertexOutput) -> @location(0) vec4<f32> {
         needAlphaTesting: true,
         backFaceCulling: false,
         depthWrite: false,
-        clipDepth: "matrix",
     },
 ];
 

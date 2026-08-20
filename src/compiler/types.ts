@@ -187,7 +187,6 @@ export interface CompiledShaderProgram {
     needAlphaTesting: boolean;
     backFaceCulling: boolean;
     depthWrite: boolean;
-    clipDepth: "matrix" | "direct-webgpu";
 }
 
 export interface CompiledShaderUniformDefault {

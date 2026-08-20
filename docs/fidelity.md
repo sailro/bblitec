@@ -226,44 +226,44 @@ round one store early, and that is not a rounding-sized difference:
 `Math.PI / 2` has `cos = 6.1e-17` as a double and `-4.4e-8` as its float32
 neighbour, which moves the whole second row of the view matrix.
 
-**A graph that writes its own fragment depth reaches the clip-z departure
-directly, and refuses.** `FragDepthBlock` hands the graph
-`@builtin(frag_depth)`, so the value it returns is a depth in the pin's own
-convention — near at 1, compared GREATER. This port's main pass keeps near at
-0 and compares LESS, which orders the same written value the opposite way.
-Scene 84 measures it: a depth ramp across the screen behind a second plane,
-28.041 full MAD with the bounding box and the red and green channels matching
-exactly, which is a swapped occlusion rather than a shading difference.
-Generation refuses the block for that reason; it closes when the renderer
-adopts the pinned convention outright, which is the same thing the ground
-residual below waits on.
+**The reached slice renders under one depth convention, and it is the
+pin's.** `src/engine/render-target.ts` declares `REVERSE_DEPTH_COMPARE =
+"greater-equal"`, `mat4PerspectiveLHToRef` maps `near -> 1` and `far -> 0`,
+and every family this port reaches takes that pair as its default: PBR,
+Standard, node, shader materials, the geometry tasks, the background ground
+and the solid skybox. Both backends carry it on every pipeline and clear
+depth to zero, so the composed view-projection is equal to the browser's
+uploaded matrix in all sixteen elements.
 
-**The clip-z row is the one departure, and it reaches nothing else.** The
-pinned perspective maps `near -> 1` and `far -> 0`; the native main pass
-keeps `near -> 0`. `mat4PerspectiveLHToRef` writes only `[0]`, `[5]`,
-`[10]`, `[11]` and `[14]`, so in the composed view-projection clip `x`,
-`y` and `w` are products of rows `[0]`, `[5]` and the view's own `z` row,
-and `[10]`/`[14]` reach clip `z` alone. Against the browser's uploaded
-matrix, that is the whole of the difference: thirteen of the sixteen
-elements are equal bit for bit and the three that are not are that row.
+The compare is not typed here. `pinned-depth-state.ts` reads the pin's own
+declaration and emits `upstream::pinned_depth_compare`, failing generation on
+a spelling this runtime has no enumerator for — the contract
+`pinned-blend-table.ts` holds for the pin's blend factors, and the one
+`assertPinnedPerspectiveWriter` already holds for the projection half of the
+same convention. Each backend translates the enumerator to its own API.
+
+Two arms of the library sit outside the slice and name their own compare: the
+pin's shadow targets render standard-Z `less-equal`, and a `ShaderMaterial`
+may pass `depthCompare` (its default is `"greater-equal"`; a scene naming one
+refuses at compilation today).
+
+`FragDepthBlock` composes because of it: the block hands a graph
+`@builtin(frag_depth)`, so the value it returns is a depth in that
+convention, and a renderer ordering depth the other way would occlude by its
+inverse. Scene 84 measures the block at 0.000 on both backends.
 
 **A depth convention cannot move a coverage mask, but it can move a
 varying — through the near-plane clipper.** Unclipped geometry is
-unaffected, which is why the position-seeded dither reproduces without
-adopting reverse-Z. A triangle that straddles the eye plane is another
-matter: the clipper generates new vertices and interpolates their
-attributes from clip space, `z` included, so a differing `z` row shifts
-the interpolated varying in its last bits across the whole clipped
-triangle. Scene 7's solid skybox measures it exactly: its cube is centred
-on the eye, so its side faces straddle the eye plane, and the `+X` face
-carries ±1 errors thinning to zero at the untouched vertices until the
-draw binds the pin's own reverse-Z row. That is why
-`build_solid_skybox_scene_uniforms` builds its own view-projection: the
-draw writes no depth and is first in the pass, so the convention reaches
-its clipping without reaching any depth test. Grounds cannot take the
-same route — they test against the opaque pass — so a ground quad the
-camera stands inside keeps this residual until the renderer adopts the
-pinned convention outright.
+unaffected. A triangle that straddles the eye plane is another matter: the
+clipper generates new vertices and interpolates their attributes from clip
+space, `z` included, so a differing `z` row would shift the interpolated
+varying in its last bits across the whole clipped triangle. Scene 7's solid
+skybox is where that would show — its cube is centred on the eye, so its
+side faces straddle the eye plane — and it is why
+`build_solid_skybox_scene_uniforms` still builds its own view-projection
+rather than binding the frame's: the pinned vertex stage offsets the cube by
+the eye itself, and the clip row that reaches its dither seed has to be
+exact rather than merely equivalent.
 
 **The pinned background dither reproduces on both backends, and which
 fragment carries it is a pinned fork.** `WGSL_DITHER` seeds

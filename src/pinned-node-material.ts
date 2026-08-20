@@ -146,16 +146,6 @@ const refusedFlags: Readonly<Record<string, string>> = {
     usesMorphTargets: "MorphTargetsBlock",
     usesClipPlanes: "ClipPlanesBlock",
     usesMeshAttributeExists: "MeshAttributeExistsBlock",
-    // A graph writing `@builtin(frag_depth)` puts the depth *convention* into
-    // its own output: the pin's main pass maps near to 1 and compares
-    // GREATER, and this port's maps near to 0 and compares LESS, so the same
-    // written value occludes the opposite way. Scene 84 measures it -- a
-    // depth ramp across the screen, 28.041 MAD with the bounding box and the
-    // red and green channels matching exactly, which is a swapped occlusion
-    // rather than a shading difference. This is the one place the recorded
-    // clip-z departure reaches a value rather than only the near-plane
-    // clipper, and it closes when the renderer adopts the pinned convention.
-    usesFragDepth: "FragDepthBlock",
 };
 
 /**
@@ -180,6 +170,10 @@ const servedFlags = new Set([
     "usesAnisotropy",
     "usesIridescence",
     "usesSubsurface",
+    // A graph writing `@builtin(frag_depth)` writes the depth convention
+    // itself, so it only composes against a renderer that shares the pin's:
+    // `pinned_depth_clear` in the PALs, near -> 1 compared greater-equal.
+    "usesFragDepth",
 ]);
 
 /**

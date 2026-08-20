@@ -224,9 +224,9 @@ Regression guards, each measured rather than assumed:
   canonical in [fidelity](fidelity.md). The instrumented differential
   capture that establishes it ships as `scene -- capture` (see
   [development](development.md#instrumented-browser-capture)). The same
-  captures measure the native forward-Z and baked-vertex-mirror
-  adaptations as identical to the browser's reverse-Z and world-matrix
-  mirror to ~1e-5 px, which is why both adaptations stand.
+  captures measure the native baked-vertex-mirror adaptation as identical
+  to the browser's world-matrix mirror to ~1e-5 px, which is why it
+  stands.
 - **Scene 247 is three shading contracts, none of them instancing
   arithmetic**: texture-less PBR factors shade quantized through the
   pinned factor-texture bake (base color as sRGB bytes whose hardware
@@ -276,9 +276,12 @@ Only the GPU API layer differs:
   permits layout bindings a shader ignores — so mesh bind groups stay
   interchangeable across those pipelines; the composed variants build
   a layout per variant (below). Blend for transparent:
-  color SrcAlpha/OneMinusSrcAlpha, alpha One/OneMinusSrcAlpha, depth
-  LESS_EQUAL with writes off (opaque: LESS with writes on). Anything
-  unimplemented throws — explicit failure, never approximation.
+  color SrcAlpha/OneMinusSrcAlpha, alpha One/OneMinusSrcAlpha, with
+  depth writes off (opaque: writes on). The compare is the pin's own
+  `REVERSE_DEPTH_COMPARE`, lowered once into
+  `upstream::pinned_depth_compare` and translated per backend, so it is
+  the same on every pipeline. Anything unimplemented throws — explicit
+  failure, never approximation.
 - **Uniforms**: WebGPU has no push constants; every block SDL_GPU
   pushes arrives through `wgpuQueueWriteBuffer` instead. The two
   per-mesh vertex-stage blocks (deformation, instance parent world)
@@ -359,13 +362,12 @@ Only the GPU API layer differs:
   task loop. Color render tasks draw their
   `build_render_task_draw_lists` lists into render targets with
   pipelines selected by sample count and depth presence; depth-only
-  tasks draw the explicit no-color meshes through GREATER-compare
-  pipelines with the reverse-depth matrix and depth cleared to zero;
+  tasks draw the explicit no-color meshes with depth writes on;
   geometry tasks bind one MRT per attachment (`geometry_clear_color`
   clears, optional output target last, resolve on multisample) —
   Standard and PBR draws both go through their pin-composed MRT
-  variants under the pin's reverse-Z contract (reverse matrix, GREATER,
-  zero depth clear, the gpUniforms block per task — demoted to a
+  variants, which render under the same convention and the same frame
+  matrix as everything else (the gpUniforms block per task — demoted to a
   fragment storage buffer on SDL_GPU where a fifth uniform block would
   exceed the stage cap, and stored rather than discarded when a later
   render task borrows the task's depth); copy tasks either resolve in an empty pass or run the

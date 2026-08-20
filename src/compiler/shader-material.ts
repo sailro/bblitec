@@ -170,7 +170,6 @@ export function compileShaderMaterialOptions(
                     needAlphaTesting: program.needAlphaTesting,
                     backFaceCulling: program.backFaceCulling,
                     depthWrite: program.depthWrite,
-                    clipDepth: program.clipDepth,
                 });
             }
         }
@@ -231,12 +230,6 @@ export function compileShaderMaterialOptions(
         needAlphaTesting,
         backFaceCulling,
         depthWrite,
-        // The pinned prelude clips through the composed matrix when
-        // one is requested; matrix-free programs write clip
-        // positions directly like the pinned alpha-card.
-        clipDepth: uniforms.includes("worldViewProjection")
-            ? "matrix"
-            : "direct-webgpu",
     };
     try {
         lowerWgslShaderProgram(sceneProgram);
