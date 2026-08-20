@@ -47,6 +47,8 @@ function emitOptions(
         plainSpriteLayer: true,
         plainBillboardSystem: true,
         geometryOutputTasks: [],
+        postProcessTasks: [],
+        postProcessShaders: [],
         gpuDeformation: false,
         animatedWorldBounds: false,
         morphStorage: false,

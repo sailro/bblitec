@@ -134,6 +134,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["renderer:geometry-output"],
     },
     {
+        source: "upstream/src/frame_graph_post_process.cpp",
+        features: ["renderer:post-process"],
+    },
+    {
         source: "upstream/src/material_pbr.cpp",
         features: ["material:pbr"],
     },

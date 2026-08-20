@@ -23,6 +23,10 @@
 #if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
 #include <bblite/upstream/frame_graph_geometry.hpp>
 #endif
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#include <bblite/upstream/frame_graph_post_process.hpp>
+#include <bblite/upstream/post_process_shaders.hpp>
+#endif
 #include <bblite/upstream/render_capabilities.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 
@@ -265,6 +269,12 @@ struct DawnRenderTask {
     WGPUBuffer view_projection = nullptr;
     // Lazily created group-1 bind group for depth-only passes.
     WGPUBindGroup scene_group = nullptr;
+    // A task the scene gave its own camera composes its own view-projection
+    // and eye position, so it needs its own copy of the pin's per-pass scene
+    // block; the lights beside it are the scene's and stay shared. Null for
+    // a task that draws through the scene camera, which binds the frame's.
+    WGPUBuffer pinned_scene_uniforms = nullptr;
+    WGPUBindGroup pinned_frame_group = nullptr;
 };
 
 struct DawnGeometryTask {
@@ -279,7 +289,29 @@ struct DawnGeometryTask {
     WGPUBuffer pinned_geometry_params = nullptr;
     std::array<float, 16> previous_view_projection{};
     bool has_previous_view_projection = false;
+    /** Set with the textures: another task binds this task's depth. */
+    bool depth_borrowed = false;
 };
+
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+/**
+ * One post-process pass's GPU state.
+ *
+ * The pin builds all of this in `createPostProcessGpuState` and keeps it on
+ * the task; here it lives beside the frame task it belongs to, created the
+ * first time the pass records and rebuilt whenever the frame graph's textures
+ * are.
+ */
+struct DawnPostProcessTask {
+    WGPUShaderModule module = nullptr;
+    WGPUBindGroupLayout group_layout = nullptr;
+    WGPUPipelineLayout pipeline_layout = nullptr;
+    WGPURenderPipeline pipeline = nullptr;
+    WGPUBindGroup group = nullptr;
+    WGPUBuffer uniforms = nullptr;
+    std::uint32_t uniform_size = 0;
+};
+#endif
 
 struct DawnState : DawnDevice {
     // Transmission scenes render the frame in linear rgba16float and
@@ -352,6 +384,14 @@ struct DawnState : DawnDevice {
     std::vector<DawnRenderTarget> render_targets;
     std::vector<DawnRenderTask> render_tasks;
     std::vector<DawnGeometryTask> geometry_tasks;
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+    std::vector<DawnPostProcessTask> post_process_tasks;
+    // The pin's own `getBilinearSampler`: linear magnification and
+    // minification over WebGPU's defaults, which is clamp addressing and a
+    // nearest mip filter. `nearest_sampler` is already its `getNearestSampler`
+    // sibling, so the pass's two sampling modes are both the pin's.
+    WGPUSampler post_process_bilinear_sampler = nullptr;
+#endif
     WGPUShaderModule depth_only_module = nullptr;
     WGPUShaderModule blit_vertex_module = nullptr;
     WGPUShaderModule blit_fragment_module = nullptr;
@@ -535,6 +575,12 @@ struct DawnState : DawnDevice {
             if (task.scene_group) {
                 wgpuBindGroupRelease(task.scene_group);
             }
+            if (task.pinned_frame_group) {
+                wgpuBindGroupRelease(task.pinned_frame_group);
+            }
+            if (task.pinned_scene_uniforms) {
+                wgpuBufferRelease(task.pinned_scene_uniforms);
+            }
             if (task.view_projection) {
                 wgpuBufferRelease(task.view_projection);
             }
@@ -613,6 +659,25 @@ struct DawnState : DawnDevice {
             }
             task.has_previous_view_projection = false;
         }
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+        // The pass's pipeline and bind group name the attachments the graph
+        // just released, so they are rebuilt with them; the pin discards the
+        // same state when its own internal target is re-created.
+        for (DawnPostProcessTask& task : post_process_tasks) {
+            if (task.group) wgpuBindGroupRelease(task.group);
+            if (task.pipeline) wgpuRenderPipelineRelease(task.pipeline);
+            if (task.pipeline_layout) {
+                wgpuPipelineLayoutRelease(task.pipeline_layout);
+            }
+            if (task.group_layout) {
+                wgpuBindGroupLayoutRelease(task.group_layout);
+            }
+            if (task.uniforms) wgpuBufferRelease(task.uniforms);
+            if (task.module) wgpuShaderModuleRelease(task.module);
+            task = {};
+        }
+        post_process_tasks.clear();
+#endif
         frame_graph_width = 0;
         frame_graph_height = 0;
     }
@@ -812,6 +877,11 @@ struct DawnState : DawnDevice {
             wgpuSamplerRelease(transmission_sampler);
         }
         if (nearest_sampler) wgpuSamplerRelease(nearest_sampler);
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+        if (post_process_bilinear_sampler) {
+            wgpuSamplerRelease(post_process_bilinear_sampler);
+        }
+#endif
         if (mesh_pipeline_layout) {
             wgpuPipelineLayoutRelease(mesh_pipeline_layout);
         }
@@ -1680,6 +1750,11 @@ void create_frame_graph_textures(
     if (state.geometry_tasks.size() < engine.frame_tasks.size()) {
         state.geometry_tasks.resize(engine.frame_tasks.size());
     }
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+    if (state.post_process_tasks.size() < engine.frame_tasks.size()) {
+        state.post_process_tasks.resize(engine.frame_tasks.size());
+    }
+#endif
     for (
         std::size_t index = 0;
         index < engine.frame_tasks.size();
@@ -1687,6 +1762,7 @@ void create_frame_graph_textures(
         const FrameTaskRecord& record = engine.frame_tasks[index];
         if (record.kind != FrameTaskKind::geometry) continue;
         DawnGeometryTask& task = state.geometry_tasks[index];
+        task.depth_borrowed = geometry_depth_is_borrowed(engine, index);
         const std::uint32_t samples =
             task_sample_count(state, record.geometry.samples);
         task.colors.reserve(record.geometry.attachments.size());
@@ -2015,53 +2091,36 @@ void ensure_pinned_frame_buffers(DawnState& state) {
         16 + upstream::pinned_max_lights * sizeof(upstream::LightEntry));
 }
 
-// Group 0, built once from the buffers the frame writer fills.
-WGPUBindGroup pinned_frame_group(DawnState& state) {
-    if (state.pinned_frame_group) return state.pinned_frame_group;
-    std::array<WGPUBindGroupEntry, 2> entries{};
-    entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-    entries[0].binding = 0;
-    entries[0].buffer = state.pinned_scene_uniforms;
-    entries[0].size = sizeof(upstream::SceneUniforms);
-    entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-    entries[1].binding = 1;
-    entries[1].buffer = state.pinned_lights_uniforms;
-    entries[1].size =
-        16 + upstream::pinned_max_lights * sizeof(upstream::LightEntry);
-    WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    descriptor.layout = pinned_frame_layout_for(state);
-    descriptor.entryCount = entries.size();
-    descriptor.entries = entries.data();
-    state.pinned_frame_group =
-        wgpuDeviceCreateBindGroup(state.device, &descriptor);
-    if (!state.pinned_frame_group) {
-        dawn_error("pinned frame bind group creation failed.");
-    }
-    return state.pinned_frame_group;
-}
-
-/** Group 0 for the geometry tasks: the reverse-Z scene block beside the
- *  shared lights buffer, in the same layout as the main frame group. */
-WGPUBindGroup pinned_geometry_frame_group(DawnState& state) {
-    if (state.pinned_geometry_frame_group) {
-        return state.pinned_geometry_frame_group;
-    }
+/**
+ * Group 0 over one scene block and the frame's shared lights.
+ *
+ * Three callers want exactly this and differ only in which scene block they
+ * read: the frame's own, a geometry task's reverse-Z one, and a render task
+ * drawing through its own camera. The lights are the scene's in all three.
+ */
+WGPUBindGroup pinned_frame_group_over(
+    DawnState& state,
+    WGPUBuffer& scene_uniforms,
+    WGPUBindGroup& group,
+    const char* what) {
+    if (group) return group;
     ensure_pinned_frame_buffers(state);
-    if (!state.pinned_geometry_scene_uniforms) {
+    if (!scene_uniforms) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = sizeof(upstream::SceneUniforms);
         descriptor.usage =
             WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-        state.pinned_geometry_scene_uniforms =
+        scene_uniforms =
             wgpuDeviceCreateBuffer(state.device, &descriptor);
-        if (!state.pinned_geometry_scene_uniforms) {
-            dawn_error("pinned geometry scene buffer creation failed.");
+        if (!scene_uniforms) {
+            dawn_error((std::string(what) + " buffer creation failed.")
+                           .c_str());
         }
     }
     std::array<WGPUBindGroupEntry, 2> entries{};
     entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
     entries[0].binding = 0;
-    entries[0].buffer = state.pinned_geometry_scene_uniforms;
+    entries[0].buffer = scene_uniforms;
     entries[0].size = sizeof(upstream::SceneUniforms);
     entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
     entries[1].binding = 1;
@@ -2072,12 +2131,46 @@ WGPUBindGroup pinned_geometry_frame_group(DawnState& state) {
     descriptor.layout = pinned_frame_layout_for(state);
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
-    state.pinned_geometry_frame_group =
-        wgpuDeviceCreateBindGroup(state.device, &descriptor);
-    if (!state.pinned_geometry_frame_group) {
-        dawn_error("pinned geometry frame bind group creation failed.");
+    group = wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    if (!group) {
+        dawn_error(
+            (std::string(what) + " bind group creation failed.").c_str());
     }
-    return state.pinned_geometry_frame_group;
+    return group;
+}
+
+// Group 0, built once from the buffers the frame writer fills.
+WGPUBindGroup pinned_frame_group(DawnState& state) {
+    return pinned_frame_group_over(
+        state,
+        state.pinned_scene_uniforms,
+        state.pinned_frame_group,
+        "pinned frame");
+}
+
+/**
+ * Group 0 for a render task drawing through its own camera: its own scene
+ * block, because a second camera moves the view-projection and the eye
+ * position and no other value in it.
+ */
+WGPUBindGroup task_pinned_frame_group(
+    DawnState& state,
+    DawnRenderTask& task) {
+    return pinned_frame_group_over(
+        state,
+        task.pinned_scene_uniforms,
+        task.pinned_frame_group,
+        "render task frame");
+}
+
+/** Group 0 for the geometry tasks: the reverse-Z scene block beside the
+ *  shared lights buffer, in the same layout as the main frame group. */
+WGPUBindGroup pinned_geometry_frame_group(DawnState& state) {
+    return pinned_frame_group_over(
+        state,
+        state.pinned_geometry_scene_uniforms,
+        state.pinned_geometry_frame_group,
+        "pinned geometry frame");
 }
 
 /**
@@ -4770,6 +4863,286 @@ void save_dawn_geometry_id_buffer(
     wgpuTextureRelease(color);
 }
 
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+/**
+ * One post-process pass, recorded into the frame's encoder.
+ *
+ * The pin runs every effect through the same pass -- a three-vertex draw over
+ * the composed module its factory handed over -- so what this reads off the
+ * record is the module, the textures it samples, the uniform block it writes,
+ * and where it draws. `source_texture_view` resolves a frame-graph reference
+ * the way every other task in this backend resolves one, so a pass sampling a
+ * geometry attachment reaches it by the same path a render task would.
+ *
+ * A pass whose output is the swapchain draws straight into `surface_view`:
+ * WebGPU lets a surface texture be a colour attachment, so no readable copy
+ * stands between the pass and the present.
+ */
+template <typename SourceTextureView>
+void record_post_process_pass(
+    DawnState& state,
+    Engine& engine,
+    TaskHandle handle,
+    WGPUCommandEncoder encoder,
+    WGPUTextureView surface_view,
+    std::uint32_t width,
+    std::uint32_t height,
+    SourceTextureView source_texture_view) {
+    PostProcessTaskOptions& pass =
+        engine.frame_tasks[handle.value].post_process;
+    const upstream::PostProcessShaderInfo& info =
+        upstream::post_process_shader_infos[
+            pass.shader_index];
+    DawnPostProcessTask& gpu =
+        state.post_process_tasks[handle.value];
+    const RenderTargetRecord& output_record =
+        engine.render_targets[pass.output_target.value];
+    DawnRenderTarget& output =
+        state.render_targets[pass.output_target.value];
+    const std::uint32_t output_width = output_record.swapchain
+        ? width
+        : output.width;
+    const std::uint32_t output_height = output_record.swapchain
+        ? height
+        : output.height;
+    std::uint32_t source_width = output_width;
+    std::uint32_t source_height = output_height;
+    if (
+        pass.source.source ==
+            RenderTextureSource::render_target &&
+        pass.source.target.value <
+            state.render_targets.size()) {
+        source_width =
+            state.render_targets[pass.source.target.value]
+                .width;
+        source_height =
+            state.render_targets[pass.source.target.value]
+                .height;
+    }
+    if (!gpu.pipeline) {
+        // Both stages live in one composed module; the two
+        // deployed files carry the same text, so either loads it.
+        gpu.module = load_wgsl_module(
+            state,
+            "postprocess-" +
+                std::to_string(info.module_index) + ".frag");
+        gpu.uniform_size =
+            (info.uniform_byte_length + 15u) & ~15u;
+        std::vector<WGPUBindGroupLayoutEntry> layout_entries;
+        WGPUBindGroupLayoutEntry sampler_entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        sampler_entry.binding = 0;
+        sampler_entry.visibility = WGPUShaderStage_Fragment;
+        sampler_entry.sampler.type =
+            WGPUSamplerBindingType_Filtering;
+        layout_entries.push_back(sampler_entry);
+        WGPUBindGroupLayoutEntry texture_entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        texture_entry.binding = 1;
+        texture_entry.visibility = WGPUShaderStage_Fragment;
+        texture_entry.texture.sampleType =
+            WGPUTextureSampleType_Float;
+        layout_entries.push_back(texture_entry);
+        for (
+            std::size_t extra = 0;
+            extra < pass.extra_textures.size();
+            ++extra) {
+            WGPUBindGroupLayoutEntry extra_entry =
+                texture_entry;
+            extra_entry.binding =
+                2u + static_cast<std::uint32_t>(extra);
+            layout_entries.push_back(extra_entry);
+        }
+        if (gpu.uniform_size > 0) {
+            WGPUBindGroupLayoutEntry uniform_entry =
+                WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            uniform_entry.binding = info.uniform_binding;
+            uniform_entry.visibility =
+                WGPUShaderStage_Vertex |
+                WGPUShaderStage_Fragment;
+            uniform_entry.buffer.type =
+                WGPUBufferBindingType_Uniform;
+            layout_entries.push_back(uniform_entry);
+            WGPUBufferDescriptor uniform_descriptor =
+                WGPU_BUFFER_DESCRIPTOR_INIT;
+            uniform_descriptor.size = gpu.uniform_size;
+            uniform_descriptor.usage =
+                WGPUBufferUsage_Uniform |
+                WGPUBufferUsage_CopyDst;
+            gpu.uniforms = wgpuDeviceCreateBuffer(
+                state.device,
+                &uniform_descriptor);
+        }
+        WGPUBindGroupLayoutDescriptor layout_descriptor =
+            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+        layout_descriptor.entryCount = layout_entries.size();
+        layout_descriptor.entries = layout_entries.data();
+        gpu.group_layout = wgpuDeviceCreateBindGroupLayout(
+            state.device,
+            &layout_descriptor);
+        WGPUPipelineLayoutDescriptor pipeline_layout =
+            WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+        pipeline_layout.bindGroupLayoutCount = 1;
+        pipeline_layout.bindGroupLayouts = &gpu.group_layout;
+        gpu.pipeline_layout = wgpuDeviceCreatePipelineLayout(
+            state.device,
+            &pipeline_layout);
+        // The generated table names the pin's factors; turning
+        // them into this API's enums is the backend's own
+        // `blend_state_from`.
+        const upstream::PostProcessBlend blend =
+            upstream::post_process_blend(pass.alpha_mode);
+        const WGPUBlendState blend_state =
+            blend_state_from(blend.factors);
+        WGPUColorTargetState color_target =
+            WGPU_COLOR_TARGET_STATE_INIT;
+        color_target.format = state.surface_format;
+        if (blend.enabled) color_target.blend = &blend_state;
+        WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+        fragment.module = gpu.module;
+        fragment.entryPoint =
+            string_view("postProcessFragment");
+        fragment.targetCount = 1;
+        fragment.targets = &color_target;
+        WGPURenderPipelineDescriptor descriptor =
+            WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+        descriptor.layout = gpu.pipeline_layout;
+        descriptor.vertex.module = gpu.module;
+        descriptor.vertex.entryPoint =
+            string_view("postProcessVertex");
+        descriptor.primitive.topology =
+            WGPUPrimitiveTopology_TriangleList;
+        descriptor.primitive.cullMode = WGPUCullMode_None;
+        // The pin builds the pipeline against its output target's
+        // own sample count and resolves nothing; what it refuses
+        // is a multisampled *source*.
+        descriptor.multisample.count = output_record.swapchain
+            ? 1u
+            : task_sample_count(state, output_record.samples);
+        descriptor.multisample.mask = ~0u;
+        descriptor.fragment = &fragment;
+        gpu.pipeline = wgpuDeviceCreateRenderPipeline(
+            state.device,
+            &descriptor);
+        if (!gpu.pipeline) {
+            dawn_error("post-process pipeline creation failed.");
+        }
+        std::vector<WGPUBindGroupEntry> group_entries;
+        WGPUBindGroupEntry sampler_binding =
+            WGPU_BIND_GROUP_ENTRY_INIT;
+        sampler_binding.binding = 0;
+        sampler_binding.sampler =
+            pass.sampling == PostProcessSampling::nearest
+                ? state.nearest_sampler
+                : state.post_process_bilinear_sampler;
+        group_entries.push_back(sampler_binding);
+        WGPUBindGroupEntry texture_binding =
+            WGPU_BIND_GROUP_ENTRY_INIT;
+        texture_binding.binding = 1;
+        texture_binding.textureView =
+            source_texture_view(pass.source).second;
+        group_entries.push_back(texture_binding);
+        for (
+            std::size_t extra = 0;
+            extra < pass.extra_textures.size();
+            ++extra) {
+            WGPUBindGroupEntry extra_binding =
+                WGPU_BIND_GROUP_ENTRY_INIT;
+            extra_binding.binding =
+                2u + static_cast<std::uint32_t>(extra);
+            extra_binding.textureView =
+                source_texture_view(
+                    pass.extra_textures[extra])
+                    .second;
+            group_entries.push_back(extra_binding);
+        }
+        if (gpu.uniforms) {
+            WGPUBindGroupEntry uniform_binding =
+                WGPU_BIND_GROUP_ENTRY_INIT;
+            uniform_binding.binding = info.uniform_binding;
+            uniform_binding.buffer = gpu.uniforms;
+            uniform_binding.size = gpu.uniform_size;
+            group_entries.push_back(uniform_binding);
+        }
+        WGPUBindGroupDescriptor group_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        group_descriptor.layout = gpu.group_layout;
+        group_descriptor.entryCount = group_entries.size();
+        group_descriptor.entries = group_entries.data();
+        gpu.group = wgpuDeviceCreateBindGroup(
+            state.device,
+            &group_descriptor);
+        pass.uniforms_dirty = true;
+    }
+    if (gpu.uniforms && pass.uniforms_dirty) {
+        std::vector<float> data(gpu.uniform_size / 4u, 0.0f);
+        upstream::write_post_process_uniforms(
+            engine,
+            pass,
+            output_width,
+            output_height,
+            source_width,
+            source_height,
+            data.data());
+        wgpuQueueWriteBuffer(
+            state.queue,
+            gpu.uniforms,
+            0,
+            data.data(),
+            gpu.uniform_size);
+        pass.uniforms_dirty = false;
+    }
+    WGPURenderPassColorAttachment attachment =
+        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+    attachment.view = output_record.swapchain
+        ? surface_view
+        : output.color_view;
+    attachment.loadOp = pass.clear
+        ? WGPULoadOp_Clear
+        : WGPULoadOp_Load;
+    attachment.storeOp = WGPUStoreOp_Store;
+    WGPURenderPassDescriptor pass_descriptor =
+        WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+    pass_descriptor.colorAttachmentCount = 1;
+    pass_descriptor.colorAttachments = &attachment;
+    WGPURenderPassEncoder post_pass =
+        wgpuCommandEncoderBeginRenderPass(
+            encoder,
+            &pass_descriptor);
+    if (pass.has_viewport) {
+        const PixelViewport rectangle =
+            upstream::resolve_post_process_viewport(
+                pass.viewport,
+                output_width,
+                output_height);
+        wgpuRenderPassEncoderSetViewport(
+            post_pass,
+            static_cast<float>(rectangle.x),
+            static_cast<float>(rectangle.y),
+            static_cast<float>(rectangle.width),
+            static_cast<float>(rectangle.height),
+            0.0f,
+            1.0f);
+        wgpuRenderPassEncoderSetScissorRect(
+            post_pass,
+            static_cast<std::uint32_t>(rectangle.x),
+            static_cast<std::uint32_t>(rectangle.y),
+            static_cast<std::uint32_t>(rectangle.width),
+            static_cast<std::uint32_t>(rectangle.height));
+    }
+    wgpuRenderPassEncoderSetPipeline(post_pass, gpu.pipeline);
+    wgpuRenderPassEncoderSetBindGroup(
+        post_pass,
+        0,
+        gpu.group,
+        0,
+        nullptr);
+    wgpuRenderPassEncoderDraw(post_pass, 3, 1, 0, 0);
+    wgpuRenderPassEncoderEnd(post_pass);
+    wgpuRenderPassEncoderRelease(post_pass);
+}
+#endif
+
 } // namespace
 
 bool run_dawn_engine(Engine& engine) {
@@ -4788,25 +5161,6 @@ bool run_dawn_engine(Engine& engine) {
         dawn_error(
             "transmission combined with frame-graph tasks is not "
             "implemented yet.");
-    }
-    for (const TaskHandle handle : scene.tasks) {
-        if (handle.value >= engine.frame_tasks.size()) {
-            throw std::runtime_error(
-                "Scene frame task handle is invalid.");
-        }
-        const FrameTaskRecord& task = engine.frame_tasks[handle.value];
-        if (
-            task.kind == FrameTaskKind::render &&
-            task.render.has_camera &&
-            task.render.target.value < engine.render_targets.size() &&
-            engine.render_targets[task.render.target.value].has_color) {
-            // The gated scenes drive color tasks with the scene
-            // camera; a per-task camera would need per-task fragment
-            // uniforms.
-            dawn_error(
-                "color render tasks with a dedicated camera are not "
-                "implemented yet.");
-        }
     }
     apply_animation_seek(frame_options, scene);
     // Read by the image-skybox and ground arms, which not every feature set
@@ -5028,6 +5382,14 @@ bool run_dawn_engine(Engine& engine) {
             WGPU_SAMPLER_DESCRIPTOR_INIT;
         state.nearest_sampler =
             wgpuDeviceCreateSampler(state.device, &nearest_descriptor);
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+        WGPUSamplerDescriptor post_process_descriptor =
+            WGPU_SAMPLER_DESCRIPTOR_INIT;
+        post_process_descriptor.magFilter = WGPUFilterMode_Linear;
+        post_process_descriptor.minFilter = WGPUFilterMode_Linear;
+        state.post_process_bilinear_sampler =
+            wgpuDeviceCreateSampler(state.device, &post_process_descriptor);
+#endif
         // The pinned scene-color sampler: repeat trilinear with the
         // shared anisotropy (getTrilinearAnisotropicSampler).
         WGPUSamplerDescriptor transmission_descriptor =
@@ -6767,19 +7129,33 @@ bool run_dawn_engine(Engine& engine) {
                         task_camera,
                         task_aspect,
                         !target_record.has_color);
-                if (
-                    target_record.has_color &&
-                    task_matrix != matrix) {
-                    dawn_error(
-                        "color render tasks with a non-scene view "
-                        "projection are not implemented yet.");
-                }
                 wgpuQueueWriteBuffer(
                     state.queue,
                     render_task.view_projection,
                     0,
                     task_matrix.data(),
                     64);
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+                // A task the scene gave its own camera reads its own eye
+                // position and view-projection, which is the whole of what
+                // the pass block holds; the record says so directly.
+                if (target_record.has_color && task.render.has_camera) {
+                    // The task's own pass block, in the pin's own shape: the
+                    // frame's writer over the task's camera and matrix.
+                    const upstream::SceneUniforms task_scene_block =
+                        pinned_scene_block(
+                            scene,
+                            task_camera,
+                            task_matrix);
+                    task_pinned_frame_group(state, render_task);
+                    wgpuQueueWriteBuffer(
+                        state.queue,
+                        render_task.pinned_scene_uniforms,
+                        0,
+                        &task_scene_block,
+                        sizeof(task_scene_block));
+                }
+#endif
                 if (target_record.has_color) {
                     // Depth-only tasks never read fragment uniforms;
                     // skipping them keeps the no-color override
@@ -6818,7 +7194,13 @@ bool run_dawn_engine(Engine& engine) {
                                         std::uint32_t samples,
                                         WGPURenderPipeline&
                                             bound_pipeline,
-                                        bool pass_has_depth = true) {
+                                        bool pass_has_depth = true,
+                                        // Which per-pass block the composed
+                                        // stages read: the frame's, or a
+                                        // task's own when it draws through
+                                        // its own camera.
+                                        WGPUBindGroup frame_group = nullptr) {
+            (void)frame_group;
             for (const upstream::RenderDrawCommand& draw :
                  list.commands) {
                 if (draw.item_index >= state.meshes.size()) continue;
@@ -6853,7 +7235,8 @@ bool run_dawn_engine(Engine& engine) {
                             samples,
                             pass_has_depth),
                         bound_pipeline,
-                        pinned_frame_group(state),
+                        frame_group ? frame_group
+                                    : pinned_frame_group(state),
                         mesh.pinned_group,
                         // Skinned and palette-world draws read the mirrored
                         // buffer; the palette carries the mirror on both
@@ -6916,7 +7299,8 @@ bool run_dawn_engine(Engine& engine) {
                             pass_has_depth,
                             (mesh.standard_group_key & 1) != 0),
                         bound_pipeline,
-                        pinned_frame_group(state),
+                        frame_group ? frame_group
+                                    : pinned_frame_group(state),
                         mesh.standard_group,
                         // The Standard families carry no glTF X-mirror: the
                         // baked buffer is the pin's own convention already.
@@ -7335,6 +7719,24 @@ bool run_dawn_engine(Engine& engine) {
             }
             return {target.sampled_color, target.sampled_color_view};
         };
+        /** The depth view a reference names, or null when it names none. */
+        const auto task_depth_view =
+            [&](const RenderTextureRef& reference) -> WGPUTextureView {
+            if (
+                reference.source != RenderTextureSource::geometry_depth ||
+                reference.task.value >= engine.frame_tasks.size() ||
+                reference.task.value >= state.geometry_tasks.size()) {
+                throw std::runtime_error(
+                    "Render task depth must name a geometry task.");
+            }
+            WGPUTextureView view =
+                state.geometry_tasks[reference.task.value].depth_view;
+            if (!view) {
+                throw std::runtime_error(
+                    "Geometry task has no depth attachment to share.");
+            }
+            return view;
+        };
         const auto source_texture_view =
             [&](const RenderTextureRef& reference)
             -> std::pair<WGPUTexture, WGPUTextureView> {
@@ -7566,7 +7968,25 @@ bool run_dawn_engine(Engine& engine) {
                     WGPU_RENDER_PASS_DESCRIPTOR_INIT;
                 pass_descriptor.colorAttachmentCount = 1;
                 pass_descriptor.colorAttachments = &color_attachment;
-                if (target_record.has_depth && target.depth) {
+                // The pin's external-depth arm: a task handed another task's
+                // depth binds that view and LOADS it, because a geometry
+                // output is eager and its owner already cleared and wrote it.
+                WGPUTextureView borrowed_depth_view = nullptr;
+                if (
+                    task.render.depth.source ==
+                    RenderTextureSource::geometry_depth) {
+                    borrowed_depth_view =
+                        task_depth_view(task.render.depth);
+                }
+                if (borrowed_depth_view) {
+                    depth_attachment.view = borrowed_depth_view;
+                    depth_attachment.depthLoadOp = WGPULoadOp_Load;
+                    depth_attachment.depthStoreOp = WGPUStoreOp_Store;
+                    depth_attachment.stencilLoadOp = WGPULoadOp_Load;
+                    depth_attachment.stencilStoreOp = WGPUStoreOp_Store;
+                    pass_descriptor.depthStencilAttachment =
+                        &depth_attachment;
+                } else if (target_record.has_depth && target.depth) {
                     depth_attachment.view = target.depth_view;
                     depth_attachment.depthLoadOp = WGPULoadOp_Clear;
                     depth_attachment.depthClearValue = 1.0f;
@@ -7585,20 +8005,22 @@ bool run_dawn_engine(Engine& engine) {
                         encoder,
                         &pass_descriptor);
                 WGPURenderPipeline bound_pipeline = nullptr;
-                const bool pass_has_depth =
-                    target_record.has_depth && target.depth;
+                const bool pass_has_depth = borrowed_depth_view ||
+                    (target_record.has_depth && target.depth);
                 draw_list_into(
                     task_pass,
                     render_task.draw_lists.opaque,
                     samples,
                     bound_pipeline,
-                    pass_has_depth);
+                    pass_has_depth,
+                    render_task.pinned_frame_group);
                 draw_list_into(
                     task_pass,
                     render_task.draw_lists.transparent,
                     samples,
                     bound_pipeline,
-                    pass_has_depth);
+                    pass_has_depth,
+                    render_task.pinned_frame_group);
                 wgpuRenderPassEncoderEnd(task_pass);
                 wgpuRenderPassEncoderRelease(task_pass);
                 continue;
@@ -7673,7 +8095,9 @@ bool run_dawn_engine(Engine& engine) {
                 depth_attachment.depthLoadOp = WGPULoadOp_Clear;
                 depth_attachment.depthClearValue =
                     task_has_pinned ? 0.0f : 1.0f;
-                depth_attachment.depthStoreOp = WGPUStoreOp_Discard;
+                depth_attachment.depthStoreOp = geometry.depth_borrowed
+                    ? WGPUStoreOp_Store
+                    : WGPUStoreOp_Discard;
                 depth_attachment.stencilLoadOp = WGPULoadOp_Clear;
                 depth_attachment.stencilStoreOp = WGPUStoreOp_Discard;
                 WGPURenderPassDescriptor pass_descriptor =
@@ -7845,6 +8269,20 @@ bool run_dawn_engine(Engine& engine) {
                 wgpuRenderPassEncoderRelease(task_pass);
                 continue;
             }
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+            if (task.kind == FrameTaskKind::post_process) {
+                record_post_process_pass(
+                    state,
+                    engine,
+                    handle,
+                    encoder,
+                    surface_view,
+                    width,
+                    height,
+                    source_texture_view);
+                continue;
+            }
+#endif
             const CopyTaskOptions& copy = task.copy;
             if (
                 copy.resolve_target.value != invalid_handle &&
@@ -7930,7 +8368,7 @@ bool run_dawn_engine(Engine& engine) {
             wgpuRenderPassEncoderSetPipeline(blit_pass, blit_pipeline);
             if (copy.has_viewport) {
 #if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
-                const upstream::PixelViewport pixel_viewport =
+                const PixelViewport pixel_viewport =
                     upstream::resolve_copy_viewport(
                         copy.viewport,
                         target.width,

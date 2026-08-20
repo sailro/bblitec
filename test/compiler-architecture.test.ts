@@ -194,7 +194,7 @@ test("keeps extracted option and manifest blocks in their modules", () => {
             "src/compiler/intrinsics/engine-options.ts",
             [
                 /Geometry textureDescriptions must contain 1-8 entries\./,
-                /Copy task requires sourceTexture\./,
+                /Copy task requires targetTexture or resolveTexture\./,
                 /defaultRenderTask must be a static boolean\./,
             ],
         ],

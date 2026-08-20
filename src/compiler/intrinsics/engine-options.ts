@@ -16,6 +16,7 @@ import type {
 } from "../types.js";
 import {
     compilePositiveInteger,
+    validateObjectProperties,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
 
@@ -24,6 +25,7 @@ export interface EngineOptionContext
     readonly symbols: CompilerSymbols;
     readonly geometryOutputTasks: readonly GeometryOutputTaskManifest[];
     unwrap(expression: ts.Expression): ts.Expression;
+    propertyName(name: ts.PropertyName): string | undefined;
     compileValue(expression: ts.Expression): Value;
     expectKind(
         value: Value,
@@ -59,6 +61,12 @@ export function compileRenderTargetOptions(
     expression: ts.Expression,
 ): string {
     const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        ["lbl", "format", "dFormat", "samples", "size"],
+        "Reached render targets support lbl, format, dFormat, samples, and size.",
+    );
     const samples = context.objectProperty(object, "samples");
     const colorFormat = context.objectProperty(object, "format");
     const depthFormat = context.objectProperty(object, "dFormat");
@@ -97,6 +105,12 @@ export function compileRenderTaskOptions(
     expression: ts.Expression,
 ): string {
     const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        ["name", "rt", "clrColor", "clr", "cam", "cs", "autoMirror", "depth"],
+        "Reached render tasks support name, rt, clrColor, clr, cam, cs, autoMirror, and depth.",
+    );
     const nameExpression = context.objectProperty(object, "name");
     const targetExpression = context.objectProperty(object, "rt");
     if (!targetExpression) {
@@ -116,9 +130,27 @@ export function compileRenderTaskOptions(
     }
     const canvasSize = context.objectProperty(object, "cs");
     const autoMirror = context.objectProperty(object, "autoMirror");
+    // An external depth attachment: the pin binds that target's depth view
+    // instead of the task target's own, and loads it because a geometry
+    // task's output is eager.
+    const depthExpression = context.objectProperty(object, "depth");
+    let depth = "bbl::RenderTextureRef{}";
+    if (depthExpression) {
+        const value = context.compileValue(depthExpression);
+        // Only a geometry task's own depth is a depth attachment; every
+        // other render texture is a colour one, and the record says which by
+        // its source rather than by a flag beside it.
+        if (value.kind !== "render-texture" || !value.isDepthTexture) {
+            context.fail(
+                depthExpression,
+                "Render task depth must be a geometry task's geometryDepthTexture.",
+            );
+        }
+        depth = value.cpp;
+    }
     return `bbl::RenderTaskOptions{${context.cppString(
         nameExpression ? context.compileStringLiteral(nameExpression) : "render-task",
-    )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "bbl::Color4{}"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? "bbl::CameraHandle{}"}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}}`;
+    )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "bbl::Color4{}"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? "bbl::CameraHandle{}"}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}, ${depth}}`;
 }
 
 export function compileGeometryTaskOptions(
@@ -129,6 +161,18 @@ export function compileGeometryTaskOptions(
     manifest: GeometryOutputTaskManifest;
 } {
     const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        [
+            "name",
+            "samples",
+            "textureDescriptions",
+            "targetTexture",
+            "targetTextureClearColor",
+        ],
+        "Reached geometry renderer tasks support name, samples, textureDescriptions, targetTexture, and targetTextureClearColor.",
+    );
     const nameExpression = context.objectProperty(object, "name");
     const samplesExpression = context.objectProperty(object, "samples");
     const descriptionsExpression = context.objectProperty(
@@ -212,21 +256,24 @@ export function compileCopyTaskOptions(
     expression: ts.Expression,
 ): string {
     const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        [
+            "name",
+            "sourceTexture",
+            "targetTexture",
+            "resolveTexture",
+            "viewport",
+        ],
+        "Reached copy tasks support name, sourceTexture, targetTexture, resolveTexture, and viewport.",
+    );
     const nameExpression = context.objectProperty(object, "name");
-    const sourceExpression = context.objectProperty(object, "sourceTexture");
-    if (!sourceExpression) {
-        context.fail(object, "Copy task requires sourceTexture.");
-    }
-    const source = context.compileValue(sourceExpression);
-    const sourceCpp =
-        source.kind === "render-target"
-            ? `bbl::render_target_texture(${source.cpp})`
-            : source.kind === "render-texture"
-                ? source.cpp
-                : context.fail(
-                      sourceExpression,
-                      `Copy source must be a render texture, received ${source.kind}.`,
-                  );
+    const sourceCpp = compileTextureReference(
+        context,
+        object,
+        "sourceTexture",
+    );
     const targetExpression = context.objectProperty(object, "targetTexture");
     const resolveExpression = context.objectProperty(object, "resolveTexture");
     const target = targetExpression
@@ -295,7 +342,7 @@ export function geometryEnumMember(type: GeometryTextureTypeName): string {
     return type.toLowerCase();
 }
 
-function requiredObjectNumber(
+export function requiredObjectNumber(
     context: EngineOptionContext,
     object: ts.ObjectLiteralExpression,
     name: string,
@@ -306,6 +353,47 @@ function requiredObjectNumber(
         context.fail(object, `Object literal is missing numeric property '${name}'.`);
     }
     return context.compileNumber(value, precision);
+}
+
+/**
+ * A texture option, as the render-texture reference the frame graph carries.
+ *
+ * A render target names its own colour attachment; a render texture — a
+ * geometry task's attachment, its output or its depth — already is one.
+ *
+ * `sampling` says how the task will read it. A pass that samples declares
+ * `texture_2d<f32>`, so a geometry task's own depth attachment cannot bind
+ * there — a scene wanting depth values reads them out of the colour
+ * attachment the geometry task writes them to, which is what the pin does.
+ * Refusing it here names the property; the backend would only fail the pipeline.
+ */
+export function compileTextureReference(
+    context: EngineOptionContext,
+    object: ts.ObjectLiteralExpression,
+    property: string,
+    sampling: "color" | "any" = "any",
+): string {
+    const expression = context.objectProperty(object, property);
+    if (!expression) {
+        context.fail(object, `Frame-graph task requires ${property}.`);
+    }
+    const value: Value = context.compileValue(expression);
+    if (value.kind === "render-target") {
+        return `bbl::render_target_texture(${value.cpp})`;
+    }
+    if (value.kind === "render-texture") {
+        if (sampling === "color" && value.isDepthTexture) {
+            context.fail(
+                expression,
+                `Frame-graph ${property} is sampled as colour, so it cannot be a depth attachment.`,
+            );
+        }
+        return value.cpp;
+    }
+    return context.fail(
+        expression,
+        `Frame-graph ${property} must be a render texture, received ${value.kind}.`,
+    );
 }
 
 export function compileSceneDefaultRenderTask(

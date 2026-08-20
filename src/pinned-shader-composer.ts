@@ -194,6 +194,8 @@ export async function importPinnedModule<T>(
     return (await import(url)) as T;
 }
 
+const augmentedModules = new Map<string, Promise<unknown>>();
+
 /**
  * Imports a pinned module with named module-local symbols also exported.
  *
@@ -209,6 +211,14 @@ export async function importPinnedModuleWithExports<T>(
     relativePath: string,
     extraExports: readonly string[],
 ): Promise<T> {
+    // Node dedupes the `data:` import, but not the read, the rewrite and the
+    // base64 that build its URL — and a scene composing several post-process
+    // stages asks for the same module once per stage.
+    const key = `${relativePath}|${extraExports.join(",")}`;
+    const cached = augmentedModules.get(key);
+    if (cached) {
+        return (await cached) as T;
+    }
     const modulePath = join(pinnedLibraryRoot(), relativePath);
     const anchored = readFileSync(modulePath, "utf8").replace(
         /(from\s*|import\()(["'])(\.\.?\/[^"']+)\2/g,
@@ -222,7 +232,9 @@ export async function importPinnedModuleWithExports<T>(
         augmented,
         "utf8",
     ).toString("base64")}`;
-    return (await import(url)) as T;
+    const loading = import(url);
+    augmentedModules.set(key, loading);
+    return (await loading) as T;
 }
 
 async function pinnedComposer(): Promise<PinnedComposerModules> {

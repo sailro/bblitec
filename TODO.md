@@ -175,7 +175,7 @@ record future audits build on.
 
 ## P1 — Full Babylon Lite corpus audit
 
-165 corpus scenes remain unregistered; measured scenes are in
+151 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -196,11 +196,10 @@ scenes.
 deferred-lane physics), `parseNodeMaterialFromSnippet` 17, engine options beyond
 msaaSamples/requiredLimits 7, `parseNodeParticleSource` 6, static array literal
 5, `receiveShadows` 5, `loadSplat` 5, `??` over a non-static-record operand 5,
-`light.position.set` 4, `createFacingBillboardSystem` 4, string-literal
-arguments 3, `createNavigationPluginAsync` 3. Standard diffuse-texture
-assignment blocks 5 (18, 25, 90, 110, 272), vector `.set()` on node properties
-blocks 6 (4, 22, 65, 141, 142, 223), mesh name/id setters block 4 (111, 113,
-129, 221).
+`light.position.set` 4, string-literal arguments 3,
+`createNavigationPluginAsync` 3. Standard diffuse-texture assignment blocks 5
+(18, 25, 90, 110, 272), vector `.set()` on node properties blocks 5 (4, 22, 65,
+141, 223), mesh name/id setters block 4 (111, 113, 129, 221).
 
 **No corpus scene can retire the runtime-sweep gate.** Of the scenes reaching
 `createMeshFromData` (86, 114, 170-175, 231), `setThinInstances` (16, 17, 43,
@@ -219,8 +218,8 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (131 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25, 26, 36, 38,
-43, 51-99, 110-115, 117, 118, 120-129, 140-144, 147-149, 152, 155-158, 160, 162,
+**Integrate first (128 scenes):** 4, 11, 12, 16-18, 20, 22, 23, 25, 26, 36, 38,
+43, 51-99, 110-115, 117, 118, 120-129, 140, 141, 144, 148, 149, 152, 155-158, 160, 162,
 165, 179, 200-207, 211, 214, 215, 217-219, 223, 226, 229, 231, 241, 251,
 261-264, 269-271, 275-280. Includes static CSG/CSG2, compressed assets and
 splats, deterministic picking (113-115, 117, 118, 129), and display-only gizmos
@@ -252,7 +251,6 @@ that does to the deferred lane by default.
 - [ ] Scenes 26, 87: support image-processing `toneMapping`.
 - [ ] Scene 36: support `loadBasisTexture2D`.
 - [ ] Scene 38: support `createCylinder`.
-- [ ] Scene 148: support `createDepthOfFieldPostProcessTask`.
 - [ ] Extend the sprite path past the slice Scene 50 measures. Each item is a
   separate arm upstream keeps behind its own module or hook, and each fails
   explicitly today:
@@ -311,9 +309,8 @@ that does to the deferred lane by default.
 - [ ] Scene 123: support `loadSPZ`.
 - [ ] Scenes 127, 128: support `createLinearDepthMaterial`.
 - [ ] Scene 140: fold the reached browser-derived boolean.
-- [ ] Scene 142: support quaternion setters.
-- [ ] Scene 143: support `createBlurPostProcessTask`.
-- [ ] Scene 147: support `createCircleOfConfusionPostProcessTask`.
+- [ ] Scene 148: add the depth-of-field composite, which records a circle of
+  confusion, two depth-aware blurs and a merge as one task.
 - [ ] Scenes 155, 156: support property-animation blending.
 - [ ] Scene 165: the viewProjection + world system-uniform pair, per-instance
   thin-instance colors (`setThinInstanceColors` plus the instance color vertex
@@ -380,7 +377,7 @@ that does to the deferred lane by default.
 - [ ] Port the pinned two-pass `.babylon` parent wiring and geometry-less
   `TransformNode` containers (`load-babylon.ts` second pass); the native loader
   skips parented and geometry-less nodes silently. No measured scene is
-  affected. Reached by the ungated Scene 143.
+  affected. Reached by Scene 143, whose Sponza load hits neither.
 - [ ] Extend `KHR_materials_specular` past its two factors: `specularTexture`
   and `specularColorTexture` fail explicitly at load. Scene 241 is the only
   corpus asset carrying them and is compiler-blocked, so the pinned

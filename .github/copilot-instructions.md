@@ -26,6 +26,36 @@ Do not duplicate detailed facts in this file:
 
 Read the relevant canonical page before changing that area.
 
+## The three gates around a piece of work
+
+Every one of these exists because skipping it cost a session. They are
+gates, not suggestions: each opens before a specific kind of work, and the
+work is not started, or not finished, until it has been passed.
+
+1. **Before any feature: read this whole documentation set.** Not the page
+   that looks relevant — all of it, including `TODO.md`. The pages cross-cut:
+   a rendering question is answered in `debugging.md` by a command that
+   `development.md` documents and `fidelity.md` explains the contract for,
+   and the capability you are about to build is usually already half-built
+   somewhere the page you skipped would have named.
+2. **Before porting a Babylon Lite feature: read that feature's own upstream
+   page** — what it is worth and how to read it are under
+   [Pinned upstream](#pinned-upstream), including that a remark about
+   Babylon.js is not a statement about the target. Getting the page is the
+   only part that is mechanical: the published site renders through a
+   client-side app, so fetch it at the pinned commit, which is also the
+   version that matches the code.
+
+   ```bash
+   gh api "repos/BabylonJS/Babylon-Lite/contents/docs/lite/architecture/29-post-process.md?ref=$(node -p "require('./upstream/babylon-lite.json').sourceVersion")" --jq .content | base64 -d
+   ```
+
+3. **Before pushing: run `/simplify` over the complete body of work**, not
+   over the last commit. When it finds the deeper fix — a mechanism this
+   repository already owns, a re-derivation to delete, a contract to move —
+   do that fix in the same pass and revalidate. Work is not deferred out of
+   the current task because it reaches outside the diff.
+
 ## Diagnose by capture, not by inference
 
 **This is the habit that matters most in this repository.** A rendering
@@ -114,8 +144,12 @@ residual.
   beside the code but drift from it — the large-world page describes a
   `scene._floatingOriginOffset` mirror and a per-frame
   `updateFloatingOriginOffset` that the pinned `floating-origin.ts` says it
-  deleted as "net cost without value". Where the two disagree, lower from the
-  source and say so.
+  deleted as "net cost without value", and the post-process page's WGSL
+  outline omits the Y flip the pinned vertex stage writes into `uv`. Where the
+  two disagree, lower from the source and say so. Drift runs the other way
+  too, which is what makes the page worth reading: the same page states that
+  a pass's pipeline takes its *output target's* sample count, which the source
+  confirms and both backends had hardcoded to one.
 - Generated files include provenance comments and
   `generated/<scene>/upstream/provenance.json`.
 - Optional Tint compilation is pinned separately in `upstream/tint.json`.

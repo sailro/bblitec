@@ -38,6 +38,7 @@ export interface CompileManifest {
     plainSpriteLayer: boolean;
     plainBillboardSystem: boolean;
     geometryOutputTasks: GeometryOutputTaskManifest[];
+    postProcessTasks: PostProcessTaskManifest[];
     adaptations: CompileAdaptation[];
     scenePbrMaterials: ScenePbrMaterialManifest[];
     /** Every scene-code material creation, any family, for the handle count. */
@@ -246,6 +247,35 @@ export interface GeometryOutputTaskManifest {
     emitColor: boolean;
 }
 
+/**
+ * One effect option, in the shape the pin's own factory receives it. Vector
+ * options are the `{x, y}` pair the pinned configs are written with.
+ */
+export type PostProcessOptionValue =
+    | number
+    | boolean
+    | { x: number; y: number };
+
+/**
+ * One reached post-process pass, in reach order.
+ *
+ * The pin builds every effect on one `createPostProcessTask`, so what varies
+ * between two passes is the `_shader` record its factory hands over — which is
+ * why this carries the entry point and the options that reach the composed
+ * text, and nothing about the pass itself. `shaderIndex` is the reach order,
+ * which is the generated shader table's index order.
+ */
+export interface PostProcessTaskManifest {
+    shaderIndex: number;
+    /** The Babylon Lite entry point the pass was created through. */
+    intrinsic: string;
+    /**
+     * Every option the pass itself does not read, statically resolved and
+     * forwarded whole — the pin decides which of them its text branches on.
+     */
+    options: Record<string, PostProcessOptionValue>;
+}
+
 export interface CompileResult {
     cpp: string;
     cmake: string;
@@ -323,6 +353,17 @@ export interface Value {
     asset?: CompileAsset;
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
+    /**
+     * Set on a `render-texture` naming a task's depth attachment rather than
+     * a colour one, which is what a render task's `depth` may bind.
+     */
+    isDepthTexture?: true;
+    /**
+     * Which post-process pass a `task` value names. `outputTexture` reads it
+     * to resolve the internal target the pin's `prepareOutputTarget` creates,
+     * and a settable effect option resolves its parameter slot through it.
+     */
+    postProcessTask?: PostProcessTaskManifest;
     lightKind?: LightKind;
     /**
      * The extra textures a custom-shader descriptor binds, as the native
@@ -445,6 +486,7 @@ export type Feature =
     | "renderer:transmission"
     | "renderer:fog"
     | "renderer:geometry-output"
+    | "renderer:post-process"
     | "background:image-skybox"
     | "background:solid-skybox";
 

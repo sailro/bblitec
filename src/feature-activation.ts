@@ -55,6 +55,7 @@ export type FeatureActivationConsumer =
     | "render_capabilities.hpp"
     | "material_texture_slots.hpp"
     | "variant table"
+    | "deployed shaders"
     | "loader flag"
     | "renderer plan"
     | "vcpkg manifest"
@@ -431,6 +432,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "renderer:geometry-output": {
         provenance: "src/frame-graph/geometry-renderer-task.ts",
         consumers: ["features.cmake", "variant table"],
+    },
+    "renderer:post-process": {
+        provenance: "src/frame-graph/post-process-task.ts",
+        consumers: ["features.cmake"],
     },
 };
 
@@ -1101,6 +1106,7 @@ function compositionRows(
     const { composition, emit, specialization: spec, features } = inputs;
     const variantCount = (emit.pinnedVariants ?? []).length;
     const taskCount = emit.geometryOutputTasks.length;
+    const passCount = emit.postProcessTasks.length;
     const kinds = composition.lightKinds;
     return [
         row(
@@ -1171,6 +1177,24 @@ function compositionRows(
                 : "no geometry-output tasks",
             "src/material/pbr/pbr-geometry-output-shader.ts (attachmentExpr)",
             ["variant table"],
+        ),
+        row(
+            "post-process:stages",
+            "composition",
+            passCount > 0,
+            passCount > 0
+                ? `${passCount} post-process pass(es), composed by running ` +
+                    `each effect's own factory: ${[
+                        ...new Set(
+                            emit.postProcessTasks.map(
+                                (task) => task.intrinsic,
+                            ),
+                        ),
+                    ].join(", ")}`
+                : "no post-process passes",
+            "src/frame-graph/post-process-task.ts getShaderModule, over " +
+                "each effect module's own _shader record",
+            ["deployed shaders"],
         ),
     ];
 }

@@ -341,6 +341,32 @@ function Write-StageSlots {
     Set-Content $slotPath ($slots -join [Environment]::NewLine)
 }
 
+function Get-ShaderEntryPoint {
+    <#
+    .SYNOPSIS
+    The entry point a stage is compiled at, from its file name.
+
+    .DESCRIPTION
+    Three conventions meet here. Babylon Lite's own composed material variants
+    name both entry points `main`. A post-process pass is composed too, but the
+    pin puts both of its stages in one module, so each names itself. Everything
+    else is a shader this repository authors or specializes, and those carry
+    the mainVertex/mainFragment convention.
+    #>
+    param(
+        [string]$Name,
+        [bool]$Vertex
+    )
+
+    if ($Name.StartsWith("postprocess-")) {
+        return $(if ($Vertex) { "postProcessVertex" } else { "postProcessFragment" })
+    }
+    if ($Name.StartsWith("variant-")) {
+        return "main"
+    }
+    return $(if ($Vertex) { "mainVertex" } else { "mainFragment" })
+}
+
 function Get-HlslUniformBufferCount {
     param([string]$Path)
 
@@ -529,17 +555,17 @@ foreach ($shaderDirectory in $shaderDirectories) {
                 0,
                 $source.FullName.Length - ".native.wgsl".Length
             )
-            # Babylon Lite's own composed stages name both entry points
-            # `main`; only the shaders this repository specializes carry the
-            # mainVertex/mainFragment convention.
+            # Text the pin composed rather than this repository: its groups
+            # and bindings are the pin's own, which decides both the register
+            # remap below and the binding cross-check that would otherwise
+            # read this repository's specialization back out of Tint.
             $isPinnedVariant = $source.Name.StartsWith("variant-")
-            $entryPoint = if ($isPinnedVariant) {
-                "main"
-            } elseif ($outputBase.EndsWith(".vert")) {
-                "mainVertex"
-            } else {
-                "mainFragment"
-            }
+            $isPinnedComposed = (
+                $isPinnedVariant -or $source.Name.StartsWith("postprocess-")
+            )
+            $entryPoint = Get-ShaderEntryPoint `
+                $source.Name `
+                ($outputBase.EndsWith(".vert"))
             $pendingHlsl = "$outputBase.pending-hlsl"
             $reflection = & $Tint $source.FullName `
                 --entry-point $entryPoint `
@@ -588,7 +614,7 @@ foreach ($shaderDirectory in $shaderDirectories) {
             $undeclared = @(
                 $actualBindings | Where-Object { $expectedBindings -notcontains $_ }
             )
-            if ((-not $isPinnedVariant) -and $undeclared.Count -gt 0) {
+            if ((-not $isPinnedComposed) -and $undeclared.Count -gt 0) {
                 throw (
                     "Tint reports binding(s) $($undeclared -join ', ') that " +
                     "$($source.FullName) does not declare."
@@ -601,6 +627,9 @@ foreach ($shaderDirectory in $shaderDirectories) {
             # SDL-facing artifact from a source whose gp block is demoted to
             # a read-only storage buffer. Dawn keeps the pin's uniform
             # declaration in the `.native.wgsl` it consumes.
+            # Only the material variants reach five: a post-process stage
+            # carries one uniform block, and this repository's own shaders are
+            # laid out against the cap.
             $sdlSource = $source.FullName
             if ($isPinnedVariant) {
                 $uniformCount = Get-HlslUniformBufferCount $pendingHlsl
@@ -626,7 +655,7 @@ foreach ($shaderDirectory in $shaderDirectories) {
                     }
                 }
             }
-            if ($isPinnedVariant) {
+            if ($isPinnedComposed) {
                 Remap-PinnedVariantRegisters `
                     $pendingHlsl `
                     $outputBase.EndsWith(".vert")
@@ -649,15 +678,12 @@ foreach ($shaderDirectory in $shaderDirectories) {
         $profile = if ($source.Name.EndsWith(".vert.hlsl")) { "vs_6_0" } else { "ps_6_0" }
         $outputBase = $source.FullName.Substring(0, $source.FullName.Length - ".hlsl".Length)
         $nativeWgsl = "$outputBase.native.wgsl"
-        # A pinned composed variant keeps Babylon Lite's own `main` entry point
-        # in the HLSL Tint emits, like a hand-authored .hlsl without a native
-        # WGSL beside it; only shaders this repository specializes carry the
-        # mainVertex/mainFragment convention.
-        $entryPoint = if (
-            (Test-Path $nativeWgsl) -and
-            (-not $source.Name.StartsWith("variant-"))
-        ) {
-            if ($profile -eq "vs_6_0") { "mainVertex" } else { "mainFragment" }
+        # A hand-authored .hlsl with no native WGSL beside it is Babylon
+        # Lite's own text carried verbatim, so it keeps `main` like a composed
+        # variant does; everything else answers to the same convention as the
+        # Tint path above.
+        $entryPoint = if (Test-Path $nativeWgsl) {
+            Get-ShaderEntryPoint $source.Name ($profile -eq "vs_6_0")
         } else {
             "main"
         }

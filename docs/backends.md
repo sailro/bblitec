@@ -331,13 +331,15 @@ afterwards). Only the GPU API layer differs:
   question the moment a stage's contents depend on scene code — a custom
   sprite fragment declares its layer block and its `fx` block, and which
   of them survives is the caller's WGSL to decide. A stage whose emitted HLSL exceeds
-  SDL_GPU's four uniform buffers — the composed Standard geometry
-  fragments spend all four on scene, lights, mesh and mat before the
-  tasks' `gp` block — is recompiled with `gp` demoted to a read-only
-  storage buffer (an `r` row in the sidecar; the SDL PAL binds the
-  task's params buffer against it), while Dawn keeps the pin's uniform
-  declaration in the `.native.wgsl` it consumes. The PAL binds by that
-  file, never by
+  SDL_GPU's four uniform buffers — a composed geometry fragment of
+  either family spends all four on scene, lights, mesh and mat before
+  the tasks' `gp` block, which a second light is enough to reach — is
+  recompiled with `gp` demoted to a read-only storage buffer (an `r`
+  row in the sidecar; the SDL PAL binds the task's params buffer
+  against it and declares it in the stage's root signature, or D3D12
+  refuses the pipeline for an SRV range it does not bind), while Dawn
+  keeps the pin's uniform declaration in the `.native.wgsl` it
+  consumes. The PAL binds by that file, never by
   the WGSL: a stage can declare a block it never reads — the unlit
   fragment declares its mesh block for `mli()`, and a custom sprite body
   that owns its own alpha reads neither block it is offered — and Tint
@@ -371,7 +373,8 @@ afterwards). Only the GPU API layer differs:
   variants under the pin's reverse-Z contract (reverse matrix, GREATER,
   zero depth clear, the gpUniforms block per task — demoted to a
   fragment storage buffer on SDL_GPU where a fifth uniform block would
-  exceed the stage cap); copy tasks either resolve in an empty pass or run the
+  exceed the stage cap, and stored rather than discarded when a later
+  render task borrows the task's depth); copy tasks either resolve in an empty pass or run the
   generated fullscreen blit with the integer `resolve_copy_viewport`
   viewport+scissor, and a swapchain copy records its source as the
   capture texture. Sampled depth attachments copy into an r32float

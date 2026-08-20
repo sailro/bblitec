@@ -630,6 +630,42 @@ shaders. Reports
 join those IDs to glTF nodes, meshes, materials, alpha mode, and double-sided
 state.
 
+**A post-process pass draws the module the pin composed, and reads the
+parameters the pin's own writer places.** Every effect Babylon Lite ships is
+one `createPostProcessTask` differing only in a `_shader` record, so the
+factory is *executed* at generation against a descriptor-only render target
+and the pin's own `getShaderModule` concatenates the module that deploys —
+byte-identical to the one an instrumented capture shows the browser
+compiling for Scenes 142 and 143. Executing rather than folding is the
+blur's doing: its kernel decides how many taps the vertex stage carries, and
+each tap's offset and weight is a Gaussian evaluated in doubles and printed
+through the pin's own `toFixed(7)`, so folding would mean restating an
+integration, a rounding rule and a formatter. The uniform half is lowered
+instead, from each effect's own `writeUniforms` body, because its values
+depend on the real attachments — the blur's delta is the direction over the
+output extent, the chromatic aberration's screen size is the source's — and
+because the pin's split between mutating a parameter and uploading the block
+is what `updateUniforms` means. Two rules the emitted pass takes from the
+pin rather than from its siblings: the pipeline's sample count is the
+*output target's*, and the normalized viewport rounds its far edges up where
+a copy task's rounds them down.
+
+**A depth attachment another task owns is loaded, not cleared.** The pin's
+geometry renderer publishes its depth as an eager wrapper target, and
+`createRenderTask`'s `const loadOp = (config.depth ? depthSrc._eager : ...)`
+turns that eagerness into a load: the borrowing task neither builds nor
+disposes the attachment, and the task that wrote it stores rather than
+discards it. Scene 147 reaches it, sharing one depth buffer between the
+geometry pass that produces its normalized view depth and the colour pass
+whose result the circle of confusion ignores.
+
+`attachControl` and `attachFreeControl` register input on the camera they
+are handed and make no camera the scene's, which is what lets Scene 142
+render its right eye through the scene camera and its left through a render
+task's own. A task with its own camera carries its own copy of the pin's
+per-pass scene block; a second camera moves the view-projection and the eye
+position and no other value in it.
+
 Scenes 145 and 146 gate the separate production geometry-renderer path: all
 eleven geometry texture types, split 7+4 MRT passes, optional real color,
 independent depth, viewport copies, and MSAA resolve.

@@ -361,13 +361,6 @@ export class GeometryOutputLowerer {
 
 namespace bbl::upstream {
 
-struct PixelViewport {
-    std::int32_t x = 0;
-    std::int32_t y = 0;
-    std::int32_t width = 0;
-    std::int32_t height = 0;
-};
-
 PixelViewport resolve_copy_viewport(
     const NormalizedViewport& viewport,
     std::uint32_t target_width,
@@ -570,6 +563,13 @@ RenderTextureRef geometry_task_texture(
     result.source = RenderTextureSource::geometry;
     result.task = task;
     result.geometry_type = type;
+    return result;
+}
+
+RenderTextureRef geometry_task_depth_texture(TaskHandle task) {
+    RenderTextureRef result;
+    result.source = RenderTextureSource::geometry_depth;
+    result.task = task;
     return result;
 }
 

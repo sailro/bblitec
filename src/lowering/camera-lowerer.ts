@@ -1113,23 +1113,23 @@ void apply_free_camera_inertia(CameraRecord& camera);
 
 namespace bbl {
 
-void attach_control(Engine& engine, CameraHandle camera, Scene& scene) {
-    if (camera.value >= engine.cameras.size()) throw std::runtime_error("Invalid camera handle.");
-    engine.cameras[camera.value].controls_enabled = true;
-    scene.camera = camera;
-}
-
-void attach_free_control(
-    Engine& engine,
-    CameraHandle camera,
-    Scene& scene) {
+// Both attach hooks register input on the camera they are handed and
+// nothing else: the pinned attachControl/attachFreeControl install canvas
+// listeners and push an inertia hook onto scene._beforeRender, and neither
+// makes their camera the scene's. A scene that attaches controls to a
+// second camera -- an anaglyph's left eye -- renders through the camera it
+// assigned, which is what the pin does.
+void attach_control(Engine& engine, CameraHandle camera) {
     if (camera.value >= engine.cameras.size()) {
         throw std::runtime_error("Invalid camera handle.");
     }
-    CameraRecord& record = engine.cameras[camera.value];
-    record.kind = CameraKind::free;
-    record.controls_enabled = true;
-    scene.camera = camera;
+    engine.cameras[camera.value].controls_enabled = true;
+}
+
+// The free-camera entry point is a separate pinned symbol reaching a separate
+// input handler, and the same one line of runtime state.
+void attach_free_control(Engine& engine, CameraHandle camera) {
+    attach_control(engine, camera);
 }
 
 } // namespace bbl

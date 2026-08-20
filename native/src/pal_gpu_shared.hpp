@@ -53,6 +53,30 @@
 namespace bbl::pal {
 
 /**
+ * Whether another task binds this geometry task's depth.
+ *
+ * The pin hands that depth over as an eager wrapper target, so the borrowing
+ * pass loads it — which only works if the task that wrote it stored it. The
+ * answer belongs to the frame graph, so it is settled once with the task's
+ * textures rather than re-scanned per frame.
+ */
+inline bool geometry_depth_is_borrowed(
+    const Engine& engine,
+    std::size_t task) {
+    for (const FrameTaskRecord& record : engine.frame_tasks) {
+        if (
+            record.kind == FrameTaskKind::render &&
+            record.render.depth.source ==
+                RenderTextureSource::geometry_depth &&
+            record.render.depth.task.value == task) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+/**
  * The pin's `gpUniforms` block, declared by a geometry-output variant whose
  * attachments include NORMALIZED_VIEW_DEPTH or LINEAR_VELOCITY
  * (`pbr-geometry-output-shader.ts` createPbrGeometryParamsFragment):
@@ -1867,21 +1891,9 @@ inline float geometry_clear_component(GeometryTextureType type) {
  * accumulates alpha at one; the pinned background ground rides one over
  * one-minus-src-alpha on both lanes. The operation is always add. Every
  * blending pipeline in either backend translates one of these instances
- * to its API's enums.
+ * to its API's enums; `BlendFactors` itself lives in the runtime records,
+ * because generated code names it too.
  */
-enum class BlendFactor {
-    one,
-    src_alpha,
-    one_minus_src_alpha,
-};
-
-struct BlendFactors {
-    BlendFactor src_color;
-    BlendFactor dst_color;
-    BlendFactor src_alpha;
-    BlendFactor dst_alpha;
-};
-
 inline constexpr BlendFactors transparent_blend{
     BlendFactor::src_alpha,
     BlendFactor::one_minus_src_alpha,
