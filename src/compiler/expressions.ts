@@ -5,9 +5,10 @@
 // the module that owns it -- data paths and constructors to the data
 // lowerer, local classes to the class lowerer, property reads to the
 // compiler's property path, and calls to `compileCall`, whose order
-// (immediate promises, math and data methods, record and class
-// methods, bound callbacks, registered intrinsics, native functions,
-// user functions) is the resolution order a call site observes.
+// (immediate promises, math and data methods, scene collection pushes,
+// record and class methods, bound callbacks, registered intrinsics,
+// native functions, user functions) is the resolution order a call site
+// observes.
 import ts from "typescript";
 import type { ClassLowerer } from "./classes.js";
 import type { DataLowerer } from "./data-lowering.js";
@@ -18,7 +19,7 @@ import {
 } from "./promises.js";
 import type { StaticEvaluator } from "./static-evaluator.js";
 import type { CompilerSymbols } from "./symbols.js";
-import type { Value } from "./types.js";
+import type { Value, ValueKind } from "./types.js";
 import type {
     UserFunctionContext,
     UserFunctionLowerer,
@@ -37,6 +38,13 @@ export interface ExpressionContext
         Map<ts.Symbol, { name: string; value: Value }>
     >;
     unwrap(expression: ts.Expression): ts.Expression;
+    expectArgumentCount(
+        call: ts.CallExpression,
+        minimum: number,
+        maximum: number,
+    ): void;
+    expectKind(value: Value, kind: ValueKind, node: ts.Node): void;
+    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     activeThis(): Value | undefined;
     lookup(identifier: ts.Identifier): Value;
     lookupOptional(
@@ -545,19 +553,10 @@ export class ExpressionLowerer {
             callee.expression.expression,
         );
         if (scene.kind !== "scene") return undefined;
-        if (call.arguments.length !== 1) {
-            this.context.fail(
-                call,
-                "Reached scene light list push takes one light.",
-            );
-        }
+        this.context.expectArgumentCount(call, 1, 1);
         const light = this.context.compileValue(call.arguments[0]!);
-        if (light.kind !== "light") {
-            this.context.fail(
-                call.arguments[0]!,
-                `Expected light, received ${light.kind}.`,
-            );
-        }
+        this.context.expectKind(light, "light", call.arguments[0]!);
+        this.context.expectSameEngine(scene, light, call);
         return {
             kind: "void",
             cpp: `bbl::add_to_scene(${scene.cpp}, ${light.cpp})`,
@@ -586,12 +585,12 @@ export class ExpressionLowerer {
             if (method) {
                 return method;
             }
-            const sceneCollection = this.compileSceneLightPush(
+            const lightPush = this.compileSceneLightPush(
                 call,
                 callee,
             );
-            if (sceneCollection) {
-                return sceneCollection;
+            if (lightPush) {
+                return lightPush;
             }
             // A method on a constructed instance inlines with `this`
             // bound to that instance's field record.

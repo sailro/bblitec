@@ -412,7 +412,7 @@ struct GpuGeometryTask {
     bool depth_borrowed = false;
 };
 
-#if BBLITE_PINNED_MATERIAL_VARIANTS
+#if BBLITE_PINNED_MATERIALS
 /** A texture and its sampler, resolved from the pin's own name for a binding. */
 struct PinnedResource {
     SDL_GPUTexture* texture = nullptr;
@@ -594,6 +594,33 @@ bool append_variant_attribute(
 }
 #endif
 
+#if BBLITE_PINNED_MATERIALS
+/**
+ * The scene-owned pair one slot source names, or an empty pair.
+ *
+ * A source outside the mesh's own slots is served by something this backend
+ * holds for the whole scene, and every composed family -- PBR, Standard and
+ * node alike -- wants the same answer, so the pairing is stated once here
+ * rather than per family.
+ */
+PinnedResource state_resource_for(
+    const GpuState& state,
+    upstream::MaterialTextureSource source) {
+    switch (source) {
+        case upstream::MaterialTextureSource::environment_cube:
+            return {state.environment, state.sampler};
+        case upstream::MaterialTextureSource::brdf_lut:
+            return {state.brdf_lut, state.background_sampler};
+        case upstream::MaterialTextureSource::scene_color:
+            // The pin's transmission grab: the 1024x1024 mip-chained scene
+            // colour copied out mid-pass, sampled trilinear-anisotropic.
+            return {state.transmission_color, state.transmission_sampler};
+        default:
+            return {};
+    }
+}
+#endif
+
 #if BBLITE_PBR_VARIANTS > 0
 /**
  * Which of our resources the pin's own name for a binding refers to.
@@ -619,24 +646,17 @@ PinnedResource pinned_resource_for(
                 return {mesh.*members.texture, mesh.*members.sampler};
             }
         } else {
-            switch (slot->source) {
-                case upstream::MaterialTextureSource::environment_cube:
-                    return {state.environment, state.sampler};
-                case upstream::MaterialTextureSource::brdf_lut:
-                    return {state.brdf_lut, state.background_sampler};
-                case upstream::MaterialTextureSource::scene_color:
-                    // The pin's transmission grab: the 1024x1024
-                    // mip-chained scene colour copied out mid-pass,
-                    // sampled trilinear-anisotropic.
-                    return {
-                        state.transmission_color,
-                        state.transmission_sampler};
-                case upstream::MaterialTextureSource::bone_palette:
-                    return {
-                        mesh.pinned_bone_texture,
-                        state.pinned_bone_sampler};
-                default:
-                    break;
+            const PinnedResource resource =
+                state_resource_for(state, slot->source);
+            if (resource.texture != nullptr) return resource;
+            if (
+                slot->source ==
+                upstream::MaterialTextureSource::bone_palette) {
+                // The texture is the mesh's; only the sampler is the
+                // scene's, so this one row cannot join the resolver above.
+                return {
+                    mesh.pinned_bone_texture,
+                    state.pinned_bone_sampler};
             }
         }
     }
@@ -1068,27 +1088,18 @@ void draw_pinned_variant(
         resolve);
     const PinnedStageSlots& pinned_fragment =
         state.pinned_fragment_slots[pinned_variant];
-    std::vector<SDL_GPUTextureSamplerBinding>
-        pinned_textures;
-    pinned_textures.reserve(
-        pinned_fragment.textures.size());
-    for (const std::string& name :
-         pinned_fragment.textures) {
-        const PinnedResource resource =
-            pinned_resource_for(state, mesh, name);
-        pinned_textures.push_back(
-            SDL_GPUTextureSamplerBinding{
+    bind_stage_textures(
+        pass,
+        pinned_fragment,
+        true,
+        [&](const std::string& name) {
+            const PinnedResource resource =
+                pinned_resource_for(state, mesh, name);
+            return SDL_GPUTextureSamplerBinding{
                 resource.texture,
                 resource.sampler,
-            });
-    }
-    if (!pinned_textures.empty()) {
-        SDL_BindGPUFragmentSamplers(
-            pass,
-            0,
-            pinned_textures.data(),
-            static_cast<Uint32>(pinned_textures.size()));
-    }
+            };
+        });
     bind_stage_storage(
         pass,
         pinned_fragment,
@@ -1118,27 +1129,18 @@ void draw_pinned_variant(
 #endif
             return nullptr;
         });
-    if (!pinned_vertex.textures.empty()) {
-        std::vector<SDL_GPUTextureSamplerBinding>
-            vertex_textures;
-        vertex_textures.reserve(
-            pinned_vertex.textures.size());
-        for (const std::string& name :
-             pinned_vertex.textures) {
+    bind_stage_textures(
+        pass,
+        pinned_vertex,
+        false,
+        [&](const std::string& name) {
             const PinnedResource resource =
                 pinned_resource_for(state, mesh, name);
-            vertex_textures.push_back(
-                SDL_GPUTextureSamplerBinding{
-                    resource.texture,
-                    resource.sampler,
-                });
-        }
-        SDL_BindGPUVertexSamplers(
-            pass,
-            0,
-            vertex_textures.data(),
-            static_cast<Uint32>(vertex_textures.size()));
-    }
+            return SDL_GPUTextureSamplerBinding{
+                resource.texture,
+                resource.sampler,
+            };
+        });
     const SDL_GPUBufferBinding pinned_vertex_binding{
         // Skinned and palette-world draws read the
         // mirrored buffer; the palette carries the mirror
@@ -1312,10 +1314,9 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
  * Draws one node command through the graph's own compiled stages.
  *
  * The blocks are pushed by the names the register remap published beside
- * each stage: the pin's `scene` in group 0, its `meshU` and the graph's
- * `nodeU` in group 1. A graph reaching the lights block refuses at
- * generation, so no stage here declares one and the resolver has no arm for
- * it — the `else` names whatever a future one declares.
+ * each stage: the pin's `scene` and `nmeLights` in group 0, its `meshU` and
+ * the graph's `nodeU` in group 1. A name the resolver cannot map pushes
+ * nothing and fails loudly rather than pushing a neighbour's bytes.
  */
 void draw_node_variant(
     GpuState& state,
@@ -1342,17 +1343,19 @@ void draw_node_variant(
     const upstream::NodeMeshUniforms node_mesh =
         node_mesh_block(scene, engine, draw.item.mesh.value);
     // The pin's own lights array, at the group-0 slot every composed family
-    // shares. Built only for a graph that declares it, since the walk and the
-    // block are pure cost for one that does not.
-    const std::vector<std::uint8_t> pinned_lights = entry.uses_lights
-        ? pinned_lights_block(scene, engine)
-        : std::vector<std::uint8_t>{};
+    // shares. Filled on the first name that asks for it: the sidecar is what
+    // says whether this graph kept the block, and the walk and the block are
+    // pure cost for one that did not.
+    std::vector<std::uint8_t> pinned_lights;
     const auto resolve = [&](
                              const std::string& block) -> PinnedStageBlock {
         if (block == "scene") {
             return {&pinned_scene, sizeof(pinned_scene)};
         }
         if (block == "nmeLights") {
+            if (pinned_lights.empty()) {
+                pinned_lights = pinned_lights_block(scene, engine);
+            }
             return {pinned_lights.data(), pinned_lights.size()};
         }
         if (block == "meshU") return {&node_mesh, sizeof(node_mesh)};
@@ -1377,32 +1380,28 @@ void draw_node_variant(
         true,
         "node variant",
         resolve);
-    // The environment pair, by the pin's own names. The slot order is the
-    // sidecar's, which is what the compaction pass published.
-    const PinnedStageSlots& fragment_slots = state.node_fragment_slots[variant];
-    std::vector<SDL_GPUTextureSamplerBinding> fragment_textures;
-    fragment_textures.reserve(fragment_slots.textures.size());
-    for (const std::string& name : fragment_slots.textures) {
-        if (name == "nmeIblTexture") {
-            fragment_textures.push_back({state.environment, state.sampler});
-            continue;
-        }
-        if (name == "nmeBrdfLUT") {
-            fragment_textures.push_back(
-                {state.brdf_lut, state.background_sampler});
-            continue;
-        }
-        gpu_error(
-            ("node variant declares an unmapped resource '" + name + "'.")
-                .c_str());
-    }
-    if (!fragment_textures.empty()) {
-        SDL_BindGPUFragmentSamplers(
-            pass,
-            0,
-            fragment_textures.data(),
-            static_cast<Uint32>(fragment_textures.size()));
-    }
+    // The graph's own names carry no slot the table knows, so they join it
+    // through the source `node_binding_resources` declares -- and the pair
+    // that source names is the one every other family already resolves.
+    bind_stage_textures(
+        pass,
+        state.node_fragment_slots[variant],
+        true,
+        [&](const std::string& name) {
+            const PinnedResource resource = state_resource_for(
+                state,
+                upstream::node_binding_source(name));
+            if (resource.texture == nullptr) {
+                gpu_error(
+                    ("node variant declares an unmapped resource '" + name +
+                     "'.")
+                        .c_str());
+            }
+            return SDL_GPUTextureSamplerBinding{
+                resource.texture,
+                resource.sampler,
+            };
+        });
     const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
     SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
     const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
@@ -1746,28 +1745,22 @@ void draw_standard_variant(
         resolve);
     const PinnedStageSlots& fragment_slots =
         state.standard_fragment_slots[variant];
-    std::vector<SDL_GPUTextureSamplerBinding> fragment_textures;
-    fragment_textures.reserve(fragment_slots.textures.size());
-    for (const std::string& name : fragment_slots.textures) {
-        const PinnedResource resource = standard_resource_for(
-            state,
-            mesh,
-            material,
-            emissive_render_texture,
-            name);
-        fragment_textures.push_back(
-            SDL_GPUTextureSamplerBinding{
+    bind_stage_textures(
+        pass,
+        fragment_slots,
+        true,
+        [&](const std::string& name) {
+            const PinnedResource resource = standard_resource_for(
+                state,
+                mesh,
+                material,
+                emissive_render_texture,
+                name);
+            return SDL_GPUTextureSamplerBinding{
                 resource.texture,
                 resource.sampler,
-            });
-    }
-    if (!fragment_textures.empty()) {
-        SDL_BindGPUFragmentSamplers(
-            pass,
-            0,
-            fragment_textures.data(),
-            static_cast<Uint32>(fragment_textures.size()));
-    }
+            };
+        });
     // The gp block the shader compile demoted out of the uniform slots:
     // SDL_GPU caps those at four per stage and a geometry fragment spends all
     // four on scene, lights, mesh and mat.

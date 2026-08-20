@@ -377,10 +377,11 @@ class GeneratedSourceWriter {
 // is reached by their disjunction rather than by any one of them.
 #define BBLITE_PINNED_MATERIALS (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 || BBLITE_NODE_VARIANTS > 0)
 
-// The two material families alone: the thin-instance arm, the reverse-Z
-// geometry contract and the material texture resources. A node graph binds
-// the frame state above and none of this, so the two are separate questions
-// and a reader can tell which one an #if is asking.
+// The two material families alone: the thin-instance arm and the geometry
+// contract. A node graph binds the frame state above and resolves its
+// textures through the same scene-owned pairs, but reaches none of this, so
+// the two are separate questions and a reader can tell which one an #if is
+// asking.
 #define BBLITE_PINNED_MATERIAL_VARIANTS (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0)
 `,
         );

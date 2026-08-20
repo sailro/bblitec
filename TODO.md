@@ -387,6 +387,26 @@ that does to the deferred lane by default.
   camera stands inside, and `FragDepthBlock` above. Every measured scene has
   to be re-measured cell by cell, because the change moves where depth
   precision lands rather than only which comparison runs.
+- [ ] Build the node group-1 layout from the reflected binding table rather
+  than by hand. `variantBindings` (src/pinned-pbr-variant-cpp.ts) already
+  yields `{binding, name, kind, vertex, fragment}` rows from composed WGSL,
+  and both `pinned_draw_layout_for` and `standard_draw_layout_for` are one
+  generic walk over it with a `kind` switch; `node_draw_layout_for` is the
+  only composed family still choosing `viewDimension` and `sampler.type` in
+  C++. Two frictions to settle first: the reflector drops bindings 0 and 1 by
+  the PBR mesh/material convention while a node `nodeU` sits at binding 1, and
+  a node module is one text deployed to both stages, so a reflected row would
+  widen the env pair's visibility from fragment-only to vertex|fragment. Until
+  then each node capability served adds another hand-written block.
+
+- [ ] Build the pinned lights block once per frame rather than once per draw.
+  `pinned_lights_block` value-initializes 16 `LightEntry` (1 KB) and copies it
+  into a second vector on every call; SDL_GPU calls it from all three composed
+  draw paths, where the bytes are identical for every draw in a frame. Dawn
+  already treats it as per-frame state in `write_pinned_frame_blocks`. The
+  push has to stay per draw, but the build does not. One hoist covering all
+  three families, not a per-family change.
+
 - [ ] Scenes 62, 81, 83: resolve the module-level texture-URL constants
   (`SCENE62_TEXTURE_URL` and siblings).
 - [ ] Scenes 66, 72, 214, 215, 271: support `receiveShadows`.

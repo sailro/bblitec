@@ -13,8 +13,81 @@
  * `node-pipeline.ts` is what wrote it.
  */
 import { floatLiteral, stringLiteral } from "./cpp-literals.js";
-import { mirroredStructFromWgsl } from "./pinned-pbr-variant-cpp.js";
+import {
+    mirroredStructFromWgsl,
+    variantBindings,
+} from "./pinned-pbr-variant-cpp.js";
 import type { ComposedNodeMaterial } from "./pinned-node-material.js";
+
+/**
+ * One environment resource a composed stage names, joined onto the source the
+ * generated slot table already knows it by.
+ *
+ * The pin decides which binding is which role (`node-env.ts` `emitEnv`), the
+ * composed text decides what that binding is called, and the slot table
+ * decides which of our textures the role denotes. Each fact comes from its
+ * own owner and they are joined here, so no PAL restates any of them.
+ */
+interface EnvResource {
+    textureName: string;
+    samplerName: string;
+    source: string;
+}
+
+/**
+ * The pin's four env bindings, by the role `emitEnv` allocates each for and
+ * the `material_texture_slots` source that role denotes.
+ */
+const envResourceRoles = [
+    {
+        texture: "iblTexture",
+        sampler: "iblSampler",
+        source: "environment_cube",
+    },
+    { texture: "brdfLut", sampler: "brdfSampler", source: "brdf_lut" },
+] as const;
+
+/**
+ * Records the names this graph gives the env bindings the pin allocated.
+ *
+ * The names are the pin's and identical across graphs, so a second graph
+ * naming a binding differently is a pin change this fails on rather than
+ * publishing two rows a PAL would resolve by whichever it found first.
+ */
+function collectEnvResources(
+    composed: ComposedNodeMaterial,
+    into: Map<string, EnvResource>,
+): void {
+    const env = composed.envBindings;
+    if (!env) return;
+    const names = new Map(
+        variantBindings(composed.wgsl, composed.wgsl).map(
+            (binding) => [binding.binding, binding.name] as const,
+        ),
+    );
+    for (const role of envResourceRoles) {
+        const textureName = names.get(env[role.texture]);
+        const samplerName = names.get(env[role.sampler]);
+        if (textureName === undefined || samplerName === undefined) {
+            throw new Error(
+                `Node graph declares no name at the env binding the pin ` +
+                    `allocated for ${role.texture}.`,
+            );
+        }
+        const found = into.get(role.source);
+        if (
+            found &&
+            (found.textureName !== textureName ||
+                found.samplerName !== samplerName)
+        ) {
+            throw new Error(
+                `Node graphs name the ${role.source} pair differently ` +
+                    `('${found.textureName}' and '${textureName}').`,
+            );
+        }
+        into.set(role.source, { textureName, samplerName, source: role.source });
+    }
+}
 
 /** One composed graph, plus the stem its two stages deploy under. */
 export interface NodeVariantManifestEntry {
@@ -70,6 +143,7 @@ export function pinnedNodeVariantsHeader(
     const attributeRows: string[] = [];
     const uniformFloats: number[] = [];
     const entries: string[] = [];
+    const envResources = new Map<string, EnvResource>();
     for (const variant of variants) {
         const firstAttribute = attributeRows.length;
         for (const attribute of variant.composed.attributes) {
@@ -80,6 +154,10 @@ export function pinnedNodeVariantsHeader(
         const firstFloat = uniformFloats.length;
         uniformFloats.push(...variant.composed.uboFloats);
         const env = variant.composed.envBindings;
+        const envRow = env
+            ? `{true, ${env.iblTexture}, ${env.iblSampler}, ` +
+                `${env.brdfLut}, ${env.brdfSampler}}`
+            : "{false, 0, 0, 0, 0}";
         entries.push(
             `    {${stringLiteral(variant.vertexStem)}, ` +
                 `${stringLiteral(variant.fragmentStem)}, ` +
@@ -91,12 +169,16 @@ export function pinnedNodeVariantsHeader(
                         : variant.composed.uboBinding
                 }, ` +
                 `${variant.composed.uboBytes}, ${firstFloat}, ` +
-                `${variant.composed.usesLights}, ` +
-                `{${env ? "true" : "false"}, ${env?.iblTexture ?? 0}, ` +
-                `${env?.iblSampler ?? 0}, ${env?.brdfLut ?? 0}, ` +
-                `${env?.brdfSampler ?? 0}}},`,
+                `${envRow}},`,
         );
+        collectEnvResources(variant.composed, envResources);
     }
+    const envRows = [...envResources.values()].map(
+        (resource) =>
+            `    {${stringLiteral(resource.textureName)}, ` +
+            `${stringLiteral(resource.samplerName)}, ` +
+            `MaterialTextureSource::${resource.source}},`,
+    );
     return `#pragma once
 
 // ${provenance}
@@ -106,6 +188,8 @@ export function pinnedNodeVariantsHeader(
 #include <cstdint>
 #include <limits>
 #include <string_view>
+
+#include <bblite/upstream/material_texture_slots.hpp>
 
 namespace bbl::upstream {
 
@@ -142,6 +226,27 @@ struct NodeVariantEnvBindings {
     std::uint32_t brdf_sampler;
 };
 
+/**
+ * Which of our resources one env name denotes, by the slot table's source.
+ *
+ * The graph's names are the pin's own, so they do not match the PBR binding
+ * names the slot rows carry and cannot be resolved by name -- the declared
+ * \`source\` is the join key, exactly as it is for the Standard family's
+ * \`standard_binding_resources\`. Resolving through it means which texture
+ * serves a pinned name is decided once, in one table, for both backends.
+ */
+struct NodeBindingResource {
+    std::string_view texture_name;
+    std::string_view sampler_name;
+    MaterialTextureSource source;
+};
+
+inline constexpr std::array<
+    NodeBindingResource,
+    ${envRows.length}> node_binding_resources{{
+${envRows.join("\n") || "    // No reached graph declares one."}
+}};
+
 struct NodeVariantEntry {
     /** The deployed stem of each stage; both name one module. */
     std::string_view vertex_stem;
@@ -156,8 +261,6 @@ struct NodeVariantEntry {
     std::size_t ubo_bytes;
     /** Where this graph's block starts in the float table below. */
     std::size_t first_uniform_float;
-    /** Whether the graph reads the scene lights at group 0 binding 1. */
-    bool uses_lights;
     NodeVariantEnvBindings env;
 };
 
@@ -166,6 +269,20 @@ inline constexpr std::array<
     ${variants.length}> node_variants{{
 ${entries.join("\n")}
 }};
+
+/** The slot source one composed name denotes, or \`no_node_binding_source\`. */
+inline constexpr MaterialTextureSource no_node_binding_source =
+    static_cast<MaterialTextureSource>(-1);
+
+inline constexpr MaterialTextureSource node_binding_source(
+    std::string_view name) {
+    for (const NodeBindingResource& row : node_binding_resources) {
+        if (name == row.texture_name || name == row.sampler_name) {
+            return row.source;
+        }
+    }
+    return no_node_binding_source;
+}
 
 /** Whether a graph declares a uniform block at all. The binding and the byte
  *  count answer it together, so one predicate reads both. */

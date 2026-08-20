@@ -66,12 +66,6 @@ export interface ComposedNodeMaterial {
     attributes: readonly ComposedNodeAttribute[];
     /** `backFaceCulling` as the graph's JSON declares it. */
     backFaceCulling: boolean;
-    /**
-     * Whether the graph reads the scene's lights. The buffer is the one every
-     * composed family shares at group 0 binding 1, so this decides only
-     * whether a stage declares it — the block itself is already bound.
-     */
-    usesLights: boolean;
     /** The environment bindings, or null when the graph reaches none. */
     envBindings: ComposedNodeEnvBindings | null;
 }
@@ -275,7 +269,6 @@ export async function composeNodeMaterial(
         uboFloats,
         attributes,
         backFaceCulling: material._graph.backFaceCulling,
-        usesLights: material._state["usesLightsUbo"] === true,
         envBindings: env
             ? {
                 iblTexture: env._iblTexture,
