@@ -16,6 +16,90 @@ interface PositionalLightDefaults {
 export class LightLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
+    /**
+     * The `set_<kind>_light_<vector>` entry points for one light kind.
+     *
+     * A vector is an `ObservableVec3` upstream, so a write does two things:
+     * it moves the field and it marks the light's local matrix dirty, which
+     * the next read rebuilds. Each emitted setter is that pair, and it lives
+     * in its own kind's translation unit so a scene reaching no light of a
+     * kind links none of them.
+     *
+     * `vectors` is checked against the pinned factory's own object literal
+     * before it is emitted, so a kind that stopped declaring one of them
+     * fails generation instead of emitting a setter for a field the pin no
+     * longer observes.
+     */
+    private lightVectorSetters(
+        modulePath: string,
+        symbolName: string,
+        kind: string,
+        vectors: readonly string[],
+    ): string {
+        const declared = this.observableVectors(modulePath, symbolName);
+        for (const vector of vectors) {
+            if (!declared.includes(vector)) {
+                this.context.contractError(
+                    this.context.functionDeclaration(modulePath, symbolName)
+                        .declaration,
+                    `Expected the ${kind} light to observe '${vector}'.`,
+                );
+            }
+        }
+        return vectors
+            .map((vector) => `
+void set_${kind}_light_${vector}(
+    Engine& engine,
+    LightHandle light,
+    Vec3 ${vector}) {
+    LightRecord& record = engine.lights[light.value];
+    record.${vector} = ${vector};
+    refresh_${kind}_light_matrix(record);
+}
+`)
+            .join("");
+    }
+
+    /**
+     * The `ObservableVec3` properties a pinned light factory declares on the
+     * object it hands to `applyWorldMatrixAccessors` — which is the pin's own
+     * statement of the vectors that kind carries.
+     */
+    private observableVectors(
+        modulePath: string,
+        symbolName: string,
+    ): string[] {
+        const { declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        const lightObject = this.context.callObjectArgument(
+            declaration,
+            "applyWorldMatrixAccessors",
+        );
+        const observed: string[] = [];
+        for (const property of lightObject.properties) {
+            if (
+                !ts.isPropertyAssignment(property) ||
+                !ts.isIdentifier(property.name)
+            ) {
+                continue;
+            }
+            const initializer = this.context.unwrapExpression(
+                property.initializer,
+            );
+            if (
+                ts.isNewExpression(initializer) &&
+                this.context
+                    .propertyPath(initializer.expression)
+                    ?.join(".") === "ObservableVec3"
+            ) {
+                observed.push(property.name.text);
+            }
+        }
+        return observed;
+    }
+
     public lowerMatrix(): LoweredSource {
         const modulePath = "src/light/light-matrix.ts";
         const symbolName = "localMatrixFromDirection";
@@ -257,11 +341,11 @@ LightHandle create_point_light(
         );
         // The pinned factory builds the local matrix from the direction
         // AND the light's position property (the same call shape a spot
-        // uses); the emitted zeros are the pinned DEFAULT position
-        // (`new ObservableVec3(0, 0, 0, ...)`), extracted below so they
-        // stay the pin's own — the native record has no settable
-        // directional position, so a changed default could not be
-        // carried silently.
+        // uses). The pinned DEFAULT position (`new ObservableVec3(0, 0, 0,
+        // ...)`) is extracted below and stored on the record, because the
+        // record's position is settable: both the factory's rebuild and the
+        // setter's read the same field, so the default has to be the pin's
+        // there rather than a zero baked into one call.
         this.context.assertExpressionShape(
             this.context.callExpression(
                 declaration,
@@ -309,6 +393,25 @@ LightHandle create_point_light(
 
 namespace bbl {
 
+namespace {
+
+// The pinned local-matrix closure, which the factory runs once and every
+// ObservableVec3 write re-runs: the pin marks the matrix dirty on a set and
+// rebuilds it from the light's current direction and position on the next
+// read, so a setter that moved only the field would leave a stale matrix.
+void refresh_directional_light_matrix(LightRecord& light) {
+    upstream::local_matrix_from_direction(
+        light.direction.x,
+        light.direction.y,
+        light.direction.z,
+        light.position.x,
+        light.position.y,
+        light.position.z,
+        light.local_matrix);
+}
+
+} // namespace
+
 LightHandle create_directional_light(
     Engine& engine,
     Vec3 direction,
@@ -316,23 +419,22 @@ LightHandle create_directional_light(
     LightRecord light;
     light.kind = LightKind::directional;
     light.direction = direction;
+    // The pinned default position, from the factory's own ObservableVec3.
+    light.position = Vec3{
+        ${this.context.floatLiteral(defaultPosition[0]!)},
+        ${this.context.floatLiteral(defaultPosition[1]!)},
+        ${this.context.floatLiteral(defaultPosition[2]!)}};
     light.intensity = intensity;
     light.diffuse_color = ${this.context.cppColor3(defaults.diffuseColor)};
     light.specular_color = ${this.context.cppColor3(defaults.specularColor)};
     light.range = std::numeric_limits<float>::max();
-    upstream::local_matrix_from_direction(
-        direction.x,
-        direction.y,
-        direction.z,
-        ${this.context.floatLiteral(defaultPosition[0]!)},
-        ${this.context.floatLiteral(defaultPosition[1]!)},
-        ${this.context.floatLiteral(defaultPosition[2]!)},
-        light.local_matrix);
+    refresh_directional_light_matrix(light);
     engine.lights.push_back(light);
     return LightHandle{
         static_cast<std::uint32_t>(engine.lights.size() - 1)};
 }
 
+${this.lightVectorSetters(modulePath, symbolName, "directional", ["position"])}
 } // namespace bbl
 `,
         };
@@ -422,6 +524,24 @@ LightHandle create_directional_light(
 
 namespace bbl {
 
+namespace {
+
+// The pinned local-matrix closure, re-run on every ObservableVec3 write the
+// same way the directional one is: a spot carries both an orientation and a
+// position, so either setter rebuilds the whole matrix.
+void refresh_spot_light_matrix(LightRecord& light) {
+    upstream::local_matrix_from_direction(
+        light.direction.x,
+        light.direction.y,
+        light.direction.z,
+        light.position.x,
+        light.position.y,
+        light.position.z,
+        light.local_matrix);
+}
+
+} // namespace
+
 LightHandle create_spot_light(
     Engine& engine,
     Vec3 position,
@@ -439,19 +559,13 @@ LightHandle create_spot_light(
     light.diffuse_color = ${this.context.cppColor3(defaults.diffuseColor)};
     light.specular_color = ${this.context.cppColor3(defaults.specularColor)};
     light.range = std::numeric_limits<float>::max();
-    upstream::local_matrix_from_direction(
-        direction.x,
-        direction.y,
-        direction.z,
-        position.x,
-        position.y,
-        position.z,
-        light.local_matrix);
+    refresh_spot_light_matrix(light);
     engine.lights.push_back(light);
     return LightHandle{
         static_cast<std::uint32_t>(engine.lights.size() - 1)};
 }
 
+${this.lightVectorSetters(modulePath, symbolName, "spot", ["position", "direction"])}
 } // namespace bbl
 `,
         };

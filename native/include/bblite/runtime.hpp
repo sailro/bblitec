@@ -1459,6 +1459,15 @@ LightHandle create_spot_light(
     float angle,
     float exponent,
     float intensity = 1.0f);
+// A light's position and direction are ObservableVec3 upstream: writing one
+// marks the light's local matrix dirty, and the next read rebuilds it. These
+// entry points are that pair — the field write plus the rebuild — and each is
+// emitted beside its own kind's factory, so a scene reaching no light of a
+// kind links none of them. Only the vectors a reached scene writes are
+// lowered; the rest refuse at compile time (src/compiler/assignments.ts).
+void set_directional_light_position(Engine& engine, LightHandle light, Vec3 position);
+void set_spot_light_position(Engine& engine, LightHandle light, Vec3 position);
+void set_spot_light_direction(Engine& engine, LightHandle light, Vec3 direction);
 CameraHandle create_arc_rotate_camera(Engine& engine, double alpha, double beta, double radius, Vec3d target);
 CameraHandle create_free_camera(Engine& engine, Vec3d position, Vec3d target);
 CameraHandle create_default_camera(Engine& engine, Scene& scene);

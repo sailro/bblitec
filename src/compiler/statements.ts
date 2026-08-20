@@ -8,6 +8,7 @@ import type {
     Value,
     ValueKind,
 } from "./types.js";
+import { lightVectorSetter } from "./assignments.js";
 
 export interface StatementLoweringContext {
     emitDataAssignment(
@@ -1131,6 +1132,14 @@ export class StatementLowerer {
             );
             return true;
         }
+        if (target.kind === "light") {
+            return this.compileLightVectorSet(
+                context,
+                call,
+                owner,
+                target,
+            );
+        }
         if (target.kind !== "mesh") {
             return false;
         }
@@ -1183,6 +1192,61 @@ export class StatementLowerer {
         // mesh's transformed vertices only when this version moves.
         context.emit(
             `++${engine}.meshes[${target.cpp}.value].transform_version;`,
+        );
+        return true;
+    }
+
+    /**
+     * `light.position.set(x, y, z)` and `light.direction.set(...)`.
+     *
+     * Both vectors are `ObservableVec3` upstream, so a write does two
+     * things: it moves the field and it marks the light's local matrix
+     * dirty, which the next read rebuilds. The emitted entry point is
+     * that pair, lowered beside its own kind's factory from the pin's
+     * own local-matrix closure — the compiler names the kind because it
+     * already knows it, so a scene reaching no light of a kind links no
+     * setter for it.
+     *
+     * Which vectors a kind carries is `assignments.ts`'s table, beside the
+     * scalar and colour properties it already owns for the same four kinds;
+     * a vector no reached scene writes stays unlowered and fails by name
+     * rather than moving a record field nothing rebuilds from.
+     */
+    private compileLightVectorSet(
+        context: StatementLoweringContext,
+        call: ts.CallExpression,
+        owner: ts.PropertyAccessExpression,
+        target: Value,
+    ): boolean {
+        const property = owner.name.text;
+        if (property !== "position" && property !== "direction") {
+            return false;
+        }
+        if (!target.lightKind) {
+            // A light read out of the data model carries no static kind, and
+            // the entry point is named by it. Nothing reached asks for this,
+            // so it takes the generic unsupported-statement path rather than
+            // a message that would name the wrong cause.
+            return false;
+        }
+        const setter = lightVectorSetter(target, property);
+        if (!setter) {
+            context.fail(
+                call,
+                `A ${target.lightKind} light has no '${property}' to set.`,
+            );
+        }
+        const components = this.setCallComponents(
+            context,
+            call,
+            3,
+            `${property}.set`,
+        );
+        context.emit(
+            `bbl::${setter}(` +
+                `${context.requireEngine(target, call)}, ` +
+                `${target.cpp}, ` +
+                `bbl::Vec3{${components.join(", ")}});`,
         );
         return true;
     }

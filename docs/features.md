@@ -682,6 +682,10 @@ build error with a source location, not a silently different image.
 - direct `createMorphTargets` covers one target attached to one mesh
 - a spot light created in scene code carries its colors and intensity; its
   `angle`, `exponent`, and `range` setters fail explicitly
+- a directional light's `position` and a spot light's `position` and
+  `direction` are settable after creation through the pin's own
+  `ObservableVec3.set`, which rebuilds that kind's local matrix; the vectors
+  no reached scene writes stay unlowered and fail by name
 - scene fog is ported for PBR, Standard, and image-skybox surfaces; fog
   composed with Grid, custom-shader, environment-ground/DDS-skybox background,
   transmission, or geometry-output surfaces fails explicitly

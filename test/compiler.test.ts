@@ -126,6 +126,46 @@ test("enforces light subtype property contracts", () => {
     );
 });
 
+test("lowers a light vector set to its own kind's entry point", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createSpotLight,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const spot = createSpotLight([0, 0, 0], [0, 1, 0], 1.5, 10);
+            spot.position.set(1, 2, 3);
+            spot.direction.set(0, -1, 0);
+        }
+    `);
+    assert.match(
+        result.cpp,
+        /bbl::set_spot_light_position\([^;]*bbl::Vec3\{1\.0f, 2\.0f, 3\.0f\}\);/,
+    );
+    assert.match(result.cpp, /bbl::set_spot_light_direction\(/);
+    // A vector the kind carries upstream but no reached scene writes stays
+    // unlowered and refuses by name, the way the scalar table's unreached
+    // spot properties do.
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createPointLight,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const point = createPointLight([0, 1, 0]);
+                    point.position.set(1, 2, 3);
+                }
+            `),
+        /A point light has no 'position' to set\./,
+    );
+});
+
 test("preserves reached box, ground, and sphere options", () => {
     const result = compileSource(`
         import {
