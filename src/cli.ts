@@ -556,6 +556,7 @@ async function main(): Promise<void> {
         runtimeMeshFeatures,
         standardComposition,
         standardRenderableMeshFeatures,
+        nodeVariants,
     } = await composeScenePipeline({
         result,
         outputPath,
@@ -655,6 +656,7 @@ async function main(): Promise<void> {
         clearcoat: emittedArms.clearcoat,
         sheen: emittedArms.sheen,
         pinnedVariants,
+        ...(nodeVariants.length > 0 ? { nodeVariants } : {}),
         ...(standardComposition !== undefined
             ? {
                 pinnedStandardVariants: standardComposition.variants,

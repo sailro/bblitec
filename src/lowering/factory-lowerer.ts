@@ -1985,6 +1985,68 @@ void flush_thin_instances(Engine& engine, MeshHandle mesh) {
         };
     }
 
+    public lowerNodeMaterialFactory(): LoweredSource {
+        const modulePath = "src/material/node/node-material.ts";
+        const { declaration } = this.context.functionDeclaration(
+            modulePath,
+            "parseNodeMaterialFromSnippet",
+        );
+        // The record the pin returns. Everything on it except the family tag
+        // and the alpha-blending flag is compiled away — the WGSL, the UBO
+        // layout and the bindings are composition's output, and the `inputs`
+        // handles that would mutate the block are not lowered — so the two
+        // that survive are the two asserted here.
+        const material = this.context.objectInitializer(
+            declaration,
+            "material",
+        );
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(material, "_needsAlphaBlending"),
+            "graph.needsAlphaBlending",
+            "NodeMaterial alpha blending",
+        );
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(material, "_buildGroup"),
+            "_buildGroup",
+            "NodeMaterial mesh group builder",
+        );
+        return {
+            modulePath,
+            symbolName: "parseNodeMaterialFromSnippet",
+            header: "",
+            source: `// ${
+                this.context.provenance(
+                    modulePath,
+                    "parseNodeMaterialFromSnippet",
+                )
+            }
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/node_variants.hpp>
+
+namespace bbl {
+
+// The graph was compiled at generation by the pin's own emitter and
+// pipeline builder; what remains at run time is which composed program a
+// draw uses, and the fixed-function state that program was built with.
+MaterialHandle create_node_material(
+    Engine& engine,
+    std::uint32_t variant) {
+    const upstream::NodeVariantEntry& entry =
+        upstream::node_variants.at(variant);
+    MaterialRecord material;
+    material.node_material = true;
+    material.shader_variant = variant;
+    material.double_sided = !entry.back_face_culling;
+    engine.materials.push_back(material);
+    return MaterialHandle{
+        static_cast<std::uint32_t>(engine.materials.size() - 1)};
+}
+
+} // namespace bbl
+`,
+        };
+    }
+
     public lowerShaderMaterialFactory(): LoweredSource {
         const modulePath = "src/material/shader/shader-material.ts";
         const { declaration } =

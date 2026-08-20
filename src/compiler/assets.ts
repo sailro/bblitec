@@ -86,6 +86,40 @@ export function registerAsset(
 }
 
 /**
+ * The module and export an identifier names, repository-relative.
+ *
+ * Every executed-module route asks the same question -- which scene-adjacent
+ * module holds this, and under what name -- so the resolution is written once
+ * here. The path is relative because it travels through `manifest.json`,
+ * which has to stay machine-independent. Returns undefined when the
+ * expression is not a module binding at all, which each caller reads as "not
+ * my shape" rather than as an error.
+ */
+export function executedModuleReference(
+    context: ExecutedModuleReferenceContext,
+    identifier: ts.Expression,
+): { module: string; exportName: string } | undefined {
+    const unwrapped = context.unwrap(identifier);
+    if (!ts.isIdentifier(unwrapped)) return undefined;
+    const modulePath = context.symbols.declarationSourcePath(unwrapped);
+    if (!modulePath) return undefined;
+    const root = findRepositoryRoot(
+        dirname(resolve(context.options.fileName)),
+    );
+    return {
+        module: relative(root, modulePath).split(sep).join("/"),
+        exportName: unwrapped.text,
+    };
+}
+
+/** What `executedModuleReference` reads; the asset registry is a superset. */
+export interface ExecutedModuleReferenceContext {
+    readonly symbols: CompilerSymbols;
+    readonly options: ResolvedCompileOptions;
+    unwrap(expression: ts.Expression): ts.Expression;
+}
+
+/**
  * The asset a zero-argument scene-module call produces, registered under
  * the given kind.
  *
@@ -105,13 +139,8 @@ function registerExecutedModuleAsset(
     if (!ts.isCallExpression(unwrapped)) {
         return undefined;
     }
-    const callee = context.unwrap(unwrapped.expression);
-    if (!ts.isIdentifier(callee)) {
-        return undefined;
-    }
-    const modulePath =
-        context.symbols.declarationSourcePath(callee);
-    if (!modulePath) {
+    const reference = executedModuleReference(context, unwrapped.expression);
+    if (!reference) {
         return undefined;
     }
     if (unwrapped.arguments.length !== 0) {
@@ -120,17 +149,11 @@ function registerExecutedModuleAsset(
             `A ${label} factory takes no arguments.`,
         );
     }
-    const root = findRepositoryRoot(
-        dirname(resolve(context.options.fileName)),
-    );
-    const relativePath = relative(root, modulePath)
-        .split(sep)
-        .join("/");
     const asset = registerAsset(
         context,
         kind === "pixels"
-            ? pixelsAssetSource(relativePath, callee.text)
-            : spriteAtlasAssetSource(relativePath, callee.text),
+            ? pixelsAssetSource(reference.module, reference.exportName)
+            : spriteAtlasAssetSource(reference.module, reference.exportName),
         kind,
     );
     return context.cppString(asset.output);

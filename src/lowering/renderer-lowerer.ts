@@ -816,6 +816,7 @@ enum class RenderMaterialKind {
     standard,
     grid,
     shader,
+    node,
 };
 
 enum class RenderBucket {
@@ -846,6 +847,8 @@ enum class RenderPipelineKind {
     grid_transparent_none,
     shader,
     shader_a2c,
+    node_opaque_back,
+    node_opaque_none,
 };
 
 enum class RenderStage {
@@ -903,6 +906,7 @@ struct RenderFeatures {
     bool grid_material = false;
     bool no_color_material = false;
     bool shader_material = false;
+    bool node_material = false;
 };
 
 // Generated per-scene shader-variant metadata: pipeline state from the
@@ -1218,6 +1222,8 @@ RenderItem bind_render_item(
         ? RenderMaterialKind::grid
         : material.shader_material
             ? RenderMaterialKind::shader
+            : material.node_material
+            ? RenderMaterialKind::node
             : material.standard_material
             ? RenderMaterialKind::standard
             : RenderMaterialKind::pbr;
@@ -1283,6 +1289,12 @@ RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
             return item.alpha_to_coverage
                 ? RenderPipelineKind::shader_a2c
                 : RenderPipelineKind::shader;
+        // A node graph's blend state is its own; the reached slice composes
+        // only the opaque arm, so the bucket cannot be transparent here.
+        case RenderMaterialKind::node:
+            return double_sided
+                ? RenderPipelineKind::node_opaque_none
+                : RenderPipelineKind::node_opaque_back;
     }
     return RenderPipelineKind::pbr_opaque_back;
 }
@@ -1325,6 +1337,7 @@ void include_material_features(
     features.grid_material |= material.grid_material;
     features.no_color_material |= material.no_color;
     features.shader_material |= material.shader_material;
+    features.node_material |= material.node_material;
 }
 
 RenderFeatures build_render_features(
@@ -1367,13 +1380,18 @@ const ShaderVariantInfo& shader_variant_info(std::uint32_t variant) {
 }
 
 std::uint32_t shader_uniform_buffer_count(
-    std::uint32_t variant,
-    bool fragment_stage) {
+    [[maybe_unused]] std::uint32_t variant,
+    [[maybe_unused]] bool fragment_stage) {${
+            shaderBindingCases === ""
+                ? ""
+                : `
     switch (variant) {
 ${shaderBindingCases}
         default:
-            return 0u;
-    }
+            break;
+    }`
+        }
+    return 0u;
 }
 
 RenderDrawLists build_render_draw_lists(

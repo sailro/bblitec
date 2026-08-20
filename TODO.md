@@ -175,7 +175,7 @@ record future audits build on.
 
 ## P1 — Full Babylon Lite corpus audit
 
-157 corpus scenes remain unregistered; measured scenes are in
+147 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -184,17 +184,18 @@ Refresh the audit by building `dist` once, then compiling each scene directly:
 `node dist/src/scene-command.js compile corpus/babylon-lite/lab/lite/src/lite/sceneNNN.ts`.
 The command accepts an unregistered path.
 
-**The corpus carries only the shared modules registered scenes import.**
-`lab/lite/src/shared/` and `lab/lite/src/_shared/` hold three files
-(scene252-stdmorph.ts, sprite-atlas-image.ts, sprite-grid.ts), each pinned in
-`upstream/babylon-lite-scenes.json`. The node-material cluster imports absent
-modules (`../shared/sceneNN-nme.js`); integrating from it starts by copying
-those out of the pinned upstream tree and pinning their SHA-256 beside the
-scenes.
+**The corpus carries only the shared modules registered scenes import**,
+each pinned in `upstream/babylon-lite-scenes.json`. Integrating a scene that
+imports one starts by copying it out of the pinned upstream tree and pinning
+its SHA-256 beside the scenes. The ten shipped node-material graphs are
+already there; the remaining node-material, node-particle and skin modules are
+not.
 
-**Largest first-blocker clusters** (swept against 1.23.0): browser-dependent
-condition 17 (15 of them deferred-lane physics), `parseNodeMaterialFromSnippet`
-17, engine options beyond msaaSamples/requiredLimits 7,
+**Largest first-blocker clusters** (swept against 1.23.0, before the node
+family shipped): browser-dependent condition 17 (15 of them deferred-lane
+physics), `parseNodeMaterialFromSnippet` 17 — of which ten shipped and seven
+remain, each behind a capability the reached slice refuses — engine options
+beyond msaaSamples/requiredLimits 7,
 `parseNodeParticleSource` 7, static array literal 5, `receiveShadows` 5,
 `loadSplat` 5, `??` over a non-static-record operand 5,
 string-literal arguments 3, `createNavigationPluginAsync` 3. Standard
@@ -349,8 +350,29 @@ that does to the deferred lane by default.
   - Scenes 205, 206 reach the billboard path but stop at engine options.
   - Scene 117: an unsupported constructor expression, then sprite picking.
   - Scenes 205, 206: engine options.
-- [ ] Scenes 60, 61, 64, 67-71, 77-80, 82, 84, 85, 88, 89: support node-material
-  snippets.
+- [ ] Extend node materials past the slice scenes 60, 61, 77-80, 82, 85, 88
+  and 89 measure. Each item is a block the composed graph reaches and this
+  port refuses by name at generation, so a scene's own error says which:
+  - `TextureBlock` / `ImageSourceBlock` (62, 81, 83 — those three also want
+    their module-level texture-URL constants resolved) and the group-1
+    texture pair the pin's pipeline builder allocates for each.
+  - `LightBlock` (63, 83) — the lights UBO already binds at group 0 binding 1;
+    what is missing is the per-mesh selection reaching a node draw's own mesh
+    block, which `node_mesh_block` already fills.
+  - `ReflectionBlock` plus `PBRMetallicRoughnessBlock` (67-71, 73, 87), which
+    the pin serves through `node-env.ts` — four more group-1 bindings and the
+    scene's environment cube.
+  - `MorphTargetsBlock` (64, 66), two vertex storage bindings.
+  - `ScreenSizeBlock` and `FragDepthBlock` (84); `ClipPlanesBlock` and
+    `MeshAttributeExistsBlock` (86, which also wants `setClipPlane`).
+  - alpha blending: the graph's own `alphaMode`, which needs the transparent
+    bucket and the sort.
+  - a graph reached through `getSceneNNNme()` behind a gzip payload (66, 72,
+    73), which is a module function rather than an exported object.
+  - `GeometryTextureOutputBlock` (149), the node family's geometry-MRT arm.
+  - the `inputs` handles, which no reached scene writes: a scene setting one
+    would need the node UBO rewritten per frame instead of folded.
+  - shadows (65, 66, 72), which need the shadow subsystem first.
 - [ ] Scenes 62, 81, 83: resolve the module-level texture-URL constants
   (`SCENE62_TEXTURE_URL` and siblings).
 - [ ] Scene 63: support reached scene-light insertion.
@@ -552,6 +574,19 @@ Both backends stay long-term as mutually validating implementations;
   build options (a DXC-less build changes rendering, so the compiler stays),
   ship only the CRT DLLs the exe imports, drop SPIR-V from D3D12-only packages
   once packaging can declare a target driver, and evaluate packed native assets.
+
+## P2 — Shader deployment conventions
+
+- [ ] Publish each deployed stage's entry point instead of matching its file
+  name. `tools/compile-shaders.ps1` picks the entry point and the register
+  convention from three filename prefixes — `variant-`, `postprocess-`,
+  `node-` — plus a fourth flag carved out of the first, so the deployment
+  convention is encoded twice in two languages and a rename compiles a stage
+  at the wrong entry point with no error. Generation already writes
+  `upstream/shaders/composition.json` and nothing reads it: add each row's
+  entry points and whether it is pin-composed, have the script look the file
+  up there, and keep `mainVertex`/`mainFragment` as the fallback for the
+  stages this repository authors. Both prefix ladders then delete.
 
 ## Documentation maintenance
 

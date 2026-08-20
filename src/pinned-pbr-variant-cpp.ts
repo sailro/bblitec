@@ -301,6 +301,26 @@ const fieldTypes: Readonly<
     "u32": { cppType: "std::uint32_t", align: 4, size: 4 },
 };
 
+/**
+ * The one field type whose element count is part of the declaration.
+ *
+ * `array<vec4<u32>, N>` is the mesh block's light-index list, and N is the
+ * pin's own `MAX_LIGHTS / 4` — read from the text rather than restated, so a
+ * pin that changed the constant changes the mirror with it.
+ */
+function arrayFieldType(
+    wgslType: string,
+): { cppType: string; align: number; size: number } | undefined {
+    const match = /^array<vec4<u32>\s*,\s*(\d+)>$/.exec(wgslType);
+    if (!match) return undefined;
+    const count = Number.parseInt(match[1]!, 10);
+    return {
+        cppType: `std::array<std::array<std::uint32_t, 4>, ${count}>`,
+        align: 16,
+        size: count * 16,
+    };
+}
+
 /** A WGSL identifier reused verbatim as the C++ member name. */
 function memberName(name: string): string {
     if (!/^[A-Za-z_]\w*$/.test(name)) {
@@ -323,7 +343,7 @@ export function parseVariantFields(structBody: string): VariantField[] {
             );
         }
         const wgslType = match[2]!.trim();
-        const mapped = fieldTypes[wgslType];
+        const mapped = fieldTypes[wgslType] ?? arrayFieldType(wgslType);
         if (!mapped) {
             throw new Error(
                 `Pinned material UBO field '${match[1]}' has unsupported ` +
@@ -651,6 +671,71 @@ function mirroredMembers(
     };
 }
 
+/**
+ * One field per line, out of a WGSL struct body.
+ *
+ * The separator is a comma or a newline — the composed fragments minify a
+ * block onto one line while the node pipeline writes one field per line — but
+ * only outside `<>`: `li: array<vec4<u32>, 4>` carries a comma inside its own
+ * type, and splitting there produces two halves of a field rather than two
+ * fields.
+ */
+function splitWgslFields(structBody: string): string {
+    const parts: string[] = [];
+    let depth = 0;
+    let current = "";
+    for (const character of structBody) {
+        if (character === "<") depth += 1;
+        else if (character === ">") depth -= 1;
+        if (depth === 0 && (character === "," || character === "\n")) {
+            parts.push(current);
+            current = "";
+            continue;
+        }
+        current += character;
+    }
+    parts.push(current);
+    return parts
+        .map((part) => part.replace(/\/\/.*$/, "").trim())
+        .filter((part) => part !== "")
+        .map((part) => `${part},`)
+        .join("\n");
+}
+
+/**
+ * A WGSL struct declaration mirrored into C++, padded to the pin's offsets.
+ *
+ * Each composed family declares blocks a PAL uploads byte for byte, and each
+ * reads them out of the composed text rather than restating them. This is
+ * that step, once: parse the declaration, lay it out under WGSL's uniform
+ * rules, and emit the struct with a `static_assert` per field.
+ */
+export function mirroredStructFromWgsl(
+    structName: string,
+    structBody: string,
+    provenance: string,
+): string {
+    const fields = parseVariantFields(splitWgslFields(structBody));
+    const { offsets, totalBytes } = variantLayout(fields);
+    const mirrored = mirroredMembers(structName, fields, offsets, totalBytes);
+    return `// ${provenance}\n` +
+        `struct ${structName} {\n${mirrored.members}\n};\n` +
+        `static_assert(\n` +
+        `    sizeof(${structName}) == ${totalBytes},\n` +
+        `    "${structName} must be the pinned ${totalBytes} bytes.");\n` +
+        mirrored.asserts;
+}
+
+/**
+ * The pin's own mesh block, from a composed fragment.
+ *
+ * The widest declaration wins: the velocity geometry arm appends
+ * `previousWorld` and `velocityEnabled` after the light-index array, so the
+ * fields keep their declared order rather than being laid out scalars-first.
+ * The array's offset is cross-checked against the pin's own
+ * `MSH_LIGHT_INDEX_WORD_OFFSET`, which is what checks the mirror against the
+ * constant the writers index by rather than only against the declaration.
+ */
 export function meshUniformsBlock(
     fragmentWgsl: string,
     lightIndexWordOffset: number,
@@ -662,109 +747,30 @@ export function meshUniformsBlock(
                 "MeshUniforms.",
         );
     }
-    // `li` is an array of vec4<u32>; its element count comes from the
-    // declaration rather than from MAX_LIGHTS restated here. Fields keep
-    // their declared order — the velocity geometry arm appends
-    // previousWorld and velocityEnabled after the array, and laying the
-    // scalars out contiguously would move them under it.
-    const arrayField =
-        /(\w+)\s*:\s*array<vec4<u32>\s*,\s*(\d+)>/.exec(body[1]!);
-    const arrayIndexInText = arrayField
-        ? body[1]!.indexOf(arrayField[0])
-        : -1;
-    const parseScalars = (text: string) =>
-        text
-            .split(/[,\n]/)
-            .map((part) => part.replace(/\/\/.*$/, "").trim())
-            .filter((part) => part !== "")
-            .map((part) => `${part},`)
-            .join("\n");
-    const beforeText = arrayField
-        ? body[1]!.slice(0, arrayIndexInText)
-        : body[1]!;
-    const afterText = arrayField
-        ? body[1]!
-            .slice(arrayIndexInText)
-            .replace(/(\w+)\s*:\s*array<vec4<u32>\s*,\s*\d+>\s*,?/, "")
-        : "";
-    const fields = parseVariantFields(parseScalars(beforeText));
-    const { offsets, totalBytes } = variantLayout(fields);
-    const mirrored = mirroredMembers("MeshUniforms", fields, offsets);
-    let members = mirrored.members;
-    let asserts = mirrored.asserts;
-    let end = totalBytes;
-    if (arrayField) {
-        // The array aligns to 16 like any vec4, after the scalars.
-        const natural = fields.reduce(
-            (cursor, field, index) => Math.max(
-                cursor,
-                offsets[index]! + field.size,
-            ),
-            0,
+    const declaration = body[1]!;
+    const fields = parseVariantFields(splitWgslFields(declaration));
+    const { offsets } = variantLayout(fields);
+    const arrayIndex = fields.findIndex((field) =>
+        field.wgslType.startsWith("array<")
+    );
+    if (arrayIndex < 0) {
+        throw new Error(
+            "The pinned mesh block no longer declares its light-index array.",
         );
-        const arrayOffset = Math.ceil(natural / 16) * 16;
-        if (arrayOffset !== lightIndexWordOffset * 4) {
-            throw new Error(
-                `Pinned MSH_LIGHT_INDEX_WORD_OFFSET is ` +
-                    `${lightIndexWordOffset} (byte ` +
-                    `${lightIndexWordOffset * 4}); the mirrored mesh layout ` +
-                    `puts '${arrayField[1]}' at byte ${arrayOffset}.`,
-            );
-        }
-        if (arrayOffset > natural) {
-            members += `\n    // ${arrayOffset - natural} bytes of WGSL ` +
-                `alignment padding.\n` +
-                `    std::array<std::uint8_t, ${arrayOffset - natural}> ` +
-                `_padArray{};`;
-        }
-        members += `\n    // offset ${arrayOffset}, ` +
-            `array<vec4<u32>, ${arrayField[2]}>\n` +
-            `    std::array<std::array<std::uint32_t, 4>, ${arrayField[2]}> ` +
-            `${arrayField[1]}{};`;
-        asserts += `\nstatic_assert(\n` +
-            `    offsetof(MeshUniforms, ${arrayField[1]}) == ` +
-            `${arrayOffset},\n` +
-            `    "MeshUniforms::${arrayField[1]} must sit where the pin ` +
-            `puts it.");`;
-        end = arrayOffset + Number.parseInt(arrayField[2]!, 10) * 16;
-        const afterScalars = parseScalars(afterText);
-        if (afterScalars !== "") {
-            // The velocity arm's tail, laid out from the array's end under
-            // the same WGSL rules and padded to 16 like the block itself.
-            const tailFields = parseVariantFields(afterScalars);
-            const tailLayout = variantLayout(tailFields);
-            let tailCursor = 0;
-            tailFields.forEach((field, index) => {
-                const offset = end + tailLayout.offsets[index]!;
-                if (tailLayout.offsets[index]! > tailCursor) {
-                    const pad = tailLayout.offsets[index]! - tailCursor;
-                    members +=
-                        `\n    // ${pad} bytes of WGSL alignment padding.` +
-                        `\n    std::array<std::uint8_t, ${pad}> ` +
-                        `_padTail${index}{};`;
-                }
-                members += `\n    // offset ${offset}, ${field.wgslType}` +
-                    `\n    ${field.cppType} ${field.name}{};`;
-                asserts += `\nstatic_assert(\n` +
-                    `    offsetof(MeshUniforms, ${field.name}) == ` +
-                    `${offset},\n` +
-                    `    "MeshUniforms::${field.name} must sit where the ` +
-                    `pin puts it.");`;
-                tailCursor = tailLayout.offsets[index]! + field.size;
-            });
-            if (tailLayout.totalBytes > tailCursor) {
-                const pad = tailLayout.totalBytes - tailCursor;
-                members +=
-                    `\n    // ${pad} bytes rounding the block up to 16.` +
-                    `\n    std::array<std::uint8_t, ${pad}> _padTailEnd{};`;
-            }
-            end += tailLayout.totalBytes;
-        }
     }
-    return `// src/render/lights-ubo.ts appendMeshLightUboFields\n` +
-        `struct MeshUniforms {\n${members}\n};\n` +
-        `static_assert(\n    sizeof(MeshUniforms) == ${end},\n` +
-        `    "MeshUniforms must be the pinned ${end} bytes.");\n${asserts}`;
+    if (offsets[arrayIndex] !== lightIndexWordOffset * 4) {
+        throw new Error(
+            `Pinned MSH_LIGHT_INDEX_WORD_OFFSET is ${lightIndexWordOffset} ` +
+                `(byte ${lightIndexWordOffset * 4}); the mirrored mesh ` +
+                `layout puts '${fields[arrayIndex]!.name}' at byte ` +
+                `${offsets[arrayIndex]}.`,
+        );
+    }
+    return mirroredStructFromWgsl(
+        "MeshUniforms",
+        declaration,
+        "src/render/lights-ubo.ts appendMeshLightUboFields",
+    );
 }
 
 export function lightUniformsBlock(

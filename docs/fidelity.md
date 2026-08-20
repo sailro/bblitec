@@ -512,6 +512,46 @@ texture's binding pair and UV transform, since nothing samples them. Scene 29
 gates the glTF arm and Scene 21 the legacy one; a scene reaching both
 composes two variants, one per material, like any other fork.
 
+**A node material is compiled by the pin, not re-emitted here.** A Babylon NME
+document is a graph, and `material/node/node-emitter.ts` turns it into WGSL
+through one emitter per block class — a hundred and three of them, which are
+the graph's semantics rather than formulas to restate. So the pin's own
+`parseNodeMaterialFromSnippet` runs at generation against a recording device
+(`src/pinned-node-material.ts`): every device call on `compileNodePipeline`'s
+path happens after the module text is assembled, which is what makes four stub
+methods enough, and a pin that started deciding the text from something a real
+device answers would fail here rather than compose something else. What
+deploys is that module, entered at the pin's own `vs_main`/`fs_main`; what the
+generated `node_variants.hpp` carries is a transcript of the same run — the
+uniform block's layout, the vertex inputs and the cull state the compiler
+produced.
+
+Two of that transcript's parts are folds with a stated reason. The **uniform
+block is a constant**: `writeNodeUBO` scatters each named input's values at the
+offset the pin's layout gave it, and the `inputs` handles that would change one
+are not lowered, so generation bakes what the pin's own writer would have
+written. And the **mesh block rides the identity world** where the pin passes
+`mesh.worldMatrix`, because a scene-code mesh bakes its node transform into its
+vertices here — the same argument the Standard family's draws already make, and
+the same one that keeps `receivesShadow` at the pin's default, since
+`receiveShadows` has no lowered setter.
+
+The graph itself arrives two ways and each gets the answer it deserves. A
+module exporting the document as a literal is read as data, which is the fold
+and cannot drift. A module that builds its graph at load — id counters,
+spread-composed inputs, arrays it pushes into — is code this compiler does not
+lower, so it is executed instead, under Node.
+
+That last word is the whole difference from the two executed asset kinds
+beside it. A drawn atlas and a computed pixel buffer produce *pixels*, so they
+run in the engine the golden runs them in and each records an adaptation
+saying the bytes depend on that Chrome. A graph is structure: an object of
+numbers, strings and arrays, built from counters and `push`, with no Math and
+no browser API in any of the seven corpus modules that write one. Two
+ECMAScript engines cannot disagree about it, so there is no adaptation to
+record — and a module reaching past plain data fails at its own import rather
+than being executed against a shim.
+
 **A sprite atlas that is drawn rather than fetched is executed, not
 reimplemented.** `lab/lite/src/_shared/sprite-atlas-image.ts` builds its
 256x128 atlas with canvas2D — rotated wedges, `arc`, `hsl` — and returns a

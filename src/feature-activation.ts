@@ -321,6 +321,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/shader/shader-material.ts",
         consumers: CMAKE,
     },
+    "material:node": {
+        provenance: "src/material/node/node-material.ts",
+        consumers: ["features.cmake", "variant table"],
+    },
     "material:standard": {
         provenance: "src/material/standard/create-standard-material.ts",
         consumers: CMAKE,

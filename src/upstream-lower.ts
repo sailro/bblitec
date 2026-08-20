@@ -38,6 +38,10 @@ import {
 } from "./pinned-pbr-variant-cpp.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
 import {
+    pinnedNodeVariantsHeader,
+    type NodeVariantManifestEntry,
+} from "./pinned-node-material-cpp.js";
+import {
     pinnedStandardSupportBlock,
     type PinnedStandardSelector,
     type PinnedStandardVariantManifestEntry,
@@ -109,6 +113,64 @@ function sceneUboBytes(context: LoweringContext): number {
         );
     }
     return Number.parseInt(initializer.text, 10);
+}
+
+/** The light kinds the pin writes an entry for, in its own order. */
+const pinnedLightKinds = [
+    "hemispheric",
+    "directional",
+    "point",
+    "spot",
+] as const;
+
+/**
+ * The pinned per-pass blocks, hoisted into whichever family header is emitted
+ * first.
+ *
+ * All three composed families declare the same scene and lights blocks, and
+ * the two material families also share the mesh block. Whichever header a
+ * scene emits carries them; a TU never sees two copies, because the capability
+ * defines gate the includes. `meshFragmentWgsl` is the composed fragment whose
+ * `MeshUniforms` declaration is widest — absent for the node family, which
+ * declares its own mesh block instead.
+ */
+function sharedPinnedMirrors(
+    context: LoweringContext,
+    features: readonly string[],
+    meshFragmentWgsl?: string,
+): string {
+    const reachedKinds = pinnedLightKinds.filter((kind) =>
+        features.includes(`light:${kind}`)
+    );
+    return `
+// ---------------------------------------------------------------------------
+// The shared pinned per-pass blocks, hoisted for a scene whose earlier family
+// headers are not emitted.
+${
+        reachedKinds.length > 0
+            ? "#include <bblite/upstream/light_matrix.hpp>\n"
+            : ""
+    }
+namespace bbl::upstream {
+
+using bbl::LightRecord;
+using bbl::LightKind;
+
+${
+        sceneUniformsStruct(
+            new RendererLowerer(context).compiledSceneUniformsWgsl(),
+            sceneUboBytes(context),
+        )
+    }
+
+${lightUniformsBlock(context, pinnedMaxLights(context), reachedKinds)}
+${
+        meshFragmentWgsl === undefined ? "" : `
+${meshUniformsBlock(meshFragmentWgsl, meshLightIndexWordOffset(context))}
+`
+    }
+} // namespace bbl::upstream
+`;
 }
 import type {
     CompiledShaderProgram,
@@ -219,6 +281,12 @@ export interface UpstreamEmitOptions {
     standardRenderableMeshFeatures?: readonly number[];
     /** The Standard fallback for meshes created past the static table. */
     standardRuntimeMeshFeatures?: number;
+    /**
+     * The pin's own composed node graphs — one module per graph, emitted as
+     * `node_variants.hpp` plus the two stages each deploys under. Absent when
+     * the scene reaches no node material.
+     */
+    nodeVariants?: readonly NodeVariantManifestEntry[];
     /** The runtime material-handle count the variant gate checks. */
     pinnedMaterialCount?: number;
     /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
@@ -298,6 +366,22 @@ class GeneratedSourceWriter {
 #define BBLITE_STANDARD_VARIANTS ${
                 (options.pinnedStandardVariants ?? []).length
             }
+
+// The node graphs the pin's own emitter compiled for this scene. Zero
+// until one is parsed, which also skips node_variants.hpp.
+#define BBLITE_NODE_VARIANTS ${(options.nodeVariants ?? []).length}
+
+// Whether any draw goes through Babylon Lite's own group scheme: group 0
+// the per-pass scene and lights blocks, group 1 the per-draw ones. The
+// three composed families share that frame state, so the code building it
+// is reached by their disjunction rather than by any one of them.
+#define BBLITE_PINNED_MATERIALS (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 || BBLITE_NODE_VARIANTS > 0)
+
+// The two material families alone: the thin-instance arm, the reverse-Z
+// geometry contract and the material texture resources. A node graph binds
+// the frame state above and none of this, so the two are separate questions
+// and a reader can tell which one an #if is asking.
+#define BBLITE_PINNED_MATERIAL_VARIANTS (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0)
 `,
         );
         // The texture-slot table both render backends execute. Emitted for
@@ -1053,6 +1137,13 @@ ${composed.wgsl}`,
                 generated,
             );
         }
+        if (features.includes("material:node")) {
+            this.writeSource(
+                "upstream/src/material_node.cpp",
+                factories.lowerNodeMaterialFactory(),
+                generated,
+            );
+        }
         if (features.includes("material:no-color-view")) {
             this.writeSource(
                 "upstream/src/material_views.cpp",
@@ -1167,53 +1258,7 @@ ${composed.wgsl}`,
             }
             const sharedMirrors = (options.pinnedVariants ?? []).length > 0
                 ? ""
-                : `
-// ---------------------------------------------------------------------------
-// The shared pinned scene/lights/mesh blocks, hoisted for a scene that emits
-// no pbr_variants.hpp (both families' composed stages declare the same three
-// blocks; a TU never sees this and the PBR copy together, the capability
-// defines gate the includes).
-${
-                    ["hemispheric", "directional", "point", "spot"].some(
-                        (kind) => features.includes(`light:${kind}`),
-                    )
-                        ? "#include <bblite/upstream/light_matrix.hpp>\n"
-                        : ""
-                }
-namespace bbl::upstream {
-
-using bbl::LightRecord;
-using bbl::LightKind;
-
-${
-                    sceneUniformsStruct(
-                        new RendererLowerer(context)
-                            .compiledSceneUniformsWgsl(),
-                        sceneUboBytes(context),
-                    )
-                }
-
-${
-                    lightUniformsBlock(
-                        context,
-                        pinnedMaxLights(context),
-                        ["hemispheric", "directional", "point", "spot"]
-                            .filter(
-                                (kind) =>
-                                    features.includes(`light:${kind}`),
-                            ),
-                    )
-                }
-
-${
-                    meshUniformsBlock(
-                        widestStandardMesh,
-                        meshLightIndexWordOffset(context),
-                    )
-                }
-
-} // namespace bbl::upstream
-`;
+                : sharedPinnedMirrors(context, features, widestStandardMesh);
             this.tree.write(
                 "upstream/include/bblite/upstream/standard_variants.hpp",
                 pinnedStandardVariantsHeader(
@@ -1247,6 +1292,45 @@ ${
                     }`,
                     data: variant.fragmentWgsl,
                 });
+            }
+        }
+        if ((options.nodeVariants ?? []).length > 0) {
+            // A node graph declares its own mesh block, but the per-pass
+            // scene and lights blocks are the same ones the other two
+            // composed families read, so a node-only scene hoists them here
+            // exactly as a Standard-only scene hoists them into its own
+            // header.
+            // A node graph declares its own mesh block, but the per-pass
+            // scene and lights blocks are the same ones the other two
+            // composed families read, so a node-only scene hoists them.
+            const sharedNodeMirrors =
+                (options.pinnedVariants ?? []).length > 0 ||
+                    (options.pinnedStandardVariants ?? []).length > 0
+                    ? ""
+                    : sharedPinnedMirrors(context, features);
+            this.tree.write(
+                "upstream/include/bblite/upstream/node_variants.hpp",
+                pinnedNodeVariantsHeader(
+                    "src/pinned-node-material-cpp.ts " +
+                        "pinnedNodeVariantsHeader",
+                    options.nodeVariants!,
+                ) + sharedNodeMirrors,
+            );
+            for (const variant of options.nodeVariants!) {
+                // One module carries both stages, so it deploys twice --
+                // once per entry point, the way a composed post-process
+                // pass does. The `node-` prefix is what makes
+                // tools/compile-shaders.ps1 take the pin's own group
+                // scheme through the register remap and publish the
+                // `.slots` sidecar the SDL PAL binds against.
+                for (
+                    const stem of [variant.vertexStem, variant.fragmentStem]
+                ) {
+                    composedShaders.push({
+                        output: `upstream/shaders/${stem}.native.wgsl`,
+                        data: variant.composed.wgsl,
+                    });
+                }
             }
         }
         if (composedShaders.length > 0) {

@@ -22,6 +22,52 @@ import { pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 
+/**
+ * The WebGPU flag namespaces, installed before the first pinned import.
+ *
+ * `engine/gpu-flags.ts` exists to shrink the bundle: it *snapshots*
+ * `globalThis.GPUShaderStage` and its siblings into one-letter aliases at
+ * module load, so a pinned module loaded in Node — where the namespaces do
+ * not exist — captures `undefined` and fails the moment a descriptor reads
+ * a flag. Installing them here rather than in each caller is what makes the
+ * order right: every pinned import in generation goes through this module,
+ * and a snapshot taken once cannot be corrected afterwards.
+ *
+ * The values are the WebGPU specification's, and they reach no artifact —
+ * generation reads the WGSL and the binding tables a descriptor carries,
+ * never its usage masks.
+ */
+const webgpuFlagNamespaces: Readonly<
+    Record<string, Readonly<Record<string, number>>>
+> = {
+    GPUShaderStage: { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 },
+    GPUTextureUsage: {
+        COPY_SRC: 1,
+        COPY_DST: 2,
+        TEXTURE_BINDING: 4,
+        STORAGE_BINDING: 8,
+        RENDER_ATTACHMENT: 16,
+    },
+    GPUBufferUsage: {
+        MAP_READ: 1,
+        MAP_WRITE: 2,
+        COPY_SRC: 4,
+        COPY_DST: 8,
+        INDEX: 16,
+        VERTEX: 32,
+        UNIFORM: 64,
+        STORAGE: 128,
+        INDIRECT: 256,
+        QUERY_RESOLVE: 512,
+    },
+    GPUColorWrite: { RED: 1, GREEN: 2, BLUE: 4, ALPHA: 8, ALL: 15 },
+};
+
+for (const [name, values] of Object.entries(webgpuFlagNamespaces)) {
+    const host = globalThis as unknown as Record<string, unknown>;
+    if (host[name] === undefined) host[name] = values;
+}
+
 /** The composer's output; field names are the pinned module's own. */
 export interface ComposedPinnedShader {
     vertexWgsl: string;

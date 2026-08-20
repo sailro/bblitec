@@ -197,6 +197,17 @@ struct DawnMesh {
     std::map<std::size_t, StandardGeometryDrawState>
         standard_geometry_states;
 #endif
+#if BBLITE_NODE_VARIANTS > 0
+    // A node graph's per-draw blocks: the pin's own mesh block, and the
+    // graph's uniform block when it declares one. Both are written once —
+    // the mesh block follows the mesh's transform, and the uniform block is
+    // the graph's own constants.
+    WGPUBuffer node_mesh_uniforms = nullptr;
+    WGPUBuffer node_uniforms = nullptr;
+    WGPUBindGroup node_group = nullptr;
+    std::size_t node_group_variant =
+        std::numeric_limits<std::size_t>::max();
+#endif
     std::array<WGPUTexture, mesh_texture_slots> owned_textures{};
     std::array<WGPUTextureView, mesh_texture_slots> owned_views{};
     std::array<WGPUTextureView, mesh_texture_slots> views{};
@@ -452,7 +463,7 @@ struct DawnState : DawnDevice {
     // groups interchangeable across shader variants.
     std::array<WGPUBindGroupLayout, 4> mesh_group_layouts{};
     WGPUPipelineLayout mesh_pipeline_layout = nullptr;
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIALS
     // Babylon Lite's own grouping, which its composed fragments declare:
     // group 0 carries the per-pass scene block and the lights array, group 1
     // the per-draw mesh and material blocks followed by the material's texture
@@ -468,6 +479,16 @@ struct DawnState : DawnDevice {
 #if BBLITE_PBR_VARIANTS > 0
     std::vector<WGPUBindGroupLayout> pinned_draw_layouts;
     std::vector<WGPUPipelineLayout> pinned_pipeline_layouts;
+#endif
+#if BBLITE_NODE_VARIANTS > 0
+    // The node family's layouts, modules and pipelines. A graph's group-1
+    // bindings are its own, so each carries its own layout.
+    std::vector<WGPUBindGroupLayout> node_draw_layouts;
+    std::vector<WGPUPipelineLayout> node_pipeline_layouts;
+    std::vector<WGPUShaderModule> node_vertex_modules;
+    std::vector<WGPUShaderModule> node_fragment_modules;
+    std::map<std::uint32_t, std::map<std::size_t, WGPURenderPipeline>>
+        node_variant_pipelines;
 #endif
 #if BBLITE_STANDARD_VARIANTS > 0
     // The Standard family's composed layouts, modules and pipelines. The
@@ -487,7 +508,7 @@ struct DawnState : DawnDevice {
     std::map<std::uint32_t, std::map<std::size_t, WGPURenderPipeline>>
         pinned_variant_pipelines;
 #endif
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIALS
     // The frame's scene and lights blocks, shared by the PBR and the
     // Standard composed families through the same group-0 layout.
     WGPUBuffer pinned_scene_uniforms = nullptr;
@@ -2004,7 +2025,7 @@ PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
     }
 }
 
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIALS
 // Babylon Lite's own bind groups, as its composed fragments declare them.
 //
 // The generated `pbr_variants.hpp` mirrors the four blocks -- SceneUniforms,
@@ -3586,6 +3607,46 @@ DawnPipeline& pipeline_for(
     return slot;
 }
 
+
+#if BBLITE_PINNED_MATERIALS
+/**
+ * One declared vertex input, resolved onto our vertex and into Dawn's format
+ * enum. The three composed families ask the same question of the same table
+ * (`pinned_vertex_input`); what stays here is the enum residue and the split
+ * between the vertex stream and the thin-instance one.
+ */
+bool append_variant_attribute(
+    std::string_view name,
+    std::uint32_t location,
+    bool uses_local_position,
+    std::vector<WGPUVertexAttribute>& attributes,
+    std::vector<WGPUVertexAttribute>& instance_attributes) {
+    const PinnedVertexInput input =
+        pinned_vertex_input(name, uses_local_position);
+    if (!input.mapped) return false;
+    WGPUVertexAttribute attribute{};
+    attribute.shaderLocation = location;
+    attribute.offset = input.offset;
+    switch (input.lane) {
+        case VertexInputLane::float2:
+            attribute.format = WGPUVertexFormat_Float32x2;
+            break;
+        case VertexInputLane::float3:
+            attribute.format = WGPUVertexFormat_Float32x3;
+            break;
+        case VertexInputLane::float4:
+            attribute.format = WGPUVertexFormat_Float32x4;
+            break;
+        case VertexInputLane::uint4:
+            attribute.format = WGPUVertexFormat_Uint32x4;
+            break;
+    }
+    (input.instance_stream ? instance_attributes : attributes)
+        .push_back(attribute);
+    return true;
+}
+#endif
+
 #if BBLITE_PBR_VARIANTS > 0
 /**
  * The render pipeline for one composed variant.
@@ -3647,60 +3708,18 @@ WGPURenderPipeline pinned_variant_pipeline(
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::PbrVariantAttribute& input =
             upstream::pbr_variant_attributes[entry.first_attribute + index];
-        WGPUVertexAttribute attribute{};
-        attribute.shaderLocation = input.location;
-        if (input.name == "position") {
-            attribute.format = WGPUVertexFormat_Float32x3;
-            // A LOCAL_POSITION geometry variant's varying reads the raw
-            // attribute, so it binds the vertex's local lanes; its mesh
-            // world is the real node world, keeping worldPos the same
-            // product the baked pair produces.
-            attribute.offset = entry.uses_local_position
-                ? offsetof(GpuVertex, local_position)
-                : offsetof(GpuVertex, position);
-        } else if (input.name == "normal") {
-            attribute.format = WGPUVertexFormat_Float32x3;
-            attribute.offset = offsetof(GpuVertex, normal);
-        } else if (input.name == "tangent") {
-            attribute.format = WGPUVertexFormat_Float32x4;
-            attribute.offset = offsetof(GpuVertex, tangent);
-        } else if (input.name == "uv") {
-            attribute.format = WGPUVertexFormat_Float32x2;
-            attribute.offset = offsetof(GpuVertex, uv);
-        } else if (input.name == "uv2") {
-            attribute.format = WGPUVertexFormat_Float32x2;
-            attribute.offset = offsetof(GpuVertex, uv2);
-        } else if (input.name == "color") {
-            attribute.format = WGPUVertexFormat_Float32x4;
-            attribute.offset = offsetof(GpuVertex, color);
-        } else if (
-            input.name == "world0" || input.name == "world1" ||
-            input.name == "world2" || input.name == "world3") {
-            attribute.format = WGPUVertexFormat_Float32x4;
-            attribute.offset = static_cast<std::uint64_t>(
-                16 * (input.name.back() - '0'));
-            instance_attributes.push_back(attribute);
-            continue;
-        }
-#if BBLITE_GPU_DEFORMATION
-        else if (input.name == "joints") {
-            // The pin takes joint indices as integers; the transcribed stage
-            // takes them as floats, so the vertex carries both while the two
-            // paths coexist.
-            attribute.format = WGPUVertexFormat_Uint32x4;
-            attribute.offset = offsetof(GpuVertex, joint_indices);
-        } else if (input.name == "weights") {
-            attribute.format = WGPUVertexFormat_Float32x4;
-            attribute.offset = offsetof(GpuVertex, weights);
-        }
-#endif
-        else {
+        if (
+            !append_variant_attribute(
+                input.name,
+                input.location,
+                entry.uses_local_position,
+                attributes,
+                instance_attributes)) {
             dawn_error(
                 (std::string("pinned variant declares an unmapped vertex ") +
                  "input '" + std::string(input.name) + "'.")
                     .c_str());
         }
-        attributes.push_back(attribute);
     }
     std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
     vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
@@ -3845,42 +3864,19 @@ WGPURenderPipeline standard_variant_pipeline(
     attributes.reserve(entry.attribute_count);
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::StandardVariantAttribute& input =
-            upstream::standard_variant_attributes[
-                entry.first_attribute + index];
-        WGPUVertexAttribute attribute{};
-        attribute.shaderLocation = input.location;
-        if (input.name == "position") {
-            attribute.format = WGPUVertexFormat_Float32x3;
-            attribute.offset = entry.uses_local_position
-                ? offsetof(GpuVertex, local_position)
-                : offsetof(GpuVertex, position);
-        } else if (input.name == "normal") {
-            attribute.format = WGPUVertexFormat_Float32x3;
-            attribute.offset = offsetof(GpuVertex, normal);
-        } else if (input.name == "uv") {
-            attribute.format = WGPUVertexFormat_Float32x2;
-            attribute.offset = offsetof(GpuVertex, uv);
-        } else if (input.name == "uv2") {
-            attribute.format = WGPUVertexFormat_Float32x2;
-            attribute.offset = offsetof(GpuVertex, uv2);
-        } else if (input.name == "color") {
-            attribute.format = WGPUVertexFormat_Float32x4;
-            attribute.offset = offsetof(GpuVertex, color);
-        } else if (
-            input.name == "world0" || input.name == "world1" ||
-            input.name == "world2" || input.name == "world3") {
-            attribute.format = WGPUVertexFormat_Float32x4;
-            attribute.offset = static_cast<std::uint64_t>(
-                16 * (input.name.back() - '0'));
-            instance_attributes.push_back(attribute);
-            continue;
-        } else {
+            upstream::standard_variant_attributes[entry.first_attribute + index];
+        if (
+            !append_variant_attribute(
+                input.name,
+                input.location,
+                entry.uses_local_position,
+                attributes,
+                instance_attributes)) {
             dawn_error(
-                (std::string("standard variant declares an unmapped ") +
-                 "vertex input '" + std::string(input.name) + "'.")
+                (std::string("standard variant declares an unmapped vertex ") +
+                 "input '" + std::string(input.name) + "'.")
                     .c_str());
         }
-        attributes.push_back(attribute);
     }
     std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
     vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
@@ -3965,6 +3961,277 @@ WGPURenderPipeline standard_variant_pipeline(
         wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
     if (!pipeline) dawn_error("standard variant pipeline creation failed.");
     return map.emplace(key, pipeline).first->second;
+}
+#endif
+
+#if BBLITE_NODE_VARIANTS > 0
+/**
+ * Group 1 for one node graph: the pin's mesh block, plus the graph's own
+ * uniform block at whichever binding `compileNodePipeline` gave it.
+ */
+WGPUBindGroupLayout node_draw_layout_for(
+    DawnState& state,
+    std::size_t variant) {
+    if (state.node_draw_layouts.size() < upstream::node_variants.size()) {
+        state.node_draw_layouts.resize(
+            upstream::node_variants.size(),
+            nullptr);
+    }
+    if (state.node_draw_layouts[variant]) {
+        return state.node_draw_layouts[variant];
+    }
+    const upstream::NodeVariantEntry& entry =
+        upstream::node_variants[variant];
+    std::vector<WGPUBindGroupLayoutEntry> entries;
+    WGPUBindGroupLayoutEntry mesh_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    mesh_entry.binding = 0;
+    mesh_entry.visibility =
+        WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+    mesh_entry.buffer.type = WGPUBufferBindingType_Uniform;
+    entries.push_back(mesh_entry);
+    if (upstream::has_node_ubo(entry)) {
+        WGPUBindGroupLayoutEntry node_entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        node_entry.binding =
+            static_cast<std::uint32_t>(entry.ubo_binding);
+        node_entry.visibility =
+            WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+        node_entry.buffer.type = WGPUBufferBindingType_Uniform;
+        entries.push_back(node_entry);
+    }
+    WGPUBindGroupLayoutDescriptor descriptor =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    descriptor.label = string_view("node-mesh");
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    state.node_draw_layouts[variant] =
+        wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
+    if (!state.node_draw_layouts[variant]) {
+        dawn_error("node variant bind group layout creation failed.");
+    }
+    return state.node_draw_layouts[variant];
+}
+
+WGPUPipelineLayout node_pipeline_layout_for(
+    DawnState& state,
+    std::size_t variant) {
+    if (state.node_pipeline_layouts.size() < upstream::node_variants.size()) {
+        state.node_pipeline_layouts.resize(
+            upstream::node_variants.size(),
+            nullptr);
+    }
+    if (state.node_pipeline_layouts[variant]) {
+        return state.node_pipeline_layouts[variant];
+    }
+    std::array<WGPUBindGroupLayout, 2> groups{
+        pinned_frame_layout_for(state),
+        node_draw_layout_for(state, variant),
+    };
+    WGPUPipelineLayoutDescriptor descriptor =
+        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    descriptor.bindGroupLayoutCount = groups.size();
+    descriptor.bindGroupLayouts = groups.data();
+    state.node_pipeline_layouts[variant] =
+        wgpuDeviceCreatePipelineLayout(state.device, &descriptor);
+    if (!state.node_pipeline_layouts[variant]) {
+        dawn_error("node variant pipeline layout creation failed.");
+    }
+    return state.node_pipeline_layouts[variant];
+}
+
+/**
+ * The render pipeline for one compiled node graph.
+ *
+ * The module is the pin's, entered at its own `vs_main`/`fs_main`. Its
+ * vertex inputs are named rather than positional — the pipeline builder
+ * numbers them by emission order, so a graph reading uv first puts uv at
+ * location 0 — which is why each is resolved onto our vertex by name here
+ * and an unmapped one fails naming itself.
+ */
+WGPURenderPipeline node_variant_pipeline(
+    DawnState& state,
+    std::size_t variant,
+    upstream::RenderPipelineKind kind,
+    std::uint32_t samples,
+    bool has_depth) {
+    const std::size_t key =
+        variant * 256 + static_cast<std::size_t>(kind) * 2 +
+        (has_depth ? 1 : 0);
+    auto& map = state.node_variant_pipelines[samples];
+    const auto existing = map.find(key);
+    if (existing != map.end()) return existing->second;
+    if (state.node_vertex_modules.size() < upstream::node_variants.size()) {
+        state.node_vertex_modules.resize(
+            upstream::node_variants.size(),
+            nullptr);
+        state.node_fragment_modules.resize(
+            upstream::node_variants.size(),
+            nullptr);
+    }
+    const upstream::NodeVariantEntry& entry =
+        upstream::node_variants[variant];
+    if (!state.node_vertex_modules[variant]) {
+        state.node_vertex_modules[variant] =
+            load_wgsl_module(state, std::string(entry.vertex_stem).c_str());
+        state.node_fragment_modules[variant] = load_wgsl_module(
+            state,
+            std::string(entry.fragment_stem).c_str());
+    }
+    std::vector<WGPUVertexAttribute> attributes;
+    // A node graph declaring the thin-instance columns would need a second
+    // stream this pipeline does not bind, so the shared table's own marking
+    // is what refuses it.
+    std::vector<WGPUVertexAttribute> instance_attributes;
+    attributes.reserve(entry.attribute_count);
+    for (std::size_t index = 0; index < entry.attribute_count; ++index) {
+        const upstream::NodeVariantAttribute& input =
+            upstream::node_variant_attributes[entry.first_attribute + index];
+        if (
+            !append_variant_attribute(
+                input.name,
+                input.location,
+                false,
+                attributes,
+                instance_attributes)) {
+            dawn_error(
+                (std::string("node variant declares an unmapped vertex ") +
+                 "input '" + std::string(input.name) + "'.")
+                    .c_str());
+        }
+        if (!instance_attributes.empty()) {
+            dawn_error(
+                (std::string("node variant declares the per-instance ") +
+                 "vertex input '" + std::string(input.name) +
+                 "', which its pipeline binds no stream for.")
+                    .c_str());
+        }
+    }
+    WGPUVertexBufferLayout vertex_layout{};
+    vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
+    vertex_layout.arrayStride = sizeof(GpuVertex);
+    vertex_layout.attributeCount = attributes.size();
+    vertex_layout.attributes = attributes.data();
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.layout = node_pipeline_layout_for(state, variant);
+    descriptor.vertex.module = state.node_vertex_modules[variant];
+    descriptor.vertex.entryPoint = string_view("vs_main");
+    descriptor.vertex.bufferCount = 1;
+    descriptor.vertex.buffers = &vertex_layout;
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.frontFace = WGPUFrontFace_CCW;
+    // The backFaceCulling the graph declared, which is the whole of its
+    // fixed-function state: the reached slice composes no blend, so the
+    // kind carries nothing else.
+    descriptor.primitive.cullMode =
+        kind == upstream::RenderPipelineKind::node_opaque_none
+            ? WGPUCullMode_None
+            : WGPUCullMode_Back;
+    WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
+    depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
+    depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
+    depth_stencil.depthCompare = WGPUCompareFunction_Less;
+    descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
+    descriptor.multisample.count = samples;
+    descriptor.multisample.mask = ~0u;
+    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
+    color_target.format = state.frame_color_format;
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = state.node_fragment_modules[variant];
+    fragment.entryPoint = string_view("fs_main");
+    fragment.targetCount = 1;
+    fragment.targets = &color_target;
+    descriptor.fragment = &fragment;
+    WGPURenderPipeline pipeline =
+        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    if (!pipeline) dawn_error("node variant pipeline creation failed.");
+    return map.emplace(key, pipeline).first->second;
+}
+
+/** The per-draw buffers a node graph needs, created once per mesh. */
+void ensure_node_draw_buffers(
+    DawnState& state,
+    DawnMesh& mesh,
+    const upstream::NodeVariantEntry& entry) {
+    const auto uniform_buffer = [&](std::uint64_t size) {
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.size = size;
+        descriptor.usage =
+            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        WGPUBuffer buffer =
+            wgpuDeviceCreateBuffer(state.device, &descriptor);
+        if (!buffer) dawn_error("node uniform buffer creation failed.");
+        return buffer;
+    };
+    if (!mesh.node_mesh_uniforms) {
+        mesh.node_mesh_uniforms =
+            uniform_buffer(sizeof(upstream::NodeMeshUniforms));
+    }
+    if (!mesh.node_uniforms && upstream::has_node_ubo(entry)) {
+        mesh.node_uniforms =
+            uniform_buffer(static_cast<std::uint64_t>(entry.ubo_bytes));
+        // The constants the graph declared, written with the buffer that
+        // holds them: nothing a reached scene does changes them.
+        wgpuQueueWriteBuffer(
+            state.queue,
+            mesh.node_uniforms,
+            0,
+            &upstream::node_variant_uniform_floats[
+                entry.first_uniform_float],
+            entry.ubo_bytes);
+    }
+}
+
+WGPUBindGroup build_node_draw_group(
+    DawnState& state,
+    DawnMesh& mesh,
+    std::size_t variant) {
+    const upstream::NodeVariantEntry& entry =
+        upstream::node_variants[variant];
+    std::vector<WGPUBindGroupEntry> entries;
+    WGPUBindGroupEntry mesh_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    mesh_entry.binding = 0;
+    mesh_entry.buffer = mesh.node_mesh_uniforms;
+    mesh_entry.size = sizeof(upstream::NodeMeshUniforms);
+    entries.push_back(mesh_entry);
+    if (upstream::has_node_ubo(entry)) {
+        WGPUBindGroupEntry node_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        node_entry.binding =
+            static_cast<std::uint32_t>(entry.ubo_binding);
+        node_entry.buffer = mesh.node_uniforms;
+        node_entry.size = static_cast<std::uint64_t>(entry.ubo_bytes);
+        entries.push_back(node_entry);
+    }
+    WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    descriptor.layout = node_draw_layout_for(state, variant);
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    WGPUBindGroup group =
+        wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    if (!group) dawn_error("node variant bind group creation failed.");
+    return group;
+}
+
+/**
+ * The one block a node draw rebuilds: the pin's own `MeshU`, carrying the
+ * world matrix the vertex stage multiplies by and the shadow and light lanes
+ * a graph reaching neither leaves at zero. The uniform block the graph
+ * declared is a constant, so `ensure_node_draw_buffers` writes it once.
+ */
+void write_node_mesh_block(
+    DawnState& state,
+    const Scene& scene,
+    const Engine& engine,
+    const upstream::RenderDrawCommand& draw,
+    DawnMesh& mesh) {
+    const upstream::NodeMeshUniforms block =
+        node_mesh_block(scene, engine, draw.item.mesh.value);
+    wgpuQueueWriteBuffer(
+        state.queue,
+        mesh.node_mesh_uniforms,
+        0,
+        &block,
+        sizeof(block));
 }
 #endif
 
@@ -5569,12 +5836,22 @@ bool run_dawn_engine(Engine& engine) {
                     "yet.");
             }
         } else if (
+            item.material_kind == upstream::RenderMaterialKind::node) {
+#if BBLITE_NODE_VARIANTS > 0
+            if (item.shader_variant >= upstream::node_variants.size()) {
+                dawn_error("this node material graph was not composed.");
+            }
+#else
+            dawn_error(
+                "a node material in a build with no composed graphs.");
+#endif
+        } else if (
             item.material_kind !=
                 upstream::RenderMaterialKind::standard &&
             item.material_kind != upstream::RenderMaterialKind::pbr &&
             item.material_kind != upstream::RenderMaterialKind::grid) {
             dawn_error(
-                "only Standard, PBR, Grid, and shader-variant "
+                "only Standard, PBR, Grid, node and shader-variant "
                 "materials are implemented yet.");
         }
         const ModelGeometry& geometry = engine.geometries[item.geometry];
@@ -6854,7 +7131,7 @@ bool run_dawn_engine(Engine& engine) {
             0,
             matrix.data(),
             sizeof(matrix));
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIALS
         // The pin's per-pass blocks, before anything reads them: the scene block
         // the variants' vertex and fragment stages share, and the lights array
         // their multi-light arm indexes.
@@ -6931,6 +7208,33 @@ bool run_dawn_engine(Engine& engine) {
                             "Standard draw in a build with no composed "
                             "variant table; the transcribed fragment is "
                             "retired.");
+#endif
+#if BBLITE_NODE_VARIANTS > 0
+                    } else if (
+                        draw.item.material_kind ==
+                        upstream::RenderMaterialKind::node) {
+                        const std::size_t variant =
+                            draw.item.shader_variant;
+                        ensure_node_draw_buffers(
+                            state,
+                            draw_mesh,
+                            upstream::node_variants.at(variant));
+                        write_node_mesh_block(
+                            state,
+                            scene,
+                            engine,
+                            draw,
+                            draw_mesh);
+                        // Keyed like the two sibling families: a mesh moved
+                        // to another graph rebuilds rather than keeping a
+                        // group over the first graph's buffers.
+                        if (draw_mesh.node_group_variant != variant) {
+                            draw_mesh.node_group = build_node_draw_group(
+                                state,
+                                draw_mesh,
+                                variant);
+                            draw_mesh.node_group_variant = variant;
+                        }
 #endif
                     } else if (grid_draw) {
                         const upstream::GridUniforms fragment =
@@ -7251,7 +7555,7 @@ bool run_dawn_engine(Engine& engine) {
                     0,
                     task_matrix.data(),
                     64);
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIALS
                 // A task the scene gave its own camera reads its own eye
                 // position and view-projection, which is the whole of what
                 // the pass block holds; the record says so directly.
@@ -7435,6 +7739,39 @@ bool run_dawn_engine(Engine& engine) {
                          std::to_string(draw.item.mesh.value) +
                          " reached the encode with no resolved variant.")
                             .c_str());
+                }
+#endif
+#if BBLITE_NODE_VARIANTS > 0
+                if (
+                    draw.item.material_kind ==
+                    upstream::RenderMaterialKind::node) {
+                    if (!mesh.node_group) {
+                        dawn_error(
+                            ("node draw for mesh " +
+                             std::to_string(draw.item.mesh.value) +
+                             " reached the encode with no bind group.")
+                                .c_str());
+                    }
+                    encode_variant_draw(
+                        list_pass,
+                        node_variant_pipeline(
+                            state,
+                            draw.item.shader_variant,
+                            draw.pipeline,
+                            samples,
+                            pass_has_depth),
+                        bound_pipeline,
+                        frame_group ? frame_group
+                                    : pinned_frame_group(state),
+                        mesh.node_group,
+                        // A node graph reads the baked vertices under the
+                        // identity world, like the Standard family.
+                        mesh.vertices,
+                        nullptr,
+                        1,
+                        mesh.indices,
+                        mesh.index_count);
+                    continue;
                 }
 #endif
 #if BBLITE_PBR_VARIANTS > 0
@@ -8216,7 +8553,7 @@ bool run_dawn_engine(Engine& engine) {
                 // zero depth clear. Only the legacy fallback keeps the
                 // forward pair.
                 bool task_has_pinned = false;
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIAL_VARIANTS
                 task_has_pinned =
                     pinned_lists_have_pinned_draws(render_task.draw_lists);
 #endif
@@ -8242,7 +8579,9 @@ bool run_dawn_engine(Engine& engine) {
                     wgpuCommandEncoderBeginRenderPass(
                         encoder,
                         &pass_descriptor);
-                WGPURenderPipeline bound_pipeline = nullptr;
+                // Both are read only by the composed families' arms below,
+                // so a scene reaching neither leaves them untouched.
+                [[maybe_unused]] WGPURenderPipeline bound_pipeline = nullptr;
                 const auto draw_geometry_list =
                     [&](const upstream::RenderDrawList& list) {
                         for (const upstream::RenderDrawCommand& draw :
@@ -8252,7 +8591,7 @@ bool run_dawn_engine(Engine& engine) {
                                 state.meshes.size()) {
                                 continue;
                             }
-                            DawnMesh& mesh =
+                            [[maybe_unused]] DawnMesh& mesh =
                                 state.meshes[draw.item_index];
 #if BBLITE_PBR_VARIANTS > 0
                             // The pin's own MRT arm for a PBR draw: the
