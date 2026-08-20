@@ -79,6 +79,7 @@ export function pinnedNodeVariantsHeader(
         }
         const firstFloat = uniformFloats.length;
         uniformFloats.push(...variant.composed.uboFloats);
+        const env = variant.composed.envBindings;
         entries.push(
             `    {${stringLiteral(variant.vertexStem)}, ` +
                 `${stringLiteral(variant.fragmentStem)}, ` +
@@ -89,7 +90,11 @@ export function pinnedNodeVariantsHeader(
                         ? "node_no_ubo"
                         : variant.composed.uboBinding
                 }, ` +
-                `${variant.composed.uboBytes}, ${firstFloat}},`,
+                `${variant.composed.uboBytes}, ${firstFloat}, ` +
+                `${variant.composed.usesLights}, ` +
+                `{${env ? "true" : "false"}, ${env?.iblTexture ?? 0}, ` +
+                `${env?.iblSampler ?? 0}, ${env?.brdfLut ?? 0}, ` +
+                `${env?.brdfSampler ?? 0}}},`,
         );
     }
     return `#pragma once
@@ -121,6 +126,22 @@ ${attributeRows.join("\n")}
 inline constexpr std::size_t node_no_ubo =
     std::numeric_limits<std::size_t>::max();
 
+/**
+ * The environment pair a graph reaching \`ReflectionBlock\` declares.
+ *
+ * \`node-env.ts\` allocates the four together and binds them from the scene's
+ * own \`EnvironmentTextures\` — the same specular cube and BRDF LUT the
+ * material families sample — so a PAL resolves them against what it holds
+ * rather than owning anything new.
+ */
+struct NodeVariantEnvBindings {
+    bool present;
+    std::uint32_t ibl_texture;
+    std::uint32_t ibl_sampler;
+    std::uint32_t brdf_lut;
+    std::uint32_t brdf_sampler;
+};
+
 struct NodeVariantEntry {
     /** The deployed stem of each stage; both name one module. */
     std::string_view vertex_stem;
@@ -135,6 +156,9 @@ struct NodeVariantEntry {
     std::size_t ubo_bytes;
     /** Where this graph's block starts in the float table below. */
     std::size_t first_uniform_float;
+    /** Whether the graph reads the scene lights at group 0 binding 1. */
+    bool uses_lights;
+    NodeVariantEnvBindings env;
 };
 
 inline constexpr std::array<

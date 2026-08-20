@@ -2289,12 +2289,13 @@ WGPUBindGroup pinned_geometry_frame_group(DawnState& state) {
 void write_pinned_geometry_prologue(
     DawnState& state,
     const Scene& scene,
+    const Engine& engine,
     const CameraRecord& camera,
     DawnGeometryTask& geometry,
     const std::array<float, 16>& geometry_matrix) {
     pinned_geometry_frame_group(state);
     const upstream::SceneUniforms scene_block =
-        pinned_scene_block(scene, camera, geometry_matrix);
+        pinned_scene_block(scene, engine, camera, geometry_matrix);
     wgpuQueueWriteBuffer(
         state.queue,
         state.pinned_geometry_scene_uniforms,
@@ -2694,6 +2695,7 @@ void write_pinned_geometry_task(
     write_pinned_geometry_prologue(
         state,
         scene,
+        engine,
         camera,
         geometry,
         geometry_matrix);
@@ -2760,7 +2762,7 @@ void write_pinned_frame_blocks(
     const std::array<float, 16>& view_projection) {
     ensure_pinned_frame_buffers(state);
     const upstream::SceneUniforms scene_block =
-        pinned_scene_block(scene, camera, view_projection);
+        pinned_scene_block(scene, engine, camera, view_projection);
     wgpuQueueWriteBuffer(
         state.queue,
         state.pinned_scene_uniforms,
@@ -3252,6 +3254,7 @@ void write_standard_geometry_task(
     write_pinned_geometry_prologue(
         state,
         scene,
+        engine,
         camera,
         geometry,
         geometry_matrix);
@@ -3999,6 +4002,34 @@ WGPUBindGroupLayout node_draw_layout_for(
         node_entry.buffer.type = WGPUBufferBindingType_Uniform;
         entries.push_back(node_entry);
     }
+    if (entry.env.present) {
+        // The pin's own four, in the order `emitEnv` allocates them: the
+        // specular cube and its sampler, then the BRDF LUT and its own.
+        WGPUBindGroupLayoutEntry cube = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        cube.binding = entry.env.ibl_texture;
+        cube.visibility = WGPUShaderStage_Fragment;
+        cube.texture.sampleType = WGPUTextureSampleType_Float;
+        cube.texture.viewDimension = WGPUTextureViewDimension_Cube;
+        entries.push_back(cube);
+        WGPUBindGroupLayoutEntry cube_sampler =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        cube_sampler.binding = entry.env.ibl_sampler;
+        cube_sampler.visibility = WGPUShaderStage_Fragment;
+        cube_sampler.sampler.type = WGPUSamplerBindingType_Filtering;
+        entries.push_back(cube_sampler);
+        WGPUBindGroupLayoutEntry lut = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        lut.binding = entry.env.brdf_lut;
+        lut.visibility = WGPUShaderStage_Fragment;
+        lut.texture.sampleType = WGPUTextureSampleType_Float;
+        lut.texture.viewDimension = WGPUTextureViewDimension_2D;
+        entries.push_back(lut);
+        WGPUBindGroupLayoutEntry lut_sampler =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        lut_sampler.binding = entry.env.brdf_sampler;
+        lut_sampler.visibility = WGPUShaderStage_Fragment;
+        lut_sampler.sampler.type = WGPUSamplerBindingType_Filtering;
+        entries.push_back(lut_sampler);
+    }
     WGPUBindGroupLayoutDescriptor descriptor =
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.label = string_view("node-mesh");
@@ -4201,6 +4232,31 @@ WGPUBindGroup build_node_draw_group(
         node_entry.buffer = mesh.node_uniforms;
         node_entry.size = static_cast<std::uint64_t>(entry.ubo_bytes);
         entries.push_back(node_entry);
+    }
+    if (entry.env.present) {
+        // `pushEnvBindGroupEntries` binds the scene's own EnvironmentTextures,
+        // which is what the material families already sample here.
+        if (!state.environment_cube_view || !state.brdf_view) {
+            dawn_error(
+                "a node graph reaches the environment in a scene that "
+                "loaded none.");
+        }
+        const auto texture = [&](std::uint32_t binding, WGPUTextureView view) {
+            WGPUBindGroupEntry item = WGPU_BIND_GROUP_ENTRY_INIT;
+            item.binding = binding;
+            item.textureView = view;
+            entries.push_back(item);
+        };
+        const auto sampler = [&](std::uint32_t binding, WGPUSampler value) {
+            WGPUBindGroupEntry item = WGPU_BIND_GROUP_ENTRY_INIT;
+            item.binding = binding;
+            item.sampler = value;
+            entries.push_back(item);
+        };
+        texture(entry.env.ibl_texture, state.environment_cube_view);
+        sampler(entry.env.ibl_sampler, state.default_sampler);
+        texture(entry.env.brdf_lut, state.brdf_view);
+        sampler(entry.env.brdf_sampler, state.clamp_sampler);
     }
     WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     descriptor.layout = node_draw_layout_for(state, variant);
@@ -7565,6 +7621,7 @@ bool run_dawn_engine(Engine& engine) {
                     const upstream::SceneUniforms task_scene_block =
                         pinned_scene_block(
                             scene,
+                            engine,
                             task_camera,
                             task_matrix);
                     task_pinned_frame_group(state, render_task);

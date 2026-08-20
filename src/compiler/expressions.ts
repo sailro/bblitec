@@ -521,6 +521,49 @@ export class ExpressionLowerer {
         return conditional;
     }
 
+    /**
+     * `scene.lights.push(light)`, which is what `addToScene` does with one.
+     *
+     * The pin's own `addToScene` branches on the entity: a light takes
+     * `ctx.lights.push(entity)` and then recurses into `entity.children`,
+     * which a scene-code light has none of. So the two spellings are the same
+     * call here, and a scene that writes the collection directly reaches the
+     * lowering the intrinsic already has rather than a second one.
+     */
+    private compileSceneLightPush(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        if (
+            callee.name.text !== "push" ||
+            !ts.isPropertyAccessExpression(callee.expression) ||
+            callee.expression.name.text !== "lights"
+        ) {
+            return undefined;
+        }
+        const scene = this.context.compileValue(
+            callee.expression.expression,
+        );
+        if (scene.kind !== "scene") return undefined;
+        if (call.arguments.length !== 1) {
+            this.context.fail(
+                call,
+                "Reached scene light list push takes one light.",
+            );
+        }
+        const light = this.context.compileValue(call.arguments[0]!);
+        if (light.kind !== "light") {
+            this.context.fail(
+                call.arguments[0]!,
+                `Expected light, received ${light.kind}.`,
+            );
+        }
+        return {
+            kind: "void",
+            cpp: `bbl::add_to_scene(${scene.cpp}, ${light.cpp})`,
+        };
+    }
+
     private compileCall(call: ts.CallExpression): Value {
         const promise = compileImmediatePromise(
             this.context,
@@ -542,6 +585,13 @@ export class ExpressionLowerer {
                 );
             if (method) {
                 return method;
+            }
+            const sceneCollection = this.compileSceneLightPush(
+                call,
+                callee,
+            );
+            if (sceneCollection) {
+                return sceneCollection;
             }
             // A method on a constructed instance inlines with `this`
             // bound to that instance's field record.

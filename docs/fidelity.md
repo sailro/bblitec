@@ -204,6 +204,14 @@ number semantics in the pinned `mat4ComposeInto` and matrix multiply;
 this makes native glTF instance matrices bit-identical to the
 browser's uploaded thin-instance buffers.
 
+**The pin fills two spare scene-block lanes with the canvas size, and so does
+this port.** `_packSceneUniforms` writes `eng.canvas.width` into
+`vFogColor.w` and `eng.canvas.height` into `_envPad0` on every scene, in the
+base pack rather than through a contributor. Nothing in the material families
+reads either, which is why the two lanes went unwritten here until a node
+graph's `ScreenSizeBlock` read them back through the pin's own
+`vec2(scene.vFogColor.w, scene._envPad0)`.
+
 **The camera's scalars are doubles, and each float32 store in the chain is
 one the pin performs.** `alpha`, `beta`, `radius`, `target`, `position`,
 `fov`, `nearPlane` and `farPlane` are plain JavaScript numbers upstream,
@@ -217,6 +225,18 @@ back), `mat4PerspectiveLHToRef`, `mat4MultiplyInto`. A float record would
 round one store early, and that is not a rounding-sized difference:
 `Math.PI / 2` has `cos = 6.1e-17` as a double and `-4.4e-8` as its float32
 neighbour, which moves the whole second row of the view matrix.
+
+**A graph that writes its own fragment depth reaches the clip-z departure
+directly, and refuses.** `FragDepthBlock` hands the graph
+`@builtin(frag_depth)`, so the value it returns is a depth in the pin's own
+convention — near at 1, compared GREATER. This port's main pass keeps near at
+0 and compares LESS, which orders the same written value the opposite way.
+Scene 84 measures it: a depth ramp across the screen behind a second plane,
+28.041 full MAD with the bounding box and the red and green channels matching
+exactly, which is a swapped occlusion rather than a shading difference.
+Generation refuses the block for that reason; it closes when the renderer
+adopts the pinned convention outright, which is the same thing the ground
+residual below waits on.
 
 **The clip-z row is the one departure, and it reaches nothing else.** The
 pinned perspective maps `near -> 1` and `far -> 0`; the native main pass

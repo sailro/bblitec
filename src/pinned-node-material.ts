@@ -31,6 +31,20 @@ export interface ComposedNodeAttribute {
     name: string;
 }
 
+/**
+ * The four group-1 bindings a graph reaching the environment declares.
+ *
+ * `node-env.ts` allocates them together and binds them from the scene's own
+ * `EnvironmentTextures` — the same specular cube and BRDF LUT the material
+ * families sample — so the PAL resolves them against what it already holds.
+ */
+export interface ComposedNodeEnvBindings {
+    iblTexture: number;
+    iblSampler: number;
+    brdfLut: number;
+    brdfSampler: number;
+}
+
 /** What running the pin's node-material compiler produced. */
 export interface ComposedNodeMaterial {
     /** The module both stages compile from, the pin's own text. */
@@ -52,6 +66,14 @@ export interface ComposedNodeMaterial {
     attributes: readonly ComposedNodeAttribute[];
     /** `backFaceCulling` as the graph's JSON declares it. */
     backFaceCulling: boolean;
+    /**
+     * Whether the graph reads the scene's lights. The buffer is the one every
+     * composed family shares at group 0 binding 1, so this decides only
+     * whether a stage declares it — the block itself is already bound.
+     */
+    usesLights: boolean;
+    /** The environment bindings, or null when the graph reaches none. */
+    envBindings: ComposedNodeEnvBindings | null;
 }
 
 /** The pin's build state, by the field names `node-types.ts` gives them. */
@@ -67,6 +89,12 @@ interface PinnedNodeMaterial {
         _nodeUboSize: number;
         _nodeUboBinding: number | null;
         _textureBindings: readonly { _name: string }[];
+        _envBindings: {
+            _iblTexture: number;
+            _iblSampler: number;
+            _brdfLUT: number;
+            _brdfSampler: number;
+        } | null;
     };
     _state: PinnedNodeBuildState;
     _graph: {
@@ -121,22 +149,44 @@ function compositionEngine(): unknown {
  * module with an arm no PAL binds.
  */
 const refusedFlags: Readonly<Record<string, string>> = {
-    usesLightsUbo: "LightBlock",
-    usesEnv: "ReflectionBlock",
     usesMorphTargets: "MorphTargetsBlock",
-    usesScreenSize: "ScreenSizeBlock",
-    usesFragDepth: "FragDepthBlock",
     usesClipPlanes: "ClipPlanesBlock",
     usesMeshAttributeExists: "MeshAttributeExistsBlock",
-    usesClearcoat: "ClearCoatBlock",
-    usesSheen: "SheenBlock",
-    usesAnisotropy: "AnisotropyBlock",
-    usesIridescence: "IridescenceBlock",
-    usesSubsurface: "SubSurfaceBlock",
+    // A graph writing `@builtin(frag_depth)` puts the depth *convention* into
+    // its own output: the pin's main pass maps near to 1 and compares
+    // GREATER, and this port's maps near to 0 and compares LESS, so the same
+    // written value occludes the opposite way. Scene 84 measures it -- a
+    // depth ramp across the screen, 28.041 MAD with the bounding box and the
+    // red and green channels matching exactly, which is a swapped occlusion
+    // rather than a shading difference. This is the one place the recorded
+    // clip-z departure reaches a value rather than only the near-plane
+    // clipper, and it closes when the renderer adopts the pinned convention.
+    usesFragDepth: "FragDepthBlock",
 };
 
-/** The build-state flags a served graph is allowed to raise. */
-const servedFlags = new Set(["hasSkeleton", "hasInstances"]);
+/**
+ * The build-state flags a served graph is allowed to raise.
+ *
+ * The lights buffer and the environment pair are resources the PAL already
+ * holds for the material families. The five layer flags beside them declare
+ * nothing at all — `PBRMetallicRoughnessBlock` reads each one to decide which
+ * arithmetic to compose, and the resulting module binds the same seven
+ * resources either way — so serving the block serves them.
+ */
+const servedFlags = new Set([
+    "hasSkeleton",
+    "hasInstances",
+    "usesLightsUbo",
+    "usesEnv",
+    // The screen size rides the block's two spare lanes, which
+    // `_packSceneUniforms` fills for every scene.
+    "usesScreenSize",
+    "usesClearcoat",
+    "usesSheen",
+    "usesAnisotropy",
+    "usesIridescence",
+    "usesSubsurface",
+]);
 
 /**
  * The vertex inputs a PAL can serve out of our own vertex. The pin names an
@@ -217,6 +267,7 @@ export async function composeNodeMaterial(
             uboFloats[start + index] = value;
         });
     }
+    const env = material._compile._envBindings;
     return {
         wgsl: material._compile._wgsl,
         uboBytes: material._compile._nodeUboSize,
@@ -224,5 +275,14 @@ export async function composeNodeMaterial(
         uboFloats,
         attributes,
         backFaceCulling: material._graph.backFaceCulling,
+        usesLights: material._state["usesLightsUbo"] === true,
+        envBindings: env
+            ? {
+                iblTexture: env._iblTexture,
+                iblSampler: env._iblSampler,
+                brdfLut: env._brdfLUT,
+                brdfSampler: env._brdfSampler,
+            }
+            : null,
     };
 }

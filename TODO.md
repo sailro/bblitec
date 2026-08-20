@@ -350,21 +350,22 @@ that does to the deferred lane by default.
   - Scenes 205, 206 reach the billboard path but stop at engine options.
   - Scene 117: an unsupported constructor expression, then sprite picking.
   - Scenes 205, 206: engine options.
-- [ ] Extend node materials past the slice scenes 60, 61, 77-80, 82, 85, 88
-  and 89 measure. Each item is a block the composed graph reaches and this
-  port refuses by name at generation, so a scene's own error says which:
-  - `TextureBlock` / `ImageSourceBlock` (62, 81, 83 — those three also want
-    their module-level texture-URL constants resolved) and the group-1
-    texture pair the pin's pipeline builder allocates for each.
-  - `LightBlock` (63, 83) — the lights UBO already binds at group 0 binding 1;
-    what is missing is the per-mesh selection reaching a node draw's own mesh
-    block, which `node_mesh_block` already fills.
-  - `ReflectionBlock` plus `PBRMetallicRoughnessBlock` (67-71, 73, 87), which
-    the pin serves through `node-env.ts` — four more group-1 bindings and the
-    scene's environment cube.
+- [ ] Extend node materials past the slice scenes 60, 61, 63, 67-71, 77-80,
+  82, 85, 88 and 89 measure. Each item is a block the composed graph reaches
+  and this port refuses by name at generation, so a scene's own error says
+  which:
+  - `TextureBlock` / `ImageSourceBlock` (62, 73, 81, 83) and the group-1
+    texture pair the pin's pipeline builder allocates for each. 81 and 83
+    additionally load their texture from a `data:` URL, which asset
+    materialization treats as a path and fails to open.
   - `MorphTargetsBlock` (64, 66), two vertex storage bindings.
-  - `ScreenSizeBlock` and `FragDepthBlock` (84); `ClipPlanesBlock` and
-    `MeshAttributeExistsBlock` (86, which also wants `setClipPlane`).
+  - `ClipPlanesBlock` and `MeshAttributeExistsBlock` (86, which also wants
+    `setClipPlane`).
+  - `FragDepthBlock` (84). Not a binding: a graph writing
+    `@builtin(frag_depth)` writes a depth in the pin's own reverse-Z
+    convention, which this port's forward-Z main pass orders the opposite way
+    ([fidelity](docs/fidelity.md#shader-contract) carries the measurement).
+    It closes with the reverse-Z adoption below, not before.
   - alpha blending: the graph's own `alphaMode`, which needs the transparent
     bucket and the sort.
   - a graph reached through `getSceneNNNme()` behind a gzip payload (66, 72,
@@ -372,7 +373,20 @@ that does to the deferred lane by default.
   - `GeometryTextureOutputBlock` (149), the node family's geometry-MRT arm.
   - the `inputs` handles, which no reached scene writes: a scene setting one
     would need the node UBO rewritten per frame instead of folded.
-  - shadows (65, 66, 72), which need the shadow subsystem first.
+  - image-processing `toneMapping` (87) and shadows (65, 66, 72), neither of
+    which is a node-material contract.
+
+- [ ] Adopt the pin's reverse-Z convention in the main pass. The frame-graph
+  paths already render under it — the geometry tasks and the depth-only tasks
+  build their matrices with `build_view_projection(..., true)`, compare
+  GREATER and clear depth to zero — so what remains is the forward pass: its
+  view-projection, the depth compare on every main-pass pipeline (about
+  fourteen in the SDL PAL and twelve in Dawn), the depth clears, the skybox,
+  ground and solid-skybox builders that make their own view-projection, and
+  the CPU fallback. Two recorded residuals close with it: the ground quad a
+  camera stands inside, and `FragDepthBlock` above. Every measured scene has
+  to be re-measured cell by cell, because the change moves where depth
+  precision lands rather than only which comparison runs.
 - [ ] Scenes 62, 81, 83: resolve the module-level texture-URL constants
   (`SCENE62_TEXTURE_URL` and siblings).
 - [ ] Scene 63: support reached scene-light insertion.

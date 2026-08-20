@@ -993,7 +993,7 @@ void draw_pinned_variant(
     const upstream::PbrVariantEntry& variant_entry =
         upstream::pbr_variants[pinned_variant];
     const upstream::SceneUniforms pinned_scene =
-        pinned_scene_block(scene, camera, matrix);
+        pinned_scene_block(scene, engine, camera, matrix);
     const std::vector<std::uint8_t> pinned_lights =
         pinned_lights_block(scene, engine);
     const MeshRecord& pinned_record =
@@ -1338,13 +1338,22 @@ void draw_node_variant(
     const upstream::NodeVariantEntry& entry =
         upstream::node_variants[variant];
     const upstream::SceneUniforms pinned_scene =
-        pinned_scene_block(scene, camera, matrix);
+        pinned_scene_block(scene, engine, camera, matrix);
     const upstream::NodeMeshUniforms node_mesh =
         node_mesh_block(scene, engine, draw.item.mesh.value);
+    // The pin's own lights array, at the group-0 slot every composed family
+    // shares. Built only for a graph that declares it, since the walk and the
+    // block are pure cost for one that does not.
+    const std::vector<std::uint8_t> pinned_lights = entry.uses_lights
+        ? pinned_lights_block(scene, engine)
+        : std::vector<std::uint8_t>{};
     const auto resolve = [&](
                              const std::string& block) -> PinnedStageBlock {
         if (block == "scene") {
             return {&pinned_scene, sizeof(pinned_scene)};
+        }
+        if (block == "nmeLights") {
+            return {pinned_lights.data(), pinned_lights.size()};
         }
         if (block == "meshU") return {&node_mesh, sizeof(node_mesh)};
         if (block == "nodeU") {
@@ -1368,6 +1377,32 @@ void draw_node_variant(
         true,
         "node variant",
         resolve);
+    // The environment pair, by the pin's own names. The slot order is the
+    // sidecar's, which is what the compaction pass published.
+    const PinnedStageSlots& fragment_slots = state.node_fragment_slots[variant];
+    std::vector<SDL_GPUTextureSamplerBinding> fragment_textures;
+    fragment_textures.reserve(fragment_slots.textures.size());
+    for (const std::string& name : fragment_slots.textures) {
+        if (name == "nmeIblTexture") {
+            fragment_textures.push_back({state.environment, state.sampler});
+            continue;
+        }
+        if (name == "nmeBrdfLUT") {
+            fragment_textures.push_back(
+                {state.brdf_lut, state.background_sampler});
+            continue;
+        }
+        gpu_error(
+            ("node variant declares an unmapped resource '" + name + "'.")
+                .c_str());
+    }
+    if (!fragment_textures.empty()) {
+        SDL_BindGPUFragmentSamplers(
+            pass,
+            0,
+            fragment_textures.data(),
+            static_cast<Uint32>(fragment_textures.size()));
+    }
     const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
     SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
     const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
@@ -1656,7 +1691,7 @@ void draw_standard_variant(
     const upstream::StandardVariantEntry& entry =
         upstream::standard_variants[variant];
     const upstream::SceneUniforms pinned_scene =
-        pinned_scene_block(scene, camera, matrix);
+        pinned_scene_block(scene, engine, camera, matrix);
     const std::vector<std::uint8_t> pinned_lights =
         pinned_lights_block(scene, engine);
     const MeshRecord& record = engine.meshes[item.mesh.value];
