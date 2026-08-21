@@ -1115,7 +1115,11 @@ ${composed.wgsl}`,
         if (features.includes("material:standard")) {
             this.writeSource(
                 "upstream/src/material_standard.cpp",
-                factories.lowerStandardMaterialFactory(),
+                factories.lowerStandardMaterialFactory(
+                    features.includes(
+                        "material:standard-diffuse-render-texture",
+                    ),
+                ),
                 generated,
             );
         }

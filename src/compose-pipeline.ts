@@ -275,7 +275,10 @@ export async function composeScenePipeline({
                     "material:no-color-view",
                 ),
                 emissiveRenderTexture: result.manifest.features.includes(
-                    "renderer:geometry-output",
+                    "material:standard-emissive-render-texture",
+                ),
+                diffuseRenderTexture: result.manifest.features.includes(
+                    "material:standard-diffuse-render-texture",
                 ),
                 thinInstances:
                     result.manifest.features.includes(

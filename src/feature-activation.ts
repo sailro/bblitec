@@ -382,6 +382,17 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/sprite/sprite-2d-uvscroll.ts",
         consumers: CMAKE,
     },
+    "material:standard-diffuse-render-texture": {
+        provenance:
+            "src/material/standard/standard-material.ts diffuseTexture + " +
+            "src/texture/rtt.ts",
+        consumers: CMAKE,
+    },
+    "material:standard-emissive-render-texture": {
+        provenance:
+            "src/material/standard/set-std-emissive.ts + src/texture/rtt.ts",
+        consumers: CMAKE,
+    },
     "texture:file": {
         provenance:
             "src/texture/texture-2d.ts + src/texture/solid-texture.ts",

@@ -477,7 +477,7 @@ test("generates engine API wrappers over the PAL", () => {
 test("generates mesh and standard-material factories from upstream defaults", () => {
     const lowerer = new FactoryLowerer(new LoweringContext());
     const mesh = lowerer.lowerMeshFactories();
-    const material = lowerer.lowerStandardMaterialFactory();
+    const material = lowerer.lowerStandardMaterialFactory(false);
     const grid = lowerer.lowerGridMaterialFactory();
     const shader = lowerer.lowerShaderMaterialFactory();
     assert.match(mesh.source, /create_box\(Engine& engine, BoxOptions options\)/);

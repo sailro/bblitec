@@ -399,6 +399,15 @@ setters, and scene-local custom shader variants driven through their reflected
 uniform offsets. A setter stamps the material the call names, so a scene
 carrying several scene-code materials reaches each of them independently.
 
+A Standard material's `diffuseTexture` also takes a colour render target,
+which is how one pass displays another's output. The pin hands that
+attachment back carrying `invertY: true` and reads exactly that property to
+build the material's UV block, so the slot samples V-flipped — where a
+loaded image carries no such property and is flipped at upload instead.
+Only that source is lowered: an image texture and a depth-only render
+target each refuse by name, the second because the pin gives it the
+opposite flip and a different sampler.
+
 A shader material also takes the two remaining halves of its own program.
 Its `samplers` become the pin's own `<name>` / `<name>Sampler` pair, every
 one declared as the pin declares it and re-homed into this backend's

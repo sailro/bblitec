@@ -180,14 +180,24 @@ struct DawnMesh {
     std::uint32_t pinned_bone_count = 0;
 #endif
 #if BBLITE_STANDARD_VARIANTS > 0
-    // The Standard family's per-draw blocks and group-1 bind group, keyed
-    // by (variant, unfilterable-emissive) exactly like the layout.
-    WGPUBuffer standard_mesh_uniforms = nullptr;
-    WGPUBuffer standard_material_uniforms = nullptr;
-    WGPUBuffer standard_uv_uniforms = nullptr;
-    WGPUBindGroup standard_group = nullptr;
-    std::size_t standard_group_key =
-        std::numeric_limits<std::size_t>::max();
+    // The Standard family's per-draw blocks and group-1 bind group.
+    //
+    // Keyed by MATERIAL, not by this mesh alone: a render task may draw the
+    // mesh through a material of its own (`addMesh(mesh, { material })`),
+    // and the pin's plan gives that draw the mesh's own item index, so both
+    // draws arrive here as the same `DawnMesh`. One buffer set per mesh
+    // would let whichever block is written last poison the other pass --
+    // every queue write lands before the frame submits. The SDL backend is
+    // immune because it pushes the material block per draw.
+    struct StandardDrawState {
+        WGPUBuffer mesh_uniforms = nullptr;
+        WGPUBuffer material_uniforms = nullptr;
+        WGPUBuffer uv_uniforms = nullptr;
+        WGPUBindGroup group = nullptr;
+        // (variant, unfilterable-emissive), exactly like the layout's key.
+        std::size_t group_key = std::numeric_limits<std::size_t>::max();
+    };
+    std::map<std::uint32_t, StandardDrawState> standard_states;
     struct StandardGeometryDrawState {
         WGPUBuffer mesh_uniforms = nullptr;
         WGPUBuffer material_uniforms = nullptr;
@@ -225,6 +235,10 @@ struct DawnMesh {
     // Frame-graph source texture bound in the standard-emissive slot
     // (non-owning; resolved once frame-graph textures exist).
     WGPUTextureView emissive_render_view = nullptr;
+    // `material.diffuseTexture = <createRenderTargetTexture output>`: the
+    // colour attachment the Standard diffuse slot samples in place of
+    // decoded image bytes.
+    WGPUTextureView diffuse_render_view = nullptr;
     std::uint64_t transform_version = 0;
 #if BBLITE_GPU_DEFORMATION
     WGPUBuffer deformation_uniforms = nullptr;
@@ -824,6 +838,21 @@ struct DawnState : DawnDevice {
                 }
             }
             mesh.standard_geometry_states.clear();
+            for (auto& [material, draw_state] : mesh.standard_states) {
+                if (draw_state.group) {
+                    wgpuBindGroupRelease(draw_state.group);
+                }
+                if (draw_state.mesh_uniforms) {
+                    wgpuBufferRelease(draw_state.mesh_uniforms);
+                }
+                if (draw_state.material_uniforms) {
+                    wgpuBufferRelease(draw_state.material_uniforms);
+                }
+                if (draw_state.uv_uniforms) {
+                    wgpuBufferRelease(draw_state.uv_uniforms);
+                }
+            }
+            mesh.standard_states.clear();
 #endif
             if (mesh.material_uniforms) {
                 wgpuBufferRelease(mesh.material_uniforms);
@@ -3018,6 +3047,10 @@ WGPUBindGroup build_standard_draw_group(
     WGPUBuffer geometry_params,
     WGPUTextureView emissive_render_view) {
     const bool unfilterable_emissive = emissive_render_view != nullptr;
+    // Unlike the emissive view this needs no pipeline bit -- a colour
+    // attachment is an ordinary filterable float texture -- so it is read
+    // off the mesh rather than threaded through the call.
+    WGPUTextureView diffuse_render_view = mesh.diffuse_render_view;
     const upstream::StandardVariantEntry& entry =
         upstream::standard_variants[variant];
     // The fixed mesh@0/material@1 entries yield to reflected rows exactly
@@ -3123,6 +3156,19 @@ WGPUBindGroup build_standard_draw_group(
                 material->has_emissive_render_texture) {
                 view = emissive_render_view;
                 sampler = state.nearest_sampler;
+            } else if (
+                row.source ==
+                    upstream::MaterialTextureSource::base_color &&
+                material != nullptr &&
+                material->has_diffuse_render_texture) {
+                // `material.diffuseTexture = <render target>`: a colour
+                // attachment, which rtt.ts hands the pin's bilinear
+                // sampler (`getBilinearSampler`: linear mag/min over
+                // WebGPU's clamp default). This backend's clamp sampler
+                // differs only in its mip filter, and buildRenderTarget
+                // allocates one level, so nothing samples past mip 0.
+                view = diffuse_render_view;
+                sampler = state.clamp_sampler;
             } else {
                 // By source, not by name: the row names are the pin's own
                 // std bindings (dT/oT/rT...), the slot table's names are
@@ -3175,7 +3221,12 @@ WGPUBindGroup build_standard_draw_group(
 }
 
 /** The per-draw uniform buffers for a mesh's Standard draws. */
-void ensure_standard_draw_buffers(DawnState& state, DawnMesh& mesh) {
+DawnMesh::StandardDrawState& ensure_standard_draw_buffers(
+    DawnState& state,
+    DawnMesh& mesh,
+    std::uint32_t material) {
+    DawnMesh::StandardDrawState& draw_state =
+        mesh.standard_states[material];
     const auto uniform_buffer = [&](std::size_t size) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = static_cast<std::uint64_t>(size);
@@ -3184,18 +3235,19 @@ void ensure_standard_draw_buffers(DawnState& state, DawnMesh& mesh) {
         if (!buffer) dawn_error("standard draw buffer creation failed.");
         return buffer;
     };
-    if (!mesh.standard_mesh_uniforms) {
-        mesh.standard_mesh_uniforms =
+    if (!draw_state.mesh_uniforms) {
+        draw_state.mesh_uniforms =
             uniform_buffer(sizeof(upstream::MeshUniforms));
     }
-    if (!mesh.standard_material_uniforms) {
-        mesh.standard_material_uniforms =
+    if (!draw_state.material_uniforms) {
+        draw_state.material_uniforms =
             uniform_buffer(upstream::standard_material_ubo_bytes);
     }
-    if (!mesh.standard_uv_uniforms) {
-        mesh.standard_uv_uniforms =
+    if (!draw_state.uv_uniforms) {
+        draw_state.uv_uniforms =
             uniform_buffer(sizeof(upstream::StandardUvTransformUniforms));
     }
+    return draw_state;
 }
 
 /** Writes one Standard draw's pinned blocks for the frame. */
@@ -3313,7 +3365,11 @@ void write_standard_geometry_task(
                 draw.item.material.value < engine.materials.size()
                     ? &engine.materials[draw.item.material.value]
                     : nullptr;
-            ensure_standard_draw_buffers(state, mesh);
+            DawnMesh::StandardDrawState& colour_state =
+                ensure_standard_draw_buffers(
+                    state,
+                    mesh,
+                    draw.item.material.value);
             DawnMesh::StandardGeometryDrawState& draw_state =
                 mesh.standard_geometry_states[variant];
             // A LOCAL_POSITION variant's mesh block carries the node world
@@ -3344,8 +3400,8 @@ void write_standard_geometry_task(
                 draw,
                 variant,
                 draw_state.mesh_uniforms,
-                mesh.standard_material_uniforms,
-                mesh.standard_uv_uniforms);
+                colour_state.material_uniforms,
+                colour_state.uv_uniforms);
             if (!draw_state.group) {
                 draw_state.group = build_standard_draw_group(
                     state,
@@ -3353,8 +3409,8 @@ void write_standard_geometry_task(
                     material,
                     variant,
                     draw_state.mesh_uniforms,
-                    mesh.standard_material_uniforms,
-                    mesh.standard_uv_uniforms,
+                    colour_state.material_uniforms,
+                    colour_state.uv_uniforms,
                     geometry.pinned_geometry_params,
                     nullptr);
             }
@@ -7307,11 +7363,15 @@ bool run_dawn_engine(Engine& engine) {
                                 ? &engine.materials[
                                       draw.item.material.value]
                                 : nullptr;
-                        ensure_standard_draw_buffers(state, draw_mesh);
+                        DawnMesh::StandardDrawState& standard_state =
+                            ensure_standard_draw_buffers(
+                                state,
+                                draw_mesh,
+                                draw.item.material.value);
                         // The bind group builds at encode: a depth-sampled
                         // emissive render texture's view resolves only
                         // after the frame-graph textures exist.
-                        draw_mesh.standard_group_key = variant * 2 +
+                        standard_state.group_key = variant * 2 +
                             ((standard_material &&
                               standard_material
                                   ->has_emissive_render_texture)
@@ -7323,9 +7383,9 @@ bool run_dawn_engine(Engine& engine) {
                             engine,
                             draw,
                             variant,
-                            draw_mesh.standard_mesh_uniforms,
-                            draw_mesh.standard_material_uniforms,
-                            draw_mesh.standard_uv_uniforms);
+                            standard_state.mesh_uniforms,
+                            standard_state.material_uniforms,
+                            standard_state.uv_uniforms);
 #else
                         dawn_error(
                             "Standard draw in a build with no composed "
@@ -7590,24 +7650,39 @@ bool run_dawn_engine(Engine& engine) {
                 }
                 const MaterialRecord& material =
                     engine.materials[item.material.value];
-                if (!material.has_emissive_render_texture) continue;
-                const RenderTextureRef& reference =
-                    material.emissive_render_texture;
-                if (
-                    reference.source !=
-                        RenderTextureSource::render_target ||
-                    reference.target.value >=
-                        state.render_targets.size()) {
-                    dawn_error(
-                        "emissive render texture source is not "
-                        "implemented yet.");
-                }
-                const DawnRenderTarget& source_target =
-                    state.render_targets[reference.target.value];
-                state.meshes[item_index].emissive_render_view =
-                    source_target.depth_copy_view
+                // Both reached writes -- `setStandardEmissiveTexture` and
+                // `material.diffuseTexture` -- name a
+                // `createRenderTargetTexture` output, and rtt.ts hands back
+                // the depth view for a depth-only target and the colour
+                // view otherwise.
+                const auto material_render_view =
+                    [&](const RenderTextureRef& reference)
+                    -> WGPUTextureView {
+                    if (
+                        reference.source !=
+                            RenderTextureSource::render_target ||
+                        reference.target.value >=
+                            state.render_targets.size()) {
+                        dawn_error(
+                            "a material render texture must name a render "
+                            "target built by createRenderTargetTexture.");
+                    }
+                    const DawnRenderTarget& source_target =
+                        state.render_targets[reference.target.value];
+                    return source_target.depth_copy_view
                         ? source_target.depth_copy_view
                         : source_target.sampled_color_view;
+                };
+                if (material.has_emissive_render_texture) {
+                    state.meshes[item_index].emissive_render_view =
+                        material_render_view(
+                            material.emissive_render_texture);
+                }
+                if (material.has_diffuse_render_texture) {
+                    state.meshes[item_index].diffuse_render_view =
+                        material_render_view(
+                            material.diffuse_render_texture);
+                }
             }
             for (const TaskHandle handle : scene.tasks) {
                 const FrameTaskRecord& task =
@@ -7793,29 +7868,35 @@ bool run_dawn_engine(Engine& engine) {
                 }
 #endif
 #if BBLITE_STANDARD_VARIANTS > 0
+                const auto standard_entry =
+                    mesh.standard_states.find(draw.item.material.value);
                 if (
                     draw.item.material_kind ==
-                    upstream::RenderMaterialKind::standard &&
-                    mesh.standard_group_key !=
+                        upstream::RenderMaterialKind::standard &&
+                    standard_entry != mesh.standard_states.end() &&
+                    standard_entry->second.group_key !=
                         std::numeric_limits<std::size_t>::max()) {
-                    const std::size_t variant = mesh.standard_group_key / 2;
-                    if (!mesh.standard_group) {
+                    DawnMesh::StandardDrawState& standard_state =
+                        standard_entry->second;
+                    const std::size_t variant =
+                        standard_state.group_key / 2;
+                    if (!standard_state.group) {
                         const MaterialRecord* standard_material =
                             draw.item.material.value <
                                     engine.materials.size()
                                 ? &engine.materials[
                                       draw.item.material.value]
                                 : nullptr;
-                        mesh.standard_group = build_standard_draw_group(
+                        standard_state.group = build_standard_draw_group(
                             state,
                             mesh,
                             standard_material,
                             variant,
-                            mesh.standard_mesh_uniforms,
-                            mesh.standard_material_uniforms,
-                            mesh.standard_uv_uniforms,
+                            standard_state.mesh_uniforms,
+                            standard_state.material_uniforms,
+                            standard_state.uv_uniforms,
                             nullptr,
-                            (mesh.standard_group_key & 1) != 0
+                            (standard_state.group_key & 1) != 0
                                 ? mesh.emissive_render_view
                                 : nullptr);
                     }
@@ -7837,11 +7918,11 @@ bool run_dawn_engine(Engine& engine) {
                             draw.pipeline,
                             samples,
                             pass_has_depth,
-                            (mesh.standard_group_key & 1) != 0),
+                            (standard_state.group_key & 1) != 0),
                         bound_pipeline,
                         frame_group ? frame_group
                                     : pinned_frame_group(state),
-                        mesh.standard_group,
+                        standard_state.group,
                         // The Standard families carry no glTF X-mirror: the
                         // baked buffer is the pin's own convention already.
                         mesh.vertices,

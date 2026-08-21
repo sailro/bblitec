@@ -196,6 +196,20 @@ struct GpuMeshSlotMembers {
     SDL_GPUSampler* GpuMesh::* sampler = nullptr;
 };
 
+/**
+ * The frame-graph attachments a Standard draw samples in place of decoded
+ * image bytes.
+ *
+ * Two slots reach this: the depth-sampled emissive texture
+ * `setStandardEmissiveTexture` names, and the colour attachment a
+ * `material.diffuseTexture` write names. They are resolved once per draw
+ * rather than inside the binding walk, which carries no engine.
+ */
+struct StandardRenderTextures {
+    SDL_GPUTexture* base_color = nullptr;
+    SDL_GPUTexture* standard_emissive = nullptr;
+};
+
 GpuMeshSlotMembers mesh_slot_members(
     upstream::MaterialTextureSource source) {
     using Source = upstream::MaterialTextureSource;
@@ -1459,16 +1473,79 @@ void ensure_standard_slots(GpuState& state, std::size_t variant) {
 }
 
 /**
+ * The attachment a material's render-texture reference names.
+ *
+ * Both reached writes -- `setStandardEmissiveTexture` and
+ * `material.diffuseTexture` -- take a `createRenderTargetTexture` output,
+ * which is an eagerly built render target and nothing else, so that is the
+ * one source resolved here. A geometry attachment or the swapchain refuses
+ * by name rather than binding something plausible.
+ */
+SDL_GPUTexture* material_render_texture(
+    GpuState& state,
+    const Engine& engine,
+    const RenderTextureRef& reference) {
+    if (
+        reference.source != RenderTextureSource::render_target ||
+        reference.target.value >= state.render_targets.size()) {
+        gpu_error(
+            "a material render texture must name a render target built by "
+            "createRenderTargetTexture.");
+    }
+    const RenderTargetRecord& record =
+        engine.render_targets[reference.target.value];
+    const GpuRenderTarget& target =
+        state.render_targets[reference.target.value];
+    if (record.swapchain) {
+        gpu_error("a material cannot sample the swapchain.");
+    }
+    // rtt.ts hands back the colour view when there is one and the
+    // depth-only view otherwise; the same split decides which of this
+    // target's textures a material samples.
+    if (!record.has_color) {
+        if (!record.has_depth || !target.depth) {
+            gpu_error(
+                "a material render texture names a target with neither "
+                "colour nor depth.");
+        }
+        return target.depth;
+    }
+    return target.sampled_color;
+}
+
+/** The frame-graph attachments one Standard material samples. */
+StandardRenderTextures standard_render_textures(
+    GpuState& state,
+    const Engine& engine,
+    const MaterialRecord* material) {
+    StandardRenderTextures textures;
+    if (!material) return textures;
+    if (material->has_diffuse_render_texture) {
+        textures.base_color = material_render_texture(
+            state,
+            engine,
+            material->diffuse_render_texture);
+    }
+    if (material->has_emissive_render_texture) {
+        textures.standard_emissive = material_render_texture(
+            state,
+            engine,
+            material->emissive_render_texture);
+    }
+    return textures;
+}
+
+/**
  * Which of our resources the pin's own name for a Standard binding refers
  * to. The name->slot rows are the generated `standard_binding_resources`;
- * the cube reflection pair and the depth-sampled emissive render texture
- * are the two resources outside the material slot table.
+ * the cube reflection pair and the two render-texture slots are the
+ * resources outside the material slot table.
  */
 PinnedResource standard_resource_for(
     GpuState& state,
     const GpuMesh& mesh,
     const MaterialRecord* material,
-    SDL_GPUTexture* emissive_render_texture,
+    const StandardRenderTextures& render_textures,
     const std::string& name) {
     for (
         const upstream::StandardBindingResource& row :
@@ -1485,7 +1562,20 @@ PinnedResource standard_resource_for(
             // The compiled `material.emissiveTexture = <render texture>`
             // setter: the pin's depth-sampled texture, bound with the
             // non-filtering depth sampler.
-            return {emissive_render_texture, state.depth_sampler};
+            return {render_textures.standard_emissive, state.depth_sampler};
+        }
+        if (
+            row.source == upstream::MaterialTextureSource::base_color &&
+            material != nullptr &&
+            material->has_diffuse_render_texture) {
+            // `material.diffuseTexture = <render texture>`: a colour
+            // attachment, which rtt.ts hands the pin's bilinear sampler.
+            // `getBilinearSampler`: linear mag/min over clamp
+            // addressing, which is the descriptor `ground_sampler` was
+            // already built with (its `max_lod` 0 and the pin's nearest
+            // mip filter agree, because buildRenderTarget allocates one
+            // level).
+            return {render_textures.base_color, state.ground_sampler};
         }
         const GpuMeshSlotMembers members = mesh_slot_members(row.source);
         if (members.texture != nullptr) {
@@ -1688,7 +1778,7 @@ void draw_standard_variant(
     SDL_GPUGraphicsPipeline*& bound_pipeline,
     const FrameTaskRecord* geometry_task = nullptr,
     const PinnedGeometryParams* geometry_params = nullptr,
-    SDL_GPUTexture* emissive_render_texture = nullptr,
+    StandardRenderTextures render_textures = {},
     SDL_GPUBuffer* geometry_params_buffer = nullptr) {
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline =
@@ -1768,7 +1858,7 @@ void draw_standard_variant(
                 state,
                 mesh,
                 material,
-                emissive_render_texture,
+                render_textures,
                 name);
             return SDL_GPUTextureSamplerBinding{
                 resource.texture,
@@ -5510,13 +5600,10 @@ bool run_gpu_engine(Engine& engine) {
                                     bound_pipeline,
                                     geometry_task,
                                     geometry_params,
-                                    material &&
-                                            material
-                                                ->has_emissive_render_texture
-                                        ? source_texture(
-                                              material
-                                                  ->emissive_render_texture)
-                                        : nullptr,
+                                    standard_render_textures(
+                                        state,
+                                        engine,
+                                        material),
                                     geometry_params_buffer);
                                 continue;
                             }

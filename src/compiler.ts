@@ -216,6 +216,8 @@ const featureSources: Record<Feature, string[]> = {
     "sprite:2d": [],
     "sprite:uv-scroll": [],
     "sprite:custom-shader": [],
+    "material:standard-diffuse-render-texture": [],
+    "material:standard-emissive-render-texture": [],
     "texture:file": [],
     "texture:pixels": [],
     "sprite:billboard": [],

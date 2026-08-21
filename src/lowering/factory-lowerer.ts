@@ -2976,10 +2976,53 @@ MaterialHandle create_grid_material(
         };
     }
 
-    public lowerStandardMaterialFactory(): LoweredSource {
+    /**
+     * The colour arm of `createRenderTargetTexture`, which is what a
+     * `material.diffuseTexture` write binds.
+     *
+     * `geometry-output-lowerer.ts` already anchors the depth arm of this
+     * same declaration (`aspect: 'depth-only'`, `_sampleType: 'depth'`,
+     * `getNearestSampler`). These are its twin: the colour view carries
+     * `invertY: true`, which `isStandardUvInverted` reads to flip the
+     * material's UV block, and takes the bilinear sampler. Folding either
+     * without anchoring it would agree with the pin only until it changes.
+     */
+    private assertPinnedRenderTargetColourArm(): void {
+        const { declaration } = this.context.functionDeclaration(
+            "src/texture/rtt.ts",
+            "createRenderTargetTexture",
+        );
+        if (
+            !this.context.hasNode(
+                declaration,
+                (node) =>
+                    ts.isPropertyAssignment(node) &&
+                    this.context.propertyName(node.name) === "invertY" &&
+                    node.initializer.kind === ts.SyntaxKind.TrueKeyword,
+            )
+        ) {
+            this.context.contractError(
+                declaration,
+                "Expected the colour render-target view to carry invertY: true.",
+            );
+        }
+        if (!this.context.hasCall(declaration, "getBilinearSampler")) {
+            this.context.contractError(
+                declaration,
+                "Expected bilinear sampling for colour render-target views.",
+            );
+        }
+    }
+
+    public lowerStandardMaterialFactory(
+        diffuseRenderTexture: boolean,
+    ): LoweredSource {
         const modulePath = "src/material/standard/create-standard-material.ts";
         const symbolName = "createStandardMaterial";
         const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
+        if (diffuseRenderTexture) {
+            this.assertPinnedRenderTargetColourArm();
+        }
         const returnStatement = declaration.body!.statements.find(
             (statement): statement is ts.ReturnStatement =>
                 ts.isReturnStatement(statement) && statement.expression !== undefined,
@@ -3003,9 +3046,15 @@ MaterialHandle create_grid_material(
             modulePath,
             symbolName,
             header: "",
-            source: `// ${this.context.provenance(modulePath, symbolName)}
+            source: `// ${diffuseRenderTexture
+            ? this.context.provenance(
+                modulePath,
+                symbolName,
+                "src/texture/rtt.ts#createRenderTargetTexture and src/material/standard/standard-pipeline.ts#isStandardUvInverted",
+            )
+            : this.context.provenance(modulePath, symbolName)}
 #include <bblite/runtime.hpp>
-
+${diffuseRenderTexture ? "\n#include <stdexcept>\n" : ""}
 namespace bbl {
 
 MaterialHandle create_standard_material(Engine& engine) {
@@ -3021,6 +3070,30 @@ MaterialHandle create_standard_material(Engine& engine) {
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }
 
+${diffuseRenderTexture
+            ? `
+// The plain material.diffuseTexture write, for the one source the reached
+// slice gives it: a colour render target.
+//
+// src/texture/rtt.ts hands that attachment back as a Texture2D carrying
+// invertY: true, and isStandardUvInverted reads exactly that property off
+// the diffuse texture, so the material's UV block flips V. A loaded image
+// carries no such property -- loadTexture2D flips at upload instead --
+// which is why the record's uv_invert_y and invert_y are separate fields.
+void set_standard_diffuse_render_texture(
+    Engine& engine,
+    MaterialHandle material,
+    RenderTextureRef texture) {
+    if (material.value >= engine.materials.size()) {
+        throw std::runtime_error("Invalid material handle.");
+    }
+    MaterialRecord& record = engine.materials[material.value];
+    record.diffuse_render_texture = texture;
+    record.has_diffuse_render_texture = true;
+    record.base_color_texture.uv_invert_y = true;
+}
+`
+            : ""}
 } // namespace bbl
 `,
         };

@@ -310,7 +310,34 @@ that does to the deferred lane by default.
   static record property — 226 `container._gaussianSplats ?? []`, 251
   `xbot.animationGroups ?? []`. Splats, animation groups and the Recast lane sit
   behind them.
-- [ ] Scenes 18, 25: support Standard ground diffuse textures.
+- [ ] Key the PBR and node draw state by material on Dawn, as the Standard
+  colour path now is. `build_render_task_draw_lists` gives a per-pass
+  material override the mesh's own item index, so both draws reach the PAL
+  as one `DawnMesh`; SDL_GPU pushes each block per draw and is immune,
+  while Dawn writes one buffer per mesh and the last write wins.
+  `pinned_mesh_uniforms`/`pinned_material_uniforms`/`pinned_group` and the
+  node pair still key by mesh, and `ensure_pinned_draw_bindings` rebuilds
+  the group when the variant changes, so a second material both poisons the
+  block and steals the group. The compensating guard that survives from
+  before is `pal_dawn.cpp`'s no-color skip, whose comment says it "keeps the
+  no-color override materials from rewriting the shared buffers" — the
+  general fix deletes it. Unreached today: scene 116's PBR override goes
+  through the depth-only path, which binds no material state. One
+  `(material, variant)` map serving all four families is the shape.
+- [ ] Extend `material.diffuseTexture` past the colour render target scene
+  110 measures. Two sources refuse by name: an image texture, and a
+  depth-only `createRenderTargetTexture` output — `rtt.ts` forks on the
+  attachment, giving a colour view `invertY: true` plus the bilinear
+  sampler and a depth view `invertY: false` plus the nearest one, and the
+  setter folds the colour arm. The record and the loader already carry the
+  image half (`base_color_texture`, filled by the `.babylon` loader), so a
+  scene-code write adds that write plus the right `uv_invert_y`: false for
+  `loadTexture2D`, true for the KTX2/Basis and texture-array uploads
+  `pinned-standard-variants.ts` already names. Scenes 18, 25, 90 and 272
+  sit behind it and each wants more besides: 18 the shadow family and
+  `loadTexture2D`, 25 `loadKtxTexture2D` and `uvScale`, 90 `alphaCutOff`
+  plus a static-array loop and a canvas2D data URL built in the entry file,
+  272 `cloneTransformNode` and `createSolidTexture2D`.
 - [ ] Scene 20: lower an arrow function bound to a name and used as a value.
 - [ ] Scenes 26, 87: support image-processing `toneMapping`.
 - [ ] Scene 36: support `loadBasisTexture2D`.
@@ -407,7 +434,6 @@ that does to the deferred lane by default.
 - [ ] Scene 86: support `setClipPlane`.
 - [ ] Scene 91: support `initializeCsg2Async`.
 - [ ] Scene 99: support `enableBoneControl`.
-- [ ] Scenes 90, 110: support Standard material diffuse textures.
 - [ ] Scene 111: support mesh IDs.
 - [ ] Scene 112: resolve and lower `addDdsEnvironmentBackground`.
 - [ ] Scenes 113, 129: support mesh names.
