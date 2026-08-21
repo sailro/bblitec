@@ -298,6 +298,7 @@ export function compileAssetIntrinsic(
                 `bbl::TextureAddressMode::repeat, ` +
                 `bbl::TextureAddressMode::repeat, ` +
                 `1.0f, ${mipMaps ? "1000.0f" : "0.0f"}}`;
+            context.reachFeature("texture:file", call);
             return {
                 kind: "texture",
                 cpp:

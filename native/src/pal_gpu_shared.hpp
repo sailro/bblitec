@@ -1361,6 +1361,34 @@ inline BonePaletteLayout bone_palette_layout(std::uint32_t bones) {
 }
 #endif
 
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+/**
+ * A shader material carrying fewer textures than its stage samples.
+ *
+ * Both backends raise it through their own error function, so the message
+ * is composed once here the way `standard_variant_request` already is. It
+ * describes a generation bug -- the record is filled by the compiled
+ * `setShaderTexture` calls -- rather than a draw to skip.
+ */
+inline std::string shader_sampler_shortfall(
+    const upstream::ShaderVariantInfo& info,
+    std::size_t carried) {
+    return "shader variant '" + std::string(info.name) + "' declares " +
+        std::to_string(info.samplers.size()) +
+        " sampler(s); the material carries " + std::to_string(carried) +
+        " texture(s).";
+}
+
+/** A compiled stage keeping a register the material never declared. */
+inline std::string shader_sampler_unmapped(
+    const upstream::ShaderVariantInfo& info,
+    const std::string& texture_name) {
+    return "shader variant '" + std::string(info.name) +
+        "' binds texture '" + texture_name +
+        "', which its samplers option never declared.";
+}
+#endif
+
 #if BBLITE_STANDARD_VARIANTS > 0
 /** The pair `standard_variant_for` looks a draw up by, or none. */
 struct StandardVariantKey {

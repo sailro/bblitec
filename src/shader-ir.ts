@@ -82,6 +82,16 @@ export interface ShaderProgramReflection {
     attributes: Array<{ name: string; location: number; type: ShaderType }>;
     varyings: ShaderStructMember[];
     uniformBlocks: ShaderUniformBlockReflection[];
+    /**
+     * The declared samplers, in declaration order — which is the order
+     * `setShaderTexture` indexes and the order the emitted pairs take
+     * (`@binding(2n)` / `@binding(2n + 1)`).
+     *
+     * Every declared pair is emitted, as the pin's own prelude emits it. A
+     * pair the compiled stage drops is the shader compiler's decision, and
+     * the `.slots` sidecar it publishes is what the PAL binds by.
+     */
+    samplers: string[];
 }
 
 export interface ShaderIrProgram {
@@ -450,21 +460,30 @@ function parseUniformSignature(signature: string): { name: string; type: ShaderT
     return { name, type: type as ShaderType };
 }
 
+/**
+ * Whether any path the expression reads satisfies `matches`.
+ *
+ * The two questions this answers are the same walk over the same node
+ * kinds: a uniform read is `shaderSystem.x` / `shaderUniforms.x` (two
+ * parts), and a sampler read is the bare `<name>` / `<name>Sampler` the
+ * caller's `textureSample` names (one part). Parameterizing the leaf test
+ * keeps one exhaustive switch per node type, so a new IR kind is one edit
+ * rather than four.
+ */
 function expressionUsesPath(
     expression: ShaderExpression,
-    root: string,
-    member: string,
+    matches: (parts: readonly string[]) => boolean,
 ): boolean {
     switch (expression.kind) {
         case "binary":
-            return expressionUsesPath(expression.left, root, member) ||
-                expressionUsesPath(expression.right, root, member);
+            return expressionUsesPath(expression.left, matches) ||
+                expressionUsesPath(expression.right, matches);
         case "call":
         case "construct":
             return expression.arguments.some((argument) =>
-                expressionUsesPath(argument, root, member));
+                expressionUsesPath(argument, matches));
         case "path":
-            return expression.parts[0] === root && expression.parts[1] === member;
+            return matches(expression.parts);
         case "number":
             return false;
     }
@@ -472,24 +491,54 @@ function expressionUsesPath(
 
 function statementUsesPath(
     statement: ShaderStatement,
-    root: string,
-    member: string,
+    matches: (parts: readonly string[]) => boolean,
 ): boolean {
     switch (statement.kind) {
         case "assign":
-            return expressionUsesPath(statement.target, root, member) ||
-                expressionUsesPath(statement.value, root, member);
+            return expressionUsesPath(statement.target, matches) ||
+                expressionUsesPath(statement.value, matches);
         case "if":
-            return expressionUsesPath(statement.condition, root, member) ||
+            return expressionUsesPath(statement.condition, matches) ||
                 statement.statements.some((nested) =>
-                    statementUsesPath(nested, root, member));
+                    statementUsesPath(nested, matches));
         case "let":
         case "return":
-            return expressionUsesPath(statement.value, root, member);
+            return expressionUsesPath(statement.value, matches);
         case "discard":
         case "var":
             return false;
     }
+}
+
+/** Whether a stage reads the uniform block member `root.member`. */
+function stageReadsUniform(
+    module: ShaderModule,
+    root: string,
+    member: string,
+): boolean {
+    return module.entryPoint.statements.some((statement) =>
+        statementUsesPath(
+            statement,
+            (parts) => parts[0] === root && parts[1] === member,
+        ));
+}
+
+/**
+ * Whether a stage samples the declared sampler `name`.
+ *
+ * Both halves of the pin's generated pair count: a body naming only the
+ * `<name>Sampler` companion still needs the binding, and the two are
+ * declared and bound together either way.
+ */
+function stageReadsSampler(
+    module: ShaderModule,
+    name: string,
+): boolean {
+    return module.entryPoint.statements.some((statement) =>
+        statementUsesPath(
+            statement,
+            (parts) => parts[0] === name || parts[0] === `${name}Sampler`,
+        ));
 }
 
 function typeComponents(type: ShaderType): number {
@@ -516,18 +565,15 @@ function reflectUniformBlock(
     module: ShaderModule,
     uniforms: Array<{ name: string; type: ShaderType }>,
 ): ShaderUniformBlockReflection | undefined {
-    const statements = module.entryPoint.statements;
     const systemMatrix = uniforms.some(
         ({ name }) =>
             name === "worldViewProjection" &&
-            statements.some((statement) =>
-                statementUsesPath(statement, "shaderSystem", name)),
+            stageReadsUniform(module, "shaderSystem", name),
     );
     const custom = uniforms.filter(
         ({ name }) =>
             name !== "worldViewProjection" &&
-            statements.some((statement) =>
-                statementUsesPath(statement, "shaderUniforms", name)),
+            stageReadsUniform(module, "shaderUniforms", name),
     );
     if (!systemMatrix && custom.length === 0) return undefined;
 
@@ -585,6 +631,19 @@ export function lowerWgslShaderProgram(
         return { name, ...attribute };
     });
     const uniforms = source.uniforms.map(parseUniformSignature);
+    // A sampler pair binds in the fragment stage alone here. The pin
+    // declares both stages' visibility, but SDL_GPU gives a vertex texture
+    // its own register space, and no reached scene samples in a vertex
+    // stage, so one that does refuses rather than binding at the fragment
+    // stage's registers.
+    for (const name of source.samplers ?? []) {
+        if (stageReadsSampler(vertex, name)) {
+            throw new Error(
+                `Shader material sampler '${name}' is read by the vertex stage, which is not lowered.`,
+            );
+        }
+    }
+    const samplers = [...(source.samplers ?? [])];
     const vertexBlock = reflectUniformBlock("vertex", vertex, uniforms);
     const fragmentBlock = reflectUniformBlock("fragment", fragment, uniforms);
     const vertexOutput = vertex.structs.find(
@@ -610,6 +669,7 @@ export function lowerWgslShaderProgram(
             uniformBlocks: [vertexBlock, fragmentBlock].filter(
                 (block): block is ShaderUniformBlockReflection => !!block,
             ),
+            samplers,
         },
     };
 }

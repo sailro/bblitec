@@ -89,6 +89,10 @@ export interface MaterialIntrinsicContext
         nameExpression: ts.Expression,
         expectedCounts: number[],
     ): { offset: number; count: number };
+    resolveShaderTextureSlot(
+        material: Value,
+        nameExpression: ts.Expression,
+    ): number;
     compileShaderUniformComponents(
         expression: ts.Expression,
         count: number,
@@ -151,7 +155,7 @@ export function compileMaterialIntrinsic(
             if (channels.length === 3) {
                 channels.push("1.0f");
             }
-            context.reachFeature("material:pbr", call);
+            context.reachFeature("texture:file", call);
             return {
                 kind: "texture",
                 cpp:
@@ -435,6 +439,53 @@ export function compileMaterialIntrinsic(
                 call,
                 [1, 2, 3, 4],
             );
+        }
+
+        case "setShaderTexture": {
+            // src/material/shader/shader-material.ts: the setter stores the
+            // texture on the slot the sampler name owns and bumps the
+            // material's resource version so the bind group rebuilds. The
+            // slot is settled at generation, and the reached slice binds
+            // once before registration, so what stays at run time is the
+            // texture itself.
+            context.expectArgumentCount(call, 3, 3);
+            const material =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                material,
+                "material",
+                call.arguments[0]!,
+            );
+            const slot = context.resolveShaderTextureSlot(
+                material,
+                call.arguments[1]!,
+            );
+            const texture =
+                context.compileValue(call.arguments[2]!);
+            context.expectKind(
+                texture,
+                "texture",
+                call.arguments[2]!,
+            );
+            // The reached slice binds a loaded image. `createSolidTexture2D`
+            // and `createTexture2DFromPixels` are the same value kind but
+            // different native types, so without this they would compile to
+            // a C++ overload error in the generated tree rather than a
+            // refusal naming the call.
+            if (!texture.textureFile) {
+                context.fail(
+                    call.arguments[2]!,
+                    "Reached shader-material textures come from loadTexture2D.",
+                );
+            }
+            context.expectSameEngine(material, texture, call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_shader_texture(` +
+                    `${context.requireEngine(material, call)}, ` +
+                    `${material.cpp}, ${slot}u, ${texture.cpp})`,
+            };
         }
 
         case "setShaderFloat": {

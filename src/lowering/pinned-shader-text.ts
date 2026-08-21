@@ -27,10 +27,13 @@ import type { LoweringContext } from "./context.js";
  * it.
  */
 /**
- * One record in a list the pin loops over — an extra texture's `name`, say.
- * Only string fields are read, which is all a shader builder needs of one.
+ * One record in a list the pin loops over — an extra texture's `name`, or a
+ * `defines` entry whose `value` decides both the WGSL type word and the
+ * literal, which is why a field is not only a string.
  */
-export type ShaderTextRecord = Readonly<Record<string, string>>;
+export type ShaderTextRecord = Readonly<
+    Record<string, string | boolean | number>
+>;
 
 export type ShaderTextBinding =
     | string
@@ -60,6 +63,25 @@ const RELATIONS = new Map<
     ts.SyntaxKind,
     (left: number, right: number) => boolean
 >([[ts.SyntaxKind.LessThanToken, (left, right) => left < right]]);
+
+/**
+ * The host functions a pinned text builder calls on a bound value rather
+ * than declaring itself. `formatDefineValue` reaches both: it separates an
+ * integer define from a fractional one and prints whichever it got. They
+ * are listed rather than dispatched by name so a builder reaching a third
+ * one refuses instead of evaluating something this table never checked.
+ */
+const HOST_CALLS = new Map<
+    string,
+    (argument: ShaderTextBinding) => ShaderTextBinding
+>([
+    [
+        "Number.isInteger",
+        (argument) =>
+            typeof argument === "number" && Number.isInteger(argument),
+    ],
+    ["String", (argument) => String(argument)],
+]);
 
 function isRecord(
     value: ShaderTextBinding,
@@ -492,6 +514,22 @@ export class PinnedShaderText {
         return value;
     }
 
+    /**
+     * The text one pinned expression produces for a bound permutation.
+     *
+     * `evaluate` runs a whole builder; this runs a fragment of one, which is
+     * what a caller needs when only part of a pinned prelude belongs to it —
+     * the `defines` loop's own line, say, from a builder whose remaining
+     * output this port re-addresses.
+     */
+    public text(
+        modulePath: string,
+        expression: ts.Expression,
+        parameters: ReadonlyMap<string, ShaderTextBinding>,
+    ): string {
+        return this.evaluateString(expression, parameters, modulePath);
+    }
+
     /** A string, boolean, number, or bound list the pinned text reads. */
     private evaluateValue(
         expression: ts.Expression,
@@ -501,6 +539,19 @@ export class PinnedShaderText {
         const node = this.context.unwrapExpression(expression);
         if (ts.isNumericLiteral(node)) {
             return Number(node.text);
+        }
+        if (ts.isTypeOfExpression(node)) {
+            return typeof this.evaluateValue(
+                node.expression,
+                scope,
+                modulePath,
+            );
+        }
+        if (ts.isCallExpression(node)) {
+            const host = this.hostCall(node, scope, modulePath);
+            if (host !== undefined) {
+                return host;
+            }
         }
         if (
             ts.isBinaryExpression(node) &&
@@ -579,6 +630,33 @@ export class PinnedShaderText {
         return this.evaluateString(node, scope, modulePath);
     }
 
+    /**
+     * A call to one of the host functions above, or undefined when the
+     * callee is a builder this evaluator should walk instead. A host name
+     * carrying anything other than one argument refuses, because the table
+     * above only checked the one-argument form.
+     */
+    private hostCall(
+        node: ts.CallExpression,
+        scope: ReadonlyMap<string, ShaderTextBinding>,
+        modulePath: string,
+    ): ShaderTextBinding | undefined {
+        const path = this.context.propertyPath(node.expression);
+        const host = path && HOST_CALLS.get(path.join("."));
+        if (!host) {
+            return undefined;
+        }
+        if (node.arguments.length !== 1) {
+            this.context.contractError(
+                node,
+                `Pinned shader text calls '${path!.join(".")}' with ${node.arguments.length} arguments; this evaluator folds the one-argument form.`,
+            );
+        }
+        return host(
+            this.evaluateValue(node.arguments[0]!, scope, modulePath),
+        );
+    }
+
     private evaluateString(
         expression: ts.Expression,
         scope: ReadonlyMap<string, ShaderTextBinding>,
@@ -628,6 +706,18 @@ export class PinnedShaderText {
                 scope,
                 modulePath,
             );
+        }
+        if (ts.isCallExpression(node)) {
+            const host = this.hostCall(node, scope, modulePath);
+            if (host !== undefined) {
+                if (typeof host !== "string") {
+                    this.context.contractError(
+                        node,
+                        "Pinned shader text splices a host call that is not text.",
+                    );
+                }
+                return host;
+            }
         }
         // A builder called by name, whose parameters bind positionally from
         // the arguments evaluated here. It is looked for in this module and

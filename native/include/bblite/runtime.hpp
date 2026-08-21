@@ -1042,6 +1042,10 @@ struct MaterialRecord {
     // multiplies the uniform against this texel, so a baked zero stays zero.
     std::array<std::uint8_t, 4> orm_fallback{255, 255, 255, 255};
     RenderTextureRef emissive_render_texture{};
+    // A shader material's own sampler slots, in the order its `samplers`
+    // option declared them (`_textureSlots` upstream). Empty for every other
+    // family, and for a shader material whose WGSL samples nothing.
+    std::vector<FileTexture> shader_textures;
     std::uint32_t reflection_cube = invalid_handle;
     float reflection_level = 1.0f;
     // The pin's 2D reflection slot: the non-cube arm of the same
@@ -1413,6 +1417,11 @@ void set_shader_uniform_value(
     float v1,
     float v2,
     float v3);
+void set_shader_texture(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot,
+    FileTexture texture);
 void set_alpha_to_coverage(
     Engine& engine,
     MaterialHandle material,

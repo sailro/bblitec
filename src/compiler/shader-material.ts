@@ -14,6 +14,7 @@ import {
 } from "../shader-ir.js";
 import {
     shaderMaterialPrograms,
+    shaderSamplerName,
     shaderUniformValueLayout,
 } from "../shader-material-programs.js";
 import {
@@ -23,10 +24,33 @@ import {
     type ObjectValidationContext,
 } from "./option-helpers.js";
 import type {
+    CompiledShaderDefine,
     CompiledShaderProgram,
     CompiledShaderUniformDefault,
     Value,
 } from "./types.js";
+
+/**
+ * What `createShaderMaterial` accepts as a WGSL identifier
+ * (`assertIdentifier` in `src/material/shader/shader-material.ts`). It is
+ * the rule behind both the sampler and the define refusal, so it is stated
+ * once.
+ */
+const WGSL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * How many sampler pairs a shader material may declare.
+ *
+ * The Dawn backend binds every mesh pipeline outside the composed material
+ * families through one superset group-2 layout, whose fifth pair is the
+ * environment/reflection cube (`pal_dawn.cpp`, the `pair == 4` arm of the
+ * layout's `viewDimension`). A fifth 2D pair would land in that entry and
+ * fail inside `wgpuDeviceCreateBindGroup` at run time, on one backend only,
+ * so the reached slice stops at four and says so here instead. Lifting it
+ * means a per-variant layout, the way the composed families already build
+ * one.
+ */
+const MAX_SHADER_SAMPLERS = 4;
 
 export interface ShaderMaterialContext
     extends ObjectValidationContext,
@@ -69,12 +93,14 @@ export function compileShaderMaterialOptions(
             "fragmentSource",
             "attributes",
             "uniforms",
+            "samplers",
+            "defines",
             "needAlphaBlending",
             "needAlphaTesting",
             "backFaceCulling",
             "depthWrite",
         ],
-        "Reached shader materials support source, attributes, uniforms, alpha state, culling, and depthWrite only.",
+        "Reached shader materials support source, attributes, uniforms, samplers, defines, alpha state, culling, and depthWrite only.",
     );
 
     const vertexExpression = context.objectProperty(object, "vertexSource");
@@ -100,6 +126,25 @@ export function compileShaderMaterialOptions(
     const attributes = compileStaticStringArray(context, attributesExpression);
     const { signatures: uniforms, defaults: uniformDefaults } =
         compileShaderUniformSignatures(context, uniformsExpression);
+    // `createShaderMaterial` asserts one namespace across the uniform,
+    // sampler and define names it generates, so the set is built once here
+    // and each normalizer adds its own to it.
+    const generatedNames = new Set(
+        uniforms.map((signature) => {
+            const separator = signature.indexOf(":");
+            return separator < 1 ? signature : signature.slice(0, separator);
+        }),
+    );
+    const samplers = compileShaderSamplers(
+        context,
+        context.objectProperty(object, "samplers"),
+        generatedNames,
+    );
+    const defines = compileShaderDefines(
+        context,
+        context.objectProperty(object, "defines"),
+        generatedNames,
+    );
     const needAlphaBlending = compileOptionalStaticBoolean(
         context,
         context.objectProperty(object, "needAlphaBlending"),
@@ -125,6 +170,8 @@ export function compileShaderMaterialOptions(
         if (
             stringArraysEqual(attributes, program.attributes) &&
             stringArraysEqual(uniforms, program.uniforms) &&
+            stringArraysEqual(samplers, program.samplers ?? []) &&
+            definesEqual(defines, program.defines ?? []) &&
             needAlphaBlending === program.needAlphaBlending &&
             needAlphaTesting === program.needAlphaTesting &&
             backFaceCulling === program.backFaceCulling &&
@@ -138,6 +185,8 @@ export function compileShaderMaterialOptions(
                     fragmentSource,
                     attributes,
                     uniforms,
+                    samplers,
+                    defines,
                     needAlphaBlending,
                     needAlphaTesting,
                     backFaceCulling,
@@ -166,6 +215,8 @@ export function compileShaderMaterialOptions(
                     attributes: program.attributes,
                     uniforms: program.uniforms,
                     uniformDefaults: [],
+                    samplers: [...(program.samplers ?? [])],
+                    defines: [...(program.defines ?? [])],
                     needAlphaBlending: program.needAlphaBlending,
                     needAlphaTesting: program.needAlphaTesting,
                     backFaceCulling: program.backFaceCulling,
@@ -226,6 +277,8 @@ export function compileShaderMaterialOptions(
         attributes,
         uniforms,
         uniformDefaults,
+        samplers,
+        defines,
         needAlphaBlending,
         needAlphaTesting,
         backFaceCulling,
@@ -280,6 +333,145 @@ export function compileShaderMaterialOptions(
     }
     void reflection;
     return reachShaderProgram(context, sceneProgram);
+}
+
+/**
+ * The `samplers` list, normalized the way `createShaderMaterial` normalizes
+ * it: each name a WGSL identifier, unique against every other generated
+ * name, together with the `<name>Sampler` companion the prelude writes
+ * beside it (the pin reserves both).
+ *
+ * The reached slice is the bare-string form. The pin also takes a
+ * `ShaderSamplerDecl` object naming a sample type, a view dimension or a
+ * comparison sampler, and each of those changes the declared WGSL texture
+ * type and the sampler's own kind, so one refuses by name rather than
+ * compiling to the float/2d pair a plain string means.
+ */
+function compileShaderSamplers(
+    context: ShaderMaterialContext,
+    expression: ts.Expression | undefined,
+    used: Set<string>,
+): string[] {
+    if (!expression) {
+        return [];
+    }
+    const samplers: string[] = [];
+    for (const element of context.expectStaticArrayLiteral(expression)
+        .elements) {
+        // A typed `ShaderSamplerDecl` names its own sample type, view
+        // dimension or comparison mode, each of which changes the declared
+        // WGSL texture and sampler types, so it refuses rather than
+        // compiling to the float/2d pair a plain string means. Everything
+        // else goes through the same static-string resolution `attributes`
+        // and `uniforms` take, so a module constant naming a sampler works
+        // in all three.
+        if (
+            ts.isObjectLiteralExpression(
+                context.resolveStaticExpression(element),
+            )
+        ) {
+            context.fail(
+                element,
+                "Reached shader-material samplers are named by a string; a typed sampler declaration is not lowered.",
+            );
+        }
+        const name = context.compileStaticString(element);
+        if (!WGSL_IDENTIFIER.test(name)) {
+            context.fail(
+                element,
+                `Shader material sampler '${name}' is not a valid WGSL identifier.`,
+            );
+        }
+        for (const generated of [name, shaderSamplerName(name)]) {
+            if (used.has(generated)) {
+                context.fail(
+                    element,
+                    `Shader material sampler '${name}' collides with another generated identifier.`,
+                );
+            }
+            used.add(generated);
+        }
+        samplers.push(name);
+    }
+    if (samplers.length > MAX_SHADER_SAMPLERS) {
+        context.fail(
+            expression,
+            `Reached shader materials declare at most ${MAX_SHADER_SAMPLERS} samplers; this one declares ${samplers.length}.`,
+        );
+    }
+    return samplers;
+}
+
+/**
+ * The `defines` map, normalized the way `createShaderMaterial` normalizes
+ * it: every entry validated as a WGSL identifier, unique against the names
+ * the material already generates, and the set sorted by name so two scenes
+ * declaring the same defines in different orders compose the same prelude.
+ *
+ * The value stays a boolean or a number here because that is what decides
+ * the emitted `const`'s type and literal, and the pin's own prelude line
+ * makes that decision (`pinnedShaderDefineLines`).
+ */
+function compileShaderDefines(
+    context: ShaderMaterialContext,
+    expression: ts.Expression | undefined,
+    used: Set<string>,
+): CompiledShaderDefine[] {
+    if (!expression) {
+        return [];
+    }
+    const object = context.expectObjectLiteral(expression);
+    const defines: CompiledShaderDefine[] = [];
+    for (const property of object.properties) {
+        if (!ts.isPropertyAssignment(property)) {
+            context.fail(
+                property,
+                "Shader material defines must be plain name/value properties.",
+            );
+        }
+        const name = context.propertyName(property.name);
+        if (!name || !WGSL_IDENTIFIER.test(name)) {
+            context.fail(
+                property,
+                `Shader material define '${name ?? property.name.getText()}' is not a valid WGSL identifier.`,
+            );
+        }
+        if (used.has(name)) {
+            context.fail(
+                property,
+                `Shader material define '${name}' collides with another generated identifier.`,
+            );
+        }
+        used.add(name);
+        const resolved = context.resolveStaticExpression(
+            property.initializer,
+        );
+        const value =
+            resolved.kind === ts.SyntaxKind.TrueKeyword
+                ? true
+                : resolved.kind === ts.SyntaxKind.FalseKeyword
+                    ? false
+                    : expectStaticNumber(context, resolved);
+        defines.push({ name, value });
+    }
+    // src/material/shader/shader-material.ts sorts the normalized set the
+    // same way before storing it, and the prelude emits it in that order.
+    defines.sort((left, right) => left.name.localeCompare(right.name));
+    return defines;
+}
+
+function definesEqual(
+    left: readonly CompiledShaderDefine[],
+    right: readonly { name: string; value: boolean | number }[],
+): boolean {
+    return (
+        left.length === right.length &&
+        left.every(
+            (entry, index) =>
+                entry.name === right[index]!.name &&
+                entry.value === right[index]!.value,
+        )
+    );
 }
 
 function compileShaderUniformSignatures(
@@ -423,6 +615,39 @@ export function resolveShaderUniform(
         );
     }
     return entry;
+}
+
+/**
+ * Which of a shader material's sampler slots a `setShaderTexture` name
+ * binds. The pin looks the name up in the material's own `_textureSlots`
+ * map at run time; here the declaration order is the binding order and the
+ * map is settled at generation, so the write lowers to an index.
+ */
+export function resolveShaderTextureSlot(
+    context: ShaderMaterialContext,
+    material: Value,
+    nameExpression: ts.Expression,
+): number {
+    if (!material.shaderVariant) {
+        context.fail(
+            nameExpression,
+            "Shader texture writes require a shader material.",
+        );
+    }
+    const program = reachedShaderProgram(
+        context,
+        material.shaderVariant,
+        nameExpression,
+    );
+    const name = context.compileStringLiteral(nameExpression);
+    const slot = program.samplers.indexOf(name);
+    if (slot < 0) {
+        context.fail(
+            nameExpression,
+            `Shader variant '${program.name}' declares no sampler '${name}'.`,
+        );
+    }
+    return slot;
 }
 
 export function compileShaderUniformComponents(

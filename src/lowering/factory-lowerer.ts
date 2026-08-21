@@ -2149,7 +2149,7 @@ MaterialHandle create_node_material(
         return {
             modulePath,
             symbolName:
-                "createShaderMaterial,setShaderUniform,setShaderFloat,setShaderVector3,setAlphaToCoverage",
+                "createShaderMaterial,setShaderUniform,setShaderFloat,setShaderVector3,setShaderTexture,setAlphaToCoverage",
             header: "",
             source: `// ${this.context.provenance(modulePath, "createShaderMaterial")}
 #include <bblite/runtime.hpp>
@@ -2254,6 +2254,23 @@ void set_shader_uniform_value(
     float v3) {
     const float values[4] = {v0, v1, v2, v3};
     set_shader_uniform_values(engine, material, offset, 4u, values);
+}
+
+// setShaderTexture: the pin stores the Texture2D on the slot the sampler
+// name owns and bumps _resourceVersion so the group-1 bind group rebuilds.
+// The compiler resolved the name to that slot; the version has no native
+// counterpart because a reached scene binds before registration, so the
+// bind group is built once from what the record holds.
+void set_shader_texture(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot,
+    FileTexture texture) {
+    MaterialRecord& record = shader_material(engine, material);
+    if (record.shader_textures.size() <= slot) {
+        record.shader_textures.resize(slot + 1);
+    }
+    record.shader_textures[slot] = std::move(texture);
 }
 
 void set_alpha_to_coverage(
@@ -2398,9 +2415,20 @@ PixelsTexture create_texture_2d_from_pixels(
         };
     }
 
-    public lowerPbrMaterialFactory(): LoweredSource {
+    /**
+     * The two scene-code Texture2D sources, in a translation unit of their
+     * own.
+     *
+     * They live in the pin's own `src/texture/` rather than in any material
+     * module, and a scene can reach them without reaching PBR at all -- a
+     * custom shader material binding a loaded image is the case. Bundling
+     * them into the PBR factory made `loadTexture2D` an undefined symbol
+     * for such a scene, which is upstream's boundary expressed wrongly
+     * here; `texture_pixels.cpp` already carries the third source this way.
+     */
+    public lowerFileTextureFactory(): LoweredSource {
         const solidModule = "src/texture/solid-texture.ts";
-        const pbrModule = "src/material/pbr/pbr-material.ts";
+        const textureModule = "src/texture/texture-2d.ts";
         const { declaration: createSolidTexture } =
             this.context.functionDeclaration(
                 solidModule,
@@ -2449,6 +2477,70 @@ PixelsTexture create_texture_2d_from_pixels(
                 "Expected rgba8unorm solid textures.",
             );
         }
+        this.context.functionDeclaration(
+            textureModule,
+            "loadTexture2D",
+        );
+        return {
+            modulePath: textureModule,
+            symbolName: "loadTexture2D,createSolidTexture2D",
+            header: "",
+            source: `// ${this.context.provenance(
+                textureModule,
+                "loadTexture2D",
+                `${solidModule}#createSolidTexture2D`,
+            )}
+#include <bblite/runtime.hpp>
+#include <bblite/pal.hpp>
+
+#include <algorithm>
+#include <cmath>
+
+namespace bbl {
+
+// src/texture/texture-2d.ts loadTexture2D: the encoded image bytes load at
+// startup (the compiler materialized the asset), and the sampler mirrors the
+// pinned defaults (linear filters, repeat addressing, invertY true, srgb
+// false; mip sampling clamps to the base level when mipMaps is false).
+FileTexture load_file_texture(
+    Engine&,
+    const std::string& path,
+    TextureSamplerState sampler,
+    bool invert_y,
+    bool srgb) {
+    FileTexture texture;
+    texture.data.bytes = pal::read_binary_file(path);
+    texture.data.sampler = sampler;
+    texture.data.invert_y = invert_y;
+    texture.srgb = srgb;
+    return texture;
+}
+
+SolidTexture create_solid_texture(
+    Engine&,
+    float r,
+    float g,
+    float b,
+    float a) {
+    const auto quantize = [](float value) {
+        return static_cast<float>(
+            std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f)) / 255.0f;
+    };
+    return SolidTexture{Color4{
+        quantize(r),
+        quantize(g),
+        quantize(b),
+        quantize(a),
+    }};
+}
+
+} // namespace bbl
+`,
+        };
+    }
+
+    public lowerPbrMaterialFactory(): LoweredSource {
+        const pbrModule = "src/material/pbr/pbr-material.ts";
         // The opt-in setters replaced the unlit/skyboxMode options. Each is
         // one stamp plus an unconditional extension registration, and the
         // stamped field name is what `composeScenePbrVariants` hands the
@@ -2535,45 +2627,18 @@ PixelsTexture create_texture_2d_from_pixels(
                 "Expected initial PBR UBO version 0.",
             );
         }
-        this.context.functionDeclaration(
-            "src/texture/texture-2d.ts",
-            "loadTexture2D",
-        );
         return {
             modulePath: pbrModule,
-            symbolName: "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence,createSolidTexture2D,loadTexture2D",
+            symbolName: "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence",
             header: "",
-            source: `// ${this.context.provenance(
-                pbrModule,
-                "createPbrMaterial",
-                `${solidModule}#createSolidTexture2D, src/texture/texture-2d.ts#loadTexture2D`,
-            )}
+            source: `// ${this.context.provenance(pbrModule, "createPbrMaterial")}
 #include <bblite/runtime.hpp>
-#include <bblite/pal.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <utility>
 
 namespace bbl {
-
-// src/texture/texture-2d.ts loadTexture2D: the encoded image bytes load at
-// startup (the compiler materialized the asset), and the sampler mirrors the
-// pinned defaults (linear filters, repeat addressing, invertY true, srgb
-// false; mip sampling clamps to the base level when mipMaps is false).
-FileTexture load_file_texture(
-    Engine&,
-    const std::string& path,
-    TextureSamplerState sampler,
-    bool invert_y,
-    bool srgb) {
-    FileTexture texture;
-    texture.data.bytes = pal::read_binary_file(path);
-    texture.data.sampler = sampler;
-    texture.data.invert_y = invert_y;
-    texture.srgb = srgb;
-    return texture;
-}
 
 // Attaches a loaded base-color image to a created PBR material. The base
 // color slot always samples sRGB natively, matching the srgb: true contract
@@ -2584,24 +2649,6 @@ void set_material_base_color_file(
     FileTexture texture) {
     engine.materials[material.value].base_color_texture =
         std::move(texture.data);
-}
-
-SolidTexture create_solid_texture(
-    Engine&,
-    float r,
-    float g,
-    float b,
-    float a) {
-    const auto quantize = [](float value) {
-        return static_cast<float>(
-            std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f)) / 255.0f;
-    };
-    return SolidTexture{Color4{
-        quantize(r),
-        quantize(g),
-        quantize(b),
-        quantize(a),
-    }};
 }
 
 // src/material/pbr/set-unlit.ts and set-skybox.ts: the optional PBR
