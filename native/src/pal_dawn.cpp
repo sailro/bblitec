@@ -7432,6 +7432,15 @@ bool run_dawn_engine(Engine& engine) {
                             state.frame_color_format,
                             WGPUTextureFormat_Depth24PlusStencil8,
                             state.sample_count));
+                    // The atlas reports the chain it allocated; the blit
+                    // that fills it is this state's.
+                    const DawnBillboardPass& built =
+                        state.billboard_passes.back();
+                    generate_mipmaps(
+                        state,
+                        built.atlas,
+                        WGPUTextureFormat_RGBA8Unorm,
+                        built.atlas_mip_levels);
                 }
             }
             for (DawnBillboardPass& billboard : state.billboard_passes) {

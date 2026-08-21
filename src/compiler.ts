@@ -135,6 +135,7 @@ import type {
     CompileOptions,
     CompileResult,
     CompiledNodeMaterial,
+    CompiledNodeParticles,
     CompiledShaderProgram,
     Feature,
     GeometryOutputTaskManifest,
@@ -163,10 +164,13 @@ export type {
     PostProcessTaskManifest,
     ShaderMaterialVariantName,
 } from "./compiler/types.js";
+import { isNodeParticleValue } from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import {
     shaderMaterialPrograms,
 } from "./shader-material-programs.js";
+import { assertDeterministicRandomUnreached } from "./compiler/deterministic-random.js";
+import { nodeParticleManifest } from "./compiler/intrinsics/particle.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
 
 const featureSources: Record<Feature, string[]> = {
@@ -225,6 +229,10 @@ const featureSources: Record<Feature, string[]> = {
     "texture:file": [],
     "texture:pixels": [],
     "sprite:billboard": [],
+    // A frozen node-particle system draws through the billboard family; the
+    // simulation itself is baked at generation, so nothing of the pin's own
+    // particle runtime compiles.
+    "particle:node": [],
     "sprite:billboard-axis-locked": [],
     "sprite:billboard-cutout": [],
     "sprite:billboard-custom-shader": [],
@@ -365,6 +373,11 @@ class Compiler
     public readonly assets = new Map<string, CompileAsset>();
     public readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
     public readonly reachedNodeMaterials: CompiledNodeMaterial[] = [];
+    public readonly reachedNodeParticles: CompiledNodeParticles = {
+        sets: [],
+        steps: [],
+        billboards: [],
+    };
     /** The pinned tone-mapping export the scene selected, if any. */
     private selectedToneMapping: string | undefined;
     private readonly reachedEffects_: EffectManifest[] = [];
@@ -442,6 +455,11 @@ class Compiler
         for (const statement of this.entryStatements()) {
             this.emitStatement(statement);
         }
+        assertDeterministicRandomUnreached(
+            this,
+            this.jsRandomReached,
+            this.sourceFile,
+        );
 
         const features = featureOrder.filter((feature) => this.features.has(feature));
         // Emitted in `features` order so the parallel record serializes
@@ -469,6 +487,9 @@ class Compiler
         return {
             cpp: this.renderCpp(features),
             cmake: this.renderCmake(features, runtimeSources, generatedSources),
+            ...(this.reachedNodeParticles.sets.length > 0
+                ? { nodeParticles: this.reachedNodeParticles }
+                : {}),
             manifest: {
                 source: this.options.fileName,
                 features,
@@ -488,6 +509,13 @@ class Compiler
                             ),
                     ),
                 nodeMaterials: this.reachedNodeMaterials,
+                ...(this.reachedNodeParticles.sets.length > 0
+                    ? {
+                          nodeParticles: nodeParticleManifest(
+                              this.reachedNodeParticles,
+                          ),
+                      }
+                    : {}),
                 ...(this.selectedToneMapping
                     ? { toneMapping: this.selectedToneMapping }
                     : {}),
@@ -683,7 +711,8 @@ class Compiler
             // to carries only that it has one, so there is nothing to
             // declare natively.
             value.kind === "sprite-custom-shader" ||
-            value.kind === "billboard-custom-shader"
+            value.kind === "billboard-custom-shader" ||
+            isNodeParticleValue(value.kind)
         ) {
             this.defineVariable(declaration.name, value);
             return;
@@ -2077,6 +2106,58 @@ class Compiler
         return this.body.splice(start);
     }
 
+    /**
+     * Mark an already-emitted local `[[maybe_unused]]`.
+     *
+     * One case reaches this: a numeric local whose only reader is the
+     * `Math.random` arrow a node-particle bake moves to generation. The
+     * source reads it; the lowered program does not, and MSVC /W4 warns on
+     * a local that is initialized and never referenced.
+     */
+    public markEmittedLocalUnused(
+        cppName: string,
+        site: ts.Node,
+    ): void {
+        const declaration = `double ${cppName} = `;
+        for (let index = this.body.length - 1; index >= 0; index -= 1) {
+            const line = this.body[index]!;
+            if (line.trimStart().startsWith(declaration)) {
+                this.body[index] = line.replace(
+                    declaration,
+                    `[[maybe_unused]] ${declaration}`,
+                );
+                return;
+            }
+        }
+        // A miss cannot be silent: the annotation is what keeps the
+        // generated C++ warning-clean under /W4, and a declaration this no
+        // longer recognizes would surface as a warning in a native build
+        // with nothing pointing back here.
+        this.fail(
+            site,
+            `Cannot mark local '${cppName}' unused: no emitted ` +
+                "declaration matches it.",
+        );
+    }
+
+    /** How many lines the body stream holds, for a caller that may undo. */
+    public emittedLineCount(): number {
+        return this.body.length;
+    }
+
+    /**
+     * Drop every line emitted after `count`.
+     *
+     * An unrolled static loop whose body lowers to no statement at all --
+     * every statement in it a compile-time record, as a particle
+     * simulation's steps are -- would otherwise leave one braced block per
+     * iteration declaring a loop index nothing reads, which MSVC /W4 warns
+     * on.
+     */
+    public truncateEmittedLines(count: number): void {
+        this.body.length = count;
+    }
+
     public registerNativeFunction(
         prototype: string,
         definitionLines: string[],
@@ -2841,7 +2922,8 @@ class Compiler
             value.kind === "tuple" ||
             value.kind === "record" ||
             value.kind === "string" ||
-            value.kind === "callback"
+            value.kind === "callback" ||
+            isNodeParticleValue(value.kind)
         ) {
             this.defineVariable(identifier, value);
             return;
@@ -3273,6 +3355,11 @@ class Compiler
         )
             ? "#include <bblite/upstream/billboard_system.hpp>\n"
             : "";
+        // The frozen node-particle bridge: main.cpp calls the two folded
+        // pinned functions by name.
+        const nodeParticleInclude = features.includes("particle:node")
+            ? "#include <bblite/upstream/node_particles.hpp>\n"
+            : "";
         const cameraMathInclude =
             features.some((feature) =>
                 feature.startsWith("camera:"),
@@ -3315,7 +3402,7 @@ class Compiler
             : "";
         return `// Generated by bblitec. Do not edit.
 #include <bblite/runtime.hpp>
-${jsDataInclude}${cameraMathInclude}${spriteInclude}${billboardInclude}${postProcessInclude}
+${jsDataInclude}${cameraMathInclude}${spriteInclude}${billboardInclude}${nodeParticleInclude}${postProcessInclude}
 #include <cmath>
 #include <exception>
 #include <iostream>

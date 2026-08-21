@@ -224,6 +224,31 @@ export class BrowserErasure {
                       )
                     : undefined;
             }
+            // A browser-derived value compared against a literal is how the
+            // corpus reads an opt-out switch: `params.get("noise") !== "off"`
+            // is `null !== "off"` once the query string is known empty. Only
+            // the strict forms fold, because loose equality coerces and this
+            // evaluator carries no `undefined` to coerce against.
+            if (
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.ExclamationEqualsEqualsToken
+            ) {
+                const right = this.evaluateBrowserValue(
+                    unwrapped.right,
+                );
+                const equal = strictlyEqualBrowserValues(left, right);
+                if (equal === undefined) return undefined;
+                return {
+                    kind: "boolean",
+                    value:
+                        unwrapped.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsEqualsEqualsToken
+                            ? equal
+                            : !equal,
+                };
+            }
             return undefined;
         }
         if (ts.isCallExpression(unwrapped)) {
@@ -420,4 +445,30 @@ export class BrowserErasure {
                 "_device";
         return objectAssign || deviceEvent;
     }
+}
+
+/**
+ * `===` over two folded browser values, or undefined when either side is
+ * unknown or is the search-params object (which compares by identity).
+ */
+function strictlyEqualBrowserValues(
+    left: Value["browserValue"] | undefined,
+    right: Value["browserValue"] | undefined,
+): boolean | undefined {
+    if (!left || !right) return undefined;
+    if (left.kind === "search-params" || right.kind === "search-params") {
+        return undefined;
+    }
+    if (left.kind !== right.kind) return false;
+    if (left.kind === "null" || right.kind === "null") return true;
+    if (left.kind === "boolean" && right.kind === "boolean") {
+        return left.value === right.value;
+    }
+    if (left.kind === "number" && right.kind === "number") {
+        return left.value === right.value;
+    }
+    if (left.kind === "string" && right.kind === "string") {
+        return left.value === right.value;
+    }
+    return undefined;
 }

@@ -1,5 +1,13 @@
 import type ts from "typescript";
 import type { CompileAdaptation } from "../fidelity.js";
+import type {
+    NodeParticleBakeRequest,
+    NodeParticleBuilder,
+    NodeParticleCamera,
+    NodeParticleGraphSource,
+    NodeParticleSetRequest,
+    NodeParticleStep,
+} from "../pinned-node-particle.js";
 import type { DataType } from "./data-types.js";
 
 export interface CompileOptions {
@@ -30,6 +38,8 @@ export interface CompileManifest {
     customShaderPrograms: CompiledShaderProgram[];
     /** Every node-material graph the scene parsed, in reach order. */
     nodeMaterials: CompiledNodeMaterial[];
+    /** The scene's node-particle program, summarized. */
+    nodeParticles?: NodeParticleManifest;
     /**
      * The pinned tone-mapping export the scene assigned, when it assigned one.
      * Absent means the pin's own default, which is what `pbr-renderable.ts`
@@ -297,6 +307,28 @@ export type CompiledNodeMaterial =
         }
     );
 
+/**
+ * The scene's whole node-particle program: every set it built, the ordered
+ * calls it made on their systems, and which of those systems it froze.
+ *
+ * It IS the bake request `src/pinned-node-particle.ts` replays -- one record
+ * per SCENE rather than per set, because the deterministic seed a scene
+ * installs is global, so a scene stepping two sets draws one random sequence
+ * across both. Only `synced` is this side's: the compiler refuses a second
+ * write to one frozen state, which the driver has no opinion about.
+ */
+export interface CompiledNodeParticles
+    extends Omit<NodeParticleBakeRequest, "sets" | "billboards"> {
+    sets: NodeParticleSetRequest[];
+    billboards: Array<{
+        set: number;
+        system: number;
+        /** Whether a `syncParticleBillboard` already wrote this one. */
+        synced?: boolean;
+    }>;
+    steps: NodeParticleStep[];
+}
+
 export interface CompileAsset {
     source: string;
     output: string;
@@ -413,6 +445,38 @@ export interface CompileResult {
     cpp: string;
     cmake: string;
     manifest: CompileManifest;
+    /**
+     * The scene's node-particle program, when it built one.
+     *
+     * Compiler output rather than manifest content: it is the bake request
+     * generation replays, it is consumed in-process before anything is
+     * written, and it holds the whole graph document plus one record per
+     * simulation step -- 60 KB on a scene whose manifest is otherwise 5 KB.
+     * What the manifest carries instead is the summary below, which is what
+     * a reader of the tree actually wants.
+     */
+    nodeParticles?: CompiledNodeParticles;
+}
+
+/** What `manifest.json` records about a node-particle program. */
+export interface NodeParticleManifest {
+    sets: Array<{
+        builder: NodeParticleBuilder;
+        /**
+         * The document's identity: a factory's `module#export`, or the
+         * SHA-256 of a literal graph. The bytes themselves live in the
+         * corpus module the scene imported, and any change to them moves
+         * the baked state in `upstream/src/node_particles.cpp`.
+         */
+        graph: string;
+        emitter: readonly [number, number, number];
+        textureBaseUrl?: string;
+    }>;
+    /** How many `animateParticleSystem` calls the program replays. */
+    steps: number;
+    /** Whether the program installs a deterministic seed before them. */
+    seeded: boolean;
+    billboards: Array<{ set: number; system: number }>;
 }
 
 export type ValueKind =
@@ -433,6 +497,9 @@ export type ValueKind =
     | "material"
     | "mesh"
     | "morph-targets"
+    | "node-particle-graph"
+    | "node-particle-set"
+    | "node-particle-system"
     | "number"
     | "render-target"
     | "render-target-texture"
@@ -455,6 +522,20 @@ export type ValueKind =
     | "texture"
     | "tuple"
     | "void";
+
+/**
+ * The node-particle values are compile-time records: a graph, the set built
+ * from it and one of its systems name entries in the scene's own particle
+ * program, and nothing native holds them -- the simulation is baked at
+ * generation. Both binding paths ask the same question, so they ask it here.
+ */
+export function isNodeParticleValue(kind: ValueKind): boolean {
+    return (
+        kind === "node-particle-graph" ||
+        kind === "node-particle-set" ||
+        kind === "node-particle-system"
+    );
+}
 
 export interface Value {
     kind: ValueKind;
@@ -488,6 +569,16 @@ export interface Value {
      * `container.materialVariants`: through the object, not by name.
      */
     asset?: CompileAsset;
+    /**
+     * The graph a `node-particle-graph` value carries, and — on a set, its
+     * systems and one of them — which recorded set it names. The program
+     * those calls append to is the scene's, not the value's, so only the
+     * index travels here.
+     */
+    nodeParticleGraph?: NodeParticleGraphSource;
+    /** Which set, and which of its systems, in the manifest's own order. */
+    nodeParticleSetIndex?: number;
+    nodeParticleSystemIndex?: number;
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     /**
@@ -526,6 +617,20 @@ export interface Value {
      */
     postProcessComposite?: PostProcessCompositeManifest;
     lightKind?: LightKind;
+    /**
+     * A camera's own construction, as static numbers, and the scene's
+     * reference to the camera it was assigned.
+     *
+     * One executed port reads the scene's camera rather than only the
+     * scene's own records: a node-particle graph's `UpdateFlowMapBlock`
+     * derives the view-projection at build, so the driver that runs that
+     * build has to hold the same camera. Everything in it is a literal the
+     * scene wrote, and a camera assembled any other way carries no program
+     * and refuses there.
+     */
+    cameraProgram?: NodeParticleCamera;
+    /** The camera value `scene.camera = ...` stored, by reference. */
+    sceneCamera?: Value;
     /**
      * The extra textures a custom-shader descriptor binds, as the native
      * expressions that build them, in binding order. They ride the
@@ -635,6 +740,7 @@ export type Feature =
     | "mesh:thin-instances"
     | "mesh:thin-instances-dynamic"
     | "mesh:torus"
+    | "particle:node"
     | "scene:remove"
     | "sprite:2d"
     | "sprite:uv-scroll"

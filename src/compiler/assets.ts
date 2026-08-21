@@ -17,6 +17,11 @@ import {
     spriteAtlasAssetSource,
 } from "../executed-module-assets.js";
 import { dataUrlAssetName, isDataUrl } from "../data-url.js";
+import {
+    notJson,
+    staticJsonValue,
+    type StaticJsonContext,
+} from "./option-helpers.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type {
     CompileAsset,
@@ -52,7 +57,26 @@ export function registerAsset(
     if (existing) {
         return existing;
     }
+    const asset = assetRecord(source, kind, faceSize);
+    context.assets.set(key, asset);
+    return asset;
+}
 
+/**
+ * The packaged record one source becomes, without the registry.
+ *
+ * Two callers register an asset: the compiler, whose sources come out of the
+ * entry AST, and generation, whose one source -- a node-particle graph's
+ * texture -- is only known once the pin has resolved it against the scene's
+ * `textureBaseUrl`. Both must package it under the same name, so the naming
+ * rule lives here rather than in either.
+ */
+export function assetRecord(
+    source: string,
+    kind: CompileAsset["kind"],
+    faceSize?: number,
+): CompileAsset {
+    source = resolveBundledAsset(source);
     const sourcePath = source.split(/[?#]/, 1)[0] ?? source;
     // A data URL's text IS the payload, so it names nothing; the media type
     // does the naming instead, which keeps the packaged file's extension --
@@ -87,14 +111,12 @@ export function registerAsset(
         kind === "babylon"
             ? `${hash(source)}-${basenameWithoutExtension(safeName)}/${safeName}`
             : `${hash(source)}-${safeName}`;
-    const asset: CompileAsset = {
+    return {
         source,
         output,
         kind,
         ...(faceSize === undefined ? {} : { faceSize }),
     };
-    context.assets.set(key, asset);
-    return asset;
 }
 
 /**
@@ -257,4 +279,78 @@ function hash(value: string): string {
         hash = Math.imul(hash, 0x01000193);
     }
     return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * A serialized graph document the scene hands a pinned parser, resolved the
+ * one way this compiler resolves them.
+ *
+ * Two families take one: a node material's NME document and a node
+ * particle's NPE document. The corpus writes each of them both ways, and
+ * each way gets the answer it deserves — a module exporting the document
+ * outright is read as data, which is the fold and cannot drift, while a
+ * module that BUILDS its document at load is code this compiler does not
+ * lower, so generation runs it instead. Only the reason for the refusal
+ * differs between the families, which is why the label is a parameter.
+ *
+ * `factory` says whether a module that *computes* the document is accepted:
+ * a node particle's is (`createSceneNNNNpeJson()`), and a node material's is
+ * not, because the pin's own graph loader is what would have to run.
+ */
+export interface StaticGraphDocumentContext
+    extends ExecutedModuleReferenceContext, StaticJsonContext {
+    fail(node: ts.Node, message: string): never;
+}
+
+export type StaticGraphDocument =
+    | { kind: "literal"; graph: Record<string, unknown> }
+    | {
+          kind: "module";
+          module: string;
+          exportName: string;
+          /** The factory's own call, when it was one. */
+          call?: ts.CallExpression;
+      };
+
+export function staticGraphDocument(
+    context: StaticGraphDocumentContext,
+    expression: ts.Expression,
+    label: string,
+    factory: "factory" | "export-only",
+): StaticGraphDocument {
+    const literal = staticJsonValue(context, expression);
+    if (literal !== notJson) {
+        if (
+            typeof literal !== "object" ||
+            literal === null ||
+            Array.isArray(literal)
+        ) {
+            context.fail(expression, `A ${label} graph is a JSON object.`);
+        }
+        return {
+            kind: "literal",
+            graph: literal as Record<string, unknown>,
+        };
+    }
+    const unwrapped = context.unwrap(expression);
+    const call =
+        factory === "factory" && ts.isCallExpression(unwrapped)
+            ? unwrapped
+            : undefined;
+    const reference = executedModuleReference(
+        context,
+        call ? call.expression : expression,
+    );
+    if (!reference) {
+        context.fail(
+            expression,
+            `A ${label} graph must be a static JSON literal or a module ` +
+                "export this compiler can run at generation.",
+        );
+    }
+    return {
+        kind: "module",
+        ...reference,
+        ...(call ? { call } : {}),
+    };
 }

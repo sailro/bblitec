@@ -704,6 +704,11 @@ struct SpriteAtlasRecord {
     std::uint32_t height = 0;
     std::vector<SpriteFrame> frames;
     bool premultiplied_alpha = false;
+    // `loadTexture2D`'s own `mipMaps`, as the loader that built this atlas
+    // passed it: `loadSpriteAtlas` turns the chain off, and the atlas a
+    // particle graph's texture block builds leaves it on. The PALs upload
+    // the chain this says rather than inferring one from the sampler.
+    bool mip_maps = false;
     TextureSamplerState sampler{};
 };
 

@@ -307,7 +307,12 @@ export function lightVectorSetter(
         : undefined;
 }
 
-export interface AssignmentContext {
+export interface AssignmentContext extends DeterministicRandomContext {
+    readonly checker: ts.TypeChecker;
+    resolveStaticExpression(
+        expression: ts.Expression,
+    ): ts.Expression;
+    lookupOptional(identifier: ts.Identifier): Value | undefined;
     /**
      * Records the tone-mapping curve the scene selected, refusing a second
      * differing selection: the composed arms are closed at generation, so a
@@ -481,6 +486,16 @@ export function emitPropertyAssignment(
         expression,
     );
     const left = expression.left;
+    if (
+        emitDeterministicRandomInstall(
+            context,
+            expression,
+            left,
+            context.checker,
+        )
+    ) {
+        return;
+    }
     if (context.isBrowserOnlyExpression(left)) {
         context.eraseBrowserInstrumentation(
             expression.pos,
@@ -614,6 +629,13 @@ export function emitPropertyAssignment(
                 `Unsupported camera property '${property}'.`,
             );
         }
+        noteCameraRecordWrite(
+            context,
+            scene.sceneCamera,
+            property,
+            expression.right,
+            operator === "=",
+        );
         context.emit(
             `${context.requireEngine(scene, expression)}.cameras[${scene.cpp}.camera.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
         );
@@ -717,6 +739,11 @@ export function emitPropertyAssignment(
                 "camera",
                 expression.right,
             );
+            // The scene keeps the camera VALUE, not a copy: a property
+            // written after the assignment still reaches it, and one
+            // executed port -- the node-particle flow-map build -- reads
+            // the scene's camera rather than the scene's own records.
+            target.sceneCamera = camera;
             context.emit(
                 `${target.cpp}.camera = ${camera.cpp};`,
             );
@@ -920,6 +947,15 @@ export function emitPropertyAssignment(
                 expression,
                 "camera target",
             );
+            // The program records the target the constructor gave; a later
+            // write is not one of its scalar properties, so it invalidates.
+            noteCameraRecordWrite(
+                context,
+                target,
+                "target",
+                undefined,
+                false,
+            );
             context.emit(
                 `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].target = ${context.compileVec3(expression.right, "double")};`,
             );
@@ -930,6 +966,14 @@ export function emitPropertyAssignment(
             const nativeProperty =
                 cameraRecordField(property);
             if (nativeProperty) {
+                noteCameraRecordWrite(
+                    context,
+                    target,
+                    property,
+                    expression.right,
+                    expression.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken,
+                );
                 context.emit(
                     `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
                 );
@@ -1049,6 +1093,11 @@ function requireSimpleAssignment(
     }
 }
 import ts from "typescript";
+import {
+    emitDeterministicRandomInstall,
+    type DeterministicRandomContext,
+} from "./deterministic-random.js";
+import { noteCameraRecordWrite } from "./intrinsics/camera.js";
 import { cameraRecordField } from "./properties.js";
 import { compileRenderTextureValue } from "./intrinsics/engine-options.js";
 import { postProcessEffect } from "../post-process-effects.js";

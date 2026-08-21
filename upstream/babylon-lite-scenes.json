@@ -668,6 +668,48 @@
       "upstreamPath": "lab/lite/src/lite/scene87.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene87.ts",
       "sha256": "9b3f70a660580019a8579c8cab094446655a85c9140ada3c007846a02dad04a0"
+    },
+    {
+      "id": "scene262",
+      "upstreamPath": "lab/lite/src/lite/scene262.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene262.ts",
+      "sha256": "543c344d24ff7f9fffd23e079e3f80618d6d5075b5bbacaaf97c9770edc0781d"
+    },
+    {
+      "id": "scene263",
+      "upstreamPath": "lab/lite/src/lite/scene263.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene263.ts",
+      "sha256": "a9a2bb18e2f6bf33c6aa2d41d9398bbc3dc254d717906d01c2fa9781a9500305"
+    },
+    {
+      "id": "scene264",
+      "upstreamPath": "lab/lite/src/lite/scene264.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene264.ts",
+      "sha256": "f02256fc8ea2c48b7e88848f96dfb85363ce528985eede43297de6d735852cf5"
+    },
+    {
+      "id": "scene276",
+      "upstreamPath": "lab/lite/src/lite/scene276.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene276.ts",
+      "sha256": "16d19141a455df25f54110b36f6365024caa9bd25abbffdad1c8422e54452c0b"
+    },
+    {
+      "id": "scene277",
+      "upstreamPath": "lab/lite/src/lite/scene277.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene277.ts",
+      "sha256": "7cdbdc82760b9b92d483133a900c0425bd268ca385e7050021f398716015541a"
+    },
+    {
+      "id": "scene280",
+      "upstreamPath": "lab/lite/src/lite/scene280.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene280.ts",
+      "sha256": "e43e781d3d6541638a87c1c262e562ee2c5fdcf868a8d19061c0997d56a20ba6"
+    },
+    {
+      "id": "scene281",
+      "upstreamPath": "lab/lite/src/lite/scene281.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene281.ts",
+      "sha256": "73aa006d8cbac72f01487a657cfaef690768bc4582bdb3921d6c5c96d4af282a"
     }
   ],
   "modules": [
@@ -800,6 +842,41 @@
       "upstreamPath": "lab/lite/src/shared/scene87-nme.ts",
       "source": "corpus/babylon-lite/lab/lite/src/shared/scene87-nme.ts",
       "sha256": "cc7a1af142f46db7badf3e74b79f81537aa94b7eae44155c0ca521a4df15f079"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene262-npe.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene262-npe.ts",
+      "sha256": "816a5f92f6f103f1d9af60a7fd70d72caff3e1fc5aa76317c9ff34974fc6eb0e"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene263-npe.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene263-npe.ts",
+      "sha256": "0685b0e82e3bcf22c68885c01c8600c377c1c430b7afeae40220d345908dcf3e"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene264-npe.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene264-npe.ts",
+      "sha256": "164f0e80e16e68ea55ec94fc49d0470651e54f6797993331b5867f18054a8e10"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene276-npe.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene276-npe.ts",
+      "sha256": "d13b5649927f4d3c78ae4f237d8f1c7c855f93681eb85c14384822c941a3d9ca"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene277-npe.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene277-npe.ts",
+      "sha256": "641276a490a8838bd06d9663ab0bc6e6bc5ac4e0f4e4ea3722c863f5130d8771"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene280-npe.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene280-npe.ts",
+      "sha256": "5f04acbdee4e7dfe75c91f73a97b03974dc27178d57885de31837ddf44eb310c"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene281-npe.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene281-npe.ts",
+      "sha256": "84af45168b7db23d0104e348634d0d23f290f485ffc31f140fa8bc8c1c853054"
     }
   ]
 }

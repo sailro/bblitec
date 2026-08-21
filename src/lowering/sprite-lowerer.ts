@@ -9,6 +9,11 @@ import {
 } from "./pinned-blend-table.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
+    decodeAtlasImageCpp,
+    gridSpriteAtlasFramesCpp,
+    pushAtlasHandleCpp,
+} from "./pinned-grid-atlas.js";
+import {
     extraTextureBindingsWgsl,
     extraTextureRecords,
 } from "../shader-builtins-sprite-fx.js";
@@ -1197,17 +1202,7 @@ SpriteAtlasHandle load_sprite_atlas(
         throw std::runtime_error(
             "loadSpriteAtlas: gridSize required.");
     }
-    SpriteAtlasRecord atlas;
-    // loadTexture2D fetches, decodes and uploads before the grid is
-    // built, so the decode has to happen here too: the frame table is
-    // derived from the texture's own size.
-    const std::vector<std::uint8_t> file_bytes =
-        pal::read_binary_file(path);
-    const pal::DecodedImage image =
-        pal::decode_image(ts::ArrayBuffer(file_bytes));
-    atlas.rgba = image.rgba;
-    atlas.width = static_cast<std::uint32_t>(image.width);
-    atlas.height = static_cast<std::uint32_t>(image.height);
+${decodeAtlasImageCpp()}
     atlas.premultiplied_alpha = options.premultiplied_alpha;
     if (options.premultiply_on_load) {
         // createImageBitmap({ premultiplyAlpha: "premultiply" }).
@@ -1228,6 +1223,7 @@ SpriteAtlasHandle load_sprite_atlas(
     // The pinned sampler: clamp both axes, no mip chain, and a filter
     // chosen by \`sampling\`. mipmapFilter is "nearest" without mips, which
     // also takes maxAnisotropy back to 1.
+    atlas.mip_maps = false;
     atlas.sampler.min_filter = options.sampling;
     atlas.sampler.mag_filter = options.sampling;
     atlas.sampler.mipmap_mode = TextureMipmapMode::nearest;
@@ -1240,43 +1236,9 @@ SpriteAtlasHandle load_sprite_atlas(
     // createGridSpriteAtlas: row-major frames over a uniform grid.
     const double cell_w = static_cast<double>(options.grid_width_px);
     const double cell_h = static_cast<double>(options.grid_height_px);
-    const double margin = 0.0;
-    const double spacing = 0.0;
-    const double tw = static_cast<double>(atlas.width);
-    const double th = static_cast<double>(atlas.height);
-    const double columns = std::max(
-        1.0,
-        std::floor((tw - margin * 2.0 + spacing) / (cell_w + spacing)));
-    const double rows = std::max(
-        1.0,
-        std::floor((th - margin * 2.0 + spacing) / (cell_h + spacing)));
-    const double pivot_x = 0.5;
-    const double pivot_y = 0.5;
-    for (double r = 0.0; r < rows; r += 1.0) {
-        for (double c = 0.0; c < columns; c += 1.0) {
-            const double x = margin + c * (cell_w + spacing);
-            const double y = margin + r * (cell_h + spacing);
-            SpriteFrame frame;
-            frame.uv_min = Vec2{
-                static_cast<float>(x / tw),
-                static_cast<float>(y / th)};
-            frame.uv_max = Vec2{
-                static_cast<float>((x + cell_w) / tw),
-                static_cast<float>((y + cell_h) / th)};
-            frame.source_size_px = Vec2{
-                static_cast<float>(cell_w),
-                static_cast<float>(cell_h)};
-            frame.pivot = Vec2{
-                static_cast<float>(pivot_x),
-                static_cast<float>(pivot_y)};
-            atlas.frames.push_back(frame);
-        }
-    }
+${gridSpriteAtlasFramesCpp(this.context)}
 
-    engine.sprite_atlases.push_back(std::move(atlas));
-    return SpriteAtlasHandle{
-        static_cast<std::uint32_t>(
-            engine.sprite_atlases.size() - 1u)};
+${pushAtlasHandleCpp()}
 }
 
 Sprite2DLayerHandle create_sprite_2d_layer(

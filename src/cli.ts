@@ -9,7 +9,10 @@ import {
     renderFeaturesCmake,
 } from "./compiler.js";
 import type { CompiledShaderProgram } from "./compiler.js";
-import type { Feature } from "./compiler/types.js";
+import type {
+    CompiledNodeParticles,
+    Feature,
+} from "./compiler/types.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
 import {
     predeclaredShaderProgram,
@@ -66,6 +69,9 @@ import {
     type BabylonLight,
 } from "./babylon-asset-features.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
+import { assetRecord } from "./compiler/assets.js";
+import { bakeNodeParticles } from "./pinned-node-particle.js";
+import type { NodeParticleSystemEmit } from "./lowering/node-particle-lowerer.js";
 
 interface CliOptions {
     input: string;
@@ -360,6 +366,31 @@ function materializedAssetSource(
     );
 }
 
+/**
+ * Run the scene's node-particle program through the pin and package each
+ * frozen system's texture.
+ *
+ * The bake is the executed half of the family (`src/pinned-node-particle.ts`
+ * carries why); what it hands back is the particle state and the URL the
+ * pin's own texture block resolved, which becomes an ordinary packaged
+ * asset from here on.
+ */
+async function bakeNodeParticleSystems(
+    program: CompiledNodeParticles,
+): Promise<NodeParticleSystemEmit[]> {
+    const bake = await bakeNodeParticles(program);
+    return bake.systems.map((system) => {
+        const asset = system.texture
+            ? assetRecord(system.texture.url, "texture")
+            : undefined;
+        return {
+            bake: system,
+            textureAsset: asset?.output ?? "",
+            ...(asset ? { asset } : {}),
+        };
+    });
+}
+
 async function main(): Promise<void> {
     const options = parseArguments(process.argv.slice(2));
     const inputPath = resolve(options.input);
@@ -371,6 +402,15 @@ async function main(): Promise<void> {
         ...(options.width ? { width: options.width } : {}),
         ...(options.height ? { height: options.height } : {}),
     });
+
+    // The frozen node-particle bake is a Chromium run that nothing between
+    // here and the emitters depends on, so it is started rather than
+    // awaited: the compile spends about as long lowering and writing the
+    // tree as the browser spends simulating, and the two overlap. It is
+    // joined below, before the first consumer of what it produces.
+    const bakingNodeParticles = result.nodeParticles
+        ? bakeNodeParticleSystems(result.nodeParticles)
+        : undefined;
 
     mkdirSync(outputPath, { recursive: true });
     // Assets are materialized from their sources every run; the compiled
@@ -419,6 +459,25 @@ async function main(): Promise<void> {
     // Resolve reached variant slugs to full program records: predeclared
     // names come from the pinned registry (no defaults), scene-local
     // programs travel in the manifest.
+    // The bake's own texture is the one asset it contributes, and it is
+    // only known once the pin has resolved it against the scene's
+    // `textureBaseUrl`. Joining here keeps it ahead of every consumer: the
+    // emitters below, the image-codec scan and the manifest write.
+    const nodeParticles = bakingNodeParticles
+        ? await bakingNodeParticles
+        : [];
+    for (const system of nodeParticles) {
+        if (!system.asset) continue;
+        if (
+            !result.manifest.assets.some(
+                (existing) => existing.output === system.asset!.output,
+            )
+        ) {
+            result.manifest.assets.push(system.asset);
+            await materializeAsset(system.asset, inputPath, outputPath);
+        }
+    }
+
     const shaderPrograms: CompiledShaderProgram[] =
         result.manifest.shaderVariants.map((name) => {
             const custom =
@@ -602,6 +661,7 @@ async function main(): Promise<void> {
         postProcessTasks: result.manifest.postProcessTasks,
         postProcessShaders,
         postProcessComposites,
+        ...(nodeParticles.length > 0 ? { nodeParticles } : {}),
         gpuDeformation:
             specializationFeatures.gpuDeformation ||
             result.manifest.features.includes(

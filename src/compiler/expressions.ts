@@ -236,6 +236,40 @@ export class ExpressionLowerer {
                         : {}),
                 };
             }
+            if (owner.kind === "node-particle-set") {
+                const slot = this.compileValue(
+                    unwrapped.argumentExpression,
+                );
+                if (
+                    slot.kind !== "number" ||
+                    slot.staticNumber === undefined ||
+                    !Number.isInteger(slot.staticNumber) ||
+                    slot.staticNumber < 0
+                ) {
+                    this.context.fail(
+                        unwrapped.argumentExpression,
+                        "A node-particle set's systems are indexed by a " +
+                            "static non-negative integer.",
+                    );
+                }
+                // How many systems the set has is the graph's answer, not
+                // this call's: the bake builds it and refuses an index it
+                // has no system for.
+                return {
+                    kind: "node-particle-system",
+                    cpp: "",
+                    ...(owner.nodeParticleSetIndex !== undefined
+                        ? {
+                              nodeParticleSetIndex:
+                                  owner.nodeParticleSetIndex,
+                          }
+                        : {}),
+                    nodeParticleSystemIndex: slot.staticNumber,
+                    ...(owner.engineCpp
+                        ? { engineCpp: owner.engineCpp }
+                        : {}),
+                };
+            }
             if (owner.kind !== "tuple") {
                 this.context.fail(
                     unwrapped.expression,

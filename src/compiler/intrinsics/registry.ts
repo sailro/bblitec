@@ -33,6 +33,10 @@ import {
     type MeshIntrinsicContext,
 } from "./mesh.js";
 import {
+    compileParticleIntrinsic,
+    type ParticleIntrinsicContext,
+} from "./particle.js";
+import {
     compileSceneIntrinsic,
     type SceneIntrinsicContext,
 } from "./scene.js";
@@ -51,6 +55,7 @@ export interface IntrinsicContext
         LightIntrinsicContext,
         MaterialIntrinsicContext,
         MeshIntrinsicContext,
+        ParticleIntrinsicContext,
         SceneIntrinsicContext,
         SpriteIntrinsicContext,
         EffectIntrinsicContext {}
@@ -72,6 +77,7 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileAssetIntrinsic,
     compileSpriteIntrinsic,
     compileEffectIntrinsic,
+    compileParticleIntrinsic,
 ];
 
 /**

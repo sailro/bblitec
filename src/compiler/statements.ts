@@ -49,6 +49,10 @@ export interface StatementLoweringContext {
     ): void;
     captureEmittedLines(emitBody: () => void): string[];
     allocateTemporaryCppName(label: string): string;
+    /** How many lines have been emitted, for a caller that may undo. */
+    emittedLineCount(): number;
+    /** Drop every line emitted after `count`. */
+    truncateEmittedLines(count: number): void;
     emitVariableDeclaration(
         declaration: ts.VariableDeclaration,
     ): void;
@@ -667,7 +671,8 @@ export class StatementLowerer {
         ) {
             return false;
         }
-        const indexName = declaration.name.text;
+        const indexBinding = declaration.name;
+        const indexName = indexBinding.text;
         const length = context.compileValue(
             statement.condition.right,
         );
@@ -724,20 +729,22 @@ export class StatementLowerer {
             index < length.staticNumber;
             index += 1
         ) {
+            const before = context.emittedLineCount();
             context.emit("{");
             context.increaseIndent();
             context.pushScope(
                 context.allocateBlockPrefix(),
             );
+            // The index declaration is emitted by the binding; the body
+            // starts after it, which is what "produced no code" means here.
+            let bodyStart = 0;
             try {
-                context.bindLocalValue(
-                    declaration.name,
-                    {
-                        kind: "number",
-                        cpp: `${index}.0`,
-                        staticNumber: index,
-                    },
-                );
+                context.bindLocalValue(indexBinding, {
+                    kind: "number",
+                    cpp: `${index}.0`,
+                    staticNumber: index,
+                });
+                bodyStart = context.emittedLineCount();
                 const statements = ts.isBlock(
                     statement.statement,
                 )
@@ -750,7 +757,14 @@ export class StatementLowerer {
                 context.popScope();
                 context.decreaseIndent();
             }
-            context.emit("}");
+            // A body that lowers to nothing -- every statement in it a
+            // compile-time record, as a particle simulation's steps are --
+            // would leave a block declaring an index nothing reads.
+            if (context.emittedLineCount() === bodyStart) {
+                context.truncateEmittedLines(before);
+            } else {
+                context.emit("}");
+            }
         }
         return true;
     }

@@ -126,6 +126,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["sprite:billboard"],
     },
     {
+        source: "upstream/src/node_particles.cpp",
+        features: ["particle:node"],
+    },
+    {
         source: "upstream/src/renderer_plan.cpp",
         features: ["renderer:pbr"],
     },
@@ -220,4 +224,27 @@ export function reachedGeneratedSources(
                 ),
         )
         .map((rule) => rule.source);
+}
+
+/**
+ * The shared sprite-atlas header, which is the sprite module's but is
+ * included by every generated source that resolves a frame through it:
+ * `sprite_2d.cpp`, `billboard_system.cpp` and `node_particles.cpp`.
+ *
+ * Stated here rather than at the two places that act on it, because it is
+ * the same question the table above answers for sources — which features
+ * bring a generated file into existence — and a header whose reach drifts
+ * from its includers fails in the native build with nothing pointing back.
+ */
+export const sharedSpriteAtlasHeaderFeatures = [
+    "sprite:2d",
+    "sprite:billboard",
+] as const;
+
+export function reachesSharedSpriteAtlasHeader(
+    features: readonly string[],
+): boolean {
+    return sharedSpriteAtlasHeaderFeatures.some((feature) =>
+        features.includes(feature),
+    );
 }

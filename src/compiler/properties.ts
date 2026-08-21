@@ -64,6 +64,12 @@ interface PropertyRead {
      */
     carriesRenderTextureAspect?: true;
     /**
+     * Carries which recorded node-particle set the owner names onto the
+     * value read, so the element access that follows can say which set's
+     * system it took.
+     */
+    carriesNodeParticleSet?: true;
+    /**
      * The plain-data type this read produces, when it produces data rather
      * than a handle or a scalar the compiler models itself. Set it and the
      * value arrives as `kind: "data"`, which is what the comparison, sink
@@ -249,6 +255,18 @@ const propertyRules: readonly PropertyRule[] = [
         retag: true,
     },
     {
+        // `set.systems` is the pin's own array, and the element access that
+        // follows names one of its systems by index. The read produces the
+        // set again rather than a kind of its own: what identifies a system
+        // is the set plus the index, and the bake refuses an index the built
+        // set has no system for.
+        owner: "node-particle-set",
+        property: "systems",
+        value: "node-particle-set",
+        retag: true,
+        carriesNodeParticleSet: true,
+    },
+    {
         owner: "camera",
         property: "worldMatrix",
         value: "camera-world-matrix",
@@ -404,6 +422,10 @@ export function readProperty(
                   scenePbrMaterialIndex:
                       owner.scenePbrMaterialIndex,
               }
+            : {}),
+        ...(rule.carriesNodeParticleSet &&
+        owner.nodeParticleSetIndex !== undefined
+            ? { nodeParticleSetIndex: owner.nodeParticleSetIndex }
             : {}),
         ...(rule.carriesRenderTextureAspect
             ? {

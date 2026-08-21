@@ -2040,6 +2040,19 @@ inline std::uint32_t full_mip_chain(
                 static_cast<double>(std::max(width, height)))));
 }
 
+/**
+ * The mip levels a sprite atlas's texture is uploaded with.
+ *
+ * The chain is the pinned loader's own `mipMaps` decision, carried on the
+ * record: `loadSpriteAtlas` turns it off, and the atlas a node-particle
+ * graph's texture block builds through `loadTexture2D` leaves it on. Both
+ * backends ask this rather than each inferring the option back out of the
+ * sampler.
+ */
+inline std::uint32_t atlas_mip_levels(const SpriteAtlasRecord& atlas) {
+    return atlas.mip_maps ? full_mip_chain(atlas.width, atlas.height) : 1u;
+}
+
 // ---------------------------------------------------------------------------
 // The pin's transmission scene-colour grab, stated once for both backends
 // (frame-graph/transmission.ts): a fixed 1024x1024 rgba16float texture

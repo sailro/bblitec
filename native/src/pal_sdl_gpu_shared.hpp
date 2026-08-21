@@ -632,15 +632,23 @@ inline SDL_GPUTexture* upload_2d_texture(
     std::uint32_t width,
     std::uint32_t height,
     SDL_GPUTextureFormat format,
-    const char* label) {
+    const char* label,
+    // The chain the pinned loader built, which the caller reads off its own
+    // record rather than inferring here: `loadSpriteAtlas` turns mips off
+    // and the atlas a node-particle texture block builds leaves them on.
+    // Generating the levels needs the texture to be a colour target too.
+    std::uint32_t mip_levels = 1u) {
     SDL_GPUTextureCreateInfo texture_info{};
     texture_info.type = SDL_GPU_TEXTURETYPE_2D;
     texture_info.format = format;
-    texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    texture_info.usage = mip_levels > 1u
+        ? (SDL_GPU_TEXTUREUSAGE_SAMPLER |
+           SDL_GPU_TEXTUREUSAGE_COLOR_TARGET)
+        : SDL_GPU_TEXTUREUSAGE_SAMPLER;
     texture_info.width = width;
     texture_info.height = height;
     texture_info.layer_count_or_depth = 1;
-    texture_info.num_levels = 1;
+    texture_info.num_levels = mip_levels;
     texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
     if (!texture) gpu_error(label);
@@ -665,6 +673,9 @@ inline SDL_GPUTexture* upload_2d_texture(
         width, height, 1};
     SDL_UploadToGPUTexture(copy, &source, &destination, false);
     SDL_EndGPUCopyPass(copy);
+    if (texture_info.num_levels > 1) {
+        SDL_GenerateMipmapsForGPUTexture(command, texture);
+    }
     if (!SDL_SubmitGPUCommandBuffer(command)) gpu_error(label);
     SDL_ReleaseGPUTransferBuffer(device, transfer);
     return texture;
