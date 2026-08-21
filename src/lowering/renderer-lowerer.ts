@@ -7,10 +7,15 @@ import type {
     GeometryOutputTaskManifest,
 } from "../compiler.js";
 import { emitNativeWgslProgram } from "../shader-wgsl-emitter.js";
+import {
+    pinnedShaderDefineLines,
+    shaderPipelineModule,
+} from "./pinned-shader-defines.js";
 import { lowerWgslShaderProgram } from "../shader-ir.js";
 import type { ShaderProgramReflection } from "../shader-ir.js";
 import {
     composeStandaloneWgsl,
+    predeclaredShaderProgram,
     shaderMaterialPrograms,
 } from "../shader-material-programs.js";
 import {
@@ -325,7 +330,6 @@ const backgroundSolidModule =
     "src/material/pbr/background-solid-skybox.ts";
 const rgbdDecodeModule = "src/loader-env/rgbd-decode.ts";
 const surfaceModule = "src/engine/surface.ts";
-const shaderPipelineModule = "src/material/shader/shader-pipeline.ts";
 const sceneUniformsSourceModule = "src/shader/scene-uniforms.ts";
 
 interface LoweredShader {
@@ -704,6 +708,7 @@ export class RendererLowerer {
                 };
                 return {
                     name: program.name,
+                    samplers: reflection.samplers,
                     alphaBlending: program.needAlphaBlending,
                     alphaTesting: program.needAlphaTesting,
                     backFaceCulling: program.backFaceCulling,
@@ -715,10 +720,6 @@ export class RendererLowerer {
                 };
             },
         );
-        const shaderBindingCases = shaderVariantTable.map((info, id) =>
-            `        case ${id}u:
-            return fragment_stage ? ${info.fragment.present ? 1 : 0}u : ${info.vertex.present ? 1 : 0}u;`,
-        ).join("\n");
         const floatLiteral = (value: number): string =>
             Number.isInteger(value)
                 ? `${value}.0f`
@@ -747,6 +748,7 @@ export class RendererLowerer {
         {${info.defaults.map(floatLiteral).join(", ")}},
         ${stageBlockLiteral(info.vertex)},
         ${stageBlockLiteral(info.fragment)},
+        {${info.samplers.map((name) => `"${name}"`).join(", ")}},
     },`,
         ).join("\n");
         // The camera matrix chain the source below emits is anchored
@@ -929,6 +931,12 @@ struct ShaderVariantInfo {
     std::vector<float> defaults;
     ShaderVariantStageBlock vertex;
     ShaderVariantStageBlock fragment;
+    // The material's declared sampler names, in the order its samplers
+    // option gave them -- which is the order setShaderTexture indexed and
+    // the order the material record stores. The compiled stage may keep
+    // fewer, at its own dense registers, so a backend that binds by
+    // register looks the surviving name up here.
+    std::vector<const char*> samplers;
 };
 
 std::uint32_t shader_variant_count();
@@ -1038,9 +1046,6 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine);
 RenderFeatures build_render_features(
     const Scene& scene,
     const Engine& engine);
-std::uint32_t shader_uniform_buffer_count(
-    std::uint32_t variant,
-    bool fragment_stage);
 RenderDrawLists build_render_draw_lists(
     const std::vector<RenderItem>& items,
     const Engine& engine);
@@ -1373,21 +1378,6 @@ const ShaderVariantInfo& shader_variant_info(std::uint32_t variant) {
         throw std::runtime_error("Unknown shader variant id.");
     }
     return shader_variants[variant];
-}
-
-std::uint32_t shader_uniform_buffer_count(
-    [[maybe_unused]] std::uint32_t variant,
-    [[maybe_unused]] bool fragment_stage) {${
-            shaderBindingCases === ""
-                ? ""
-                : `
-    switch (variant) {
-${shaderBindingCases}
-        default:
-            break;
-    }`
-        }
-    return 0u;
 }
 
 RenderDrawLists build_render_draw_lists(
@@ -2195,10 +2185,9 @@ ${pinnedFogInfosPacking()}    };
         ground: true,
         skybox: true,
         transmission: true,
-        shaderPrograms: shaderMaterialPrograms.map((program) => ({
-            ...program,
-            uniformDefaults: program.uniformDefaults ?? [],
-        })),
+        shaderPrograms: shaderMaterialPrograms.map(
+            predeclaredShaderProgram,
+        ),
         gridMaterial: false,
         idDiagnostics: true,
         geometryOutputTasks: [],
@@ -2705,6 +2694,12 @@ ${lifted.fragmentBody}
         for (const source of options.shaderPrograms) {
             const name = source.name;
             const program = lowerWgslShaderProgram(source);
+            // The prelude's `defines` lines come from the pin's own
+            // builder; everything else in it this port re-addresses.
+            const defineLines = pinnedShaderDefineLines(
+                this.context,
+                source.defines ?? [],
+            );
             result.push(
                 {
                     output: `upstream/shaders/${name}.vert.wgsl`,
@@ -2714,6 +2709,7 @@ ${lifted.fragmentBody}
                             source,
                             sceneUniformsWgsl,
                             "vertex",
+                            defineLines,
                         ),
                 },
                 {
@@ -2724,15 +2720,24 @@ ${lifted.fragmentBody}
                             source,
                             sceneUniformsWgsl,
                             "fragment",
+                            defineLines,
                         ),
                 },
                 {
                     output: `upstream/shaders/${name}.vert.native.wgsl`,
-                    data: emitNativeWgslProgram(program, "vertex"),
+                    data: emitNativeWgslProgram(
+                        program,
+                        "vertex",
+                        defineLines,
+                    ),
                 },
                 {
                     output: `upstream/shaders/${name}.frag.native.wgsl`,
-                    data: emitNativeWgslProgram(program, "fragment"),
+                    data: emitNativeWgslProgram(
+                        program,
+                        "fragment",
+                        defineLines,
+                    ),
                 },
             );
         }

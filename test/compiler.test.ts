@@ -2249,6 +2249,7 @@ test("compiles Babylon Lite scene 10 PBR rough sphere", () => {
         "light:hemispheric",
         "material:pbr",
         "mesh:sphere",
+        "texture:file",
         "renderer:pbr",
     ]);
     assert.deepEqual(result.manifest.runtimeSources, [
@@ -2270,6 +2271,7 @@ test("compiles Babylon Lite scene 10 PBR rough sphere", () => {
         "upstream/src/light_hemispheric.cpp",
         "upstream/src/renderer_plan.cpp",
         "upstream/src/material_pbr.cpp",
+        "upstream/src/texture_file.cpp",
         "upstream/src/mesh_factories.cpp",
     ]);
 });
@@ -2293,6 +2295,7 @@ test("compiles Babylon Lite scene 8 HDR glass sphere", () => {
         "light:point",
         "material:pbr",
         "mesh:sphere",
+        "texture:file",
         "renderer:pbr",
     ]);
     assert.deepEqual(
@@ -2397,6 +2400,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
         "material:standard",
         "mesh:box",
         "mesh:ground",
+        "texture:file",
         "renderer:pbr",
     ]);
     assert.match(result.cpp, /\.fixed_delta_ms = 16\.0f/);
@@ -2424,6 +2428,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
         "upstream/src/light_hemispheric.cpp",
         "upstream/src/renderer_plan.cpp",
         "upstream/src/material_pbr.cpp",
+        "upstream/src/texture_file.cpp",
         "upstream/src/material_standard.cpp",
         "upstream/src/mesh_factories.cpp",
     ]);
@@ -2664,6 +2669,118 @@ test("compiles Babylon Lite scene 163 shader alpha cutout", () => {
         result.manifest.adaptations.some(
             ({ id }) => id === "typed-reached-shader-variants",
         ),
+    );
+});
+
+const SHADER_SAMPLER_SOURCE = (options: string, fragmentBody: string): string => `
+    import {
+        addToScene,
+        createEngine,
+        createPlane,
+        createSceneContext,
+        createShaderMaterial,
+        createSolidTexture2D,
+        loadTexture2D,
+        registerScene,
+        setShaderTexture,
+        startEngine,
+    } from "@babylonjs/lite";
+
+    const vertexSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);out.uv=input.uv;return out;}\`;
+    const fragmentSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,};
+@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{${fragmentBody}}\`;
+
+    async function main() {
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const material = createShaderMaterial({
+            name: "probe",
+            vertexSource,
+            fragmentSource,
+            attributes: ["position", "uv"],
+            uniforms: ["worldViewProjection"],
+            ${options}
+        });
+        ${options.includes("samplers") ? 'setShaderTexture(material, "albedo", await loadTexture2D(engine, "/textures/nme/ebf71b300f43563f.png"));' : ""}
+        const plane = createPlane(engine, { width: 1, height: 1 });
+        plane.material = material;
+        addToScene(scene, plane);
+        await registerScene(scene);
+        await startEngine(engine);
+    }
+`;
+
+test("reaches a shader material's samplers and defines", () => {
+    const result = compileSource(
+        SHADER_SAMPLER_SOURCE(
+            `samplers: ["albedo"],
+            defines: { TINT: true, Scale: 2 },`,
+            "if(TINT){return textureSample(albedo,albedoSampler,input.uv)*Scale;}return vec4<f32>(1.0,0.0,0.0,1.0);",
+        ),
+    );
+    const [program] = result.manifest.customShaderPrograms;
+    assert.deepEqual(program?.samplers, ["albedo"]);
+    // createShaderMaterial sorts the normalized set by name, and the
+    // prelude emits it in that order.
+    assert.deepEqual(program?.defines, [
+        { name: "Scale", value: 2 },
+        { name: "TINT", value: true },
+    ]);
+    // The slot the setter resolved is the declared index.
+    assert.match(result.cpp, /bbl::set_shader_texture\([^)]*, 0u,/);
+});
+
+test("refuses the shader-material sampler and define shapes outside the reached slice", () => {
+    // A typed ShaderSamplerDecl changes the declared WGSL texture and
+    // sampler types, so it refuses rather than compiling to the float/2d
+    // pair a plain string means.
+    assert.throws(
+        () =>
+            compileSource(
+                SHADER_SAMPLER_SOURCE(
+                    `samplers: [{ name: "albedo", sampleType: "depth" }],`,
+                    "return textureSample(albedo,albedoSampler,input.uv);",
+                ),
+            ),
+        /typed sampler declaration is not lowered/,
+    );
+    // SDL_GPU gives a vertex texture its own register space.
+    assert.throws(
+        () =>
+            compileSource(
+                SHADER_SAMPLER_SOURCE(
+                    `samplers: ["albedo"],`,
+                    "return textureSample(albedo,albedoSampler,input.uv);",
+                ).replace(
+                    "out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);",
+                    "out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0)+textureSample(albedo,albedoSampler,input.uv);",
+                ),
+            ),
+        /read by the vertex stage/,
+    );
+    // The pin reserves both halves of the generated pair.
+    assert.throws(
+        () =>
+            compileSource(
+                SHADER_SAMPLER_SOURCE(
+                    `samplers: ["albedo"],
+                    defines: { albedoSampler: true },`,
+                    "return textureSample(albedo,albedoSampler,input.uv);",
+                ),
+            ),
+        /collides with another generated identifier/,
+    );
+    // A define carries a static boolean or number and nothing else.
+    assert.throws(
+        () =>
+            compileSource(
+                SHADER_SAMPLER_SOURCE(
+                    `defines: { TINT: "yes" },`,
+                    "if(TINT){return vec4<f32>(1.0,0.0,0.0,1.0);}return vec4<f32>(0.0,0.0,0.0,1.0);",
+                ),
+            ),
+        /Expected a static numeric literal/,
     );
 });
 

@@ -11,7 +11,10 @@ import {
 import type { CompiledShaderProgram } from "./compiler.js";
 import type { Feature } from "./compiler/types.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
-import { shaderMaterialPrograms } from "./shader-material-programs.js";
+import {
+    predeclaredShaderProgram,
+    shaderMaterialPrograms,
+} from "./shader-material-programs.js";
 import {
     emitUpstreamGenerated,
     readPinnedMaxLights,
@@ -426,11 +429,7 @@ async function main(): Promise<void> {
                     `Unknown shader variant '${name}'.`,
                 );
             }
-            return {
-                ...predeclared,
-                uniformDefaults:
-                    predeclared.uniformDefaults ?? [],
-            };
+            return predeclaredShaderProgram(predeclared);
         });
     const reachedBabylonLights = babylonLights(
         outputPath,

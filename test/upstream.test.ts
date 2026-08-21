@@ -20,7 +20,10 @@ import {
     UpstreamSourceStore,
 } from "../src/upstream-source.js";
 import type { CompiledShaderProgram } from "../src/compiler.js";
-import { shaderMaterialPrograms } from "../src/shader-material-programs.js";
+import {
+    predeclaredShaderProgram,
+    shaderMaterialPrograms,
+} from "../src/shader-material-programs.js";
 import { dawnUtilityShaders } from "../src/upstream-lower.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
 
@@ -44,10 +47,7 @@ function reachedPrograms(
         if (!program) {
             throw new Error(`Unknown predeclared shader program '${name}'.`);
         }
-        return {
-            ...program,
-            uniformDefaults: program.uniformDefaults ?? [],
-        };
+        return predeclaredShaderProgram(program);
     });
 }
 
@@ -729,12 +729,11 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         /item\.material_kind != RenderMaterialKind::pbr &&\s*item\.material_kind != RenderMaterialKind::standard/,
     );
     assert.match(lowered.source, /build_render_features/);
-    assert.match(lowered.source, /shader_uniform_buffer_count/);
     // Variant ids index the generated table in reach order; the cutout
-    // (id 1) reflects a vertex-only system block.
+    // reflects a vertex-only system block and declares no samplers.
     assert.match(
         lowered.source,
-        /case 1u:\s*\r?\n\s*return fragment_stage \? 0u : 1u;/,
+        /"circular-cutout",[\s\S]*?ShaderVariantStageBlock\{true, true, 16u, \{\}\},\s*\r?\n\s*ShaderVariantStageBlock\{false, false, 0u, \{\}\},\s*\r?\n\s*\{\},/,
     );
     // The alpha-card entry carries the historical native defaults
     // (depth 0.5, opacity 1.0) at their declaration-order value offsets

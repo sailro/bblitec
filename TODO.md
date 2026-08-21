@@ -433,7 +433,18 @@ that does to the deferred lane by default.
   thin-instance colors (`setThinInstanceColors` plus the instance color vertex
   stream), and an explicit image-neutral lowering decision for
   `enableThinInstanceGpuCulling`.
-- [ ] Scenes 160, 162: extend reached shader-material options.
+- [ ] Extend shader-material options past the slice scenes 159-163 measure.
+  `samplers` and `defines` shipped; each remaining option fails by name.
+  A sampler is a bare string binding a 2D float texture the fragment reads:
+  a typed `ShaderSamplerDecl` (its `sampleType`, `viewDimension: "2d-array"`
+  and `comparison` each change the declared WGSL texture and sampler types),
+  a sampler the vertex stage reads (SDL_GPU gives a vertex texture its own
+  register space), `storageBuffers`, `blend`/`blendMode`, `transmissive`,
+  `depthCompare`, `depthOnlyFragment`, `depthBias`/`depthBiasSlopeScale`,
+  `useThinInstanceColors`, `stencil` and `plugins` are all unreached and
+  unlowered. `setShaderMatrix`, `setShaderStorageBuffer`,
+  `enableShaderMaterialUniformCaching` and `enableShaderUniformRangeUpdates`
+  likewise. No corpus scene reaches any of them at this pin.
 - [ ] Scenes 17, 217: extend reached PBR material options.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
 - [ ] Scenes 200-209: large-world rendering (`useHighPrecisionMatrix` +

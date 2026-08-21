@@ -212,6 +212,11 @@ struct DawnMesh {
     std::array<WGPUTextureView, mesh_texture_slots> owned_views{};
     std::array<WGPUTextureView, mesh_texture_slots> views{};
     std::array<WGPUSampler, mesh_texture_slots> samplers{};
+    // A shader material's own sampler slots, in the order its `samplers`
+    // option declared them. They take the leading pairs of the superset
+    // texture group for a shader-kind draw, because the caller's WGSL
+    // declares its textures from binding 0 up.
+    std::vector<DawnSampledTexture> shader_textures;
     // Standard-material `.babylon` reflection cube view, non-owning
     // (points into DawnState::reflection_cube_views).
     WGPUTextureView reflection = nullptr;
@@ -758,6 +763,7 @@ struct DawnState : DawnDevice {
                     wgpuSamplerRelease(mesh.samplers[slot]);
                 }
             }
+            release_dawn_extra_textures(mesh.shader_textures);
             for (auto& [kind, binding] : mesh.bindings) {
                 if (binding.scene) wgpuBindGroupRelease(binding.scene);
                 if (binding.textures) {
@@ -4842,6 +4848,31 @@ DawnMeshBindings& bindings_for(
     samplers[pair] = mesh.samplers[standard_bump_slot];
     ++pair;
 #endif
+    // A shader material's own textures replace the leading pairs: the
+    // caller's fragment declares them from binding 0 up, and the superset
+    // layout's own first pairs are the material-slot ones no custom WGSL
+    // names.
+    //
+    // Declared order is binding order here, unlike the SDL backend: Dawn
+    // compiles the `.native.wgsl` this port emitted, whose `@binding(2n)`
+    // pairs ARE the declared indexes, so no compaction stands between the
+    // record and the group.
+    if (binding_traits.shader && binding_shader_info) {
+        if (
+            mesh.shader_textures.size() <
+            binding_shader_info->samplers.size()) {
+            dawn_error(shader_sampler_shortfall(
+                *binding_shader_info,
+                mesh.shader_textures.size()));
+        }
+        for (
+            std::size_t slot = 0;
+            slot < binding_shader_info->samplers.size();
+            ++slot) {
+            views[slot] = mesh.shader_textures[slot].view;
+            samplers[slot] = mesh.shader_textures[slot].sampler;
+        }
+    }
     const std::uint32_t pair_count =
         static_cast<std::uint32_t>(pair);
     std::array<WGPUBindGroupEntry, max_texture_pairs * 2>
@@ -6137,6 +6168,24 @@ bool run_dawn_engine(Engine& engine) {
                 slot_data
                     ? slot_data->sampler
                     : TextureSamplerState{});
+        }
+        if (material) {
+            for (const FileTexture& texture : material->shader_textures) {
+                std::uint32_t shader_mip_count = 1;
+                DawnSampledTexture sampled;
+                sampled.texture = upload_material_texture(
+                    state,
+                    texture.data,
+                    texture.srgb,
+                    {255, 255, 255, 255},
+                    shader_mip_count);
+                sampled.view =
+                    wgpuTextureCreateView(sampled.texture, nullptr);
+                sampled.sampler = create_texture_sampler(
+                    state.device,
+                    texture.data.sampler);
+                mesh.shader_textures.push_back(sampled);
+            }
         }
         state.meshes.push_back(std::move(mesh));
     }

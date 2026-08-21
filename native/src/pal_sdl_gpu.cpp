@@ -173,6 +173,10 @@ struct GpuMesh {
 #if BBLITE_MATERIAL_STANDARD_REFLECTION
     SDL_GPUSampler* standard_reflection_sampler = nullptr;
 #endif
+    // A shader material's own sampler slots, bound as fragment samplers
+    // 0..n in the order its `samplers` option declared them. Empty for
+    // every other material family.
+    std::vector<SDL_GPUTextureSamplerBinding> shader_textures;
     std::uint32_t index_count = 0;
     std::uint32_t instance_count = 1;
     std::uint64_t transform_version = 0;
@@ -265,6 +269,26 @@ GpuMeshSlotMembers mesh_slot_members(
         default:
             return {};
     }
+}
+
+/**
+ * A shader material's own texture/sampler pairs, at the registers the
+ * compaction pass gave them.
+ *
+ * The pairs were uploaded in the order the material declared them and
+ * reordered at upload against this stage's `.slots` sidecar, so this only
+ * binds what that produced. Empty for every other family, and for a stage
+ * whose pairs the shader compiler dropped.
+ */
+void bind_shader_material_textures(
+    SDL_GPURenderPass* pass,
+    const GpuMesh& mesh) {
+    if (mesh.shader_textures.empty()) return;
+    SDL_BindGPUFragmentSamplers(
+        pass,
+        0,
+        mesh.shader_textures.data(),
+        static_cast<Uint32>(mesh.shader_textures.size()));
 }
 
 void bind_mesh_vertex_buffers(
@@ -433,6 +457,12 @@ struct GpuState {
     std::vector<SDL_GPUGraphicsPipeline*> shader_pipelines;
     std::vector<SDL_GPUGraphicsPipeline*>
         shader_a2c_pipelines;
+    // What the compaction pass assigned each shader-material stage, by the
+    // caller's own block and sampler names. The stage's contents depend on
+    // scene code, so this sidecar -- not the WGSL, and not the reflection
+    // generation derived from it -- is the authority on its registers.
+    std::vector<PinnedStageSlots> shader_vertex_slots;
+    std::vector<PinnedStageSlots> shader_fragment_slots;
     SDL_GPUGraphicsPipeline* background_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* skybox_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* id_pipeline = nullptr;
@@ -2853,6 +2883,9 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
         SDL_ReleaseGPUTexture(state.device, mesh.*members.texture);
         SDL_ReleaseGPUSampler(state.device, mesh.*members.sampler);
     }
+    // The shader material's own pairs, which the upload loop created
+    // outside the slot table.
+    release_sprite_fragment_textures(state.device, mesh.shader_textures);
 }
 
 void release(GpuState& state) {
@@ -3641,6 +3674,8 @@ bool run_gpu_engine(Engine& engine) {
             shader_fragment_shaders.resize(
                 shader_variant_total,
                 nullptr);
+            state.shader_vertex_slots.resize(shader_variant_total);
+            state.shader_fragment_slots.resize(shader_variant_total);
             for (
                 std::uint32_t variant = 0;
                 variant < shader_variant_total;
@@ -3651,23 +3686,36 @@ bool run_gpu_engine(Engine& engine) {
                     std::string(info.name) + ".vert";
                 const std::string fragment_name =
                     std::string(info.name) + ".frag";
+                // A shader material's stage is composed from the caller's
+                // own WGSL, so which blocks and textures survive to the
+                // compiled artifact is the caller's text to decide -- a
+                // sampler read only inside a branch a define folds away is
+                // stripped, and the registers behind it move up. The
+                // compaction pass publishes what it assigned, so the PAL
+                // binds by that sidecar rather than by the reflection
+                // generation derived, exactly as the post-process and
+                // billboard programs already do.
+                state.shader_vertex_slots[variant] =
+                    read_pinned_stage_slots(vertex_name);
+                state.shader_fragment_slots[variant] =
+                    read_pinned_stage_slots(fragment_name);
+                const PinnedStageSlots& vertex_slots =
+                    state.shader_vertex_slots[variant];
+                const PinnedStageSlots& fragment_slots =
+                    state.shader_fragment_slots[variant];
                 shader_vertex_shaders[variant] = load_shader(
                     state.device,
                     vertex_name.c_str(),
                     SDL_GPU_SHADERSTAGE_VERTEX,
-                    0,
-                    upstream::shader_uniform_buffer_count(
-                        variant,
-                        false),
+                    static_cast<Uint32>(vertex_slots.textures.size()),
+                    static_cast<Uint32>(vertex_slots.uniforms.size()),
                     "mainVertex");
                 shader_fragment_shaders[variant] = load_shader(
                     state.device,
                     fragment_name.c_str(),
                     SDL_GPU_SHADERSTAGE_FRAGMENT,
-                    0,
-                    upstream::shader_uniform_buffer_count(
-                        variant,
-                        true),
+                    static_cast<Uint32>(fragment_slots.textures.size()),
+                    static_cast<Uint32>(fragment_slots.uniforms.size()),
                     "mainFragment");
             }
         }
@@ -4720,6 +4768,62 @@ bool run_gpu_engine(Engine& engine) {
                     state.device,
                     data ? data->sampler : TextureSamplerState{});
             }
+            // A shader material's own samplers sit outside the generated
+            // slot table: the caller named them, so they bind as fragment
+            // samplers of their own.
+            //
+            // The record stores them in the order `samplers` declared, and
+            // the compiled stage keeps whichever its WGSL reads, densely,
+            // at registers the compaction pass assigned. So the upload
+            // walks that stage's sidecar and pulls each surviving name's
+            // texture out of the declared order -- the same name-to-
+            // resource resolution the composed Standard variants use. A
+            // register naming something the material never declared is a
+            // generation bug, not a draw to skip.
+            if (material && material->shader_material) {
+                const upstream::ShaderVariantInfo& shader_info =
+                    upstream::shader_variant_info(
+                        material->shader_variant);
+                const PinnedStageSlots& slots =
+                    state.shader_fragment_slots[
+                        material->shader_variant];
+                for (const std::string& texture_name : slots.textures) {
+                    const auto declared = std::find_if(
+                        shader_info.samplers.begin(),
+                        shader_info.samplers.end(),
+                        [&](const char* candidate) {
+                            return texture_name == candidate;
+                        });
+                    if (declared == shader_info.samplers.end()) {
+                        gpu_error(
+                            shader_sampler_unmapped(
+                                shader_info,
+                                texture_name)
+                                .c_str());
+                    }
+                    const std::size_t slot = static_cast<std::size_t>(
+                        declared - shader_info.samplers.begin());
+                    if (slot >= material->shader_textures.size()) {
+                        gpu_error(
+                            shader_sampler_shortfall(
+                                shader_info,
+                                material->shader_textures.size())
+                                .c_str());
+                    }
+                    const FileTexture& texture =
+                        material->shader_textures[slot];
+                    gpu_mesh.shader_textures.push_back(
+                        SDL_GPUTextureSamplerBinding{
+                            upload_texture(
+                                state.device,
+                                texture.data,
+                                texture.srgb,
+                                {255, 255, 255, 255}),
+                            create_texture_sampler(
+                                state.device,
+                                texture.data.sampler)});
+                }
+            }
             return gpu_mesh;
         };
         for (const upstream::RenderItem& item : render_plan.items) {
@@ -5495,6 +5599,9 @@ bool run_gpu_engine(Engine& engine) {
                                 push_stage_block(
                                     shader_info.fragment,
                                     true);
+                                bind_shader_material_textures(
+                                    task_pass,
+                                    mesh);
                                 if (shader_info.vertex.present) {
                                     // A pure scene-matrix vertex block
                                     // leaves the shared binding valid;
@@ -6749,6 +6856,7 @@ bool run_gpu_engine(Engine& engine) {
                         };
                         push_stage_block(shader_info.vertex, false);
                         push_stage_block(shader_info.fragment, true);
+                        bind_shader_material_textures(pass, mesh);
                         if (shader_info.vertex.present) {
                             scene_matrix_bound =
                                 shader_info.vertex.system_matrix &&

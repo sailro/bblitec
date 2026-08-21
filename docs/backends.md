@@ -327,7 +327,12 @@ Only the GPU API layer differs:
   stages go through publishes the same file, because they raise the same
   question the moment a stage's contents depend on scene code — a custom
   sprite fragment declares its layer block and its `fx` block, and which
-  of them survives is the caller's WGSL to decide. A stage whose emitted HLSL exceeds
+  of them survives is the caller's WGSL to decide. A shader material's
+  stages are the same case and bind the same way: the caller's own WGSL
+  decides which of its declared sampler pairs the compiled stage keeps,
+  so SDL_GPU reads the sidecar and resolves each surviving register back
+  to the slot `setShaderTexture` stored, while Dawn compiles the deployed
+  WGSL and takes the declared order. A stage whose emitted HLSL exceeds
   SDL_GPU's four uniform buffers — a composed geometry fragment of
   either family spends all four on scene, lights, mesh and mat before
   the tasks' `gp` block, which a second light is enough to reach — is

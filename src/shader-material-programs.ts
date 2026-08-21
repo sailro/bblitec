@@ -6,6 +6,7 @@
 // (`compileShaderMaterialOptions` in src/compiler.ts), so this table is a
 // verified mirror, never an independent source of truth.
 import type { ShaderMaterialVariantName } from "./compiler.js";
+import type { CompiledShaderProgram } from "./compiler/types.js";
 
 export interface ShaderMaterialProgramSource {
     name: string;
@@ -16,6 +17,10 @@ export interface ShaderMaterialProgramSource {
     /** Native uniform defaults applied at material creation; pinned
      *  predeclared values carry the historical record initializers. */
     uniformDefaults?: Array<{ name: string; values: number[] }>;
+    /** Reached `samplers`, in declaration order — the binding order too. */
+    samplers?: string[];
+    /** Reached `defines`, already in the pin's sorted `ShaderDefine` order. */
+    defines?: Array<{ name: string; value: boolean | number }>;
     needAlphaBlending: boolean;
     needAlphaTesting: boolean;
     backFaceCulling: boolean;
@@ -148,6 +153,31 @@ export function getShaderMaterialProgram(
     return program;
 }
 
+/**
+ * The companion identifier the pin's own prelude writes beside a sampler's
+ * texture (`buildShaderPrelude`). Owned once, because the compiler
+ * validates against it, the IR tests for it, and both emitters declare it.
+ */
+export function shaderSamplerName(name: string): string {
+    return `${name}Sampler`;
+}
+
+/**
+ * A predeclared program as the compiler's own reached-program record: the
+ * table above leaves the optional halves off the entries that do not use
+ * them, while a reached program always carries both.
+ */
+export function predeclaredShaderProgram(
+    program: ShaderMaterialProgramSource,
+): CompiledShaderProgram {
+    return {
+        ...program,
+        uniformDefaults: program.uniformDefaults ?? [],
+        samplers: program.samplers ?? [],
+        defines: program.defines ?? [],
+    };
+}
+
 const systemUniformTypes: Record<string, string | undefined> = {
     alphaCutoff: "f32",
     cameraPosition: "vec3<f32>",
@@ -191,6 +221,14 @@ export function composeStandaloneWgsl(
     program: ShaderMaterialProgramSource,
     sceneUniformsWgsl: string,
     stage: "vertex" | "fragment",
+    /**
+     * The `const` lines the pin's own prelude writes for this program's
+     * defines, read from `buildShaderPrelude` by
+     * `pinnedShaderDefineLines`. Passed in because that read needs the
+     * lowering context, and both this composer and the native emitter
+     * splice the same block.
+     */
+    defineLines = "",
 ): string {
     const uniforms = program.uniforms.map(uniformField);
     const system = uniforms.filter(({ system: isSystem }) => isSystem);
@@ -206,6 +244,18 @@ ${custom.map(({ name, type }) => `    ${name}: ${type},`).join("\n")}
 @group(1) @binding(1) var<uniform> shaderUniforms: ShaderUniforms;
 `
         : "";
+    // The pin's own prelude places each sampler pair in group 1 after the
+    // custom UBO, at consecutive bindings; SDL specialization re-homes them
+    // (see `emitNativeWgslProgram`), so only this evidence copy keeps the
+    // pin's addresses.
+    let nextBinding = custom.length > 0 ? 2 : 1;
+    const samplerBlock = (program.samplers ?? [])
+        .map(
+            (name) =>
+                `@group(1) @binding(${nextBinding++}) var ${name}: texture_2d<f32>;\n` +
+                `@group(1) @binding(${nextBinding++}) var ${shaderSamplerName(name)}: sampler;\n`,
+        )
+        .join("");
     const attributes = program.attributes.map((name, location) => {
         const type = attributeTypes[name];
         if (!type) throw new Error(`Unsupported custom shader attribute '${name}'.`);
@@ -220,7 +270,7 @@ ${systemFields}
 }
 @group(1) @binding(0) var<uniform> shaderSystem: ShaderSystemUniforms;
 ${customBlock}
-struct VertexInput {
+${samplerBlock}${defineLines}struct VertexInput {
 ${attributes}
 };
 ${source.trim()}

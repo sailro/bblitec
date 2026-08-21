@@ -1,3 +1,4 @@
+import { shaderSamplerName } from "./shader-material-programs.js";
 import type {
     ShaderExpression,
     ShaderIrProgram,
@@ -104,9 +105,39 @@ ${block.members
 @group(${group}) @binding(0) var<uniform> shaderUniforms: ShaderUniforms;`;
 }
 
+/**
+ * The texture/sampler pairs a fragment samples, at this backend's own
+ * addresses: SDL_GPU takes fragment textures at group 2, binding `2n` with
+ * the sampler at `2n + 1`, where the pin binds both into its group 1 beside
+ * the uniform blocks. The identifiers stay the pin's, because the caller's
+ * WGSL samples through them.
+ */
+function emitSamplerBindings(
+    program: ShaderIrProgram,
+    stage: ShaderStage,
+): string | undefined {
+    if (stage !== "fragment" || program.reflection.samplers.length === 0) {
+        return undefined;
+    }
+    return program.reflection.samplers
+        .flatMap((name, index) => [
+            `@group(2) @binding(${index * 2}) var ${name}: texture_2d<f32>;`,
+            `@group(2) @binding(${index * 2 + 1}) var ${shaderSamplerName(name)}: sampler;`,
+        ])
+        .join("\n");
+}
+
 export function emitNativeWgslProgram(
     program: ShaderIrProgram,
     stage: ShaderStage,
+    /**
+     * The `const` lines the pin's own prelude writes for this program's
+     * defines (`pinnedShaderDefineLines`). They are the one part of the
+     * prelude this port does not re-address: a `const` needs no SDL
+     * binding or location, so the pin's text is spliced unchanged, in the
+     * pin's own position — after the uniform blocks, before `VertexInput`.
+     */
+    defineLines = "",
 ): string {
     const module = stage === "vertex" ? program.vertex : program.fragment;
     const block = program.reflection.uniformBlocks.find(
@@ -138,6 +169,8 @@ export function emitNativeWgslProgram(
     return [
         "// Native-specialized WGSL generated from the bblitec typed shader IR.",
         emitUniformBlock(block),
+        emitSamplerBindings(program, stage),
+        defineLines.length > 0 ? defineLines.trimEnd() : undefined,
         vertexInput,
         ...moduleStructs,
         "",

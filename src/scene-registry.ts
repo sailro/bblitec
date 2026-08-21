@@ -507,10 +507,34 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene160",
+        name: "Scene 160 - Shader Texture Sampler",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene160.ts",
+        title: "Babylon Lite Native - Shader Texture Sampler",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene161",
         name: "Scene 161 - Shader Custom Uniforms",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene161.ts",
         title: "Babylon Lite Native - Shader Custom Uniforms",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene162",
+        name: "Scene 162 - Shader Defines",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene162.ts",
+        title: "Babylon Lite Native - Shader Defines",
         parity: {
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,

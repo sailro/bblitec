@@ -399,6 +399,22 @@ setters, and scene-local custom shader variants driven through their reflected
 uniform offsets. A setter stamps the material the call names, so a scene
 carrying several scene-code materials reaches each of them independently.
 
+A shader material also takes the two remaining halves of its own program.
+Its `samplers` become the pin's own `<name>` / `<name>Sampler` pair, every
+one declared as the pin declares it and re-homed into this backend's
+fragment texture group, bound per material by `setShaderTexture`. Which
+pairs the compiled stage keeps, and at which registers, is the caller's own
+WGSL to decide — a sampler read only inside a branch a define folds away is
+dropped and the registers behind it move up — so SDL_GPU binds by the
+`.slots` sidecar the compaction pass publishes, resolving each surviving
+register back to the slot the material stored, exactly as the composed
+material families do. Dawn compiles the deployed WGSL directly, where the
+declared order is the binding order. Its `defines` become the module-scope
+WGSL `const` declarations the pin's own prelude writes — WGSL has no
+preprocessor, so a define is a constant the shader compiler folds a branch
+against, and the set is part of the program's identity rather than per-draw
+state.
+
 Material state written and read per frame: alpha mask/blend/coverage,
 reflectance, emissive strength, lighting intensities, double-sided, normal
 scale, shared texture scaling, transmission, IOR, volume, dispersion,
@@ -748,7 +764,14 @@ build error with a source location, not a silently different image.
   generation naming it
 - custom shader variants are bounded by the supported WGSL subset and the
   `worldViewProjection` system uniform; arbitrary system-uniform sets and
-  matrix-valued custom uniforms remain unsupported
+  matrix-valued custom uniforms remain unsupported. A sampler is named by a
+  string and binds a 2D float texture, loaded by `loadTexture2D`, in the
+  fragment stage: a typed `ShaderSamplerDecl`, a depth or comparison
+  sampler, a `2d-array` view, a sampler the vertex stage reads (SDL_GPU
+  gives a vertex texture its own register space), a fifth sampler (the
+  fifth pair of the shared mesh texture group is the reflection cube) and
+  a texture from anywhere but `loadTexture2D` all fail by name, as do
+  storage buffers
 - a node material graph is taken inline; a snippet id fetches it from the
   snippet server at page load and fails. The graph itself is read as a JSON
   literal or executed as the module that builds it, and every block outside

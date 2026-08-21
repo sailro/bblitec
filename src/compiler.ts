@@ -82,6 +82,7 @@ import {
     compileShaderMaterialOptions,
     compileShaderUniformComponents,
     reachedShaderProgram,
+    resolveShaderTextureSlot,
     resolveShaderUniform,
     type ShaderMaterialContext,
 } from "./compiler/shader-material.js";
@@ -215,6 +216,7 @@ const featureSources: Record<Feature, string[]> = {
     "sprite:2d": [],
     "sprite:uv-scroll": [],
     "sprite:custom-shader": [],
+    "texture:file": [],
     "texture:pixels": [],
     "sprite:billboard": [],
     "sprite:billboard-axis-locked": [],
@@ -1328,6 +1330,17 @@ class Compiler
             material,
             nameExpression,
             expectedCounts,
+        );
+    }
+
+    public resolveShaderTextureSlot(
+        material: Value,
+        nameExpression: ts.Expression,
+    ): number {
+        return resolveShaderTextureSlot(
+            this,
+            material,
+            nameExpression,
         );
     }
 

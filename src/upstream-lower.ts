@@ -1133,6 +1133,13 @@ ${composed.wgsl}`,
                 generated,
             );
         }
+        if (features.includes("texture:file")) {
+            this.writeSource(
+                "upstream/src/texture_file.cpp",
+                factories.lowerFileTextureFactory(),
+                generated,
+            );
+        }
         if (features.includes("texture:pixels")) {
             this.writeSource(
                 "upstream/src/texture_pixels.cpp",

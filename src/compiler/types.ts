@@ -183,10 +183,29 @@ export interface CompiledShaderProgram {
     attributes: string[];
     uniforms: string[];
     uniformDefaults: CompiledShaderUniformDefault[];
+    /**
+     * The `samplers` list: each name reaches WGSL as the pin's own
+     * `<name>` / `<name>Sampler` texture-and-sampler pair, and
+     * `setShaderTexture` binds by the index it has here.
+     */
+    samplers: string[];
+    /**
+     * The `defines` map, normalized into the pin's own sorted
+     * `ShaderDefine[]`. Each becomes a module-scope WGSL `const` in both
+     * stages' prelude, which is why it is part of the program's identity
+     * rather than per-draw state: the pin keys its pipeline cache on the
+     * define set too, and nothing at run time can change one.
+     */
+    defines: CompiledShaderDefine[];
     needAlphaBlending: boolean;
     needAlphaTesting: boolean;
     backFaceCulling: boolean;
     depthWrite: boolean;
+}
+
+export interface CompiledShaderDefine {
+    name: string;
+    value: boolean | number;
 }
 
 export interface CompiledShaderUniformDefault {
@@ -535,6 +554,7 @@ export type Feature =
     | "sprite:2d"
     | "sprite:uv-scroll"
     | "sprite:custom-shader"
+    | "texture:file"
     | "texture:pixels"
     | "sprite:billboard"
     | "sprite:billboard-axis-locked"
