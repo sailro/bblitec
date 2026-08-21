@@ -1088,15 +1088,33 @@ void pal::run_engine(Engine& engine) {
     const bool sprites_only =
         !engine.registered_sprite_renderers.empty() &&
         engine.registered_scenes.empty();
+    // The same rule for the effect half: an EffectRenderer is a rendering
+    // context on the engine, so a scene that registered one and no
+    // SceneContext has no render plan for the scene renderers to draw.
+    const bool effects_only =
+        !engine.registered_effect_renderers.empty() &&
+        engine.registered_scenes.empty();
     if (gpu_backend == "dawn") {
-        if (sprites_only
-                ? pal::run_sprite_dawn_engine(engine)
-                : pal::run_dawn_engine(engine)) {
+        if (effects_only
+                ? pal::run_effect_dawn_engine(engine)
+                : sprites_only
+                    ? pal::run_sprite_dawn_engine(engine)
+                    : pal::run_dawn_engine(engine)) {
             return;
         }
         throw std::runtime_error(
             "BBLITE_GPU_BACKEND=dawn requires a Dawn-enabled native "
             "build (BBLITE_BACKEND=DAWN or BOTH).");
+    }
+    if (effects_only) {
+        if (pal::run_effect_gpu_engine(engine)) {
+            return;
+        }
+        if (pal::run_effect_dawn_engine(engine)) {
+            return;
+        }
+        throw std::runtime_error(
+            "An effect renderer requires a GPU backend.");
     }
     if (sprites_only) {
         if (pal::run_sprite_gpu_engine(engine)) {

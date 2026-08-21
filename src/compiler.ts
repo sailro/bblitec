@@ -77,6 +77,7 @@ import {
 } from "./compiler/property-animation.js";
 import {
     compileNodeMaterialOptions,
+    type CompiledNodeMaterialCall,
     type NodeMaterialContext,
 } from "./compiler/node-material.js";
 import {
@@ -147,6 +148,7 @@ import type {
     ScenePbrMaterialManifest,
     ScenePbrSheenManifest,
     SpriteCustomShaderManifest,
+    EffectManifest,
     Value,
     ValueKind,
 } from "./compiler/types.js";
@@ -227,6 +229,13 @@ const featureSources: Record<Feature, string[]> = {
     "sprite:billboard-cutout": [],
     "sprite:billboard-custom-shader": [],
     "renderer:sprite": ["src/pal_sdl_gpu_sprite.cpp"],
+    // The scene-less fullscreen-effect path: an EffectRenderer is its own
+    // rendering context on the engine, exactly as a SpriteRenderer is, so a
+    // scene registering one and no SceneContext compiles no scene renderer
+    // and draws from this translation unit instead.
+    "renderer:effect": ["src/pal_sdl_gpu_effect.cpp"],
+    "effect:wrapper": [],
+    "effect:task": [],
     "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],
     "renderer:fog": [],
@@ -356,6 +365,9 @@ class Compiler
     public readonly assets = new Map<string, CompileAsset>();
     public readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
     public readonly reachedNodeMaterials: CompiledNodeMaterial[] = [];
+    /** The pinned tone-mapping export the scene selected, if any. */
+    private selectedToneMapping: string | undefined;
+    private readonly reachedEffects_: EffectManifest[] = [];
     private thisInstance: Value | undefined;
     private readonly classInstances = new Map<Value, ts.ClassDeclaration>();
     private readonly body: string[] = [];
@@ -476,6 +488,9 @@ class Compiler
                             ),
                     ),
                 nodeMaterials: this.reachedNodeMaterials,
+                ...(this.selectedToneMapping
+                    ? { toneMapping: this.selectedToneMapping }
+                    : {}),
                 geometryOutputTasks: this.geometryOutputTasks,
                 postProcessTasks: this.postProcessTasks,
                 postProcessComposites: this.postProcessComposites,
@@ -484,6 +499,7 @@ class Compiler
                 sceneMaterialCount: this.sceneMaterialCount,
                 sceneMeshes: this.sceneMeshes,
                 spriteCustomShaders: this.sceneSpriteCustomShaders,
+                effects: this.reachedEffects_,
                 plainSpriteLayer: this.reachedPlainSpriteLayer,
                 plainBillboardSystem: this.reachedPlainBillboardSystem,
             },
@@ -1308,10 +1324,30 @@ class Compiler
         return compileShaderMaterialOptions(this, expression);
     }
 
+    /** Records one effect descriptor and returns its index in reach order. */
+    public recordEffect(effect: EffectManifest): number {
+        return this.reachedEffects_.push(effect) - 1;
+    }
+
+    public selectToneMapping(name: string, node: ts.Node): void {
+        if (
+            this.selectedToneMapping &&
+            this.selectedToneMapping !== name
+        ) {
+            this.fail(
+                node,
+                "A scene selects one tone mapping; the composed arms are " +
+                    `closed at generation and '${this.selectedToneMapping}' ` +
+                    "was already selected.",
+            );
+        }
+        this.selectedToneMapping = name;
+    }
+
     public compileNodeMaterialOptions(
         snippetExpression: ts.Expression,
         optionsExpression: ts.Expression | undefined,
-    ): number {
+    ): CompiledNodeMaterialCall {
         return compileNodeMaterialOptions(
             this,
             snippetExpression,

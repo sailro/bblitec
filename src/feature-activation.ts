@@ -441,6 +441,24 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/sprite/sprite-pipeline.ts",
         consumers: CMAKE,
     },
+    "renderer:effect": {
+        provenance:
+            "src/effect/effect-renderer.ts createEffectRenderer " +
+            "(a RenderingContext on the engine, like a SpriteRenderer)",
+        consumers: CMAKE,
+    },
+    "effect:wrapper": {
+        provenance:
+            "src/effect/effect-renderer.ts createEffectWrapper " +
+            "(DEFAULT_VERTEX_WGSL plus the caller's fragment)",
+        consumers: CMAKE,
+    },
+    "effect:task": {
+        provenance:
+            "src/effect/effect-renderer.ts createEffectRenderTask " +
+            "(the frame-graph pass into a RenderTarget)",
+        consumers: CMAKE,
+    },
     "renderer:pbr": {
         provenance:
             "src/material/pbr/pbr-template.ts (fragments composed by the " +

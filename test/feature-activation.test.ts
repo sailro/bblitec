@@ -45,6 +45,7 @@ function emitOptions(
         idDiagnostics: false,
         shaderPrograms: [],
         spriteCustomShaders: [],
+        effects: [],
         plainSpriteLayer: true,
         plainBillboardSystem: true,
         geometryOutputTasks: [],

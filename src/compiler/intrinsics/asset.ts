@@ -324,6 +324,14 @@ export function compileAssetIntrinsic(
                         ) === "true";
                 }
             }
+            // `maxAnisotropy: allLinear ? 4 : 1` — the pin asks for
+            // anisotropic filtering only when nothing in the chain is
+            // nearest, and the mip filter it folds into that test is
+            // `mipMaps ? "linear" : "nearest"`, so turning mips off turns
+            // anisotropy off with them. The glTF sampler path already
+            // carries the same rule for the same reason.
+            const allLinear =
+                minFilter === "linear" && magFilter === "linear" && mipMaps;
             const sampler =
                 `bbl::TextureSamplerState{` +
                 `bbl::TextureFilter::${minFilter}, ` +
@@ -331,7 +339,8 @@ export function compileAssetIntrinsic(
                 `bbl::TextureMipmapMode::${mipMaps ? "linear" : "nearest"}, ` +
                 `bbl::TextureAddressMode::repeat, ` +
                 `bbl::TextureAddressMode::repeat, ` +
-                `1.0f, ${mipMaps ? "1000.0f" : "0.0f"}}`;
+                `${allLinear ? "4.0f" : "1.0f"}, ` +
+                `${mipMaps ? "1000.0f" : "0.0f"}}`;
             context.reachFeature("texture:file", call);
             return {
                 kind: "texture",

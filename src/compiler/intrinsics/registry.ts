@@ -20,6 +20,11 @@ import {
     type LightIntrinsicContext,
 } from "./light.js";
 import {
+    compileEffectIntrinsic,
+    type EffectIntrinsicContext,
+} from "./effect.js";
+import {
+    compileMaterialConstant,
     compileMaterialIntrinsic,
     type MaterialIntrinsicContext,
 } from "./material.js";
@@ -47,7 +52,8 @@ export interface IntrinsicContext
         MaterialIntrinsicContext,
         MeshIntrinsicContext,
         SceneIntrinsicContext,
-        SpriteIntrinsicContext {}
+        SpriteIntrinsicContext,
+        EffectIntrinsicContext {}
 
 type IntrinsicCompiler = (
     context: IntrinsicContext,
@@ -65,6 +71,7 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileMaterialIntrinsic,
     compileAssetIntrinsic,
     compileSpriteIntrinsic,
+    compileEffectIntrinsic,
 ];
 
 /**
@@ -75,7 +82,8 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
 export function compileRegisteredConstant(
     importedName: string,
 ): Value | undefined {
-    return compileSpriteConstant(importedName);
+    return compileSpriteConstant(importedName) ??
+        compileMaterialConstant(importedName);
 }
 
 export function compileRegisteredIntrinsic(

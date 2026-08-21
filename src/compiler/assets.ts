@@ -16,6 +16,7 @@ import {
     pixelsAssetSource,
     spriteAtlasAssetSource,
 } from "../executed-module-assets.js";
+import { dataUrlAssetName, isDataUrl } from "../data-url.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type {
     CompileAsset,
@@ -53,7 +54,13 @@ export function registerAsset(
     }
 
     const sourcePath = source.split(/[?#]/, 1)[0] ?? source;
-    const sourceName = sourcePath.split(/[\\/]/).pop() || `${kind}.bin`;
+    // A data URL's text IS the payload, so it names nothing; the media type
+    // does the naming instead, which keeps the packaged file's extension --
+    // and with it the reached image codec -- derivable as it is for every
+    // other asset.
+    const sourceName = isDataUrl(source)
+        ? dataUrlAssetName(source)
+        : sourcePath.split(/[\\/]/).pop() || `${kind}.bin`;
     const packagedName =
         kind === "gltf" && /\.gltf$/i.test(sourceName)
             ? sourceName.replace(/\.gltf$/i, ".glb")

@@ -78,6 +78,10 @@ Primary source ownership:
 | `src/post-process-effects.ts` | the reached effects: which options reach the composed text, which scalars the effect's writer reads, and which textures bind after the source |
 | `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant |
 | `src/pinned-node-material.ts` | runs the pin's own node-material compiler over a Babylon NME graph, against a recording device, and refuses every arm outside the reached slice |
+| `src/pinned-tone-mapping.ts` | the tone-mapping record a scene selects, read from the pinned module that owns it -- the curve is a value upstream, not a flag |
+| `src/data-url.ts` | a `data:` asset URL, whose bytes are the source text rather than a location to fetch |
+| `src/lowering/effect-lowerer.ts` | the fullscreen-effect family: the pin's own vertex stage lifted, its pass state asserted, and the two records a scene fills |
+| `src/pinned-effect-cpp.ts` | the C++ transcript of one `EffectWrapper`: which stages it draws and what its declared bind group holds |
 | `src/pinned-node-material-cpp.ts` | the C++ transcript of that run: the node variant table, its vertex inputs, the folded uniform bytes, and the pin's own mesh block mirrored |
 | `src/compiler/node-material.ts` | which graph a `parseNodeMaterialFromSnippet` call reached: a static JSON literal read as data, or a module generation executes |
 | `src/pinned-standard-variants.ts` | the Standard sibling: derives the pin's own feature words and composes the Standard colour and geometry variants |
@@ -98,9 +102,13 @@ Primary source ownership:
 | `native/src/pal.cpp` | filesystem, paths, environment, timing, host engine |
 | `native/src/pal_sdl.cpp` | deterministic SDL_Renderer fallback |
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
-| `native/src/pal_sdl_gpu_shared.hpp` | SDL_GPU-only mechanics: shader load, buffer/texture upload, sampler, PNG readback |
+| `native/src/pal_sdl_gpu_shared.hpp` | SDL_GPU-only mechanics: window/device/swapchain bring-up, shader load, buffer/texture upload, sampler, PNG readback |
 | `native/src/pal_sdl_gpu_sprite.cpp` | the pure-2D sprite pass on SDL_GPU, a separate translation unit because a sprite-only scene generates no camera or render-plan headers |
-| `native/src/pal_dawn_shared.hpp` | Dawn-only device, surface and swapchain bring-up, and WGSL module loading |
+| `native/src/pal_sdl_gpu_effect.cpp` | the fullscreen-effect frame driver on SDL_GPU, a separate translation unit for the same reason |
+| `native/src/pal_dawn_effect.cpp` | the same driver on Dawn |
+| `native/src/pal_sdl_gpu_effect.hpp` | the SDL_GPU effect pass mechanics both its `.cpp` driver and the scene renderer's frame-graph task draw through |
+| `native/src/pal_dawn_effect.hpp` | the Dawn effect pass mechanics, likewise shared by its driver and the frame graph |
+| `native/src/pal_dawn_shared.hpp` | Dawn-only device, surface and swapchain bring-up, WGSL module loading, and the surface capture every driver screenshots through |
 | `native/src/pal_dawn_sprite.cpp` | the same sprite pass on Dawn |
 | `native/src/pal_dawn.cpp` | Dawn (WebGPU) resources, uploads, pipelines, readback, submission |
 | `native/src/pal_gpu_shared.hpp` | vertex packing, RGBD decode, deformation uniforms, and inverse image processing shared byte-identically by both GPU backends |
@@ -241,6 +249,9 @@ The current generated slice includes:
   white, anaglyph, circle of confusion — each drawing the pin's own composed
   module, and the depth-of-field composite as the chain of them its own
   factory builds
+- fullscreen effects: the caller's WGSL wrapped in the pin's own
+  fullscreen-triangle vertex stage, drawn either by a swapchain rendering
+  context of its own or by a frame-graph task into a render target
 - linear RGBA16F opaque/transmission rendering followed by one final
   image-processing pass
 - reached custom WGSL lowered through a typed shader IR into reflected HLSL/MSL

@@ -38,6 +38,9 @@
 #if BBLITE_HAS_SPLATS
 #include "pal_dawn_splat.hpp"
 #endif
+#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+#include "pal_dawn_effect.hpp"
+#endif
 #include "pal_gpu_shared.hpp"
 #include "pal_render_capture.hpp"
 
@@ -456,6 +459,12 @@ struct DawnState : DawnDevice {
     WGPUSampler clamp_sampler = nullptr;
     WGPUSampler ground_sampler = nullptr;
     WGPUSampler nearest_sampler = nullptr;
+#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+    // One built pass per effect render task, keyed by task index and built
+    // lazily against the target's own format and sample count -- the pin
+    // keys its own pipeline cache by exactly that pair.
+    std::vector<DawnEffectPass> effect_tasks;
+#endif
     // Frame graph state.
     std::vector<DawnRenderTarget> render_targets;
     std::vector<DawnRenderTask> render_tasks;
@@ -777,6 +786,12 @@ struct DawnState : DawnDevice {
             program = {};
         }
         post_process_programs.clear();
+#endif
+#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+        for (DawnEffectPass& pass : effect_tasks) {
+            release_dawn_effect_pass(pass);
+        }
+        effect_tasks.clear();
 #endif
         frame_graph_width = 0;
         frame_graph_height = 0;
@@ -4136,6 +4151,27 @@ WGPUBindGroupLayout node_draw_layout_for(
         node_entry.buffer.type = WGPUBufferBindingType_Uniform;
         entries.push_back(node_entry);
     }
+    // The graph's own `TextureBlock`/`ImageSourceBlock` pairs, at the
+    // bindings the pin's pipeline builder allocated and with the visibility
+    // its own BGL entry carries -- a UV chain can put the sample in either
+    // stage, so the pin declares both and so does this.
+    for (std::size_t index = 0; index < entry.texture_count; ++index) {
+        const upstream::NodeVariantTexture& binding =
+            upstream::node_variant_textures[entry.first_texture + index];
+        WGPUBindGroupLayoutEntry view = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        view.binding = binding.texture;
+        view.visibility =
+            WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+        view.texture.sampleType = WGPUTextureSampleType_Float;
+        view.texture.viewDimension = WGPUTextureViewDimension_2D;
+        entries.push_back(view);
+        WGPUBindGroupLayoutEntry sampler = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        sampler.binding = binding.sampler;
+        sampler.visibility =
+            WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+        sampler.sampler.type = WGPUSamplerBindingType_Filtering;
+        entries.push_back(sampler);
+    }
     if (entry.env.present) {
         // The pin's own four, in the order `emitEnv` allocates them: the
         // specular cube and its sampler, then the BRDF LUT and its own.
@@ -4370,6 +4406,27 @@ WGPUBindGroup build_node_draw_group(
         node_entry.buffer = draw_state.material_uniforms;
         node_entry.size = static_cast<std::uint64_t>(entry.ubo_bytes);
         entries.push_back(node_entry);
+    }
+    // The images the scene supplied, uploaded with the mesh: the variant
+    // table's order is the pin's allocation order, and the material's slots
+    // were filled in that same order by `create_node_material`.
+    for (std::size_t index = 0; index < entry.texture_count; ++index) {
+        const upstream::NodeVariantTexture& binding =
+            upstream::node_variant_textures[entry.first_texture + index];
+        if (index >= mesh.shader_textures.size()) {
+            dawn_error(
+                "a node graph declares more textures than its material "
+                "carries.");
+        }
+        const DawnSampledTexture& supplied = mesh.shader_textures[index];
+        WGPUBindGroupEntry view = WGPU_BIND_GROUP_ENTRY_INIT;
+        view.binding = binding.texture;
+        view.textureView = supplied.view;
+        entries.push_back(view);
+        WGPUBindGroupEntry sampler = WGPU_BIND_GROUP_ENTRY_INIT;
+        sampler.binding = binding.sampler;
+        sampler.sampler = supplied.sampler;
+        entries.push_back(sampler);
     }
     if (entry.env.present) {
         // `pushEnvBindGroupEntries` binds the scene's own EnvironmentTextures,
@@ -9012,6 +9069,60 @@ bool run_dawn_engine(Engine& engine) {
                 wgpuRenderPassEncoderRelease(task_pass);
                 continue;
             }
+#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+            if (task.kind == FrameTaskKind::effect) {
+                // The same two halves the swapchain renderer draws through,
+                // recorded into the frame graph's encoder instead: the pin
+                // ships two entry points over one pass, not two passes.
+                if (state.effect_tasks.size() < engine.frame_tasks.size()) {
+                    state.effect_tasks.resize(engine.frame_tasks.size());
+                }
+                DawnEffectPass& pass = state.effect_tasks[handle.value];
+                const RenderTargetRecord& target_record =
+                    engine.render_targets[task.effect.target.value];
+                DawnRenderTarget& target =
+                    state.render_targets[task.effect.target.value];
+                if (!pass.pipeline) {
+                    pass = create_dawn_effect_pass(
+                        state,
+                        engine,
+                        task.effect.effect,
+                        target.color_format,
+                        target_record.swapchain
+                            ? 1u
+                            : task_sample_count(state, target_record.samples));
+                }
+                upload_dawn_effect_pass(
+                    state.queue,
+                    engine,
+                    pass,
+                    task.effect.effect);
+                WGPURenderPassColorAttachment attachment =
+                    WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+                attachment.view = target_record.swapchain
+                    ? surface_view
+                    : target.color_view;
+                attachment.loadOp = task.effect.clear
+                    ? WGPULoadOp_Clear
+                    : WGPULoadOp_Load;
+                attachment.storeOp = WGPUStoreOp_Store;
+                attachment.clearValue = WGPUColor{
+                    task.effect.clear_color.r,
+                    task.effect.clear_color.g,
+                    task.effect.clear_color.b,
+                    task.effect.clear_color.a};
+                WGPURenderPassDescriptor descriptor =
+                    WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+                descriptor.colorAttachmentCount = 1;
+                descriptor.colorAttachments = &attachment;
+                WGPURenderPassEncoder effect_pass =
+                    wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+                record_dawn_effect_pass(effect_pass, pass);
+                wgpuRenderPassEncoderEnd(effect_pass);
+                wgpuRenderPassEncoderRelease(effect_pass);
+                continue;
+            }
+#endif
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
             if (task.kind == FrameTaskKind::post_process) {
                 // A composite records the chain its own factory built; a

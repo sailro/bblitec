@@ -147,32 +147,14 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 frame >= frame_options.screenshot_frame &&
                 !captures.screenshot_saved &&
                 !frame_options.screenshot_path.empty();
-            WGPUBuffer readback = nullptr;
-            const std::uint32_t bytes_per_row = (width * 4 + 255) & ~255u;
+            DawnSurfaceCapture capture{};
             if (capture_frame) {
-                WGPUBufferDescriptor readback_descriptor =
-                    WGPU_BUFFER_DESCRIPTOR_INIT;
-                readback_descriptor.usage =
-                    WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
-                readback_descriptor.size =
-                    static_cast<std::uint64_t>(bytes_per_row) * height;
-                readback = wgpuDeviceCreateBuffer(
+                capture = begin_dawn_surface_capture(
                     state.device,
-                    &readback_descriptor);
-                WGPUTexelCopyTextureInfo copy_source =
-                    WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-                copy_source.texture = surface_texture.texture;
-                WGPUTexelCopyBufferInfo copy_destination =
-                    WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
-                copy_destination.layout.bytesPerRow = bytes_per_row;
-                copy_destination.layout.rowsPerImage = height;
-                copy_destination.buffer = readback;
-                const WGPUExtent3D copy_size{width, height, 1};
-                wgpuCommandEncoderCopyTextureToBuffer(
                     encoder,
-                    &copy_source,
-                    &copy_destination,
-                    &copy_size);
+                    surface_texture.texture,
+                    width,
+                    height);
             }
 
             WGPUCommandBuffer command =
@@ -182,49 +164,15 @@ bool run_sprite_dawn_engine(Engine& engine) {
             wgpuCommandEncoderRelease(encoder);
 
             if (capture_frame) {
-                WGPUBufferMapCallbackInfo map_callback =
-                    WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-                map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
-                map_callback.callback = [](
-                                            WGPUMapAsyncStatus status,
-                                            WGPUStringView message,
-                                            void* userdata1,
-                                            void*) {
-                    if (status != WGPUMapAsyncStatus_Success) {
-                        auto* error =
-                            static_cast<std::string*>(userdata1);
-                        if (error->empty()) *error = view_text(message);
-                    }
-                };
-                map_callback.userdata1 = &state.uncaptured_error;
-                wait_for(
-                    state.instance,
-                    wgpuBufferMapAsync(
-                        readback,
-                        WGPUMapMode_Read,
-                        0,
-                        static_cast<std::size_t>(bytes_per_row) * height,
-                        map_callback));
-                const void* mapped = wgpuBufferGetConstMappedRange(
-                    readback,
-                    0,
-                    static_cast<std::size_t>(bytes_per_row) * height);
-                if (!mapped) dawn_error("buffer map returned no data.");
-                std::vector<std::uint8_t> pixels(
-                    static_cast<const std::uint8_t*>(mapped),
-                    static_cast<const std::uint8_t*>(mapped) +
-                        static_cast<std::size_t>(bytes_per_row) * height);
-                wgpuBufferUnmap(readback);
-                save_capture_png(
-                    pixels,
+                finish_dawn_surface_capture(
+                    state,
+                    capture,
                     width,
                     height,
-                    bytes_per_row,
-                    state.surface_format == WGPUTextureFormat_BGRA8Unorm,
                     frame_options.screenshot_path);
                 captures.screenshot_saved = true;
             }
-            if (readback) wgpuBufferRelease(readback);
+            if (capture.readback) wgpuBufferRelease(capture.readback);
 
             wgpuSurfacePresent(state.surface);
             wgpuTextureViewRelease(surface_view);

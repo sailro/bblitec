@@ -1,6 +1,8 @@
 import ts from "typescript";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import type { CompiledNodeMaterialCall } from "../node-material.js";
+import { isToneMappingExport } from "../../pinned-tone-mapping.js";
 import type {
     ScenePbrClearCoatManifest,
     ScenePbrIridescenceManifest,
@@ -78,7 +80,7 @@ export interface MaterialIntrinsicContext
     compileNodeMaterialOptions(
         snippetExpression: ts.Expression,
         optionsExpression: ts.Expression | undefined,
-    ): number;
+    ): CompiledNodeMaterialCall;
     expectShaderVariant(
         material: Value,
         variant: string,
@@ -130,6 +132,22 @@ function compileShaderUniformWrite(
             `${material.cpp}, ${offset}u, ` +
             `${components.join(", ")})`,
     };
+}
+
+/**
+ * A pinned tone-mapping record a scene imports by name.
+ *
+ * Upstream models a tone mapping as a value -- `{ id, helpersWGSL, callWGSL }`
+ * -- and `pbr-renderable.ts` composes whichever record the scene assigned, so
+ * what the identifier carries here is the export's own name. Generation reads
+ * that export's WGSL out of the module that owns it; nothing about the curve
+ * reaches run time, which is why the value has no native expression.
+ */
+export function compileMaterialConstant(
+    importedName: string,
+): Value | undefined {
+    if (!isToneMappingExport(importedName)) return undefined;
+    return { kind: "tone-mapping", cpp: "", staticString: importedName };
 }
 
 export function compileMaterialIntrinsic(
@@ -813,15 +831,31 @@ export function compileMaterialIntrinsic(
                 context.compileValue(call.arguments[0]!),
                 call,
             );
-            const index = context.compileNodeMaterialOptions(
+            const graph = context.compileNodeMaterialOptions(
                 call.arguments[1]!,
                 call.arguments[2],
             );
             context.reachFeature("material:node", call);
             context.reachFeature("renderer:pbr", call);
+            // The textures travel under the names the call keyed them by,
+            // because that is the join the pin performs: a declared binding
+            // reads `options.textures?.[tb._name]`, and which pair a name
+            // lands on is the composition's answer rather than this call's.
+            // Resolving here would need the composed order the compiler does
+            // not have yet, and would put the same lookup in a second place.
+            const textures = graph.textures
+                .map(
+                    (entry) =>
+                        `bbl::NodeMaterialTexture{` +
+                        `${context.cppString(entry.name)}, ` +
+                        `${entry.texture.cpp}}`,
+                )
+                .join(", ");
             return {
                 kind: "material",
-                cpp: `bbl::create_node_material(${engine}, ${index}u)`,
+                cpp:
+                    `bbl::create_node_material(${engine}, ` +
+                    `${graph.index}u, {${textures}})`,
                 engineCpp: engine,
             };
         }

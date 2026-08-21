@@ -195,11 +195,23 @@ compile the scene renderer's translation unit at all and draws from
 That split is upstream's own — a `SpriteRenderer` is its own `RenderingContext`
 on the engine rather than part of a scene.
 
+The fullscreen-effect path takes the same shape and for the same reason: an
+`EffectRenderer` is a rendering context on the engine, so its two halves live
+in `pal_sdl_gpu_effect.hpp` / `pal_dawn_effect.hpp` and are drawn both by the
+scene-less driver beside them and by the scene renderer's frame-graph effect
+task. The pipeline is built against the *output target's* format and sample
+count, which is what the pin's own `targetSignatureKey` cache is keyed by, so
+one wrapper drawn into two targets builds two passes. The two backends resolve
+its bind group differently for the standing reason: SDL_GPU reads the `.slots`
+sidecar, because a uniform block the caller's body never reads does not survive
+Tint and the compaction that follows is dense, while Dawn compiles the deployed
+WGSL and takes the descriptor's own binding numbers.
+
 Deleting a backend stays a matter of dropping its files. `BBLITE_BACKEND`
 removes every translation unit belonging to the backend it turns off,
-including its sprite pass, and each entry point compiles to a stub that
-returns false, so the other backend keeps rendering every feature the scene
-reached.
+including its sprite and effect passes, and each entry point compiles to a
+stub that returns false, so the other backend keeps rendering every feature
+the scene reached.
 
 ## Measured contracts
 

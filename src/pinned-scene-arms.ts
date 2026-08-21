@@ -14,6 +14,10 @@
  */
 import type { PinnedComposeOptions } from "./pinned-pbr-variants.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
+import {
+    defaultToneMappingName,
+    pinnedToneMapping,
+} from "./pinned-tone-mapping.js";
 
 /** The light kinds the pin ships a single-light module for. */
 export const pinnedSingleLightTypes = [
@@ -45,6 +49,12 @@ export interface PinnedSceneArmRequest {
     noLight: boolean;
     /** Tone-mapping states to include; `[false]` for a scene without it. */
     toneMapping: readonly boolean[];
+    /**
+     * The pinned tone-mapping export the scene selected, or undefined for the
+     * pin's own default -- which is exactly what `pbr-renderable.ts` composes
+     * for an unset `imageProcessing.toneMapping`.
+     */
+    toneMappingName?: string;
     /** Whether the scene has an environment (`PBR_HAS_ENV`). */
     environment: boolean;
     /** Whether the scene reaches fog (`PBR_HAS_FOG`); the composed fog arm's
@@ -58,10 +68,11 @@ export interface PinnedSceneArmRequest {
  *
  * Each piece is imported rather than written: the multi-light structs and loop
  * come from `multilight-wgsl.js`, each single-light block from its own
- * `singlelight-<kind>-wgsl.js`, and the tone mapping from the pin's
- * `StandardToneMapping` — which is what `pbr-renderable.ts` passes when
- * `scene.imageProcessing.toneMapping` is left at its default. Supplying any of
- * them another way composes a different fragment.
+ * `singlelight-<kind>-wgsl.js`, and the tone mapping from the record the scene
+ * selected — `pbr-renderable.ts` composes
+ * `scene.imageProcessing.toneMapping ?? StandardToneMapping`, so an unset
+ * selection reaches the pin's own default here for the same reason. Supplying
+ * any of them another way composes a different fragment.
  */
 export async function pinnedSceneArms(
     request: PinnedSceneArmRequest,
@@ -77,9 +88,9 @@ export async function pinnedSceneArms(
             COMPUTE_PBR_LIGHT: string;
             getMultiLightLoop: () => string;
         }>("material/pbr/fragments/multilight-wgsl.js"),
-        importPinnedModule<{
-            StandardToneMapping: { helpersWGSL: string; callWGSL: string };
-        }>("material/pbr/tone-mapping.js"),
+        pinnedToneMapping(
+            request.toneMappingName ?? defaultToneMappingName,
+        ),
     ]);
     const multi = {
         multiLightWgsl:
@@ -87,8 +98,8 @@ export async function pinnedSceneArms(
         multiLightLoop: multiLight.getMultiLightLoop(),
     };
     const tone = {
-        toneMappingHelpers: toneMapping.StandardToneMapping.helpersWGSL,
-        toneMappingCall: toneMapping.StandardToneMapping.callWGSL,
+        toneMappingHelpers: toneMapping.helpersWGSL,
+        toneMappingCall: toneMapping.callWGSL,
     };
     const singles = await Promise.all(
         request.lightKinds.map(async (type) => {

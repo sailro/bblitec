@@ -175,7 +175,7 @@ record future audits build on.
 
 ## P1 — Full Babylon Lite corpus audit
 
-147 corpus scenes remain unregistered; measured scenes are in
+130 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -187,24 +187,20 @@ The command accepts an unregistered path.
 **The corpus carries only the shared modules registered scenes import**,
 each pinned in `upstream/babylon-lite-scenes.json`. Integrating a scene that
 imports one starts by copying it out of the pinned upstream tree and pinning
-its SHA-256 beside the scenes. The ten shipped node-material graphs are
+its SHA-256 beside the scenes. The thirteen shipped node-material graphs are
 already there; the remaining node-material, node-particle and skin modules are
-not.
+not — and a missing module is invisible in a compile probe, because the
+compiler reports the unresolved identifier the import would have bound rather
+than the import.
 
-**Largest first-blocker clusters** (swept against 1.23.0, before the node
-family shipped): browser-dependent condition 17 (15 of them deferred-lane
-physics), `parseNodeMaterialFromSnippet` 17 — of which ten shipped and seven
-remain, each behind a capability the reached slice refuses — engine options
-beyond msaaSamples/requiredLimits 7,
-`parseNodeParticleSource` 7, static array literal 5, `receiveShadows` 5,
-`loadSplat` 5, `??` over a non-static-record operand 5,
-string-literal arguments 3, `createNavigationPluginAsync` 3. Standard
-diffuse-texture assignment blocks 5 (18, 25, 90, 110, 272), mesh name/id
-setters block 4 (111, 113, 129, 221). The light vector setters shipped, and
-the five scenes behind them moved on: 4 and 22 to `createGroundFromHeightMap`
-and the shadow family, 65 to `receiveShadows`, 141 to
-`usePhysicalLightFalloff` then node materials, 207 to engine options, 223 to
-`createUtilityLayer`.
+**Largest first-blocker clusters** (swept against 1.23.0 on 2026-08-21):
+browser-dependent condition 17 (15 of them deferred-lane physics), engine
+options beyond msaaSamples/requiredLimits 7, `parseNodeParticleSource` 7,
+`receiveShadows` 6, `??` over a non-static-record operand 5, `loadSplat` 5,
+Standard image diffuse textures 5 (18, 25, 90, 91, 272), mesh name/id setters
+4 (111, 113, 129, 221), `createNavigationPluginAsync` 3. Node materials
+shipped thirteen of their twenty-two; each of the nine that remain sits behind
+a capability the reached slice refuses.
 
 - [ ] Scene 11's residual is a skinned pose, not its material: the composed
   fragment is byte-identical to the browser's and `scene -- diff` names two
@@ -257,11 +253,11 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (123 scenes):** 4, 12, 16-18, 20, 22, 23, 25, 26, 36, 38, 43,
-51-53, 58-91, 99, 110-115, 117, 118, 120-129, 140, 141, 144, 149, 152, 155-158,
-160, 162, 165, 179, 200-207, 211, 214, 215, 217-220, 223, 226, 229, 231, 241,
-250, 251, 261-264, 269-271, 275-284, 300, 301. Includes static CSG/CSG2,
-compressed assets
+**Integrate first (96 scenes):** 4, 12, 16-18, 20, 22, 23, 25, 26, 36, 38, 43,
+51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
+140, 141, 144, 149, 152, 155-158, 165, 179, 200-207, 211, 214, 215, 217-220,
+223, 226, 229, 231, 241, 250, 251, 261-264, 269-271, 275-284, 300,
+301. Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118, 129), and display-only
 gizmos (223). The eight 1.23.0 added are all first-lane: none needs a platform,
 user-input or external-service contract.
@@ -356,7 +352,9 @@ that does to the deferred lane by default.
   plus a static-array loop and a canvas2D data URL built in the entry file,
   272 `cloneTransformNode` and `createSolidTexture2D`.
 - [ ] Scene 20: lower an arrow function bound to a name and used as a value.
-- [ ] Scenes 26, 87: support image-processing `toneMapping`.
+- [ ] Scene 26: its first blocker is a non-literal string argument;
+  image-processing `toneMapping` shipped with scene 87 and `AcesToneMapping`
+  is one of the three records `src/pinned-tone-mapping.ts` already reads.
 - [ ] Scene 36: support `loadBasisTexture2D`.
 - [ ] Scene 38: support `createCylinder`.
 - [ ] Extend the sprite path past the slice Scene 50 measures. Each item is a
@@ -398,10 +396,15 @@ that does to the deferred lane by default.
   82, 84, 85, 88 and 89 measure. Each item is a block the composed graph reaches
   and this port refuses by name at generation, so a scene's own error says
   which:
-  - `TextureBlock` / `ImageSourceBlock` (62, 73, 81, 83) and the group-1
-    texture pair the pin's pipeline builder allocates for each. 81 and 83
-    additionally load their texture from a `data:` URL, which asset
-    materialization treats as a path and fails to open.
+  - a scene-supplied `blockLoader` (73, 83), which is the pin's bundle-size
+    device: the scene passes a function mapping each block class name to a
+    dynamic import of the pin's own emitter module, so `loadGraphEmitters`
+    pulls only what the graph reaches. It composes the same module the default
+    registry does *when* every arm maps to the pin's own emitter, and nothing
+    static proves that of an arbitrary function. The shape that would: read
+    the switch statically, refuse any arm whose import is not a pinned
+    `material/node/blocks/*.js` emitter, and compose with exactly those.
+    73 additionally wants camera viewports and a loader-returned collection.
   - `MorphTargetsBlock` (64, 66), two vertex storage bindings.
   - `ClipPlanesBlock` and `MeshAttributeExistsBlock` (86, which also wants
     `setClipPlane`).
@@ -410,10 +413,49 @@ that does to the deferred lane by default.
   - a graph reached through `getSceneNNNme()` behind a gzip payload (66, 72,
     73), which is a module function rather than an exported object.
   - `GeometryTextureOutputBlock` (149), the node family's geometry-MRT arm.
+  - `MeshAttributeExistsBlock` and `ClipPlanesBlock` (86, which also wants
+    `setClipPlane` and a mesh-data module function behind
+    `createMeshFromData`).
   - the `inputs` handles, which no reached scene writes: a scene setting one
     would need the node UBO rewritten per frame instead of folded.
-  - image-processing `toneMapping` (87) and shadows (65, 66, 72), neither of
-    which is a node-material contract.
+  - shadows (65, 66, 72), which are not a node-material contract.
+
+- [ ] Extend the fullscreen-effect slice past scenes 74, 75 and 76. Each item
+  fails by name today: a custom `vertexWGSL`, an `EffectWrapperOptions.blend`
+  state, the `EffectRenderer`'s per-frame `update` callback, the per-binding
+  record form of `setEffectUniforms`, an effect texture from anything but
+  `createSolidTexture2D`, and the `EffectBindingLayout` fields past the five
+  the corpus writes (`visibility`, `textureSampleType`, `viewDimension`,
+  `samplerType` — the last three are what a cascade-array depth sampler
+  needs). `unregisterEffectRenderer`, `disposeEffectRenderer` and
+  `disposeEffectWrapper` are unlowered because the reached slice never
+  detaches one. The whole `UniformEffectWrapper` family — the pin's smaller
+  uniform-only frame-graph path — is unreached: it is `createEffectWrapper`
+  with one uniform binding at zero and no texture machinery, so it would
+  compose onto the same table rather than needing a second one.
+
+- [ ] Keep a `data:` asset's payload out of the generated manifest. An asset's
+  `source` is its URL, and for a data URL the URL *is* the base64 payload, so
+  it rides `registerAsset`'s key, `hash(source)` and `manifest.json` verbatim
+  — scene 81's manifest is 6.3 KB, nearly all of it the inline atlas, and the
+  generated-tree byte diff the neutrality proof compares carries it. The
+  repository already has the shape: `"generated:pinned-ibl-brdf-lut"` and the
+  executed-module markers are opaque source strings only `materializeAsset`
+  resolves. Registering a data URL the same way keeps the bytes in one place.
+  Nothing is wrong today; it stops scaling at the first large inline texture.
+
+- [ ] Three per-frame costs the scene-less drivers share with their siblings,
+  filed together because fixing one family alone would make the tree less
+  consistent rather than more. (a) `pal_sdl_gpu_sprite.cpp` and
+  `pal_sdl_gpu_effect.cpp` render offscreen and blit the full screen to the
+  swapchain every frame for a capture that happens at most once; gating the
+  offscreen path on a requested screenshot drops a full-screen copy per frame
+  and stops inflating `--benchmark`. (b) Material textures are decoded and
+  uploaded per *mesh*, so two meshes sharing one material decode the same PNG
+  twice at load — true of the shader, node and slot paths on both backends.
+  (c) A module carrying both entry points deploys twice under two stems with
+  identical bytes; SDL_GPU needs both compiles, Dawn loads only one, so the
+  second file is dead weight there. The post-process family does all three.
 
 - [ ] Carry a `ShaderMaterial`'s own `depthCompare` through lowering.
   `src/material/shader/shader-material.ts` defaults it to `"greater-equal"`
@@ -442,11 +484,8 @@ that does to the deferred lane by default.
   already treats it as per-frame state in `write_pinned_frame_blocks`. The
   push has to stay per draw, but the build does not. One hoist covering all
   three families, not a per-family change.
-- [ ] Scenes 62, 81, 83: resolve the module-level texture-URL constants
-  (`SCENE62_TEXTURE_URL` and siblings).
 - [ ] Scenes 66, 72, 214, 215, 271: support `receiveShadows`.
 - [ ] Scene 73: support camera viewports.
-- [ ] Scenes 74, 76: support `createEffectWrapper`.
 - [ ] Scene 75: support the `SCENE_CLEAR_COLOR` shader binding.
 - [ ] Scene 86: support `setClipPlane`.
 - [ ] Scene 91: support `initializeCsg2Async`.

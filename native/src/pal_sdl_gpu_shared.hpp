@@ -399,6 +399,69 @@ inline void push_stage_uniform(
         static_cast<Uint32>(bytes));
 }
 
+/**
+ * The window, device and swapchain a run needs before it can draw anything.
+ *
+ * `docs/backends.md` puts swapchain handling per backend, which means one
+ * copy per backend rather than one per translation unit -- and the Dawn side
+ * has read that way since `create_dawn_device`. This is its SDL_GPU twin, so
+ * the scene renderer and the two scene-less drivers open a device the same
+ * way instead of each carrying the same thirty lines.
+ */
+struct SdlGpuDeviceOptions {
+    bool hidden_test_pass = false;
+    /** Benchmarks present immediately; everything else keeps vsync. */
+    bool immediate_present = false;
+    bool gpu_debug = false;
+};
+
+struct SdlGpuDevice {
+    SDL_Window* window = nullptr;
+    SDL_GPUDevice* device = nullptr;
+    SDL_GPUTextureFormat swapchain_format = SDL_GPU_TEXTUREFORMAT_INVALID;
+};
+
+inline void create_sdl_gpu_device(
+    const EngineOptions& engine_options,
+    const SdlGpuDeviceOptions& options,
+    SdlGpuDevice& state) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) gpu_error("SDL_Init");
+    state.window = SDL_CreateWindow(
+        engine_options.title.c_str(),
+        engine_options.width,
+        engine_options.height,
+        options.hidden_test_pass
+            ? SDL_WINDOW_RESIZABLE | SDL_WINDOW_NOT_FOCUSABLE
+            : SDL_WINDOW_RESIZABLE);
+    if (!state.window) gpu_error("SDL_CreateWindow");
+    state.device = SDL_CreateGPUDevice(
+        SDL_GPU_SHADERFORMAT_DXIL |
+            SDL_GPU_SHADERFORMAT_SPIRV |
+            SDL_GPU_SHADERFORMAT_MSL,
+        options.gpu_debug,
+        nullptr);
+    if (!state.device) gpu_error("SDL_CreateGPUDevice");
+    if (!SDL_ClaimWindowForGPUDevice(state.device, state.window)) {
+        gpu_error("SDL_ClaimWindowForGPUDevice");
+    }
+    state.swapchain_format =
+        SDL_GetGPUSwapchainTextureFormat(state.device, state.window);
+    if (options.immediate_present &&
+        SDL_WindowSupportsGPUPresentMode(
+            state.device, state.window, SDL_GPU_PRESENTMODE_IMMEDIATE)) {
+        if (!SDL_SetGPUSwapchainParameters(
+                state.device,
+                state.window,
+                SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+                SDL_GPU_PRESENTMODE_IMMEDIATE)) {
+            gpu_error("SDL_SetGPUSwapchainParameters");
+        }
+    }
+    if (!SDL_SetGPUAllowedFramesInFlight(state.device, 3)) {
+        gpu_error("SDL_SetGPUAllowedFramesInFlight");
+    }
+}
+
 inline SDL_GPUShader* load_shader(
     SDL_GPUDevice* device,
     const char* base_name,

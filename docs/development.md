@@ -947,19 +947,19 @@ npm run scene -- neutrality artifacts/parity-baseline
 `neutrality` prints every cell that moved and exits non-zero if any did.
 `status:verify` performs the published half of the same comparison.
 
-It already knows the one movement that is not a finding: scenes 9 and 37 do
-not render bit-identically on Dawn from one run to the next, by a few dozen
-pixels of 921600, so their Dawn cells move for any change and for no change
-alike. Those are reported as expected wobble and excluded from the exit
-status; every other moved cell is real. Only their *Dawn* cells — SDL_GPU and
-single-sampled Dawn are both bit-stable, which places the wobble in the
-multisampled Dawn path.
+It already knows the movements that are not findings: scenes 9, 37 and 120 do
+not render bit-identically on Dawn from one run to the next, so their Dawn
+cells move for any change and for no change alike. Those are reported as
+expected wobble and excluded from the exit status; every other moved cell is
+real. Only their *Dawn* cells — SDL_GPU and single-sampled Dawn are both
+bit-stable, which places the wobble in the multisampled Dawn path.
 
-Nothing else is on that list. A single unreproduced observation is not grounds
-for adding a scene to it: a whitelist entry excuses that scene's Dawn cells
-permanently and would hide a real regression there. Re-run before concluding,
-and add a scene only once it moves repeatedly under changes that cannot reach
-it.
+Nothing else is on that list, and the entry fee is a measurement rather than a
+surprising neutrality run: `scene -- stability <id> --backend dawn` has to show
+the re-runs differing and `--single-sample` has to show them stop. A whitelist
+entry excuses that scene's Dawn cells permanently, so it hides any Dawn
+regression smaller than the wobble — scene 120's spans 0.002 against a 0.004
+Dawn foreground.
 
 There is no hosted CI. During iteration, run only the smallest relevant tests,
 generation steps, affected native builds, and scene parity gates. Do not repeat

@@ -78,6 +78,8 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
 | [Frame graph](#frame-graph) | Run | render targets, tasks, geometry MRTs, blits, MSAA resolve |
 | [Post-process passes](#post-process-passes) | Compile → Run | each effect's stage composed by the pin at generation; the fullscreen pass, its uniforms and its viewport at run time |
+| [Fullscreen effects](#fullscreen-effects) | Compile → Run | the caller's WGSL wrapped in the pin's own vertex stage at generation; the swapchain renderer or the frame-graph task at run time |
+| [Image processing](#image-processing) | Compile → Run | the tone-mapping curve composed into the PBR fragment; exposure and contrast live per frame |
 | [Render backends](#render-backends) | Run | SDL_GPU, Dawn, CPU fallback, transmission, image processing |
 | [Runtime scene mutation](#runtime-scene-mutation) | Run | removal with plan rematching, material-family append, instance counts |
 | [Diagnostics and capture](#diagnostics-and-capture) | Run | screenshots, benchmarks, attribution buffers |
@@ -169,6 +171,13 @@ Every remote URL the scene reaches is downloaded into
 and GLB with their external buffers and images, `.babylon` scenes with their
 textures, `.env`/`.hdr`/`.dds` environments, PNG/JPEG/WebP images, cubemap
 faces, and the pinned BRDF LUT.
+
+A `data:` URL is the one source that names no location: its bytes are in the
+scene's own text, so materializing it is a decode rather than a download, and
+what it packages under is derived from its media type. Upstream draws no
+distinction — `fetch` serves a data URL from the string — which is why nothing
+in the pinned loaders marks the case. Only the base64 form is read; a
+percent-encoded body refuses rather than decoding through a second path.
 
 **Why compile time:** the native runtime has no network stack and no
 asynchronous scheduler, while every Babylon Lite loader is `fetch`-based. A
@@ -502,10 +511,21 @@ either way.
 the depth *convention* into its own output, and both backends render under
 the pin's ([fidelity](fidelity.md#shader-contract)).
 
-What refuses at generation, naming the block that reached it: `TextureBlock`
-and `ImageSourceBlock`, morph targets, shadows, clip planes and the
-mesh-attribute test. A graph fetched by snippet id refuses too, because the
-fetch is a network read at page load.
+A graph may also sample textures. `TextureBlock` and `ImageSourceBlock` each
+declare a binding named after the block, and the pin's own pipeline builder
+allocates the group-1 texture/sampler pair for it out of the same running
+counter the node UBO and the environment take — so the pair belongs to the
+composition rather than to any ordering this port could choose. What the
+scene supplies is the image, under that binding's name
+(`parseNodeMaterialFromSnippet`'s `textures` record), and generation joins the
+two: a binding the record omits, or a name the graph declares no binding for,
+refuses at generation where upstream raises it at the first render.
+
+What refuses at generation, naming the block that reached it: morph targets,
+shadows, clip planes and the mesh-attribute test. A graph fetched by snippet
+id refuses too, because the fetch is a network read at page load, and a graph
+handed its own `blockLoader` refuses because that function is scene code
+deciding which emitter serves each block class.
 
 ### Animation playback
 
@@ -689,6 +709,62 @@ normalized viewport becomes the pin's own pixel rectangle, which rounds its far
 edges *up* where a frame-graph copy task rounds them down, so the two do not
 share a resolver.
 
+### Fullscreen effects
+
+`createEffectWrapper` is the pin's own equivalent of Babylon.js's
+`EffectWrapper`/`EffectRenderer`: a fullscreen fragment the caller writes, one
+explicitly declared bind group, and a three-vertex draw over a
+`@builtin(vertex_index)` triangle. It is deliberately outside the frame graph
+in its simplest form — an `EffectRenderer` registers on the engine as its own
+rendering context and owns a swapchain target, so a procedural fullscreen
+scene needs no `SceneContext` at all.
+
+**Compile time: the module and the layout.** The pin builds one shader module
+as `vertexWGSL ?? DEFAULT_VERTEX_WGSL` concatenated with the caller's
+fragment, so generation lifts that constant out of the pinned module and
+performs the same concatenation. Both entry points live in the one module, so
+it deploys twice — once per stage — exactly as a post-process module does. The
+bind-group layout is the descriptor's `bindings` array rather than anything
+reflected out of the WGSL, which is why it travels to the generated table
+whole; a sampler's `textureBinding` is resolved to the texture binding it
+samples through at generation, so the runtime reads one number where the pin
+runs a lookup with a fallback.
+
+**Run time: the pass.** Two entry points draw the same pair of halves. An
+`EffectRenderer` is its own rendering context, so a scene registering one and
+no `SceneContext` compiles no scene renderer and draws from a translation unit
+of its own — the same split a `SpriteRenderer` already takes, and for the same
+reason. A `createEffectRenderTask` is a frame-graph task into a
+`RenderTarget` the caller made, which a Standard material can then sample as
+its diffuse texture. Either way the pipeline is built against the *output
+target's* format and sample count, which is what the pin's own
+`targetSignatureKey` cache is keyed by.
+
+What refuses at generation, by name: a custom `vertexWGSL`, a `blend` state,
+the `EffectRenderer`'s per-frame `update` callback, the per-binding record
+form of `setEffectUniforms`, an effect texture from anything but
+`createSolidTexture2D`, and every `EffectBindingLayout` field past the five
+the corpus writes (`visibility`, `textureSampleType`, `viewDimension`,
+`samplerType`). The `UniformEffectWrapper` family — the pin's smaller
+uniform-only path — is unreached and unlowered.
+
+### Image processing
+
+Exposure, contrast and the tone-mapping opt-in, written on the scene's
+`imageProcessing` record. Exposure and contrast are live scene-UBO fields the
+frame reads; the tone-mapping *curve* is not, because upstream models one as a
+value — `{ id, helpersWGSL, callWGSL }` — that `pbr-renderable.ts` composes
+straight into the PBR fragment. So a scene naming one of the pin's three
+exported records selects which WGSL reaches composition, and an unset
+selection reaches the pin's own default for the same reason the pin resolves
+`toneMapping ?? StandardToneMapping`. A scene naming two different records
+refuses at generation, because the composed arm set is closed there.
+
+A node graph's own `ImageProcessingBlock` is unaffected: it reads the
+tone-mapping *state* out of the scene block and carries the standard
+exponential curve inline, so the selection reaches the material families
+alone.
+
 ### Render backends
 
 Two peer GPU backends render the same generated plans and are selected at run
@@ -730,7 +806,8 @@ before it trusts a measurement.
 | Lights | which light-kind writers and `light_*.cpp` units exist | the lights buffer, per-mesh light sets, uniforms |
 | Textures | which image codecs link and ship | decode, mip generation, factor texels, sampler state |
 | Post-process passes | each effect's composed stage, for the options the scene passed | the pass, its uniform block, its viewport rectangle and its blend |
-| Node materials | the graph compiled to a module by the pin's own emitter, its uniform block folded to the graph's defaults | the draw, its mesh block, and the per-mesh light selection that block carries |
+| Node materials | the graph compiled to a module by the pin's own emitter, its uniform block folded to the graph's defaults | the draw, its mesh block, the textures the scene supplied, and the per-mesh light selection that block carries |
+| Fullscreen effects | the caller's fragment wrapped in the pin's own vertex stage, and the bind-group layout the descriptor declared | the pass, its uniform bytes, and the textures the scene bound |
 
 ## Knobs
 
@@ -812,9 +889,12 @@ build error with a source location, not a silently different image.
 - a node material graph is taken inline; a snippet id fetches it from the
   snippet server at page load and fails. The graph itself is read as a JSON
   literal or executed as the module that builds it, and every block outside
-  the reached slice — textures, morph targets, shadows, clip planes, the
-  mesh-attribute test, fragment depth and alpha blending — refuses at
-  generation naming the block that reached it
+  the reached slice — morph targets, shadows, clip planes, the
+  mesh-attribute test and alpha blending — refuses at generation naming the
+  block that reached it. An executed graph module may import its own relative
+  siblings, which is how the corpus composes one document out of another; a
+  package import refuses, because that is the boundary keeping the route to
+  plain data
 - an asset carrying more punctual light nodes than the pinned `MAX_LIGHTS`
   (16) fails, where upstream grows the constant at run time
 - a scene-code mesh or PBR material created before a later glTF load fails,

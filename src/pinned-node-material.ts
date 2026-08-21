@@ -45,6 +45,23 @@ export interface ComposedNodeEnvBindings {
     brdfSampler: number;
 }
 
+/**
+ * One texture the graph samples, at the pair the pin's pipeline builder gave
+ * it.
+ *
+ * `compileNodePipeline` allocates the pair from the same running binding
+ * counter the node UBO and the environment take, so the numbers belong to the
+ * composition rather than to any ordering this port could choose. The name is
+ * the pin's own sanitized block name, which is also the key `options.textures`
+ * is read under, so it is what joins a declared binding to the texture the
+ * scene supplied.
+ */
+export interface ComposedNodeTextureBinding {
+    name: string;
+    texture: number;
+    sampler: number;
+}
+
 /** What running the pin's node-material compiler produced. */
 export interface ComposedNodeMaterial {
     /** The module both stages compile from, the pin's own text. */
@@ -64,6 +81,8 @@ export interface ComposedNodeMaterial {
      */
     uboFloats: readonly number[];
     attributes: readonly ComposedNodeAttribute[];
+    /** The texture pairs the graph declares, in the pin's allocation order. */
+    textures: readonly ComposedNodeTextureBinding[];
     /** `backFaceCulling` as the graph's JSON declares it. */
     backFaceCulling: boolean;
     /** The environment bindings, or null when the graph reaches none. */
@@ -82,7 +101,11 @@ interface PinnedNodeMaterial {
         _wgsl: string;
         _nodeUboSize: number;
         _nodeUboBinding: number | null;
-        _textureBindings: readonly { _name: string }[];
+        _textureBindings: readonly {
+            _name: string;
+            _texBinding: number;
+            _sampBinding: number;
+        }[];
         _envBindings: {
             _iblTexture: number;
             _iblSampler: number;
@@ -203,9 +226,6 @@ function assertReachedSlice(
     material: PinnedNodeMaterial,
     label: string,
 ): void {
-    if (material._compile._textureBindings.length > 0) {
-        refuse(label, "a texture (TextureBlock or ImageSourceBlock)");
-    }
     if (material._state.shadowLights.length > 0) {
         refuse(label, "a shadow generator");
     }
@@ -262,6 +282,11 @@ export async function composeNodeMaterial(
         uboBinding: material._compile._nodeUboBinding,
         uboFloats,
         attributes,
+        textures: material._compile._textureBindings.map((binding) => ({
+            name: binding._name,
+            texture: binding._texBinding,
+            sampler: binding._sampBinding,
+        })),
         backFaceCulling: material._graph.backFaceCulling,
         envBindings: env
             ? {
